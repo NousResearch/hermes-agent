@@ -1433,12 +1433,21 @@ class _AnthropicChatShim:
 class AnthropicAuxiliaryClient:
     """OpenAI-client-compatible wrapper over a native Anthropic client."""
 
-    def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False):
+    def __init__(
+        self,
+        real_client: Any,
+        model: str,
+        api_key: str,
+        base_url: str,
+        is_oauth: bool = False,
+        auth_scheme: str = "",
+    ):
         self._real_client = real_client
         adapter = _AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth)
         self.chat = _AnthropicChatShim(adapter)
         self.api_key = api_key
         self.base_url = base_url
+        self.auth_scheme = str(auth_scheme or "").strip().lower()
 
     def close(self):
         close_fn = getattr(self._real_client, "close", None)
@@ -1467,6 +1476,7 @@ class AsyncAnthropicAuxiliaryClient:
         self.chat = _AsyncAnthropicChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
         self.base_url = sync_wrapper.base_url
+        self.auth_scheme = sync_wrapper.auth_scheme
         # See AsyncCodexAuxiliaryClient: mirror _real_client so cache
         # eviction on a poisoned underlying client also drops this entry.
         self._real_client = sync_wrapper._real_client
@@ -1597,6 +1607,8 @@ def _maybe_wrap_anthropic(
     api_key: str,
     base_url: str,
     api_mode: Optional[str] = None,
+    *,
+    auth_scheme: str = "",
 ) -> Any:
     """Rewrap a plain OpenAI client in ``AnthropicAuxiliaryClient`` when
     the endpoint actually speaks Anthropic Messages.
@@ -1656,8 +1668,18 @@ def _maybe_wrap_anthropic(
         )
         return client_obj
 
+    resolved_auth_scheme = str(auth_scheme or "").strip().lower()
+    if not resolved_auth_scheme:
+        from hermes_cli.config import get_custom_provider_auth_scheme
+
+        resolved_auth_scheme = get_custom_provider_auth_scheme(base_url)
+
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        real_client = build_anthropic_client(
+            api_key,
+            base_url,
+            auth_scheme=resolved_auth_scheme or None,
+        )
     except Exception as exc:
         logger.warning(
             "Failed to build Anthropic client for %s (%s) — falling back to "
@@ -1671,7 +1693,12 @@ def _maybe_wrap_anthropic(
         model, base_url[:60] if base_url else "", api_mode or "auto-detected",
     )
     return AnthropicAuxiliaryClient(
-        real_client, model, api_key, base_url, is_oauth=False,
+        real_client,
+        model,
+        api_key,
+        base_url,
+        is_oauth=False,
+        auth_scheme=resolved_auth_scheme,
     )
 
 
@@ -2327,6 +2354,7 @@ _RUNTIME_MAIN_MODEL: str = ""
 _RUNTIME_MAIN_BASE_URL: str = ""
 _RUNTIME_MAIN_API_KEY: str = ""
 _RUNTIME_MAIN_API_MODE: str = ""
+_RUNTIME_MAIN_AUTH_SCHEME: str = ""
 
 
 def set_runtime_main(
@@ -2336,6 +2364,7 @@ def set_runtime_main(
     base_url: str = "",
     api_key: str = "",
     api_mode: str = "",
+    auth_scheme: str = "",
 ) -> None:
     """Record the live runtime provider/model/credentials for the current AIAgent.
 
@@ -2350,22 +2379,26 @@ def set_runtime_main(
     """
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
+    global _RUNTIME_MAIN_AUTH_SCHEME
     _RUNTIME_MAIN_PROVIDER = (provider or "").strip().lower()
     _RUNTIME_MAIN_MODEL = (model or "").strip()
     _RUNTIME_MAIN_BASE_URL = (base_url or "").strip()
     _RUNTIME_MAIN_API_KEY = api_key.strip() if isinstance(api_key, str) else ""
     _RUNTIME_MAIN_API_MODE = (api_mode or "").strip()
+    _RUNTIME_MAIN_AUTH_SCHEME = (auth_scheme or "").strip().lower()
 
 
 def clear_runtime_main() -> None:
     """Clear the runtime override (e.g. on session end)."""
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
+    global _RUNTIME_MAIN_AUTH_SCHEME
     _RUNTIME_MAIN_PROVIDER = ""
     _RUNTIME_MAIN_MODEL = ""
     _RUNTIME_MAIN_BASE_URL = ""
     _RUNTIME_MAIN_API_KEY = ""
     _RUNTIME_MAIN_API_MODE = ""
+    _RUNTIME_MAIN_AUTH_SCHEME = ""
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -2501,7 +2534,14 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         # Anthropic OAuth claims only apply to api.anthropic.com.
         try:
             from agent.anthropic_adapter import build_anthropic_client
-            real_client = build_anthropic_client(custom_key, custom_base)
+            from hermes_cli.config import get_custom_provider_auth_scheme
+
+            custom_auth_scheme = get_custom_provider_auth_scheme(custom_base)
+            real_client = build_anthropic_client(
+                custom_key,
+                custom_base,
+                auth_scheme=custom_auth_scheme or None,
+            )
         except ImportError:
             logger.warning(
                 "Custom endpoint declares api_mode=anthropic_messages but the "
@@ -2509,7 +2549,14 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
             )
             return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra), model
         return (
-            AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base, is_oauth=False),
+            AnthropicAuxiliaryClient(
+                real_client,
+                model,
+                custom_key,
+                custom_base,
+                is_oauth=False,
+                auth_scheme=custom_auth_scheme,
+            ),
             model,
         )
     # URL-based anthropic detection for custom endpoints that didn't set
@@ -2772,7 +2819,15 @@ _AUTO_PROVIDER_LABELS = {
     "_resolve_api_key_provider": "api-key",
 }
 
-_MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
+_MAIN_RUNTIME_FIELDS = (
+    "provider",
+    "model",
+    "base_url",
+    "api_key",
+    "api_mode",
+    "auth_mode",
+    "auth_scheme",
+)
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -4307,6 +4362,7 @@ def _resolve_auto(
     runtime_base_url = str(runtime.get("base_url") or "")
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = str(runtime.get("api_mode") or "")
+    runtime_auth_scheme = str(runtime.get("auth_scheme") or "")
 
     # Fall back to process-local globals when main_runtime dict was not
     # provided or was incomplete.  ``set_runtime_main()`` now records
@@ -4319,6 +4375,8 @@ def _resolve_auto(
         runtime_api_key = _RUNTIME_MAIN_API_KEY
     if not runtime_api_mode and _RUNTIME_MAIN_API_MODE:
         runtime_api_mode = _RUNTIME_MAIN_API_MODE
+    if not runtime_auth_scheme and _RUNTIME_MAIN_AUTH_SCHEME:
+        runtime_auth_scheme = _RUNTIME_MAIN_AUTH_SCHEME
 
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
@@ -4408,6 +4466,7 @@ def _resolve_auto(
                 explicit_base_url=explicit_base_url,
                 explicit_api_key=explicit_api_key,
                 api_mode=runtime_api_mode or None,
+                auth_scheme=runtime_auth_scheme or None,
             )
             if client is not None:
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",
@@ -4557,6 +4616,7 @@ def resolve_provider_client(
     explicit_base_url: str = None,
     explicit_api_key: str = None,
     api_mode: str = None,
+    auth_scheme: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
     task: Optional[str] = None,
@@ -4683,7 +4743,12 @@ def resolve_provider_client(
         # Anthropic-wire endpoints: rewrap plain OpenAI clients so
         # chat.completions.create() is translated to /v1/messages.
         return _maybe_wrap_anthropic(
-            client_obj, final_model_str, api_key_str, base_url_str, api_mode,
+            client_obj,
+            final_model_str,
+            api_key_str,
+            base_url_str,
+            api_mode,
+            auth_scheme=auth_scheme or "",
         )
 
     # ── Auto: try all providers in priority order ────────────────────
@@ -4937,7 +5002,11 @@ def resolve_provider_client(
                 if entry_api_mode == "anthropic_messages":
                     try:
                         from agent.anthropic_adapter import build_anthropic_client
-                        real_client = build_anthropic_client(custom_key, custom_base)
+                        real_client = build_anthropic_client(
+                            custom_key,
+                            custom_base,
+                            auth_scheme=str(custom_entry.get("auth_scheme") or "") or None,
+                        )
                     except ImportError:
                         logger.warning(
                             "Named custom provider %r declares api_mode="
@@ -4957,7 +5026,12 @@ def resolve_provider_client(
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))
                     sync_anthropic = AnthropicAuxiliaryClient(
-                        real_client, final_model, custom_key, custom_base, is_oauth=False,
+                        real_client,
+                        final_model,
+                        custom_key,
+                        custom_base,
+                        is_oauth=False,
+                        auth_scheme=str(custom_entry.get("auth_scheme") or ""),
                     )
                     if async_mode:
                         return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model

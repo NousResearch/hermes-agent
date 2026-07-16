@@ -547,6 +547,16 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     )
 
 
+def _normalize_anthropic_auth_scheme(auth_scheme: str | None) -> str | None:
+    """Validate an explicit Anthropic Messages credential-header choice."""
+    if auth_scheme is None or not str(auth_scheme).strip():
+        return None
+    normalized = str(auth_scheme).strip().lower()
+    if normalized not in {"bearer", "x-api-key"}:
+        raise ValueError("Anthropic auth_scheme must be 'bearer' or 'x-api-key'")
+    return normalized
+
+
 def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
     """Return True for endpoints that still gate 1M context behind a beta."""
     normalized = _normalize_base_url_text(base_url).lower()
@@ -707,6 +717,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    auth_scheme: str | None = None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -733,6 +744,12 @@ def build_anthropic_client(
     its default on fresh clients so 1M-capable subscriptions keep the
     capability.
 
+    ``auth_scheme`` controls only the outbound credential header. ``bearer``
+    uses the HTTP Authorization bearer scheme, while ``x-api-key`` uses
+    Anthropic's native API-key header.
+    When omitted, the historical endpoint and token compatibility behavior is
+    preserved.
+
     Returns an anthropic.Anthropic instance.
     """
     _anthropic_sdk = _get_anthropic_sdk()
@@ -742,9 +759,13 @@ def build_anthropic_client(
             "Install it with: pip install 'anthropic>=0.39.0'"
         )
 
+    wire_auth_scheme = _normalize_anthropic_auth_scheme(auth_scheme)
+
     # Callable api_key → Entra ID bearer provider path. Delegated to a
     # helper so the existing static-key code below stays unchanged.
     if callable(api_key) and not isinstance(api_key, str):
+        if wire_auth_scheme == "x-api-key":
+            raise ValueError("Callable Anthropic credentials require auth_scheme='bearer'")
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout,
             drop_context_1m_beta=drop_context_1m_beta,
@@ -787,11 +808,20 @@ def build_anthropic_client(
         # Kimi's /coding endpoint requires User-Agent: claude-code/0.1.0
         # to be recognized as a valid Coding Agent. Without it, returns 403.
         # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
-        kwargs["api_key"] = api_key
         kwargs["default_headers"] = {
             "User-Agent": "claude-code/0.1.0",
             **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
         }
+    if wire_auth_scheme == "bearer":
+        kwargs["auth_token"] = api_key
+        if common_betas and "default_headers" not in kwargs:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+    elif wire_auth_scheme == "x-api-key":
+        kwargs["api_key"] = api_key
+        if common_betas and "default_headers" not in kwargs:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+    elif _is_kimi_coding_endpoint(base_url):
+        kwargs["api_key"] = api_key
     elif _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
         # Authorization: Bearer *** for regular API keys. Route those endpoints

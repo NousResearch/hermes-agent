@@ -279,6 +279,7 @@ def init_agent(
     api_key: str = None,
     provider: str = None,
     api_mode: str = None,
+    auth_scheme: str = None,
     acp_command: str = None,
     acp_args: list[str] | None = None,
     command: str = None,
@@ -434,6 +435,11 @@ def init_agent(
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""
+    from agent.anthropic_adapter import _normalize_anthropic_auth_scheme
+
+    agent._anthropic_auth_scheme = (
+        _normalize_anthropic_auth_scheme(auth_scheme) or ""
+    )
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
@@ -832,7 +838,12 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+            agent._anthropic_client = build_anthropic_client(
+                effective_key,
+                base_url,
+                timeout=_provider_timeout,
+                auth_scheme=agent._anthropic_auth_scheme or None,
+            )
             # No OpenAI client needed for Anthropic mode
             agent.client = None
             agent._client_kwargs = {}
@@ -2139,6 +2150,7 @@ def init_agent(
         agent._primary_runtime.update({
             "anthropic_api_key": agent._anthropic_api_key,
             "anthropic_base_url": agent._anthropic_base_url,
+            "anthropic_auth_scheme": agent._anthropic_auth_scheme,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
 

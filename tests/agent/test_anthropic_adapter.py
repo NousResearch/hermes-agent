@@ -59,6 +59,79 @@ class TestIsOAuthToken:
 
 
 class TestBuildAnthropicClient:
+    @staticmethod
+    def _capture_auth_headers(auth_scheme):
+        import anthropic
+        import httpx
+
+        captured = {}
+
+        def handler(request):
+            captured.update(
+                {
+                    key.lower(): value
+                    for key, value in request.headers.items()
+                    if key.lower() in {"authorization", "x-api-key"}
+                }
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "model": "example-model",
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            )
+
+        transport = httpx.MockTransport(handler)
+
+        class OfflineSDK:
+            @staticmethod
+            def Anthropic(**kwargs):
+                kwargs["http_client"] = httpx.Client(transport=transport)
+                return anthropic.Anthropic(**kwargs)
+
+        with patch(
+            "agent.anthropic_adapter._get_anthropic_sdk",
+            return_value=OfflineSDK,
+        ):
+            client = build_anthropic_client(
+                "test-key-not-secret",
+                base_url="https://relay.example/anthropic",
+                auth_scheme=auth_scheme,
+            )
+            client.messages.create(
+                model="example-model",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "test"}],
+            )
+            client.close()
+        return captured
+
+    def test_explicit_bearer_sends_only_authorization_header(self):
+        headers = self._capture_auth_headers("bearer")
+
+        assert headers == {"authorization": "Bearer test-key-not-secret"}
+
+    def test_explicit_x_api_key_sends_only_x_api_key_header(self):
+        headers = self._capture_auth_headers("x-api-key")
+
+        assert headers == {"x-api-key": "test-key-not-secret"}
+
+    def test_omitted_auth_scheme_preserves_existing_default(self):
+        headers = self._capture_auth_headers(None)
+
+        assert headers == {"x-api-key": "test-key-not-secret"}
+
+    def test_invalid_explicit_auth_scheme_raises(self):
+        with pytest.raises(ValueError, match="auth_scheme"):
+            build_anthropic_client("test-key-not-secret", auth_scheme="basic")
+
     def test_setup_token_uses_auth_token(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client("sk-ant-oat01-" + "x" * 60)

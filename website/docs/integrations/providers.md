@@ -1199,7 +1199,15 @@ custom_providers:
     base_url: https://proxy.example.com/anthropic
     key_env: ANTHROPIC_PROXY_KEY
     api_mode: anthropic_messages  # for Anthropic-compatible proxies
+    auth_scheme: bearer           # or x-api-key; selects the credential header
 ```
+
+For Anthropic Messages endpoints, `auth_scheme` is independent from where the
+credential is stored. Use `bearer` when the endpoint expects the HTTP
+Authorization bearer scheme, or `x-api-key` when it expects Anthropic's native
+API-key header. Hermes does not infer this setting from the provider name,
+model, or URL. Existing entries that omit `auth_scheme` keep their previous
+authentication behavior.
 
 Some OpenAI-compatible endpoints need provider-specific request body fields. Add an `extra_body` map to the matching custom provider and Hermes will merge it into each chat-completions request for that endpoint:
 

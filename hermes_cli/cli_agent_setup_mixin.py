@@ -79,6 +79,7 @@ class CLIAgentSetupMixin:
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
+        resolved_auth_scheme = runtime.get("auth_scheme", "")
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
@@ -115,11 +116,13 @@ class CLIAgentSetupMixin:
         routing_changed = (
             resolved_provider != self.provider
             or resolved_api_mode != self.api_mode
+            or resolved_auth_scheme != getattr(self, "auth_scheme", "")
             or resolved_acp_command != self.acp_command
             or resolved_acp_args != self.acp_args
         )
         self.provider = resolved_provider
         self.api_mode = resolved_api_mode
+        self.auth_scheme = resolved_auth_scheme
         self.acp_command = resolved_acp_command
         self.acp_args = resolved_acp_args
         self._credential_pool = resolved_credential_pool
@@ -186,6 +189,7 @@ class CLIAgentSetupMixin:
             "base_url": self.base_url,
             "provider": self.provider,
             "api_mode": self.api_mode,
+            "auth_scheme": getattr(self, "auth_scheme", ""),
             "command": self.acp_command,
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
@@ -335,6 +339,7 @@ class CLIAgentSetupMixin:
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
+                "auth_scheme": getattr(self, "auth_scheme", ""),
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
@@ -346,6 +351,7 @@ class CLIAgentSetupMixin:
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
                 api_mode=runtime.get("api_mode"),
+                auth_scheme=runtime.get("auth_scheme"),
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),

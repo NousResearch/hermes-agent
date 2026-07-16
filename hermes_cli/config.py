@@ -4756,6 +4756,7 @@ def _normalize_custom_provider_entry(
         "apiKey": "api_key",
         "baseUrl": "base_url",
         "apiMode": "api_mode",
+        "authScheme": "auth_scheme",
         "keyEnv": "key_env",
         "apiKeyEnv": "key_env",  # alias — OpenClaw-compatible + docs variant
         "defaultModel": "default_model",
@@ -4775,6 +4776,7 @@ def _normalize_custom_provider_entry(
         "provider",
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
         "api_mode", "transport", "model", "default_model", "models",
+        "auth_scheme",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
@@ -4854,6 +4856,16 @@ def _normalize_custom_provider_entry(
     api_mode = entry.get("api_mode") or entry.get("transport")
     if isinstance(api_mode, str) and api_mode.strip():
         normalized["api_mode"] = api_mode.strip()
+
+    auth_scheme = entry.get("auth_scheme")
+    if isinstance(auth_scheme, str) and auth_scheme.strip():
+        normalized_auth_scheme = auth_scheme.strip().lower()
+        if normalized_auth_scheme in {"bearer", "x-api-key"}:
+            normalized["auth_scheme"] = normalized_auth_scheme
+        else:
+            raise ValueError(
+                "Custom provider auth_scheme must be 'bearer' or 'x-api-key'"
+            )
 
     model_name = entry.get("model") or entry.get("default_model")
     if isinstance(model_name, str) and model_name.strip():
@@ -4948,6 +4960,7 @@ def _custom_provider_entry_to_provider_config(
         "discover_models",
         "extra_body",
         "extra_headers",
+        "auth_scheme",
         "ssl_ca_cert",
         "ssl_verify",
     ):
@@ -5143,6 +5156,34 @@ def get_custom_provider_extra_headers(
     return {}
 
 
+def get_custom_provider_auth_scheme(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Return an explicitly configured Anthropic auth scheme for ``base_url``.
+
+    The URL is used only to select the matching custom-provider entry. The
+    authentication scheme itself always comes from that entry's
+    ``auth_scheme`` field.
+    """
+    if custom_providers is None:
+        custom_providers = get_compatible_custom_providers(config)
+    target = str(base_url or "").strip().rstrip("/").lower()
+    if not target:
+        return ""
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        candidate = str(entry.get("base_url") or "").strip().rstrip("/").lower()
+        if candidate != target:
+            continue
+        auth_scheme = str(entry.get("auth_scheme") or "").strip().lower()
+        if auth_scheme in {"bearer", "x-api-key"}:
+            return auth_scheme
+    return ""
+
+
 def apply_custom_provider_extra_headers_to_client_kwargs(
     client_kwargs: Dict[str, Any],
     base_url: str,
@@ -5290,6 +5331,7 @@ _KNOWN_ROOT_KEYS = {
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
+    "auth_scheme",
     "context_length", "rate_limit_delay", "extra_body",
     "ssl_ca_cert", "ssl_verify",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
@@ -5369,6 +5411,16 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                         "warning",
                         f"custom_providers[{i}] is missing 'base_url' field",
                         "Add the API endpoint URL, e.g.: base_url: https://api.example.com/v1",
+                    ))
+                auth_scheme = entry.get("auth_scheme")
+                if auth_scheme is not None and (
+                    not isinstance(auth_scheme, str)
+                    or auth_scheme.strip().lower() not in {"bearer", "x-api-key"}
+                ):
+                    issues.append(ConfigIssue(
+                        "error",
+                        f"custom_providers[{i}].auth_scheme must be 'bearer' or 'x-api-key'",
+                        "Set auth_scheme to bearer or x-api-key, or remove the field",
                     ))
 
     # ── fallback_model: single dict OR list of dicts (chain) ─────────────

@@ -421,6 +421,7 @@ class AIAgent:
         api_key: str = None,
         provider: str = None,
         api_mode: str = None,
+        auth_scheme: str = None,
         acp_command: str = None,
         acp_args: list[str] | None = None,
         command: str = None,
@@ -497,6 +498,7 @@ class AIAgent:
             api_key=api_key,
             provider=provider,
             api_mode=api_mode,
+            auth_scheme=auth_scheme,
             acp_command=acp_command,
             acp_args=acp_args,
             command=command,
@@ -801,10 +803,26 @@ class AIAgent:
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
 
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(
+        self,
+        new_model,
+        new_provider,
+        api_key='',
+        base_url='',
+        api_mode='',
+        auth_scheme='',
+    ):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
         from agent.agent_runtime_helpers import switch_model
-        return switch_model(self, new_model, new_provider, api_key, base_url, api_mode)
+        return switch_model(
+            self,
+            new_model,
+            new_provider,
+            api_key,
+            base_url,
+            api_mode,
+            auth_scheme,
+        )
 
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
@@ -1196,6 +1214,7 @@ class AIAgent:
             "base_url": getattr(self, "base_url", "") or "",
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
+            "auth_scheme": getattr(self, "_anthropic_auth_scheme", "") or "",
         }
 
     def _check_compression_model_feasibility(self) -> None:
@@ -4481,6 +4500,7 @@ class AIAgent:
                 new_token,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                auth_scheme=getattr(self, "_anthropic_auth_scheme", None),
             )
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
@@ -4603,6 +4623,7 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(
                 runtime_key, runtime_base,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                auth_scheme=getattr(self, "_anthropic_auth_scheme", None),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
@@ -4673,6 +4694,7 @@ class AIAgent:
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
                 drop_context_1m_beta=_drop_1m,
+                auth_scheme=getattr(self, "_anthropic_auth_scheme", None),
             )
 
     def _interruptible_api_call(self, api_kwargs: dict):

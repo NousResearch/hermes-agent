@@ -1012,9 +1012,11 @@ def try_recover_primary_transport(
             from agent.anthropic_adapter import build_anthropic_client
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
+            agent._anthropic_auth_scheme = rt.get("anthropic_auth_scheme", "")
             agent._anthropic_client = build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                auth_scheme=agent._anthropic_auth_scheme or None,
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
@@ -1184,9 +1186,11 @@ def restore_primary_runtime(agent) -> bool:
             from agent.anthropic_adapter import build_anthropic_client
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
+            agent._anthropic_auth_scheme = rt.get("anthropic_auth_scheme", "")
             agent._anthropic_client = build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                auth_scheme=agent._anthropic_auth_scheme or None,
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
@@ -1776,7 +1780,15 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
+def switch_model(
+    agent,
+    new_model,
+    new_provider,
+    api_key='',
+    base_url='',
+    api_mode='',
+    auth_scheme='',
+):
     """Switch the model/provider in-place for a live agent.
 
     Called by the /model command handlers (CLI and gateway) after
@@ -1836,6 +1848,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "_anthropic_client",
             "_anthropic_api_key",
             "_anthropic_base_url",
+            "_anthropic_auth_scheme",
             "_is_anthropic_oauth",
             "_config_context_length",
         )
@@ -1962,9 +1975,15 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
+            from agent.anthropic_adapter import _normalize_anthropic_auth_scheme
+
+            agent._anthropic_auth_scheme = (
+                _normalize_anthropic_auth_scheme(auth_scheme) or ""
+            )
             agent._anthropic_client = build_anthropic_client(
                 effective_key, agent._anthropic_base_url,
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                auth_scheme=agent._anthropic_auth_scheme or None,
             )
             agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
             agent.client = None
@@ -2125,6 +2144,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         agent._primary_runtime.update({
             "anthropic_api_key": agent._anthropic_api_key,
             "anthropic_base_url": agent._anthropic_base_url,
+            "anthropic_auth_scheme": agent._anthropic_auth_scheme,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
 

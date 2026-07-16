@@ -615,6 +615,17 @@ def _lift_extra_headers(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
         result["extra_headers"] = extra_headers
 
 
+def _lift_auth_scheme(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Copy an explicitly configured Anthropic wire authentication scheme."""
+    auth_scheme = str(entry.get("auth_scheme") or "").strip().lower()
+    if auth_scheme in {"bearer", "x-api-key"}:
+        result["auth_scheme"] = auth_scheme
+    elif auth_scheme:
+        raise ValueError(
+            "Custom provider auth_scheme must be 'bearer' or 'x-api-key'"
+        )
+
+
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm:
@@ -685,6 +696,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     if isinstance(extra_body, dict):
                         result["extra_body"] = dict(extra_body)
                     _lift_extra_headers(entry, result)
+                    _lift_auth_scheme(entry, result)
                     # The v11→v12 migration writes the API mode under the new
                     # ``transport`` field, but hand-edited configs may still
                     # use the legacy ``api_mode`` spelling.  Accept both —
@@ -715,6 +727,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         if isinstance(extra_body, dict):
                             result["extra_body"] = dict(extra_body)
                         _lift_extra_headers(entry, result)
+                        _lift_auth_scheme(entry, result)
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
@@ -763,6 +776,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         if isinstance(extra_body, dict):
             result["extra_body"] = dict(extra_body)
         _lift_extra_headers(entry, result)
+        _lift_auth_scheme(entry, result)
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
@@ -1003,6 +1017,7 @@ def _resolve_named_custom_runtime(
         # credentials. NEVER log the values.
         if custom_provider.get("extra_headers"):
             pool_result["extra_headers"] = dict(custom_provider["extra_headers"])
+        _lift_auth_scheme(custom_provider, pool_result)
         return pool_result
 
     _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
@@ -1040,6 +1055,7 @@ def _resolve_named_custom_runtime(
     # Values may carry credentials — NEVER log them.
     if custom_provider.get("extra_headers"):
         result["extra_headers"] = dict(custom_provider["extra_headers"])
+    _lift_auth_scheme(custom_provider, result)
     request_overrides = _custom_provider_request_overrides(custom_provider)
     if request_overrides:
         result["request_overrides"] = request_overrides

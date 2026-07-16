@@ -395,6 +395,7 @@ def _run_agent(
         base_url=runtime.get("base_url"),
         provider=runtime.get("provider"),
         api_mode=runtime.get("api_mode"),
+        auth_scheme=runtime.get("auth_scheme"),
         model=effective_model,
         enabled_toolsets=toolsets_list,
         quiet_mode=True,

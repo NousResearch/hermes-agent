@@ -2991,6 +2991,7 @@ def _apply_model_switch(
                 api_key=result.api_key,
                 base_url=result.base_url,
                 api_mode=result.api_mode,
+                auth_scheme=result.auth_scheme,
             )
         except Exception as exc:
             # The in-place swap rolled the agent back to the old working
@@ -4638,6 +4639,7 @@ def _make_agent(
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),
         api_mode=runtime.get("api_mode"),
+        auth_scheme=runtime.get("auth_scheme"),
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"),

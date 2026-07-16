@@ -21,7 +21,7 @@ Convert text to speech with ten providers:
 | **Edge TTS** (default) | Good | Free | None needed |
 | **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
 | **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` |
-| **MiniMax TTS** | Excellent | Paid | `MINIMAX_API_KEY` |
+| **MiniMax TTS** | Excellent | Paid | `MINIMAX_API_KEY` or `MINIMAX_CN_API_KEY` |
 | **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
 | **Google Gemini TTS** | Excellent | Free tier | `GEMINI_API_KEY` |
 | **xAI TTS** | Excellent | Paid | `XAI_API_KEY` |
@@ -58,11 +58,13 @@ tts:
     speed: 1.0                  # 0.25 - 4.0
     # language: "es"            # Sent as lang_code — only for OpenAI-compatible endpoints that support it (e.g. Kokoro)
   minimax:
+    region: "global"           # "global" or "cn"; see selection rules below
     model: "speech-02-hd"     # speech-02-hd (default), speech-02-turbo
     voice_id: "English_Graceful_Lady"  # See https://platform.minimax.io/faq/system-voice-id
     speed: 1                    # 0.5 - 2.0
     vol: 1                      # 0 - 10
     pitch: 0                    # -12 - 12
+    # base_url: "https://tts.example/v1/t2a_v2"  # Optional endpoint override for the selected region
   mistral:
     model: "voxtral-mini-tts-2603"
     voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
@@ -101,6 +103,13 @@ tts:
     # volume: 1.0                               # 0.5 = half as loud
     # normalize_audio: true
 ```
+
+MiniMax TTS selects its region, endpoint, and credential together:
+
+- `region: "global"` uses `https://api.minimax.io/v1/t2a_v2` with `MINIMAX_API_KEY`.
+- `region: "cn"` uses `https://api.minimaxi.com/v1/t2a_v2` with `MINIMAX_CN_API_KEY`.
+- If `region` is omitted, `MINIMAX_API_KEY` keeps precedence for backward compatibility. If only `MINIMAX_CN_API_KEY` is configured, Hermes selects `cn`.
+- An explicitly selected region must have its matching credential. Hermes never borrows the other region's key. A `base_url` override does not change the selected credential, and an override pointing at the other region's official endpoint is rejected.
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
 

@@ -128,6 +128,7 @@ except ImportError:
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
+from agent.i18n import t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -2050,9 +2051,14 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
-    @staticmethod
-    def _build_update_prompt_card(*, prompt: str, default: str, prompt_id: int) -> Dict[str, Any]:
-        default_hint = f"\n\nDefault: `{default}`" if default else ""
+    def _build_update_prompt_card(
+        self, *, prompt: str, default: str, prompt_id: int
+    ) -> Dict[str, Any]:
+        default_hint = (
+            t("gateway.update.prompt_native_feishu_default_hint", default=default)
+            if default
+            else ""
+        )
 
         def _btn(label: str, answer: str, btn_type: str) -> dict:
             return {
@@ -2068,7 +2074,10 @@ class FeishuAdapter(BasePlatformAdapter):
         return {
             "config": {"wide_screen_mode": True},
             "header": {
-                "title": {"content": "⚕ Update Needs Your Input", "tag": "plain_text"},
+                "title": {
+                    "content": f"⚕ {t('gateway.update.prompt_native_heading')}",
+                    "tag": "plain_text",
+                },
                 "template": "orange",
             },
             "elements": [
@@ -2076,8 +2085,16 @@ class FeishuAdapter(BasePlatformAdapter):
                 {
                     "tag": "action",
                     "actions": [
-                        _btn("✓ Yes", "y", "primary"),
-                        _btn("✗ No", "n", "danger"),
+                        _btn(
+                            f"✓ {t('gateway.update.prompt_native_yes')}",
+                            "y",
+                            "primary",
+                        ),
+                        _btn(
+                            f"✗ {t('gateway.update.prompt_native_no')}",
+                            "n",
+                            "danger",
+                        ),
                     ],
                 },
             ],
@@ -2140,15 +2157,32 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_resolved_update_prompt_card(*, answer: str, user_name: str) -> Dict[str, Any]:
         yes = answer == "y"
-        label = "Yes" if yes else "No"
+        label = t(
+            "gateway.update.prompt_native_yes"
+            if yes
+            else "gateway.update.prompt_native_no"
+        )
         return {
             "config": {"wide_screen_mode": True},
             "header": {
-                "title": {"content": f"{'✅' if yes else '❌'} Update prompt answered: {label}", "tag": "plain_text"},
+                "title": {
+                    "content": t(
+                        "gateway.update.callback_answered",
+                        icon="✅" if yes else "❌",
+                        answer=label,
+                    ),
+                    "tag": "plain_text",
+                },
                 "template": "green" if yes else "red",
             },
             "elements": [
-                {"tag": "markdown", "content": f"Answered by **{user_name}**"},
+                {
+                    "tag": "markdown",
+                    "content": t(
+                        "gateway.update.callback_answered_by",
+                        user=user_name,
+                    ),
+                },
             ],
         }
 

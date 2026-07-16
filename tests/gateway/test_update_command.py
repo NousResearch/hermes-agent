@@ -10,6 +10,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
+from agent import i18n
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
@@ -748,6 +749,51 @@ class TestSendUpdateNotification:
 
         sent_text = mock_adapter.send.call_args[0][1]
         assert "finished successfully" in sent_text
+
+    @pytest.mark.asyncio
+    async def test_sends_generic_message_in_active_language(self, tmp_path, monkeypatch):
+        """Generic post-update success notification uses the active UI language."""
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        i18n.reset_language_cache()
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222"}
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._send_update_notification()
+
+        assert mock_adapter.send.call_args[0][1] == "✅ Hermes の更新が正常に完了しました。"
+
+    @pytest.mark.asyncio
+    async def test_sends_failure_message_in_active_language(self, tmp_path, monkeypatch):
+        """Post-update failure notification frame uses the active UI language."""
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        i18n.reset_language_cache()
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222"}
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("Traceback: boom")
+        (hermes_home / ".update_exit_code").write_text("1")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._send_update_notification()
+
+        sent_text = mock_adapter.send.call_args[0][1]
+        assert sent_text.startswith("❌ Hermes の更新に失敗しました。")
+        assert "Traceback: boom" in sent_text
 
     @pytest.mark.asyncio
     async def test_cleans_up_files_after_notification(self, tmp_path):

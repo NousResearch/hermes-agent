@@ -22,6 +22,12 @@ approval:
 gateway:
   approval_expired: "⚠️ 承認の有効期限が切れました（エージェントはもう待機していません）。エージェントに再試行を依頼してください。"
   draining:         "⏳ 再起動前に {count} 個のアクティブエージェントの終了を待っています..."
+  drain:
+    action_restarting:  "再起動中"
+    action_shutting_down: "停止中"
+    queued:            "⏳ ゲートウェイは{action}です — 復帰後の次のターンとしてキューに追加しました。"
+    rejecting:         "⏳ ゲートウェイは{action}のため、現在別のターンを受け付けていません。"
+    new_work:          "⏳ ゲートウェイは{action}のため、現在新しい処理を受け付けていません。"
   goal_cleared:     "✓ 目標をクリアしました。"
   no_active_goal:   "アクティブな目標はありません。"
   config_read_failed: "⚠️ config.yaml を読み込めませんでした: {error}"
@@ -232,6 +238,12 @@ gateway:
   restart:
     in_progress:           "⏳ ゲートウェイの再起動はすでに進行中です..."
     restarting:            "♻ ゲートウェイを再起動しています。60 秒以内に通知が届かない場合は、コンソールで `hermes gateway restart` を実行してください。"
+    completed:             "♻ ゲートウェイの再起動が完了しました。セッションは継続します。"
+    online:                "♻️ ゲートウェイはオンラインです — Hermes の準備ができました。"
+
+  shutdown_notice:
+    shutdown:              "⚠️ ゲートウェイを停止しています — 現在のタスクは中断されます。"
+    restart:               "⚠️ ゲートウェイを再起動しています — 現在のタスクは中断されます。再起動後に任意のメッセージを送ると、中断した位置からの再開を試みます。"
 
   resume:
     db_unavailable:        "セッションデータベースは利用できません。"
@@ -329,11 +341,41 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_count:         "無効な数値「{arg}」— /undo または /undo N を使用してください。"
 
   update:
-    platform_not_messaging:  "✗ /update はメッセージングプラットフォームでのみ利用可能です。ターミナルで `hermes update` を実行してください。"
+    platform_not_messaging:  "✗ /update はメッセージングプラットフォームからのみ利用できます。ターミナルで `hermes update` を実行してください。"
     not_git_repo:            "✗ Git リポジトリではありません — 更新できません。"
-    hermes_cmd_not_found:    "✗ `hermes` コマンドが見つかりません。Hermes は実行中ですが、更新コマンドは PATH 上にも現在の Python インタープリタ経由でも実行可能ファイルを見つけられませんでした。ターミナルで `hermes update` を手動で実行してみてください。"
+    hermes_cmd_not_found:    "✗ `hermes` コマンドを見つけられません。Hermes は実行中ですが、更新コマンドが PATH または現在の Python インタープリタ経由で実行ファイルを見つけられませんでした。ターミナルで `hermes update` を手動実行してください。"
     start_failed:            "✗ 更新の開始に失敗しました: {error}"
-    starting:                "⚕ Hermes の更新を開始しています… 進捗をここにストリーミングします。"
+    starting:                "⚕ Hermes の更新を開始しています…進捗をここにストリームします。"
+    finished:                "✅ Hermes の更新が完了しました。"
+    failed_exit:             "❌ Hermes の更新に失敗しました（終了コード {exit_code}）。"
+    timed_out:               "❌ Hermes の更新は 30 分でタイムアウトしました。"
+    prompt_default_hint:     "（デフォルト: {default}）"
+    prompt_fallback:         "⚕ **更新には入力が必要です:**\n\n{prompt}{default_hint}\n\n返信は `{prefix}approve`（yes）または `{prefix}deny`（no）、または回答を直接入力してください。"
+    prompt_native_heading:    "更新には入力が必要です"
+    prompt_native_heading_telegram: "更新には入力が必要です:"
+    prompt_native_default_hint: "（デフォルト: {default}）"
+    prompt_native_feishu_default_hint: "\n\nデフォルト: `{default}`"
+    prompt_native_yes:         "はい"
+    prompt_native_no:          "いいえ"
+    prompt_native_yes_visited: "確認済み"
+    prompt_native_no_visited:  "キャンセル済み"
+    callback_unauthorized:     "⛔ 更新プロンプトに回答する権限がありません。"
+    callback_ack:              "「{answer}」を更新プロセスに送信しました。"
+    callback_answered:         "{icon} 更新プロンプトに回答しました: {answer}"
+    callback_answered_telegram: "⚕ 更新プロンプトの回答: *{answer}*"
+    callback_footer:            "{answer}（回答者: {user}）"
+    callback_answered_by:       "回答者: **{user}**"
+    callback_already_answered:  "このプロンプトには既に回答済みです。"
+    callback_expired:           "⏱ プロンプトの有効期限が切れました — 操作は行われませんでした"
+    response_failed:            "✗ 更新プロセスへの回答送信に失敗しました: {error}"
+    response_sent:              "✓ 「{label}」を更新プロセスに送信しました。"
+    finished_with_output:    "✅ Hermes の更新が完了しました。\n\n```\n{output}\n```"
+    failed_with_output:      "❌ Hermes の更新に失敗しました。\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Hermes の更新が正常に完了しました。"
+    failed_generic:          "❌ Hermes の更新に失敗しました。詳細は gateway ログを確認するか、`hermes update` を手動で実行してください。"
+
+  clarify:
+    answered_by:              "回答者: {user}（{choice}）"
 
   usage:
     rate_limits:              "⏱️ **レート制限:** {state}"

@@ -44,6 +44,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from agent.i18n import t
+
 try:
     import aiohttp
 
@@ -2724,13 +2726,36 @@ class QQAdapter(BasePlatformAdapter):
         """
         del session_key, metadata  # present for contract parity only.
 
-        default_hint = f" (default: {default})" if default else ""
-        content = f"⚕ **Update Needs Your Input**\n\n{prompt}{default_hint}"
+        heading = t("gateway.update.prompt_native_heading")
+        default_hint = (
+            t("gateway.update.prompt_native_default_hint", default=default)
+            if default
+            else ""
+        )
+        content = f"⚕ **{heading}**\n\n{prompt}{default_hint}"
+        keyboard = build_update_prompt_keyboard()
+        buttons = keyboard.content.rows[0].buttons
+        for button, label_key, visited_key, prefix in (
+            (
+                buttons[0],
+                "gateway.update.prompt_native_yes",
+                "gateway.update.prompt_native_yes_visited",
+                "✓ ",
+            ),
+            (
+                buttons[1],
+                "gateway.update.prompt_native_no",
+                "gateway.update.prompt_native_no_visited",
+                "✗ ",
+            ),
+        ):
+            button.render_data.label = f"{prefix}{t(label_key)}"
+            button.render_data.visited_label = t(visited_key)
         msg_id = self._last_msg_id.get(chat_id)
         return await self.send_with_keyboard(
             chat_id,
             content,
-            build_update_prompt_keyboard(),
+            keyboard,
             reply_to=msg_id,
         )
 

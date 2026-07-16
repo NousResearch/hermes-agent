@@ -21,6 +21,8 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
+from agent.i18n import t
+
 logger = logging.getLogger(__name__)
 
 
@@ -4833,12 +4835,23 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         try:
-            default_hint = f" (default: {default})" if default else ""
-            text = self.format_message(f"⚕ *Update needs your input:*\n\n{prompt}{default_hint}")
+            heading = t("gateway.update.prompt_native_heading_telegram")
+            default_hint = (
+                t("gateway.update.prompt_native_default_hint", default=default)
+                if default
+                else ""
+            )
+            text = self.format_message(f"⚕ *{heading}*\n\n{prompt}{default_hint}")
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✓ Yes", callback_data="update_prompt:y"),
-                    InlineKeyboardButton("✗ No", callback_data="update_prompt:n"),
+                    InlineKeyboardButton(
+                        f"✓ {t('gateway.update.prompt_native_yes')}",
+                        callback_data="update_prompt:y",
+                    ),
+                    InlineKeyboardButton(
+                        f"✗ {t('gateway.update.prompt_native_no')}",
+                        callback_data="update_prompt:n",
+                    ),
                 ]
             ])
             thread_id = self._metadata_thread_id(metadata)
@@ -5952,14 +5965,25 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id=str(query_thread_id) if query_thread_id is not None else None,
             user_name=query_user_name,
         ):
-            await query.answer(text="⛔ You are not authorized to answer update prompts.")
+            await query.answer(text=t("gateway.update.callback_unauthorized"))
             return
-        await query.answer(text=f"Sent '{answer}' to the update process.")
+        answer_label = t(
+            "gateway.update.prompt_native_yes"
+            if answer == "y"
+            else "gateway.update.prompt_native_no"
+        )
+        await query.answer(
+            text=t("gateway.update.callback_ack", answer=answer_label)
+        )
         # Edit the message to show the choice and remove buttons
-        label = "Yes" if answer == "y" else "No"
         try:
             await query.edit_message_text(
-                text=self.format_message(f"⚕ Update prompt answered: *{label}*"),
+                text=self.format_message(
+                    t(
+                        "gateway.update.callback_answered_telegram",
+                        answer=answer_label,
+                    )
+                ),
                 parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=None,
             )

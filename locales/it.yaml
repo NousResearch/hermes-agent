@@ -22,6 +22,12 @@ approval:
 gateway:
   approval_expired: "⚠️ Approvazione scaduta (l'agente non è più in attesa). Chiedi all'agente di riprovare."
   draining:         "⏳ Attendo il completamento di {count} agente/i attivo/i prima di riavviare..."
+  drain:
+    action_restarting:  "si sta riavviando"
+    action_shutting_down: "si sta arrestando"
+    queued:            "⏳ Il gateway {action} — in coda per il turno successivo al suo ritorno."
+    rejecting:         "⏳ Il gateway {action} e al momento non accetta un altro turno."
+    new_work:          "⏳ Il gateway {action} e al momento non accetta nuovo lavoro."
   goal_cleared:     "✓ Obiettivo cancellato."
   no_active_goal:   "Nessun obiettivo attivo."
   config_read_failed: "⚠️ Impossibile leggere config.yaml: {error}"
@@ -232,6 +238,12 @@ gateway:
   restart:
     in_progress:           "⏳ Riavvio del gateway già in corso..."
     restarting:            "♻ Riavvio del gateway. Se non ricevi una notifica entro 60 secondi, riavvia dalla console con `hermes gateway restart`."
+    completed:             "♻ Gateway riavviato correttamente. La sessione continua."
+    online:                "♻️ Gateway online — Hermes è pronto."
+
+  shutdown_notice:
+    shutdown:              "⚠️ Il gateway si sta arrestando — L'attività corrente verrà interrotta."
+    restart:               "⚠️ Il gateway si sta riavviando — L'attività corrente verrà interrotta. Invia un messaggio qualsiasi dopo il riavvio e proverò a riprendere da dove eri rimasto."
 
   resume:
     db_unavailable:        "Database delle sessioni non disponibile."
@@ -334,6 +346,36 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Impossibile localizzare il comando `hermes`. Hermes è in esecuzione, ma il comando di aggiornamento non ha trovato l'eseguibile nel PATH o tramite l'interprete Python attuale. Prova a eseguire `hermes update` manualmente nel terminale."
     start_failed:            "✗ Avvio dell'aggiornamento non riuscito: {error}"
     starting:                "⚕ Avvio dell'aggiornamento di Hermes… mostrerò qui i progressi in streaming."
+    finished:                "✅ Aggiornamento di Hermes completato."
+    failed_exit:             "❌ Aggiornamento di Hermes non riuscito (codice di uscita {exit_code})."
+    timed_out:               "❌ Aggiornamento di Hermes scaduto dopo 30 minuti."
+    prompt_default_hint:     " (predefinito: {default})"
+    prompt_fallback:         "⚕ **L'aggiornamento richiede il tuo input:**\n\n{prompt}{default_hint}\n\nRispondi `{prefix}approve` (yes) o `{prefix}deny` (no), oppure digita direttamente la risposta."
+    prompt_native_heading:    "L'aggiornamento richiede il tuo input"
+    prompt_native_heading_telegram: "L'aggiornamento richiede il tuo input:"
+    prompt_native_default_hint: " (predefinito: {default})"
+    prompt_native_feishu_default_hint: "\n\nPredefinito: `{default}`"
+    prompt_native_yes:         "Sì"
+    prompt_native_no:          "No"
+    prompt_native_yes_visited: "Confermato"
+    prompt_native_no_visited:  "Annullato"
+    callback_unauthorized:     "⛔ Non hai l'autorizzazione per rispondere ai prompt di aggiornamento."
+    callback_ack:              "'{answer}' inviato al processo di aggiornamento."
+    callback_answered:         "{icon} Prompt di aggiornamento risposto: {answer}"
+    callback_answered_telegram: "⚕ Prompt di aggiornamento risposto: *{answer}*"
+    callback_footer:            "{answer} da {user}"
+    callback_answered_by:       "Risposto da **{user}**"
+    callback_already_answered:  "Hai già risposto~"
+    callback_expired:           "⏱ Prompt scaduto — nessuna azione eseguita"
+    response_failed:            "✗ Impossibile inviare la risposta al processo di aggiornamento: {error}"
+    response_sent:              "✓ `{label}` inviato al processo di aggiornamento."
+    finished_with_output:    "✅ Aggiornamento di Hermes completato.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ Aggiornamento di Hermes non riuscito.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Aggiornamento di Hermes completato correttamente."
+    failed_generic:          "❌ Aggiornamento di Hermes non riuscito. Controlla i log del gateway o esegui `hermes update` manualmente per i dettagli."
+
+  clarify:
+    answered_by:              "Risposto da {user}: {choice}"
 
   usage:
     rate_limits:              "⏱️ **Limiti di frequenza:** {state}"

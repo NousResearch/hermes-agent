@@ -22,6 +22,12 @@ approval:
 gateway:
   approval_expired: "⚠️ Час схвалення минув (агент більше не очікує). Попросіть агента спробувати ще раз."
   draining:         "⏳ Очікування завершення {count} активних агент(ів) перед перезапуском..."
+  drain:
+    action_restarting:  "перезапускається"
+    action_shutting_down: "завершує роботу"
+    queued:            "⏳ Шлюз {action} — повідомлення поставлено в чергу на наступний хід після повернення."
+    rejecting:         "⏳ Шлюз {action} і наразі не приймає ще один хід."
+    new_work:          "⏳ Шлюз {action} і наразі не приймає нову роботу."
   goal_cleared:     "✓ Ціль очищено."
   no_active_goal:   "Немає активної цілі."
   config_read_failed: "⚠️ Не вдалося прочитати config.yaml: {error}"
@@ -232,6 +238,12 @@ gateway:
   restart:
     in_progress:           "⏳ Перезапуск гейтвея вже виконується..."
     restarting:            "♻ Перезапуск гейтвея. Якщо ви не отримаєте сповіщення протягом 60 секунд, перезапустіть із консолі командою `hermes gateway restart`."
+    completed:             "♻ Гейтвей успішно перезапущено. Ваш сеанс продовжується."
+    online:                "♻️ Гейтвей онлайн — Hermes готовий."
+
+  shutdown_notice:
+    shutdown:              "⚠️ Гейтвей вимикається — Поточне завдання буде перервано."
+    restart:               "⚠️ Гейтвей перезапускається — Поточне завдання буде перервано. Надішліть будь-яке повідомлення після перезапуску, і я спробую продовжити з місця зупинки."
 
   resume:
     db_unavailable:        "База даних сеансів недоступна."
@@ -334,6 +346,36 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Не вдалося знайти команду `hermes`. Hermes запущено, але команда оновлення не знайшла виконуваний файл у PATH або через поточний інтерпретатор Python. Спробуйте виконати `hermes update` вручну у вашому терміналі."
     start_failed:            "✗ Не вдалося запустити оновлення: {error}"
     starting:                "⚕ Запуск оновлення Hermes… Я транслюватиму прогрес сюди."
+    finished:                "✅ Оновлення Hermes завершено."
+    failed_exit:             "❌ Оновлення Hermes завершилося помилкою (код виходу {exit_code})."
+    timed_out:               "❌ Оновлення Hermes перевищило тайм-аут 30 хвилин."
+    prompt_default_hint:     " (типово: {default})"
+    prompt_fallback:         "⚕ **Оновлення потребує вашого введення:**\n\n{prompt}{default_hint}\n\nВідповідайте `{prefix}approve` (yes) або `{prefix}deny` (no), або введіть відповідь напряму."
+    prompt_native_heading:    "Оновленню потрібен ваш ввід"
+    prompt_native_heading_telegram: "Оновленню потрібен ваш ввід:"
+    prompt_native_default_hint: " (за замовчуванням: {default})"
+    prompt_native_feishu_default_hint: "\n\nЗа замовчуванням: `{default}`"
+    prompt_native_yes:         "Так"
+    prompt_native_no:          "Ні"
+    prompt_native_yes_visited: "Підтверджено"
+    prompt_native_no_visited:  "Скасовано"
+    callback_unauthorized:     "⛔ Ви не маєте дозволу відповідати на запити оновлення."
+    callback_ack:              "«{answer}» надіслано процесу оновлення."
+    callback_answered:         "{icon} На запит оновлення відповіли: {answer}"
+    callback_answered_telegram: "⚕ На запит оновлення відповіли: *{answer}*"
+    callback_footer:            "{answer}, відповів(ла) {user}"
+    callback_answered_by:       "Відповів(ла) **{user}**"
+    callback_already_answered:  "Вже відповіли~"
+    callback_expired:           "⏱ Термін дії запиту минув — дію не виконано"
+    response_failed:            "✗ Не вдалося надіслати відповідь процесу оновлення: {error}"
+    response_sent:              "✓ `{label}` надіслано процесу оновлення."
+    finished_with_output:    "✅ Оновлення Hermes завершено.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ Оновлення Hermes завершилося помилкою.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Оновлення Hermes успішно завершено."
+    failed_generic:          "❌ Оновлення Hermes завершилося помилкою. Перегляньте логи gateway або виконайте `hermes update` вручну для деталей."
+
+  clarify:
+    answered_by:              "Відповів(ла) {user}: {choice}"
 
   usage:
     rate_limits:              "⏱️ **Обмеження швидкості:** {state}"

@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent import i18n
+
 # ---------------------------------------------------------------------------
 # Minimal stubs so we can import gateway code without heavy deps
 # ---------------------------------------------------------------------------
@@ -659,6 +661,46 @@ class TestBusySessionAck:
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content", "")
         assert "restarting" in content
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("queue_enabled", "expected"),
+        [
+            (
+                True,
+                "⏳ ゲートウェイは再起動中です — 復帰後の次のターンとしてキューに追加しました。",
+            ),
+            (
+                False,
+                "⏳ ゲートウェイは再起動中のため、現在別のターンを受け付けていません。",
+            ),
+        ],
+    )
+    async def test_draining_ack_uses_active_language(
+        self, monkeypatch, queue_enabled, expected
+    ):
+        """Both busy-session drain responses must use the active language."""
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        i18n.reset_language_cache()
+        try:
+            runner, _sentinel = _make_runner()
+            runner._draining = True
+            runner._busy_input_mode = "interrupt"
+            runner._queue_during_drain_enabled = lambda: queue_enabled
+            runner._status_action_gerund = lambda: "restarting"
+            runner._queue_or_replace_pending_event = MagicMock()
+            adapter = _make_adapter()
+
+            event = _make_event(text="hello")
+            sk = build_session_key(event.source)
+            runner.adapters[event.source.platform] = adapter
+
+            result = await runner._handle_active_session_busy_message(event, sk)
+
+            assert result is True
+            assert adapter._send_with_retry.call_args.kwargs["content"] == expected
+        finally:
+            i18n.reset_language_cache()
 
     @pytest.mark.asyncio
     async def test_pending_sentinel_no_interrupt(self):

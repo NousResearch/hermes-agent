@@ -25,6 +25,8 @@ from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
+from agent.i18n import t
+
 logger = logging.getLogger(__name__)
 
 
@@ -5856,9 +5858,14 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
-            default_hint = f" (default: {default})" if default else ""
+            heading = t("gateway.update.prompt_native_heading")
+            default_hint = (
+                t("gateway.update.prompt_native_default_hint", default=default)
+                if default
+                else ""
+            )
             embed = discord.Embed(
-                title="⚕ Update Needs Your Input",
+                title=f"⚕ {heading}",
                 description=f"{prompt}{default_hint}",
                 color=discord.Color.gold(),
             )
@@ -5870,7 +5877,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # Mirror the prompt in plain content — embeds are invisible on
             # some clients (see send_exec_approval).
             content = self._self_contained_prompt_content(
-                "⚕ **Update Needs Your Input**", f"{prompt}{default_hint}"
+                f"⚕ **{heading}**", f"{prompt}{default_hint}"
             )
             msg = await channel.send(content=content, embed=embed, view=view)
             view._message = msg  # store for on_timeout expiration editing
@@ -7122,6 +7129,14 @@ def _define_discord_view_classes() -> None:
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
+            for child, key in zip(
+                self.children,
+                (
+                    "gateway.update.prompt_native_yes",
+                    "gateway.update.prompt_native_no",
+                ),
+            ):
+                child.label = t(key)
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             return _component_check_auth(
@@ -7134,12 +7149,14 @@ def _define_discord_view_classes() -> None:
         ):
             if self.resolved:
                 await interaction.response.send_message(
-                    "Already answered~", ephemeral=True
+                    t("gateway.update.callback_already_answered"),
+                    ephemeral=True,
                 )
                 return
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
+                    t("gateway.update.callback_unauthorized"),
+                    ephemeral=True,
                 )
                 return
 
@@ -7149,7 +7166,13 @@ def _define_discord_view_classes() -> None:
             embed = interaction.message.embeds[0] if interaction.message.embeds else None
             if embed:
                 embed.color = color
-                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+                embed.set_footer(
+                    text=t(
+                        "gateway.update.callback_footer",
+                        answer=label,
+                        user=interaction.user.display_name,
+                    )
+                )
 
             for child in self.children:
                 child.disabled = True
@@ -7170,17 +7193,23 @@ def _define_discord_view_classes() -> None:
             except Exception as exc:
                 logger.error("Failed to write update response: %s", exc)
 
-        @discord.ui.button(label="Yes", style=discord.ButtonStyle.green, emoji="✓")
+        @discord.ui.button(label="", style=discord.ButtonStyle.green, emoji="✓")
         async def yes_btn(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._respond(interaction, "y", discord.Color.green(), "Yes")
+            await self._respond(
+                interaction, "y", discord.Color.green(),
+                t("gateway.update.prompt_native_yes"),
+            )
 
-        @discord.ui.button(label="No", style=discord.ButtonStyle.red, emoji="✗")
+        @discord.ui.button(label="", style=discord.ButtonStyle.red, emoji="✗")
         async def no_btn(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._respond(interaction, "n", discord.Color.red(), "No")
+            await self._respond(
+                interaction, "n", discord.Color.red(),
+                t("gateway.update.prompt_native_no"),
+            )
 
         async def on_timeout(self):
             self.resolved = True
@@ -7193,7 +7222,7 @@ def _define_discord_view_classes() -> None:
                     embed = msg.embeds[0] if msg.embeds else None
                     if embed:
                         embed.color = discord.Color.greyple()
-                        embed.set_footer(text="⏱ Prompt expired — no action taken")
+                        embed.set_footer(text=t("gateway.update.callback_expired"))
                     await msg.edit(embed=embed, view=self)
                 except Exception:
                     pass
@@ -7655,7 +7684,13 @@ def _define_discord_view_classes() -> None:
                 user = getattr(interaction, "user", None)
                 display_name = getattr(user, "display_name", "user")
                 embed.color = discord.Color.green()
-                embed.set_footer(text=f"Answered by {display_name}: {choice}")
+                embed.set_footer(
+                    text=t(
+                        "gateway.clarify.answered_by",
+                        user=display_name,
+                        choice=choice,
+                    )
+                )
 
             try:
                 await interaction.response.edit_message(embed=embed, view=self)

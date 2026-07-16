@@ -22,6 +22,12 @@ approval:
 gateway:
   approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."
   draining:         "⏳ Yeniden başlatmadan önce {count} aktif ajan bekleniyor..."
+  drain:
+    action_restarting:  "yeniden başlatılıyor"
+    action_shutting_down: "kapatılıyor"
+    queued:            "⏳ Ağ geçidi {action} — geri döndüğünde sonraki tur için sıraya alındı."
+    rejecting:         "⏳ Ağ geçidi {action} ve şu anda başka bir tur kabul etmiyor."
+    new_work:          "⏳ Ağ geçidi {action} ve şu anda yeni iş kabul etmiyor."
   goal_cleared:     "✓ Hedef temizlendi."
   no_active_goal:   "Aktif hedef yok."
   config_read_failed: "⚠️ config.yaml okunamadı: {error}"
@@ -232,6 +238,12 @@ gateway:
   restart:
     in_progress:           "⏳ Gateway yeniden başlatma zaten sürüyor..."
     restarting:            "♻ Gateway yeniden başlatılıyor. 60 saniye içinde bildirim almazsanız konsoldan `hermes gateway restart` ile yeniden başlatın."
+    completed:             "♻ Gateway başarıyla yeniden başlatıldı. Oturumunuz devam ediyor."
+    online:                "♻️ Gateway çevrimiçi — Hermes hazır."
+
+  shutdown_notice:
+    shutdown:              "⚠️ Gateway kapatılıyor — Geçerli göreviniz kesintiye uğrayacak."
+    restart:               "⚠️ Gateway yeniden başlatılıyor — Geçerli göreviniz kesintiye uğrayacak. Yeniden başlatmadan sonra herhangi bir mesaj gönderin; kaldığınız yerden devam etmeyi deneyeceğim."
 
   resume:
     db_unavailable:        "Oturum veritabanı kullanılamıyor."
@@ -329,11 +341,41 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_count:         "Geçersiz sayı \"{arg}\" — /undo veya /undo N kullanın."
 
   update:
-    platform_not_messaging:  "✗ /update yalnızca mesajlaşma platformlarında kullanılabilir. Terminalden `hermes update` komutunu çalıştırın."
-    not_git_repo:            "✗ Git deposu değil — güncellenemiyor."
-    hermes_cmd_not_found:    "✗ `hermes` komutu bulunamadı. Hermes çalışıyor, ancak güncelleme komutu yürütülebilir dosyayı PATH'te veya mevcut Python yorumlayıcısı aracılığıyla bulamadı. Terminalde `hermes update` komutunu manuel olarak çalıştırmayı deneyin."
+    platform_not_messaging:  "✗ /update yalnızca mesajlaşma platformlarından kullanılabilir. Terminalden `hermes update` çalıştırın."
+    not_git_repo:            "✗ Bir git deposu değil — güncellenemez."
+    hermes_cmd_not_found:    "✗ `hermes` komutu bulunamadı. Hermes çalışıyor, ancak güncelleme komutu yürütülebilir dosyayı PATH üzerinde veya geçerli Python yorumlayıcısı üzerinden bulamadı. Terminalinizde `hermes update` komutunu elle çalıştırmayı deneyin."
     start_failed:            "✗ Güncelleme başlatılamadı: {error}"
-    starting:                "⚕ Hermes güncellemesi başlatılıyor… İlerlemeyi buraya akıtacağım."
+    starting:                "⚕ Hermes güncellemesi başlatılıyor… İlerlemeyi burada aktaracağım."
+    finished:                "✅ Hermes güncellemesi tamamlandı."
+    failed_exit:             "❌ Hermes güncellemesi başarısız oldu (çıkış kodu {exit_code})."
+    timed_out:               "❌ Hermes güncellemesi 30 dakika sonra zaman aşımına uğradı."
+    prompt_default_hint:     " (varsayılan: {default})"
+    prompt_fallback:         "⚕ **Güncelleme için girişiniz gerekiyor:**\n\n{prompt}{default_hint}\n\n`{prefix}approve` (yes) veya `{prefix}deny` (no) ile yanıtlayın ya da cevabınızı doğrudan yazın."
+    prompt_native_heading:    "Güncelleme girişinizi bekliyor"
+    prompt_native_heading_telegram: "Güncelleme girişinizi bekliyor:"
+    prompt_native_default_hint: " (varsayılan: {default})"
+    prompt_native_feishu_default_hint: "\n\nVarsayılan: `{default}`"
+    prompt_native_yes:         "Evet"
+    prompt_native_no:          "Hayır"
+    prompt_native_yes_visited: "Onaylandı"
+    prompt_native_no_visited:  "İptal edildi"
+    callback_unauthorized:     "⛔ Güncelleme istemlerini yanıtlamaya yetkiniz yok."
+    callback_ack:              "'{answer}' güncelleme işlemine gönderildi."
+    callback_answered:         "{icon} Güncelleme istemi yanıtlandı: {answer}"
+    callback_answered_telegram: "⚕ Güncelleme istemi yanıtlandı: *{answer}*"
+    callback_footer:            "{answer} — {user}"
+    callback_answered_by:       "Yanıtlayan: **{user}**"
+    callback_already_answered:  "Zaten yanıtlandı~"
+    callback_expired:           "⏱ İstemin süresi doldu — işlem yapılmadı"
+    response_failed:            "✗ Yanıt güncelleme işlemine gönderilemedi: {error}"
+    response_sent:              "✓ `{label}` güncelleme işlemine gönderildi."
+    finished_with_output:    "✅ Hermes güncellemesi tamamlandı.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ Hermes güncellemesi başarısız oldu.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Hermes güncellemesi başarıyla tamamlandı."
+    failed_generic:          "❌ Hermes güncellemesi başarısız oldu. Ayrıntılar için gateway günlüklerini kontrol edin veya `hermes update` komutunu elle çalıştırın."
+
+  clarify:
+    answered_by:              "Yanıtlayan {user}: {choice}"
 
   usage:
     rate_limits:              "⏱️ **Hız Sınırları:** {state}"

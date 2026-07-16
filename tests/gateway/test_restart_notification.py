@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
+from agent import i18n
 from gateway.config import HomeChannel, Platform
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.session import build_session_key
@@ -268,6 +269,27 @@ async def test_send_home_channel_startup_notification_to_configured_home(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_uses_active_language(monkeypatch):
+    monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+    i18n.reset_language_cache()
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock()
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {("telegram", "home-42", None)}
+    adapter.send.assert_called_once_with(
+        "home-42",
+        "♻️ ゲートウェイはオンラインです — Hermes の準備ができました。",
+    )
+
+
+@pytest.mark.asyncio
 async def test_send_home_channel_startup_notification_preserves_thread_metadata(
     tmp_path, monkeypatch
 ):
@@ -395,6 +417,32 @@ async def test_send_restart_notification_delivers_and_cleans_up(tmp_path, monkey
     assert call_args[0][0] == "42"  # chat_id
     assert "restarted" in call_args[0][1].lower()
     assert call_args[1].get("metadata") is None  # no thread
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_uses_active_language(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+    i18n.reset_language_cache()
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock()
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "42", None)
+    adapter.send.assert_called_once_with(
+        "42",
+        "♻ ゲートウェイの再起動が完了しました。セッションは継続します。",
+        metadata=None,
+    )
     assert not notify_path.exists()
 
 
@@ -663,6 +711,47 @@ async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_
         "⚠️ Gateway shutting down — Your current task will be interrupted.",
         metadata={"thread_id": "topic-7"},
     )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_uses_active_language(monkeypatch):
+    monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+    i18n.reset_language_cache()
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="parent-42", chat_type="group", thread_id="topic-7")
+    session_key = build_session_key(source)
+
+    runner._running_agents[session_key] = object()
+    runner.session_store._entries[session_key] = MagicMock(origin=source)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once_with(
+        "parent-42",
+        "⚠️ ゲートウェイを停止しています — 現在のタスクは中断されます。",
+        metadata={"thread_id": "topic-7"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_restart_shutdown_notification_uses_active_language_for_home_channel(monkeypatch):
+    monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+    i18n.reset_language_cache()
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert getattr(adapter, "sent") == [
+        "⚠️ ゲートウェイを再起動しています — 現在のタスクは中断されます。"
+        "再起動後に任意のメッセージを送ると、中断した位置からの再開を試みます。"
+    ]
 
 
 @pytest.mark.asyncio

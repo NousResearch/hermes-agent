@@ -22,6 +22,12 @@ approval:
 gateway:
   approval_expired: "⚠️ Goedkeuring het verval (die agent wag nie meer nie). Vra die agent om weer te probeer."
   draining:         "⏳ Wag vir {count} aktiewe agent(e) voor herbegin..."
+  drain:
+    action_restarting:  "herbegin"
+    action_shutting_down: "afsluit"
+    queued:            "⏳ Gateway {action} — in die tou geplaas vir die volgende beurt nadat dit terug is."
+    rejecting:         "⏳ Gateway is besig om {action} en aanvaar nie tans nog 'n beurt nie."
+    new_work:          "⏳ Gateway is besig om {action} en aanvaar nie tans nuwe werk nie."
   goal_cleared:     "✓ Doelwit verwyder."
   no_active_goal:   "Geen aktiewe doelwit nie."
   config_read_failed: "⚠️ Kon nie config.yaml lees nie: {error}"
@@ -232,6 +238,12 @@ gateway:
   restart:
     in_progress:           "⏳ Gateway-herbegin reeds aan die gang..."
     restarting:            "♻ Herbegin van gateway. As jy nie binne 60 sekondes in kennis gestel word nie, herbegin vanaf die konsole met `hermes gateway restart`."
+    completed:             "♻ Gateway suksesvol herbegin. Jou sessie gaan voort."
+    online:                "♻️ Gateway aanlyn — Hermes is terug en gereed."
+
+  shutdown_notice:
+    shutdown:              "⚠️ Gateway sluit af — Jou huidige taak sal onderbreek word."
+    restart:               "⚠️ Gateway herbegin — Jou huidige taak sal onderbreek word. Stuur enige boodskap ná die herbegin en ek sal probeer hervat waar jy opgehou het."
 
   resume:
     db_unavailable:        "Sessie-databasis is nie beskikbaar nie."
@@ -334,6 +346,36 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Kon nie die `hermes`-opdrag vind nie. Hermes loop, maar die opdateeropdrag kon nie die uitvoerbare lêer op PATH of via die huidige Python-vertolker vind nie. Probeer `hermes update` met die hand in jou terminale uitvoer."
     start_failed:            "✗ Kon nie opdatering begin nie: {error}"
     starting:                "⚕ Begin Hermes-opdatering… Ek sal vordering hier stroom."
+    finished:                "✅ Hermes-opdatering voltooi."
+    failed_exit:             "❌ Hermes-opdatering het misluk (uitgangskode {exit_code})."
+    timed_out:               "❌ Hermes-opdatering het ná 30 minute uitgetel."
+    prompt_default_hint:     " (verstek: {default})"
+    prompt_fallback:         "⚕ **Opdatering het jou invoer nodig:**\n\n{prompt}{default_hint}\n\nAntwoord `{prefix}approve` (yes) of `{prefix}deny` (no), of tik jou antwoord direk."
+    prompt_native_heading:    "Opdatering benodig jou invoer"
+    prompt_native_heading_telegram: "Opdatering benodig jou invoer:"
+    prompt_native_default_hint: " (verstek: {default})"
+    prompt_native_feishu_default_hint: "\n\nVerstek: `{default}`"
+    prompt_native_yes:         "Ja"
+    prompt_native_no:          "Nee"
+    prompt_native_yes_visited: "Bevestig"
+    prompt_native_no_visited:  "Gekanselleer"
+    callback_unauthorized:     "⛔ Jy is nie gemagtig om opdateringsaanwysings te beantwoord nie."
+    callback_ack:              "'{answer}' is na die opdateringsproses gestuur."
+    callback_answered:         "{icon} Opdateringsaanwysing beantwoord: {answer}"
+    callback_answered_telegram: "⚕ Opdateringsaanwysing beantwoord: *{answer}*"
+    callback_footer:            "{answer} deur {user}"
+    callback_answered_by:       "Beantwoord deur **{user}**"
+    callback_already_answered:  "Reeds beantwoord~"
+    callback_expired:           "⏱ Aanwysing het verval — geen aksie geneem nie"
+    response_failed:            "✗ Kon nie antwoord na die opdateringsproses stuur nie: {error}"
+    response_sent:              "✓ `{label}` is na die opdateringsproses gestuur."
+    finished_with_output:    "✅ Hermes-opdatering voltooi.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ Hermes-opdatering het misluk.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Hermes-opdatering suksesvol voltooi."
+    failed_generic:          "❌ Hermes-opdatering het misluk. Gaan die gateway-logboeke na of voer `hermes update` handmatig uit vir besonderhede."
+
+  clarify:
+    answered_by:              "Beantwoord deur {user}: {choice}"
 
   usage:
     rate_limits:              "⏱️ **Tariefperke:** {state}"

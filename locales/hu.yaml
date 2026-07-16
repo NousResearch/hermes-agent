@@ -22,6 +22,12 @@ approval:
 gateway:
   approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."
   draining:         "⏳ {count} aktív ügynök befejezésére várunk az újraindítás előtt..."
+  drain:
+    action_restarting:  "újraindul"
+    action_shutting_down: "leáll"
+    queued:            "⏳ Az átjáró {action} — visszatérése után a következő körhöz sorolva."
+    rejecting:         "⏳ Az átjáró {action}, ezért jelenleg nem fogad újabb kört."
+    new_work:          "⏳ Az átjáró {action}, ezért jelenleg nem fogad új munkát."
   goal_cleared:     "✓ A cél törölve."
   no_active_goal:   "Nincs aktív cél."
   config_read_failed: "⚠️ Nem sikerült olvasni a config.yaml fájlt: {error}"
@@ -232,6 +238,12 @@ gateway:
   restart:
     in_progress:           "⏳ Az átjáró újraindítása már folyamatban van..."
     restarting:            "♻ Átjáró újraindítása. Ha 60 másodpercen belül nem kapsz értesítést, indítsd újra a konzolból a `hermes gateway restart` paranccsal."
+    completed:             "♻ Az átjáró sikeresen újraindult. A munkameneted folytatódik."
+    online:                "♻️ Az átjáró online — Hermes készen áll."
+
+  shutdown_notice:
+    shutdown:              "⚠️ Az átjáró leáll — A jelenlegi feladat megszakad."
+    restart:               "⚠️ Az átjáró újraindul — A jelenlegi feladat megszakad. Küldj bármilyen üzenetet az újraindítás után, és megpróbálom ott folytatni, ahol abbahagytad."
 
   resume:
     db_unavailable:        "A munkamenet-adatbázis nem érhető el."
@@ -334,6 +346,36 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Nem sikerült megtalálni a `hermes` parancsot. A Hermes fut, de a frissítőparancs nem találta a futtatható fájlt a PATH-on vagy a jelenlegi Python interpreteren keresztül. Próbáld futtatni a `hermes update` parancsot manuálisan a terminálban."
     start_failed:            "✗ Nem sikerült elindítani a frissítést: {error}"
     starting:                "⚕ Hermes frissítés indítása… A folyamatot itt fogom közvetíteni."
+    finished:                "✅ Hermes frissítés befejezve."
+    failed_exit:             "❌ A Hermes frissítés sikertelen (kilépési kód: {exit_code})."
+    timed_out:               "❌ A Hermes frissítés 30 perc után időtúllépés miatt leállt."
+    prompt_default_hint:     " (alapértelmezett: {default})"
+    prompt_fallback:         "⚕ **A frissítéshez bemenetre van szükség:**\n\n{prompt}{default_hint}\n\nVálaszolj `{prefix}approve` (yes) vagy `{prefix}deny` (no) paranccsal, vagy írd be közvetlenül a válaszod."
+    prompt_native_heading:    "A frissítés az Ön bevitelét igényli"
+    prompt_native_heading_telegram: "A frissítés az Ön bevitelét igényli:"
+    prompt_native_default_hint: " (alapértelmezett: {default})"
+    prompt_native_feishu_default_hint: "\n\nAlapértelmezett: `{default}`"
+    prompt_native_yes:         "Igen"
+    prompt_native_no:          "Nem"
+    prompt_native_yes_visited: "Megerősítve"
+    prompt_native_no_visited:  "Megszakítva"
+    callback_unauthorized:     "⛔ Nincs jogosultsága a frissítési kérések megválaszolására."
+    callback_ack:              "A(z) „{answer}” elküldve a frissítési folyamatnak."
+    callback_answered:         "{icon} Frissítési kérés megválaszolva: {answer}"
+    callback_answered_telegram: "⚕ Frissítési kérés megválaszolva: *{answer}*"
+    callback_footer:            "{answer} — {user}"
+    callback_answered_by:       "Megválaszolta: **{user}**"
+    callback_already_answered:  "Már megválaszolva~"
+    callback_expired:           "⏱ A kérés lejárt — nem történt művelet"
+    response_failed:            "✗ Nem sikerült elküldeni a választ a frissítési folyamatnak: {error}"
+    response_sent:              "✓ A(z) `{label}` elküldve a frissítési folyamatnak."
+    finished_with_output:    "✅ Hermes frissítés befejezve.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ A Hermes frissítés sikertelen.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ A Hermes frissítés sikeresen befejeződött."
+    failed_generic:          "❌ A Hermes frissítés sikertelen. Részletekért ellenőrizd a gateway naplóit, vagy futtasd kézzel a `hermes update` parancsot."
+
+  clarify:
+    answered_by:              "Megválaszolta: {user}: {choice}"
 
   usage:
     rate_limits:              "⏱️ **Sebességkorlátok:** {state}"

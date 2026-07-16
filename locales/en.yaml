@@ -33,6 +33,12 @@ gateway:
   # Messenger replies to slash commands and implicit state changes.
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
   draining:         "⏳ Draining {count} active agent(s) before restart..."
+  drain:
+    action_restarting:  "restarting"
+    action_shutting_down: "shutting down"
+    queued:            "⏳ Gateway {action} — queued for the next turn after it comes back."
+    rejecting:         "⏳ Gateway is {action} and is not accepting another turn right now."
+    new_work:          "⏳ Gateway is {action} and is not accepting new work right now."
   goal_cleared:     "✓ Goal cleared."
   no_active_goal:   "No active goal."
   config_read_failed: "⚠️ Could not read config.yaml: {error}"
@@ -247,6 +253,12 @@ gateway:
   restart:
     in_progress:           "⏳ Gateway restart already in progress..."
     restarting:            "♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`."
+    completed:             "♻ Gateway restarted successfully. Your session continues."
+    online:                "♻️ Gateway online — Hermes is back and ready."
+
+  shutdown_notice:
+    shutdown:              "⚠️ Gateway shutting down — Your current task will be interrupted."
+    restart:               "⚠️ Gateway restarting — Your current task will be interrupted. Send any message after restart and I'll try to resume where you left off."
 
   resume:
     db_unavailable:        "Session database not available."
@@ -346,6 +358,36 @@ gateway:
     hermes_cmd_not_found:    "✗ Could not locate the `hermes` command. Hermes is running, but the update command could not find the executable on PATH or via the current Python interpreter. Try running `hermes update` manually in your terminal."
     start_failed:            "✗ Failed to start update: {error}"
     starting:                "⚕ Starting Hermes update… I'll stream progress here."
+    finished:                "✅ Hermes update finished."
+    failed_exit:             "❌ Hermes update failed (exit code {exit_code})."
+    timed_out:               "❌ Hermes update timed out after 30 minutes."
+    prompt_default_hint:     " (default: {default})"
+    prompt_fallback:         "⚕ **Update needs your input:**\n\n{prompt}{default_hint}\n\nReply `{prefix}approve` (yes) or `{prefix}deny` (no), or type your answer directly."
+    prompt_native_heading:    "Update Needs Your Input"
+    prompt_native_heading_telegram: "Update needs your input:"
+    prompt_native_default_hint: " (default: {default})"
+    prompt_native_feishu_default_hint: "\n\nDefault: `{default}`"
+    prompt_native_yes:         "Yes"
+    prompt_native_no:          "No"
+    prompt_native_yes_visited: "Confirmed"
+    prompt_native_no_visited:  "Cancelled"
+    callback_unauthorized:     "⛔ You are not authorized to answer update prompts."
+    callback_ack:              "Sent '{answer}' to the update process."
+    callback_answered:         "{icon} Update prompt answered: {answer}"
+    callback_answered_telegram: "⚕ Update prompt answered: *{answer}*"
+    callback_footer:            "{answer} by {user}"
+    callback_answered_by:       "Answered by **{user}**"
+    callback_already_answered:  "Already answered~"
+    callback_expired:           "⏱ Prompt expired — no action taken"
+    response_failed:            "✗ Failed to send response to update process: {error}"
+    response_sent:              "✓ Sent `{label}` to the update process."
+    finished_with_output:    "✅ Hermes update finished.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ Hermes update failed.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Hermes update finished successfully."
+    failed_generic:          "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+
+  clarify:
+    answered_by:              "Answered by {user}: {choice}"
 
   usage:
     rate_limits:              "⏱️ **Rate Limits:** {state}"

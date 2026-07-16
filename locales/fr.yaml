@@ -22,6 +22,12 @@ approval:
 gateway:
   approval_expired: "⚠️ Approbation expirée (l'agent n'attend plus). Demandez à l'agent de réessayer."
   draining:         "⏳ Vidage de {count} agent(s) actif(s) avant redémarrage..."
+  drain:
+    action_restarting:  "redémarre"
+    action_shutting_down: "s'arrête"
+    queued:            "⏳ Le gateway {action} — mise en file pour le prochain tour à son retour."
+    rejecting:         "⏳ Le gateway {action} et n'accepte pas d'autre tour pour le moment."
+    new_work:          "⏳ Le gateway {action} et n'accepte pas de nouveau travail pour le moment."
   goal_cleared:     "✓ Objectif effacé."
   no_active_goal:   "Aucun objectif actif."
   config_read_failed: "⚠️ Impossible de lire config.yaml : {error}"
@@ -232,6 +238,12 @@ gateway:
   restart:
     in_progress:           "⏳ Redémarrage du gateway déjà en cours..."
     restarting:            "♻ Redémarrage du gateway. Si vous n'êtes pas notifié dans les 60 secondes, redémarrez depuis la console avec `hermes gateway restart`."
+    completed:             "♻ Le gateway a redémarré avec succès. Votre session continue."
+    online:                "♻️ Gateway en ligne — Hermes est prêt."
+
+  shutdown_notice:
+    shutdown:              "⚠️ Le gateway s'arrête — Votre tâche en cours sera interrompue."
+    restart:               "⚠️ Le gateway redémarre — Votre tâche en cours sera interrompue. Envoyez n'importe quel message après le redémarrage et j'essaierai de reprendre là où vous vous étiez arrêté."
 
   resume:
     db_unavailable:        "Base de données des sessions indisponible."
@@ -329,11 +341,41 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_count:         "Nombre invalide « {arg} » — utilisez /undo ou /undo N."
 
   update:
-    platform_not_messaging:  "✗ /update n'est disponible que depuis les plateformes de messagerie. Exécutez `hermes update` depuis le terminal."
-    not_git_repo:            "✗ Pas un dépôt git — impossible de mettre à jour."
-    hermes_cmd_not_found:    "✗ Impossible de localiser la commande `hermes`. Hermes est en cours d'exécution, mais la commande de mise à jour n'a pas pu trouver l'exécutable dans le PATH ni via l'interpréteur Python actuel. Essayez d'exécuter `hermes update` manuellement dans votre terminal."
+    platform_not_messaging:  "✗ /update est disponible uniquement depuis les plateformes de messagerie. Exécutez `hermes update` depuis le terminal."
+    not_git_repo:            "✗ Ce n'est pas un dépôt git — impossible de mettre à jour."
+    hermes_cmd_not_found:    "✗ Impossible de trouver la commande `hermes`. Hermes est en cours d'exécution, mais la commande de mise à jour n'a pas trouvé l'exécutable dans le PATH ni via l'interpréteur Python actuel. Essayez d'exécuter `hermes update` manuellement dans le terminal."
     start_failed:            "✗ Échec du démarrage de la mise à jour : {error}"
     starting:                "⚕ Démarrage de la mise à jour Hermes… Je diffuserai la progression ici."
+    finished:                "✅ Mise à jour Hermes terminée."
+    failed_exit:             "❌ La mise à jour Hermes a échoué (code de sortie {exit_code})."
+    timed_out:               "❌ La mise à jour Hermes a expiré après 30 minutes."
+    prompt_default_hint:     " (par défaut : {default})"
+    prompt_fallback:         "⚕ **La mise à jour nécessite votre saisie :**\n\n{prompt}{default_hint}\n\nRépondez `{prefix}approve` (yes) ou `{prefix}deny` (no), ou saisissez directement votre réponse."
+    prompt_native_heading:    "La mise à jour nécessite votre saisie"
+    prompt_native_heading_telegram: "La mise à jour nécessite votre saisie :"
+    prompt_native_default_hint: " (par défaut : {default})"
+    prompt_native_feishu_default_hint: "\n\nPar défaut : `{default}`"
+    prompt_native_yes:         "Oui"
+    prompt_native_no:          "Non"
+    prompt_native_yes_visited: "Confirmé"
+    prompt_native_no_visited:  "Annulé"
+    callback_unauthorized:     "⛔ Vous n'êtes pas autorisé à répondre aux invites de mise à jour."
+    callback_ack:              "« {answer} » envoyé au processus de mise à jour."
+    callback_answered:         "{icon} Invite de mise à jour traitée : {answer}"
+    callback_answered_telegram: "⚕ Invite de mise à jour traitée : *{answer}*"
+    callback_footer:            "{answer} par {user}"
+    callback_answered_by:       "Réponse de **{user}**"
+    callback_already_answered:  "Déjà répondu~"
+    callback_expired:           "⏱ L'invite a expiré — aucune action effectuée"
+    response_failed:            "✗ Échec de l'envoi de la réponse au processus de mise à jour : {error}"
+    response_sent:              "✓ `{label}` envoyé au processus de mise à jour."
+    finished_with_output:    "✅ Mise à jour Hermes terminée.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ La mise à jour Hermes a échoué.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Mise à jour Hermes terminée avec succès."
+    failed_generic:          "❌ La mise à jour Hermes a échoué. Consultez les logs du gateway ou exécutez `hermes update` manuellement pour plus de détails."
+
+  clarify:
+    answered_by:              "Réponse de {user} : {choice}"
 
   usage:
     rate_limits:              "⏱️ **Limites de débit :** {state}"

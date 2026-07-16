@@ -22,6 +22,12 @@ approval:
 gateway:
   approval_expired: "⚠️ Genehmigung abgelaufen (Agent wartet nicht mehr). Bitten Sie den Agenten, es erneut zu versuchen."
   draining:         "⏳ Warte auf {count} aktive(n) Agent(en) vor dem Neustart..."
+  drain:
+    action_restarting:  "wird neu gestartet"
+    action_shutting_down: "wird heruntergefahren"
+    queued:            "⏳ Das Gateway {action} — für die nächste Runde nach der Rückkehr eingereiht."
+    rejecting:         "⏳ Das Gateway {action} und nimmt derzeit keine weitere Runde an."
+    new_work:          "⏳ Das Gateway {action} und nimmt derzeit keine neuen Aufgaben an."
   goal_cleared:     "✓ Ziel gelöscht."
   no_active_goal:   "Kein aktives Ziel."
   config_read_failed: "⚠️ config.yaml konnte nicht gelesen werden: {error}"
@@ -232,6 +238,12 @@ gateway:
   restart:
     in_progress:           "⏳ Gateway-Neustart läuft bereits..."
     restarting:            "♻ Gateway wird neu gestartet. Falls Sie nicht innerhalb von 60 Sekunden benachrichtigt werden, starten Sie über die Konsole mit `hermes gateway restart` neu."
+    completed:             "♻ Gateway wurde erfolgreich neu gestartet. Ihre Sitzung wird fortgesetzt."
+    online:                "♻️ Gateway online — Hermes ist bereit."
+
+  shutdown_notice:
+    shutdown:              "⚠️ Gateway wird heruntergefahren — Ihre aktuelle Aufgabe wird unterbrochen."
+    restart:               "⚠️ Gateway wird neu gestartet — Ihre aktuelle Aufgabe wird unterbrochen. Senden Sie nach dem Neustart eine beliebige Nachricht, dann versuche ich dort fortzufahren, wo Sie aufgehört haben."
 
   resume:
     db_unavailable:        "Sitzungsdatenbank nicht verfügbar."
@@ -329,11 +341,41 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_count:         "Ungültige Anzahl \"{arg}\" — verwenden Sie /undo oder /undo N."
 
   update:
-    platform_not_messaging:  "✗ /update ist nur auf Messaging-Plattformen verfügbar. Führen Sie `hermes update` im Terminal aus."
-    not_git_repo:            "✗ Kein Git-Repository — Update nicht möglich."
-    hermes_cmd_not_found:    "✗ Der Befehl `hermes` konnte nicht gefunden werden. Hermes läuft, aber der Update-Befehl konnte das ausführbare Programm weder im PATH noch über den aktuellen Python-Interpreter finden. Versuchen Sie, `hermes update` manuell im Terminal auszuführen."
-    start_failed:            "✗ Update konnte nicht gestartet werden: {error}"
-    starting:                "⚕ Hermes-Update wird gestartet… Ich streame den Fortschritt hier."
+    platform_not_messaging:  "✗ /update ist nur über Messaging-Plattformen verfügbar. Führen Sie `hermes update` im Terminal aus."
+    not_git_repo:            "✗ Kein Git-Repository — Aktualisierung nicht möglich."
+    hermes_cmd_not_found:    "✗ Der Befehl `hermes` konnte nicht gefunden werden. Hermes läuft, aber der Update-Befehl konnte die ausführbare Datei weder im PATH noch über den aktuellen Python-Interpreter finden. Versuchen Sie, `hermes update` manuell im Terminal auszuführen."
+    start_failed:            "✗ Aktualisierung konnte nicht gestartet werden: {error}"
+    starting:                "⚕ Hermes-Aktualisierung wird gestartet… Fortschritt wird hier gestreamt."
+    finished:                "✅ Hermes-Aktualisierung abgeschlossen."
+    failed_exit:             "❌ Hermes-Aktualisierung fehlgeschlagen (Exit-Code {exit_code})."
+    timed_out:               "❌ Hermes-Aktualisierung nach 30 Minuten abgebrochen."
+    prompt_default_hint:     " (Standard: {default})"
+    prompt_fallback:         "⚕ **Aktualisierung benötigt Ihre Eingabe:**\n\n{prompt}{default_hint}\n\nAntworten Sie mit `{prefix}approve` (yes) oder `{prefix}deny` (no), oder geben Sie Ihre Antwort direkt ein."
+    prompt_native_heading:    "Aktualisierung benötigt Ihre Eingabe"
+    prompt_native_heading_telegram: "Die Aktualisierung benötigt Ihre Eingabe:"
+    prompt_native_default_hint: " (Standard: {default})"
+    prompt_native_feishu_default_hint: "\n\nStandard: `{default}`"
+    prompt_native_yes:         "Ja"
+    prompt_native_no:          "Nein"
+    prompt_native_yes_visited: "Bestätigt"
+    prompt_native_no_visited:  "Abgebrochen"
+    callback_unauthorized:     "⛔ Sie sind nicht berechtigt, auf Update-Eingabeaufforderungen zu antworten."
+    callback_ack:              "'{answer}' wurde an den Update-Prozess gesendet."
+    callback_answered:         "{icon} Update-Eingabeaufforderung beantwortet: {answer}"
+    callback_answered_telegram: "⚕ Update-Eingabeaufforderung beantwortet: *{answer}*"
+    callback_footer:            "{answer} von {user}"
+    callback_answered_by:       "Beantwortet von **{user}**"
+    callback_already_answered:  "Bereits beantwortet~"
+    callback_expired:           "⏱ Eingabeaufforderung abgelaufen — keine Aktion ausgeführt"
+    response_failed:            "✗ Antwort konnte nicht an den Update-Prozess gesendet werden: {error}"
+    response_sent:              "✓ `{label}` wurde an den Update-Prozess gesendet."
+    finished_with_output:    "✅ Hermes-Aktualisierung abgeschlossen.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ Hermes-Aktualisierung fehlgeschlagen.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ Hermes-Aktualisierung erfolgreich abgeschlossen."
+    failed_generic:          "❌ Hermes-Aktualisierung fehlgeschlagen. Prüfen Sie die Gateway-Logs oder führen Sie `hermes update` manuell aus."
+
+  clarify:
+    answered_by:              "Beantwortet von {user}: {choice}"
 
   usage:
     rate_limits:              "⏱️ **Ratenlimits:** {state}"

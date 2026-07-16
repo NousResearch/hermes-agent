@@ -22,6 +22,12 @@ approval:
 gateway:
   approval_expired: "⚠️ La aprobación ha caducado (el agente ya no está esperando). Pida al agente que lo intente de nuevo."
   draining:         "⏳ Esperando a que terminen {count} agente(s) activo(s) antes de reiniciar..."
+  drain:
+    action_restarting:  "reiniciando"
+    action_shutting_down: "apagando"
+    queued:            "⏳ El gateway se está {action} — la solicitud se ha puesto en cola para el siguiente turno cuando vuelva."
+    rejecting:         "⏳ El gateway se está {action} y no acepta otro turno en este momento."
+    new_work:          "⏳ El gateway se está {action} y no acepta trabajo nuevo en este momento."
   goal_cleared:     "✓ Objetivo eliminado."
   no_active_goal:   "No hay objetivo activo."
   config_read_failed: "⚠️ No se pudo leer config.yaml: {error}"
@@ -232,6 +238,12 @@ gateway:
   restart:
     in_progress:           "⏳ El reinicio del gateway ya está en curso..."
     restarting:            "♻ Reiniciando el gateway. Si no recibes notificación en 60 segundos, reinicia desde la consola con `hermes gateway restart`."
+    completed:             "♻ El gateway se reinició correctamente. Tu sesión continúa."
+    online:                "♻️ Gateway en línea — Hermes está listo."
+
+  shutdown_notice:
+    shutdown:              "⚠️ El gateway se está apagando — Tu tarea actual se interrumpirá."
+    restart:               "⚠️ El gateway se está reiniciando — Tu tarea actual se interrumpirá. Envía cualquier mensaje después del reinicio e intentaré continuar donde lo dejaste."
 
   resume:
     db_unavailable:        "Base de datos de sesiones no disponible."
@@ -326,11 +338,41 @@ gateway:
     invalid_count:         "Cantidad no válida \"{arg}\" — usa /undo o /undo N."
 
   update:
-    platform_not_messaging:  "✗ /update solo está disponible en plataformas de mensajería. Ejecuta `hermes update` desde la terminal."
+    platform_not_messaging:  "✗ /update solo está disponible desde plataformas de mensajería. Ejecuta `hermes update` desde la terminal."
     not_git_repo:            "✗ No es un repositorio git — no se puede actualizar."
-    hermes_cmd_not_found:    "✗ No se pudo localizar el comando `hermes`. Hermes está en ejecución, pero el comando de actualización no encontró el ejecutable en PATH ni a través del intérprete de Python actual. Intenta ejecutar `hermes update` manualmente en tu terminal."
-    start_failed:            "✗ No se pudo iniciar la actualización: {error}"
-    starting:                "⚕ Iniciando la actualización de Hermes… Transmitiré el progreso aquí."
+    hermes_cmd_not_found:    "✗ No se pudo encontrar el comando `hermes`. Hermes está en ejecución, pero el comando de actualización no pudo encontrar el ejecutable en PATH ni mediante el intérprete de Python actual. Intenta ejecutar `hermes update` manualmente en la terminal."
+    start_failed:            "✗ Error al iniciar actualización: {error}"
+    starting:                "⚕ Iniciando actualización de Hermes… Transmitiré el progreso aquí."
+    finished:                "✅ Actualización de Hermes completada."
+    failed_exit:             "❌ La actualización de Hermes falló (código de salida {exit_code})."
+    timed_out:               "❌ La actualización de Hermes agotó el tiempo tras 30 minutos."
+    prompt_default_hint:     " (predeterminado: {default})"
+    prompt_fallback:         "⚕ **La actualización necesita tu entrada:**\n\n{prompt}{default_hint}\n\nResponde `{prefix}approve` (yes) o `{prefix}deny` (no), o escribe tu respuesta directamente."
+    prompt_native_heading:    "La actualización necesita tu entrada"
+    prompt_native_heading_telegram: "La actualización necesita tu entrada:"
+    prompt_native_default_hint: " (predeterminado: {default})"
+    prompt_native_feishu_default_hint: "\n\nPredeterminado: `{default}`"
+    prompt_native_yes:         "Sí"
+    prompt_native_no:          "No"
+    prompt_native_yes_visited: "Confirmado"
+    prompt_native_no_visited:  "Cancelado"
+    callback_unauthorized:     "⛔ No tienes autorización para responder a las solicitudes de actualización."
+    callback_ack:              "Se ha enviado '{answer}' al proceso de actualización."
+    callback_answered:         "{icon} Solicitud de actualización respondida: {answer}"
+    callback_answered_telegram: "⚕ Solicitud de actualización respondida: *{answer}*"
+    callback_footer:            "{answer} por {user}"
+    callback_answered_by:       "Respondido por **{user}**"
+    callback_already_answered:  "Ya se ha respondido~"
+    callback_expired:           "⏱ La solicitud ha caducado — no se ha realizado ninguna acción"
+    response_failed:            "✗ No se pudo enviar la respuesta al proceso de actualización: {error}"
+    response_sent:              "✓ Se ha enviado `{label}` al proceso de actualización."
+    finished_with_output:    "✅ Actualización de Hermes completada.\n\n```\n{output}\n```"
+    failed_with_output:      "❌ La actualización de Hermes falló.\n\n```\n{output}\n```"
+    finished_successfully:   "✅ La actualización de Hermes se completó correctamente."
+    failed_generic:          "❌ La actualización de Hermes falló. Consulta los logs del gateway o ejecuta `hermes update` manualmente para más detalles."
+
+  clarify:
+    answered_by:              "Respondido por {user}: {choice}"
 
   usage:
     rate_limits:              "⏱️ **Límites de tasa:** {state}"

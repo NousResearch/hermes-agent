@@ -1855,7 +1855,17 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
                     fallback=DEFAULT_XAI_OAUTH_BASE_URL,
                 )
                 if api_key and base_url:
-                    return api_key, base_url
+                    # pool.select() already refreshes when needed. Still refuse
+                    # a past-exp JWT so we never hand fallback activation a
+                    # guaranteed 401. Non-JWT keys (no exp claim) pass through.
+                    from hermes_cli.auth import _xai_access_token_is_expiring
+
+                    if not _xai_access_token_is_expiring(api_key, skew_seconds=0):
+                        return api_key, base_url
+                    logger.debug(
+                        "Auxiliary xAI OAuth: pool entry token expired after "
+                        "select/refresh; treating as unusable"
+                    )
     except Exception as exc:
         logger.debug("Auxiliary xAI OAuth pool credential resolution failed: %s", exc)
 
@@ -4777,6 +4787,34 @@ def resolve_provider_client(
     # OpenRouter / Nous bills for side tasks they thought were running on
     # their xAI subscription.
     if provider == "xai-oauth":
+        if raw_codex:
+            # Main-agent / fallback path needs a raw OpenAI client with
+            # responses.stream() access (same contract as openai-codex).
+            # Credential order MUST stay pool-first: _resolve_xai_oauth_for_aux
+            # selects+refreshes the pool entry before any singleton auth-store
+            # fallthrough. Do NOT call resolve_xai_oauth_runtime_credentials
+            # first — that reverses the pool-first contract and can build the
+            # client from a different identity than the later-attached pool.
+            if not model:
+                logger.warning(
+                    "resolve_provider_client: xai-oauth requested without a "
+                    "model; pass model explicitly."
+                )
+                return None, None
+            resolved = _resolve_xai_oauth_for_aux()
+            if resolved is None:
+                logger.warning(
+                    "resolve_provider_client: xai-oauth requested but no "
+                    "usable xAI OAuth token found (run: hermes model -> "
+                    "xAI Grok OAuth — SuperGrok / Premium+)"
+                )
+                return None, None
+            api_key, base_url = resolved
+            final_model = _normalize_resolved_model(model, provider)
+            return (
+                _create_openai_client(api_key=api_key, base_url=base_url),
+                final_model,
+            )
         client, default = _build_xai_oauth_aux_client(model)
         if client is None:
             logger.warning(

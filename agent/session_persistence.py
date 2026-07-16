@@ -296,6 +296,30 @@ def _db_flush_adopt_compression_tip(agent) -> bool:
     return True
 
 
+def _apply_durable_user_rewrite(agent) -> None:
+    """Correct the close-persisted staged user row in place when a ``pre_persist_user_message`` hook composed
+    durable context onto it after the CLI close safety-net (``_persist_active_session_before_close``) had
+    already written and marked it. The append-only scan cannot re-write a marked row, so the injected block
+    would reach the live prompt but not the durable row.
+
+    Deliberately run AHEAD of the scan rather than off a marked-row branch inside it: ``_db_flush_scan_start``
+    skips the identity-matched prefix, and the close safety-net's own flush puts exactly that staged dict into
+    the prefix — the loop never visits the row that needs correcting. The signal is one-shot (set in
+    ``build_turn_context`` only when the staged dict was already persisted) and consumed here, and
+    ``update_active_message_content`` targets the newest active user row itself, so no positional match is
+    needed and no second row is inserted — the staged user turn stays exactly one row."""
+    rewrite = getattr(agent, "_persist_user_message_durable_rewrite", None)
+    if rewrite is None:
+        return
+    agent._persist_user_message_durable_rewrite = None
+    if not agent.session_id:
+        return
+    try:
+        agent._session_db.update_active_message_content(agent.session_id, rewrite)
+    except Exception:
+        logger.warning("pre_persist durable rewrite failed for session=%s", agent.session_id, exc_info=True)
+
+
 def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adoption_budget: int) -> bool:
     """Classify a failed flush; True when the caller should retry once on an adopted compression tip."""
     agent._db_flush_scan_prefix = None  # full re-scan next flush: an exception mid-loop leaves mixed dispositions
@@ -406,6 +430,7 @@ class SessionPersistenceMixin:
         try:
             if not self._session_db_created:  # retry row creation if the earlier attempt failed transiently
                 self._ensure_db_session()
+            _apply_durable_user_rewrite(self)
             batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history)
             _db_flush_write(self, batch_rows, batch_msgs, messages)
             # Markers are now the sole truth; reset the one-shot seed so no id() outlives this flush.

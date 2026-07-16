@@ -496,6 +496,28 @@ class SessionMessagesMixin:
             (session_id, role, int(offset)))
         return row[0] if row else None
 
+    def update_active_message_content(self, session_id: str, content: Any, *, role: str = "user") -> bool:
+        """Correct the content of the newest active row of *role* in place; ``True`` if a row was updated.
+
+        A ``pre_persist_user_message`` hook can compose durable context onto a user message whose dict was
+        ALREADY written: the CLI close safety-net persists the staged user dict and stamps it ``_db_persisted``
+        before the turn's hook runs, and the append-only flush then skips that marked dict. This targeted
+        UPDATE corrects the durable body WITHOUT inserting a second row, so the staged user turn stays a single
+        row (the append path's own in-place update, ``resolve_and_repair_transcript_batch``, is assistant-only).
+        The ``messages_fts*`` triggers re-index the row on UPDATE."""
+        encoded = self._encode_content(content)
+
+        def _do(conn) -> bool:
+            row = conn.execute(
+                "SELECT id FROM messages WHERE session_id = ? AND role = ? AND active = 1 "
+                "ORDER BY id DESC LIMIT 1", (session_id, role)).fetchone()
+            if row is None:
+                return False
+            conn.execute("UPDATE messages SET content = ? WHERE id = ?", (encoded, row[0]))
+            return True
+
+        return self._execute_write(_do)
+
     def latest_conversation_role(self, session_id: str) -> Optional[str]:
         """Role of the newest active user/assistant/tool row, or ``None``. ``session_meta`` /
         ``system`` rows are transcript bookkeeping stripped before the model sees history, so

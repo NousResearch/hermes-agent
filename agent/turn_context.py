@@ -540,6 +540,10 @@ def _bind_turn_identity(
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
     agent._persist_user_message_platform_id = persist_user_platform_id
+    # One-shot signal: set by the pre_persist hook only when its returns must correct an
+    # already-durable staged user row in place (CLI close path). Reset each turn so a prior
+    # turn's flag can never leak forward.
+    agent._persist_user_message_durable_rewrite = None
     # Unique task_id when not provided isolates VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
@@ -787,7 +791,19 @@ def _apply_pre_persist_hook(
         # applier. Guarded on ``is not None`` so it is a no-op when no override was set.
         _ov = getattr(agent, "_persist_user_message_override", None)
         if _pp and _ov is not None and not isinstance(_ov, list):
-            agent._persist_user_message_override = _compose_pre_persist_returns(_ov, _pp)
+            _composed_override = _compose_pre_persist_returns(_ov, _pp)
+            agent._persist_user_message_override = _composed_override
+            # If this staged user dict was ALREADY written durably (the CLI close safety-net
+            # persists the pending dict and stamps it ``_db_persisted`` before this turn's hook
+            # runs), the append-only flush SKIPS it on marker — the recomposed override never
+            # reaches the durable row. Popping the marker is not an option: the flush would
+            # INSERT a second user row (its in-place path is assistant-only). Flag a one-shot
+            # in-place correction the flush applies instead (see
+            # ``SessionPersistenceMixin._flush_messages_to_session_db_unlocked``). No-op on the
+            # ordinary path, where the dict is not yet persisted and the flush writes it fresh.
+            from agent.context_compressor import _DB_PERSISTED_MARKER
+            if user_msg.get(_DB_PERSISTED_MARKER):
+                agent._persist_user_message_durable_rewrite = _composed_override
     except Exception as exc:
         logger.warning("pre_persist_user_message hook failed: %s", exc)
     user_msg["content"] = user_message

@@ -984,7 +984,6 @@ def _auth_lock_path() -> Path:
     return _auth_file_path().with_suffix(".lock")
 
 
-_auth_lock_holder = threading.local()
 _auth_target_lock_holders: Dict[str, threading.local] = {}
 _auth_target_lock_holders_guard = threading.Lock()
 
@@ -997,10 +996,7 @@ def _same_path(left: Path, right: Path) -> bool:
 
 
 def _auth_lock_holder_for(target_path: Path) -> threading.local:
-    """Return a reentrancy tracker scoped to one auth-store lock path."""
-    active_path = _auth_file_path()
-    if _same_path(target_path, active_path):
-        return _auth_lock_holder
+    """Return a reentrancy tracker keyed to one canonical auth-store path."""
     try:
         key = str(target_path.resolve(strict=False))
     except Exception:

@@ -55,6 +55,13 @@ def _normalize_onoff(value: Any, default: str = "on") -> str:
 # practical limit for readable messages — matching OpenClaw's choice).
 MAX_POST_LENGTH = 4000
 
+# First-turn thread-context seeding caps (#37695). These bound prompt INPUT
+# and are independent of MAX_POST_LENGTH, which governs outbound sends only.
+# Per-post cap keeps a single long post from dominating the seeded block;
+# the total cap bounds the whole injected context regardless of post count.
+MAX_THREAD_CONTEXT_POST_CHARS = 500
+MAX_THREAD_CONTEXT_TOTAL_CHARS = 4000
+
 # Channel type codes returned by the Mattermost API.
 _CHANNEL_TYPE_MAP = {
     "D": "dm",
@@ -271,7 +278,16 @@ class MattermostAdapter(BasePlatformAdapter):
             return cached[1]
 
         try:
-            data = await self._api_get(f"posts/{root_id}/thread")
+            # Bound retrieval at the request so we never materialize an entire
+            # long thread just to slice its tail. Mattermost's thread endpoint
+            # honours ``perPage`` + ``direction=up`` to return only the most
+            # recent N posts (root + latest replies). We ask for ``limit + 1``
+            # to leave room for skipping the triggering post below.
+            per_page = limit + 1
+            data = await self._api_get(
+                f"posts/{root_id}/thread"
+                f"?perPage={per_page}&direction=up&skipFetchThreads=true"
+            )
             raw_posts = data.get("posts") if isinstance(data, dict) else None
             if isinstance(raw_posts, dict):
                 posts = list(raw_posts.values())
@@ -282,6 +298,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
             posts.sort(key=lambda p: (p.get("create_at", 0), p.get("id", "")))
 
+            # Defensive in-memory bound in case a server ignores perPage.
             context_parts: List[str] = []
             for post in posts[-(limit + 1):]:
                 post_id = str(post.get("id") or "")
@@ -296,6 +313,11 @@ class MattermostAdapter(BasePlatformAdapter):
                 text = str(post.get("message") or "").strip()
                 if not text or text.startswith("/"):
                     continue
+
+                # Per-post cap: truncate an over-long post so a single wall of
+                # text cannot dominate (or blow out) the seeded block.
+                if len(text) > MAX_THREAD_CONTEXT_POST_CHARS:
+                    text = text[:MAX_THREAD_CONTEXT_POST_CHARS].rstrip() + " […]"
 
                 props = post.get("props") if isinstance(post.get("props"), dict) else {}
                 name = (
@@ -320,7 +342,19 @@ class MattermostAdapter(BasePlatformAdapter):
                     if is_authorized is False:
                         trust_tag = "[unverified] "
 
-                context_parts.append(f"{trust_tag}[{name}]: {text}")
+                entry = f"{trust_tag}[{name}]: {text}"
+                context_parts.append(entry)
+
+            # Total cap: keep the NEWEST posts under the overall budget rather
+            # than truncating mid-block. Posts are ordered oldest→newest, so we
+            # trim from the front (oldest) until the rendered block fits.
+            total_chars = sum(len(p) + 1 for p in context_parts)
+            while (
+                len(context_parts) > 1
+                and total_chars > MAX_THREAD_CONTEXT_TOTAL_CHARS
+            ):
+                dropped = context_parts.pop(0)
+                total_chars -= len(dropped) + 1
 
             if not context_parts:
                 content = ""
@@ -1449,8 +1483,6 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
     """
     if "require_mention" in mattermost_cfg and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
         os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
-    if "strict_mention" in mattermost_cfg and not os.getenv("MATTERMOST_STRICT_MENTION"):
-        os.environ["MATTERMOST_STRICT_MENTION"] = str(mattermost_cfg["strict_mention"]).lower()
     # thread_context: first-turn thread-history seeding policy. Normalize so a
     # YAML boolean (``off`` -> False) is written as canonical "on"/"off".
     if "thread_context" in mattermost_cfg and not os.getenv("MATTERMOST_THREAD_CONTEXT"):

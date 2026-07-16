@@ -1377,3 +1377,117 @@ def test_adapter_thread_context_off_via_yaml_boolean():
     )
     adapter = MattermostAdapter(config)
     assert adapter._thread_context_mode == "off"
+
+
+# ---------------------------------------------------------------------------
+# Bounded retrieval + prompt-input caps (#37695 review follow-up)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_thread_context_bounds_the_request():
+    """The thread fetch must bound retrieval server-side, not just slice in memory."""
+    adapter = _make_adapter()
+    adapter._bot_user_id = "bot_user_id"
+    api = AsyncMock(
+        return_value={
+            "posts": {
+                "root_1": _thread_post("root_1", "u1", "hello", 100, "", username="alice"),
+                "p2": _thread_post("p2", "u1", "trigger", 200, "root_1", username="alice"),
+            }
+        }
+    )
+    adapter._api_get = api
+
+    await adapter._fetch_thread_context(
+        root_id="root_1",
+        current_post_id="p2",
+        channel_id="chan",
+        chat_type="channel",
+        limit=30,
+    )
+
+    called_path = api.await_args[0][0]
+    assert called_path.startswith("posts/root_1/thread")
+    # Retrieval is bounded at the request: perPage caps how many posts the
+    # server materializes, direction=up returns the most recent tail.
+    assert "perPage=31" in called_path
+    assert "direction=up" in called_path
+
+
+@pytest.mark.asyncio
+async def test_fetch_thread_context_caps_per_post_length():
+    """A single over-long post is truncated so it cannot dominate the block."""
+    from plugins.platforms.mattermost.adapter import MAX_THREAD_CONTEXT_POST_CHARS
+
+    adapter = _make_adapter()
+    adapter._bot_user_id = "bot_user_id"
+    long_text = "x" * (MAX_THREAD_CONTEXT_POST_CHARS + 500)
+    adapter._api_get = AsyncMock(
+        return_value={
+            "posts": {
+                "root_1": _thread_post("root_1", "u1", long_text, 100, "", username="alice"),
+                "p2": _thread_post("p2", "u1", "trigger", 200, "root_1", username="alice"),
+            }
+        }
+    )
+
+    out = await adapter._fetch_thread_context(
+        root_id="root_1",
+        current_post_id="p2",
+        channel_id="chan",
+        chat_type="channel",
+    )
+
+    # The rendered post body is truncated to the per-post cap plus an ellipsis.
+    assert "x" * MAX_THREAD_CONTEXT_POST_CHARS in out
+    assert "x" * (MAX_THREAD_CONTEXT_POST_CHARS + 1) not in out
+    assert "[…]" in out
+
+
+@pytest.mark.asyncio
+async def test_fetch_thread_context_caps_total_length_keeping_newest():
+    """Total rendered context is bounded; oldest posts drop first."""
+    from plugins.platforms.mattermost.adapter import (
+        MAX_THREAD_CONTEXT_POST_CHARS,
+        MAX_THREAD_CONTEXT_TOTAL_CHARS,
+    )
+
+    adapter = _make_adapter()
+    adapter._bot_user_id = "bot_user_id"
+    # Enough near-max posts that the total budget forces trimming.
+    body = "a" * MAX_THREAD_CONTEXT_POST_CHARS
+    posts = {"root_1": _thread_post("root_1", "u1", "OLDEST", 50, "", username="alice")}
+    n = (MAX_THREAD_CONTEXT_TOTAL_CHARS // MAX_THREAD_CONTEXT_POST_CHARS) + 3
+    for i in range(n):
+        pid = f"p{i}"
+        posts[pid] = _thread_post(pid, "u1", body, 100 + i, "root_1", username="alice")
+    posts["newest_msg"] = _thread_post(
+        "newest_msg", "u1", "NEWEST-KEPT", 100 + n, "root_1", username="alice"
+    )
+    posts["trig"] = _thread_post("trig", "u1", "trigger", 100 + n + 1, "root_1", username="alice")
+    adapter._api_get = AsyncMock(return_value={"posts": posts})
+
+    out = await adapter._fetch_thread_context(
+        root_id="root_1",
+        current_post_id="trig",
+        channel_id="chan",
+        chat_type="channel",
+        limit=n + 5,
+    )
+
+    # Total stays within budget (plus header/footer framing lines).
+    assert len(out) <= MAX_THREAD_CONTEXT_TOTAL_CHARS + 500
+    # Newest content is retained; oldest is trimmed to fit.
+    assert "NEWEST-KEPT" in out
+    assert "OLDEST" not in out
+
+
+def test_apply_yaml_config_does_not_bridge_strict_mention(monkeypatch):
+    """The unrelated MATTERMOST_STRICT_MENTION dead bridge must be gone."""
+    from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+    monkeypatch.delenv("MATTERMOST_STRICT_MENTION", raising=False)
+    _apply_yaml_config({"strict_mention": True}, {"strict_mention": True})
+    assert "MATTERMOST_STRICT_MENTION" not in os.environ
+

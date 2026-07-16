@@ -1945,3 +1945,36 @@ class TestClaimDispatch:
         # At minimum, the good job's record is still intact (no corruption from the bad neighbor)
         loaded = {j["id"]: j for j in load_jobs()}
         assert "good" in loaded
+
+
+class TestLateEnvRepointScopesStore:
+    """A HERMES_HOME set AFTER cron.jobs import must scope the store even
+    without use_cron_store(): fixtures that patch the environment too late
+    previously read/wrote the import-time jobs.json — the user's real file."""
+
+    def test_late_env_repoint_scopes_store(self, tmp_path, monkeypatch):
+        import cron.jobs as jobs
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store = jobs._current_cron_store()
+        expected = tmp_path.resolve() / "cron"
+        assert store.cron_dir == expected
+        assert store.jobs_file == expected / "jobs.json"
+        assert store.output_dir == expected / "output"
+        # the import-time compatibility constants are untouched
+        assert jobs.JOBS_FILE != store.jobs_file
+
+    def test_unchanged_home_returns_import_time_constants(self, monkeypatch):
+        import cron.jobs as jobs
+
+        monkeypatch.setenv("HERMES_HOME", str(jobs.HERMES_DIR))
+        store = jobs._current_cron_store()
+        assert store.jobs_file is jobs.JOBS_FILE
+
+    def test_use_cron_store_override_still_wins(self, tmp_path, monkeypatch):
+        import cron.jobs as jobs
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "env-home"))
+        with jobs.use_cron_store(tmp_path / "override-home"):
+            store = jobs._current_cron_store()
+            assert store.jobs_file == (tmp_path / "override-home").resolve() / "cron" / "jobs.json"

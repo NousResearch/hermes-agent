@@ -116,11 +116,27 @@ _cron_store_override: ContextVar[Optional[_CronStorePaths]] = ContextVar(
 
 
 def _current_cron_store() -> _CronStorePaths:
-    """Return paths pinned to this execution context's profile."""
+    """Return paths pinned to this execution context's profile.
+
+    With no use_cron_store() override active, the active profile home is
+    resolved FRESH via get_hermes_home() (context-local override, then the
+    HERMES_HOME env var) instead of trusting the import-time capture. A test
+    or embedder that re-points HERMES_HOME after this module was imported
+    therefore reads/writes ITS OWN store — not whatever jobs.json the import
+    happened to freeze (the filed incident: fixtures that patched the env too
+    late silently rewrote the user's real jobs file). The module-level
+    constants keep their import-time values as the documented compatibility
+    surface, and the common path (home unchanged since import) still returns
+    them unchanged.
+    """
     override = _cron_store_override.get()
     if override is not None:
         return override
-    return _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
+    home = get_hermes_home().resolve()
+    if home == HERMES_DIR:
+        return _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
+    cron_dir = home / "cron"
+    return _CronStorePaths(cron_dir, cron_dir / "jobs.json", cron_dir / "output")
 
 
 @contextlib.contextmanager

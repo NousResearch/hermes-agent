@@ -1294,6 +1294,155 @@ class TestTakeoverMarker:
         assert not marker_path.exists()
 
 
+class TestScopedLockTakeover:
+    """Cross-home takeover requires explicit, corroborated process identity."""
+
+    @staticmethod
+    def _owner_record(target_home: Path, *, pid: int = 4242, start_time: int = 123):
+        target_home.mkdir(parents=True, exist_ok=True)
+        record = {
+            "pid": pid,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": start_time,
+            "hermes_home": str(target_home),
+        }
+        (target_home / "gateway.pid").write_text(json.dumps(record))
+        return record
+
+    def test_verified_distinct_home_handoff_marks_target_before_sigterm(
+        self, tmp_path, monkeypatch
+    ):
+        replacer_home = tmp_path / "replacer"
+        target_home = tmp_path / "target"
+        replacer_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(replacer_home))
+        record = self._owner_record(target_home)
+
+        alive = iter([True, True, False])
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: next(alive))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda _pid: "python -m hermes_cli.main gateway run",
+        )
+        calls = []
+
+        def terminate(pid, *, force=False):
+            marker_path = target_home / ".gateway-takeover.json"
+            assert marker_path.exists()
+            payload = json.loads(marker_path.read_text())
+            assert payload["target_hermes_home"] == str(target_home)
+            assert payload["replacer_hermes_home"] == str(replacer_home)
+            calls.append((pid, force))
+
+        monkeypatch.setattr(status, "terminate_pid", terminate)
+
+        owner_pid = status.take_over_scoped_lock_holder(
+            record, graceful_attempts=1
+        )
+
+        assert owner_pid == 4242
+        assert calls == [(4242, False)]
+        assert not (target_home / ".gateway-takeover.json").exists()
+        assert not (replacer_home / ".gateway-takeover.json").exists()
+
+    def test_handoff_rejects_uncorroborated_target_home(self, tmp_path, monkeypatch):
+        target_home = tmp_path / "target"
+        record = self._owner_record(target_home)
+        # The lock claims target_home, but that home's PID record names a
+        # different process identity.
+        bad_pid_record = dict(record, pid=9999)
+        (target_home / "gateway.pid").write_text(json.dumps(bad_pid_record))
+
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda _pid: "python -m hermes_cli.main gateway run",
+        )
+        calls = []
+        monkeypatch.setattr(
+            status, "terminate_pid", lambda *args, **kwargs: calls.append(args)
+        )
+
+        assert status.take_over_scoped_lock_holder(record) is None
+        assert calls == []
+        assert not (target_home / ".gateway-takeover.json").exists()
+
+    def test_handoff_requires_marker_write_before_termination(
+        self, tmp_path, monkeypatch
+    ):
+        target_home = tmp_path / "target"
+        record = self._owner_record(target_home)
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda _pid: "python -m hermes_cli.main gateway run",
+        )
+        monkeypatch.setattr(status, "write_takeover_marker", lambda *a, **k: False)
+        calls = []
+        monkeypatch.setattr(
+            status, "terminate_pid", lambda *args, **kwargs: calls.append(args)
+        )
+
+        assert status.take_over_scoped_lock_holder(record) is None
+        assert calls == []
+
+    def test_pid_reuse_after_sigterm_is_never_force_killed(
+        self, tmp_path, monkeypatch
+    ):
+        target_home = tmp_path / "target"
+        record = self._owner_record(target_home)
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+        starts = iter([123, 123, 999])
+        monkeypatch.setattr(
+            status, "_get_process_start_time", lambda _pid: next(starts)
+        )
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda _pid: "python -m hermes_cli.main gateway run",
+        )
+        calls = []
+        monkeypatch.setattr(
+            status,
+            "terminate_pid",
+            lambda pid, *, force=False: calls.append((pid, force)),
+        )
+
+        assert status.take_over_scoped_lock_holder(
+            record, graceful_attempts=1
+        ) == 4242
+        assert calls == [(4242, False)]
+
+    def test_target_accepts_verified_cross_home_marker(self, tmp_path, monkeypatch):
+        replacer_home = tmp_path / "replacer"
+        target_home = tmp_path / "target"
+        replacer_home.mkdir()
+        target_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(replacer_home))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 100)
+
+        assert status.write_takeover_marker(
+            os.getpid(),
+            target_home=target_home,
+            target_start_time=100,
+        ) is True
+        assert not (replacer_home / ".gateway-takeover.json").exists()
+        assert (target_home / ".gateway-takeover.json").exists()
+
+        # The target process reads its own home.  A differing replacer home is
+        # valid only because the marker explicitly names this target home.
+        monkeypatch.setenv("HERMES_HOME", str(target_home))
+        assert status.consume_takeover_marker_for_self() is True
+        assert not (target_home / ".gateway-takeover.json").exists()
+
+
 class TestPlannedStopMarker:
     """Tests for intentional service/manual gateway stop markers."""
 

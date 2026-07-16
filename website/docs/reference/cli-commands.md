@@ -1542,16 +1542,21 @@ hermes completion fish > ~/.config/fish/completions/hermes.fish
 ## `hermes update`
 
 ```bash
-hermes update [--gateway] [--check] [--no-backup] [--backup] [--yes]
+hermes update [--gateway] [--light] [--check] [--no-backup] [--backup] [--yes]
 ```
 
 Pulls the latest `hermes-agent` code and reinstalls dependencies in the managed venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install. Use `--check` to see whether your checkout is behind `origin/main` without installing.
 
 `hermes update` pulls the configured update branch (default: `main`). If your checkout is on another branch, Hermes may check out the update branch before pulling. Commit branch work before updating when you want to keep it outside the update autostash flow.
 
+**`--light` / `-L`:** Skip the Node/Web/Desktop rebuild — npm install, the web UI Vite build, and the Electron desktop rebuild are all skipped. The core Python update (git pull, pip reinstall, skills sync, model catalog refresh) still runs. Much faster on Windows, where npm and the Electron binary download dominate update time. Gateway mode (`--gateway`) implies `--light` automatically — chat-based updates don't need the dashboard or desktop app rebuilt. If you need the dashboard afterward, run it separately: `cd web && npm install && npm run build`.
+
+**pip installs:** `hermes update` detects pip-based installations automatically — it queries PyPI for the latest release and runs `pip install --upgrade hermes-agent` instead of `git pull`. PyPI releases track tagged versions (major/minor releases), not every commit on `main`. Use `--check` to see if a newer PyPI release is available without installing.
+
 | Option | Description |
 |--------|-------------|
-| `--gateway` | Internal mode used by the messaging `/update` command. Uses file-based IPC for prompts and progress streaming instead of reading from terminal stdin. Not a gateway restart flag. |
+| `--gateway` | Internal mode used by the messaging `/update` command. Uses file-based IPC for prompts and progress streaming instead of reading from terminal stdin. Not a gateway restart flag. Implies `--light` (skips the Node/Web/Desktop rebuild). |
+| `--light`, `-L` | Skip the npm install, web UI Vite build, and Electron desktop rebuild. Core Python update only — much faster on Windows. Gateway mode implies this automatically. Run `cd web && npm install && npm run build` separately if you need the dashboard/TUI afterward. |
 | `--check` | Check whether an update is available without pulling, installing dependencies, or restarting anything. |
 | `--no-backup` | Skip the pre-update backup for this run, even if `updates.pre_update_backup` is enabled in `config.yaml`. |
 | `--backup` | Create a labeled pre-update snapshot of `HERMES_HOME` (config, auth, sessions, skills, pairing data) before pulling. Default is **off** — the previous always-backup behavior was adding minutes to every update on large homes. Flip it on permanently via `updates.pre_update_backup: true` in `config.yaml`. |

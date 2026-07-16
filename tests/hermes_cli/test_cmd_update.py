@@ -1240,3 +1240,124 @@ class TestNodeRuntimeNpmResolution:
             not call.args or not call.args[0] or call.args[0][0] != windows_npm
             for call in mock_run.call_args_list
         )
+
+class TestCmdUpdateLightMode:
+    """`--light` skips the Node/Web/Desktop rebuild steps.
+
+    Regression guard for PR #45012: light mode must run the core Python
+    update (git pull + pip) but NOT shell out to npm for the web UI build or
+    trigger the Electron desktop rebuild.
+    """
+
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_light_mode_skips_node_and_web_build(
+        self, mock_run, mock_which, mock_args, capsys
+    ):
+        from hermes_cli import main as hm
+
+        # Keep uv and npm distinct so the uv pip install doesn't masquerade
+        # as an npm call in assertions.
+        mock_which.side_effect = {"uv": "/usr/bin/uv", "npm": "/usr/bin/npm"}.get
+        mock_args.light = True
+        mock_args.gateway = False
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+
+        cmd_update(mock_args)
+
+        npm_calls = [
+            c for c in mock_run.call_args_list
+            if c.args and c.args[0][0] == "/usr/bin/npm"
+        ]
+        # No npm install / web UI build in light mode.
+        assert npm_calls == []
+
+        out = capsys.readouterr().out
+        assert "Light mode" in out
+        assert "npm install" in out
+
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_gateway_mode_implies_light(
+        self, mock_run, mock_which, mock_args, capsys
+    ):
+        from hermes_cli import main as hm
+
+        # Gateway chat-based updates must NOT rebuild the dashboard/desktop.
+        mock_which.side_effect = {"uv": "/usr/bin/uv", "npm": "/usr/bin/npm"}.get
+        mock_args.light = False
+        mock_args.gateway = True
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+
+        cmd_update(mock_args)
+
+        npm_calls = [
+            c for c in mock_run.call_args_list
+            if c.args and c.args[0][0] == "/usr/bin/npm"
+        ]
+        assert npm_calls == [], "gateway mode must imply --light"
+
+        out = capsys.readouterr().out
+        assert "Light mode" in out
+
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_light_mode_without_desktop_app_does_not_crash(
+        self, mock_run, mock_which, mock_args, capsys
+    ):
+        """Light mode must not reference the desktop build_result variable.
+
+        Regression guard for PR #45012: the non-light desktop-build block
+        assigned `build_result` only inside an `if has_desktop_app:` guard; a
+        later unguarded `if build_result.returncode` would raise
+        UnboundLocalError on machines without a packaged desktop app. Light
+        mode sidesteps the block entirely.
+        """
+        from hermes_cli import main as hm
+
+        mock_which.side_effect = {"uv": "/usr/bin/uv", "npm": "/usr/bin/npm"}.get
+        mock_args.light = True
+        mock_args.gateway = False
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+
+        # Should complete without raising UnboundLocalError.
+        cmd_update(mock_args)
+
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_light_mode_warns_when_built_app_present(
+        self, mock_run, mock_which, mock_args, capsys
+    ):
+        """Light mode must warn that a built dashboard/desktop is left stale.
+
+        Regression guard for PR #45012: skipping the rebuilds silently leaves
+        an installed dashboard/desktop on its previous version. Light mode must
+        tell the user so the UI reflects the update they just pulled.
+        """
+        from hermes_cli import main as hm
+
+        mock_which.side_effect = {"uv": "/usr/bin/uv", "npm": "/usr/bin/npm"}.get
+        mock_args.light = True
+        mock_args.gateway = False
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+
+        # Simulate a built desktop app + existing web dashboard dist.
+        with patch.object(hm, "_desktop_packaged_executable", return_value=None), \
+             patch.object(hm, "_desktop_dist_exists", return_value=True), \
+             patch.object(hm, "_web_ui_build_needed", return_value=False):
+            cmd_update(mock_args)
+
+        out = capsys.readouterr().out
+        assert "Light mode" in out
+        assert "built dashboard/desktop app" in out
+        assert "left it on the" in out
+        # Includes the desktop rebuild command since a desktop app exists.
+        assert "hermes desktop --build-only" in out

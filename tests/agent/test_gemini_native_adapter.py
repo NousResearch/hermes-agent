@@ -52,6 +52,41 @@ def test_build_native_request_preserves_thought_signature_on_tool_replay():
     assert parts[0]["thoughtSignature"] == "sig-123"
 
 
+def test_tool_call_without_thought_signature_emits_sentinel():
+    """Tool calls missing extra_content (MoA aggregator, cross-provider replay,
+    session restore) must still emit thoughtSignature so Gemini 3 thinking
+    models don't reject the request with 400 INVALID_ARGUMENT."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {"role": "system", "content": "Be helpful."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_no_sig",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command": "ls"}',
+                        },
+                        # No extra_content — simulates serialized tool_call
+                        # from MoA aggregator or cross-provider history.
+                    }
+                ],
+            },
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    parts = request["contents"][0]["parts"]
+    assert parts[0]["functionCall"]["name"] == "terminal"
+    assert parts[0]["thoughtSignature"] == "skip_thought_signature_validator"
+
+
 def test_build_native_request_uses_original_function_name_for_tool_result():
     from agent.gemini_native_adapter import build_gemini_request
 

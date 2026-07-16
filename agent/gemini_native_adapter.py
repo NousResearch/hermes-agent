@@ -270,8 +270,12 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
         }
     }
     thought_signature = _tool_call_extra_signature(tool_call)
-    if thought_signature:
-        part["thoughtSignature"] = thought_signature
+    # Always emit thoughtSignature — Gemini 3 thinking models require it on
+    # every functionCall part.  Use the real signature when available (preserves
+    # the thinking context from the original response) or a standard sentinel
+    # fallback for tool_calls that lack extra_content (e.g. after serialization
+    # in MoA aggregator mode, cross-provider history replay, or session restore).
+    part["thoughtSignature"] = thought_signature or "skip_thought_signature_validator"
     return part
 
 

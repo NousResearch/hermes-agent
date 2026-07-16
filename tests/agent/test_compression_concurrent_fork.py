@@ -192,9 +192,18 @@ def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     assert held is True
 
     agent = _build_agent_with_db(db, parent_sid)
+    agent._emit_status = MagicMock()
+    agent._emit_status.reset_mock()
     messages = [{"role": "user", "content": "m1"}, {"role": "user", "content": "m2"}]
 
     compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    # Lock losers may emit feasibility warnings, but they are not actually
+    # compacting and must not advertise a compaction lifecycle to clients.
+    from agent.conversation_compression import COMPACTION_STATUS
+
+    emitted = [call.args[0] for call in agent._emit_status.call_args_list]
+    assert COMPACTION_STATUS not in emitted
 
     # Skipped: messages returned verbatim, no rotation
     assert compressed is messages or compressed == messages

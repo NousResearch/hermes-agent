@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
+import pytest
 
 def _write_config(tmp_path: Path, body: str) -> None:
     hermes_home = tmp_path
@@ -98,6 +98,68 @@ def test_estimator_unknown_dict_fallback():
 
 
 # ── default base + tier scaling ────────────────────────────────────────────
+
+
+def test_loopback_aggregator_keeps_stale_watchdog(monkeypatch, tmp_path):
+    """A loopback proxy to remote models is not a local inference backend."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    _write_config(tmp_path, "")
+
+    agent = _make_agent(
+        tmp_path,
+        provider="9router",
+        model="cx/gpt-5.6-sol",
+        base_url="http://localhost:20128/v1",
+    )
+    payload = {
+        "model": agent.model,
+        "messages": [{"role": "user", "content": "x" * 500_000}],
+    }
+
+    assert agent._compute_non_stream_stale_timeout(payload) == 240.0
+
+
+@pytest.mark.parametrize(
+    "provider", ["ollama", "lmstudio", "vllm", "llamacpp", "llama.cpp", "llama-cpp"]
+)
+def test_genuine_local_inference_keeps_unlimited_default(monkeypatch, tmp_path, provider):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    _write_config(tmp_path, "")
+
+    agent = _make_agent(
+        tmp_path,
+        provider=provider,
+        model="llama3.2",
+        base_url="http://localhost:11434/v1",
+    )
+
+    assert agent._compute_non_stream_stale_timeout({"messages": []}) == float("inf")
+
+
+@pytest.mark.parametrize("base_url", [
+    "http://localhost:11434/v1",
+    "http://localhost:20128/ollama/v1",
+])
+def test_loopback_proxy_ollama_markers_do_not_disable_watchdog(
+    monkeypatch, tmp_path, base_url
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    _write_config(tmp_path, "")
+
+    agent = _make_agent(
+        tmp_path,
+        provider="9router",
+        model="cx/gpt-5.6-sol",
+        base_url=base_url,
+    )
+
+    assert agent._compute_non_stream_stale_timeout({"messages": []}) == 90.0
 
 
 def test_default_base_is_90s(monkeypatch, tmp_path):

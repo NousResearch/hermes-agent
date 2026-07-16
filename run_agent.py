@@ -150,7 +150,7 @@ from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
 from agent.model_metadata import (
     estimate_request_tokens_rough,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.estimate_request_tokens_rough")
-    is_local_endpoint,
+    is_explicit_local_runtime,
 )
 from agent.usage_pricing import normalize_usage
 # Re-exported for tests that monkeypatch these symbols on run_agent.
@@ -1317,7 +1317,10 @@ class AIAgent:
         """
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
         base_url = getattr(self, "_base_url", None) or self.base_url or ""
-        if uses_implicit_default and base_url and is_local_endpoint(base_url):
+        if (
+            uses_implicit_default
+            and is_explicit_local_runtime(self.provider, base_url)
+        ):
             return float("inf")
 
         from agent.chat_completion_helpers import estimate_request_context_tokens

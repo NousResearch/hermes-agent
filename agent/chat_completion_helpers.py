@@ -30,7 +30,7 @@ from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.errors import EmptyStreamError
 from agent.gemini_native_adapter import is_native_gemini_base_url
-from agent.model_metadata import is_local_endpoint
+from agent.model_metadata import is_explicit_local_runtime
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
@@ -2244,7 +2244,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # prefill on large contexts before producing the first token.
             # Auto-increase the httpx read timeout unless the user explicitly
             # overrode HERMES_STREAM_READ_TIMEOUT.
-            if _stream_read_timeout == 120.0 and agent.base_url and is_local_endpoint(agent.base_url):
+            if _stream_read_timeout == 120.0 and is_explicit_local_runtime(
+                agent.provider, agent.base_url
+            ):
                 _stream_read_timeout = _base_timeout
                 logger.debug(
                     "Local provider detected (%s) — stream read timeout raised to %.0fs",
@@ -3128,7 +3130,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
     # for prefill on large contexts.  Disable the stale detector unless
     # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
-    if _stream_stale_timeout_base == 180.0 and agent.base_url and is_local_endpoint(agent.base_url):
+    if _stream_stale_timeout_base == 180.0 and is_explicit_local_runtime(
+        agent.provider, agent.base_url
+    ):
         _stream_stale_timeout = float("inf")
         logger.debug("Local provider detected (%s) — stale stream timeout disabled", agent.base_url)
     else:

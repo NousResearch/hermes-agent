@@ -670,15 +670,24 @@ class TestDeliverResultWrapping:
         # Media files should be forwarded separately
         assert kwargs["media_files"] == [(str(media_path), False)]
 
-    def test_agent_cron_transform_runs_once_before_fanout(self, tmp_path):
-        """The agent finalizer transforms once before delivery fan-out."""
+    def _run_agent_cron_transform_case(
+        self,
+        tmp_path,
+        *,
+        deliver,
+        platforms,
+        expected_platform,
+        expected_sends,
+    ):
         from gateway.config import Platform
         from run_agent import AIAgent as RealAIAgent
 
-        pconfig = MagicMock()
-        pconfig.enabled = True
         mock_cfg = MagicMock()
-        mock_cfg.platforms = {Platform.SLACK: pconfig}
+        mock_cfg.platforms = {}
+        for platform in platforms:
+            pconfig = MagicMock()
+            pconfig.enabled = True
+            mock_cfg.platforms[Platform(platform)] = pconfig
 
         transform_calls = []
 
@@ -723,7 +732,7 @@ class TestDeliverResultWrapping:
             "name": "Slack report",
             "prompt": "make a report",
             "model": "test-model",
-            "deliver": "slack:C123456789,slack:C987654321",
+            "deliver": deliver,
         }
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
@@ -753,14 +762,35 @@ class TestDeliverResultWrapping:
         assert len(transform_calls) == 1
         assert transform_calls[0]["response_text"] == "raw cron text"
         assert transform_calls[0]["model"] == "test-model"
-        assert transform_calls[0]["platform"] == "slack"
+        assert transform_calls[0]["platform"] == expected_platform
         assert transform_calls[0]["session_id"].startswith("cron_slack-job_")
-        assert send_mock.call_count == 2
+        assert send_mock.call_count == expected_sends
+        sent_platforms = {call.args[0] for call in send_mock.call_args_list}
+        assert sent_platforms == {Platform(platform) for platform in platforms}
         for call in send_mock.call_args_list:
             args, kwargs = call
-            assert args[0] == Platform.SLACK
             assert args[3] == "raw cron text|transformed"
             assert kwargs["media_files"] == []
+
+    def test_agent_cron_transform_runs_once_before_same_platform_fanout(self, tmp_path):
+        """Same-platform fan-out can expose the concrete delivery platform."""
+        self._run_agent_cron_transform_case(
+            tmp_path,
+            deliver="slack:C123456789,slack:C987654321",
+            platforms=["slack"],
+            expected_platform="slack",
+            expected_sends=2,
+        )
+
+    def test_agent_cron_transform_uses_cron_for_cross_platform_fanout(self, tmp_path):
+        """Cross-platform fan-out has no single concrete output platform."""
+        self._run_agent_cron_transform_case(
+            tmp_path,
+            deliver="slack:C123456789,discord:987654321",
+            platforms=["slack", "discord"],
+            expected_platform="cron",
+            expected_sends=2,
+        )
 
     def test_transformed_agent_output_preserves_wrap_and_media_extraction(
         self, tmp_path, monkeypatch

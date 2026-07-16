@@ -1263,6 +1263,22 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     return targets[0] if targets else None
 
 
+def _resolve_transform_output_platform(job: dict) -> str:
+    """Resolve the platform exposed to the once-per-turn output transform.
+
+    When a cron job has exactly one delivery platform, let
+    ``transform_llm_output`` see that concrete platform. Cross-platform fan-out
+    has no single target-platform contract, so keep the cron platform instead
+    of formatting once for one target and sending that result everywhere.
+    """
+    platforms = {
+        str(target.get("platform") or "").lower()
+        for target in _resolve_delivery_targets(job)
+        if target.get("platform")
+    }
+    return next(iter(platforms)) if len(platforms) == 1 else "cron"
+
+
 # Media extension sets — audio routing is centralized in gateway.platforms.base
 # via should_send_media_as_audio() so Telegram-specific rules stay in one place.
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
@@ -3151,13 +3167,8 @@ def run_job(
         # Keep ``agent.platform`` as cron: request dispatch, prompt construction,
         # and approvals rely on it.  Only transform_llm_output should see the
         # concrete delivery platform, and the existing finalizer invokes that
-        # hook exactly once per turn. For fan-out, the first resolved target is
-        # the canonical output format and every target receives the same result.
-        agent._transform_llm_output_platform = (
-            str(delivery_target.get("platform") or "").lower()
-            if delivery_target
-            else "cron"
-        )
+        # hook exactly once per turn.
+        agent._transform_llm_output_platform = _resolve_transform_output_platform(job)
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,

@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from agent.system_prompt import build_system_prompt_parts
 
 
@@ -58,6 +60,68 @@ class TestContextFileCwd:
     def test_configured_dir_when_terminal_cwd_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
+
+
+def _run_with_context_files(agent, context_files):
+    """Run build_system_prompt_parts with a stubbed build_context_files_prompt."""
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", side_effect=context_files),
+    ):
+        return build_system_prompt_parts(agent)
+
+
+class TestContextFilesKwargSkew:
+    """#65868 — a version-skewed prompt_builder whose build_context_files_prompt
+    predates allow_install_tree_fallback must not crash the rebuild. Before the
+    guard the TypeError propagated and took the whole backend down (SIGTERM)."""
+
+    @staticmethod
+    def _stale_callee():
+        """Mimic the pre-244f70aa signature: no allow_install_tree_fallback."""
+        calls = []
+
+        def build(cwd=None, skip_soul=False, context_length=None):
+            calls.append({"cwd": cwd})
+            return "STALE-CONTEXT-FILES"
+
+        return build, calls
+
+    def test_kwarg_skew_retries_without_new_kwarg_and_warns_once(
+        self, monkeypatch, caplog
+    ):
+        import agent.system_prompt as sp
+
+        monkeypatch.setattr(sp, "_WARNED_CONTEXT_FILES_KWARG_SKEW", False)
+        build, calls = self._stale_callee()
+
+        with caplog.at_level("WARNING", logger="agent.system_prompt"):
+            parts = _run_with_context_files(_make_agent(platform="cli"), build)
+            # A second rebuild must not re-warn.
+            _run_with_context_files(_make_agent(platform="cli"), build)
+
+        # Retried the stale callee successfully → context files still load.
+        assert "STALE-CONTEXT-FILES" in parts["context"]
+        # Both rebuilds reached the stale callee (2 sessions × 1 retry each).
+        assert len(calls) == 2
+        skew_warnings = [
+            r for r in caplog.records if "#65868" in r.getMessage()
+        ]
+        assert len(skew_warnings) == 1  # warned once, not per rebuild
+
+    def test_unrelated_typeerror_still_propagates(self, monkeypatch):
+        import agent.system_prompt as sp
+
+        monkeypatch.setattr(sp, "_WARNED_CONTEXT_FILES_KWARG_SKEW", False)
+
+        def boom(cwd=None, skip_soul=False, context_length=None,
+                 allow_install_tree_fallback=False):
+            raise TypeError("something else entirely")
+
+        with pytest.raises(TypeError, match="something else entirely"):
+            _run_with_context_files(_make_agent(platform="cli"), boom)
 
 
 def _stable_prompt(agent):

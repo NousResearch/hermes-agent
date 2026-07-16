@@ -183,6 +183,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         client_id=DEFAULT_NOUS_CLIENT_ID,
         scope=DEFAULT_NOUS_SCOPE,
     ),
+    "openrouter": ProviderConfig(
+        id="openrouter",
+        name="OpenRouter",
+        auth_type="api_key",
+        inference_base_url=OPENROUTER_BASE_URL,
+        api_key_env_vars=("OPENROUTER_API_KEY",),
+        base_url_env_var="OPENROUTER_BASE_URL",
+    ),
     "openai-codex": ProviderConfig(
         id="openai-codex",
         name="OpenAI Codex",

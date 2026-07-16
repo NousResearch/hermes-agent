@@ -15,6 +15,19 @@ def test_show_status_all_does_not_print_tavily_key_value(monkeypatch, capsys, tm
     assert sentinel not in output
 
 
+def test_show_status_all_never_prints_raw_api_keys(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    raw_key = "tvly-dev-1234567890abcdefghijklmnopqrstuvwxyz"
+    monkeypatch.setenv("TAVILY_API_KEY", raw_key)
+
+    show_status(SimpleNamespace(all=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Tavily" in output
+    assert raw_key not in output
+    assert "tvly" in output
+
+
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod

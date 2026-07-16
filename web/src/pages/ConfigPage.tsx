@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react'
 import {
   Code,
   Download,
@@ -34,32 +34,29 @@ import {
   History,
   Shield,
   FileOutput,
-  RefreshCw,
-} from "lucide-react";
-import { api } from "@/lib/api";
-import { getNestedValue, setNestedValue } from "@/lib/nested";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
-import { Toast } from "@nous-research/ui/ui/components/toast";
-import { AutoField } from "@/components/AutoField";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { ListItem } from "@nous-research/ui/ui/components/list-item";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
-import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { useI18n } from "@/i18n";
-import { usePageHeader } from "@/contexts/usePageHeader";
-import { PluginSlot } from "@/plugins";
+  RefreshCw
+} from 'lucide-react'
+import { api } from '@/lib/api'
+import { getNestedValue, setNestedValue } from '@/lib/nested'
+import { useToast } from '@nous-research/ui/hooks/use-toast'
+import { Toast } from '@nous-research/ui/ui/components/toast'
+import { AutoField } from '@/components/AutoField'
+import { Button } from '@nous-research/ui/ui/components/button'
+import { ListItem } from '@nous-research/ui/ui/components/list-item'
+import { Spinner } from '@nous-research/ui/ui/components/spinner'
+import { Card, CardContent, CardHeader, CardTitle } from '@nous-research/ui/ui/components/card'
+import { ConfirmDialog } from '@nous-research/ui/ui/components/confirm-dialog'
+import { Input } from '@nous-research/ui/ui/components/input'
+import { Badge } from '@nous-research/ui/ui/components/badge'
+import { useI18n } from '@/i18n'
+import { usePageHeader } from '@/contexts/usePageHeader'
+import { PluginSlot } from '@/plugins'
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-const CATEGORY_ICONS: Record<
-  string,
-  React.ComponentType<{ className?: string }>
-> = {
+const CATEGORY_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   general: Settings,
   agent: Bot,
   terminal: Monitor,
@@ -83,18 +80,12 @@ const CATEGORY_ICONS: Record<
   sessions: History,
   tool_loop_guardrails: Shield,
   tool_output: FileOutput,
-  updates: RefreshCw,
-};
+  updates: RefreshCw
+}
 
-function CategoryIcon({
-  category,
-  className,
-}: {
-  category: string;
-  className?: string;
-}) {
-  const Icon = CATEGORY_ICONS[category] ?? FileQuestion;
-  return <Icon className={className ?? "h-4 w-4"} />;
+function CategoryIcon({ category, className }: { category: string; className?: string }) {
+  const Icon = CATEGORY_ICONS[category] ?? FileQuestion
+  return <Icon className={className ?? 'h-4 w-4'} />
 }
 
 /* ------------------------------------------------------------------ */
@@ -102,33 +93,28 @@ function CategoryIcon({
 /* ------------------------------------------------------------------ */
 
 export default function ConfigPage() {
-  const [config, setConfig] = useState<Record<string, unknown> | null>(null);
-  const [schema, setSchema] = useState<Record<
-    string,
-    Record<string, unknown>
-  > | null>(null);
-  const [categoryOrder, setCategoryOrder] = useState<string[]>([]);
-  const [defaults, setDefaults] = useState<Record<string, unknown> | null>(
-    null,
-  );
-  const [saving, setSaving] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [yamlMode, setYamlMode] = useState(false);
-  const [yamlText, setYamlText] = useState("");
-  const [yamlLoading, setYamlLoading] = useState(false);
-  const [yamlSaving, setYamlSaving] = useState(false);
-  const [configPath, setConfigPath] = useState<string | null>(null);
-  const [activeCategory, setActiveCategory] = useState<string>("");
-  const [confirmReset, setConfirmReset] = useState(false);
-  const { toast, showToast } = useToast();
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const { t } = useI18n();
-  const { setEnd } = usePageHeader();
+  const [config, setConfig] = useState<Record<string, unknown> | null>(null)
+  const [schema, setSchema] = useState<Record<string, Record<string, unknown>> | null>(null)
+  const [categoryOrder, setCategoryOrder] = useState<string[]>([])
+  const [defaults, setDefaults] = useState<Record<string, unknown> | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [yamlMode, setYamlMode] = useState(false)
+  const [yamlText, setYamlText] = useState('')
+  const [yamlLoading, setYamlLoading] = useState(false)
+  const [yamlSaving, setYamlSaving] = useState(false)
+  const [configPath, setConfigPath] = useState<string | null>(null)
+  const [activeCategory, setActiveCategory] = useState<string>('')
+  const [confirmReset, setConfirmReset] = useState(false)
+  const { toast, showToast } = useToast()
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const { t } = useI18n()
+  const { setEnd } = usePageHeader()
 
   useLayoutEffect(() => {
     if (!config || !schema) {
-      setEnd(null);
-      return;
+      setEnd(null)
+      return
     }
     setEnd(
       <div className="relative w-full min-w-0 sm:max-w-xs">
@@ -137,225 +123,220 @@ export default function ConfigPage() {
           className="h-8 pl-8 pr-7 text-xs"
           placeholder={t.common.search}
           value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
+          onChange={e => setSearchQuery(e.target.value)}
         />
         {searchQuery && (
           <Button
             ghost
             size="xs"
             className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-            onClick={() => setSearchQuery("")}
+            onClick={() => setSearchQuery('')}
             aria-label={t.common.clear}
           >
             <X />
           </Button>
         )}
-      </div>,
-    );
-    return () => setEnd(null);
-  }, [config, schema, searchQuery, setEnd, t.common.clear, t.common.search]);
+      </div>
+    )
+    return () => setEnd(null)
+  }, [config, schema, searchQuery, setEnd, t.common.clear, t.common.search])
 
   function prettyCategoryName(cat: string): string {
-    const key = cat as keyof typeof t.config.categories;
-    if (t.config.categories[key]) return t.config.categories[key];
-    return cat.charAt(0).toUpperCase() + cat.slice(1);
+    const key = cat as keyof typeof t.config.categories
+    if (t.config.categories[key]) return t.config.categories[key]
+    return cat.charAt(0).toUpperCase() + cat.slice(1)
   }
 
   useEffect(() => {
     api
       .getConfig()
       .then(setConfig)
-      .catch(() => {});
+      .catch(() => {})
     api
       .getSchema()
-      .then((resp) => {
-        setSchema(resp.fields as Record<string, Record<string, unknown>>);
-        setCategoryOrder(resp.category_order ?? []);
+      .then(resp => {
+        // memory.provider has a dedicated management UI on the Plugins page
+        // (provider cards + guided setup/switch flow). Hide it from the
+        // generic config form so the two surfaces don't fight; the schema
+        // keeps the field for other consumers (Desktop settings).
+        const fields = { ...resp.fields } as Record<string, Record<string, unknown>>
+        delete fields['memory.provider']
+        setSchema(fields)
+        setCategoryOrder(resp.category_order ?? [])
       })
-      .catch(() => {});
+      .catch(() => {})
     api
       .getDefaults()
       .then(setDefaults)
-      .catch(() => {});
+      .catch(() => {})
     // getConfigRaw is profile-scoped (fetchJSON appends ?profile=), so its
     // `path` reflects the switched profile's config.yaml. /api/status's
     // config_path is machine-global (the dashboard's own profile) — wrong
     // header under the global profile switcher, so it's only a fallback.
     api
       .getConfigRaw()
-      .then((resp) => {
-        if (resp.path) setConfigPath(resp.path);
+      .then(resp => {
+        if (resp.path) setConfigPath(resp.path)
       })
-      .catch(() => {});
+      .catch(() => {})
     api
       .getStatus()
-      .then((resp) => setConfigPath((prev) => prev ?? resp.config_path))
-      .catch(() => {});
-  }, []);
+      .then(resp => setConfigPath(prev => prev ?? resp.config_path))
+      .catch(() => {})
+  }, [])
 
   // Set active category when categories load
   useEffect(() => {
     if (categoryOrder.length > 0 && !activeCategory) {
-      setActiveCategory(categoryOrder[0]);
+      setActiveCategory(categoryOrder[0])
     }
-  }, [categoryOrder, activeCategory]);
+  }, [categoryOrder, activeCategory])
 
   // Load YAML when switching to YAML mode
   useEffect(() => {
     if (yamlMode) {
-      setYamlLoading(true);
+      setYamlLoading(true)
       api
         .getConfigRaw()
-        .then((resp) => setYamlText(resp.yaml))
-        .catch(() => showToast(t.config.failedToLoadRaw, "error"))
-        .finally(() => setYamlLoading(false));
+        .then(resp => setYamlText(resp.yaml))
+        .catch(() => showToast(t.config.failedToLoadRaw, 'error'))
+        .finally(() => setYamlLoading(false))
     }
-  }, [yamlMode]);
+  }, [yamlMode])
 
   /* ---- Categories ---- */
   const categories = useMemo(() => {
-    if (!schema) return [];
-    const allCats = [
-      ...new Set(
-        Object.values(schema).map((s) => String(s.category ?? "general")),
-      ),
-    ];
-    const ordered = categoryOrder.filter((c) => allCats.includes(c));
-    const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
-    return [...ordered, ...extra];
-  }, [schema, categoryOrder]);
+    if (!schema) return []
+    const allCats = [...new Set(Object.values(schema).map(s => String(s.category ?? 'general')))]
+    const ordered = categoryOrder.filter(c => allCats.includes(c))
+    const extra = allCats.filter(c => !categoryOrder.includes(c)).sort()
+    return [...ordered, ...extra]
+  }, [schema, categoryOrder])
 
   /* ---- Category field counts ---- */
   const categoryCounts = useMemo(() => {
-    if (!schema) return {};
-    const counts: Record<string, number> = {};
+    if (!schema) return {}
+    const counts: Record<string, number> = {}
     for (const s of Object.values(schema)) {
-      const cat = String(s.category ?? "general");
-      counts[cat] = (counts[cat] || 0) + 1;
+      const cat = String(s.category ?? 'general')
+      counts[cat] = (counts[cat] || 0) + 1
     }
-    return counts;
-  }, [schema]);
+    return counts
+  }, [schema])
 
   /* ---- Search ---- */
-  const isSearching = searchQuery.trim().length > 0;
-  const lowerSearch = searchQuery.toLowerCase();
+  const isSearching = searchQuery.trim().length > 0
+  const lowerSearch = searchQuery.toLowerCase()
 
   const searchMatchedFields = useMemo(() => {
-    if (!isSearching || !schema) return [];
+    if (!isSearching || !schema) return []
     return Object.entries(schema).filter(([key, s]) => {
-      const label = key.split(".").pop() ?? key;
-      const humanLabel = label.replace(/_/g, " ");
+      const label = key.split('.').pop() ?? key
+      const humanLabel = label.replace(/_/g, ' ')
       return (
         key.toLowerCase().includes(lowerSearch) ||
         humanLabel.toLowerCase().includes(lowerSearch) ||
-        String(s.category ?? "")
+        String(s.category ?? '')
           .toLowerCase()
           .includes(lowerSearch) ||
-        String(s.description ?? "")
+        String(s.description ?? '')
           .toLowerCase()
           .includes(lowerSearch)
-      );
-    });
-  }, [isSearching, lowerSearch, schema]);
+      )
+    })
+  }, [isSearching, lowerSearch, schema])
 
   /* ---- Active tab fields ---- */
   const activeFields = useMemo(() => {
-    if (!schema || isSearching) return [];
-    return Object.entries(schema).filter(
-      ([, s]) => String(s.category ?? "general") === activeCategory,
-    );
-  }, [schema, activeCategory, isSearching]);
+    if (!schema || isSearching) return []
+    return Object.entries(schema).filter(([, s]) => String(s.category ?? 'general') === activeCategory)
+  }, [schema, activeCategory, isSearching])
 
   /* ---- Handlers ---- */
   const handleSave = async () => {
-    if (!config) return;
-    setSaving(true);
+    if (!config) return
+    setSaving(true)
     try {
-      await api.saveConfig(config);
-      showToast(t.config.configSaved, "success");
+      await api.saveConfig(config)
+      showToast(t.config.configSaved, 'success')
     } catch (e) {
-      showToast(`${t.config.failedToSave}: ${e}`, "error");
+      showToast(`${t.config.failedToSave}: ${e}`, 'error')
     } finally {
-      setSaving(false);
+      setSaving(false)
     }
-  };
+  }
 
   const handleYamlSave = async () => {
-    setYamlSaving(true);
+    setYamlSaving(true)
     try {
-      await api.saveConfigRaw(yamlText);
-      showToast(t.config.yamlConfigSaved, "success");
+      await api.saveConfigRaw(yamlText)
+      showToast(t.config.yamlConfigSaved, 'success')
       api
         .getConfig()
         .then(setConfig)
-        .catch(() => {});
+        .catch(() => {})
     } catch (e) {
-      showToast(`${t.config.failedToSaveYaml}: ${e}`, "error");
+      showToast(`${t.config.failedToSaveYaml}: ${e}`, 'error')
     } finally {
-      setYamlSaving(false);
+      setYamlSaving(false)
     }
-  };
+  }
 
   const handleReset = () => {
-    if (!defaults || !config) return;
+    if (!defaults || !config) return
     // Scope the reset to what the user is currently looking at:
     //   - search mode → the matched fields
     //   - form mode   → the active category's fields
     // Resetting the whole config here was a footgun (issue reported by @ykmfb001):
     // the button sits next to the category tabs and users reasonably assumed
     // "reset this tab", not "wipe my entire config.yaml".
-    const scopedFields = isSearching ? searchMatchedFields : activeFields;
-    if (scopedFields.length === 0) return;
-    setConfirmReset(true);
-  };
+    const scopedFields = isSearching ? searchMatchedFields : activeFields
+    if (scopedFields.length === 0) return
+    setConfirmReset(true)
+  }
 
   const executeReset = () => {
-    if (!defaults || !config) return;
-    setConfirmReset(false);
-    const scopedFields = isSearching ? searchMatchedFields : activeFields;
-    if (scopedFields.length === 0) return;
-    const scopeLabel = isSearching
-      ? t.config.searchResults
-      : prettyCategoryName(activeCategory);
-    let next: Record<string, unknown> = config;
+    if (!defaults || !config) return
+    setConfirmReset(false)
+    const scopedFields = isSearching ? searchMatchedFields : activeFields
+    if (scopedFields.length === 0) return
+    const scopeLabel = isSearching ? t.config.searchResults : prettyCategoryName(activeCategory)
+    let next: Record<string, unknown> = config
     for (const [key] of scopedFields) {
-      next = setNestedValue(next, key, getNestedValue(defaults, key));
+      next = setNestedValue(next, key, getNestedValue(defaults, key))
     }
-    setConfig(next);
-    showToast(
-      t.config.resetScopeToast.replace("{scope}", scopeLabel),
-      "success",
-    );
-  };
+    setConfig(next)
+    showToast(t.config.resetScopeToast.replace('{scope}', scopeLabel), 'success')
+  }
 
   const handleExport = () => {
-    if (!config) return;
+    if (!config) return
     const blob = new Blob([JSON.stringify(config, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "hermes-config.json";
-    a.click();
-    URL.revokeObjectURL(url);
-  };
+      type: 'application/json'
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'hermes-config.json'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
 
   const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
     reader.onload = () => {
       try {
-        const imported = JSON.parse(reader.result as string);
-        setConfig(imported);
-        showToast(t.config.configImported, "success");
+        const imported = JSON.parse(reader.result as string)
+        setConfig(imported)
+        showToast(t.config.configImported, 'success')
       } catch {
-        showToast(t.config.invalidJson, "error");
+        showToast(t.config.invalidJson, 'error')
       }
-    };
-    reader.readAsText(file);
-  };
+    }
+    reader.readAsText(file)
+  }
 
   /* ---- Loading ---- */
   if (!config || !schema) {
@@ -363,37 +344,27 @@ export default function ConfigPage() {
       <div className="flex items-center justify-center py-24">
         <Spinner className="text-2xl text-primary" />
       </div>
-    );
+    )
   }
 
   /* ---- Render field list (shared between search & normal) ---- */
-  const renderFields = (
-    fields: [string, Record<string, unknown>][],
-    showCategory = false,
-  ) => {
-    let lastSection = "";
-    let lastCat = "";
+  const renderFields = (fields: [string, Record<string, unknown>][], showCategory = false) => {
+    let lastSection = ''
+    let lastCat = ''
     return fields.map(([key, s]) => {
-      const parts = key.split(".");
-      const section = parts.length > 1 ? parts[0] : "";
-      const cat = String(s.category ?? "general");
-      const showCatBadge = showCategory && cat !== lastCat;
-      const showSection =
-        !showCategory &&
-        section &&
-        section !== lastSection &&
-        section !== activeCategory;
-      lastSection = section;
-      lastCat = cat;
+      const parts = key.split('.')
+      const section = parts.length > 1 ? parts[0] : ''
+      const cat = String(s.category ?? 'general')
+      const showCatBadge = showCategory && cat !== lastCat
+      const showSection = !showCategory && section && section !== lastSection && section !== activeCategory
+      lastSection = section
+      lastCat = cat
 
       return (
         <div key={key}>
           {showCatBadge && (
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
-              <CategoryIcon
-                category={cat}
-                className="h-4 w-4 text-muted-foreground"
-              />
+              <CategoryIcon category={cat} className="h-4 w-4 text-muted-foreground" />
               <span className="font-mondwest text-display text-xs font-semibold tracking-wider text-muted-foreground">
                 {prettyCategoryName(cat)}
               </span>
@@ -403,7 +374,7 @@ export default function ConfigPage() {
           {showSection && (
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
               <span className="font-mondwest text-display text-xs font-semibold tracking-wider text-muted-foreground">
-                {section.replace(/_/g, " ")}
+                {section.replace(/_/g, ' ')}
               </span>
               <div className="flex-1 border-t border-border" />
             </div>
@@ -413,13 +384,13 @@ export default function ConfigPage() {
               schemaKey={key}
               schema={s}
               value={getNestedValue(config, key)}
-              onChange={(v) => setConfig(setNestedValue(config, key, v))}
+              onChange={v => setConfig(setNestedValue(config, key, v))}
             />
           </div>
         </div>
-      );
-    });
-  };
+      )
+    })
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -452,33 +423,16 @@ export default function ConfigPage() {
           >
             <Upload />
           </Button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".json"
-            className="hidden"
-            onChange={handleImport}
-          />
+          <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={handleImport} />
           {!yamlMode &&
             (() => {
-              const resetScopeLabel = isSearching
-                ? t.config.searchResults
-                : prettyCategoryName(activeCategory);
-              const resetTitle = t.config.resetScopeTooltip.replace(
-                "{scope}",
-                resetScopeLabel,
-              );
+              const resetScopeLabel = isSearching ? t.config.searchResults : prettyCategoryName(activeCategory)
+              const resetTitle = t.config.resetScopeTooltip.replace('{scope}', resetScopeLabel)
               return (
-                <Button
-                  ghost
-                  size="icon"
-                  onClick={handleReset}
-                  title={resetTitle}
-                  aria-label={resetTitle}
-                >
+                <Button ghost size="icon" onClick={handleReset} title={resetTitle} aria-label={resetTitle}>
                   <RotateCcw />
                 </Button>
-              );
+              )
             })()}
 
           <div className="w-px h-5 bg-border mx-1" />
@@ -489,25 +443,15 @@ export default function ConfigPage() {
             onClick={() => setYamlMode(!yamlMode)}
             prefix={yamlMode ? <FormInput /> : <Code />}
           >
-            {yamlMode ? t.common.form : "YAML"}
+            {yamlMode ? t.common.form : 'YAML'}
           </Button>
 
           {yamlMode ? (
-            <Button
-              size="sm"
-              className="uppercase"
-              onClick={handleYamlSave}
-              disabled={yamlSaving}
-            >
+            <Button size="sm" className="uppercase" onClick={handleYamlSave} disabled={yamlSaving}>
               {yamlSaving ? t.common.saving : t.common.save}
             </Button>
           ) : (
-            <Button
-              size="sm"
-              className="uppercase"
-              onClick={handleSave}
-              disabled={saving}
-            >
+            <Button size="sm" className="uppercase" onClick={handleSave} disabled={saving}>
               {saving ? t.common.saving : t.common.save}
             </Button>
           )}
@@ -531,7 +475,7 @@ export default function ConfigPage() {
               <textarea
                 className="flex min-h-[600px] w-full bg-transparent px-4 py-3 text-sm font-mono leading-relaxed placeholder:text-muted-foreground focus-visible:outline-none border-t border-border"
                 value={yamlText}
-                onChange={(e) => setYamlText(e.target.value)}
+                onChange={e => setYamlText(e.target.value)}
                 spellCheck={false}
               />
             )}
@@ -554,37 +498,28 @@ export default function ConfigPage() {
                 </div>
 
                 <div className="flex sm:flex-col gap-1 sm:gap-px p-2 sm:pt-1 overflow-x-auto sm:overflow-x-visible scrollbar-none sm:max-h-[calc(100vh-260px)] sm:overflow-y-auto">
-                  {categories.map((cat) => {
-                    const isActive = !isSearching && activeCategory === cat;
+                  {categories.map(cat => {
+                    const isActive = !isSearching && activeCategory === cat
 
                     return (
                       <ListItem
                         key={cat}
                         active={isActive}
                         onClick={() => {
-                          setSearchQuery("");
-                          setActiveCategory(cat);
+                          setSearchQuery('')
+                          setActiveCategory(cat)
                         }}
                         className="rounded-none whitespace-nowrap px-2 py-1 text-xs"
                       >
-                        <CategoryIcon
-                          category={cat}
-                          className="h-3.5 w-3.5 shrink-0"
-                        />
-                        <span className="flex-1 truncate">
-                          {prettyCategoryName(cat)}
-                        </span>
+                        <CategoryIcon category={cat} className="h-3.5 w-3.5 shrink-0" />
+                        <span className="flex-1 truncate">{prettyCategoryName(cat)}</span>
                         <span
-                          className={`text-xs tabular-nums ${
-                            isActive
-                              ? "text-text-secondary"
-                              : "text-text-tertiary"
-                          }`}
+                          className={`text-xs tabular-nums ${isActive ? 'text-text-secondary' : 'text-text-tertiary'}`}
                         >
                           {categoryCounts[cat] || 0}
                         </span>
                       </ListItem>
-                    );
+                    )
                   })}
                 </div>
               </div>
@@ -601,18 +536,15 @@ export default function ConfigPage() {
                       {t.config.searchResults}
                     </CardTitle>
                     <Badge tone="secondary" className="text-xs">
-                      {searchMatchedFields.length}{" "}
-                      {t.config.fields.replace(
-                        "{s}",
-                        searchMatchedFields.length !== 1 ? "s" : "",
-                      )}
+                      {searchMatchedFields.length}{' '}
+                      {t.config.fields.replace('{s}', searchMatchedFields.length !== 1 ? 's' : '')}
                     </Badge>
                   </div>
                 </CardHeader>
                 <CardContent className="grid gap-2 px-4 pb-4">
                   {searchMatchedFields.length === 0 ? (
                     <p className="text-sm text-muted-foreground text-center py-8">
-                      {t.config.noFieldsMatch.replace("{query}", searchQuery)}
+                      {t.config.noFieldsMatch.replace('{query}', searchQuery)}
                     </p>
                   ) : (
                     renderFields(searchMatchedFields, true)
@@ -625,24 +557,15 @@ export default function ConfigPage() {
                 <CardHeader className="py-3 px-4">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm flex items-center gap-2">
-                      <CategoryIcon
-                        category={activeCategory}
-                        className="h-4 w-4"
-                      />
+                      <CategoryIcon category={activeCategory} className="h-4 w-4" />
                       {prettyCategoryName(activeCategory)}
                     </CardTitle>
                     <Badge tone="secondary" className="text-xs">
-                      {activeFields.length}{" "}
-                      {t.config.fields.replace(
-                        "{s}",
-                        activeFields.length !== 1 ? "s" : "",
-                      )}
+                      {activeFields.length} {t.config.fields.replace('{s}', activeFields.length !== 1 ? 's' : '')}
                     </Badge>
                   </div>
                 </CardHeader>
-                <CardContent className="grid gap-2 px-4 pb-4">
-                  {renderFields(activeFields)}
-                </CardContent>
+                <CardContent className="grid gap-2 px-4 pb-4">{renderFields(activeFields)}</CardContent>
               </Card>
             )}
           </div>
@@ -654,10 +577,8 @@ export default function ConfigPage() {
         onCancel={() => setConfirmReset(false)}
         onConfirm={executeReset}
         title={t.config.confirmResetScope.replace(
-          "{scope}",
-          isSearching
-            ? t.config.searchResults
-            : prettyCategoryName(activeCategory),
+          '{scope}',
+          isSearching ? t.config.searchResults : prettyCategoryName(activeCategory)
         )}
         description={`This will reset ${
           (isSearching ? searchMatchedFields : activeFields).length
@@ -666,5 +587,5 @@ export default function ConfigPage() {
         confirmLabel={t.config.resetDefaults}
       />
     </div>
-  );
+  )
 }

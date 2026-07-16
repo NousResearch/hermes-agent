@@ -974,6 +974,24 @@ Every model slot in Hermes — auxiliary tasks, compression, fallback — uses t
 | `model` | Which model to request | provider's default |
 | `base_url` | Custom OpenAI-compatible endpoint (overrides provider) | not set |
 
+Auxiliary task blocks additionally accept a `reasoning_effort` knob:
+
+| Key | What it does | Default |
+|-----|-------------|---------|
+| `reasoning_effort` | Thinking level for that task's LLM calls: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | not set (provider default) |
+
+This is the per-task counterpart of the global `agent.reasoning_effort`: run compression at `low` or vision at `none` to cut side-task latency and cost when your main model is an expensive reasoning model, without touching your main chat behavior. It works on every auxiliary task block (`vision`, `web_extract`, `compression`, `title_generation`, `curator`, `background_review`, ...), across all three auxiliary wire formats (chat completions, Codex Responses, Anthropic Messages). An explicit `extra_body.reasoning` on the same task wins over the shorthand.
+
+MoA is the one exception: reasoning depth for Mixture-of-Agents is configured **per slot** in the MoA preset (`moa.presets.<name>.reference_models[].reasoning_effort` / `aggregator.reasoning_effort`), not on the `moa_reference`/`moa_aggregator` auxiliary blocks — see [Mixture of Agents](/user-guide/features/mixture-of-agents).
+
+```yaml
+auxiliary:
+  compression:
+    reasoning_effort: "low"    # summaries don't need deep thinking
+  vision:
+    reasoning_effort: "none"   # disable thinking for image description
+```
+
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
 Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/reference/environment-variables) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `azure-foundry` — or any named custom provider from your `custom_providers` list (e.g. `provider: "beans"`).
@@ -1276,10 +1294,10 @@ Control how much "thinking" the model does before responding:
 
 ```yaml
 agent:
-  reasoning_effort: ""   # Provider default. Options: none, minimal, low, medium, high, xhigh, max
+  reasoning_effort: ""   # Provider/model default. Options: none, minimal, low, medium, high, xhigh, max, ultra
   adaptive_reasoning:
     enabled: true
-    max_effort: "xhigh"
+    max_effort: "max"
 ```
 
 When unset, existing providers retain their historical default (`medium` on
@@ -1289,19 +1307,20 @@ For that path, `adaptive_reasoning.enabled` lets the model request a deeper
 effort for later calls in the current turn through the existing `todo` tool.
 Hermes does not classify the task or choose effort outside the model: runtime
 code only checks the operator's baseline and cap. The default adaptive cap is
-`xhigh`; `max` remains closed until explicitly enabled and verified for the
-production backend. Adaptive Pro mode is not transmitted until its exact
-endpoint contract is canaried. The request expires at the end of the turn.
+`max` for GPT-5.6 Sol; the capability gate ignores this adaptive setting for
+other models and transports. Adaptive Pro mode is not transmitted until its
+exact endpoint contract is canaried. The request expires at the end of the
+turn.
 
 :::note Adaptive-thinking models (Claude 4.6+, Fable/Mythos-class) over OpenRouter
 These models use *adaptive* thinking and don't accept the usual `reasoning.effort`
 field — OpenRouter ignores it for them. Hermes transparently routes your
 `reasoning_effort` to OpenRouter's `verbosity` parameter instead (which maps to
-Anthropic's `output_config.effort`), so the same `low`/`medium`/`high`/`xhigh`
-knob keeps working — no extra configuration needed. `none` leaves the model on
-its own adaptive default. `max` is available when the selected backend supports
-it. The native Anthropic provider already controls effort directly and is
-unaffected.
+Anthropic's `output_config.effort`), so the same effort knob keeps working with
+the levels supported by the selected model. `none` (or unset) leaves the model
+on its own adaptive default. `max` and `ultra` are used only when the selected
+backend supports them. The native Anthropic provider already controls effort
+directly and is unaffected.
 :::
 
 You can also change the reasoning effort at runtime with the `/reasoning` command:
@@ -1314,6 +1333,37 @@ You can also change the reasoning effort at runtime with the `/reasoning` comman
 /reasoning show      # Show model thinking above each response
 /reasoning hide      # Hide model thinking
 ```
+
+#### Per-Model Reasoning Overrides
+
+You can set different reasoning effort levels for different models. This is useful when you want high reasoning for complex models but medium for faster ones:
+
+```yaml
+agent:
+  reasoning_effort: "medium"       # global default
+  reasoning_overrides:
+    "openrouter/anthropic/claude-opus-4.5": "xhigh"
+    "openai/gpt-5": "low"
+    "claude-sonnet-4.6": "high"    # bare model name also works
+```
+
+The key matching is **spelling-tolerant** — any reasonable spelling will match:
+- `claude-opus-4.5`, `claude-opus-4-5`, `claude-opus.4.5` (dots and dashes are interchangeable)
+- `anthropic/claude-opus-4.5`, `openrouter/anthropic/claude-opus-4.5` (provider prefix optional)
+- Exact matches take precedence over variants
+
+:::note
+There is no `hermes config set` support for `reasoning_overrides` keys — edit the YAML file directly. This is because model names often contain dots (e.g. `claude-opus-4.5`), which conflict with the CLI's dotted-key syntax.
+:::
+
+**Resolution priority:**
+
+1. Session-scoped `/reasoning --session` override (gateway only)
+2. Per-model override from `agent.reasoning_overrides` (spelling-tolerant)
+3. Global `agent.reasoning_effort`
+4. Provider default
+
+The override applies automatically everywhere: CLI startup, messaging gateway, Desktop/TUI, cron jobs, `/model` mid-session switches, and fallback model activation.
 
 ## Tool-Use Enforcement
 
@@ -1460,6 +1510,22 @@ Example footer:
 ```
 
 Set `file_mutation_verifier: false` (or `HERMES_FILE_MUTATION_VERIFIER=0`) to suppress the footer. The verifier only fires when real failures are outstanding at turn end — a model that retries a failed patch and succeeds within the same turn will not trigger it for that file.
+
+**Trust the verifier over the model's summary.** The footer means the listed files were **not** modified on disk, even if the assistant's closing message says the task is done. Common causes:
+
+- **Write denied** — path is on the credential denylist or outside `HERMES_WRITE_SAFE_ROOT` (see [File write safety](./security.md#file-write-safety))
+- **Patch mismatch** — `old_string` did not match the file on disk
+- **Syntax gate** — candidate content failed JSON/YAML/TOML validation before write
+
+Example footer when writes are blocked:
+
+```
+⚠️ File-mutation verifier: 2 file(s) were NOT modified this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.
+  • ~/.hermes/cron/jobs.json — [patch] Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (/path/to/project)
+  • ~/.hermes/scripts/monitor.py — [write_file] Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (/path/to/project)
+```
+
+If writes to Hermes state (cron jobs, skills, scripts under `~/.hermes/`) are failing, check whether `HERMES_WRITE_SAFE_ROOT` is set in your environment. For cron changes, use the `cronjob` tool or `hermes cron edit` instead of patching `jobs.json` directly.
 
 ### UI language for static messages
 
@@ -1886,22 +1952,21 @@ Shared files contain one domain rule per line (blank lines and `#` comments are 
 
 The policy is cached for 30 seconds, so config changes take effect quickly without restart.
 
-## Smart Approvals
+## Command Approvals
 
 Control how Hermes handles potentially dangerous commands:
 
 ```yaml
 approvals:
-  mode: manual   # manual | smart | off
+  mode: manual   # manual | off
 ```
 
 | Mode | Behavior |
 |------|----------|
-| `manual` (default) | Prompt the user before executing any flagged command. In the CLI, shows an interactive approval dialog. In messaging, queues a pending approval request. |
-| `smart` | Use an auxiliary LLM to assess whether a flagged command is actually dangerous. Low-risk commands are auto-approved with session-level persistence. Genuinely risky commands are escalated to the user. |
+| `manual` (default) | Prompt the owner before executing any flagged command. In the CLI, this shows an interactive approval dialog. In messaging, it queues a pending approval request. |
 | `off` | Skip all approval checks. Equivalent to `HERMES_YOLO_MODE=true`. **Use with caution.** |
 
-Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
+Legacy `smart` values are migrated to `manual`; an auxiliary model never decides authorization for the primary agent.
 
 :::warning
 Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.

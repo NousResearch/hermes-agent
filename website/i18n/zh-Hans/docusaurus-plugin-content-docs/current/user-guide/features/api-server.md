@@ -270,9 +270,12 @@ Runs 接受简单的 `input` 字符串，以及可选的 `session_id`、`instruc
 
 run 的工具调用进度、token 增量和生命周期事件的 Server-Sent Events 流。专为需要附加/分离而不丢失状态的仪表板和厚客户端设计。
 
+未消费的事件缓冲区会在五分钟后过期，避免已断开的客户端导致内存无限增长。这里只会过期传输状态：仍在执行的 run 会继续保留在状态轮询、审批、停止控制和并发计数中，直到其 executor 工作真正退出。已连接的 SSE 订阅者会继续正常消费事件。
+
 ### POST /v1/runs/\{run_id\}/stop
 
 中断正在运行的 agent 轮次。端点立即返回 `{"status": "stopping"}`，同时 Hermes 要求活跃 agent 在下一个安全中断点停止。
+run 会保持 `stopping` 并继续被跟踪，直到 executor 支持的工作退出，然后进入 `cancelled`；停止请求不会隐藏仍在运行的 worker。
 
 ## Jobs API（后台计划任务）
 

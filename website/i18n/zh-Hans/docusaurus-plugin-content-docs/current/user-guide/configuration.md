@@ -1044,13 +1044,13 @@ auxiliary:
 
 ```yaml
 agent:
-  reasoning_effort: ""   # 提供商默认值。选项：none、minimal、low、medium、high、xhigh、max
+  reasoning_effort: ""   # 提供商/模型默认值。选项：none、minimal、low、medium、high、xhigh、max、ultra
   adaptive_reasoning:
     enabled: true
-    max_effort: "xhigh"
+    max_effort: "max"
 ```
 
-未设置时，现有提供商保留其历史默认值（标准路径为 `medium`）。只有精确匹配的 GPT-5.6 Responses 路径使用模型门控的质量优先基线 `high`，不会改变其他模型的默认值。对于此路径，模型可以通过现有的 `todo` 工具为当前轮次中的后续调用请求更深的推理。Hermes 不在模型外部分类任务或选择推理等级；运行时代码只验证操作者设置的基线和上限。默认自适应上限是 `xhigh`，`max` 必须在生产后端验证并显式启用。自适应 Pro 模式在其精确端点契约完成 canary 验证之前不会传输。该请求在当前轮次结束时失效。
+未设置时，现有提供商保留其历史默认值（标准路径为 `medium`）。只有精确匹配的 GPT-5.6 Responses 路径使用模型门控的质量优先基线 `high`，不会改变其他模型的默认值。对于此路径，模型可以通过现有的 `todo` 工具为当前轮次中的后续调用请求更深的推理。Hermes 不在模型外部分类任务或选择推理等级；运行时代码只验证操作者设置的基线和上限。GPT-5.6 Sol 的默认自适应上限是 `max`；能力门控会在其他模型和传输路径中忽略此自适应设置。自适应 Pro 模式在其精确端点契约完成 canary 验证之前不会传输。该请求在当前轮次结束时失效。
 
 您也可以在运行时使用 `/reasoning` 命令更改推理努力程度：
 
@@ -1587,13 +1587,13 @@ security:
 
 ```yaml
 approvals:
-  mode: manual   # manual | smart | off
+  mode: smart   # smart | manual | off
 ```
 
 | 模式 | 行为 |
 |------|----------|
-| `manual`（默认） | 在执行任何被标记的命令之前提示用户。在 CLI 中显示交互式审批对话框。在消息中排队待处理的审批请求。 |
-| `smart` | 使用辅助 LLM 评估被标记的命令是否真正危险。低风险命令以会话级持久性自动批准。真正有风险的命令升级给用户。 |
+| `smart`（默认） | 使用辅助 LLM 评估被标记的命令是否真正危险。低风险命令仅对当前命令自动批准，真正危险的命令自动拒绝，不确定的情况升级给用户。 |
+| `manual` | 在执行任何被标记的命令之前提示用户。在 CLI 中显示交互式审批对话框。在消息中排队待处理的审批请求。 |
 | `off` | 跳过所有审批检查。等同于 `HERMES_YOLO_MODE=true`。**谨慎使用。** |
 
 智能模式对于减少审批疲劳特别有用 —— 它让 agent 在安全操作上更自主地工作，同时仍然捕获真正破坏性的命令。

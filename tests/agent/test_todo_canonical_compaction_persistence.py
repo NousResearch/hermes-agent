@@ -253,6 +253,10 @@ def test_canonical_todo_state_survives_compaction_db_reload_and_fresh_agent(
 
     compressed = _compress(agent, original)
     if mode == "rotation":
+        agent._flush_messages_to_session_db_unlocked = MethodType(
+            AIAgent._flush_messages_to_session_db_unlocked,
+            agent,
+        )
         agent._flush_messages_to_session_db = MethodType(
             AIAgent._flush_messages_to_session_db,
             agent,

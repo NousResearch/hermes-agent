@@ -1299,6 +1299,27 @@ def get_auth_provider_display_name(provider_id: str) -> str:
     return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
 
 
+def is_runtime_provider_routable(provider_id: str) -> bool:
+    """Return whether runtime resolution recognizes a provider identity.
+
+    This is a capability check, not a credential check. It follows the same
+    alias/plugin-aware normalization as ``resolve_provider`` while preserving
+    special runtime identities that intentionally live outside the registry.
+    """
+    normalized = (provider_id or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized in {"auto", "openrouter", "custom", "moa"}:
+        return True
+    if normalized.startswith("custom:"):
+        return True
+    try:
+        resolve_provider(normalized)
+    except AuthError:
+        return False
+    return True
+
+
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the persisted credential pool, or one provider slice.
 
@@ -4903,11 +4924,11 @@ def _quarantine_nous_oauth_state(
     reason: str,
 ) -> None:
     """Keep routing metadata but remove dead OAuth material so it is not replayed."""
-    # Forensic logging BEFORE we clear the token material. A NAS-hosted Fly agent
+    # Forensic logging BEFORE we clear the token material. A hosted agent
     # can take a terminal invalid_grant and get quarantined here silently: the
     # only downstream signal is a "No access token found" WARNING once the pool
-    # is already empty, which is too late to root-cause. The Fly log drain is
-    # WARNING-only, so this MUST be logger.warning (INFO never reaches the drain).
+    # is already empty, which is too late to root-cause. A managed log drain may
+    # be WARNING-only, so this MUST be logger.warning (INFO never reaches it).
     #
     # Redaction safety: emit ONLY the 12-char SHA-256 hex prefix of the refresh
     # token (correlates to NAS's refreshTokenHash without leaking the secret) plus

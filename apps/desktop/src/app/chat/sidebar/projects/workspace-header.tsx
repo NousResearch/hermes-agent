@@ -30,6 +30,8 @@ import { copyPath, listRepoBranches, revealPath, startWorkInRepo, switchBranchIn
 
 import { SidebarCount, SidebarRowLead } from '../chrome'
 
+import { BaseBranchPicker } from './base-branch-picker'
+
 // Branch/worktree labels routinely share a long prefix (`bb/coding-context-…`),
 // so plain end-truncation (`truncate`) hides exactly the suffix that tells two
 // lanes apart — both render as "bb/coding-context…". Keep the tail pinned and
@@ -142,6 +144,8 @@ export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemov
 // "New worktree": prompt for a branch name, then git spins up a fresh worktree
 // for that branch under the repo (the lightest way) and we open a new session
 // inside it. Naming is explicit — no auto-generated `hermes/work-<ts>` trees.
+// The base branch defaults to the remote default (origin/HEAD); the user can
+// pick any local or remote-tracking branch via a filterable combobox.
 export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onStarted: (path: string) => void }) {
   const { t } = useI18n()
   const s = t.sidebar
@@ -152,6 +156,7 @@ export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onS
   const [convertMode, setConvertMode] = useState(false)
   const [branches, setBranches] = useState<HermesGitBranch[]>([])
   const [branchesLoading, setBranchesLoading] = useState(false)
+  const [selectedBase, setSelectedBase] = useState('')
 
   const loadBranches = useCallback(async () => {
     if (!repoPath) {
@@ -181,7 +186,7 @@ export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onS
     try {
       // Pass the typed value as both the dir slug source and the branch, so the
       // branch is exactly what the user named (the dir is slugified git-side).
-      const result = await startWorkInRepo(repoPath, { branch, name: branch })
+      const result = await startWorkInRepo(repoPath, { base: selectedBase || undefined, branch, name: branch })
 
       if (result) {
         onStarted(result.path)
@@ -238,6 +243,7 @@ export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onS
         onClick={() => {
           setConvertMode(false)
           setName('')
+          setSelectedBase('')
           setOpen(true)
         }}
         type="button"
@@ -278,22 +284,30 @@ export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onS
               </CommandList>
             </Command>
           ) : (
-            <SanitizedInput
-              autoFocus
-              disabled={pending}
-              onKeyDown={event => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  void submit()
-                } else if (event.key === 'Escape') {
-                  setOpen(false)
-                }
-              }}
-              onValueChange={setName}
-              placeholder={p.branchPlaceholder}
-              sanitize={gitRef}
-              value={name}
-            />
+            <>
+              <SanitizedInput
+                autoFocus
+                disabled={pending}
+                onKeyDown={event => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    void submit()
+                  } else if (event.key === 'Escape') {
+                    setOpen(false)
+                  }
+                }}
+                onValueChange={setName}
+                placeholder={p.branchPlaceholder}
+                sanitize={gitRef}
+                value={name}
+              />
+              <BaseBranchPicker
+                disabled={pending}
+                onValueChange={setSelectedBase}
+                repoPath={repoPath}
+                value={selectedBase}
+              />
+            </>
           )}
 
           {convertMode ? (

@@ -172,8 +172,8 @@ VALID_HOOKS: Set[str] = {
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
-    # command needs user approval -- fires BOTH for CLI-interactive prompts
-    # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).
+    # command needs an approval decision -- fires for CLI-interactive prompts,
+    # and gateway/ACP owner approvals.
     # Observers only: return values are ignored. Plugins cannot veto or
     # pre-answer an approval from these hooks (use pre_tool_call to block
     # a tool before it reaches approval).
@@ -1059,7 +1059,7 @@ class PluginContext:
         """Register a plugin-defined auxiliary LLM task.
 
         Auxiliary tasks are LLM-backed side jobs (vision analysis, web extraction,
-        compression, smart-approval, etc.) that route through ``auxiliary_client.py``.
+        compression, etc.) that route through ``auxiliary_client.py``.
         Each task has its own ``auxiliary.<key>`` config block where users can
         pin a provider/model independent of the main chat model.
 

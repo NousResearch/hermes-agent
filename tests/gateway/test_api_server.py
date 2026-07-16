@@ -617,17 +617,39 @@ class TestConcurrencyCap:
         assert resp.headers.get("Retry-After")
 
     def test_cap_counts_both_buckets(self):
-        # /v1/runs task ownership + chat/responses (inflight).  Optional SSE
-        # subscriber queues are deliberately not an authority/liveness source.
+        # /v1/runs (tracked by live tasks) + chat/responses (inflight)
         adapter = _make_adapter()
         adapter._max_concurrent_runs = 4
         adapter._inflight_agent_runs = 2
-        adapter._active_run_tasks = {
-            "r1": MagicMock(done=lambda: False),
-            "r2": MagicMock(done=lambda: False),
-        }
+
+        async def _assert_live_tasks_are_counted_without_streams():
+            blocker = asyncio.Event()
+
+            async def _live_run():
+                await blocker.wait()
+
+            tasks = [asyncio.create_task(_live_run()) for _ in range(2)]
+            adapter._active_run_tasks = {f"r{i}": task for i, task in enumerate(tasks)}
+            adapter._run_streams = {}
+            try:
+                resp = adapter._concurrency_limited_response()
+                assert resp is not None
+                assert resp.status == 429
+            finally:
+                blocker.set()
+                await asyncio.gather(*tasks)
+
+        asyncio.run(_assert_live_tasks_are_counted_without_streams())
+
+    def test_cap_counts_cleanup_and_reservation_authority_without_streams(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 2
+        adapter._api_cleanup_handles = {"old-epoch": object()}
+        adapter._agent_run_reservations = 1
         adapter._run_streams = {}
+
         resp = adapter._concurrency_limited_response()
+
         assert resp is not None
         assert resp.status == 429
 
@@ -3994,7 +4016,7 @@ def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
     monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
     monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
     monkeypatch.setattr(
-        "gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: {})
+        "gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {})
     )
     monkeypatch.setattr(
         "gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None)

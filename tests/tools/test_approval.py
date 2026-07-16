@@ -65,6 +65,56 @@ class TestDetectDangerousRm:
         assert key is not None
         assert "delete" in desc.lower()
 
+    def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
+        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
+            canonical_temp = os.path.realpath("/tmp")
+            for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
+                assert detect_dangerous_command(
+                    f"rm -f {canonical_temp}/{prefix}example.py"
+                ) == (
+                    False,
+                    None,
+                    None,
+                )
+
+    def test_symlinked_temp_dir_only_exempts_canonical_target(self, tmp_path):
+        real_temp = tmp_path / "real-temp"
+        real_temp.mkdir()
+        linked_temp = tmp_path / "linked-temp"
+        linked_temp.symlink_to(real_temp, target_is_directory=True)
+        basename = "hermes-verify-example.py"
+
+        with mock_patch("tempfile.gettempdir", return_value=str(linked_temp)):
+            assert detect_dangerous_command(f"rm -f {linked_temp / basename}")[0] is True
+            assert detect_dangerous_command(f"rm -f {real_temp / basename}") == (
+                False,
+                None,
+                None,
+            )
+
+    def test_verification_cleanup_exemption_rejects_broader_deletions(self):
+        commands = (
+            "rm -rf /tmp/hermes-verify-example.py",
+            "rm -f /tmp/hermes-verify-example.py /tmp/other.py",
+            "rm -f /tmp/nested/hermes-verify-example.py",
+            "rm -f /tmp/nested/../hermes-verify-example.py",
+            "rm -f /tmp/./hermes-verify-example.py",
+            "rm -f /tmp//hermes-verify-example.py",
+            "rm -f /tmp/a/../../tmp/hermes-verify-example.py",
+            "rm -f /var/tmp/hermes-verify-example.py",
+            "rm -f /tmp/unrelated.py",
+            "rm -f /tmp/hermes-verify-*",
+            "rm -f /tmp/hermes-verify-$(touch>/tmp/pwned).py",
+            "rm -f /tmp/hermes-ad-hoc-`touch>/tmp/pwned`.py",
+            "rm -f /tmp/hermes-verify-example.py; touch /tmp/pwned",
+        )
+        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
+            for command in commands:
+                is_dangerous, key, desc = detect_dangerous_command(command)
+                assert is_dangerous is True, command
+                assert key is not None, command
+                assert "delete" in desc.lower(), command
+
 
 class TestWindowsShellDestructiveCommands:
     def test_cmd_del_requires_approval(self):
@@ -2043,7 +2093,7 @@ class TestApprovalTimeoutIsNotConsent:
     SESSION_KEY = "test-no-consent-session"
 
     def setup_method(self):
-        """Reset module state and force tight gateway_timeout for fast tests."""
+        """Reset module state and force a tight approval timeout for fast tests."""
         from tools import approval as mod
         mod._gateway_queues.clear()
         mod._gateway_notify_cbs.clear()
@@ -2080,7 +2130,7 @@ class TestApprovalTimeoutIsNotConsent:
         from tools import approval as mod
         monkeypatch.setattr(
             mod, "_get_approval_config",
-            lambda: {"mode": "manual", "gateway_timeout": seconds, "timeout": seconds},
+            lambda: {"mode": "manual", "timeout": seconds},
         )
 
     def test_timeout_returns_approved_false_with_no_consent(self, monkeypatch):
@@ -2123,10 +2173,12 @@ class TestApprovalTimeoutIsNotConsent:
         assert "rephrase" in msg.lower()
         assert "different command" in msg.lower()
 
-    def test_explicit_deny_carries_same_no_consent_shape(self):
+    def test_explicit_deny_carries_same_no_consent_shape(self, monkeypatch):
         """An explicit /deny must produce the same shape as timeout —
         the agent should treat both identically."""
         from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=60)
 
         notified = []
         mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))

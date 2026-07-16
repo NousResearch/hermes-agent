@@ -1,35 +1,41 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { H2 } from "@nous-research/ui/ui/components/typography/h2";
-import { Card, CardContent } from "@nous-research/ui/ui/components/card";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Label } from "@nous-research/ui/ui/components/label";
-import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
-import { Toast } from "@nous-research/ui/ui/components/toast";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
-import { api } from "@/lib/api";
-import type { McpServerCreate, SkillInfo, SkillHubResult } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { H2 } from '@nous-research/ui/ui/components/typography/h2'
+import { Card, CardContent } from '@nous-research/ui/ui/components/card'
+import { Badge } from '@nous-research/ui/ui/components/badge'
+import { Button } from '@nous-research/ui/ui/components/button'
+import { Input } from '@nous-research/ui/ui/components/input'
+import { Label } from '@nous-research/ui/ui/components/label'
+import { Checkbox } from '@nous-research/ui/ui/components/checkbox'
+import { Toast } from '@nous-research/ui/ui/components/toast'
+import { useToast } from '@nous-research/ui/hooks/use-toast'
+import { api } from '@/lib/api'
+import type { McpHttpAuth, McpServerCreate, SkillInfo, SkillHubResult } from '@/lib/api'
+import {
+  buildMcpServerCreate,
+  emptyMcpServerDraft,
+  type McpServerDraft,
+  type McpTransport
+} from '@/lib/mcp-server-create'
+import { cn } from '@/lib/utils'
 
 // Profile name rule mirrors the backend (`^[a-z0-9][a-z0-9_-]{0,63}$`).
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
-type StepId = "identity" | "model" | "skills" | "mcp" | "review";
+type StepId = 'identity' | 'model' | 'skills' | 'mcp' | 'review'
 
 const STEPS: { id: StepId; label: string }[] = [
-  { id: "identity", label: "Identity" },
-  { id: "model", label: "Model" },
-  { id: "skills", label: "Skills" },
-  { id: "mcp", label: "MCPs" },
-  { id: "review", label: "Review" },
-];
+  { id: 'identity', label: 'Identity' },
+  { id: 'model', label: 'Model' },
+  { id: 'skills', label: 'Skills' },
+  { id: 'mcp', label: 'MCPs' },
+  { id: 'review', label: 'Review' }
+]
 
 interface ModelChoice {
-  provider: string;
-  model: string;
-  label: string;
+  provider: string
+  model: string
+  label: string
 }
 
 /**
@@ -47,176 +53,181 @@ interface ModelChoice {
  * bundle" toggle keeps everything (sends no keep list).
  */
 export default function ProfileBuilderPage() {
-  const navigate = useNavigate();
-  const { toast, showToast } = useToast();
+  const navigate = useNavigate()
+  const { toast, showToast } = useToast()
 
-  const [step, setStep] = useState<StepId>("identity");
+  const [step, setStep] = useState<StepId>('identity')
 
   // ── Step 1: identity ──────────────────────────────────────────────
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
 
   // ── Step 2: model ─────────────────────────────────────────────────
-  const [modelChoices, setModelChoices] = useState<ModelChoice[] | null>(null);
-  const [modelChoice, setModelChoice] = useState(""); // `${provider}\u0000${model}`
-  const [modelFilter, setModelFilter] = useState("");
-  const modelLoading = useRef(false);
+  const [modelChoices, setModelChoices] = useState<ModelChoice[] | null>(null)
+  const [modelChoice, setModelChoice] = useState('') // `${provider}\u0000${model}`
+  const [modelFilter, setModelFilter] = useState('')
+  const modelLoading = useRef(false)
 
   // ── Step 3: skills ────────────────────────────────────────────────
-  const [skills, setSkills] = useState<SkillInfo[] | null>(null);
+  const [skills, setSkills] = useState<SkillInfo[] | null>(null)
   // keepAll = true: don't send a keep list (full bundle stays active).
-  const [keepAll, setKeepAll] = useState(true);
-  const [keptSkills, setKeptSkills] = useState<Set<string>>(new Set());
-  const [skillFilter, setSkillFilter] = useState("");
-  const skillsLoading = useRef(false);
+  const [keepAll, setKeepAll] = useState(true)
+  const [keptSkills, setKeptSkills] = useState<Set<string>>(new Set())
+  const [skillFilter, setSkillFilter] = useState('')
+  const skillsLoading = useRef(false)
   // Hub search
-  const [hubQuery, setHubQuery] = useState("");
-  const [hubResults, setHubResults] = useState<SkillHubResult[]>([]);
-  const [hubSearching, setHubSearching] = useState(false);
-  const [hubSkills, setHubSkills] = useState<SkillHubResult[]>([]);
+  const [hubQuery, setHubQuery] = useState('')
+  const [hubResults, setHubResults] = useState<SkillHubResult[]>([])
+  const [hubSearching, setHubSearching] = useState(false)
+  const [hubSkills, setHubSkills] = useState<SkillHubResult[]>([])
 
   // ── Step 4: MCPs ──────────────────────────────────────────────────
-  const [mcpServers, setMcpServers] = useState<McpServerCreate[]>([]);
-  const [mcpDraft, setMcpDraft] = useState<{
-    name: string;
-    url: string;
-    command: string;
-    args: string;
-  }>({ name: "", url: "", command: "", args: "" });
+  const [mcpServers, setMcpServers] = useState<McpServerCreate[]>([])
+  const [mcpDraft, setMcpDraft] = useState<McpServerDraft>(emptyMcpServerDraft)
 
   // ── Submit ────────────────────────────────────────────────────────
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(false)
 
-  const nameValid = PROFILE_NAME_RE.test(name.trim());
+  const nameValid = PROFILE_NAME_RE.test(name.trim())
 
   // Lazy-load model choices when the model step is first shown.
   const loadModels = useCallback(() => {
-    if (modelChoices !== null || modelLoading.current) return;
-    modelLoading.current = true;
+    if (modelChoices !== null || modelLoading.current) return
+    modelLoading.current = true
     api
       .getModelOptions()
-      .then((res) => {
-        const flat: ModelChoice[] = [];
+      .then(res => {
+        const flat: ModelChoice[] = []
         for (const prov of res.providers ?? []) {
           for (const m of prov.models ?? []) {
-            flat.push({ provider: prov.slug, model: m, label: `${prov.name} · ${m}` });
+            flat.push({
+              provider: prov.slug,
+              model: m,
+              label: `${prov.name} · ${m}`
+            })
           }
         }
-        setModelChoices(flat);
+        setModelChoices(flat)
       })
       .catch(() => setModelChoices([]))
       .finally(() => {
-        modelLoading.current = false;
-      });
-  }, [modelChoices]);
+        modelLoading.current = false
+      })
+  }, [modelChoices])
 
   const loadSkills = useCallback(() => {
-    if (skills !== null || skillsLoading.current) return;
-    skillsLoading.current = true;
+    if (skills !== null || skillsLoading.current) return
+    skillsLoading.current = true
     api
       .getSkills()
-      .then((res) => {
-        setSkills(res);
+      .then(res => {
+        setSkills(res)
         // Default keep = all currently-enabled skills (matches the seeded set).
-        setKeptSkills(new Set(res.filter((s) => s.enabled).map((s) => s.name)));
+        setKeptSkills(new Set(res.filter(s => s.enabled).map(s => s.name)))
       })
       .catch(() => setSkills([]))
       .finally(() => {
-        skillsLoading.current = false;
-      });
-  }, [skills]);
+        skillsLoading.current = false
+      })
+  }, [skills])
 
   useEffect(() => {
-    if (step === "model") loadModels();
-    if (step === "skills") loadSkills();
-  }, [step, loadModels, loadSkills]);
+    if (step === 'model') loadModels()
+    if (step === 'skills') loadSkills()
+  }, [step, loadModels, loadSkills])
 
   const runHubSearch = useCallback(() => {
-    const q = hubQuery.trim();
-    if (!q) return;
-    setHubSearching(true);
+    const q = hubQuery.trim()
+    if (!q) return
+    setHubSearching(true)
     api
-      .searchSkillsHub(q, "all", 20)
-      .then((res) => setHubResults(res.results ?? []))
+      .searchSkillsHub(q, 'all', 20)
+      .then(res => setHubResults(res.results ?? []))
       .catch(() => setHubResults([]))
-      .finally(() => setHubSearching(false));
-  }, [hubQuery]);
+      .finally(() => setHubSearching(false))
+  }, [hubQuery])
 
   const toggleKeep = (skillName: string) => {
-    setKeptSkills((prev) => {
-      const next = new Set(prev);
-      if (next.has(skillName)) next.delete(skillName);
-      else next.add(skillName);
-      return next;
-    });
-  };
+    setKeptSkills(prev => {
+      const next = new Set(prev)
+      if (next.has(skillName)) next.delete(skillName)
+      else next.add(skillName)
+      return next
+    })
+  }
 
   const addHubSkill = (r: SkillHubResult) => {
-    setHubSkills((prev) =>
-      prev.some((x) => x.identifier === r.identifier) ? prev : [...prev, r],
-    );
-  };
-  const removeHubSkill = (identifier: string) =>
-    setHubSkills((prev) => prev.filter((x) => x.identifier !== identifier));
+    setHubSkills(prev => (prev.some(x => x.identifier === r.identifier) ? prev : [...prev, r]))
+  }
+  const removeHubSkill = (identifier: string) => setHubSkills(prev => prev.filter(x => x.identifier !== identifier))
 
   const addMcpDraft = () => {
-    const n = mcpDraft.name.trim();
-    if (!n) {
-      showToast("MCP server needs a name", "error");
-      return;
+    let entry: McpServerCreate
+    try {
+      entry = buildMcpServerCreate(mcpDraft)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Invalid MCP server', 'error')
+      return
     }
-    if (!mcpDraft.url.trim() && !mcpDraft.command.trim()) {
-      showToast("Give the MCP server a URL or a command", "error");
-      return;
-    }
-    const entry: McpServerCreate = { name: n };
-    if (mcpDraft.url.trim()) entry.url = mcpDraft.url.trim();
-    if (mcpDraft.command.trim()) {
-      entry.command = mcpDraft.command.trim();
-      const args = mcpDraft.args.trim();
-      if (args) entry.args = args.split(/\s+/);
-    }
-    setMcpServers((prev) => [...prev.filter((s) => s.name !== n), entry]);
-    setMcpDraft({ name: "", url: "", command: "", args: "" });
-  };
-  const removeMcp = (n: string) =>
-    setMcpServers((prev) => prev.filter((s) => s.name !== n));
+    setMcpServers(prev => [...prev.filter(server => server.name !== entry.name), entry])
+    setMcpDraft(emptyMcpServerDraft())
+  }
+  const removeMcp = (n: string) => setMcpServers(prev => prev.filter(s => s.name !== n))
+
+  const setMcpTransport = (transport: McpTransport) => {
+    setMcpDraft(draft =>
+      transport === 'http'
+        ? { ...draft, transport, command: '', args: '', env: '' }
+        : {
+            ...draft,
+            transport,
+            url: '',
+            httpAuth: 'none',
+            bearerToken: ''
+          }
+    )
+  }
+
+  const setMcpHttpAuth = (httpAuth: McpHttpAuth) => {
+    setMcpDraft(draft => ({
+      ...draft,
+      httpAuth,
+      bearerToken: httpAuth === 'header' ? draft.bearerToken : ''
+    }))
+  }
 
   const filteredModels = useMemo(() => {
-    if (!modelChoices) return [];
-    const f = modelFilter.trim().toLowerCase();
-    if (!f) return modelChoices;
-    return modelChoices.filter((c) => c.label.toLowerCase().includes(f));
-  }, [modelChoices, modelFilter]);
+    if (!modelChoices) return []
+    const f = modelFilter.trim().toLowerCase()
+    if (!f) return modelChoices
+    return modelChoices.filter(c => c.label.toLowerCase().includes(f))
+  }, [modelChoices, modelFilter])
 
   const filteredSkills = useMemo(() => {
-    if (!skills) return [];
-    const f = skillFilter.trim().toLowerCase();
-    if (!f) return skills;
+    if (!skills) return []
+    const f = skillFilter.trim().toLowerCase()
+    if (!f) return skills
     return skills.filter(
-      (s) =>
+      s =>
         s.name.toLowerCase().includes(f) ||
-        (s.description || "").toLowerCase().includes(f) ||
-        (s.category || "").toLowerCase().includes(f),
-    );
-  }, [skills, skillFilter]);
+        (s.description || '').toLowerCase().includes(f) ||
+        (s.category || '').toLowerCase().includes(f)
+    )
+  }, [skills, skillFilter])
 
   const pickedModel = useMemo(
-    () =>
-      modelChoice
-        ? modelChoices?.find((c) => `${c.provider}\u0000${c.model}` === modelChoice)
-        : undefined,
-    [modelChoice, modelChoices],
-  );
+    () => (modelChoice ? modelChoices?.find(c => `${c.provider}\u0000${c.model}` === modelChoice) : undefined),
+    [modelChoice, modelChoices]
+  )
 
   const handleCreate = async () => {
-    const n = name.trim();
+    const n = name.trim()
     if (!PROFILE_NAME_RE.test(n)) {
-      showToast("Invalid profile name (lowercase, digits, - and _)", "error");
-      setStep("identity");
-      return;
+      showToast('Invalid profile name (lowercase, digits, - and _)', 'error')
+      setStep('identity')
+      return
     }
-    setCreating(true);
+    setCreating(true)
     try {
       const res = await api.createProfile({
         name: n,
@@ -226,31 +237,31 @@ export default function ProfileBuilderPage() {
         model: pickedModel?.model,
         mcp_servers: mcpServers.length ? mcpServers : undefined,
         keep_skills: keepAll ? undefined : Array.from(keptSkills),
-        hub_skills: hubSkills.length ? hubSkills.map((s) => s.identifier) : undefined,
-      });
-      const pending = (res.hub_installs ?? []).filter((h) => h.pid).length;
+        hub_skills: hubSkills.length ? hubSkills.map(s => s.identifier) : undefined
+      })
+      const pending = (res.hub_installs ?? []).filter(h => h.pid).length
       showToast(
         pending
-          ? `Profile "${n}" created — ${pending} hub skill${pending === 1 ? "" : "s"} installing`
+          ? `Profile "${n}" created — ${pending} hub skill${pending === 1 ? '' : 's'} installing`
           : `Profile "${n}" created`,
-        "success",
-      );
-      navigate("/profiles");
+        'success'
+      )
+      navigate('/profiles')
     } catch (e) {
-      showToast(`Create failed: ${e}`, "error");
+      showToast(`Create failed: ${e}`, 'error')
     } finally {
-      setCreating(false);
+      setCreating(false)
     }
-  };
+  }
 
-  const stepIndex = STEPS.findIndex((s) => s.id === step);
-  const canAdvance = step !== "identity" || nameValid;
+  const stepIndex = STEPS.findIndex(s => s.id === step)
+  const canAdvance = step !== 'identity' || nameValid
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6 p-4">
       <div className="flex items-center justify-between">
         <H2>New profile</H2>
-        <Button ghost onClick={() => navigate("/profiles")}>
+        <Button ghost onClick={() => navigate('/profiles')}>
           Cancel
         </Button>
       </div>
@@ -264,13 +275,13 @@ export default function ProfileBuilderPage() {
             disabled={i > 0 && !nameValid}
             onClick={() => setStep(s.id)}
             className={cn(
-              "rounded-full px-3 py-1 transition-colors",
+              'rounded-full px-3 py-1 transition-colors',
               s.id === step
-                ? "bg-primary text-primary-foreground"
+                ? 'bg-primary text-primary-foreground'
                 : i <= stepIndex
-                  ? "bg-muted text-foreground"
-                  : "text-muted-foreground",
-              i > 0 && !nameValid && "cursor-not-allowed opacity-50",
+                  ? 'bg-muted text-foreground'
+                  : 'text-muted-foreground',
+              i > 0 && !nameValid && 'cursor-not-allowed opacity-50'
             )}
           >
             {i + 1}. {s.label}
@@ -280,7 +291,7 @@ export default function ProfileBuilderPage() {
 
       <Card>
         <CardContent className="space-y-4 p-5">
-          {step === "identity" && (
+          {step === 'identity' && (
             <div className="space-y-4">
               <div className="space-y-1.5">
                 <Label htmlFor="pb-name">Profile name</Label>
@@ -302,15 +313,13 @@ export default function ProfileBuilderPage() {
                   id="pb-desc"
                   placeholder="What this agent profile is for"
                   value={description}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                    setDescription(e.target.value)
-                  }
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDescription(e.target.value)}
                 />
               </div>
             </div>
           )}
 
-          {step === "model" && (
+          {step === 'model' && (
             <div className="space-y-3">
               <p className="text-sm text-muted-foreground">
                 Pick the model+provider for this profile. Skip to use the default.
@@ -318,77 +327,68 @@ export default function ProfileBuilderPage() {
               <Input
                 placeholder="Filter models…"
                 value={modelFilter}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                  setModelFilter(e.target.value)
-                }
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setModelFilter(e.target.value)}
               />
               {modelChoices === null ? (
                 <p className="text-sm text-muted-foreground">Loading models…</p>
               ) : (
                 <div className="max-h-72 space-y-1 overflow-y-auto">
                   <button
-                    onClick={() => setModelChoice("")}
+                    onClick={() => setModelChoice('')}
                     className={cn(
-                      "block w-full rounded px-3 py-2 text-left text-sm",
-                      modelChoice === "" ? "bg-primary/10" : "hover:bg-muted",
+                      'block w-full rounded px-3 py-2 text-left text-sm',
+                      modelChoice === '' ? 'bg-primary/10' : 'hover:bg-muted'
                     )}
                   >
                     Use default (set later)
                   </button>
-                  {filteredModels.map((c) => {
-                    const key = `${c.provider}\u0000${c.model}`;
+                  {filteredModels.map(c => {
+                    const key = `${c.provider}\u0000${c.model}`
                     return (
                       <button
                         key={key}
                         onClick={() => setModelChoice(key)}
                         className={cn(
-                          "block w-full rounded px-3 py-2 text-left text-sm",
-                          modelChoice === key ? "bg-primary/10" : "hover:bg-muted",
+                          'block w-full rounded px-3 py-2 text-left text-sm',
+                          modelChoice === key ? 'bg-primary/10' : 'hover:bg-muted'
                         )}
                       >
                         {c.label}
                       </button>
-                    );
+                    )
                   })}
                 </div>
               )}
             </div>
           )}
 
-          {step === "skills" && (
+          {step === 'skills' && (
             <div className="space-y-4">
               <label className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={keepAll}
-                  onCheckedChange={(v) => setKeepAll(Boolean(v))}
-                />
+                <Checkbox checked={keepAll} onCheckedChange={v => setKeepAll(Boolean(v))} />
                 Start from the full default skill bundle (recommended)
               </label>
               {!keepAll && (
                 <div className="space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Choose which built-in / optional skills to keep active. Unchecked skills are disabled in the new profile.
+                    Choose which built-in / optional skills to keep active. Unchecked skills are disabled in the new
+                    profile.
                   </p>
                   <Input
                     placeholder="Filter skills…"
                     value={skillFilter}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                      setSkillFilter(e.target.value)
-                    }
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSkillFilter(e.target.value)}
                   />
                   {skills === null ? (
                     <p className="text-sm text-muted-foreground">Loading skills…</p>
                   ) : (
                     <div className="max-h-56 space-y-1 overflow-y-auto">
-                      {filteredSkills.map((s) => (
+                      {filteredSkills.map(s => (
                         <label
                           key={s.name}
                           className="flex items-start gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
                         >
-                          <Checkbox
-                            checked={keptSkills.has(s.name)}
-                            onCheckedChange={() => toggleKeep(s.name)}
-                          />
+                          <Checkbox checked={keptSkills.has(s.name)} onCheckedChange={() => toggleKeep(s.name)} />
                           <span className="flex-1">
                             <span className="font-medium">{s.name}</span>
                             {s.category && (
@@ -397,9 +397,7 @@ export default function ProfileBuilderPage() {
                               </Badge>
                             )}
                             {s.description && (
-                              <span className="block text-xs text-muted-foreground">
-                                {s.description}
-                              </span>
+                              <span className="block text-xs text-muted-foreground">{s.description}</span>
                             )}
                           </span>
                         </label>
@@ -416,20 +414,18 @@ export default function ProfileBuilderPage() {
                   <Input
                     placeholder="Search the hub (e.g. linear, hyperliquid)…"
                     value={hubQuery}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                      setHubQuery(e.target.value)
-                    }
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setHubQuery(e.target.value)}
                     onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
-                      if (e.key === "Enter") runHubSearch();
+                      if (e.key === 'Enter') runHubSearch()
                     }}
                   />
                   <Button outlined onClick={runHubSearch} disabled={hubSearching}>
-                    {hubSearching ? "Searching…" : "Search"}
+                    {hubSearching ? 'Searching…' : 'Search'}
                   </Button>
                 </div>
                 {hubResults.length > 0 && (
                   <div className="max-h-48 space-y-1 overflow-y-auto">
-                    {hubResults.map((r) => (
+                    {hubResults.map(r => (
                       <div
                         key={r.identifier}
                         className="flex items-center justify-between rounded px-2 py-1.5 text-sm hover:bg-muted"
@@ -440,9 +436,7 @@ export default function ProfileBuilderPage() {
                             {r.source}
                           </Badge>
                           {r.description && (
-                            <span className="block text-xs text-muted-foreground">
-                              {r.description}
-                            </span>
+                            <span className="block text-xs text-muted-foreground">{r.description}</span>
                           )}
                         </span>
                         <Button size="sm" ghost onClick={() => addHubSkill(r)}>
@@ -454,7 +448,7 @@ export default function ProfileBuilderPage() {
                 )}
                 {hubSkills.length > 0 && (
                   <div className="flex flex-wrap gap-2 pt-1">
-                    {hubSkills.map((r) => (
+                    {hubSkills.map(r => (
                       <Badge key={r.identifier} className="gap-1">
                         {r.name}
                         <button
@@ -472,101 +466,237 @@ export default function ProfileBuilderPage() {
             </div>
           )}
 
-          {step === "mcp" && (
-            <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Add MCP servers for this profile. HTTP servers take a URL; stdio servers take a command + args.
-              </p>
-              <div className="grid grid-cols-2 gap-2">
-                <Input
-                  placeholder="Server name"
-                  value={mcpDraft.name}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                    setMcpDraft({ ...mcpDraft, name: e.target.value })
-                  }
-                />
-                <Input
-                  placeholder="URL (https://…/mcp)"
-                  value={mcpDraft.url}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                    setMcpDraft({ ...mcpDraft, url: e.target.value })
-                  }
-                />
-                <Input
-                  placeholder="Command (e.g. npx)"
-                  value={mcpDraft.command}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                    setMcpDraft({ ...mcpDraft, command: e.target.value })
-                  }
-                />
-                <Input
-                  placeholder="Args (space-separated)"
-                  value={mcpDraft.args}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                    setMcpDraft({ ...mcpDraft, args: e.target.value })
-                  }
-                />
-              </div>
-              <Button outlined onClick={addMcpDraft}>
-                Add server
-              </Button>
-              {mcpServers.length > 0 && (
+          {step === 'mcp' && (
+            <div className="space-y-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-1">
-                  {mcpServers.map((s) => (
+                  <h3 className="font-expanded text-base font-bold tracking-[0.04em]">MCP servers</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Add MCP servers to give this profile access to external tools and data.
+                  </p>
+                </div>
+                <span className="text-xs text-muted-foreground" aria-live="polite">
+                  {mcpServers.length} configured
+                </span>
+              </div>
+
+              <div className="space-y-4 border border-border bg-background/20 p-4 md:p-5">
+                <h4 className="font-medium">Add server</h4>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="pb-mcp-name">Server name</Label>
+                    <Input
+                      id="pb-mcp-name"
+                      placeholder="Enter server name"
+                      value={mcpDraft.name}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                        setMcpDraft({ ...mcpDraft, name: e.target.value })
+                      }
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label>Transport</Label>
+                    <div
+                      className="grid grid-cols-2 border border-border bg-background/30 p-0.5"
+                      role="group"
+                      aria-label="MCP transport"
+                    >
+                      {(
+                        [
+                          ['http', 'HTTP/SSE'],
+                          ['stdio', 'stdio']
+                        ] as const
+                      ).map(([value, label]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          aria-pressed={mcpDraft.transport === value}
+                          className={cn(
+                            'px-3 py-2 text-sm font-medium transition-colors',
+                            mcpDraft.transport === value
+                              ? 'bg-primary text-primary-foreground'
+                              : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                          )}
+                          onClick={() => setMcpTransport(value)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {mcpDraft.transport === 'http' ? (
+                  <>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="pb-mcp-url">URL</Label>
+                      <Input
+                        id="pb-mcp-url"
+                        placeholder="https://example.com/mcp"
+                        value={mcpDraft.url}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                          setMcpDraft({ ...mcpDraft, url: e.target.value })
+                        }
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label>Authentication</Label>
+                      <div
+                        className="grid grid-cols-3 border border-border bg-background/30 p-0.5 md:max-w-md"
+                        role="group"
+                        aria-label="HTTP authentication"
+                      >
+                        {(
+                          [
+                            ['none', 'None'],
+                            ['header', 'Bearer token'],
+                            ['oauth', 'OAuth']
+                          ] as const
+                        ).map(([value, label]) => (
+                          <button
+                            key={value}
+                            type="button"
+                            aria-pressed={mcpDraft.httpAuth === value}
+                            className={cn(
+                              'px-2 py-2 text-sm font-medium transition-colors',
+                              mcpDraft.httpAuth === value
+                                ? 'bg-primary text-primary-foreground'
+                                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                            )}
+                            onClick={() => setMcpHttpAuth(value)}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {mcpDraft.httpAuth === 'header' && (
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="pb-mcp-bearer-token">Bearer token</Label>
+                        <Input
+                          id="pb-mcp-bearer-token"
+                          type="password"
+                          autoComplete="new-password"
+                          placeholder="Token or Bearer token"
+                          value={mcpDraft.bearerToken}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                            setMcpDraft({
+                              ...mcpDraft,
+                              bearerToken: e.target.value
+                            })
+                          }
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Stored in the new profile&apos;s .env; config.yaml keeps only an environment-variable
+                          reference.
+                        </p>
+                      </div>
+                    )}
+                    {mcpDraft.httpAuth === 'oauth' && (
+                      <p className="text-xs text-muted-foreground">
+                        After creating the profile, open its MCP page and use Authenticate to complete OAuth.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="pb-mcp-command">Command</Label>
+                        <Input
+                          id="pb-mcp-command"
+                          placeholder="npx"
+                          value={mcpDraft.command}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                            setMcpDraft({
+                              ...mcpDraft,
+                              command: e.target.value
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="pb-mcp-args">Arguments</Label>
+                        <Input
+                          id="pb-mcp-args"
+                          placeholder="-y @modelcontextprotocol/server"
+                          value={mcpDraft.args}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                            setMcpDraft({ ...mcpDraft, args: e.target.value })
+                          }
+                        />
+                      </div>
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="pb-mcp-env">Environment (KEY=VALUE per line)</Label>
+                      <textarea
+                        id="pb-mcp-env"
+                        className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:border-foreground/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30"
+                        placeholder={'API_KEY=secret\nDEBUG=1'}
+                        value={mcpDraft.env}
+                        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+                          setMcpDraft({ ...mcpDraft, env: e.target.value })
+                        }
+                      />
+                    </div>
+                  </>
+                )}
+
+                <div className="flex justify-end">
+                  <Button onClick={addMcpDraft}>Add server</Button>
+                </div>
+              </div>
+
+              {mcpServers.length > 0 && (
+                <div className="space-y-2">
+                  {mcpServers.map(s => (
                     <div
                       key={s.name}
-                      className="flex items-center justify-between rounded bg-muted px-3 py-1.5 text-sm"
+                      className="flex items-center justify-between gap-4 border border-border bg-muted/40 p-4 text-sm"
                     >
-                      <span>
-                        <span className="font-medium">{s.name}</span>{" "}
-                        <span className="text-xs text-muted-foreground">
-                          {s.url || `${s.command} ${(s.args || []).join(" ")}`}
+                      <span className="min-w-0">
+                        <span className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium">{s.name}</span>
+                          <Badge tone="outline">{s.url ? 'HTTP' : 'stdio'}</Badge>
+                          {s.auth && <Badge tone="outline">auth: {s.auth === 'header' ? 'bearer' : s.auth}</Badge>}
+                        </span>
+                        <span className="mt-1 block break-all text-xs text-muted-foreground">
+                          {s.url || [s.command, ...(s.args || [])].join(' ')}
                         </span>
                       </span>
-                      <button
-                        className="text-xs text-destructive"
-                        onClick={() => removeMcp(s.name)}
-                      >
+                      <Button size="sm" ghost destructive className="shrink-0" onClick={() => removeMcp(s.name)}>
                         Remove
-                      </button>
+                      </Button>
                     </div>
                   ))}
                 </div>
               )}
             </div>
           )}
-
-          {step === "review" && (
+          {step === 'review' && (
             <div className="space-y-3 text-sm">
-              <ReviewRow label="Name" value={name.trim() || "—"} />
-              <ReviewRow label="Description" value={description.trim() || "—"} />
-              <ReviewRow
-                label="Model"
-                value={pickedModel ? pickedModel.label : "Default (set later)"}
-              />
+              <ReviewRow label="Name" value={name.trim() || '—'} />
+              <ReviewRow label="Description" value={description.trim() || '—'} />
+              <ReviewRow label="Model" value={pickedModel ? pickedModel.label : 'Default (set later)'} />
               <ReviewRow
                 label="Skills"
                 value={
                   keepAll
-                    ? "Full default bundle"
+                    ? 'Full default bundle'
                     : `${keptSkills.size} built-in/optional kept` +
-                      (hubSkills.length ? ` + ${hubSkills.length} hub` : "")
+                      (hubSkills.length ? ` + ${hubSkills.length} hub` : '')
                 }
               />
               {!keepAll && hubSkills.length > 0 && (
-                <p className="pl-24 text-xs text-muted-foreground">
-                  Hub: {hubSkills.map((s) => s.name).join(", ")}
-                </p>
+                <p className="pl-24 text-xs text-muted-foreground">Hub: {hubSkills.map(s => s.name).join(', ')}</p>
               )}
               {keepAll && hubSkills.length > 0 && (
-                <ReviewRow
-                  label="Hub skills"
-                  value={hubSkills.map((s) => s.name).join(", ")}
-                />
+                <ReviewRow label="Hub skills" value={hubSkills.map(s => s.name).join(', ')} />
               )}
               <ReviewRow
                 label="MCP servers"
-                value={mcpServers.length ? mcpServers.map((s) => s.name).join(", ") : "None"}
+                value={mcpServers.length ? mcpServers.map(s => s.name).join(', ') : 'None'}
               />
             </div>
           )}
@@ -575,22 +705,15 @@ export default function ProfileBuilderPage() {
 
       {/* Nav buttons */}
       <div className="flex items-center justify-between">
-        <Button
-          ghost
-          disabled={stepIndex === 0}
-          onClick={() => setStep(STEPS[Math.max(0, stepIndex - 1)].id)}
-        >
+        <Button ghost disabled={stepIndex === 0} onClick={() => setStep(STEPS[Math.max(0, stepIndex - 1)].id)}>
           Back
         </Button>
-        {step === "review" ? (
+        {step === 'review' ? (
           <Button onClick={handleCreate} disabled={creating || !nameValid}>
-            {creating ? "Creating…" : "Create profile"}
+            {creating ? 'Creating…' : 'Create profile'}
           </Button>
         ) : (
-          <Button
-            disabled={!canAdvance}
-            onClick={() => setStep(STEPS[Math.min(STEPS.length - 1, stepIndex + 1)].id)}
-          >
+          <Button disabled={!canAdvance} onClick={() => setStep(STEPS[Math.min(STEPS.length - 1, stepIndex + 1)].id)}>
             Next
           </Button>
         )}
@@ -598,7 +721,7 @@ export default function ProfileBuilderPage() {
 
       <Toast toast={toast} />
     </div>
-  );
+  )
 }
 
 function ReviewRow({ label, value }: { label: string; value: string }) {
@@ -607,5 +730,5 @@ function ReviewRow({ label, value }: { label: string; value: string }) {
       <span className="w-24 shrink-0 text-muted-foreground">{label}</span>
       <span className="flex-1 break-words">{value}</span>
     </div>
-  );
+  )
 }

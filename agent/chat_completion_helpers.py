@@ -1442,8 +1442,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             and reason not in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}
         ):
             from agent.cooldown_manager import get_cooldown_manager, build_cooldown_key
-            _exhaust_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
-            _exhaust_key_raw = getattr(agent, "api_key", None) or getattr(agent, "_api_key", None) or ""
+            _primary_runtime = agent._primary_runtime or {}
+            _exhaust_provider = (_primary_runtime.get("provider") or "").strip().lower()
+            # At exhaustion the live credential belongs to the last fallback;
+            # restoration checks the primary snapshot credential. Key the gate
+            # with that same primary identity so the next turn cannot replay
+            # the exhausted chain when fallback and primary keys differ.
+            _exhaust_key_raw = (_primary_runtime.get("api_key") or "").strip()
             _ck_exhaust = build_cooldown_key(_exhaust_provider, _exhaust_key_raw or None, "rate_limit")
             _mgr = get_cooldown_manager()
             if not _mgr.is_cooling(_ck_exhaust):

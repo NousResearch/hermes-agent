@@ -1671,6 +1671,24 @@ def run_conversation(
                             )
                     continue  # Retry the API call
 
+                # A structurally valid response from the primary (not a
+                # same-provider fallback) proves that its prior rate-limit/billing
+                # state recovered. Reset its exponential history only after validation;
+                # responses must continue through the failover path above.
+                primary_runtime = getattr(agent, "_primary_runtime", None) or {}
+                primary_provider = (primary_runtime.get("provider") or "").strip().lower()
+                current_provider = (getattr(agent, "provider", "") or "").strip().lower()
+                if primary_provider and current_provider == primary_provider and not agent._fallback_activated:
+                    try:
+                        from agent.cooldown_manager import build_cooldown_key, get_cooldown_manager
+
+                        current_key = getattr(agent, "api_key", None) or getattr(agent, "_api_key", None)
+                        manager = get_cooldown_manager()
+                        manager.clear(primary_provider)
+                        manager.clear(build_cooldown_key(primary_provider, current_key or None, "rate_limit"))
+                    except Exception:
+                        logger.debug("Failed to clear recovered primary cooldown", exc_info=True)
+
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":
                     status = getattr(response, "status", None)

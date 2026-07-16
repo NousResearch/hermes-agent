@@ -71,7 +71,7 @@ export function LayoutTreeRoot({ children }: { children?: ReactNode }) {
           display: none;
         }
       `}</style>
-      <TreeNode node={tree} root />
+      <TreeNode node={tree} root rootRow={tree.type === 'split' && tree.orientation === 'row'} />
       <NarrowOverlays />
       <TreeEditBar />
       <ZoneEditor />

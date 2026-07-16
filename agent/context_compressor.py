@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm, _is_connection_error, aux_interrupt_protection
 from agent.context_engine import ContextEngine
+from agent.error_classifier import FailoverReason, classify_api_error
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     get_model_context_length,
@@ -34,6 +35,47 @@ from agent.model_metadata import (
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
+
+
+_SUMMARY_PERMANENT_QUOTA_MARKERS: tuple[str, ...] = (
+    "insufficient_quota",
+    "quota exceeded",
+    "quota_exceeded",
+    "out of funds",
+    "out of credits",
+    "out of credit",
+    "out of extra usage",
+)
+
+_SUMMARY_MISSING_CREDENTIAL_MARKERS: tuple[str, ...] = (
+    "no api key was found",
+    "no api key found",
+)
+
+
+def _is_summary_access_or_quota_error(exc: Exception) -> bool:
+    """Return True for non-retryable summary auth, permission, or quota errors."""
+
+    classified = classify_api_error(exc)
+    if classified.reason is FailoverReason.rate_limit:
+        return False
+    if classified.reason in {FailoverReason.auth, FailoverReason.auth_permanent}:
+        return True
+
+    err_text = str(exc).lower()
+    if any(marker in err_text for marker in _SUMMARY_MISSING_CREDENTIAL_MARKERS):
+        return True
+
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    if status in {401, 402, 403}:
+        return True
+
+    if classified.reason is FailoverReason.billing:
+        return any(marker in err_text for marker in _SUMMARY_PERMANENT_QUOTA_MARKERS)
+    return any(marker in err_text for marker in _SUMMARY_PERMANENT_QUOTA_MARKERS)
+
 
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
@@ -795,6 +837,7 @@ class ContextCompressor(ContextEngine):
         self._context_probe_persistable = False
         self._previous_summary = None
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
         self._last_aux_model_failure_error = None
@@ -833,6 +876,7 @@ class ContextCompressor(ContextEngine):
         """
         self._previous_summary = None
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
         self._last_aux_model_failure_error = None
@@ -857,6 +901,7 @@ class ContextCompressor(ContextEngine):
         self._session_id = session_id or ""
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
         self._fallback_compression_streak = 0
         self.get_active_compression_failure_cooldown()
         self._load_fallback_compression_streak()
@@ -1005,6 +1050,7 @@ class ContextCompressor(ContextEngine):
     def _clear_compression_failure_cooldown(self) -> None:
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
@@ -2288,6 +2334,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             _is_timeout = (
                 _status in {408, 429, 502, 504}
                 or "timeout" in _err_str
+                or "timed out" in _err_str
             )
             # Non-JSON / malformed-body responses from misconfigured providers
             # or proxies (e.g. an HTML 502 page returned with
@@ -2309,25 +2356,18 @@ This compaction should PRIORITISE preserving all information related to the focu
             # back to the main model instead of entering a 60-second cooldown.
             # See issue #18458.
             _is_streaming_closed = _is_connection_error(e)
-            # Authentication / permission failures (401/403) are NOT transient
-            # and NOT fixable by retrying the same request: the credential is
-            # invalid/blocked/expired or the endpoint is wrong (e.g. a prod
-            # token sent to a staging inference URL). Flag them so compress()
-            # aborts and preserves the session instead of rotating into a
+            # Authentication, permission, and exhausted-quota failures are NOT
+            # transient or fixable by retrying the same request. Flag them so
+            # compress() preserves the session instead of rotating into a
             # degraded child with a placeholder summary. We still allow the
             # one-shot fallback to the MAIN model below when the failure came
-            # from a distinct auxiliary summary_model (its dedicated creds may
-            # be the only broken thing); only a failure on the main model — or
-            # a fallback that also auth-fails — makes the abort stick.
-            _is_auth_error = (
-                _status in {401, 403}
-                or "invalid api key" in _err_str
-                or "invalid x-api-key" in _err_str
-                or ("api key" in _err_str and ("invalid" in _err_str or "blocked" in _err_str))
-                or "unauthorized" in _err_str
-                or "authentication" in _err_str
-            )
-            if _is_auth_error:
+            # from a distinct auxiliary summary_model; only a failure on the
+            # main model — or a fallback that also access/quota-fails — makes
+            # the abort stick.
+            _is_access_or_quota_error = _is_summary_access_or_quota_error(e)
+            if _is_access_or_quota_error:
+                # Keep the established field name for caller compatibility;
+                # it now represents the broader terminal access/quota class.
                 self._last_summary_auth_failure = True
             if _is_json_decode and not _is_model_not_found and not _is_timeout:
                 logger.error(
@@ -2377,7 +2417,30 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Transient errors (timeout, rate limit, network, JSON decode,
             # streaming premature-close) — shorter cooldown for JSON decode and
             # streaming-closed since those conditions can self-resolve quickly.
-            _transient_cooldown = 30 if (_is_json_decode or _is_streaming_closed) else 60
+            # Timeout-class failures escalate with consecutive occurrences:
+            # a session whose transcript structurally exceeds what the
+            # summary route can produce within its deadline will fail the
+            # same way every time, and re-burning the full timeout every
+            # 60s turns each subsequent turn into a multi-minute stall
+            # (#62452). 60s → 300s → 900s (capped); any successful summary
+            # resets the streak via _clear_compression_failure_cooldown().
+            # Timeout takes precedence over the streaming-closed short rung:
+            # a "timed out" error also matches _is_connection_error, but a
+            # deadline exhaustion is the structural repeat-offender class,
+            # not a transient mid-stream drop.
+            if _is_timeout:
+                self._consecutive_timeout_failures = (
+                    getattr(self, "_consecutive_timeout_failures", 0) + 1
+                )
+                _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
+                _transient_cooldown = _TIMEOUT_COOLDOWN_LADDER[
+                    min(self._consecutive_timeout_failures,
+                        len(_TIMEOUT_COOLDOWN_LADDER)) - 1
+                ]
+            elif _is_json_decode or _is_streaming_closed:
+                _transient_cooldown = 30
+            else:
+                _transient_cooldown = 60
             err_text = str(e).strip() or e.__class__.__name__
             if len(err_text) > 220:
                 err_text = err_text[:217].rstrip() + "..."
@@ -3190,16 +3253,14 @@ This compaction should PRIORITISE preserving all information related to the focu
         #           surface a warning.
         # Default is False (historical behavior).
         #
-        # EXCEPTION — auth AND transient network failures always abort. A
-        # 401/403 from the summary call means the credential or endpoint is
-        # broken (invalid/blocked key, or a token pointed at the wrong
-        # inference host). A connection/stream-close error means the network
-        # blipped at the compaction moment (#29559). In BOTH cases rotating into
-        # a child session with a placeholder summary on a broken credential
-        # strands the user on a degraded session for zero benefit — every
-        # subsequent call fails the same way. So when the failure was an auth
-        # error we abort regardless of abort_on_summary_failure, preserving
-        # the conversation unchanged until the credential is fixed.
+        # EXCEPTION — terminal access/quota AND transient network failures
+        # always abort. Missing credentials, 401/402/403 access failures, and
+        # confirmed non-resetting quota exhaustion cannot be repaired by
+        # retrying the same summary request. A connection/stream-close error
+        # means the network blipped at the compaction moment (#29559). In all
+        # of these cases, rotating into a child session with a placeholder
+        # summary degrades the conversation for zero benefit. Preserve it
+        # unchanged until access is restored or connectivity recovers.
         if not summary and (
             self.abort_on_summary_failure
             or self._last_summary_auth_failure
@@ -3212,11 +3273,12 @@ This compaction should PRIORITISE preserving all information related to the focu
             if not self.quiet_mode:
                 if self._last_summary_auth_failure:
                     logger.warning(
-                        "Summary generation failed with an authentication "
-                        "error — aborting compression. %d message(s) preserved "
-                        "unchanged; the session was NOT rotated. Check your "
-                        "provider credential / inference endpoint, then retry "
-                        "with /compress or start fresh with /new.",
+                        "Summary generation failed with a terminal access or "
+                        "quota error — aborting compression. %d message(s) "
+                        "preserved unchanged; the session was NOT rotated. "
+                        "Check the provider credential, permission, quota, or "
+                        "inference endpoint, then retry with /compress or "
+                        "start fresh with /new.",
                         n_skipped,
                     )
                 elif self._last_summary_network_failure:

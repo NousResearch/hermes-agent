@@ -96,7 +96,10 @@ export function PreviewRailPane() {
       className={cn(ZONE_CONTENT, 'min-h-0 w-full overflow-hidden [&>aside]:pt-0')}
       style={{ '--titlebar-height': `${TITLEBAR_HEIGHT}px` } as CSSProperties}
     >
-      <ChatPreviewRail onRestartServer={restartPreviewServer ?? undefined} setTitlebarToolGroup={setTitlebarToolGroup} />
+      <ChatPreviewRail
+        onRestartServer={restartPreviewServer ?? undefined}
+        setTitlebarToolGroup={setTitlebarToolGroup}
+      />
     </div>
   )
 }
@@ -159,7 +162,11 @@ export function useStatusbarContributions(side: 'left' | 'right'): StatusbarItem
       c.render
         ? ({
             id: c.id,
-            render: () => <ContribBoundary id={c.id} variant="chip">{c.render!()}</ContribBoundary>
+            render: () => (
+              <ContribBoundary id={c.id} variant="chip">
+                {c.render!()}
+              </ContribBoundary>
+            )
           } satisfies StatusbarItem)
         : (c.data as StatusbarItem)
     )

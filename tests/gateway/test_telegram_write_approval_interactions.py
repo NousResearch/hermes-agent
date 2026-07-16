@@ -69,19 +69,21 @@ def _event(text: str, surface=None, *, message_type=MessageType.TEXT) -> Message
 
 def test_reply_intents_are_exact_and_scoped():
     assert (
-        command_for_reply_intent("approve all", MEMORY_SURFACE) == "/memory approve all"
+        command_for_reply_intent("approve abc12345", MEMORY_SURFACE)
+        == "/memory approve abc12345"
     )
     assert (
-        command_for_reply_intent("одобри всё", MEMORY_SURFACE) == "/memory approve all"
-    )
-    assert (
-        command_for_reply_intent("reject skills", SKILL_SURFACE) == "/skills reject all"
+        command_for_reply_intent("одобри abc12345", MEMORY_SURFACE)
+        == "/memory approve abc12345"
     )
     assert (
         command_for_reply_intent("покажи diff", SKILL_SURFACE)
         == "/skills diff def67890"
     )
 
+    assert command_for_reply_intent("approve all", MEMORY_SURFACE) is None
+    assert command_for_reply_intent("одобри всё", MEMORY_SURFACE) is None
+    assert command_for_reply_intent("reject skills", SKILL_SURFACE) is None
     assert command_for_reply_intent("approve all", None) is None
     assert (
         command_for_reply_intent("can you approve all of this?", MEMORY_SURFACE) is None
@@ -136,8 +138,8 @@ async def test_telegram_pending_reply_adds_buttons_and_records_owned_surface(
         for row in kwargs["reply_markup"].inline_keyboard
         for button in row
     ]
-    assert "wa:m:a:all" in callbacks
-    assert "wa:m:r:all" in callbacks
+    assert "wa:m:a:all" not in callbacks
+    assert "wa:m:r:all" not in callbacks
     assert "wa:m:a:abc12345" in callbacks
     assert "wa:m:r:abc12345" in callbacks
     assert adapter._lookup_write_approval_surface("12345", "77") == MEMORY_SURFACE
@@ -146,9 +148,9 @@ async def test_telegram_pending_reply_adds_buttons_and_records_owned_surface(
 def test_only_known_approval_replies_are_rewritten(monkeypatch):
     adapter = _make_adapter(monkeypatch)
 
-    scoped = _event("approve all", MEMORY_SURFACE)
+    scoped = _event("approve abc12345", MEMORY_SURFACE)
     assert adapter._rewrite_write_approval_reply(scoped) is True
-    assert scoped.text == "/memory approve all"
+    assert scoped.text == "/memory approve abc12345"
     assert scoped.message_type == MessageType.COMMAND
 
     unrelated = _event("can you approve this design?", MEMORY_SURFACE)
@@ -181,17 +183,17 @@ async def test_voice_intent_dispatch_reuses_slash_handler_and_access_gate():
     runner = _IntentRunner()
     handled, response = await runner._dispatch_write_approval_reply_intent(
         _event("", MEMORY_SURFACE, message_type=MessageType.VOICE),
-        "одобри всё",
+        "одобри abc12345",
     )
     assert handled is True
     assert response == "Approved memory"
-    assert runner.events[0].text == "/memory approve all"
+    assert runner.events[0].text == "/memory approve abc12345"
     assert runner.events[0].message_type == MessageType.COMMAND
 
     denied_runner = _IntentRunner(denied="admin only")
     handled, response = await denied_runner._dispatch_write_approval_reply_intent(
         _event("", MEMORY_SURFACE, message_type=MessageType.VOICE),
-        "approve all",
+        "approve abc12345",
     )
     assert handled is True
     assert response == "admin only"
@@ -219,7 +221,7 @@ async def test_voice_reply_is_intercepted_at_the_stt_boundary(monkeypatch):
     monkeypatch.setattr(
         runner,
         "_enrich_message_with_transcription",
-        AsyncMock(return_value=("transcribed", ["approve all"])),
+        AsyncMock(return_value=("transcribed", ["approve abc12345"])),
     )
 
     response = await runner._prepare_inbound_message_text(
@@ -233,7 +235,7 @@ async def test_voice_reply_is_intercepted_at_the_stt_boundary(monkeypatch):
     assert response == "Approved memory"
     runner._handle_memory_command.assert_awaited_once()
     command_event = runner._handle_memory_command.call_args.args[0]
-    assert command_event.text == "/memory approve all"
+    assert command_event.text == "/memory approve abc12345"
     assert command_event.message_type == MessageType.COMMAND
 
 
@@ -287,7 +289,7 @@ async def test_callback_fails_closed_for_unauthorized_user(monkeypatch):
     adapter.set_message_handler(runner._handle_message)
     adapter.send = AsyncMock()
     query = SimpleNamespace(
-        data="wa:m:r:all",
+        data="wa:m:r:abc12345",
         from_user=SimpleNamespace(id=99, first_name="Mallory"),
         message=SimpleNamespace(
             chat_id=12345,
@@ -306,3 +308,43 @@ async def test_callback_fails_closed_for_unauthorized_user(monkeypatch):
     assert runner.events == []
     adapter.send.assert_not_awaited()
     assert "not authorized" in query.answer.call_args.kwargs["text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_stale_bulk_callback_cannot_touch_later_pending_record(monkeypatch):
+    adapter = _make_adapter(monkeypatch)
+    pending_ids = {"abc12345", "feed6789"}
+
+    class PendingRunner(_CallbackRunner):
+        async def _handle_message(self, event):
+            self.events.append(event)
+            if event.text.endswith(" all"):
+                pending_ids.clear()
+            else:
+                pending_ids.discard(event.text.rsplit(" ", 1)[-1])
+            return WriteApprovalReply("updated", MEMORY_SURFACE)
+
+    runner = PendingRunner()
+    adapter.set_message_handler(runner._handle_message)
+    adapter.send = AsyncMock()
+    query = SimpleNamespace(
+        data="wa:m:a:all",
+        from_user=SimpleNamespace(id=42, first_name="Joe"),
+        message=SimpleNamespace(
+            chat_id=12345,
+            chat=SimpleNamespace(type="private"),
+            message_thread_id=None,
+            message_id=77,
+        ),
+        answer=AsyncMock(),
+        edit_message_reply_markup=AsyncMock(),
+    )
+
+    await adapter._handle_callback_query(
+        SimpleNamespace(callback_query=query), SimpleNamespace()
+    )
+
+    assert pending_ids == {"abc12345", "feed6789"}
+    assert runner.events == []
+    adapter.send.assert_not_awaited()
+    assert "invalid" in query.answer.call_args.kwargs["text"].lower()

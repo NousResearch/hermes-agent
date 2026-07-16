@@ -920,14 +920,6 @@ class TelegramAdapter(BasePlatformAdapter):
         for subsystem in surface["subsystems"]:
             code = "m" if subsystem == "memory" else "s"
             ids = surface["items"][subsystem]
-            rows.append([
-                InlineKeyboardButton(
-                    f"Approve all {subsystem}", callback_data=f"wa:{code}:a:all"
-                ),
-                InlineKeyboardButton(
-                    f"Reject all {subsystem}", callback_data=f"wa:{code}:r:all"
-                ),
-            ])
             for pending_id in ids[:8]:
                 item_row = [
                     InlineKeyboardButton(

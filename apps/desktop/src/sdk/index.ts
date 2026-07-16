@@ -25,6 +25,7 @@ import { onGatewayEvent } from '@/contrib/events'
 import { getLogs, getStatus } from '@/hermes'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { $paneOpen, setPaneOpen, togglePane } from '@/store/panes'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
@@ -74,6 +75,14 @@ export const host = {
   /** Toast into the app's notification stack. */
   notify,
   notifyError,
+
+  /** Read and control registered layout panes without exposing the layout
+   *  tree. `open(id)` is a stable readonly atom suitable for `useValue`. */
+  panes: {
+    open: (id: string): ReadableAtom<boolean> => readonlyAtom($paneOpen(id)),
+    setOpen: (id: string, open: boolean) => setPaneOpen(id, open),
+    toggle: (id: string) => togglePane(id)
+  },
 
   // NOTE: every host door is async-safe — wrapped so a sync throw from an
   // internal helper (e.g. no desktop bridge in a plain browser) becomes a
@@ -215,7 +224,12 @@ export { queryClient } from '@/lib/query-client'
 
 export const PANES_AREA = 'panes'
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
-export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
+export const TITLEBAR_AREAS = {
+  appControls: 'titleBar.appControls',
+  center: 'titleBar.center',
+  left: 'titleBar.left',
+  right: 'titleBar.right'
+} as const
 
 /** The app's own gateway-readiness evaluation (setup.status +
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll

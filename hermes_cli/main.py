@@ -4840,7 +4840,9 @@ def _run_npm_install_deterministic(
 
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
-        ci_cmd = [npm, "ci", *extra_args]
+        # --include=dev: force devDependencies even if NODE_ENV=production
+        # or an .npmrc `omit=dev` is in effect — web build needs tsc/vite.
+        ci_cmd = [npm, "ci", "--include=dev", *extra_args]
         ci_result = subprocess.run(
             ci_cmd,
             cwd=cwd,
@@ -4855,7 +4857,15 @@ def _run_npm_install_deterministic(
             return ci_result
         # Fall through to `npm install` — lockfile may be out of sync on a
         # WIP fork/branch, or `npm ci` may not be available on very old npm.
-    install_cmd = [npm, "install", *extra_args]
+        #
+        # --no-save: prevent the fallback from rewriting the committed
+        #   lockfile. A drifted lockfile makes every future `npm ci` fail
+        #   "out of sync", a self-reinforcing cycle where web devDeps
+        #   (typescript, @vitejs/plugin-react) never install → tsc: not
+        #   found → stale dist served on every update.
+        # --include=dev: guarantee devDependencies regardless of
+        #   NODE_ENV=production / npm config omit settings.
+    install_cmd = [npm, "install", "--no-save", "--include=dev", *extra_args]
     return subprocess.run(
         install_cmd,
         cwd=cwd,

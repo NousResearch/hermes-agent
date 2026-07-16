@@ -6331,6 +6331,30 @@ class TestDeleteSessionEndpoint:
         assert resp.json().get("ok") is True
         assert not self._exists("20260618_abcdef_unique")
 
+    def test_delete_removes_whole_compression_chain(self):
+        """#57543 (single-row flavour): the list row the user clicked
+        carries the compression-chain tip's id; deleting it must take
+        the root with it, or the conversation resurfaces as the
+        previous chain link on the next reload."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="conv_root", source="tui")
+            db.end_session("conv_root", end_reason="compression")
+            db.create_session(
+                session_id="conv_tip", source="tui",
+                parent_session_id="conv_root",
+            )
+        finally:
+            db.close()
+
+        resp = self.auth_client.delete("/api/sessions/conv_tip")
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+        assert not self._exists("conv_tip")
+        assert not self._exists("conv_root")
+
 
 class TestBulkDeleteSessionsEndpoint:
     """Tests for ``POST /api/sessions/bulk-delete`` — backs the
@@ -6435,6 +6459,38 @@ class TestBulkDeleteSessionsEndpoint:
             json={"ids": [f"s{i}" for i in range(500)]},
         )
         assert resp.status_code == 200
+
+    def test_deletes_whole_compression_chain(self):
+        """#57543: the sessions list surfaces a compressed conversation
+        as ONE row carrying the chain tip's id. Bulk-deleting that id
+        must remove the whole chain — otherwise the root resurfaces as
+        the previous link on the next reload and the user sees the
+        delete "not work". ``deleted`` still counts selected rows."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="chain_root", source="tui")
+            db.end_session("chain_root", end_reason="compression")
+            db.create_session(
+                session_id="chain_tip", source="tui",
+                parent_session_id="chain_root",
+            )
+        finally:
+            db.close()
+
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete", json={"ids": ["chain_tip"]}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 1}
+
+        db = SessionDB()
+        try:
+            assert db.get_session("chain_tip") is None
+            assert db.get_session("chain_root") is None
+        finally:
+            db.close()
 
     def test_route_order_not_shadowed_by_session_id(self):
         """Pin the route-ordering contract: ``POST /api/sessions/bulk-delete``

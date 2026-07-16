@@ -2842,6 +2842,145 @@ class TestBulkDeleteSessions:
         assert not (tmp_path / "s2.json").exists()
 
 
+class TestDeleteCompressionChain:
+    """``include_compression_chain=True`` — the chain-aware variant of
+    ``delete_session`` / ``delete_sessions`` used by the dashboard
+    delete endpoints (#57543).
+
+    ``list_sessions_rich`` surfaces one row per logical conversation:
+    compression roots are projected forward and the row carries the
+    chain *tip's* id. Deleting only that physical row leaves the root
+    behind, and the next list re-projects it onto the previous link —
+    the user sees the "deleted" conversation reappear ("deletes some of
+    them, but not all"). Invariants this class locks in:
+
+    1. Deleting a tip removes the whole chain (backward walk to root).
+    2. Deleting a root removes every continuation — including stale
+       sibling continuations, which the delete would otherwise orphan
+       into brand-new visible top-level rows (forward walk collects ALL
+       compression children, not just the preferred tip).
+    3. Branch children of chain members keep the plain contract
+       (orphaned, not deleted); delegate children are cascade-deleted.
+    4. The returned count reflects the *selected* rows, not the
+       expanded chain links, so the dashboard toast matches what the
+       user picked.
+    5. The default stays chain-blind — existing callers (CLI
+       ``/exit --delete``, ACP, gateway API) are behaviour-identical.
+    """
+
+    def _make_chain(self, db):
+        """root --compression--> mid --compression--> tip (live)."""
+        db.create_session(session_id="root", source="tui")
+        db.append_message("root", role="user", content="the start")
+        db.end_session("root", end_reason="compression")
+        db.create_session(session_id="mid", source="tui", parent_session_id="root")
+        db.append_message("mid", role="user", content="continued once")
+        db.end_session("mid", end_reason="compression")
+        db.create_session(session_id="tip", source="tui", parent_session_id="mid")
+        db.append_message("tip", role="user", content="continued twice")
+
+    def test_deleting_tip_removes_whole_chain(self, db):
+        """The exact #57543 repro: the dashboard row carries the tip id;
+        bulk-deleting it must not leave the root to resurface on the
+        next list reload."""
+        self._make_chain(db)
+        rows = db.list_sessions_rich(limit=20)
+        assert [r["id"] for r in rows] == ["tip"]
+
+        deleted = db.delete_sessions(["tip"], include_compression_chain=True)
+        assert deleted == 1
+        assert db.get_session("root") is None
+        assert db.get_session("mid") is None
+        assert db.get_session("tip") is None
+        assert db.list_sessions_rich(limit=20) == []
+
+    def test_deleting_root_removes_continuations_and_stale_siblings(self, db):
+        """Forward direction: every compression child dies with the
+        chain — including a stale sibling continuation, which orphaning
+        would otherwise promote into a visible top-level row."""
+        db.create_session(session_id="root", source="tui")
+        db.end_session("root", end_reason="compression")
+        db.create_session(session_id="tip", source="tui", parent_session_id="root")
+        db.create_session(session_id="stale", source="tui", parent_session_id="root")
+        db.end_session("stale", end_reason="ws_orphan_reap")
+
+        deleted = db.delete_sessions(["root"], include_compression_chain=True)
+        assert deleted == 1
+        assert db.get_session("root") is None
+        assert db.get_session("tip") is None
+        assert db.get_session("stale") is None
+
+    def test_chain_delete_orphans_branches_and_cascades_delegates(self, db):
+        """Branch/delegate children of chain members keep the plain
+        per-row contract: a branch is its own conversation and survives
+        (orphaned); a delegate subagent run is cascade-deleted."""
+        self._make_chain(db)
+        db.create_session(
+            session_id="branch",
+            source="tui",
+            parent_session_id="root",
+            model_config={"_branched_from": "root"},
+        )
+        db.create_session(
+            session_id="delegate",
+            source="tui",
+            parent_session_id="tip",
+            model_config={"_delegate_from": "tip"},
+        )
+
+        deleted = db.delete_sessions(["tip"], include_compression_chain=True)
+        assert deleted == 1
+        branch = db.get_session("branch")
+        assert branch is not None
+        assert branch["parent_session_id"] is None
+        assert db.get_session("delegate") is None
+
+    def test_count_reflects_selected_rows_not_chain_links(self, db):
+        """Selecting 2 rows deletes 5 physical sessions but reports 2 —
+        the toast should match the user's selection."""
+        self._make_chain(db)
+        db.create_session(session_id="plain", source="tui")
+
+        deleted = db.delete_sessions(["tip", "plain"], include_compression_chain=True)
+        assert deleted == 2
+
+    def test_default_remains_chain_blind(self, db):
+        """Without the flag, only the listed row is deleted — pins the
+        historic contract for non-dashboard callers."""
+        self._make_chain(db)
+        deleted = db.delete_sessions(["tip"])
+        assert deleted == 1
+        assert db.get_session("tip") is None
+        assert db.get_session("mid") is not None
+        assert db.get_session("root") is not None
+
+    def test_single_delete_session_chain_variant(self, db):
+        """``delete_session(..., include_compression_chain=True)`` —
+        the single-row dashboard endpoint has the same reappearing-
+        conversation bug, so it routes through the same expansion."""
+        self._make_chain(db)
+        assert db.delete_session("tip", include_compression_chain=True) is True
+        assert db.get_session("root") is None
+        assert db.get_session("mid") is None
+        assert db.get_session("tip") is None
+        # Missing sessions still report False.
+        assert db.delete_session("ghost", include_compression_chain=True) is False
+
+    def test_chain_transcript_files_cleaned(self, db, tmp_path):
+        """On-disk transcripts of every expanded chain member are swept,
+        not just the selected row's."""
+        self._make_chain(db)
+        (tmp_path / "root.jsonl").write_text("")
+        (tmp_path / "tip.json").write_text("{}")
+
+        deleted = db.delete_sessions(
+            ["tip"], sessions_dir=tmp_path, include_compression_chain=True
+        )
+        assert deleted == 1
+        assert not (tmp_path / "root.jsonl").exists()
+        assert not (tmp_path / "tip.json").exists()
+
+
 class TestDeleteEmptySessions:
     """``delete_empty_sessions`` sweeps every ended, non-archived session
     whose ``message_count`` is 0. Backs the dashboard's "Delete empty"

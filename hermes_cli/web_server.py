@@ -9836,8 +9836,13 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
       deliberate — UI selection state can race against another tab's
       delete, and we'd rather succeed-on-the-rest than fail-the-whole-
       batch.
-    * Children of every deleted parent are orphaned, not cascade-
-      deleted.
+    * Compression chains are deleted whole: the sessions list shows one
+      row per logical conversation carrying the chain *tip's* id, so
+      deleting only that row would leave the root to resurface as the
+      previous chain link on the next reload (#57543). ``deleted``
+      still counts the selected rows, not the expanded chain links.
+    * Branch children of every deleted parent are orphaned, not
+      cascade-deleted; delegate children are cascade-deleted.
     * Active and archived sessions ARE deleted when explicitly
       selected — unlike ``DELETE /api/sessions/empty``, the user
       hand-picked the rows so we trust the selection.
@@ -9863,7 +9868,7 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
         )
     db = _open_session_db_for_profile(body.profile)
     try:
-        deleted = db.delete_sessions(body.ids)
+        deleted = db.delete_sessions(body.ids, include_compression_chain=True)
         return {"ok": True, "deleted": deleted}
     finally:
         db.close()
@@ -10067,7 +10072,11 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
         sid = db.resolve_session_id(session_id)
         if not sid:
             return {"ok": True, "already_absent": True}
-        db.delete_session(sid)
+        # Chain-aware like bulk-delete: the list row the user clicked
+        # represents the whole compression chain (and carries the tip's
+        # id), so deleting just this physical row would resurface the
+        # conversation as the previous chain link on reload (#57543).
+        db.delete_session(sid, include_compression_chain=True)
         return {"ok": True}
     finally:
         db.close()

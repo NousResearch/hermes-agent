@@ -6867,9 +6867,12 @@ class TestStreamingApiCall:
             call.args[0] for call in agent.stream_delta_callback.call_args_list
         ] == ["id: product-42\n", "is ready"]
 
-    def test_literal_sse_error_example_with_stop_is_not_provider_error(self, agent):
+    def test_full_bailian_sse_error_example_with_stop_is_literal_text(self, agent):
+        error_text = _provider_sse_429_text(message="Example error payload.")
+        split_at = len(error_text) // 2
         chunks = [
-            _make_chunk(content='event: error\ndata: {"example": true}\n'),
+            _make_chunk(content=error_text[:split_at]),
+            _make_chunk(content=error_text[split_at:]),
             _make_chunk(finish_reason="stop"),
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
@@ -6877,10 +6880,10 @@ class TestStreamingApiCall:
 
         resp = agent._interruptible_streaming_api_call({"messages": []})
 
-        assert resp.choices[0].message.content == 'event: error\ndata: {"example": true}\n'
+        assert resp.choices[0].message.content == error_text
         assert [
             call.args[0] for call in agent.stream_delta_callback.call_args_list
-        ] == ['event: error\ndata: {"example": true}\n']
+        ] == [error_text[:split_at], error_text[split_at:]]
 
     def test_bare_sse_error_payload_with_stop_is_literal_text(self, agent):
         error_text = _provider_bare_sse_error_text(message="Example error payload.")

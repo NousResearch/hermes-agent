@@ -306,6 +306,8 @@ def _provider_stream_error_from_text(
 
     finish_reason_text = str(finish_reason or "").lower()
     has_error_finish = finish_reason_text in _PROVIDER_STREAM_ERROR_FINISH_REASONS
+    if not has_error_finish:
+        return None
 
     for event in _parse_provider_sse_events(text):
         event_name = str(event.get("event") or "").strip().lower()
@@ -2441,13 +2443,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     if pending_text_parts or _provider_stream_text_may_be_sse(delta.content):
                         pending_text_parts.append(delta.content)
                         pending_text = "".join(pending_text_parts)
-                        provider_stream_error = _provider_stream_error_from_text(
-                            pending_text,
-                            None,
-                            response=getattr(stream, "response", None),
-                        )
-                        if provider_stream_error is not None:
-                            raise provider_stream_error
                         if _provider_stream_text_may_be_sse(pending_text):
                             continue
                         _flush_pending_stream_text()

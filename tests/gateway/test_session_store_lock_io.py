@@ -365,6 +365,47 @@ def test_save_serialization_snapshots_latest_routing_index(tmp_path):
     assert json.loads(persisted[key_b])["session_id"] == entry_b.session_id
 
 
+def test_external_handoff_route_survives_stale_in_memory_save(tmp_path):
+    """A watchdog-created clean route must not be clobbered by stale gateway memory."""
+    db = _db_with_rows(
+        {
+            "old-ended": {
+                "id": "old-ended",
+                "end_reason": "context_guard_handoff",
+            },
+            "new-live": {
+                "id": "new-live",
+                "end_reason": None,
+            },
+        }
+    )
+    key = "agent:main:telegram:dm:12345"
+    current_route = {
+        "session_key": key,
+        "session_id": "new-live",
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "platform": "telegram",
+        "chat_type": "dm",
+        "origin": _source().to_dict(),
+    }
+    db.load_gateway_routing_entries.return_value = {key: json.dumps(current_route)}
+    persisted: dict[str, str] = {}
+
+    def replace(entries, *, scope):
+        nonlocal persisted
+        persisted = dict(entries)
+
+    db.replace_gateway_routing_entries.side_effect = replace
+    store = _make_store(tmp_path, db)
+    stale = _seed_entry(store, key, "old-ended")
+
+    store._save_entries()
+
+    assert json.loads(persisted[key])["session_id"] == "new-live"
+    assert stale.session_id == "old-ended"
+
+
 def test_recovery_rejects_other_profile_row(tmp_path, monkeypatch):
     """The lock-free recovery path must retain the canonical profile guard."""
     source = _source()

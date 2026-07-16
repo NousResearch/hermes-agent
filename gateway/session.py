@@ -1246,6 +1246,76 @@ class SessionStore:
             self._routing_generation,
         )
 
+    def _protect_external_routing_handoffs(
+        self, data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Keep externally-created live routes from being overwritten by stale memory.
+
+        Script-only watchdogs and other out-of-band maintenance can atomically
+        end a gateway session and repoint ``gateway_routing``/``sessions.json``
+        while the gateway process is still alive.  Until the next inbound
+        message, this SessionStore may still hold the old in-memory
+        ``SessionEntry``.  A later full-index save from that stale snapshot must
+        not clobber the newer durable route back to the ended session.
+        """
+        db = getattr(self, "_db", None)
+        if not db or not data:
+            return data
+        loader = getattr(db, "load_gateway_routing_entries", None)
+        if not callable(loader):
+            return data
+        try:
+            current_rows = loader(scope=self._routing_scope())
+        except Exception:
+            return data
+
+        protected = dict(data)
+        for key, entry in list(data.items()):
+            if not isinstance(entry, dict):
+                continue
+            incoming_sid = entry.get("session_id")
+            if not incoming_sid:
+                continue
+            try:
+                incoming_row = db.get_session(str(incoming_sid))
+            except Exception:
+                continue
+            if not (incoming_row and incoming_row.get("end_reason") is not None):
+                continue
+
+            current_json = current_rows.get(key)
+            if not current_json:
+                continue
+            try:
+                current_entry = json.loads(current_json)
+            except Exception:
+                continue
+            if not isinstance(current_entry, dict):
+                continue
+            current_sid = current_entry.get("session_id")
+            if not current_sid or current_sid == incoming_sid:
+                continue
+            try:
+                current_row = db.get_session(str(current_sid))
+            except Exception:
+                continue
+            if current_row and current_row.get("end_reason") is None:
+                end_reason = (
+                    incoming_row.get("end_reason")
+                    if isinstance(incoming_row, dict)
+                    else None
+                )
+                logger.warning(
+                    "gateway.session: preserving newer durable route %r -> %s; "
+                    "stale in-memory entry still points at ended %s (%r)",
+                    key,
+                    current_sid,
+                    incoming_sid,
+                    end_reason,
+                )
+                protected[key] = current_entry
+        return protected
+
     def _persist_routing_data(self, data: Dict[str, Any], generation: int) -> None:
         """Serialize all whole-index writers through one durable write lock."""
         save_lock = getattr(self, "_save_lock", None)
@@ -1255,6 +1325,7 @@ class SessionStore:
         with save_lock:
             if generation <= getattr(self, "_persisted_routing_generation", 0):
                 return
+            data = self._protect_external_routing_handoffs(data)
             db_saved = False
             _db = getattr(self, "_db", None)
             if _db:

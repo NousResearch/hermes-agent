@@ -41,6 +41,7 @@ jobs:
       site: ${{ steps.classify.outputs.site }}
       scan: ${{ steps.classify.outputs.scan }}
       deps: ${{ steps.classify.outputs.deps }}
+      npm_lock: ${{ steps.classify.outputs.npm_lock }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
       ci_review: ${{ steps.classify.outputs.ci_review }}
@@ -101,6 +102,12 @@ jobs:
     needs: detect
     uses: ./.github/workflows/uv-lockfile-check.yml
 
+  lockfile-diff:
+    name: package-lock.json diff
+    needs: detect
+    if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.npm_lock == 'true'
+    uses: ./.github/workflows/lockfile-diff.yml
+
   docker-lint:
     name: Lint Docker scripts
     needs: detect
@@ -146,6 +153,7 @@ jobs:
       - history-check
       - contributor-check
       - uv-lockfile
+      - lockfile-diff
       - docker-lint
       - supply-chain
       - osv-scanner

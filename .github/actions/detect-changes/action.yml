@@ -24,6 +24,9 @@ outputs:
   deps:
     description: Check pyproject.toml dependency upper bounds.
     value: ${{ steps.classify.outputs.deps }}
+  npm_lock:
+    description: Post/update the semantic package-lock.json diff PR comment.
+    value: ${{ steps.classify.outputs.npm_lock }}
   mcp_catalog:
     description: Require MCP catalog security review label.
     value: ${{ steps.classify.outputs.mcp_catalog }}

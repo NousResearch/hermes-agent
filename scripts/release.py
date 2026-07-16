@@ -339,6 +339,7 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "hi@neueway.com": "brendandebeasi",
     "dorokuma@users.noreply.github.com": "dorokuma",
     "liuwei666888@users.noreply.github.com": "liuwei666888",
     "527711370@qq.com": "liuwei666888",

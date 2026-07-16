@@ -20,6 +20,7 @@ from agent.auxiliary_client import (
     _build_call_kwargs,
     _read_codex_access_token,
     _get_provider_chain,
+    _get_aux_model_for_provider,
     _is_payment_error,
     _is_rate_limit_error,
     _is_model_not_found_error,
@@ -3870,3 +3871,112 @@ class TestAuxiliaryMaxTokensParam:
         ):
             assert auxiliary_max_tokens_param(4096, model="") == {"max_tokens": 4096}
             assert auxiliary_max_tokens_param(4096, model=None) == {"max_tokens": 4096}
+
+
+# ── _get_aux_model_for_provider fallback diagnostic ────────────────────
+# Regression coverage for PR #44362 per teknium1 review: the new DEBUG
+# diagnostic must fire ONLY when a real ProviderProfile is present but its
+# default_aux_model is empty (a misconfiguration). `_p is None` is the
+# ordinary "no profile yet" legacy-fallback result and must stay silent.
+
+
+class TestGetAuxModelForProviderFallbackLogging:
+    """Three branches of `agent.auxiliary_client._get_aux_model_for_provider`:
+
+    1. Profile exists, default_aux_model is empty → DEBUG log MUST fire.
+    2. Profile is absent (`get_provider_profile` returns None) → MUST stay
+       silent; this is the legacy-fallback contract.
+    3. `get_provider_profile` raises → DEBUG log "Failed to read…" MUST fire.
+
+    The fallback return value (legacy dict → "" for unmapped providers) is
+    preserved in every branch.
+    """
+
+    @staticmethod
+    def _profile(default_aux_model):
+        ns = SimpleNamespace()
+        ns.default_aux_model = default_aux_model
+        ns.dummy = True
+        return ns
+
+    def test_profile_present_with_empty_default_logs_debug(self, caplog):
+        """Profile exists, default_aux_model="" → must log AND fall back."""
+        with patch(
+            "providers.get_provider_profile",
+            return_value=self._profile(default_aux_model=""),
+        ):
+            with caplog.at_level(
+                logging.DEBUG, logger="agent.auxiliary_client"
+            ):
+                result = _get_aux_model_for_provider("legacy-noaux-provider")
+        # No default `default_aux_model=""` → return the legacy fallback ("").
+        assert result == ""
+        debug_records = [
+            r
+            for r in caplog.records
+            if r.name == "agent.auxiliary_client" and r.levelno == logging.DEBUG
+        ]
+        assert len(debug_records) == 1, caplog.text
+        msg = debug_records[0].getMessage()
+        assert "has no default_aux_model" in msg
+        assert "legacy-noaux-provider" in msg
+
+    def test_profile_absent_returns_silently(self, caplog):
+        """`get_provider_profile` returning None is the normal legacy path —
+        must NOT emit a debug log that would mislabel it as missing default.
+        """
+        with patch("providers.get_provider_profile", return_value=None):
+            with caplog.at_level(
+                logging.DEBUG, logger="agent.auxiliary_client"
+            ):
+                result = _get_aux_model_for_provider("provider-without-profile")
+        # No profile → legacy fallback (empty for unmapped).
+        assert result == ""
+        debug_records = [
+            r
+            for r in caplog.records
+            if r.name == "agent.auxiliary_client" and r.levelno == logging.DEBUG
+        ]
+        assert debug_records == [], caplog.text
+
+    def test_profile_lookup_exception_logs_failure(self, caplog):
+        """`get_provider_profile` raising → must log AND not crash."""
+        with patch(
+            "providers.get_provider_profile",
+            side_effect=RuntimeError("registry exploded"),
+        ):
+            with caplog.at_level(
+                logging.DEBUG, logger="agent.auxiliary_client"
+            ):
+                result = _get_aux_model_for_provider("provider-with-bad-registry")
+        # Exception is swallowed; fallback returns "".
+        assert result == ""
+        debug_records = [
+            r
+            for r in caplog.records
+            if r.name == "agent.auxiliary_client" and r.levelno == logging.DEBUG
+        ]
+        assert len(debug_records) == 1, caplog.text
+        msg = debug_records[0].getMessage()
+        assert "Failed to read ProviderProfile" in msg
+        assert "provider-with-bad-registry" in msg
+        assert "registry exploded" in msg
+
+    def test_profile_with_default_returns_without_log(self, caplog):
+        """Sanity counter-test: happy-path profile returns directly, no log."""
+        with patch(
+            "providers.get_provider_profile",
+            return_value=self._profile(default_aux_model="anthropic/claude-haiku-4.5"),
+        ):
+            with caplog.at_level(
+                logging.DEBUG, logger="agent.auxiliary_client"
+            ):
+                result = _get_aux_model_for_provider("happy-provider")
+        # Real default wins; returns without falling back.
+        assert result == "anthropic/claude-haiku-4.5"
+        debug_records = [
+            r
+            for r in caplog.records
+            if r.name == "agent.auxiliary_client" and r.levelno == logging.DEBUG
+        ]
+        assert debug_records == [], caplog.text

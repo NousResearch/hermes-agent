@@ -894,36 +894,68 @@ def _handle_attach(args: dict, **kw) -> str:
         return tool_error(f"kanban_attach: {e}")
 
 
+_MAX_ATTACH_URL_REDIRECTS = 5
+
+
 def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[str]]:
-    """Fetch ``url`` over http(s), aborting once ``max_bytes`` is exceeded.
+    """Fetch ``url`` over http(s) with SSRF guarding, capped at ``max_bytes``.
+
+    Every hop — the initial URL and each redirect target — is validated with
+    ``tools.url_safety.is_safe_url`` before it is fetched, so a
+    model-controlled URL (or a public host 302ing to one) cannot reach
+    loopback, private/CGNAT ranges, or cloud metadata endpoints. Redirects
+    are followed manually (``follow_redirects=False``) so each Location is
+    re-checked, mirroring ``tools.skills_hub._guarded_http_get``.
 
     Returns ``(data, content_type)``. Raises ``ValueError`` for a non-http(s)
-    scheme or a body that overruns the cap (the caller maps it to a clean
-    tool error). Reads in chunks so an oversize response is rejected without
-    buffering the whole thing.
+    scheme, an SSRF-blocked target, too many redirects, or a body that
+    overruns the cap (the caller maps it to a clean tool error). Reads in
+    chunks so an oversize response is rejected without buffering the whole
+    thing.
     """
-    from urllib.parse import urlparse
-    from urllib.request import Request, urlopen
+    from urllib.parse import urljoin, urlparse
 
-    scheme = (urlparse(url).scheme or "").lower()
-    if scheme not in ("http", "https"):
-        raise ValueError(f"unsupported URL scheme {scheme!r}; only http/https are allowed")
-    req = Request(url, headers={"User-Agent": "hermes-kanban/attach"})
-    chunks: list[bytes] = []
-    total = 0
-    with urlopen(req, timeout=30) as resp:  # noqa: S310 — scheme checked above
-        content_type = resp.headers.get_content_type() if resp.headers else None
-        while True:
-            chunk = resp.read(1024 * 1024)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > max_bytes:
-                raise ValueError(
-                    f"attachment exceeds {max_bytes // (1024 * 1024)} MB limit"
-                )
-            chunks.append(chunk)
-    return b"".join(chunks), content_type
+    import httpx
+
+    from tools.url_safety import is_safe_url
+
+    current_url = url
+    for _ in range(_MAX_ATTACH_URL_REDIRECTS + 1):
+        scheme = (urlparse(current_url).scheme or "").lower()
+        if scheme not in ("http", "https"):
+            raise ValueError(
+                f"unsupported URL scheme {scheme!r}; only http/https are allowed"
+            )
+        if not is_safe_url(current_url):
+            raise ValueError(
+                f"URL blocked by SSRF protection (private/internal address): {current_url}"
+            )
+        chunks: list[bytes] = []
+        total = 0
+        with httpx.stream(
+            "GET",
+            current_url,
+            headers={"User-Agent": "hermes-kanban/attach"},
+            timeout=30,
+            follow_redirects=False,
+        ) as resp:
+            if resp.is_redirect:
+                location = resp.headers.get("location")
+                if not location:
+                    raise ValueError(f"redirect without Location header from {current_url}")
+                current_url = urljoin(current_url, location)
+                continue
+            resp.raise_for_status()
+            content_type = (resp.headers.get("content-type") or "").split(";")[0].strip() or None
+            for chunk in resp.iter_bytes(1024 * 1024):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError(
+                        f"attachment exceeds {max_bytes // (1024 * 1024)} MB limit"
+                    )
+                chunks.append(chunk)
+        return b"".join(chunks), content_type
+    raise ValueError(f"too many redirects fetching {url}")
 
 
 def _handle_attach_url(args: dict, **kw) -> str:

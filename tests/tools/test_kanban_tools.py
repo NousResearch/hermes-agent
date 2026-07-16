@@ -2258,6 +2258,22 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def allow_private_urls(monkeypatch):
+    """Opt the SSRF guard into private/loopback targets for local fixtures.
+
+    Mirrors a user setting HERMES_ALLOW_PRIVATE_URLS on a private network.
+    Resets the url_safety process-lifetime cache on both sides so the
+    override neither leaks in nor out of the test.
+    """
+    from tools import url_safety
+
+    monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+    url_safety._reset_allow_private_cache()
+    yield
+    url_safety._reset_allow_private_cache()
+
+
 def test_attach_roundtrips_bytes_to_row_and_disk(worker_env):
     """kanban_attach decodes base64, writes the blob, and records the row."""
     import base64
@@ -2385,8 +2401,13 @@ def test_attachments_unknown_task_errors(worker_env):
     assert "error" in json.loads(out)
 
 
-def test_attach_url_fetches_local_fixture(worker_env):
-    """kanban_attach_url downloads from an http(s) URL and stores the bytes."""
+def test_attach_url_fetches_local_fixture(worker_env, allow_private_urls):
+    """kanban_attach_url downloads from an http(s) URL and stores the bytes.
+
+    The fixture server lives on loopback, which the SSRF guard blocks by
+    default — opted in via the allow_private_urls fixture exactly like a
+    user on a private network would.
+    """
     import http.server
     import threading
     from pathlib import Path
@@ -2430,7 +2451,7 @@ def test_attach_url_fetches_local_fixture(worker_env):
         conn.close()
 
 
-def test_attach_url_rejects_oversize_stream(worker_env, monkeypatch):
+def test_attach_url_rejects_oversize_stream(worker_env, monkeypatch, allow_private_urls):
     """An oversize response body is rejected during download, no row written."""
     import http.server
     import threading
@@ -2477,3 +2498,186 @@ def test_attach_url_rejects_non_http_scheme(worker_env):
     d = json.loads(out)
     assert "error" in d
     assert "scheme" in d["error"]
+
+
+# ---------------------------------------------------------------------------
+# kanban_attach_url — SSRF guard (tools/url_safety.is_safe_url per hop)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def default_url_guard(monkeypatch):
+    """Force the SSRF guard to its secure default for this test.
+
+    Clears HERMES_ALLOW_PRIVATE_URLS and resets url_safety's process-lifetime
+    cache on both sides so a prior test's opt-in can't leak in.
+    """
+    from tools import url_safety
+
+    monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+    url_safety._reset_allow_private_cache()
+    yield
+    url_safety._reset_allow_private_cache()
+
+
+def _assert_attach_url_blocked(worker_env, url):
+    """Call kanban_attach_url with ``url`` and assert the SSRF guard fired
+    (clean tool error, no attachment row, no network fetch needed)."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_attach_url({"url": url})
+    d = json.loads(out)
+    assert "error" in d, out
+    assert "SSRF" in d["error"] or "blocked" in d["error"].lower(), out
+    conn = kb.connect()
+    try:
+        assert kb.list_attachments(conn, worker_env) == []
+    finally:
+        conn.close()
+
+
+def test_attach_url_blocks_loopback(worker_env, default_url_guard):
+    """http://127.0.0.1/ is rejected before any connection is made."""
+    _assert_attach_url_blocked(worker_env, "http://127.0.0.1/")
+
+
+def test_attach_url_blocks_cloud_metadata(worker_env, default_url_guard):
+    """The cloud metadata endpoint is rejected — the #1 SSRF target."""
+    _assert_attach_url_blocked(
+        worker_env, "http://169.254.169.254/latest/meta-data/"
+    )
+
+
+def test_attach_url_blocks_private_range(worker_env, default_url_guard):
+    """RFC1918 addresses (http://10.0.0.1/) are rejected."""
+    _assert_attach_url_blocked(worker_env, "http://10.0.0.1/")
+
+
+def _fake_public_dns(monkeypatch, mapping):
+    """Patch url_safety's getaddrinfo so hostnames in ``mapping`` resolve to
+    the given (public) IPs and literal IPs resolve to themselves — no real
+    DNS or network traffic."""
+    import ipaddress
+    import socket as _socket
+
+    real_af, real_sock = _socket.AF_INET, _socket.SOCK_STREAM
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        ip = mapping.get(host)
+        if ip is None:
+            # Literal IPs pass through; unknown hostnames fail like NXDOMAIN.
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                raise _socket.gaierror(f"fake DNS: unknown host {host!r}")
+            ip = host
+        return [(real_af, real_sock, 6, "", (ip, 0))]
+
+    from tools import url_safety
+    monkeypatch.setattr(url_safety.socket, "getaddrinfo", fake_getaddrinfo)
+
+
+class _FakeStreamResponse:
+    def __init__(self, *, status_code=200, headers=None, body=b""):
+        self.status_code = status_code
+        self.headers = headers or {}
+        self._body = body
+
+    @property
+    def is_redirect(self):
+        return 300 <= self.status_code < 400 and "location" in {
+            k.lower() for k in self.headers
+        }
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def iter_bytes(self, chunk_size):
+        for i in range(0, len(self._body), chunk_size):
+            yield self._body[i:i + chunk_size]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_attach_url_blocks_redirect_to_loopback(worker_env, default_url_guard, monkeypatch):
+    """A public host 302ing to loopback is caught on the redirect hop.
+
+    The pre-flight check passes (public IP), then the mocked response
+    redirects to http://127.0.0.1/ — the guard must re-validate the
+    Location target and refuse to follow it.
+    """
+    import httpx
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    _fake_public_dns(monkeypatch, {"files.example.com": "93.184.216.34"})
+
+    requested = []
+
+    def fake_stream(method, url, **kwargs):
+        requested.append(url)
+        assert kwargs.get("follow_redirects") is False
+        return _FakeStreamResponse(
+            status_code=302,
+            headers={"location": "http://127.0.0.1/latest/secrets"},
+        )
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+
+    out = kt._handle_attach_url({"url": "http://files.example.com/report.pdf"})
+    d = json.loads(out)
+    assert "error" in d, out
+    assert "127.0.0.1" in d["error"], out
+    # Only the public hop was ever fetched; the loopback target never was.
+    assert requested == ["http://files.example.com/report.pdf"]
+
+    conn = kb.connect()
+    try:
+        assert kb.list_attachments(conn, worker_env) == []
+    finally:
+        conn.close()
+
+
+def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkeypatch):
+    """A public URL passes the guard and the bytes are stored (mocked fetch)."""
+    from pathlib import Path
+
+    import httpx
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    _fake_public_dns(monkeypatch, {"files.example.com": "93.184.216.34"})
+
+    payload = b"public fetch body"
+
+    def fake_stream(method, url, **kwargs):
+        assert url == "http://files.example.com/docs/spec.pdf"
+        return _FakeStreamResponse(
+            status_code=200,
+            headers={"content-type": "application/pdf; charset=binary"},
+            body=payload,
+        )
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+
+    out = kt._handle_attach_url({"url": "http://files.example.com/docs/spec.pdf"})
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+    assert d["size"] == len(payload)
+
+    conn = kb.connect()
+    try:
+        atts = kb.list_attachments(conn, worker_env)
+        assert [a.filename for a in atts] == ["spec.pdf"]
+        assert atts[0].content_type == "application/pdf"
+        assert Path(atts[0].stored_path).read_bytes() == payload
+    finally:
+        conn.close()

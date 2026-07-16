@@ -786,7 +786,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const allowPermanent = ev.payload.allow_permanent !== false
 
         patchOverlayState({
-          approval: { allowPermanent, command: String(ev.payload.command ?? ''), description }
+          approval: {
+            allowPermanent,
+            choices: ev.payload.choices,
+            command: String(ev.payload.command ?? ''),
+            description,
+            smartDenied: ev.payload.smart_denied === true
+          }
         })
         setStatus('approval needed')
 
@@ -804,6 +810,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           secret: { envVar: ev.payload.env_var, prompt: ev.payload.prompt, requestId: ev.payload.request_id }
         })
         setStatus('secret input needed')
+
+        return
+
+      case 'sudo.expire':
+        patchOverlayState(prev => (prev.sudo?.requestId === ev.payload.request_id ? { ...prev, sudo: null } : prev))
+
+        return
+
+      case 'secret.expire':
+        patchOverlayState(prev => (prev.secret?.requestId === ev.payload.request_id ? { ...prev, secret: null } : prev))
 
         return
 

@@ -42,7 +42,7 @@ const APP = (() => {
   const unpacked = path.join(RELEASE_ROOT, 'linux-unpacked')
   return {
     appPath: unpacked,
-    binary: path.join(unpacked, 'hermes'),
+    binary: path.join(unpacked, 'Hermes'),
     resourcesPath: path.join(unpacked, 'resources'),
     asarPath: path.join(unpacked, 'resources', 'app.asar'),
     unpackedDistIndex: path.join(unpacked, 'resources', 'app.asar.unpacked', 'dist', 'index.html')
@@ -108,10 +108,9 @@ function expectedNativeDepPaths() {
 function ensurePlatformBuilds() {
   if (PLATFORM === 'darwin') return
   if (PLATFORM === 'win32') return
+  if (PLATFORM === 'linux') return
   die(
-    `Desktop bundle validation is only wired for darwin / win32 today; platform=${PLATFORM} ` +
-      `is not yet supported. The thin-installer story for Linux ships in Phase 2 alongside ` +
-      `install.sh's stage protocol.`
+    `Desktop bundle validation is only wired for darwin / win32 / linux; platform=${PLATFORM} is not supported.`
   )
 }
 

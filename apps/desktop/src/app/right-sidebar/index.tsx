@@ -171,7 +171,7 @@ function FilesystemTab({
           title={r.collapseAll}
           variant="ghost"
         >
-          <Codicon name="collapse-all" size="0.8125rem" />
+          <CollapseAllIcon />
         </Button>
       </RightSidebarSectionHeader>
       <FileTreeBody
@@ -189,6 +189,15 @@ function FilesystemTab({
         openState={openState}
       />
     </div>
+  )
+}
+
+function CollapseAllIcon() {
+  return (
+    <svg aria-hidden="true" className="h-[0.8125rem] w-[0.8125rem]" fill="none" viewBox="0 0 16 16">
+      <rect height="10" rx="1.5" stroke="currentColor" strokeWidth="1.5" width="10" x="3" y="3" />
+      <path d="M5.5 6.5h5M5.5 8h5M5.5 9.5h5" stroke="currentColor" strokeLinecap="round" strokeWidth="1.25" />
+    </svg>
   )
 }
 

@@ -36,6 +36,14 @@ def _run_timeout_case(case: dict):
     with _patched_env(case.get("env") or {}):
         helper = _scheduler_ext_helper("get_script_timeout")
         if helper is None:
+            # Pre-extraction replay path: only valid when the legacy inline
+            # function still exists (fail loud otherwise -- a transient import
+            # error on a post-extraction tree must not masquerade as legacy).
+            if not hasattr(scheduler, "_get_script_timeout"):
+                raise RuntimeError(
+                    "scheduler_ext import failed on a post-extraction tree "
+                    "(no legacy _get_script_timeout fallback available)"
+                )
             old_timeout = scheduler._SCRIPT_TIMEOUT
             old_loader = scheduler.load_config
             old_logger = scheduler.logger
@@ -88,12 +96,14 @@ def _scheduler_ext_helper(name: str):
 
 @contextmanager
 def _patched_env(values: dict[str, str]):
-    old = {key: os.environ.get(key) for key in values}
+    _TIMEOUT_KEY = "HERMES_CRON_SCRIPT_TIMEOUT"
+    tracked = set(values) | {_TIMEOUT_KEY}
+    old = {key: os.environ.get(key) for key in tracked}
     try:
         for key, value in values.items():
             os.environ[key] = str(value)
-        if "HERMES_CRON_SCRIPT_TIMEOUT" not in values:
-            os.environ.pop("HERMES_CRON_SCRIPT_TIMEOUT", None)
+        if _TIMEOUT_KEY not in values:
+            os.environ.pop(_TIMEOUT_KEY, None)
         yield
     finally:
         for key, value in old.items():

@@ -191,33 +191,6 @@
       "return": 45
     }
   },
-  "6e897508ecf8082e01e273e5983a6c3a28e779508d0b191dfb60f4d06c46f5e8": {
-    "input": {
-      "config": {
-        "agent": {
-          "model_reasoning": {
-            "gpt-5.4": {
-              "reasoning_effort": "high"
-            }
-          },
-          "reasoning_effort": "low"
-        }
-      },
-      "job": {},
-      "kind": "reasoning",
-      "model": "gpt-5.4",
-      "name": "reasoning per model override wins over global"
-    },
-    "name": "reasoning per model override wins over global",
-    "output": {
-      "db": [],
-      "messages": [],
-      "return": {
-        "effort": "low",
-        "enabled": true
-      }
-    }
-  },
   "764eb5b6d502a42639784b8c9ed2ca59491319c31217d03b843e1e136391702f": {
     "input": {
       "config": {},
@@ -233,6 +206,31 @@
       "db": [],
       "messages": [],
       "return": null
+    }
+  },
+  "a3c3ea03696a07030a5521633518b2c9aa713d1b1dd46d980a6638df93751612": {
+    "input": {
+      "config": {
+        "agent": {
+          "reasoning_effort": "low",
+          "reasoning_overrides": {
+            "gpt-5.4": "high"
+          }
+        }
+      },
+      "job": {},
+      "kind": "reasoning",
+      "model": "gpt-5.4",
+      "name": "reasoning per model override wins over global"
+    },
+    "name": "reasoning per model override wins over global",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "effort": "high",
+        "enabled": true
+      }
     }
   },
   "de326994063b27265bbbe9da95438542f234fe2819f58e9d4e480e19fd0ec2d3": {

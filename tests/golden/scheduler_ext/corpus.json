@@ -112,10 +112,8 @@
       "config": {
         "agent": {
           "reasoning_effort": "low",
-          "model_reasoning": {
-            "gpt-5.4": {
-              "reasoning_effort": "high"
-            }
+          "reasoning_overrides": {
+            "gpt-5.4": "high"
           }
         }
       },

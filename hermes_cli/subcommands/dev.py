@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from hermes_cli.dev_sync import detect_tree_kind, run as dev_sync_run
+from hermes_cli.dev_sync import DevSyncError, detect_tree_kind, run as dev_sync_run
 
 
 # ---------------------------------------------------------------------------
@@ -84,12 +84,16 @@ def _cmd_dev_sync(args, tree_root: Path) -> None:
     desktop = getattr(args, "desktop", False)
 
     print("→ Syncing source checkout...")
-    dev_sync_run(
-        tree_root,
-        watch=watch,
-        only=only,
-        desktop=desktop,
-    )
+    try:
+        dev_sync_run(
+            tree_root,
+            watch=watch,
+            only=only,
+            desktop=desktop,
+        )
+    except DevSyncError as exc:
+        print(f"✗ Sync failed: {exc}", file=sys.stderr)
+        sys.exit(1)
     print("✓ Sync complete")
 
 
@@ -254,7 +258,7 @@ def build_dev_parser(subparsers, *, cmd_dev: Callable) -> None:
         "--watch",
         action="store_true",
         default=False,
-        help="Keep watching for changes and rebuild incrementally (not yet implemented).",
+        help="Run selected TUI/web/desktop dev processes after provisioning.",
     )
     sync_parser.add_argument(
         "--only",

@@ -28,6 +28,10 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+class DevSyncError(RuntimeError):
+    """A mandatory checkout provisioning step failed."""
+
+
 # ---------------------------------------------------------------------------
 # Tree-kind detection (Python-side mirror of the Rust launcher's TreeKind)
 # ---------------------------------------------------------------------------
@@ -332,7 +336,7 @@ def run(
 
     Args:
         tree_root: Root of the source checkout.
-        watch: If True, keep watching for changes (not yet implemented).
+        watch: If True, supervise the selected frontend dev processes after sync.
         only: If given, only run these steps (``"venv"``, ``"node"``,
               ``"tui"``, ``"web"``, ``"desktop"``).
         desktop: Force desktop build even if no previous build exists.
@@ -385,6 +389,9 @@ def run(
     for line in report.summary_lines():
         print(line)
 
+    if watch:
+        _watch(tree_root, steps, desktop=desktop, runner=runner)
+
     return report
 
 
@@ -404,21 +411,16 @@ def _sync_venv(
         uv_bin = None
 
     if not uv_bin:
-        # Fallback: try system uv or python -m venv
         import shutil
 
         uv_bin = shutil.which("uv")
         if not uv_bin:
-            # Last resort: python -m venv
-            if not venv_dir.is_dir():
-                runner.run([sys.executable, "-m", "venv", str(venv_dir)], cwd=tree_root)
-                report.venv_created = True
-            report.skipped.append("uv not available — used python -m venv")
-            return report
+            raise DevSyncError("venv: managed uv is unavailable")
 
     if not venv_dir.is_dir():
         # Create the venv
-        runner.run([uv_bin, "venv", str(venv_dir)], cwd=tree_root)
+        result = runner.run([uv_bin, "venv", str(venv_dir)], cwd=tree_root)
+        _require_success("venv creation", result)
         report.venv_created = True
 
     # Sync deps: uv sync --extra all --locked, fall back to uv pip install -e .[all]
@@ -436,7 +438,8 @@ def _sync_venv(
                 cwd=tree_root,
                 env={"VIRTUAL_ENV": str(venv_dir)},
             )
-            report.venv_synced = result.returncode == 0
+            _require_success("venv dependency sync", result)
+            report.venv_synced = True
     else:
         # No lockfile — use pip install directly
         result = runner.run(
@@ -444,7 +447,8 @@ def _sync_venv(
             cwd=tree_root,
             env={"VIRTUAL_ENV": str(venv_dir)},
         )
-        report.venv_synced = result.returncode == 0
+        _require_success("venv dependency sync", result)
+        report.venv_synced = True
 
     return report
 
@@ -452,7 +456,7 @@ def _sync_venv(
 def _install_launcher(
     tree_root: Path, report: SyncReport, runner: "SubprocessRunner"
 ) -> SyncReport:
-    """Step 2: install the release launcher into .hermes-launcher/ (best-effort)."""
+    """Step 2: install the release launcher into .hermes-launcher/."""
     launcher_dir = tree_root / ".hermes-launcher"
     try:
         from hermes_cli.subcommands.adopt import _platform_suffix, DEFAULT_RELEASE_BASE
@@ -472,9 +476,7 @@ def _install_launcher(
         dest.chmod(dest.stat().st_mode | stat.S_IRWXU)
         report.launcher_installed = True
     except Exception as exc:
-        # Best-effort — stub fallback keeps working
-        logger.debug("Launcher install skipped: %s", exc)
-        report.skipped.append("launcher install skipped (stub fallback)")
+        raise DevSyncError(f"launcher install failed: {exc}") from exc
 
     return report
 
@@ -490,17 +492,14 @@ def _sync_node_deps(
     try:
         from hermes_constants import find_node_executable, with_hermes_node_path
     except ImportError:
-        report.skipped.append("node deps skipped (hermes_constants not importable)")
-        return report
+        raise DevSyncError("node deps: hermes_constants is not importable")
 
     npm = find_node_executable("npm")
     if not npm:
-        report.skipped.append("node deps skipped (npm not found)")
-        return report
+        raise DevSyncError("node deps: npm not found")
 
     if not (tree_root / "package.json").exists():
-        report.skipped.append("node deps skipped (no package.json)")
-        return report
+        raise DevSyncError("node deps: package.json is missing")
 
     extra_args = ["--no-fund", "--no-audit", "--progress=false"]
     env = with_hermes_node_path()
@@ -509,8 +508,7 @@ def _sync_node_deps(
     root_args = [*extra_args, "--workspaces=false"]
     result = runner.run_npm(npm, tree_root, extra_args=tuple(root_args), env=env)
     if result.returncode != 0:
-        report.skipped.append("node deps: root install failed")
-        return report
+        _require_success("node root install", result)
 
     # Step 2: install only the workspaces (ui-tui, web)
     ws_args = [*extra_args, "--workspace", "ui-tui", "--workspace", "web"]
@@ -518,7 +516,7 @@ def _sync_node_deps(
     if result.returncode == 0:
         report.node_deps_installed = True
     else:
-        report.skipped.append("node deps: workspace install failed")
+        _require_success("node workspace install", result)
 
     return report
 
@@ -529,8 +527,7 @@ def _build_tui(
     """Step 4a: build the TUI dist, gated by ArtifactStamp."""
     tui_dir = tree_root / "ui-tui"
     if not (tui_dir / "package.json").exists():
-        report.skipped.append("tui build skipped (no ui-tui/package.json)")
-        return report
+        raise DevSyncError("tui build: ui-tui/package.json is missing")
 
     stamp = _tui_stamp(tree_root)
     if not stamp.needs_build():
@@ -540,13 +537,11 @@ def _build_tui(
     try:
         from hermes_constants import find_node_executable, with_hermes_node_path
     except ImportError:
-        report.skipped.append("tui build skipped (hermes_constants not importable)")
-        return report
+        raise DevSyncError("tui build: hermes_constants is not importable")
 
     npm = find_node_executable("npm")
     if not npm:
-        report.skipped.append("tui build skipped (npm not found)")
-        return report
+        raise DevSyncError("tui build: npm not found")
 
     env = with_hermes_node_path()
     # esbuild the TUI
@@ -555,7 +550,7 @@ def _build_tui(
         stamp.write_stamp()
         report.tui_built = True
     else:
-        report.skipped.append("tui build failed")
+        _require_success("tui build", result)
 
     return report
 
@@ -566,8 +561,7 @@ def _build_web(
     """Step 4b: build the web dist, gated by ArtifactStamp."""
     web_dir = tree_root / "web"
     if not (web_dir / "package.json").exists():
-        report.skipped.append("web build skipped (no web/package.json)")
-        return report
+        raise DevSyncError("web build: web/package.json is missing")
 
     stamp = _web_stamp(tree_root)
     if not stamp.needs_build():
@@ -577,13 +571,11 @@ def _build_web(
     try:
         from hermes_constants import find_node_executable, with_hermes_node_path
     except ImportError:
-        report.skipped.append("web build skipped (hermes_constants not importable)")
-        return report
+        raise DevSyncError("web build: hermes_constants is not importable")
 
     npm = find_node_executable("npm")
     if not npm:
-        report.skipped.append("web build skipped (npm not found)")
-        return report
+        raise DevSyncError("web build: npm not found")
 
     env = with_hermes_node_path()
     result = runner.run([npm, "run", "build"], cwd=web_dir, env=env)
@@ -591,7 +583,7 @@ def _build_web(
         stamp.write_stamp()
         report.web_built = True
     else:
-        report.skipped.append("web build failed")
+        _require_success("web build", result)
 
     return report
 
@@ -602,8 +594,7 @@ def _build_desktop(
     """Step 4c: build the desktop app, gated by ArtifactStamp."""
     desktop_dir = tree_root / "apps" / "desktop"
     if not (desktop_dir / "package.json").exists():
-        report.skipped.append("desktop build skipped (no apps/desktop/package.json)")
-        return report
+        raise DevSyncError("desktop build: apps/desktop/package.json is missing")
 
     stamp = _desktop_stamp(tree_root)
     if not stamp.needs_build():
@@ -613,13 +604,11 @@ def _build_desktop(
     try:
         from hermes_constants import find_node_executable, with_hermes_node_path
     except ImportError:
-        report.skipped.append("desktop build skipped (hermes_constants not importable)")
-        return report
+        raise DevSyncError("desktop build: hermes_constants is not importable")
 
     npm = find_node_executable("npm")
     if not npm:
-        report.skipped.append("desktop build skipped (npm not found)")
-        return report
+        raise DevSyncError("desktop build: npm not found")
 
     env = with_hermes_node_path()
     # Source mode: "build"; packaged mode: "pack"
@@ -630,7 +619,7 @@ def _build_desktop(
         stamp.write_stamp()
         report.desktop_built = True
     else:
-        report.skipped.append("desktop build failed")
+        _require_success("desktop build", result)
 
     return report
 
@@ -764,3 +753,57 @@ class SubprocessRunner:
             errors="replace",
             check=False,
         )
+
+    def watch(self, commands: list[tuple[list[str], Path]]) -> int:
+        """Run dev processes together; stop peers when the first exits."""
+        processes = [subprocess.Popen(command, cwd=str(cwd)) for command, cwd in commands]
+        try:
+            while True:
+                for process in processes:
+                    code = process.poll()
+                    if code is not None:
+                        return code
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.terminate()
+            for process in processes:
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+
+
+def _require_success(step: str, result: subprocess.CompletedProcess) -> None:
+    if result.returncode == 0:
+        return
+    detail = (result.stderr or result.stdout or "unknown error").strip()
+    raise DevSyncError(f"{step} failed: {detail}")
+
+
+def _watch(
+    tree_root: Path,
+    steps: list[str],
+    *,
+    desktop: bool,
+    runner: SubprocessRunner,
+) -> None:
+    try:
+        from hermes_constants import find_node_executable
+    except ImportError as exc:
+        raise DevSyncError("watch: hermes_constants is not importable") from exc
+    npm = find_node_executable("npm")
+    if not npm:
+        raise DevSyncError("watch: npm not found")
+    commands: list[tuple[list[str], Path]] = []
+    if "tui" in steps:
+        commands.append(([npm, "run", "dev"], tree_root / "ui-tui"))
+    if "web" in steps:
+        commands.append(([npm, "run", "dev"], tree_root / "web"))
+    if "desktop" in steps and desktop:
+        commands.append(([npm, "run", "dev"], tree_root / "apps" / "desktop"))
+    if not commands:
+        raise DevSyncError("watch: select tui, web, or --desktop")
+    code = runner.watch(commands)
+    if code != 0:
+        raise DevSyncError(f"watch process exited with code {code}")

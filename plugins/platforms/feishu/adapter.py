@@ -3115,8 +3115,10 @@ class FeishuAdapter(BasePlatformAdapter):
 
         # Guard runs post-strip so a pure "@Bot" message (stripped to "") is dropped.
         # Also catches non-TEXT types (sticker, unrecognised message, failed image parse,
-        # etc.) that yield neither text nor media — these would produce a blank
-        # ContentBlock and cause HTTP 400 "text field is blank" errors from Bedrock/Anthropic.
+        # etc.) that yield neither text nor media. Bedrock substitutes a non-empty
+        # whitespace block for blank content (bedrock_adapter.py:500-541), so the
+        # real risk is an empty unsupported event propagating into dispatch unchecked;
+        # this guard keeps it out entirely.
         if not text and not media_urls:
             logger.debug("[Feishu] Ignoring empty message id=%s (type=%s)", message_id, inbound_type.value)
             return

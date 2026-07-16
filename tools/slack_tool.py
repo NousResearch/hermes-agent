@@ -1,13 +1,14 @@
-"""Read bounded Slack history for the active Slack conversation.
+"""Read bounded Slack history through the current profile's live Slack adapter.
 
 The tool deliberately reuses the current profile's live Slack adapter instead
 of resolving a token or constructing a second HTTP client. Each supported
 adapter owns exactly one Slack workspace; comma-separated multi-workspace
 adapters and upstream-relay turns fail closed.
 
-Every read is bound to ``HERMES_SESSION_CHAT_ID``.  A model cannot enumerate or
-read another channel (including another user's DM) merely because the bot can
-see it.  Slack permalinks are parsed locally and are never fetched as URLs.
+Reads use ``HERMES_SESSION_CHAT_ID`` by default. An explicitly configured
+profile owner may list and read same-workspace channels the bot belongs to;
+other DMs and group DMs remain forbidden. Slack permalinks are parsed locally
+and are never fetched as URLs.
 """
 
 from __future__ import annotations
@@ -569,7 +570,7 @@ def _list_channels_from_live_adapter(
     return dict(payload)
 
 
-def _extract_urls(text: str) -> list[str]:
+def _extract_urls(text: str, *, wanted_domains: set[str] | None = None) -> list[str]:
     candidates: list[str] = []
     for link in _SLACK_LINK_RE.findall(text or ""):
         candidates.extend(_URL_RE.findall(link))
@@ -579,6 +580,13 @@ def _extract_urls(text: str) -> list[str]:
     urls: list[str] = []
     for candidate in candidates:
         url = candidate[:_MAX_URL_CHARS]
+        if wanted_domains is not None:
+            try:
+                hostname = (urllib.parse.urlsplit(url).hostname or "").lower()
+            except ValueError:
+                continue
+            if hostname.removeprefix("www.") not in wanted_domains:
+                continue
         if url in seen:
             continue
         seen.add(url)
@@ -642,14 +650,25 @@ def _success_payload(**values: Any) -> str:
         collection = payload[collection_key]
         original_count = len(collection)
         payload["result_truncated"] = True
-        if payload.get("action") in {"fetch_history", "fetch_thread", "list_channels"}:
+        action = payload.get("action")
+        if action in {"fetch_history", "fetch_thread", "list_channels"}:
             # Advancing Slack's cursor would skip items removed locally from
             # this page. Suppress it and tell the caller to retry the same page
             # with a smaller limit before continuing remote pagination.
             payload.pop("next_cursor", None)
             payload["has_more"] = True
             payload["retry_same_page_with_smaller_limit"] = True
+        elif action == "find_messages":
+            payload["has_more"] = True
+            payload["continuation_instruction"] = (
+                "Repeat find_messages with the same filters and latest=continuation_latest."
+            )
         while collection:
+            if action == "find_messages":
+                payload["continuation_latest"] = _bounded_string(
+                    collection[-1].get("ts") if isinstance(collection[-1], Mapping) else "",
+                    _MAX_ID_CHARS,
+                )
             payload["count"] = len(collection)
             payload["omitted_count"] = original_count - len(collection)
             serialized = _json_result(payload)
@@ -857,6 +876,10 @@ def _find_messages(
     cursor = ""
     pages = 0
     scanned = 0
+    has_more = False
+    continuation_latest = ""
+    last_scanned_ts = ""
+    payload: Mapping[str, Any] = {}
     while pages < page_limit and len(matches) < match_limit:
         pages += 1
         payload = _read_from_live_adapter(
@@ -869,35 +892,46 @@ def _find_messages(
         raw_messages = payload.get("messages")
         if not isinstance(raw_messages, list):
             raw_messages = []
-        for raw_message in raw_messages[:100]:
+        page_messages = raw_messages[:100]
+        more_in_page = False
+        for index, raw_message in enumerate(page_messages):
             if not isinstance(raw_message, Mapping):
                 continue
             scanned += 1
             raw_text = str(raw_message.get("text") or "")
+            last_scanned_ts = _bounded_string(raw_message.get("ts"), _MAX_ID_CHARS)
             if query_text and query_text not in raw_text.casefold():
                 continue
-            summary = _message_summary(raw_message)
+            filtered_urls: list[str] | None = None
             if wanted_domains:
-                filtered_urls = []
-                for url in summary["urls"]:
-                    try:
-                        hostname = (urllib.parse.urlsplit(url).hostname or "").lower()
-                    except ValueError:
-                        continue
-                    hostname = hostname.removeprefix("www.")
-                    if hostname in wanted_domains:
-                        filtered_urls.append(url)
+                filtered_urls = _extract_urls(raw_text, wanted_domains=wanted_domains)
                 if not filtered_urls:
                     continue
+            summary = _message_summary(raw_message)
+            if filtered_urls is not None:
                 summary["urls"] = filtered_urls
             matches.append(summary)
             if len(matches) >= match_limit:
+                more_in_page = index + 1 < len(page_messages)
                 break
         cursor = _validated_cursor(
             str((payload.get("response_metadata") or {}).get("next_cursor") or "")
         )
+        remote_has_more = bool(cursor or payload.get("has_more"))
+        if len(matches) >= match_limit:
+            has_more = more_in_page or remote_has_more
+            if has_more:
+                continuation_latest = _bounded_string(matches[-1].get("ts"), _MAX_ID_CHARS)
+            break
         if not cursor:
             break
+
+    if not has_more and pages >= page_limit and bool(cursor or payload.get("has_more")):
+        has_more = True
+        continuation_latest = _bounded_string(
+            matches[-1].get("ts") if matches else last_scanned_ts,
+            _MAX_ID_CHARS,
+        )
 
     return _success_payload(
         action="find_messages",
@@ -908,6 +942,13 @@ def _find_messages(
         count=len(matches),
         scanned=scanned,
         pages=pages,
+        has_more=has_more,
+        continuation_latest=continuation_latest if has_more else "",
+        continuation_instruction=(
+            "Repeat find_messages with the same filters and latest=continuation_latest."
+            if has_more
+            else ""
+        ),
     )
 
 
@@ -1081,7 +1122,10 @@ _SLACK_SCHEMA = {
             },
             "latest": {
                 "type": "string",
-                "description": "Optional Slack timestamp upper bound.",
+                "description": (
+                    "Optional exclusive Slack timestamp upper bound. For find_messages, use "
+                    "continuation_latest from a result with has_more=true to continue."
+                ),
             },
             "oldest": {
                 "type": "string",

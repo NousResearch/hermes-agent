@@ -307,8 +307,6 @@ def session_routing_source(source: SessionSource) -> SessionSource:
     for reply routing.
     """
 
-    if not isinstance(source, SessionSource):
-        return source
     return replace(source, delivered_via_direct_slack_adapter=False)
 
 

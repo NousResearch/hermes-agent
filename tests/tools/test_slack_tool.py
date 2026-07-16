@@ -498,6 +498,75 @@ def test_find_messages_combines_query_and_domain_filters(monkeypatch):
     assert result["matches"][0]["urls"] == ["https://example.com/a"]
 
 
+def test_find_messages_filters_domains_before_returned_url_cap(monkeypatch):
+    _reader(
+        monkeypatch,
+        {
+            "ok": True,
+            "messages": [
+                {
+                    "ts": "1.000001",
+                    "text": " ".join(
+                        [
+                            "https://one.example/a",
+                            "https://two.example/b",
+                            "https://three.example/c",
+                            "https://four.example/d",
+                            "https://target.example/wanted",
+                        ]
+                    ),
+                }
+            ],
+            "response_metadata": {"next_cursor": ""},
+        },
+    )
+
+    result = json.loads(
+        slack_tool.slack(action="find_messages", link_domains="target.example")
+    )
+
+    assert result["count"] == 1
+    assert result["matches"][0]["urls"] == ["https://target.example/wanted"]
+
+
+def test_find_messages_match_limit_returns_advancing_continuation(monkeypatch):
+    calls = _reader(
+        monkeypatch,
+        {
+            "ok": True,
+            "messages": [
+                {"ts": "3.000001", "text": "needle three"},
+                {"ts": "2.000001", "text": "needle two"},
+                {"ts": "1.000001", "text": "needle one"},
+            ],
+            "response_metadata": {"next_cursor": ""},
+        },
+        {
+            "ok": True,
+            "messages": [{"ts": "1.000001", "text": "needle one"}],
+            "response_metadata": {"next_cursor": ""},
+        },
+    )
+
+    first = json.loads(slack_tool.slack(action="find_messages", query="needle", limit=2))
+    second = json.loads(
+        slack_tool.slack(
+            action="find_messages",
+            query="needle",
+            limit=2,
+            latest=first["continuation_latest"],
+        )
+    )
+
+    assert first["has_more"] is True
+    assert first["continuation_latest"] == "2.000001"
+    assert calls[1]["latest"] == "2.000001"
+    assert {match["ts"] for match in first["matches"]}.isdisjoint(
+        match["ts"] for match in second["matches"]
+    )
+    assert second["matches"][0]["ts"] == "1.000001"
+
+
 def test_find_messages_scan_is_bounded_to_three_pages(monkeypatch):
     page = {
         "ok": True,
@@ -582,6 +651,50 @@ def test_serialized_result_has_strict_aggregate_budget(monkeypatch):
     assert all(
         len(message["urls"]) <= slack_tool._MAX_URLS_PER_MESSAGE
         for message in result["messages"]
+    )
+
+
+def test_find_messages_local_truncation_returns_advancing_continuation(monkeypatch):
+    messages = [
+        {
+            "ts": f"{100 - index}.000001",
+            "text": "needle " + ("x" * 1_500),
+        }
+        for index in range(10)
+    ]
+    calls = []
+
+    def fake_reader(channel_id, **kwargs):
+        calls.append({"channel": channel_id, **kwargs})
+        latest = kwargs.get("latest")
+        page = messages
+        if latest:
+            page = [message for message in messages if float(message["ts"]) < float(latest)]
+        return {
+            "ok": True,
+            "messages": page,
+            "response_metadata": {"next_cursor": ""},
+        }
+
+    monkeypatch.setattr(slack_tool, "_read_from_live_adapter", fake_reader)
+
+    first = json.loads(slack_tool.slack(action="find_messages", query="needle", limit=10))
+    second = json.loads(
+        slack_tool.slack(
+            action="find_messages",
+            query="needle",
+            limit=10,
+            latest=first["continuation_latest"],
+        )
+    )
+
+    assert first["result_truncated"] is True
+    assert first["omitted_count"] > 0
+    assert first["has_more"] is True
+    assert calls[1]["latest"] == first["matches"][-1]["ts"]
+    assert second["matches"][0]["ts"] == messages[first["count"]]["ts"]
+    assert {match["ts"] for match in first["matches"]}.isdisjoint(
+        match["ts"] for match in second["matches"]
     )
 
 

@@ -1016,7 +1016,6 @@ class SlackAdapter(BasePlatformAdapter):
         # Support comma-separated bot tokens for multi-workspace. Exact duplicate
         # tokens must not inflate the configured-workspace count.
         bot_tokens = _parse_bot_tokens(raw_token)
-        seen_bot_tokens = set(bot_tokens)
 
         # Also load tokens from OAuth token file
         from hermes_constants import get_hermes_home
@@ -1027,8 +1026,7 @@ class SlackAdapter(BasePlatformAdapter):
                 saved = json.loads(tokens_file.read_text(encoding="utf-8"))
                 for team_id, entry in saved.items():
                     tok = entry.get("token", "") if isinstance(entry, dict) else ""
-                    if tok and tok not in seen_bot_tokens:
-                        seen_bot_tokens.add(tok)
+                    if tok and tok not in bot_tokens:
                         bot_tokens.append(tok)
                         team_label = (
                             entry.get("team_name", team_id)
@@ -1531,6 +1529,13 @@ class SlackAdapter(BasePlatformAdapter):
         if not team_id or team_id != next(iter(self._team_clients)):
             raise SlackHistoryAccessError("workspace_mismatch")
         client = self._team_clients[team_id]
+        allowed_channels = self._slack_allowed_channels()
+        if (
+            not channel_id.startswith("D")
+            and allowed_channels
+            and channel_id not in allowed_channels
+        ):
+            raise SlackHistoryAccessError("channel_not_allowed")
 
         if active_channel_id and channel_id != active_channel_id:
             if channel_id.startswith("D") or not self.allows_agent_cross_channel_history(
@@ -1552,13 +1557,6 @@ class SlackAdapter(BasePlatformAdapter):
             if channel_info.get("is_member") is not True:
                 raise SlackHistoryAccessError("cross_channel_not_allowed")
 
-        allowed_channels = self._slack_allowed_channels()
-        if (
-            not channel_id.startswith("D")
-            and allowed_channels
-            and channel_id not in allowed_channels
-        ):
-            raise SlackHistoryAccessError("channel_not_allowed")
         kwargs: Dict[str, Any] = {
             "channel": channel_id,
             "limit": max(1, min(int(limit), 100)),

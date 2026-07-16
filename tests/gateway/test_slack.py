@@ -170,6 +170,31 @@ class TestAgentHistoryCrossChannelAuthorization:
         client.conversations_history.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_disallowed_channel_is_blocked_before_cross_channel_slack_api_call(
+        self, adapter
+    ):
+        client = AsyncMock()
+        adapter._team_clients = {"T1": client}
+        adapter._configured_workspace_count = 1
+        adapter.config.extra.update(
+            {
+                "history_cross_channel_user_ids": ["U12345678"],
+                "allowed_channels": ["C_ALLOWED"],
+            }
+        )
+
+        with pytest.raises(SlackHistoryAccessError, match="channel_not_allowed"):
+            await adapter.read_history_for_agent(
+                channel_id="C_DENIED",
+                expected_team_id="T1",
+                active_channel_id="C_ACTIVE",
+                requester_user_id="U12345678",
+            )
+
+        client.conversations_info.assert_not_awaited()
+        client.conversations_history.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_configured_owner_cannot_read_another_dm(self, adapter):
         client = AsyncMock()
         adapter._team_clients = {"T1": client}

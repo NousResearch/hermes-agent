@@ -189,7 +189,7 @@ def merge_bedrock_openai_model_ids(model_ids: List[str]) -> List[str]:
 
 def bedrock_openai_base_url(region: str) -> str:
     """Return Bedrock Mantle's OpenAI-compatible base URL for *region*."""
-    resolved = (region or "").strip() or resolve_bedrock_region()
+    resolved = (region or "").strip() or resolve_bedrock_runtime_region()
     return f"https://bedrock-mantle.{resolved}.api.aws/openai/v1"
 
 
@@ -224,7 +224,7 @@ class BedrockOpenAISigV4Auth(httpx.Auth):
     requires_request_body = True
 
     def __init__(self, region: str, service: str = "bedrock"):
-        self.region = (region or "").strip() or resolve_bedrock_region()
+        self.region = (region or "").strip() or resolve_bedrock_runtime_region()
         self.service = service
 
     def auth_flow(self, request):  # pragma: no cover - exercised by live call
@@ -286,7 +286,7 @@ def configure_bedrock_openai_client_kwargs(
     api_key = client_kwargs.get("api_key")
     if isinstance(api_key, str) and api_key.strip() and api_key not in {"aws-sdk", "no-key-required"}:
         return client_kwargs
-    region = bedrock_openai_region_from_base_url(base_url) or resolve_bedrock_region()
+    region = bedrock_openai_region_from_base_url(base_url) or resolve_bedrock_runtime_region()
     client_kwargs["api_key"] = "aws-sdk"
     client_kwargs["http_client"] = build_bedrock_openai_http_client(region, timeout=timeout)
     return client_kwargs
@@ -585,7 +585,7 @@ def bedrock_model_ids_or_none() -> Optional[List[str]]:
     ``list_authenticated_providers`` section 2, and section 3.
     """
     try:
-        discovered = discover_bedrock_models(resolve_bedrock_region())
+        discovered = discover_bedrock_models(resolve_bedrock_runtime_region())
         if discovered:
             return merge_bedrock_openai_model_ids([m["id"] for m in discovered])
     except Exception:

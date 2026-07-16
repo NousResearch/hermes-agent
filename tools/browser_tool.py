@@ -3313,14 +3313,21 @@ def browser_wait(
     while True:
         snapshot = browser_snapshot(full=False, task_id=task_id)
         snapshot_failed = False
+        # Search only the page content ("snapshot" field on every backend),
+        # never the response envelope: the raw JSON reply contains keys like
+        # "success" that would satisfy a wait for common page words
+        # ("success", "error", "url") on any page whatsoever.
+        page_text = snapshot
         try:
             parsed = json.loads(snapshot)
-            snapshot_failed = isinstance(parsed, dict) and parsed.get("success") is False
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            snapshot_failed = parsed.get("success") is False
             if snapshot_failed:
                 last_snapshot_error = parsed.get("error")
-        except (TypeError, ValueError):
-            pass
-        if not snapshot_failed and needle in snapshot.lower():
+            page_text = str(parsed.get("snapshot") or "")
+        if not snapshot_failed and needle in page_text.lower():
             found = True
             break
         remaining = wait_budget - (time.monotonic() - started)

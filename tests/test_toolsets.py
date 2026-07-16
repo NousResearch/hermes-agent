@@ -77,6 +77,15 @@ class TestResolveToolset:
     def test_unknown_toolset_returns_empty(self):
         assert resolve_toolset("nonexistent") == []
 
+    def test_browser_wait_resolves_in_every_browser_bearing_toolset(self):
+        # Registering a tool in tools/browser_tool.py is not enough for the
+        # model to see it: schemas are emitted from static toolset membership,
+        # so every toolset that carries the browser tools must list it.
+        for toolset in ("browser", "coding", "hermes-acp", "hermes-api-server", "hermes-cli"):
+            tools = resolve_toolset(toolset)
+            assert "browser_snapshot" in tools, toolset
+            assert "browser_wait" in tools, toolset
+
     def test_plugin_toolset_uses_registry_snapshot(self, monkeypatch):
         reg = ToolRegistry()
         reg.register(

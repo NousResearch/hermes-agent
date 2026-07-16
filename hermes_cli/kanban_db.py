@@ -1548,23 +1548,101 @@ def _validate_sqlite_header(path: Path) -> None:
     )
 
 
-class KanbanDbCorruptError(RuntimeError):
-    """Raised when an existing kanban DB file fails integrity checks.
+@dataclass(frozen=True)
+class SqliteErrorClassification:
+    """Stable Kanban taxonomy for SQLite failures."""
 
-    Fail-closed guard against silent recreation of a corrupt board file,
-    which would otherwise destroy the user's tasks. Carries both the
-    original path and the timestamped backup we made before refusing.
+    category: str
+    retryable: bool
+    fatal: bool
+    sqlite_errorcode: Optional[int]
+    sqlite_errorname: Optional[str]
+
+
+def classify_sqlite_error(exc: BaseException) -> SqliteErrorClassification:
+    """Classify a SQLite failure using its extended code, then message fallback.
+
+    Python exposes SQLite extended result codes on real ``sqlite3`` exceptions.
+    Some adapters and tests only preserve the message, so the fallback remains
+    deliberately narrow: lock contention is retryable; storage/corruption
+    signatures quarantine the board; everything else remains an application
+    error and must not trip the board-wide circuit.
+    """
+    code = getattr(exc, "sqlite_errorcode", None)
+    name = getattr(exc, "sqlite_errorname", None)
+    try:
+        base_code = int(code) & 0xFF if code is not None else None
+    except (TypeError, ValueError):
+        base_code = None
+    message = str(exc).lower()
+
+    if base_code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED} or any(
+        marker in message for marker in ("database is locked", "database is busy")
+    ):
+        category, retryable, fatal = "transient", True, False
+    elif base_code in {
+        sqlite3.SQLITE_IOERR,
+        sqlite3.SQLITE_FULL,
+        sqlite3.SQLITE_READONLY,
+    } or any(
+        marker in message
+        for marker in (
+            "disk i/o error",
+            "database or disk is full",
+            "readonly database",
+            "read-only database",
+        )
+    ):
+        category, retryable, fatal = "fatal_storage", False, True
+    elif base_code in {sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB} or any(
+        marker in message
+        for marker in (
+            "database disk image is malformed",
+            "file is not a database",
+            "malformed database",
+        )
+    ):
+        category, retryable, fatal = "corruption", False, True
+    else:
+        category, retryable, fatal = "application", False, False
+
+    return SqliteErrorClassification(
+        category=category,
+        retryable=retryable,
+        fatal=fatal,
+        sqlite_errorcode=int(code) if isinstance(code, int) else None,
+        sqlite_errorname=str(name) if name else None,
+    )
+
+
+class KanbanDbHealthError(sqlite3.OperationalError):
+    """Raised while a persisted board-wide database circuit is open.
+
+    Keeping this in SQLite's ``OperationalError`` hierarchy preserves callers'
+    existing database-error handling while adding the shared incident fields.
     """
 
-    def __init__(self, db_path: Path, backup_path: Optional[Path], reason: str):
-        self.db_path = db_path
-        self.backup_path = backup_path
-        self.reason = reason
-        backup_str = str(backup_path) if backup_path is not None else "<backup failed>"
+    def __init__(self, health: dict[str, Any], manifest: Optional[dict[str, Any]] = None):
+        self.health = dict(health)
+        self.db_path = Path(str(health["db_path"]))
+        self.incident_id = str(health["incident_id"])
+        self.manifest_path = Path(str(health["manifest_path"]))
+        self.reason = str(health.get("reason") or "fatal SQLite health failure")
+        backup = (manifest or {}).get("backup_path")
+        self.backup_path = Path(str(backup)) if backup else None
+        code = health.get("sqlite_errorname") or health.get("sqlite_errorcode") or "unknown"
+        backup_note = f"; backup={self.backup_path}" if self.backup_path else ""
         super().__init__(
-            f"Refusing to open corrupt kanban DB at {db_path}: {reason}. "
-            f"Original preserved; backup at {backup_str}."
+            f"Kanban board database is quarantined: incident {self.incident_id}; "
+            f"classification={health.get('classification')}; sqlite={code}; "
+            f"reason={self.reason}; manifest={self.manifest_path}{backup_note}. "
+            "Run `hermes kanban diagnostics --json` and restore a verified database "
+            "before resuming board activity."
         )
+
+
+class KanbanDbCorruptError(KanbanDbHealthError):
+    """Fatal health error for a corrupt or malformed Kanban database."""
 
 
 def _backup_corrupt_db(path: Path) -> Optional[Path]:
@@ -1621,6 +1699,195 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     return candidate
 
 
+def _db_health_path(path: Path) -> Path:
+    resolved = path.expanduser().resolve()
+    return resolved.with_name(resolved.name + ".health.json")
+
+
+def _db_file_identity(path: Path) -> Optional[dict[str, int]]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return {
+        "device": int(stat.st_dev),
+        "inode": int(stat.st_ino),
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+    }
+
+
+def _atomic_create_json(path: Path, payload: dict[str, Any]) -> bool:
+    """Atomically publish JSON iff ``path`` does not already exist."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    data = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    try:
+        with temp.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temp, path)
+            return True
+        except FileExistsError:
+            return False
+    finally:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+
+
+def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def get_db_health(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Return the board circuit state while it matches the DB generation."""
+    selected = db_path if db_path is not None else kanban_db_path(board=board)
+    path = selected.expanduser().resolve()
+    health_path = _db_health_path(path)
+    health = _read_json_file(health_path)
+    if health is None:
+        return None
+    recorded = health.get("db_identity")
+    current = _db_file_identity(path)
+    # Atomic replacement is the operator recovery boundary. In-place mutation
+    # is not: damaged live bytes may continue changing after the first fault.
+    if isinstance(recorded, dict) and current is not None and (
+        current.get("device") != recorded.get("device")
+        or current.get("inode") != recorded.get("inode")
+    ):
+        try:
+            health_path.unlink()
+        except OSError:
+            pass
+        return None
+    return health
+
+
+def _incident_manifest(health: dict[str, Any]) -> Optional[dict[str, Any]]:
+    return _read_json_file(Path(str(health["manifest_path"])))
+
+
+def _ensure_incident_manifest(path: Path, health: dict[str, Any]) -> dict[str, Any]:
+    """Create/reuse the Slice-1 content-addressed evidence manifest."""
+    manifest_path = Path(str(health["manifest_path"]))
+    existing = _read_json_file(manifest_path)
+    if existing is not None:
+        return existing
+    backup = _backup_corrupt_db(path)
+    files: list[dict[str, Any]] = []
+    if backup is not None:
+        candidates = (backup, Path(str(backup) + "-wal"), Path(str(backup) + "-shm"))
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            try:
+                digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+                size = candidate.stat().st_size
+            except OSError:
+                continue
+            files.append({"path": str(candidate), "sha256": digest, "size": size})
+    manifest = {
+        "schema_version": 1,
+        "incident_id": health["incident_id"],
+        "classification": health["classification"],
+        "sqlite_errorcode": health.get("sqlite_errorcode"),
+        "sqlite_errorname": health.get("sqlite_errorname"),
+        "reason": health.get("reason"),
+        "db_path": str(path),
+        "db_identity": health.get("db_identity"),
+        "created_at": health["created_at"],
+        "capture_consistency": "inconsistent_live_capture",
+        "backup_path": str(backup) if backup is not None else None,
+        "files": files,
+    }
+    _atomic_create_json(manifest_path, manifest)
+    return _read_json_file(manifest_path) or manifest
+
+
+def _health_error(health: dict[str, Any]) -> KanbanDbHealthError:
+    error_cls = (
+        KanbanDbCorruptError
+        if health.get("classification") == "corruption"
+        else KanbanDbHealthError
+    )
+    return error_cls(health, _incident_manifest(health))
+
+
+def _trip_db_health(path: Path, exc: BaseException) -> KanbanDbHealthError:
+    """Atomically trip one board-wide incident and return its shared error."""
+    resolved = path.expanduser().resolve()
+    existing = get_db_health(resolved)
+    if existing is not None:
+        _ensure_incident_manifest(resolved, existing)
+        return _health_error(existing)
+
+    classified = classify_sqlite_error(exc)
+    if not classified.fatal:
+        raise exc
+    created_at = int(time.time())
+    incident_id = f"kbd-{created_at:x}-{secrets.token_hex(4)}"
+    manifest_path = resolved.with_name(f"{resolved.name}.incident.{incident_id}.json")
+    health = {
+        "schema_version": 1,
+        "status": "quarantined",
+        "incident_id": incident_id,
+        "classification": classified.category,
+        "sqlite_errorcode": classified.sqlite_errorcode,
+        "sqlite_errorname": classified.sqlite_errorname,
+        "reason": str(exc),
+        "db_path": str(resolved),
+        "db_identity": _db_file_identity(resolved),
+        "manifest_path": str(manifest_path),
+        "created_at": created_at,
+        "recovery_command": "hermes kanban diagnostics --json",
+    }
+    health_path = _db_health_path(resolved)
+    if not _atomic_create_json(health_path, health):
+        health = _read_json_file(health_path) or health
+    _ensure_incident_manifest(resolved, health)
+    _log.error(
+        "kanban DB circuit opened: incident=%s classification=%s manifest=%s",
+        health["incident_id"], health["classification"], health["manifest_path"],
+    )
+    return _health_error(health)
+
+
+def quarantine_db_for_error(
+    exc: BaseException,
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+) -> Optional[KanbanDbHealthError]:
+    """Persist a board circuit for a fatal SQLite error seen by a caller.
+
+    Operations that execute SQL after ``connect()`` use this boundary to feed
+    raw read/dispatch failures back into the same process-independent circuit.
+    Non-fatal application and contention errors return ``None`` unchanged.
+    """
+    if not classify_sqlite_error(exc).fatal:
+        return None
+    selected = db_path if db_path is not None else kanban_db_path(board=board)
+    return _trip_db_health(selected, exc)
+
+
+def _raise_for_sqlite_failure(path: Path, exc: BaseException) -> None:
+    if classify_sqlite_error(exc).fatal:
+        raise _trip_db_health(path, exc) from exc
+    raise exc
+
+
 def _guard_existing_db_is_healthy(path: Path) -> None:
     """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
 
@@ -1668,15 +1935,21 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
             probe.close()
         if not row or (row[0] or "").lower() != "ok":
             reason = f"integrity_check returned {row[0] if row else '<no row>'!r}"
-    except sqlite3.OperationalError:
-        # Lock contention, busy, transient IO — not corruption. Let it propagate.
-        raise
+    except sqlite3.OperationalError as exc:
+        # BUSY/LOCKED remains transient. IOERR/READONLY/FULL and malformed
+        # OperationalErrors are fatal and open the shared circuit.
+        _raise_for_sqlite_failure(resolved, exc)
     except sqlite3.DatabaseError as exc:
+        classified = classify_sqlite_error(exc)
+        if classified.fatal:
+            raise _trip_db_health(resolved, exc) from exc
         reason = f"sqlite refused to open file: {exc}"
     if reason is None:
         return
-    backup = _backup_corrupt_db(resolved)
-    raise KanbanDbCorruptError(resolved, backup, reason)
+    synthetic = sqlite3.DatabaseError(reason)
+    synthetic.sqlite_errorcode = sqlite3.SQLITE_CORRUPT
+    synthetic.sqlite_errorname = "SQLITE_CORRUPT"
+    raise _trip_db_health(resolved, synthetic)
 
 
 def connect(
@@ -1708,6 +1981,13 @@ def connect(
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Cross-process circuit breaker: refuse before any SQLite open/PRAGMA so
+    # every caller reuses the winning incident instead of retrying known-bad I/O.
+    health = get_db_health(path)
+    if health is not None:
+        _ensure_incident_manifest(path.resolve(), health)
+        raise _health_error(health)
+
     # Fast path: once THIS process has initialized this path, the expensive
     # first-open work (header validation, integrity probe, schema + additive
     # migrations) is already done and cached in _INITIALIZED_PATHS. Acquiring
@@ -1720,7 +2000,12 @@ def connect(
     # connection with WAL/pragmas under the cheap in-process _INIT_LOCK.
     resolved = str(path.resolve())
     if resolved in _INITIALIZED_PATHS:
-        conn = _sqlite_connect(path)
+        try:
+            conn = _sqlite_connect(path)
+        except sqlite3.Error as exc:
+            if classify_sqlite_error(exc).fatal:
+                raise _trip_db_health(path, exc) from exc
+            raise
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
@@ -1731,21 +2016,36 @@ def connect(
                 conn.execute("PRAGMA foreign_keys=ON")
                 conn.execute("PRAGMA secure_delete=ON")
                 conn.execute("PRAGMA cell_size_check=ON")
-        except Exception:
+        except Exception as exc:
             conn.close()
+            if isinstance(exc, sqlite3.Error):
+                _raise_for_sqlite_failure(path, exc)
             raise
         return conn
 
     with _cross_process_init_lock(path):
         # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
         # and other invalid-header cases without opening a sqlite connection.
-        _validate_sqlite_header(path)
+        try:
+            _validate_sqlite_header(path)
+        except sqlite3.Error as exc:
+            # Our byte-level preflight creates a DatabaseError without native
+            # SQLite metadata; stamp it as NOTADB for the shared taxonomy.
+            if getattr(exc, "sqlite_errorcode", None) is None:
+                exc.sqlite_errorcode = sqlite3.SQLITE_NOTADB
+                exc.sqlite_errorname = "SQLITE_NOTADB"
+            raise _trip_db_health(path, exc) from exc
         # Full integrity probe — catches corruption past the header (malformed
         # pages, broken internal metadata). Cached per-path after first success
         # via _INITIALIZED_PATHS so it only runs once per process per path.
         _guard_existing_db_is_healthy(path)
         resolved = str(path.resolve())
-        conn = _sqlite_connect(path)
+        try:
+            conn = _sqlite_connect(path)
+        except sqlite3.Error as exc:
+            if classify_sqlite_error(exc).fatal:
+                raise _trip_db_health(path, exc) from exc
+            raise
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
@@ -1779,8 +2079,10 @@ def connect(
                     conn.executescript(SCHEMA_SQL)
                     _migrate_add_optional_columns(conn)
                     _INITIALIZED_PATHS.add(resolved)
-        except Exception:
+        except Exception as exc:
             conn.close()
+            if isinstance(exc, sqlite3.Error):
+                _raise_for_sqlite_failure(path, exc)
             raise
     return conn
 
@@ -2287,21 +2589,37 @@ _BUSY_RETRY_MAX_S = 0.150  # 150ms
 
 
 def _is_busy_error(exc: BaseException) -> bool:
-    return isinstance(exc, sqlite3.OperationalError) and (
-        "database is locked" in str(exc).lower()
-        or "database is busy" in str(exc).lower()
-    )
+    return isinstance(exc, sqlite3.Error) and classify_sqlite_error(exc).retryable
 
 
-def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
+def _connection_db_path(conn: sqlite3.Connection) -> Optional[Path]:
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        if row is not None and row[2]:
+            return Path(str(row[2])).expanduser().resolve()
+    except Exception:
+        pass
+    return None
+
+
+def _execute_boundary_with_retry(
+    conn: sqlite3.Connection,
+    sql: str,
+    *,
+    db_path: Optional[Path] = None,
+) -> None:
     for attempt in range(_BUSY_MAX_RETRIES + 1):
         try:
             conn.execute(sql)
             return
-        except sqlite3.OperationalError as exc:
+        except sqlite3.Error as exc:
+            if _is_busy_error(exc) and attempt < _BUSY_MAX_RETRIES:
+                time.sleep(random.uniform(_BUSY_RETRY_MIN_S, _BUSY_RETRY_MAX_S))
+                continue
+            if db_path is not None and classify_sqlite_error(exc).fatal:
+                raise _trip_db_health(db_path, exc) from exc
             if not _is_busy_error(exc) or attempt == _BUSY_MAX_RETRIES:
                 raise
-            time.sleep(random.uniform(_BUSY_RETRY_MIN_S, _BUSY_RETRY_MAX_S))
 
 
 @contextlib.contextmanager
@@ -2316,32 +2634,49 @@ def write_txn(conn: sqlite3.Connection):
     a SQLite auto-rollback (which leaves no active transaction) does not
     shadow the original exception with a spurious rollback error.
     """
-    _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
+    db_path = _connection_db_path(conn)
+    _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE", db_path=db_path)
     try:
         yield conn
-    except Exception:
+    except Exception as exc:
         try:
             conn.execute("ROLLBACK")
-        except sqlite3.OperationalError:
-            # SQLite has already auto-rolled-back the transaction (typical
+        except sqlite3.Error:
+            # SQLite may already have auto-rolled back the transaction (notably
             # under EIO, lock contention, or corruption). Nothing to undo;
             # do not let this secondary failure shadow the real one.
             pass
+        if (
+            db_path is not None
+            and isinstance(exc, sqlite3.Error)
+            and classify_sqlite_error(exc).fatal
+        ):
+            raise _trip_db_health(db_path, exc) from exc
         raise
     else:
         try:
-            _execute_boundary_with_retry(conn, "COMMIT")
+            _execute_boundary_with_retry(conn, "COMMIT", db_path=db_path)
         except Exception:
             # COMMIT exhausted retries with the txn still open; roll back so the
             # connection isn't poisoned for the next BEGIN IMMEDIATE.
             try:
                 conn.execute("ROLLBACK")
-            except sqlite3.OperationalError:
+            except sqlite3.Error:
                 pass
             raise
         # Post-commit file-length check: header page_count must match actual file pages.
         # A discrepancy means a torn-extend — raise now rather than silently corrupt.
-        _check_file_length_invariant(conn)
+        try:
+            _check_file_length_invariant(conn)
+        except sqlite3.Error as exc:
+            if db_path is not None:
+                # A torn-extend invariant is physical corruption even though
+                # the synthetic DatabaseError has no native result code.
+                if classify_sqlite_error(exc).category == "application":
+                    exc.sqlite_errorcode = sqlite3.SQLITE_CORRUPT
+                    exc.sqlite_errorname = "SQLITE_CORRUPT"
+                raise _trip_db_health(db_path, exc) from exc
+            raise
 
 
 # ---------------------------------------------------------------------------

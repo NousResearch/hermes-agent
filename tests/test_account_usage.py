@@ -95,6 +95,53 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert "Credits balance: $12.50" in snapshot.details
 
 
+def test_fetch_account_usage_codex_weekly_only_response_is_not_mislabeled_session(monkeypatch):
+    """Regression for #65387: the Codex usage API keys windows by response
+    position, not by duration — primary_window is not guaranteed to be the
+    short (session) window. A response with only the 7-day/weekly window
+    occupying primary_window must be labeled "Weekly", not "Session", and
+    must not silently drop to a fabricated "Session" reading."""
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: {"tokens": {"account_id": "acct_123"}},
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "plan_type": "pro",
+                # Live sanitized reproduction from the issue: only the weekly
+                # window is present, and it occupies primary_window.
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 1,
+                        "limit_window_seconds": 604800,
+                        "secondary_window": None,
+                    },
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert len(snapshot.windows) == 1
+    assert snapshot.windows[0].label == "Weekly", (
+        "A primary_window with limit_window_seconds=604800 (7 days) is the "
+        "weekly window regardless of its response-position key — see #65387."
+    )
+    assert snapshot.windows[0].used_percent == 1.0
+
+
 def test_render_account_usage_lines_includes_reset_and_provider():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",

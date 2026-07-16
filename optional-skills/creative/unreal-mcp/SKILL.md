@@ -43,7 +43,9 @@ Two halves, in this order: the editor side must be up before Hermes connects.
 
 ### One-time, editor side
 
-1. Unreal Editor **5.8+** with a project open.
+1. Unreal Editor **5.8+** with a project open. (macOS: full Xcode must be
+   installed and its license accepted — the editor exits on first launch
+   without it; see pitfalls.)
 2. **Edit > Plugins** — enable **Unreal MCP** (its Toolset Registry
    dependency auto-enables). Restart the editor when prompted.
 3. The typed toolsets ship separately from the server: also enable the
@@ -98,10 +100,13 @@ The discovery walk, always in this order:
 
 1. `list_toolsets` → see what capability groups this project actually has
    (the surface is project-dependent: enabled plugins, Game Feature Plugins,
-   and any custom toolsets all contribute).
+   and any custom toolsets all contribute). Names come back FULLY QUALIFIED
+   (`editor_toolset.toolsets.scene.SceneTools`,
+   `EditorToolset.EditorAppToolset`) — use them verbatim as `toolset_name`.
 2. `describe_toolset` on the group you need → read the real parameter
    schemas. Never guess parameter names — schemas are the contract.
-3. `call_tool` with exact toolset/tool name and arguments.
+3. `call_tool` with the qualified toolset name, the SHORT tool name
+   (`find_actors`, not the dotted form), and arguments matching the schema.
 
 Cache what you learn for the session; re-list only after the editor side
 changes (new plugin enabled, toolset authored, `RefreshTools` run).
@@ -162,8 +167,11 @@ Rules of the world while you work:
   not actor **names** (internal, unique). Prefer resolving actors by
   label/class queries, then hold on to whatever handle the tool returns.
 - Prefer physically-plausible lighting values (lux/candela/Kelvin) over
-  arbitrary brightness numbers — `references/scene-craft.md` has the
-  numeric recipes (sun intensities, exposure, fog densities, moods).
+  arbitrary brightness numbers — but FIRST read the existing sun's
+  intensity to learn the scene's calibration convention; template worlds
+  are often calibrated around `intensity: 10`, and physical values blow
+  them out (`references/scene-craft.md` has the numbers,
+  `references/pitfalls.md` #12b has the calibration rule).
 
 ## From Plain English to a Scene
 
@@ -224,6 +232,10 @@ Load on demand; keep SKILL.md-level rules in mind throughout.
   examples. When docs and the live schema disagree, the live schema wins.
 - **Don't expose the server beyond localhost.** Loopback-only, no auth, by
   design. Never suggest binding it wider.
+- **Licensing note.** The server logs on start: data transmitted via the
+  plugin to a connected LLM service is Licensed Technology under the UE
+  EULA (§6(e)) — the user is responsible for ensuring their LLM provider
+  doesn't train on it. Surface this if the user asks about data handling.
 
 ## Verification Checklist
 

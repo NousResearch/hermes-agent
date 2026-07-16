@@ -1026,6 +1026,46 @@ async def test_compact_runtime_dedupe_excludes_operator_declared_sibling(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_compact_runtime_resolver_bypasses_current_operator_topic(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-operator", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="41",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:41",
+        session_id="sess-operator",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.config.platforms[Platform.TELEGRAM].extra.update({
+        "dm_topic_titles": {"style": "compact", "compact_max_words": 2},
+        "dm_topics": [
+            {
+                "chat_id": 208214988,
+                "topics": [{"name": "Operator General", "thread_id": 41}],
+            }
+        ],
+    })
+    source = _make_source(thread_id="41")
+
+    assert await runner._resolved_telegram_topic_title(
+        source,
+        "sess-operator",
+        "Daily Progress Checkin",
+    ) is None
+
+    await runner._rename_telegram_topic_for_session_title(
+        source,
+        "sess-operator",
+        "Daily Progress Checkin",
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_invalid_compact_title_config_preserves_readable_auto_title(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     db.apply_telegram_topic_migration()

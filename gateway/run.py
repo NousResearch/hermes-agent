@@ -13703,9 +13703,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         source: SessionSource,
         session_id: str,
         title: str,
-    ) -> str:
-        """Resolve a configured title with stable per-chat compact deduplication."""
+    ) -> Optional[str]:
+        """Resolve an auto-topic title, or ``None`` for operator-declared topics."""
         options = self._telegram_topic_title_options(source)
+        operator_topic_ids = telegram_operator_topic_ids(
+            self._telegram_topic_title_extra(source)
+        )
+        current_topic_id = (
+            str(source.chat_id or ""),
+            str(source.thread_id or ""),
+        )
+        if current_topic_id in operator_topic_ids:
+            return None
         if options.style != "compact":
             return _sanitize_telegram_topic_title_policy(title, options=options)
 
@@ -13721,9 +13730,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Failed to load Telegram topic titles before rename", exc_info=True)
             contexts = []
 
-        operator_topic_ids = telegram_operator_topic_ids(
-            self._telegram_topic_title_extra(source)
-        )
         auto_contexts = [
             context
             for context in contexts
@@ -13887,6 +13893,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_id,
             title,
         )
+        if topic_name is None:
+            return
         try:
             rename_topic = getattr(adapter, "rename_dm_topic", None)
             if rename_topic is not None:

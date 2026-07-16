@@ -1484,6 +1484,13 @@ class TestConfigSchema:
         }
         assert expected_keys.issubset(keys), f"Missing: {expected_keys - keys}"
 
+    def test_llm_provider_choices_match_default_model_providers(self, provider):
+        fields = {field["key"]: field for field in provider.get_config_schema()}
+
+        assert fields["llm_provider"]["choices"] == list(
+            fields["llm_model"]["default_from"]["map"]
+        )
+
 
 # ---------------------------------------------------------------------------
 # bank_id_template tests

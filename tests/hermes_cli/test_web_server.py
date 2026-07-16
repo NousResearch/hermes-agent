@@ -484,6 +484,8 @@ class TestWebServerEndpoints:
         assert fields["llm_api_key"]["kind"] == "secret"
         assert fields["llm_api_key"]["is_set"] is False
         assert fields["llm_provider"]["value"] == "openai"
+        assert fields["llm_provider"]["kind"] == "select"
+        assert fields["llm_provider"]["options"]
         assert fields["llm_model"]["value"] == "gpt-4o-mini"
 
     def test_get_memory_provider_config_loads_dynamic_plugin_schema(self):
@@ -519,14 +521,30 @@ class TestWebServerEndpoints:
         assert fields["baseUrl"]["kind"] == "text"
 
     def test_declared_surface_serves_curated_hindsight_schema(self):
+        raw_resp = self.client.get("/api/memory/providers/hindsight/config")
         resp = self.client.get("/api/memory/providers/hindsight/config?surface=declared")
 
+        assert raw_resp.status_code == 200
         assert resp.status_code == 200
-        data = resp.json()
-        fields = self._provider_field_map(data)
-        assert set(fields) == {"mode", "api_key", "api_url", "bank_id", "recall_budget"}
+        raw_fields = self._provider_field_map(raw_resp.json())
+        fields = self._provider_field_map(resp.json())
+        assert set(fields) == {
+            "mode",
+            "api_key",
+            "llm_api_key",
+            "llm_provider",
+            "llm_base_url",
+            "llm_model",
+            "api_url",
+            "bank_id",
+            "recall_budget",
+        }
         assert fields["mode"]["kind"] == "select"
         assert fields["api_key"]["kind"] == "secret"
+        assert fields["llm_provider"]["kind"] == "select"
+        assert [option["value"] for option in fields["llm_provider"]["options"]] == [
+            option["value"] for option in raw_fields["llm_provider"]["options"]
+        ]
 
     def test_declared_surface_hides_undeclared_providers(self):
         resp = self.client.get("/api/memory/providers/builtin/config?surface=declared")
@@ -534,7 +552,7 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["fields"] == []
 
-    def test_declared_surface_put_writes_config_and_secret(self):
+    def test_declared_surface_put_round_trips_supported_llm_provider(self):
         from hermes_constants import get_hermes_home
         from hermes_cli.config import load_env
 
@@ -542,22 +560,50 @@ class TestWebServerEndpoints:
             "/api/memory/providers/hindsight/config?surface=declared",
             json={
                 "values": {
-                    "mode": "local_external",
-                    "api_url": "http://localhost:8888",
-                    "api_key": "hs-declared-key",
+                    "mode": "local_embedded",
+                    "llm_provider": "groq",
+                    "llm_model": "openai/gpt-oss-120b",
+                    "llm_api_key": "llm-declared-key",
                 }
             },
         )
 
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
-        assert load_env()["HINDSIGHT_API_KEY"] == "hs-declared-key"
+        assert load_env()["HINDSIGHT_LLM_API_KEY"] == "llm-declared-key"
 
         config_path = get_hermes_home() / "hindsight" / "config.json"
         provider_config = json.loads(config_path.read_text(encoding="utf-8"))
-        assert provider_config["mode"] == "local_external"
-        assert provider_config["api_url"] == "http://localhost:8888"
-        assert "api_key" not in provider_config
+        assert provider_config["mode"] == "local_embedded"
+        assert provider_config["llm_provider"] == "groq"
+        assert provider_config["llm_model"] == "openai/gpt-oss-120b"
+        assert "llm_api_key" not in provider_config
+
+        get_resp = self.client.get(
+            "/api/memory/providers/hindsight/config?surface=declared"
+        )
+        fields = self._provider_field_map(get_resp.json())
+        assert fields["llm_provider"]["value"] == "groq"
+        assert fields["llm_api_key"]["value"] == ""
+        assert fields["llm_api_key"]["is_set"] is True
+
+    def test_declared_surface_put_rejects_unsupported_llm_provider(self):
+        from hermes_constants import get_hermes_home
+
+        resp = self.client.put(
+            "/api/memory/providers/hindsight/config?surface=declared",
+            json={
+                "values": {
+                    "mode": "local_embedded",
+                    "llm_provider": "unsupported",
+                }
+            },
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid value for 'llm_provider'"
+        assert not (get_hermes_home() / "hindsight" / "config.json").exists()
+
 
     def test_declared_surface_put_rejects_undeclared_provider(self):
         resp = self.client.put(

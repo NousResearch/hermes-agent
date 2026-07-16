@@ -1339,7 +1339,7 @@ def execute_code(
         # Env scrubbing and tool whitelist apply identically in both modes.
         _mode = _get_execution_mode()
         _child_python = _resolve_child_python(_mode)
-        _child_cwd = _resolve_child_cwd(_mode, tmpdir)
+        _child_cwd = _resolve_child_cwd(_mode, tmpdir, task_id=task_id)
         _script_path = os.path.join(tmpdir, "script.py")
 
         proc = subprocess.Popen(
@@ -1745,25 +1745,76 @@ def _resolve_child_python(mode: str) -> str:
     return sys.executable
 
 
-def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
+def _normalize_existing_cwd(raw_cwd: str) -> str | None:
+    """Return an existing absolute cwd path, or ``None`` if unusable."""
+    raw_cwd = (raw_cwd or "").strip()
+    if not raw_cwd:
+        return None
+    expanded = os.path.expanduser(raw_cwd)
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(os.getcwd(), expanded)
+    if os.path.isdir(expanded):
+        return expanded
+    return None
+
+
+def _resolve_task_project_cwd(task_id: Optional[str]) -> str | None:
+    """Return a task/session-specific project cwd when terminal state knows it."""
+    try:
+        from tools.terminal_tool import (
+            _active_environments,
+            _env_lock,
+            _resolve_container_task_id,
+            _task_env_overrides,
+        )
+    except Exception:
+        return None
+
+    try:
+        container_key = _resolve_container_task_id(task_id)
+    except Exception:
+        container_key = task_id
+
+    override = _task_env_overrides.get(container_key or "", {}).get("cwd")
+    resolved = _normalize_existing_cwd(override)
+    if resolved:
+        return resolved
+
+    try:
+        with _env_lock:
+            env = _active_environments.get(container_key or "")
+            if env is None and task_id:
+                env = _active_environments.get(task_id)
+            live_cwd = getattr(env, "cwd", None) if env is not None else None
+    except Exception:
+        return None
+
+    return _normalize_existing_cwd(live_cwd)
+
+
+def _resolve_child_cwd(mode: str, staging_dir: str, task_id: Optional[str] = None) -> str:
     """Resolve the working directory for the execute_code subprocess.
 
     - ``strict``: the staging tmpdir (today's behavior).
-    - ``project``: the session's TERMINAL_CWD (same as the terminal tool), or
-      ``os.getcwd()`` if TERMINAL_CWD is unset or doesn't point at a real dir.
-      Falls back to the staging tmpdir as a last resort so we never invoke
-      Popen with a nonexistent cwd.
+    - ``project``: prefer the task/session cwd tracked by terminal state,
+      then ``TERMINAL_CWD``, then ``os.getcwd()``. Falls back to the staging
+      tmpdir as a last resort so we never invoke Popen with a nonexistent cwd.
     """
     if mode != "project":
         return staging_dir
-    raw = os.environ.get("TERMINAL_CWD", "").strip()
-    if raw:
-        expanded = os.path.expanduser(raw)
-        if os.path.isdir(expanded):
-            return expanded
-    here = os.getcwd()
-    if os.path.isdir(here):
+
+    task_cwd = _resolve_task_project_cwd(task_id)
+    if task_cwd:
+        return task_cwd
+
+    env_cwd = _normalize_existing_cwd(os.environ.get("TERMINAL_CWD", ""))
+    if env_cwd:
+        return env_cwd
+
+    here = _normalize_existing_cwd(os.getcwd())
+    if here:
         return here
+
     return staging_dir
 
 

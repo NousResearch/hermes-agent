@@ -13,8 +13,11 @@ there is no env-var override. Tests patch ``_load_config`` directly.
 """
 
 import json
+import io
 import os
 import sys
+from types import SimpleNamespace
+import threading
 import unittest
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -220,6 +223,37 @@ class TestResolveChildCwd(unittest.TestCase):
         with patch.dict(os.environ, {"TERMINAL_CWD": "~"}):
             self.assertEqual(_resolve_child_cwd("project", "/tmp/staging"), home)
 
+    def test_project_prefers_task_override_over_terminal_cwd(self):
+        import tempfile
+
+        task_id = "acp-session-1"
+        with tempfile.TemporaryDirectory() as override_cwd, tempfile.TemporaryDirectory() as terminal_cwd:
+            with patch.dict(os.environ, {"TERMINAL_CWD": terminal_cwd}):
+                with patch("tools.terminal_tool._task_env_overrides", {task_id: {"cwd": override_cwd}}):
+                    with patch("tools.terminal_tool._active_environments", {}):
+                        with patch("tools.terminal_tool._env_lock", threading.Lock()):
+                            with patch("tools.terminal_tool._resolve_container_task_id", return_value=task_id):
+                                self.assertEqual(
+                                    _resolve_child_cwd("project", "/tmp/staging", task_id=task_id),
+                                    override_cwd,
+                                )
+
+    def test_project_prefers_live_env_cwd_over_terminal_cwd(self):
+        import tempfile
+
+        task_id = "delegate-1"
+        with tempfile.TemporaryDirectory() as live_cwd, tempfile.TemporaryDirectory() as terminal_cwd:
+            fake_env = SimpleNamespace(cwd=live_cwd)
+            with patch.dict(os.environ, {"TERMINAL_CWD": terminal_cwd}):
+                with patch("tools.terminal_tool._task_env_overrides", {}):
+                    with patch("tools.terminal_tool._active_environments", {"default": fake_env}):
+                        with patch("tools.terminal_tool._env_lock", threading.Lock()):
+                            with patch("tools.terminal_tool._resolve_container_task_id", return_value="default"):
+                                self.assertEqual(
+                                    _resolve_child_cwd("project", "/tmp/staging", task_id=task_id),
+                                    live_cwd,
+                                )
+
 
 # ---------------------------------------------------------------------------
 # Schema description
@@ -361,6 +395,47 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
         result = self._run(code, mode="strict")
         self.assertEqual(result["status"], "success")
         self.assertIn("mock", result["output"])
+
+
+class TestExecuteCodeProjectCwdSelection(unittest.TestCase):
+    """Focused local-mode regression guards around child cwd selection."""
+
+    def test_execute_code_passes_task_override_cwd_to_local_child(self):
+        task_id = "acp-session-1"
+        captured = {}
+
+        class _FakeProc:
+            def __init__(self, *_args, **kwargs):
+                captured["cwd"] = kwargs["cwd"]
+                self.stdout = io.BytesIO(b"")
+                self.stderr = io.BytesIO(b"")
+                self.returncode = 0
+
+            def poll(self):
+                return 0
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as override_cwd, tempfile.TemporaryDirectory() as terminal_cwd:
+            with _mock_mode("project"):
+                with patch.dict(os.environ, {"TERMINAL_ENV": "local", "TERMINAL_CWD": terminal_cwd}, clear=False):
+                    with patch("tools.code_execution_tool.subprocess.Popen", side_effect=_FakeProc):
+                        with patch("tools.terminal_tool._task_env_overrides", {task_id: {"cwd": override_cwd}}):
+                            with patch("tools.terminal_tool._active_environments", {}):
+                                with patch("tools.terminal_tool._env_lock", threading.Lock()):
+                                    with patch("tools.terminal_tool._resolve_container_task_id", return_value=task_id):
+                                        raw = execute_code(
+                                            code="print('ok')",
+                                            task_id=task_id,
+                                            enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+                                        )
+
+        result = json.loads(raw)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(
+            os.path.realpath(captured["cwd"]),
+            os.path.realpath(override_cwd),
+        )
 
 
 # ---------------------------------------------------------------------------

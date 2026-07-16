@@ -132,7 +132,7 @@ def _doctor_tool_availability_detail(toolset: str) -> str:
     return ""
 
 
-def _is_default_off_toolset(item: dict) -> bool:
+def _is_default_off_toolset(item: dict, enabled_toolsets: set[str] | None) -> bool:
     """Return True for opt-in toolsets that are intentionally unavailable.
 
     ``doctor`` should not warn about every bundled-but-disabled integration.
@@ -143,12 +143,27 @@ def _is_default_off_toolset(item: dict) -> bool:
     install look dirty, even though the final missing-API-key summary is
     already scoped to CLI-enabled toolsets by
     :func:`_missing_api_key_toolsets_for_summary`.
+
+    Only suppresses when the toolset is confirmed absent from the resolved
+    CLI-enabled set. A user who explicitly enabled a default-off toolset via
+    ``hermes tools`` (it's still in ``_DEFAULT_OFF_TOOLSETS`` by name, but no
+    longer actually default *for them*) has opted into wanting missing
+    credentials surfaced -- silently hiding that warning would make doctor
+    lie about why the toolset isn't working. When ``enabled_toolsets`` is
+    None (config resolution failed), retains the warning rather than
+    guessing -- failing toward showing more information, not less.
     """
     name = item.get("name")
     try:
         from hermes_cli.tools_config import _DEFAULT_OFF_TOOLSETS
 
-        return name in _DEFAULT_OFF_TOOLSETS
+        if name not in _DEFAULT_OFF_TOOLSETS:
+            return False
+        if enabled_toolsets is None:
+            # Resolver failed -- can't confirm this is still an unopted-in
+            # default, so don't suppress.
+            return False
+        return name not in enabled_toolsets
     except Exception:
         return False
 
@@ -157,6 +172,7 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
     """Adjust runtime-gated / opt-in tool availability for doctor diagnostics."""
     updated_available = list(available)
     updated_unavailable = []
+    enabled_toolsets = _enabled_cli_toolsets_for_doctor()
     for item in unavailable:
         name = item.get("name")
         if _is_kanban_worker_env_gate(item):
@@ -167,11 +183,12 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
             if "honcho" not in updated_available:
                 updated_available.append("honcho")
             continue
-        if _is_default_off_toolset(item):
-            # Default-off integrations are healthy when absent. If the user
-            # explicitly enables one and it is still unavailable, the runtime
-            # tool gating path will keep its schemas out; doctor should stay
-            # focused on actionable setup issues, not every optional backend.
+        if _is_default_off_toolset(item, enabled_toolsets):
+            # Default-off integrations the user never opted into are healthy
+            # when absent. If the user explicitly enabled one (it's in
+            # enabled_toolsets) and it's still unavailable, the check above
+            # already returns False for it, so it falls through to the
+            # normal warning path below instead of being suppressed.
             continue
         updated_unavailable.append(item)
     return updated_available, updated_unavailable

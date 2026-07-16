@@ -694,6 +694,15 @@ def _build_child_system_prompt(
         "**Persistent failures spanning multiple sessions are STILL your "
         "responsibility — session boundaries do not create attribution exemptions.**",
         "",
+        "**DECLARATIVE INTENT TRAP**: Every response MUST contain either "
+        "(a) tool calls that make progress, (b) a final verified result, or "
+        "(c) a genuine infrastructure blocker report. There is NO fourth option. "
+        "Declaring intent ('I will now X', 'Let me X', 'I'll X') without "
+        "executing X in the SAME turn is a failure — you promised action you did "
+        "not deliver. Before ending any turn, scan your response for these "
+        "patterns. If present without a tool call, add the tool call or remove "
+        "the false promise.",
+        "",
         f"YOUR TASK:\n{goal}",
     ]
     if context and context.strip():

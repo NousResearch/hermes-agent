@@ -492,6 +492,15 @@ slack:
   # must @mention the bot before Hermes will respond.
   strict_mention: false
 
+  # Ignore messages addressed to another user: when a channel or thread
+  # message *opens* by @mentioning someone other than the bot (e.g.
+  # "@rasha can you take this?"), stay silent unless the bot is also
+  # mentioned. Only a *leading* mention counts as "addressed to" — a
+  # message that references someone mid-sentence ("loop in @rasha")
+  # still reaches the bot. Overrides free_response_channels and thread
+  # auto-engagement. Opt-in; default off. Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
+  ignore_other_user_mentions: false
+
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
   mention_patterns:
@@ -504,6 +513,10 @@ slack:
 
 :::tip When to use `strict_mention`
 Set this to `true` in busy workspaces where Slack's default "the bot remembers this thread" behavior surprises users — for example, a long tech-support thread where the bot helped at the start and you'd rather it stay silent unless explicitly pinged again. DMs and active interactive sessions are unaffected.
+:::
+
+:::tip When to use `ignore_other_user_mentions`
+Set this to `true` when the bot follows busy threads (via thread auto-engagement or `free_response_channels`) and butts in on messages humans address to each other. It is a narrower tool than `strict_mention`: plain follow-ups in an engaged thread still get answers; only messages that open by @mentioning another person are skipped. **1:1 DMs are unaffected**; group DMs (MPIMs) and channels both apply it, matching the shared-surface policy below. Broadcast tokens (`@here`, `@channel`) and channel references address the room, not a person, so they are never skipped.
 :::
 
 :::info

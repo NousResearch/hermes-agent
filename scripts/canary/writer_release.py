@@ -90,6 +90,12 @@ _PINNED_BUILD_CONSTRAINTS = (
 _SAFE_WHEEL_NAME_RE = re.compile(r"^[A-Za-z0-9_.+-]+\.whl$")
 _VIRTUALENV_SITE_HOOK_NAME = "_virtualenv.pth"
 _VIRTUALENV_SITE_HOOK_BYTES = b"import _virtualenv"
+_SETUPTOOLS_DISTUTILS_SITE_HOOK_NAME = "distutils-precedence.pth"
+_SETUPTOOLS_DISTUTILS_SITE_HOOK_BYTES = (
+    b"import os; var = 'SETUPTOOLS_USE_DISTUTILS'; enabled = "
+    b"os.environ.get(var, 'local') == 'local'; enabled and "
+    b"__import__('_distutils_hack').add_shim(); \n"
+)
 _PACKAGED_DISCORD_EDGE_MODULES = (
     Path("gateway/discord_edge_bootstrap.py"),
     Path("gateway/discord_edge_service.py"),
@@ -1850,11 +1856,28 @@ def _validate_runtime_dependency_outputs(spec: ReleaseBuildSpec) -> None:
         raise RuntimeError("release runtime dependency manifest is invalid")
 
 
-def _remove_exact_virtualenv_site_hook(spec: ReleaseBuildSpec) -> bool:
-    """Remove uv's exact build-time hook before sealing the runtime."""
+def _remove_exact_site_hook(
+    spec: ReleaseBuildSpec,
+    *,
+    name: str,
+    expected: bytes,
+    label: str,
+) -> bool:
+    """Remove one exact generated site hook without accepting drift."""
 
+    if (
+        not isinstance(name, str)
+        or not name
+        or "/" in name
+        or name in {".", ".."}
+        or not isinstance(expected, bytes)
+        or not expected
+        or not isinstance(label, str)
+        or not label
+    ):
+        raise ValueError("release site hook contract is invalid")
     _validate_root_directory(spec.site_packages)
-    hook = spec.site_packages / _VIRTUALENV_SITE_HOOK_NAME
+    hook = spec.site_packages / name
     if not os.path.lexists(hook):
         return False
     before = os.lstat(hook)
@@ -1865,10 +1888,10 @@ def _remove_exact_virtualenv_site_hook(spec: ReleaseBuildSpec) -> bool:
         or before.st_gid != _BUILD_OWNER_GID
         or before.st_nlink != 1
         or stat.S_IMODE(before.st_mode) != 0o644
-        or before.st_size != len(_VIRTUALENV_SITE_HOOK_BYTES)
+        or before.st_size != len(expected)
         or _list_xattrs(hook)
     ):
-        raise RuntimeError("release virtualenv site hook identity is not exact")
+        raise RuntimeError(f"release {label} site hook identity is not exact")
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(hook, flags)
     try:
@@ -1894,12 +1917,12 @@ def _remove_exact_virtualenv_site_hook(spec: ReleaseBuildSpec) -> bool:
             before.st_mtime_ns,
             before.st_ctime_ns,
         ):
-            raise RuntimeError("release virtualenv site hook changed during open")
-        raw = os.read(descriptor, len(_VIRTUALENV_SITE_HOOK_BYTES) + 1)
+            raise RuntimeError(f"release {label} site hook changed during open")
+        raw = os.read(descriptor, len(expected) + 1)
         after = os.fstat(descriptor)
     finally:
         os.close(descriptor)
-    if raw != _VIRTUALENV_SITE_HOOK_BYTES or (
+    if raw != expected or (
         after.st_dev,
         after.st_ino,
         after.st_size,
@@ -1912,7 +1935,7 @@ def _remove_exact_virtualenv_site_hook(spec: ReleaseBuildSpec) -> bool:
         before.st_mtime_ns,
         before.st_ctime_ns,
     ):
-        raise RuntimeError("release virtualenv site hook content drifted")
+        raise RuntimeError(f"release {label} site hook content drifted")
     current = os.lstat(hook)
     if (
         current.st_dev,
@@ -1927,7 +1950,7 @@ def _remove_exact_virtualenv_site_hook(spec: ReleaseBuildSpec) -> bool:
         before.st_mtime_ns,
         before.st_ctime_ns,
     ):
-        raise RuntimeError("release virtualenv site hook changed before removal")
+        raise RuntimeError(f"release {label} site hook changed before removal")
     hook.unlink()
     directory_fd = os.open(
         spec.site_packages,
@@ -1940,8 +1963,30 @@ def _remove_exact_virtualenv_site_hook(spec: ReleaseBuildSpec) -> bool:
     finally:
         os.close(directory_fd)
     if os.path.lexists(hook):
-        raise RuntimeError("release virtualenv site hook removal did not persist")
+        raise RuntimeError(f"release {label} site hook removal did not persist")
     return True
+
+
+def _remove_exact_virtualenv_site_hook(spec: ReleaseBuildSpec) -> bool:
+    """Remove uv's exact build-time hook before sealing the runtime."""
+
+    return _remove_exact_site_hook(
+        spec,
+        name=_VIRTUALENV_SITE_HOOK_NAME,
+        expected=_VIRTUALENV_SITE_HOOK_BYTES,
+        label="virtualenv",
+    )
+
+
+def _remove_exact_setuptools_distutils_site_hook(spec: ReleaseBuildSpec) -> bool:
+    """Remove setuptools' exact executable distutils shim after provisioning."""
+
+    return _remove_exact_site_hook(
+        spec,
+        name=_SETUPTOOLS_DISTUTILS_SITE_HOOK_NAME,
+        expected=_SETUPTOOLS_DISTUTILS_SITE_HOOK_BYTES,
+        label="setuptools distutils",
+    )
 
 
 def _require_root_owned_regular_executable(
@@ -2195,6 +2240,11 @@ def build_release(
             runner=runner,
             label="release runtime dependency install",
         )
+        # The pinned runtime install may add setuptools' executable distutils
+        # shim.  Remove only its exact reviewed bytes before another target
+        # interpreter process is allowed to start.
+        _remove_exact_setuptools_distutils_site_hook(spec)
+        _validate_installed_runtime(spec, managed_python)
         _run_checked(
             verify_runtime,
             runner=runner,

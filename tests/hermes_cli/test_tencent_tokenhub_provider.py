@@ -182,7 +182,7 @@ class TestTencentTokenhubCanonicalProvider:
     def test_description_contains_hy3(self):
         from hermes_cli.models import CANONICAL_PROVIDERS
         entry = next(p for p in CANONICAL_PROVIDERS if p.slug == "tencent-tokenhub")
-        assert "Hy3 Preview" in entry.tui_desc
+        assert "Hy3" in entry.tui_desc
 
 
 # =============================================================================

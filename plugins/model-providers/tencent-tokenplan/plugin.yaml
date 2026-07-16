@@ -1,0 +1,5 @@
+name: tencent-tokenplan-provider
+kind: model-provider
+version: 1.0.0
+description: Tencent TokenPlan (Hy3 via LKEAP Anthropic-compatible endpoint)
+author: Contentment003111

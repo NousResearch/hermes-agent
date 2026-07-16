@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
 
-// Node 22's direct TypeScript runner requires the extension on Windows.
-// @ts-expect-error The Electron tsconfig intentionally disables TS extension imports.
-import { createBackendConnectionState } from './backend-connection-state.ts'
+import { test } from 'vitest'
+
+import { createBackendConnectionState } from './backend-connection-state'
 
 type FakeProcess = { id: string }
 

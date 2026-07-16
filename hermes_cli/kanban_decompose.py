@@ -84,6 +84,11 @@ Rules:
     includes the worker's base prompt, task spec, likely repository/file/tool
     output, and implementation conversation. Keep every child at or below the
     supplied budget with sensible margin.
+  - Optional calibration context may summarize outcomes from similar completed
+    tasks. Use it to calibrate estimates and their range, but never treat it as
+    a point guarantee. The current task's scope and uncertainty take priority.
+  - If no calibration context is present, estimate normally from the task
+    description; do not claim that historical evidence exists.
   - First look for semantic seams. Split only at those seams; never create
     arbitrary micro-tasks merely to hit a number.
   - Among valid semantic splits, choose the FEWEST workers and the LARGEST
@@ -127,7 +132,40 @@ Body:
 {body}
 
 Maximum rough context budget per fresh worker: {context_budget_tokens:,} tokens
-"""
+{calibration_context}"""
+
+
+def _calibration_context(task_id: str, title: str, body: str,
+                         context_budget_tokens: int) -> str:
+    """Ask optional plugins for bounded, aggregate-only estimate calibration.
+
+    The decomposer remains usable without plugins.  A plugin may return either
+    a string or ``{"context": "..."}``; raw history is deliberately not a
+    core concern and callers cap the injected aggregate to keep this auxiliary
+    prompt bounded.
+    """
+    try:
+        from hermes_cli.plugins import invoke_hook
+        results = invoke_hook(
+            "kanban_decomposer_context",
+            task_id=task_id,
+            title=title,
+            body=body,
+            context_budget_tokens=context_budget_tokens,
+        )
+    except Exception as exc:
+        logger.debug("decompose: calibration context hook failed: %s", exc)
+        return ""
+
+    parts: list[str] = []
+    for result in results or []:
+        if isinstance(result, dict):
+            result = result.get("context", "")
+        if isinstance(result, str) and result.strip():
+            parts.append(result.strip())
+    if not parts:
+        return ""
+    return "\n\nCalibration context:\n" + "\n\n".join(parts)[:4_000] + "\n"
 
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
@@ -237,11 +275,17 @@ def decompose_task(
         logger.debug("decompose: auxiliary client import failed: %s", exc)
         return DecomposeOutcome(task_id, False, "auxiliary client unavailable")
 
+    title = _truncate(task.title or "", 400)
+    body = _truncate(task.body or "(no body)", 4000)
+    calibration_context = _calibration_context(
+        task.id, title, body, context_budget_tokens,
+    )
     user_msg = _USER_TEMPLATE.format(
         task_id=task.id,
-        title=_truncate(task.title or "", 400),
-        body=_truncate(task.body or "(no body)", 4000),
+        title=title,
+        body=body,
         context_budget_tokens=context_budget_tokens,
+        calibration_context=calibration_context,
     )
 
     try:

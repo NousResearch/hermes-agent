@@ -16,6 +16,7 @@ for session boundaries and deterministic tests. ``shutdown_all`` drains the
 executor with a bounded timeout so a wedged provider can't hang teardown.
 """
 import time
+from concurrent.futures import Future
 
 import pytest
 
@@ -136,3 +137,45 @@ def test_writes_are_serialized_in_order():
         mgr.sync_all(f"turn-{i}", "resp", session_id="s1")
     assert mgr.flush_pending(timeout=10) is True
     assert order == [f"turn-{i}" for i in range(5)]
+
+
+def test_background_queue_is_bounded_and_prefetch_newest_wins(caplog):
+    class _HoldingExecutor:
+        def __init__(self):
+            self.submitted = []
+
+        def submit(self, fn):
+            self.submitted.append(fn)
+            return Future()
+
+    calls = []
+
+    class _RecordingProvider(_SlowProvider):
+        _name = "recording"
+
+        def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
+            calls.append(("sync", user_content))
+
+        def queue_prefetch(self, query, *, session_id=""):
+            calls.append(("prefetch", query))
+
+    mgr = MemoryManager()
+    mgr.add_provider(_RecordingProvider(delay=0))
+    executor = _HoldingExecutor()
+    mgr._sync_executor = executor
+
+    for i in range(40):
+        mgr.sync_all(f"turn-{i}", "response", session_id="s1")
+    mgr.queue_prefetch_all("old", session_id="s1")
+    mgr.queue_prefetch_all("new", session_id="s1")
+
+    assert len(mgr._pending_syncs) == 32
+    assert len(mgr._pending_prefetches) == 1
+    assert len(executor.submitted) == 1
+    assert "bounded queue is full" in caplog.text
+
+    mgr._drain_background()
+    assert calls == [
+        *[("sync", f"turn-{i}") for i in range(32)],
+        ("prefetch", "new"),
+    ]

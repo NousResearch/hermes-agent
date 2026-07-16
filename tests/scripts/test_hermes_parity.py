@@ -167,9 +167,18 @@ def test_bisect_six_fixture_corpus_with_stability_and_dep_bump(tmp_path: Path) -
     def runner(repo: Path, tests: tuple[str, ...]) -> bisect.PytestRun:
         test = tests[0]
         if test == "nondeterministic":
+            # PER-SIDE parity counter: a single shared counter lets the threaded
+            # N=3 runs interleave so each SIDE sees a stable sequence (all-even /
+            # all-odd) -> classified REGRESSION, flaking this test in CI. Keying
+            # the counter by repo guarantees each side alternates P,F,P.
+            # repo.name is "repo" for BOTH sides (_repo appends a fixed subdir);
+            # key by the full resolved path hash so each side truly gets its own file.
+            import hashlib
+            side_key = hashlib.sha256(str(repo.resolve()).encode()).hexdigest()[:12]
+            side_counter = counter.with_name(f"counter-{side_key}.txt")
             with counter_lock:
-                current = int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
-                counter.write_text(str(current + 1), encoding="utf-8")
+                current = int(side_counter.read_text(encoding="utf-8")) if side_counter.exists() else 0
+                side_counter.write_text(str(current + 1), encoding="utf-8")
             outcome = bisect.TestOutcome.PASS if current % 2 == 0 else bisect.TestOutcome.FAIL
             return bisect.PytestRun(outcome, f"{repo} token=SECRET")
         baseline, merge = verdicts[test]

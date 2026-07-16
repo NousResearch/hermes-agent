@@ -20,6 +20,14 @@ import tempfile
 from pathlib import Path
 
 
+_EXTRA_TMP_ROOTS: tuple[str, ...] = (
+    "/tmp",
+    "/private/tmp",
+    "/private/var/folders",
+    "/var/folders",
+)
+
+
 class UnsafeHomeError(RuntimeError):
     """Raised when a golden runner would write into a real HERMES_HOME."""
 
@@ -53,8 +61,9 @@ def require_sandboxed_home() -> Path:
         return home
     # Also accept pytest tmp_path-style locations under /private/var or TMPDIR
     # variants that resolve() may canonicalize differently on macOS.
-    for candidate in ("/tmp", "/private/tmp", "/private/var/folders", "/var/folders"):
-        croot = Path(candidate)
+    # Module-level so tests can narrow it to prove the refusal branch.
+    for candidate in _EXTRA_TMP_ROOTS:
+        croot = Path(candidate).resolve()
         if croot == home or croot in home.parents:
             return home
     raise UnsafeHomeError(

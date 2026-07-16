@@ -155,21 +155,28 @@ def test_sandbox_guard_allows_temp_and_marker(monkeypatch, tmp_path):
 
     from scripts.refactor_equiv.sandbox_guard import UnsafeHomeError
 
-    odd = tmp_path / "not-temp-shaped"
-    odd.mkdir()
-    # simulate non-temp by pointing at a home-adjacent dir; the real check
-    # uses tempfile.gettempdir(), so fabricate a path outside it:
-    fake = Path.home() / ".refactor-equiv-guard-test"
-    fake.mkdir(exist_ok=True)
-    try:
-        monkeypatch.setenv("HERMES_HOME", str(fake))
-        with pytest.raises(UnsafeHomeError):
-            require_sandboxed_home()
-        (fake / ".refactor-equiv-sandbox").touch()
-        assert require_sandboxed_home() == fake.resolve()
-    finally:
-        (fake / ".refactor-equiv-sandbox").unlink(missing_ok=True)
-        fake.rmdir()
+    # simulate a non-temp location WITHOUT touching the real home: fabricate
+    # a fake user home under tmp_path and monkeypatch both Path.home and
+    # tempfile.gettempdir so tmp_path itself no longer counts as temp.
+    import tempfile
+
+    fake_home = tmp_path / "fakeuser"
+    fake_tmp = tmp_path / "faketmp"
+    fake_home.mkdir()
+    fake_tmp.mkdir()
+    import scripts.refactor_equiv.sandbox_guard as sg
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_tmp))
+    monkeypatch.setattr(sg, "_EXTRA_TMP_ROOTS", ())
+
+    non_temp = tmp_path / "not-temp-shaped"
+    non_temp.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(non_temp))
+    with pytest.raises(UnsafeHomeError):
+        require_sandboxed_home()
+    (non_temp / ".refactor-equiv-sandbox").touch()
+    assert require_sandboxed_home() == non_temp.resolve()
 
 
 def test_state_ext_runner_writes_are_guarded(monkeypatch):

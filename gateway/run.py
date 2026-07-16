@@ -14090,7 +14090,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Best-effort semantic rename of a newly auto-created Discord thread."""
         if not await asyncio.to_thread(self._is_discord_auto_thread_lane, source):
             return
-        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        adapter = self._adapter_for_source(source) if getattr(self, "adapters", None) else None
         if adapter is None:
             return
         rename_thread = getattr(adapter, "rename_thread", None)

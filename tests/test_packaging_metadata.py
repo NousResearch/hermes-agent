@@ -267,6 +267,32 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     assert on_disk, "expected locales/*.yaml catalogs on disk"
 
 
+def test_mcp_catalog_manifests_ship_in_both_wheel_and_sdist():
+    """Every optional MCP manifest must retain its directory in distributions."""
+    manifests = sorted((REPO_ROOT / "optional-mcps").glob("*/manifest.yaml"))
+    assert manifests, "expected optional-mcps/*/manifest.yaml entries on disk"
+
+    expected_data_files = {
+        f"optional-mcps/{path.parent.name}": [str(path.relative_to(REPO_ROOT))]
+        for path in manifests
+    }
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    declared_data_files = {
+        target: sources
+        for target, sources in data["tool"]["setuptools"].get("data-files", {}).items()
+        if target.startswith("optional-mcps/")
+    }
+    assert declared_data_files == expected_data_files, (
+        "pyproject [tool.setuptools.data-files] must declare one target per "
+        "optional-mcps/<name>/manifest.yaml so wheels preserve catalog entries"
+    )
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "graft optional-mcps" in manifest, (
+        "MANIFEST.in must `graft optional-mcps` so the sdist ships MCP manifests"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dependency-pin consistency: pyproject extras <-> tools/lazy_deps.py
 #

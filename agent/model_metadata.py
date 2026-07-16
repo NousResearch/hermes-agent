@@ -657,6 +657,30 @@ def is_local_endpoint(base_url: str) -> bool:
     return False
 
 
+_EXPLICIT_LOCAL_RUNTIME_PROVIDERS = frozenset({
+    "ollama",
+    "lmstudio",
+    "vllm",
+    "llamacpp",
+    "llama.cpp",
+    "llama-cpp",
+})
+
+
+def is_explicit_local_runtime(provider: Optional[str], base_url: str) -> bool:
+    """Return whether provider explicitly identifies local inference.
+
+    Endpoint locality alone is insufficient: loopback aggregators and reverse
+    proxies can forward requests to remote models. Generic ``custom`` and
+    ``local`` providers are therefore intentionally excluded.
+    """
+    provider_id = (provider or "").strip().lower()
+    return (
+        provider_id in _EXPLICIT_LOCAL_RUNTIME_PROVIDERS
+        and is_local_endpoint(base_url)
+    )
+
+
 def _localhost_to_ipv4(url: str) -> str:
     """Rewrite a ``localhost`` HOST to ``127.0.0.1`` in a probe URL.
 

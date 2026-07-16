@@ -864,6 +864,65 @@ def _has_top_level_alternation(pattern: str) -> bool:
     return False
 
 
+def _has_nested_unbounded_repeat(pattern: str) -> bool:
+    """True if an unbounded quantifier applies to a group containing one.
+
+    ``(a+)+``, ``(?:x*)*``, ``(a{2,})+`` — the canonical catastrophic-
+    backtracking (ReDoS) shape. Registered patterns run against every log
+    line, tool output, and transcript chunk, so a pathological pattern from
+    a buggy plugin would stall the host process, not just the plugin.
+
+    Detects structural nesting only; ambiguity between overlapping
+    alternation branches (``(a|aa)+``) is not statically detected and
+    remains the plugin author's responsibility.
+    """
+
+    def _unbounded_quantifier_follows(j: int) -> bool:
+        # Is pattern[j:] an unbounded quantifier (* + {m,}) for the atom
+        # that just ended at j?
+        if j >= len(pattern):
+            return False
+        if pattern[j] in "*+":
+            return True
+        if pattern[j] == "{":
+            k = pattern.find("}", j)
+            body = pattern[j + 1:k] if k != -1 else ""
+            # {m,} is open-ended; {m} and {m,n} are bounded.
+            return body[:-1].isdigit() and body.endswith(",")
+        return False
+
+    # Stack of flags: does the group at this depth contain an unbounded
+    # repeat? Index 0 is the top level.
+    contains_unbounded = [False]
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "[":
+            i += 1
+            if i < len(pattern) and pattern[i] == "]":
+                i += 1
+            while i < len(pattern) and pattern[i] != "]":
+                if pattern[i] == "\\":
+                    i += 1
+                i += 1
+        elif ch == "(":
+            contains_unbounded.append(False)
+        elif ch == ")":
+            inner = contains_unbounded.pop() if len(contains_unbounded) > 1 else False
+            if inner and _unbounded_quantifier_follows(i + 1):
+                return True
+            contains_unbounded[-1] = contains_unbounded[-1] or inner
+        elif _unbounded_quantifier_follows(i):
+            contains_unbounded[-1] = True
+            if ch == "{":
+                i = pattern.find("}", i)  # skip the {m,} body
+        i += 1
+    return False
+
+
 _PREFIX_SUBSTRINGS = tuple(
     _extract_literal_prefix(p) for p in _PREFIX_PATTERNS
 )
@@ -924,6 +983,10 @@ def register_redaction_patterns(patterns, source: str = "plugin") -> int:
     * must not contain a top-level alternation (``ab|.*`` would escape
       the literal-prefix guarantee below through its unprefixed branch;
       grouped alternation after the prefix, ``ab(?:x|y)``, is allowed);
+    * must not nest unbounded quantifiers (``(a+)+``-style patterns can
+      backtrack catastrophically, and registered patterns run against
+      every log line and tool output — see
+      ``_has_nested_unbounded_repeat``);
     * must start with at least 2 literal characters (the pre-screen
       substring gate in ``_has_known_prefix_substring`` needs a literal
       anchor; it also structurally rules out redact-everything patterns
@@ -957,6 +1020,15 @@ def register_redaction_patterns(patterns, source: str = "plugin") -> int:
                 "escapes the literal-prefix guarantee (in 'ab|.*' the "
                 "prefix binds only the first branch); wrap alternation in "
                 "a group after the prefix, e.g. 'ab(?:x|y)'",
+                source, pattern,
+            )
+            continue
+        if _has_nested_unbounded_repeat(pattern):
+            logger.warning(
+                "%s: skipping redaction pattern %r — nested unbounded "
+                "quantifiers (e.g. '(a+)+') can backtrack catastrophically, "
+                "and registered patterns run on every log line and tool "
+                "output",
                 source, pattern,
             )
             continue

@@ -234,6 +234,14 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     # transcript and breaks prompt-prefix cache reuse on later turns. (#55733)
     "_verification_stop_synthetic",
     "_pre_verify_synthetic",
+    # An internal auto-resume continuation (MessageEvent text="" internal=True,
+    # gateway/run.py) has NO real user message — the resume prompt the model
+    # sees is injected separately. Persisting its empty user row pollutes the
+    # transcript (empty "messages" the user never sent), breaks role alternation
+    # (two consecutive user rows: the handoff row + this empty one), and is what
+    # a later /undo lands on as "your message (no text)". Drop it from
+    # persistence; the resumed turn's assistant reply still persists. (2026-07-16)
+    "_empty_resume_synthetic",
 )
 
 
@@ -1951,6 +1959,25 @@ class AIAgent:
                 # message committed by a mid-turn persist cannot be un-written
                 # when the end-of-turn drop removes it from the in-memory list.
                 if _is_ephemeral_scaffolding(msg):
+                    # Drop-site observability: an empty-resume user row dropped
+                    # HERE (not the other scaffolding types) is the risk vector —
+                    # a wrongful drop of a REAL user row would be silent data
+                    # loss. Log at INFO so a drop on the WRONG turn (a leaked
+                    # flag) is visible at the exact site it happens, not just
+                    # gateway-side on the resume turn. (undo-empty-resume pass-3)
+                    if (
+                        isinstance(msg, dict)
+                        and msg.get("_empty_resume_synthetic")
+                        and msg.get("role") == "user"
+                    ):
+                        logger.info(
+                            "flush: dropped an empty-resume user row for session %s "
+                            "(content_len=%s) — expected on an auto-resume turn; if "
+                            "this fires on a turn with real user text it is a "
+                            "leaked-flag regression",
+                            getattr(self, "session_id", "?"),
+                            len(msg.get("content") or ""),
+                        )
                     continue
                 if msg_id in flushed_ids:
                     # Already persisted by identity. One field can still change

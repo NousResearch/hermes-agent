@@ -606,6 +606,10 @@ def init_agent(
     # tail (the restart-loop backstop / auto-continue signal). Fresh per agent, so
     # the next turn's agent starts unset.
     agent._persist_superseded = False
+    # Set True by the gateway on an internal empty-text auto-resume turn so
+    # build_turn_context stamps the user row ephemeral (dropped from the durable
+    # transcript). Consumed once per turn. Default False = persist normally.
+    agent._suppress_user_turn_persist = False
     agent._execution_thread_id: int | None = None  # Set at run_conversation() start
     agent._interrupt_thread_signal_pending = False
     agent._client_lock = threading.RLock()

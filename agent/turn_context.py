@@ -38,6 +38,32 @@ from agent.model_metadata import (
 logger = logging.getLogger(__name__)
 
 
+def maybe_stamp_empty_resume_row(agent, user_msg: dict) -> bool:
+    """Stamp ``user_msg`` ephemeral when the gateway flagged this turn as an
+    internal empty-text auto-resume continuation, and CONSUME the flag.
+
+    Extracted as a pure, directly-testable helper (undo-empty-resume pass-3) so
+    the safety-critical consume-once behavior — a leaked flag must not drop a
+    LATER real user row — is exercised by an executing test, not source
+    inspection. Returns True iff the row was stamped.
+
+    Contract: reads ``agent._suppress_user_turn_persist``; if truthy, stamps
+    ``user_msg["_empty_resume_synthetic"] = True`` and resets the flag to False
+    (consumed once — a single stale flag can drop at most ONE row, and the
+    gateway additionally resets it at the top of every turn so it never carries
+    across turns). Fail-open on any error (do not stamp → row persists normally;
+    losing a real row is worse than a stray empty one).
+    """
+    try:
+        if getattr(agent, "_suppress_user_turn_persist", False):
+            user_msg["_empty_resume_synthetic"] = True
+            agent._suppress_user_turn_persist = False
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _compression_made_progress(
     orig_len: int, new_len: int, orig_tokens: int, new_tokens: int
 ) -> bool:
@@ -330,6 +356,12 @@ def build_turn_context(
 
     # Add user message.
     user_msg = {"role": "user", "content": user_message}
+    # An internal auto-resume continuation carries no real user text — the model
+    # gets its resume prompt via ``user_message`` but the persisted row would be
+    # empty. Stamp it ephemeral so the SessionDB flush drops it (no empty user
+    # row in the durable transcript). Set by the gateway on the resume-pending
+    # internal-empty path; consumed once here. See _EPHEMERAL_SCAFFOLDING_FLAGS.
+    maybe_stamp_empty_resume_row(agent, user_msg)
     # Stamp the platform-side message id (e.g. Discord message.id) as metadata on
     # the user turn so it survives the early crash-resilience persist below
     # (turn-start flush). Load-bearing for restart drain-window recovery: backfill

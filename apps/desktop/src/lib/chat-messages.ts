@@ -19,12 +19,15 @@ export type ChatMessage = {
   hidden?: boolean
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
+  /** Runtime-metadata footer (model · context · latency · cwd) from message.complete. */
+  footer?: string
 }
 
 export type GatewayEventPayload = {
   text?: string
   rendered?: string
   status?: string
+  footer?: string
   message?: string
   id?: string
   name?: string

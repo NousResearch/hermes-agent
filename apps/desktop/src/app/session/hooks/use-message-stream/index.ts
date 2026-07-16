@@ -335,7 +335,7 @@ export function useMessageStream({
   )
 
   const completeAssistantMessage = useCallback(
-    (sessionId: string, text: string) => {
+    (sessionId: string, text: string, footer?: string) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
@@ -392,7 +392,8 @@ export function useMessageStream({
             : {
                 ...message,
                 parts: replaceTextPart(message.parts),
-                pending: false
+                pending: false,
+                ...(footer ? { footer } : {})
               }
 
         const newAssistantFromCompletion = (): ChatMessage => ({
@@ -400,7 +401,8 @@ export function useMessageStream({
           role: 'assistant',
           parts: completionError ? [] : [assistantTextPart(finalText)],
           branchGroupId: state.pendingBranchGroup ?? undefined,
-          ...(completionError && { error: completionError })
+          ...(completionError && { error: completionError }),
+          ...(!completionError && footer ? { footer } : {})
         })
 
         const prev = state.messages

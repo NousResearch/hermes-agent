@@ -10302,11 +10302,17 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # desktop parity of the gateway's final-message footer. Appended to
             # the display text only (history already holds the raw response),
             # and only on a clean completion.
+            payload = {"text": raw, "usage": _get_usage(agent), "status": status}
             if raw and status == "complete":
                 footer = _turn_runtime_footer(agent, session, turn_seconds=_turn_seconds)
                 if footer:
-                    raw = f"{raw}\n\n{footer}"
-            payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+                    # Shipped as METADATA, never appended to the text: a footer
+                    # baked into `text` breaks the client's streamed-vs-final
+                    # dedupe (streamed bubble has no footer -> mismatch -> the
+                    # completed text re-appends as a DUPLICATE message) and is
+                    # washed away by the session-sync poll (DB rows carry no
+                    # footer). The desktop renders payload.footer separately.
+                    payload["footer"] = footer
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:

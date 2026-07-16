@@ -54,7 +54,7 @@ interface GatewayEventDeps {
   nativeSubagentSessionsRef: MutableRefObject<Set<string>>
   appendAssistantDelta: (sessionId: string, delta: string) => void
   appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean) => void
-  completeAssistantMessage: (sessionId: string, text: string) => void
+  completeAssistantMessage: (sessionId: string, text: string, footer?: string) => void
   failAssistantMessage: (sessionId: string, errorMessage: string) => void
   flushQueuedDeltas: (sessionId?: string) => void
   onTurnComplete?: (sessionId: string, payload: GatewayEventPayload | undefined) => void
@@ -333,7 +333,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         playCompletionSound()
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
-        completeAssistantMessage(sessionId, finalText)
+        const footer = typeof payload?.footer === 'string' && payload.footer.trim() ? payload.footer.trim() : undefined
+        completeAssistantMessage(sessionId, finalText, footer)
         onTurnComplete?.(sessionId, payload)
 
         if (isActiveEvent) {

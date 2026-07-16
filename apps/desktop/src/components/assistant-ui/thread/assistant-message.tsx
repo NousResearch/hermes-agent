@@ -130,6 +130,7 @@ export const AssistantMessage: FC<{
           </ErrorPrimitive.Root>
         </MessagePrimitive.Error>
       </div>
+      <RuntimeMetadataFooter />
       {hasVisibleText && (
         <AssistantFooter getMessageText={getMessageText} messageId={messageId} onBranchInNewChat={onBranchInNewChat} />
       )}
@@ -235,6 +236,32 @@ const MessageTimestamp: FC = () => {
   }
 
   return <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">{label}</DropdownMenuLabel>
+}
+
+/** Runtime-metadata line (model · context · latency · cwd) delivered on the
+ *  message.complete frame as payload.footer — rendered as chrome under the
+ *  bubble, NEVER as message text (baking it into the text broke the
+ *  streamed-vs-final dedupe and duplicated every message; it also vanished on
+ *  session-sync re-hydration since DB rows carry no footer). */
+const RuntimeMetadataFooter: FC = () => {
+  const footer = useAuiState(s => {
+    const custom = s.message.metadata?.custom as { footer?: unknown } | undefined
+
+    return typeof custom?.footer === 'string' ? custom.footer : null
+  })
+
+  if (!footer) {
+    return null
+  }
+
+  return (
+    <div
+      className="mt-1.5 pl-(--message-text-indent) font-mono text-[0.72rem] leading-4 text-muted-foreground/80"
+      data-slot="aui_assistant-runtime-footer"
+    >
+      {footer}
+    </div>
+  )
 }
 
 const AssistantFooter: FC<MessageActionProps> = props => (

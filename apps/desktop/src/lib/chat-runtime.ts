@@ -379,7 +379,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       unstable_annotations: [],
       unstable_data: [],
       steps: [],
-      custom: {}
+      custom: message.footer ? { footer: message.footer } : {}
     }
   } as ThreadMessage
 }

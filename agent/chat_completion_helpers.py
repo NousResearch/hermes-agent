@@ -825,6 +825,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     if isinstance(_rc, dict) and _rc.get("effort") == "auto":
         from hermes_constants import compute_dynamic_reasoning_effort
         resolved = compute_dynamic_reasoning_effort(api_messages, model=agent.model)
+        logger.debug("build_api_kwargs: auto-reasoning resolved to %s", resolved)
         # Shallow copy — never mutate the agent's config dict in place.
         _rc = {**_rc, "effort": resolved}
     # ────────────────────────────────────────────────────────────────────

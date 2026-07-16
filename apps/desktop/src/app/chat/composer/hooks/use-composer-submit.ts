@@ -11,6 +11,7 @@ import { onComposerSubmitRequest } from '../focus'
 import { composerPlainText } from '../rich-editor'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
+import { injectCanvasSkill } from '@/app/canvases/canvas-skill'
 
 interface UseComposerSubmitArgs {
   activeQueueSessionKey: string | null
@@ -89,7 +90,8 @@ export function useComposerSubmit({
       stashAt(submittedScope, text, submittedAttachments)
     }
 
-    void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))
+    const submittedText = injectCanvasSkill(text)
+    void Promise.resolve(attachments ? onSubmit(submittedText, { attachments }) : onSubmit(submittedText))
       .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
       .catch(restore)
   }

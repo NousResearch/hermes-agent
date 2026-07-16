@@ -100,6 +100,7 @@ import { $focusedStoredSessionId, type SplitDir } from '@/store/session-states'
 import {
   type AppView,
   ARTIFACTS_ROUTE,
+  CANVASES_ROUTE,
   MESSAGING_ROUTE,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution,
@@ -154,7 +155,8 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     route: SKILLS_ROUTE
   },
   { id: 'messaging', label: '', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
-  { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
+  { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE },
+  { id: 'canvases', label: 'Canvases', icon: props => <Codicon name="graph" {...props} />, route: CANVASES_ROUTE }
 ]
 
 // Two modes via the `compact` height variant (styles.css):
@@ -1090,6 +1092,7 @@ export function ChatSidebar({
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'messaging' && currentView === 'messaging') ||
                   (item.id === 'artifacts' && currentView === 'artifacts') ||
+                  (item.id === 'canvases' && currentView === 'canvases') ||
                   // Contributed rows light up at their own route.
                   (Boolean(item.route) && pathname === item.route)
 

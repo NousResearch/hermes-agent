@@ -1,0 +1,17 @@
+{
+  "name": "hermes-webex-listener",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@webex/internal-plugin-device": ">=3.12.0 <4.0.0",
+    "@webex/internal-plugin-mercury": ">=3.12.0 <4.0.0",
+    "@webex/plugin-logger": ">=3.12.0 <4.0.0",
+    "@webex/plugin-messages": ">=3.12.0 <4.0.0",
+    "@webex/plugin-people": ">=3.12.0 <4.0.0",
+    "@webex/plugin-rooms": ">=3.12.0 <4.0.0",
+    "@webex/webex-core": ">=3.12.0 <4.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

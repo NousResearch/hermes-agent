@@ -1,0 +1,49 @@
+name: webex-platform
+label: Webex
+kind: platform
+version: 1.0.0
+description: Cisco Webex Messaging adapter with WebSocket and webhook transports.
+author: Hermes Agent contributors
+requires_env:
+  - name: WEBEX_BOT_TOKEN
+    description: "Webex bot access token"
+    prompt: "Webex bot token"
+    url: "https://developer.webex.com/my-apps"
+    password: true
+optional_env:
+  - name: WEBEX_CONNECTION_MODE
+    description: "Inbound transport: websocket (default) or webhook"
+    prompt: "Connection mode"
+    password: false
+  - name: WEBEX_ALLOWED_USERS
+    description: "Comma-separated Webex user emails or IDs"
+    prompt: "Allowed users"
+    password: false
+  - name: WEBEX_ALLOW_ALL_USERS
+    description: "Allow all Webex users (true/false)"
+    prompt: "Allow all users"
+    password: false
+  - name: WEBEX_HOME_CHANNEL
+    description: "Default room ID for cron and notification delivery"
+    prompt: "Home room ID"
+    password: false
+  - name: WEBEX_WEBHOOK_PUBLIC_URL
+    description: "Public HTTPS base URL for webhook mode"
+    prompt: "Webhook public URL"
+    password: false
+  - name: WEBEX_WEBHOOK_SECRET
+    description: "Webhook signature secret"
+    prompt: "Webhook secret"
+    password: true
+  - name: WEBEX_WEBHOOK_HOST
+    description: "Webhook bind host (default: 0.0.0.0)"
+    prompt: "Webhook host"
+    password: false
+  - name: WEBEX_WEBHOOK_PORT
+    description: "Webhook bind port (default: 8646)"
+    prompt: "Webhook port"
+    password: false
+  - name: WEBEX_WEBHOOK_PATH
+    description: "Webhook callback path (default: /webex/webhook)"
+    prompt: "Webhook path"
+    password: false

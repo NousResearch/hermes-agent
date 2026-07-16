@@ -4,7 +4,25 @@ from argparse import Namespace
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hermes_cli import setup as setup_mod
+
+
+@pytest.fixture(autouse=True)
+def _isolate_webex_plugin_env(monkeypatch):
+    """Keep bundled Webex discovery independent of developer credentials."""
+    for name in (
+        "WEBEX_BOT_TOKEN",
+        "WEBEX_CONNECTION_MODE",
+        "WEBEX_HOME_CHANNEL",
+        "WEBEX_WEBHOOK_PUBLIC_URL",
+        "WEBEX_WEBHOOK_SECRET",
+        "WEBEX_WEBHOOK_HOST",
+        "WEBEX_WEBHOOK_PORT",
+        "WEBEX_WEBHOOK_PATH",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 # ---------------------------------------------------------------------------

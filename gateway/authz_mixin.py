@@ -30,12 +30,27 @@ from gateway.whatsapp_identity import (
 
 
 def _auth_env(name: str, default: str = "") -> str:
-    """Read allowlist/auth env; prefer profile secret_scope under multiplex."""
+    """Read allowlist/auth env; prefer profile secret_scope under multiplex.
+
+    When a profile secret scope is installed, that scope is AUTHORITATIVE: a var
+    the routed profile does not define resolves to ``default``, never to
+    ``os.environ``. In a multiplexer ``os.environ`` holds whichever profile
+    started the process, so falling back there would authorize the routed
+    profile's traffic against another profile's allowlist — the cross-profile
+    leak this scoping exists to prevent. ``get_secret`` applies the same rule
+    (see ``agent.secret_scope``); this mirrors it for the blank-value case.
+
+    Outside any scope (single-profile gateways) the read is plain ``os.getenv``,
+    identical to the legacy behavior every caller had before.
+    """
     if not name:
         return default
     try:
-        from agent.secret_scope import get_secret
+        from agent.secret_scope import current_secret_scope, get_secret
 
+        if current_secret_scope() is not None:
+            val = get_secret(name)
+            return str(val).strip() if val is not None else default
         val = get_secret(name)
         if val is not None and str(val).strip():
             return str(val).strip()

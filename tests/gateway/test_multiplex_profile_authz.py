@@ -304,3 +304,45 @@ def test_secondary_adapter_profile_wins_over_routes(monkeypatch):
     check = runner._make_adapter_auth_check(Platform.SLACK, profile_name="ops")
     assert check("u1", "thread", "C-CODER") is True
     assert seen["profile"] == "ops"
+
+
+def test_auth_env_scope_is_authoritative_for_undefined_var(monkeypatch):
+    """A var the routed profile does not define must not leak from os.environ.
+
+    In a multiplexer ``os.environ`` holds whichever profile started the process.
+    Falling back there for a routed profile that simply omits the var would
+    authorize its traffic against another profile's allowlist.
+    """
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from gateway.authz_mixin import _auth_env
+
+    monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "default-user")
+
+    token = set_secret_scope({"SOME_OTHER_SECRET": "x"})
+    try:
+        assert _auth_env("GATEWAY_ALLOWED_USERS") == ""
+    finally:
+        reset_secret_scope(token)
+
+
+def test_auth_env_scope_value_wins_over_process_env(monkeypatch):
+    """The routed profile's own value is used, not the process-global one."""
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from gateway.authz_mixin import _auth_env
+
+    monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "default-user")
+
+    token = set_secret_scope({"GATEWAY_ALLOWED_USERS": "coder-user"})
+    try:
+        assert _auth_env("GATEWAY_ALLOWED_USERS") == "coder-user"
+    finally:
+        reset_secret_scope(token)
+
+
+def test_auth_env_unscoped_reads_process_env(monkeypatch):
+    """Single-profile gateways keep the legacy os.getenv behavior."""
+    from gateway.authz_mixin import _auth_env
+
+    monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "default-user")
+    assert _auth_env("GATEWAY_ALLOWED_USERS") == "default-user"
+    assert _auth_env("UNSET_VAR_XYZ", "fallback") == "fallback"

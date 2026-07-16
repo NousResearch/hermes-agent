@@ -297,3 +297,42 @@ describe('fire-and-forget helpers', () => {
     expect(api.cullSession).toHaveBeenCalledOnce()
   })
 })
+
+describe('optimistic-row cache hygiene (zombie re-infection guard)', () => {
+  it('write-through strips optimistic-id rows, keeps committed + id-less rows', () => {
+    const api = stubApi()
+    pushTranscriptToRenderCache('http://g', 'sid', [
+      { id: 100, role: 'user', parts: [] },
+      { id: 'user-1784173429344-vh9u3f', role: 'user', parts: [] },
+      { id: 'assistant-stream-1784172446416', role: 'assistant', parts: [] },
+      { role: 'system', parts: [] }
+    ])
+    expect(api.putTranscript).toHaveBeenCalledWith('http://g', 'sid', [
+      { id: 100, role: 'user', parts: [] },
+      { role: 'system', parts: [] }
+    ])
+  })
+
+  it('write-through skips the put entirely when ALL rows are optimistic', () => {
+    const api = stubApi()
+    pushTranscriptToRenderCache('http://g', 'sid', [
+      { id: 'assistant-stream-1', role: 'assistant', parts: [] }
+    ])
+    expect(api.putTranscript).not.toHaveBeenCalled()
+  })
+
+  it('normalizer drops legacy on-disk optimistic rows before painting', () => {
+    const rows = normalizeCachedTranscriptRows([
+      { id: '100', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+      { id: 'assistant-stream-1784143089811', role: 'assistant', parts: [{ type: 'text', text: 'zombie' }] }
+    ])
+    expect(rows.map(row => (row as { id?: string }).id)).toEqual(['100'])
+  })
+
+  it('normalizer returns a miss when the cached file holds only optimistic rows', () => {
+    const rows = normalizeCachedTranscriptRows([
+      { id: 'user-1-x', role: 'user', parts: [{ type: 'text', text: 'zombie' }] }
+    ])
+    expect(rows).toEqual([])
+  })
+})

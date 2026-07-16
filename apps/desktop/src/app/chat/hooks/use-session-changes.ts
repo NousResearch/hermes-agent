@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 
-import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
+import { chatMessageText, type ChatMessage, renderMediaTags, toChatMessages } from '@/lib/chat-messages'
 import type { ClientSessionState } from '@/app/types'
 import type { SessionMessage, StatusResponse } from '@/types/hermes'
 
@@ -132,6 +132,12 @@ export function appendFetchedMessages(
   const materialized = toChatMessages([...newRows])
   const appendable = materialized.filter(message => !renderedIds.has(message.id))
 
+  // Reconnect-seam zombie sweep: when a committed twin of an un-stamped
+  // optimistic row arrives (the message.complete stamp was severed by a
+  // backend restart / WS reconnect), drop the zombie so the committed row
+  // doesn't paint as a duplicate. No-op when nothing is appendable.
+  const base = appendable.length ? dropZombieOptimisticRows(current, appendable) : [...current]
+
   for (const message of appendable) {
     renderedIds.add(message.id)
   }
@@ -147,7 +153,7 @@ export function appendFetchedMessages(
 
   return {
     cursor: advanceCursorAfterRows(0, fetchedRows, appendable, renderedIds),
-    messages: orderCommittedMessages([...current, ...appendable]),
+    messages: orderCommittedMessages([...base, ...appendable]),
     renderedIds
   }
 }
@@ -204,6 +210,84 @@ function optimisticTranscriptIds(messages: readonly ChatMessage[]): string[] {
         (message.id.startsWith('user-') || message.id.startsWith('assistant-') || message.pending)
     )
     .map(message => message.id)
+}
+
+/** A client-minted transcript row id (`user-<ts>` / `assistant-<ts>`), never a committed DB id. */
+export function isOptimisticRowId(id: string): boolean {
+  return !Number.isInteger(Number(id)) && (id.startsWith('user-') || id.startsWith('assistant-'))
+}
+
+/**
+ * Drop ZOMBIE optimistic rows whose committed twin just arrived via the poll.
+ *
+ * The stamping path (message.complete → markTurnComplete) can be severed by a
+ * backend restart / WS reconnect: the turn's committed rows land in the DB but
+ * no completion frame ever reaches this client, so its optimistic rows keep
+ * their client-minted ids (`user-<ts>` / `assistant-stream-<ts>`), `busy`
+ * resets without a stamp, and the id-only dedupe in appendFetchedMessages then
+ * paints the committed rows as DUPLICATES next to the zombies (DB stays clean
+ * — pure render corruption, observed live 2026-07-15). Content is the only
+ * remaining join key, so: an optimistic, NON-pending row whose (role, text)
+ * exactly matches an incoming committed row is the committed row — drop the
+ * zombie and let the committed twin render in its place.
+ *
+ * Deliberately narrow (over-collapse guardrails):
+ *  - only optimistic-id rows are ever dropped (committed rows are untouchable);
+ *  - `pending` rows are exempt (an actively-streaming row must never vanish);
+ *  - empty-text rows are exempt (no reliable join key);
+ *  - each incoming row consumes at most ONE zombie (genuine repeats like a
+ *    user sending "continue" twice keep their second copy).
+ */
+export function dropZombieOptimisticRows(
+  current: readonly ChatMessage[],
+  incoming: readonly ChatMessage[]
+): ChatMessage[] {
+  // Normalize both sides through renderMediaTags: committed assistant rows
+  // arrive via toChatMessages/assistantTextPart (MEDIA: lines already turned
+  // into markdown links) while a zombie's streamed text may still be raw.
+  // renderMediaTags is idempotent on transformed text, so this makes the
+  // join key representation-stable for both (Greptile #361 P2).
+  const contentKey = (message: ChatMessage): string =>
+    `${message.role}\u0000${renderMediaTags(chatMessageText(message)).trim()}`
+  const incomingBudget = new Map<string, number>()
+
+  for (const message of incoming) {
+    const text = chatMessageText(message).trim()
+
+    if (!text) {
+      continue
+    }
+
+    const key = contentKey(message)
+    incomingBudget.set(key, (incomingBudget.get(key) ?? 0) + 1)
+  }
+
+  if (!incomingBudget.size) {
+    return [...current]
+  }
+
+  return current.filter(message => {
+    if (!isOptimisticRowId(message.id) || message.pending) {
+      return true
+    }
+
+    const text = chatMessageText(message).trim()
+
+    if (!text) {
+      return true
+    }
+
+    const key = contentKey(message)
+    const budget = incomingBudget.get(key) ?? 0
+
+    if (budget <= 0) {
+      return true
+    }
+
+    incomingBudget.set(key, budget - 1)
+
+    return false
+  })
 }
 
 export function extractCommittedMessageIds(payload: unknown): string[] {

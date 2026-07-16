@@ -186,22 +186,64 @@ export async function readCachedTranscript(storedSessionId: string | null): Prom
 }
 
 /**
+ * Client-minted optimistic transcript-row id prefixes — live-turn scaffolding
+ * minted by the renderer (`user-<ts>-…` in the composer send path,
+ * `assistant-stream-<ts>` / `assistant-<ts>` for the streamed reply,
+ * `review-summary-<ts>` for review chips). Deliberately a PREFIX allowlist,
+ * not "any non-integer id": unknown string ids pass through (fail-open).
+ */
+const OPTIMISTIC_ROW_ID_PREFIXES = ['user-', 'assistant-', 'review-summary-'] as const
+
+/**
+ * True for rows safe to persist/paint from the render cache. The poison is
+ * specifically CLIENT-MINTED optimistic ids: a persisted zombie re-infects
+ * every boot and paints duplicates beside its committed twin after a severed
+ * message.complete stamp (observed live 2026-07-15). Committed integer ids,
+ * id-less legacy rows, and unrecognized string ids all pass through.
+ */
+export function isCommittedTranscriptRow(row: unknown): boolean {
+  if (row == null || typeof row !== 'object') {
+    return false
+  }
+
+  const id = (row as { id?: unknown }).id
+
+  if (typeof id !== 'string') {
+    return true
+  }
+
+  if (Number.isInteger(Number(id))) {
+    return true
+  }
+
+  return !OPTIMISTIC_ROW_ID_PREFIXES.some(prefix => id.startsWith(prefix))
+}
+
+/**
  * Normalize cached transcript rows to ChatMessage[] for painting. Two writer
  * shapes exist: the transcript preloader stores raw SessionMessage rows; the
  * active-session write-through stores converted ChatMessage rows (they carry
  * `parts: []`). Sniff and convert; anything unconvertible comes back empty
  * (callers treat empty as a miss and fall through to the network).
+ * Optimistic (client-minted-id) rows written by older builds are dropped —
+ * they are stale live-turn scaffolding, never valid paint content.
  */
 export function normalizeCachedTranscriptRows(rows: unknown[]): ChatMessage[] {
   try {
     if (!Array.isArray(rows) || rows.length === 0) {
       return []
     }
-    const first = rows[0] as { parts?: unknown }
-    if (first != null && typeof first === 'object' && Array.isArray(first.parts)) {
-      return rows as ChatMessage[]
+    // Preserve array identity when nothing needs filtering (the write-through
+    // pass-through contract asserted by switch-cache-paint.test.ts).
+    const committed = rows.every(isCommittedTranscriptRow) ? rows : rows.filter(isCommittedTranscriptRow)
+    if (committed.length === 0) {
+      return []
     }
-    return toChatMessages(rows as SessionMessage[])
+    const first = committed[0] as { parts?: unknown }
+    if (first != null && typeof first === 'object' && Array.isArray(first.parts)) {
+      return committed as ChatMessage[]
+    }
+    return toChatMessages(committed as SessionMessage[])
   } catch {
     return []
   }
@@ -228,7 +270,13 @@ export function pushTranscriptToRenderCache(
   try {
     const api = renderCacheApi()
     if (api && gatewayUrl && storedSessionId && Array.isArray(rows) && rows.length > 0) {
-      api.putTranscript(gatewayUrl, storedSessionId, rows)
+      // Persist COMMITTED rows only. Optimistic rows (client-minted ids) are
+      // live-turn scaffolding — a persisted zombie re-infects every boot and
+      // paints duplicates beside its committed twin after a severed stamp.
+      const committed = rows.filter(isCommittedTranscriptRow)
+      if (committed.length > 0) {
+        api.putTranscript(gatewayUrl, storedSessionId, committed)
+      }
     }
   } catch {
     // fail-open

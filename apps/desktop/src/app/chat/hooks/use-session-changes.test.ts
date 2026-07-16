@@ -11,6 +11,7 @@ import {
   appendFetchedMessages,
   createSessionChangesController,
   discardUnstampedOptimisticTranscriptRows,
+  dropZombieOptimisticRows,
   extractCommittedMessageIds,
   maxCommittedMessageId,
   sessionChangesSupported,
@@ -510,3 +511,96 @@ describe('useSessionChanges B5 watchdog and hatch', () => {
     expect(remaining).toEqual([queuedChip])
   })
 })
+
+describe('reconnect-seam zombie optimistic rows (severed message.complete stamp)', () => {
+  // Live incident 2026-07-15: a backend restart severed the message.complete
+  // frame, so an optimistic assistant row (`assistant-stream-<ts>`) was never
+  // stamped to its committed id. The poll then re-fetched the committed row
+  // and — with an id-only dedupe — painted it as a DUPLICATE beside the
+  // zombie. DB clean; pure render corruption. These drive the REAL
+  // appendFetchedMessages/dropZombieOptimisticRows, no mocks.
+
+  function textMessage(id: string, role: ChatMessage['role'], text: string, pending = false): ChatMessage {
+    return { id, role, pending, parts: [{ type: 'text', text }] }
+  }
+
+  it('drops the zombie when its committed twin arrives via the poll (no double paint)', () => {
+    const current = [
+      textMessage('100', 'user', 'hello'),
+      textMessage('assistant-stream-1784172446416', 'assistant', 'the reply')
+    ]
+    const result = appendFetchedMessages(current, [
+      { id: 101, role: 'assistant', content: 'the reply' }
+    ])
+
+    const texts = result.messages.map(row => row.parts.map(p => (p as { text?: string }).text ?? '').join(''))
+    expect(texts.filter(t => t === 'the reply')).toHaveLength(1)
+    expect(result.messages.map(row => row.id)).toEqual(['100', '101'])
+  })
+
+  it('drops a zombie USER row too (user optimistic id, committed twin polled)', () => {
+    const current = [
+      textMessage('user-1784173429344-vh9u3f', 'user', 'i see the footer!!!')
+    ]
+    const result = appendFetchedMessages(current, [
+      { id: 200, role: 'user', content: 'i see the footer!!!' }
+    ])
+
+    expect(result.messages.map(row => row.id)).toEqual(['200'])
+  })
+
+  it('never drops a PENDING (actively streaming) optimistic row', () => {
+    const current = [textMessage('assistant-stream-1', 'assistant', 'partial text', true)]
+    const result = appendFetchedMessages(current, [
+      { id: 300, role: 'assistant', content: 'partial text' }
+    ])
+
+    // orderCommittedMessages (pre-existing) sorts optimistic rows after committed
+    // ones; the contract here is SURVIVAL of the pending row, not its position.
+    expect(result.messages.map(row => row.id).sort()).toEqual(['300', 'assistant-stream-1'])
+  })
+
+  it('never drops committed rows and never over-collapses distinct content', () => {
+    const current = [
+      textMessage('400', 'assistant', 'same words'),
+      textMessage('assistant-stream-2', 'assistant', 'different words')
+    ]
+    const result = appendFetchedMessages(current, [
+      { id: 401, role: 'assistant', content: 'same words' }
+    ])
+
+    // committed 400 untouched; zombie has different content so it stays
+    // (position governed by pre-existing orderCommittedMessages, assert survival)
+    expect(result.messages.map(row => row.id).sort()).toEqual(['400', '401', 'assistant-stream-2'])
+  })
+
+  it('one incoming row consumes at most ONE zombie (genuine repeats survive)', () => {
+    const zombies = [
+      textMessage('user-a', 'user', 'continue'),
+      textMessage('user-b', 'user', 'continue')
+    ]
+    const remaining = dropZombieOptimisticRows(zombies, [textMessage('500', 'user', 'continue')])
+
+    expect(remaining.map(row => row.id)).toEqual(['user-b'])
+  })
+
+  it('role must match for a zombie drop (same text, different role stays)', () => {
+    const zombies = [textMessage('assistant-stream-3', 'assistant', 'ok')]
+    const remaining = dropZombieOptimisticRows(zombies, [textMessage('600', 'user', 'ok')])
+
+    expect(remaining.map(row => row.id)).toEqual(['assistant-stream-3'])
+  })
+
+  it('MEDIA-tag edge: raw streamed zombie matches its media-rendered committed twin', () => {
+    // Committed rows pass through assistantTextPart -> renderMediaTags; the
+    // streamed zombie may hold the raw MEDIA: line. The join key normalizes
+    // both sides so the zombie still drops (Greptile #361 P2).
+    const zombie = textMessage('assistant-stream-9', 'assistant', 'here you go\nMEDIA:/tmp/pic.png')
+    const committed = appendFetchedMessages([zombie], [
+      { id: 700, role: 'assistant', content: 'here you go\nMEDIA:/tmp/pic.png' }
+    ])
+
+    expect(committed.messages.map(row => row.id)).toEqual(['700'])
+  })
+})
+

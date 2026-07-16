@@ -19,6 +19,7 @@ import base64
 import hashlib
 import hmac
 import json
+import socket
 import time
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1608,3 +1609,35 @@ class TestDualStackBind:
             )
         finally:
             await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_default_bind_rejects_existing_ipv6_listener(self):
+        """A specific IPv6 listener must block the wildcard dual-stack bind."""
+        blocker = await asyncio.start_server(
+            lambda _reader, _writer: None,
+            host="::1",
+            port=0,
+            family=socket.AF_INET6,
+            reuse_address=False,
+        )
+        port = blocker.sockets[0].getsockname()[1]
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "port": port,
+                "routes": {
+                    "r1": {"secret": "real-secret-abc123", "prompt": "x"}
+                },
+            },
+        )
+        adapter = WebhookAdapter(cfg)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is False
+            assert adapter._runner is None
+            assert adapter.is_connected is False
+        finally:
+            await adapter.disconnect()
+            blocker.close()
+            await blocker.wait_closed()

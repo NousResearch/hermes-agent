@@ -9109,11 +9109,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``profile_name`` binds the callback to the secondary adapter's own
         multiplex profile, so its ``SessionSource`` resolves that profile's
         secret scope instead of falling back to the active profile.
+
+        The primary adapter is shared across profiles and registers without a
+        ``profile_name``: a channel it serves may still be routed elsewhere by
+        ``gateway.profile_routes``. So when no profile is bound, resolve the
+        route from the caller's routing context — otherwise the check reads the
+        *active* profile's allowlist for a routed channel, marking that
+        profile's own users ``[unverified]`` while treating default-profile
+        users as verified. ``_profile_name_for_source`` returns ``None``
+        (default profile) when multiplexing is off or no route matches, so
+        unrouted gateways are unaffected.
         """
         def check(
             user_id: str,
             chat_type: Optional[str] = None,
             chat_id: Optional[str] = None,
+            *,
+            guild_id: Optional[str] = None,
+            thread_id: Optional[str] = None,
+            parent_chat_id: Optional[str] = None,
         ) -> bool:
             if not user_id:
                 return False
@@ -9123,8 +9137,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 chat_type=chat_type or "group",
                 user_id=user_id,
                 profile=profile_name,
+                guild_id=guild_id,
+                thread_id=thread_id,
+                parent_chat_id=parent_chat_id,
             )
+            if not profile_name:
+                routed = self._profile_name_for_source(source)
+                if routed:
+                    source.profile = routed
             return self._is_user_authorized(source)
+
+        # Tells ``BasePlatformAdapter._is_sender_authorized`` it may forward the
+        # routing context above; callbacks without this marker (e.g. plugin or
+        # test-registered 3-arg callables) keep the legacy positional call.
+        check._accepts_route_ctx = True  # type: ignore[attr-defined]
         return check
 
 

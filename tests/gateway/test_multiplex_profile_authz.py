@@ -207,3 +207,100 @@ def test_secondary_open_policy_fails_startup_guard(monkeypatch):
     assert violation is not None
     assert "wecom" in violation
     assert "open policy" in violation
+
+def _routed_runner(monkeypatch, routes):
+    """Runner whose Discord/Slack channels are routed by ``profile_routes``."""
+    from gateway.profile_routing import parse_profile_routes
+    from gateway.run import GatewayRunner
+
+    _clear_auth_env(monkeypatch)
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    runner.config.profile_routes = parse_profile_routes(routes)
+    return runner
+
+
+def _capture_authorized_profile(runner):
+    """Record the profile each authz decision is scoped to."""
+    seen = {}
+
+    def _fake_is_user_authorized(source):
+        seen["profile"] = source.profile
+        return True
+
+    runner._is_user_authorized = _fake_is_user_authorized
+    return seen
+
+
+def test_primary_adapter_callback_resolves_channel_route(monkeypatch):
+    """A shared primary adapter must authorize against the ROUTED profile.
+
+    The primary adapter registers without a ``profile_name``, but a channel it
+    serves may be routed elsewhere. Without route resolution the check reads the
+    active profile's allowlist — marking the routed profile's own users
+    ``[unverified]`` while trusting default-profile users.
+    """
+    runner = _routed_runner(monkeypatch, [
+        {
+            "name": "coder-channel",
+            "platform": "slack",
+            "chat_id": "C-CODER",
+            "profile": "coder",
+        },
+    ])
+    seen = _capture_authorized_profile(runner)
+
+    check = runner._make_adapter_auth_check(Platform.SLACK)
+    assert check("u1", "thread", "C-CODER") is True
+    assert seen["profile"] == "coder"
+
+
+def test_primary_adapter_callback_matches_guild_scoped_route(monkeypatch):
+    """Guild-scoped routes match conjunctively — the callback must pass guild_id."""
+    runner = _routed_runner(monkeypatch, [
+        {
+            "name": "coder-guild",
+            "platform": "discord",
+            "guild_id": "G-CODER",
+            "profile": "coder",
+        },
+    ])
+    seen = _capture_authorized_profile(runner)
+
+    check = runner._make_adapter_auth_check(Platform.DISCORD)
+    assert check("u1", "group", "chan-1", guild_id="G-CODER") is True
+    assert seen["profile"] == "coder"
+
+
+def test_primary_adapter_callback_unrouted_channel_uses_default(monkeypatch):
+    """A channel with no matching route stays on the default profile."""
+    runner = _routed_runner(monkeypatch, [
+        {
+            "name": "coder-channel",
+            "platform": "slack",
+            "chat_id": "C-CODER",
+            "profile": "coder",
+        },
+    ])
+    seen = _capture_authorized_profile(runner)
+
+    check = runner._make_adapter_auth_check(Platform.SLACK)
+    assert check("u1", "thread", "C-OTHER") is True
+    assert seen["profile"] is None
+
+
+def test_secondary_adapter_profile_wins_over_routes(monkeypatch):
+    """An explicitly bound profile is authoritative — routes must not override it."""
+    runner = _routed_runner(monkeypatch, [
+        {
+            "name": "coder-channel",
+            "platform": "slack",
+            "chat_id": "C-CODER",
+            "profile": "coder",
+        },
+    ])
+    seen = _capture_authorized_profile(runner)
+
+    check = runner._make_adapter_auth_check(Platform.SLACK, profile_name="ops")
+    assert check("u1", "thread", "C-CODER") is True
+    assert seen["profile"] == "ops"

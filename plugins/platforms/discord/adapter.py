@@ -5046,6 +5046,17 @@ class DiscordAdapter(BasePlatformAdapter):
         is_thread_channel = isinstance(channel, discord.Thread)
         has_unverified = False
 
+        # Routing context for the gateway's authorization check: a channel here
+        # may be routed to another profile by ``gateway.profile_routes``, whose
+        # guild-/thread-scoped shapes only match when these are supplied.
+        _guild_obj_id = getattr(getattr(channel, "guild", None), "id", None)
+        _route_guild_id = str(_guild_obj_id) if _guild_obj_id is not None else None
+        _route_thread_id = channel_id if is_thread_channel else None
+        _route_parent_chat_id = (
+            str(getattr(channel, "parent_id", "") or "") or None
+            if is_thread_channel else None
+        )
+
         try:
             def _keep(msg) -> Optional[str]:
                 """Return a formatted ``[name] content`` line, or None to skip.
@@ -5097,6 +5108,9 @@ class DiscordAdapter(BasePlatformAdapter):
                         author_id,
                         chat_type="thread" if is_thread_channel else "group",
                         chat_id=channel_id,
+                        guild_id=_route_guild_id,
+                        thread_id=_route_thread_id,
+                        parent_chat_id=_route_parent_chat_id,
                     )
                     if is_authorized is False:
                         trust_tag = "[unverified] "

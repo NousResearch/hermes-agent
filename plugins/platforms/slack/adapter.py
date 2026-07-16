@@ -4402,8 +4402,16 @@ class SlackAdapter(BasePlatformAdapter):
                 # check; the auth check is configured by GatewayRunner.
                 trust_tag = ""
                 if not is_bot and msg_user:
+                    # Pass the routing context so a channel routed to another
+                    # profile by ``gateway.profile_routes`` is checked against
+                    # that profile's allowlist. ``guild_id`` carries the
+                    # workspace, mirroring the ``scope_id=team_id`` the normal
+                    # inbound path sets (the two are aliases, reconciled in
+                    # ``SessionSource.__post_init__``).
                     is_authorized = self._is_sender_authorized(
                         msg_user, chat_type="thread", chat_id=channel_id,
+                        guild_id=team_id or None,
+                        thread_id=thread_ts,
                     )
                     if is_authorized is False:
                         trust_tag = "[unverified] "

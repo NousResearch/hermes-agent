@@ -2884,6 +2884,10 @@ class BasePlatformAdapter(ABC):
         user_id: Optional[str],
         chat_type: Optional[str] = None,
         chat_id: Optional[str] = None,
+        *,
+        guild_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        parent_chat_id: Optional[str] = None,
     ) -> Optional[bool]:
         """Return whether ``user_id`` is on the allowlist, if a check is configured.
 
@@ -2891,10 +2895,25 @@ class BasePlatformAdapter(ABC):
         registered via :meth:`set_authorization_check`. Returns ``None``
         when no check is registered (caller should treat as "trust unknown"
         and preserve legacy behaviour).
+
+        The optional routing context (``guild_id`` / ``thread_id`` /
+        ``parent_chat_id``) lets a multiplexing gateway resolve which profile's
+        allowlist governs this chat — ``gateway.profile_routes`` matches
+        conjunctively, so a guild- or thread-scoped route needs those fields to
+        match at all. It is forwarded only to callbacks marked
+        ``_accepts_route_ctx``; callbacks registered as plain 3-arg callables
+        keep the legacy call and are unaffected.
         """
         if not user_id or self._authorization_check is None:
             return None
         try:
+            if getattr(self._authorization_check, "_accepts_route_ctx", False):
+                return bool(self._authorization_check(
+                    user_id, chat_type, chat_id,
+                    guild_id=guild_id,
+                    thread_id=thread_id,
+                    parent_chat_id=parent_chat_id,
+                ))
             return bool(self._authorization_check(user_id, chat_type, chat_id))
         except Exception:
             logger.warning(

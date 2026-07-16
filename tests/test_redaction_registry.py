@@ -2,8 +2,8 @@
 
 Covers ``agent.redact.register_redaction_patterns`` (validation,
 dedupe, additive semantics, matcher rebuild), the
-``PluginContext.register_redaction_patterns`` wiring, and the bundled
-``nvapi-redaction`` reference plugin.
+``PluginContext.register_redaction_patterns`` wiring, and a synthetic
+plugin written at test time for the ``register()`` end-to-end path.
 
 All tests call ``redact_sensitive_text(..., force=True)`` so results
 don't depend on the HERMES_REDACT_SECRETS environment of the test run,
@@ -162,6 +162,28 @@ def test_grouped_alternation_and_literal_pipe_accepted():
     # Escaped pipes and character-class pipes are literals, not branches.
     assert register_redaction_patterns([r"xy\|[A-Za-z0-9]{20,}"], source="test") == 1
     assert register_redaction_patterns([r"wv[|][A-Za-z0-9]{20,}"], source="test") == 1
+
+
+def test_nested_unbounded_quantifiers_rejected():
+    # (a+)+ backtracks catastrophically; registered patterns run on every
+    # log line and tool output, so ReDoS shapes are rejected up front.
+    assert register_redaction_patterns([r"ab(a+)+"], source="test") == 0
+    assert register_redaction_patterns([r"ab(?:x*)*"], source="test") == 0
+    assert register_redaction_patterns([r"ab(x{2,})+"], source="test") == 0
+    # Nesting through an intermediate group is still nesting.
+    assert register_redaction_patterns([r"ab((x+)y)*"], source="test") == 0
+    clean = "nothing here resembles a credential"
+    assert redact_sensitive_text(clean, force=True) == clean
+
+
+def test_bounded_and_sibling_quantifiers_accepted():
+    # A single unbounded quantifier is fine, as are siblings and a
+    # bounded quantifier inside an unbounded group.
+    assert register_redaction_patterns([r"zr(?:tok)?-[A-Za-z0-9]{20,}"], source="test") == 1
+    assert register_redaction_patterns([r"qm-[a-z]+[0-9]+"], source="test") == 1
+    assert register_redaction_patterns([r"pv(?:x{1,5}y)+"], source="test") == 1
+    # Quantifier chars inside a character class are literals, not repeats.
+    assert register_redaction_patterns([r"tw[+*][A-Za-z0-9]{20,}"], source="test") == 1
 
 
 # ── Plugin register() end-to-end (synthetic, written at test time) ──────

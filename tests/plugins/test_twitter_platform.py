@@ -24,6 +24,10 @@ def test_registers_twitter_platform():
     assert kwargs["cron_deliver_env_var"] == "TWITTER_HOME_CHANNEL"
     assert kwargs["max_message_length"] == 280
     assert callable(kwargs["standalone_sender_fn"])
+    assert {call.kwargs["name"] for call in ctx.register_tool.call_args_list} == {
+        "twitter_bookmarks",
+        "twitter_post_metrics",
+    }
 
 
 def test_settings_reject_unsafe_limits():
@@ -229,3 +233,86 @@ async def test_adapter_send_uses_typed_routes(monkeypatch, tmp_path):
     assert direct.success and direct.message_id == "701"
     assert not invalid.success
     adapter._client.send_dm.assert_awaited_once_with("42-7", "private")
+
+
+@pytest.mark.asyncio
+async def test_send_uploads_images_before_creating_post(monkeypatch, tmp_path):
+    from PIL import Image
+
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    image = tmp_path / "one.png"
+    Image.new("RGB", (1, 1)).save(image)
+    adapter = TwitterAdapter(PlatformConfig(extra={"client_id": "client"}))
+    adapter._client = Mock()
+    adapter._client.upload_image = AsyncMock(return_value="800")
+    adapter._client.create_post = AsyncMock(return_value="801")
+
+    result = await adapter.send(
+        "timeline", "with image", metadata={"media_files": [(str(image), False)]}
+    )
+
+    assert result.success
+    adapter._client.create_post.assert_awaited_once_with(
+        "with image", media_ids=["800"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_partial_image_upload_never_creates_text_only_post(
+    monkeypatch, tmp_path
+):
+    from PIL import Image
+
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    images = []
+    for name in ("one.png", "two.png"):
+        path = tmp_path / name
+        Image.new("RGB", (1, 1)).save(path)
+        images.append((str(path), False))
+    adapter = TwitterAdapter(PlatformConfig(extra={"client_id": "client"}))
+    adapter._client = Mock()
+    adapter._client.upload_image = AsyncMock(
+        side_effect=["800", RuntimeError("upload failed")]
+    )
+    adapter._client.create_post = AsyncMock(return_value="801")
+
+    result = await adapter.send(
+        "timeline", "with images", metadata={"media_files": images}
+    )
+
+    assert not result.success
+    adapter._client.create_post.assert_not_awaited()
+
+
+def test_twitter_tools_are_gated_by_profile_oauth(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.oauth import save_tokens
+    from plugins.platforms.twitter.tools import twitter_available
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert not twitter_available()
+    save_tokens({"access_token": "test"})
+    assert twitter_available()
+
+
+@pytest.mark.asyncio
+async def test_standalone_sender_uses_fresh_client(monkeypatch, tmp_path):
+    from plugins.platforms.twitter import adapter as adapter_module
+    from plugins.platforms.twitter.oauth import save_tokens
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    save_tokens({"access_token": "test"})
+    client = Mock()
+    client.create_post = AsyncMock(return_value="901")
+    client.close = AsyncMock()
+    monkeypatch.setattr(adapter_module, "XClient", Mock(return_value=client))
+
+    result = await adapter_module.standalone_send(
+        PlatformConfig(extra={"client_id": "client"}), "timeline", "cron post"
+    )
+
+    assert result == {"success": True, "message_id": "901"}
+    client.close.assert_awaited_once()

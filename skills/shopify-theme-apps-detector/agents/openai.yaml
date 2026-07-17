@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shopify Theme & Apps Detector"
+  short_description: "Detect a public Shopify store's theme and apps with an evidence-backed HTML report"
+  default_prompt: "Use $shopify-theme-apps-detector to scan this public Shopify store, verify theme and app candidates from raw evidence, and generate the HTML report."

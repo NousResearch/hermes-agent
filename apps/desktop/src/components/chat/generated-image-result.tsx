@@ -163,7 +163,12 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
         )}
         {loaded && src && (
           <>
-            <ChatImageActions className="opacity-0 group-hover/image:opacity-100" src={src} toolName="image_generate" />
+            <ChatImageActions
+              className="opacity-0 group-hover/image:opacity-100"
+              src={src}
+              toolName="image_generate"
+              toolResult={result}
+            />
             <ImageActionButton className="group-hover/image:opacity-100" copy={copy} onClick={download} saving={saving} />
           </>
         )}

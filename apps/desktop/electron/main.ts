@@ -43,7 +43,9 @@ import {
   createBrowserCaptureCache,
   installBrowserGuestPermissionPolicy,
   isBrowserCapturePngDestination,
+  isBrowserCdpMethodAllowed,
   isBrowserGuestNavigationAllowed,
+  normalizeBrowserCdpParams,
   PREVIEW_WEBVIEW_PARTITION,
   sanitizeBrowserCaptureFilename
 } from './browser-webview'
@@ -8233,6 +8235,35 @@ ipcMain.handle('hermes:browser:capture', async (event, guestWebContentsId) => {
     height,
     createdAt: capture.createdAt
   }
+})
+
+ipcMain.handle('hermes:browser:metrics', async (event, guestWebContentsId) => {
+  const guest = ownedBrowserGuest(event.sender, guestWebContentsId)
+
+  return {
+    guestWebContentsId: guest.id,
+    title: guest.getTitle(),
+    type: guest.getType(),
+    url: guest.getURL(),
+    zoomFactor: guest.getZoomFactor(),
+    zoomLevel: guest.getZoomLevel()
+  }
+})
+
+ipcMain.handle('hermes:browser:cdp', async (event, guestWebContentsId, method, rawParams) => {
+  const guest = ownedBrowserGuest(event.sender, guestWebContentsId)
+
+  if (!isBrowserCdpMethodAllowed(method)) {
+    throw new Error('Browser CDP method is not allowed')
+  }
+
+  const params = normalizeBrowserCdpParams(rawParams)
+
+  if (!guest.debugger.isAttached()) {
+    guest.debugger.attach('1.3')
+  }
+
+  return guest.debugger.sendCommand(method, params)
 })
 
 ipcMain.handle('hermes:browser:saveCapture', async (event, captureId, suggestedName) => {

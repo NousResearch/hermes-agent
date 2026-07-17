@@ -45,6 +45,50 @@ describe('buildToolView image handling', () => {
 
     expect(buildToolView(part({ result: { url } }), '').imageUrl).toBe(url)
   })
+
+  it('extracts an image URL from structured generation metadata', () => {
+    const url = 'https://cdn.example.com/generated-result.png'
+
+    const result = {
+      structuredContent: {
+        items: [{ id: 'job-1', model: 'image-model', results: { rawUrl: url }, status: 'completed', type: 'image' }]
+      }
+    }
+
+    expect(buildToolView(part({ result, toolName: 'plugin__show_generations' }), '').imageUrl).toBe(url)
+  })
+
+  it('does not scan unbounded arrays or oversized JSON strings for images', () => {
+    const hidden = 'https://cdn.example.com/hidden.png'
+    expect(buildToolView(part({ result: { items: [...Array.from({ length: 20 }, () => ({})), { url: hidden }] } }), '').imageUrl).toBe('')
+    expect(buildToolView(part({ result: { data: `${' '.repeat(65_537)}${JSON.stringify({ url: hidden })}` } }), '').imageUrl).toBe('')
+  })
+})
+
+describe('buildToolView video handling', () => {
+  it('extracts a direct remote video result', () => {
+    const url = 'https://cdn.example.com/result.mp4'
+
+    expect(buildToolView(part({ result: { video_url: url } }), '').videoUrl).toBe(url)
+  })
+
+  it('extracts a video URL from structured generation metadata', () => {
+    const url = 'https://cdn.example.com/generated-result.mp4'
+
+    const result = {
+      structuredContent: {
+        items: [{ id: 'job-1', model: 'video-model', results: { rawUrl: url }, status: 'completed', type: 'video' }]
+      }
+    }
+
+    expect(buildToolView(part({ result, toolName: 'plugin__show_generations' }), '').videoUrl).toBe(url)
+  })
+
+  it('does not scan beyond the bounded result window for videos', () => {
+    const hidden = 'https://cdn.example.com/hidden.mp4'
+    const result = { items: [...Array.from({ length: 20 }, () => ({})), { url: hidden }] }
+    expect(buildToolView(part({ result }), '').videoUrl).toBe('')
+  })
 })
 
 describe('buildToolView terminal exit-code status', () => {

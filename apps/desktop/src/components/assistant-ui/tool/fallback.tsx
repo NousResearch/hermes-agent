@@ -502,8 +502,20 @@ function ToolEntry({ part }: ToolEntryProps) {
                 className="opacity-0 transition-opacity group-hover/image:opacity-100"
                 src={view.imageUrl}
                 toolName={part.toolName}
+                toolResult={part.result}
               />
               <ZoomableImage alt={copy.outputAlt} className="h-auto w-full object-cover" src={view.imageUrl} />
+            </div>
+          )}
+          {view.videoUrl && (
+            <div className="group/image relative max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
+              <ChatImageActions
+                className="opacity-0 transition-opacity group-hover/image:opacity-100"
+                src={view.videoUrl}
+                toolName={part.toolName}
+                toolResult={part.result}
+              />
+              <video className="h-auto w-full bg-black" controls src={view.videoUrl} />
             </div>
           )}
           {hasSearchHits && view.searchHits && (

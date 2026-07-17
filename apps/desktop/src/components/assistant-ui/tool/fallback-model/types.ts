@@ -34,6 +34,7 @@ export interface ToolView {
   durationLabel?: string
   icon?: string
   imageUrl?: string
+  videoUrl?: string
   inlineDiff: string
   previewTarget?: string
   rawArgs: string

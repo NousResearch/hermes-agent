@@ -6,6 +6,21 @@ export const BROWSER_CAPTURE_MAX_ENTRIES = 12
 export const BROWSER_CAPTURE_TTL_MS = 5 * 60 * 1000
 export const BROWSER_CAPTURE_MAX_BYTES = 32 * 1024 * 1024
 
+export const BROWSER_CDP_METHODS = new Set([
+  'DOM.describeNode',
+  'DOM.getBoxModel',
+  'DOM.getDocument',
+  'DOM.querySelector',
+  'Emulation.clearDeviceMetricsOverride',
+  'Emulation.setDeviceMetricsOverride',
+  'Input.dispatchKeyEvent',
+  'Input.dispatchMouseEvent',
+  'Input.insertText',
+  'Page.captureScreenshot',
+  'Page.getLayoutMetrics',
+  'Runtime.evaluate'
+])
+
 interface BrowserWebviewParams {
   partition?: unknown
   src?: unknown
@@ -43,6 +58,22 @@ function parseUrl(rawUrl: unknown): URL | null {
   } catch {
     return null
   }
+}
+
+export function isBrowserCdpMethodAllowed(method: unknown): method is string {
+  return typeof method === 'string' && BROWSER_CDP_METHODS.has(method)
+}
+
+export function normalizeBrowserCdpParams(params: unknown): Record<string, unknown> {
+  if (params === undefined || params === null) {
+    return {}
+  }
+
+  if (typeof params !== 'object' || Array.isArray(params)) {
+    throw new Error('Browser CDP params must be an object')
+  }
+
+  return params as Record<string, unknown>
 }
 
 export function isBrowserWebviewSourceAllowed(partition: unknown, rawUrl: unknown): boolean {

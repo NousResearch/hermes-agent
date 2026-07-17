@@ -84,6 +84,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   openPreviewInBrowser: url => ipcRenderer.invoke('hermes:openPreviewInBrowser', url),
   browser: {
     capture: guestWebContentsId => ipcRenderer.invoke('hermes:browser:capture', guestWebContentsId),
+    cdp: (guestWebContentsId, method, params) =>
+      ipcRenderer.invoke('hermes:browser:cdp', guestWebContentsId, method, params),
+    metrics: guestWebContentsId => ipcRenderer.invoke('hermes:browser:metrics', guestWebContentsId),
     saveCapture: (captureId, suggestedName) =>
       ipcRenderer.invoke('hermes:browser:saveCapture', captureId, suggestedName)
   },

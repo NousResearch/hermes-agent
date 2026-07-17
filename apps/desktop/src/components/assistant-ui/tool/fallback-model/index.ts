@@ -719,23 +719,132 @@ function toolPreviewTarget(toolName: string, args: Record<string, unknown>, resu
   return ''
 }
 
-function toolImageUrl(args: Record<string, unknown>, result: Record<string, unknown>): string {
-  const candidate =
-    firstStringField(result, ['image_url', 'url', 'path', 'image_path']) ||
-    firstStringField(args, ['image_url', 'url', 'path'])
-
-  if (!candidate) {
+function deepImageUrl(value: unknown, depth = 0, seen = new Set<unknown>()): string {
+  if (depth > 5 || value === null || value === undefined) {
     return ''
   }
 
-  // Only inline-render images the renderer can actually fetch: data URLs or
-  // remote http(s). A bare filesystem path (e.g. vision_analyze's input image)
-  // resolves against the dev-server origin and 404s — fall back to the tool's
-  // codicon instead of a broken <img>.
-  const isDataImage = candidate.toLowerCase().startsWith('data:image/')
-  const isRemoteImage = /^https?:\/\//i.test(candidate) && /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(candidate)
+  if (typeof value === 'string') {
+    if (value.toLowerCase().startsWith('data:image/')) {
+      return value
+    }
 
-  return isDataImage || isRemoteImage ? candidate : ''
+    if (/^https?:\/\/[^\s]+\.(?:png|jpe?g|gif|webp|bmp|svg)(?:[?#]|$)/i.test(value)) {
+      return value
+    }
+
+    if (value.length > 65_536) {
+      return ''
+    }
+
+    try {
+      return deepImageUrl(JSON.parse(value), depth + 1, seen)
+    } catch {
+      return ''
+    }
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 20)) {
+      const found = deepImageUrl(item, depth + 1, seen)
+
+      if (found) {
+        return found
+      }
+    }
+
+    return ''
+  }
+
+  if (!isRecord(value) || seen.has(value)) {
+    return ''
+  }
+
+  seen.add(value)
+
+  for (const key of ['image_url', 'imageUrl', 'rawUrl', 'minUrl', 'url', 'image_path', 'path']) {
+    const found = deepImageUrl(value[key], depth + 1, seen)
+
+    if (found) {
+      return found
+    }
+  }
+
+  for (const key of ['structuredContent', 'result', 'results', 'data', 'items', 'outputs']) {
+    const found = deepImageUrl(value[key], depth + 1, seen)
+
+    if (found) {
+      return found
+    }
+  }
+
+  return ''
+}
+
+function toolImageUrl(args: Record<string, unknown>, result: Record<string, unknown>): string {
+  return deepImageUrl(result) || deepImageUrl(args)
+}
+
+function deepVideoUrl(value: unknown, depth = 0, seen = new Set<unknown>()): string {
+  if (depth > 5 || value === null || value === undefined) {
+    return ''
+  }
+
+  if (typeof value === 'string') {
+    if (/^https?:\/\/[^\s]+\.(?:mp4|mov|webm|mkv|avi)(?:[?#]|$)/i.test(value)) {
+      return value
+    }
+
+    if (value.length > 65_536) {
+      return ''
+    }
+
+    try {
+      return deepVideoUrl(JSON.parse(value), depth + 1, seen)
+    } catch {
+      return ''
+    }
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 20)) {
+      const found = deepVideoUrl(item, depth + 1, seen)
+
+      if (found) {
+        return found
+      }
+    }
+
+    return ''
+  }
+
+  if (!isRecord(value) || seen.has(value)) {
+    return ''
+  }
+
+  seen.add(value)
+
+  for (const key of ['video_url', 'videoUrl', 'rawUrl', 'url']) {
+    const found = deepVideoUrl(value[key], depth + 1, seen)
+
+    if (found) {
+      return found
+    }
+  }
+
+  for (const key of ['structuredContent', 'result', 'results', 'data', 'items', 'outputs']) {
+    const found = deepVideoUrl(value[key], depth + 1, seen)
+
+    if (found) {
+      return found
+    }
+  }
+
+  return ''
+}
+
+function toolVideoUrl(_args: Record<string, unknown>, result: Record<string, unknown>): string {
+  return deepVideoUrl(result)
 }
 
 function stripAnsi(value: string): string {
@@ -1399,6 +1508,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   // field — otherwise the merged `detail` already covers it and double-
   // rendering would duplicate output.
   const hasSplitStreams = rendersAnsi && (Boolean(stdout) || Boolean(stderrRaw))
+  const videoUrl = toolVideoUrl(argsRecord, resultRecord)
 
   return {
     countLabel: resultCount ? formatCountLabel(resultCount) : undefined,
@@ -1406,7 +1516,8 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     detailLabel: error ? 'Error details' : toolDetailLabel(part.toolName),
     durationLabel: durationLabel(resultRecord),
     icon: meta.icon,
-    imageUrl: toolImageUrl(argsRecord, resultRecord),
+    imageUrl: videoUrl ? '' : toolImageUrl(argsRecord, resultRecord),
+    videoUrl,
     inlineDiff,
     previewTarget: toolPreviewTarget(part.toolName, argsRecord, resultRecord),
     rawArgs: prettyJson(part.args),

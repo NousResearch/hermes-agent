@@ -10,11 +10,44 @@ import {
   createBrowserCaptureCache,
   installBrowserGuestPermissionPolicy,
   isBrowserCapturePngDestination,
+  isBrowserCdpMethodAllowed,
   isBrowserGuestNavigationAllowed,
   isBrowserWebviewSourceAllowed,
+  normalizeBrowserCdpParams,
   PREVIEW_WEBVIEW_PARTITION,
   sanitizeBrowserCaptureFilename
 } from './browser-webview'
+
+test('browser CDP bridge exposes page automation but blocks credential and browser-global state', () => {
+  for (const method of [
+    'Runtime.evaluate',
+    'Page.getLayoutMetrics',
+    'DOM.getDocument',
+    'DOM.querySelector',
+    'DOM.getBoxModel',
+    'Input.dispatchMouseEvent',
+    'Input.insertText',
+    'Emulation.setDeviceMetricsOverride'
+  ]) {
+    assert.equal(isBrowserCdpMethodAllowed(method), true, `${method} is allowed`)
+  }
+
+  for (const method of [
+    'Network.getAllCookies',
+    'Storage.getCookies',
+    'Browser.getVersion',
+    'Target.getTargets',
+    '',
+    null
+  ]) {
+    assert.equal(isBrowserCdpMethodAllowed(method), false, `${String(method)} is denied`)
+  }
+
+  assert.deepEqual(normalizeBrowserCdpParams(undefined), {})
+  assert.deepEqual(normalizeBrowserCdpParams({ x: 12, y: 34 }), { x: 12, y: 34 })
+  assert.throws(() => normalizeBrowserCdpParams([]), /must be an object/)
+  assert.throws(() => normalizeBrowserCdpParams('x'), /must be an object/)
+})
 
 test('webview source policy is partition-specific and rejects executable or remote-local sources', () => {
   assert.equal(isBrowserWebviewSourceAllowed(BROWSER_WEBVIEW_PARTITION, 'https://example.test/page'), true)

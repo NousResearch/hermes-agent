@@ -92,12 +92,21 @@ declare global {
       openExternal: (url: string) => Promise<void>
       openPreviewInBrowser?: (url: string) => Promise<void>
       browser: {
+        cdp: (guestWebContentsId: number, method: string, params?: Record<string, unknown>) => Promise<unknown>
         capture: (guestWebContentsId: number) => Promise<{
           captureId: string
           dataUrl: string
           width: number
           height: number
           createdAt: number
+        }>
+        metrics: (guestWebContentsId: number) => Promise<{
+          guestWebContentsId: number
+          title: string
+          type: string
+          url: string
+          zoomFactor: number
+          zoomLevel: number
         }>
         saveCapture: (captureId: string, suggestedName?: string) => Promise<{ canceled: boolean; path?: string }>
       }

@@ -24,18 +24,37 @@ from hermes_constants import OPENROUTER_MODELS_URL
 logger = logging.getLogger(__name__)
 
 
-def _resolve_requests_verify() -> bool | str:
-    """Resolve SSL verify setting for `requests` calls from env vars.
+def _resolve_requests_verify(base_url: str = "") -> bool | str:
+    """Resolve SSL verify setting for `requests` calls.
 
-    The `requests` library only honours REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE
-    by default. Hermes also honours HERMES_CA_BUNDLE (its own convention)
-    and SSL_CERT_FILE (used by the stdlib `ssl` module and by httpx), so
-    that a single env var can cover both `requests` and `httpx` callsites
-    inside the same process.
+    Priority (mirrors ``agent.ssl_verify.resolve_httpx_verify`` so the
+    ``requests``-based ``/models`` probes agree with the httpx chat client):
 
-    Returns either a filesystem path to a CA bundle, or True to defer to
-    the requests default (certifi).
+    1. Per-provider ``ssl_verify: false`` for ``base_url`` — disable verification.
+    2. Per-provider ``ssl_ca_cert`` for ``base_url`` — an explicit CA bundle.
+       Without this, a custom endpoint whose chain only verifies against the
+       provider's configured bundle (not the process ``SSL_CERT_FILE``) logs a
+       spurious CERTIFICATE_VERIFY_FAILED on every probe even though the chat
+       path succeeds (per-provider ``ssl_ca_cert`` was reaching only httpx).
+    3. Env vars ``HERMES_CA_BUNDLE`` / ``REQUESTS_CA_BUNDLE`` / ``SSL_CERT_FILE``
+       (a single var covers both ``requests`` and ``httpx`` in-process).
+    4. ``True`` — defer to the requests default (certifi).
+
+    ``base_url`` is optional so existing callers (OpenRouter, etc.) keep the
+    env-only behavior unchanged; only probes that pass a base_url pick up the
+    per-provider override.
     """
+    if base_url:
+        try:
+            from hermes_cli.config import get_custom_provider_tls_settings
+            tls = get_custom_provider_tls_settings(base_url)
+            if tls.get("ssl_verify") is False:
+                return False
+            ca = tls.get("ssl_ca_cert")
+            if isinstance(ca, str) and ca and os.path.isfile(ca):
+                return ca
+        except Exception:
+            pass  # fall through to env vars — never break a probe on config lookup
     for env_var in ("HERMES_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"):
         val = os.getenv(env_var)
         if val and os.path.isfile(val):
@@ -986,7 +1005,7 @@ def fetch_endpoint_model_metadata(
                     server_url.rstrip("/") + "/api/v1/models",
                     headers=headers,
                     timeout=(5, 10),
-                    verify=_resolve_requests_verify(),
+                    verify=_resolve_requests_verify(normalized),
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -1033,7 +1052,7 @@ def fetch_endpoint_model_metadata(
     for candidate in candidates:
         url = candidate.rstrip("/") + "/models"
         try:
-            response = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
+            response = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify(normalized))
             response.raise_for_status()
             payload = response.json()
             cache: Dict[str, Dict[str, Any]] = {}
@@ -1064,7 +1083,7 @@ def fetch_endpoint_model_metadata(
                 try:
                     # Try /v1/props first (current llama.cpp); fall back to /props for older builds
                     base = candidate.rstrip("/").replace("/v1", "")
-                    _verify = _resolve_requests_verify()
+                    _verify = _resolve_requests_verify(normalized)
                     props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5, verify=_verify)
                     if not props_resp.ok:
                         props_resp = requests.get(base + "/props", headers=headers, timeout=5, verify=_verify)
@@ -1860,7 +1879,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
         }
-        resp = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
+        resp = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify(base_url))
         if resp.status_code != 200:
             return None
         data = resp.json()

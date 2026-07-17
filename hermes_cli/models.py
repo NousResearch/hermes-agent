@@ -31,9 +31,41 @@ COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
-def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: float):
+def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: float, ssl_context=None):
     """Open catalog requests without forwarding headers across origins."""
-    return open_credentialed_url(req, timeout=timeout)
+    return open_credentialed_url(req, timeout=timeout, ssl_context=ssl_context)
+
+
+def _custom_provider_ssl_context(base_url: str):
+    """Build an ``ssl.SSLContext`` from a custom provider's TLS settings.
+
+    Mirrors the httpx/requests TLS resolution so the urllib ``/models``
+    discovery probe honors a provider's ``ssl_ca_cert`` / ``ssl_verify``
+    instead of falling back to the process-wide ``SSL_CERT_FILE`` / certifi
+    bundle. Returns None when no per-provider TLS override applies, so the
+    caller keeps urllib's default policy for public/unconfigured endpoints.
+    """
+    if not base_url:
+        return None
+    try:
+        from hermes_cli.config import get_custom_provider_tls_settings
+
+        tls = get_custom_provider_tls_settings(base_url)
+        if not tls:
+            return None
+        import ssl
+
+        if tls.get("ssl_verify") is False:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+        ca = tls.get("ssl_ca_cert")
+        if isinstance(ca, str) and ca and os.path.isfile(ca):
+            return ssl.create_default_context(cafile=ca)
+    except Exception:
+        return None  # never break discovery on a TLS-config lookup
+    return None
 
 
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
@@ -3777,12 +3809,19 @@ def probe_api_models(
 
         headers.update(normalize_extra_headers(request_headers))
 
+    _ssl_context = _custom_provider_ssl_context(normalized)
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
         tried.append(url)
         req = urllib.request.Request(url, headers=headers)
+        # Only thread ssl_context when a per-provider TLS override actually
+        # applies. Public/unconfigured endpoints keep the original 2-arg call,
+        # so nothing changes for them (and existing call-seam mocks stay valid).
+        _open_kwargs: dict[str, Any] = {"timeout": timeout}
+        if _ssl_context is not None:
+            _open_kwargs["ssl_context"] = _ssl_context
         try:
-            with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
+            with _urlopen_model_catalog_request(req, **_open_kwargs) as resp:
                 data = json.loads(resp.read().decode())
                 return {
                     "models": [m.get("id", "") for m in data.get("data", [])],

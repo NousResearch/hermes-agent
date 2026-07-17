@@ -427,6 +427,7 @@ def load_cli_config() -> Dict[str, Any]:
             "system_prompt": "",
             "prefill_messages_file": "",
             "reasoning_effort": "",
+            "output_verbosity": "",
             "service_tier": "",
             "personalities": {
                 "helpful": "You are a helpful, friendly AI assistant.",

@@ -4,6 +4,8 @@ import json
 import pytest
 from types import SimpleNamespace
 
+from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+from agent.output_verbosity import supports_openai_output_verbosity
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
 
@@ -302,6 +304,111 @@ class TestCodexBuildKwargs:
             is_codex_backend=True,
         )
         assert "max_output_tokens" not in kw
+
+    @pytest.mark.parametrize("verbosity", ["low", "medium", "high"])
+    def test_codex_backend_sets_output_verbosity(self, transport, verbosity):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_codex_backend=True,
+            supports_output_verbosity=True,
+            output_verbosity=verbosity,
+        )
+
+        assert kw["text"] == {"verbosity": verbosity}
+
+        preflight = transport.preflight_kwargs(kw)
+        assert preflight["text"] == {"verbosity": verbosity}
+
+    def test_non_codex_responses_omit_output_verbosity(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            output_verbosity="low",
+        )
+
+        assert "text" not in kw
+
+    def test_codex_backend_omits_invalid_output_verbosity(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_codex_backend=True,
+            output_verbosity="extra-short",
+        )
+
+        assert "text" not in kw
+
+    def test_output_verbosity_merges_with_request_override_text(self, transport):
+        request_overrides = {"text": {"format": {"type": "text"}}}
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_codex_backend=True,
+            supports_output_verbosity=True,
+            output_verbosity="low",
+            request_overrides=request_overrides,
+        )
+
+        assert kw["text"] == {
+            "format": {"type": "text"},
+            "verbosity": "low",
+        }
+        assert request_overrides == {"text": {"format": {"type": "text"}}}
+
+    def test_output_verbosity_explicit_request_override_wins(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_codex_backend=True,
+            output_verbosity="low",
+            request_overrides={"text": {"verbosity": "high"}},
+        )
+
+        assert kw["text"] == {"verbosity": "high"}
+
+    @pytest.mark.parametrize(
+        ("model", "hostname", "is_codex_backend", "expected"),
+        [
+            ("gpt-5.6-sol", "", True, True),
+            ("gpt-5.5", "api.openai.com", False, True),
+            ("gpt-4.1", "", True, False),
+            ("gpt-5.5", "proxy.example", False, False),
+            ("gpt-5.5", "api.x.ai", False, False),
+        ],
+    )
+    def test_output_verbosity_capability_boundary(
+        self, model, hostname, is_codex_backend, expected
+    ):
+        assert (
+            supports_openai_output_verbosity(
+                model,
+                base_url_hostname=hostname,
+                is_codex_backend=is_codex_backend,
+            )
+            is expected
+        )
+
+    def test_preflight_allows_output_verbosity_with_text_format(self):
+        payload = _preflight_codex_api_kwargs(
+            {
+                "model": "gpt-5.5",
+                "instructions": "system",
+                "input": [{"role": "user", "content": "hi"}],
+                "store": False,
+                "text": {"verbosity": "HIGH", "format": {"type": "text"}},
+            }
+        )
+
+        assert payload["text"] == {
+            "verbosity": "high",
+            "format": {"type": "text"},
+        }
 
     def test_codex_backend_sets_cache_routing_headers(self, transport):
         """Codex backend sends session_id / x-client-request-id as HTTP

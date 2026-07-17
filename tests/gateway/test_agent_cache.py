@@ -243,6 +243,30 @@ class TestExtractCacheBustingConfig:
         assert out["compression.protect_last_n"] == 25
         assert out["compression.codex_app_server_auto"] == "hermes"
 
+    def test_reads_agent_output_verbosity(self):
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {"agent": {"output_verbosity": "low", "some_other_key": "ignored"}}
+        )
+
+        assert out["agent.output_verbosity"] == "low"
+
+    def test_output_verbosity_change_busts_cache(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig_before = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"agent.output_verbosity": "low"},
+        )
+        sig_after = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"agent.output_verbosity": "high"},
+        )
+
+        assert sig_before != sig_after
+
     def test_missing_keys_yield_none(self):
         """Absent config keys must produce None values (still contribute to signature)."""
         from gateway.run import GatewayRunner

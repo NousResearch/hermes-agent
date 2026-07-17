@@ -757,6 +757,11 @@ agent:
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
   reasoning_effort: "medium"
+
+  # OpenAI Responses API output detail for GPT-5 models. Options: "low", "medium", "high".
+  # Empty preserves the provider default. Applied only to Codex OAuth or the exact
+  # api.openai.com host; ignored by xAI, GitHub Models, and custom endpoints.
+  output_verbosity: ""
   
   # Per-model reasoning effort overrides (optional dict)
   # Key: any sensible model spelling works (exact, dots↔dashes interchangeable,

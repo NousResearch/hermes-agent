@@ -123,6 +123,72 @@ class TestIRCFreshInstallDiscovery:
             _unregister_irc_platform()
 
 
+class TestPluginIsConnectedUsesRealPlatformConfig:
+    """Regression: _platform_status must feed the plugin's is_connected hook
+    with the *real* PlatformConfig loaded from config.yaml, not an empty one.
+
+    Prior behaviour handed ``PlatformConfig(enabled=True)`` (no ``extra``,
+    no ``token``) to ``is_connected``. Plugins like Feishu whose
+    ``is_connected`` reads ``config.extra["app_id"]`` always returned False,
+    so the setup menu rendered "not configured" even when the gateway was
+    actively connected to the platform.
+    """
+
+    def test_uses_real_platform_config_when_is_connected_defined(self, monkeypatch):
+        """is_connected receives the PlatformConfig from load_gateway_config()."""
+        import hermes_cli.gateway as gateway_mod
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        captured: list[PlatformConfig] = []
+
+        def _fake_is_connected(cfg):
+            captured.append(cfg)
+            return bool(cfg.extra.get("app_id"))
+
+        plat = _register_irc_platform(
+            is_connected=_fake_is_connected,
+            validate_config=_fake_is_connected,
+        )
+        try:
+            fake_cfg = GatewayConfig()
+            fake_cfg.platforms[Platform("irc")] = PlatformConfig(
+                enabled=True, extra={"app_id": "cli_test123"}
+            )
+            monkeypatch.setattr(
+                "gateway.config.load_gateway_config", lambda: fake_cfg
+            )
+
+            status = gateway_mod._platform_status(plat)
+
+            assert status == "configured"
+            assert len(captured) == 1
+            assert captured[0].extra.get("app_id") == "cli_test123"
+        finally:
+            _unregister_irc_platform()
+
+    def test_falls_back_to_empty_config_when_yaml_missing(self, monkeypatch):
+        """If load_gateway_config() raises, _platform_status still returns
+        a status string (falling back to an empty PlatformConfig)."""
+        import hermes_cli.gateway as gateway_mod
+
+        plat = _register_irc_platform(
+            is_connected=lambda cfg: False,
+            validate_config=lambda cfg: False,
+        )
+        try:
+            def _boom():
+                raise RuntimeError("no config.yaml")
+
+            monkeypatch.setattr(
+                "gateway.config.load_gateway_config", _boom
+            )
+
+            status = gateway_mod._platform_status(plat)
+            assert status == "not configured"
+        finally:
+            _unregister_irc_platform()
+
+
 # ── Interactive setup dispatch ──────────────────────────────────────────────
 
 

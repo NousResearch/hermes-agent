@@ -5152,10 +5152,23 @@ def _platform_status(platform: dict) -> str:
         # check_fn (typically just dependency / env presence).
         if entry.is_connected is not None:
             try:
-                from gateway.config import PlatformConfig
+                from gateway.config import Platform, PlatformConfig, load_gateway_config
 
-                synthetic = PlatformConfig(enabled=True)
-                configured = bool(entry.is_connected(synthetic))
+                # Resolve the real PlatformConfig from ~/.hermes/config.yaml so
+                # ``is_connected`` sees credentials the user has already saved
+                # (e.g. Feishu's ``extra.app_id``). Previously this passed an
+                # empty ``PlatformConfig(enabled=True)`` and every plugin
+                # platform rendered as "not configured" even when the gateway
+                # was actively connected.
+                platform_cfg: PlatformConfig | None = None
+                try:
+                    gw_cfg = load_gateway_config()
+                    platform_cfg = gw_cfg.platforms.get(Platform(entry.name))
+                except Exception:
+                    platform_cfg = None
+                if platform_cfg is None:
+                    platform_cfg = PlatformConfig(enabled=True)
+                configured = bool(entry.is_connected(platform_cfg))
             except Exception:
                 configured = False
         else:

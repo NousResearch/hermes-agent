@@ -37,6 +37,7 @@ EXPECTED_CONSOLE_COMMANDS = {
     ("sessions", "rename"),
     ("sessions", "optimize"),
     ("sessions", "repair"),
+    ("sessions", "migrate-fts"),
     ("cron", "list"),
     ("cron", "status"),
     ("cron", "create"),

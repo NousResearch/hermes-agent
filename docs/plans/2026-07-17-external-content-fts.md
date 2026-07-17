@@ -89,10 +89,23 @@ Expected RED: FTS SQL lacks `content=` and physical `_content` shadow tables exi
 
 **Objective:** Expose a maintenance path only after the core migration is proven safe.
 
+**Implemented command:**
+
+```bash
+# Logical read-only preflight: mode, revision, backup/staging estimate, free space
+hermes sessions migrate-fts --check-only
+
+# After explicitly stopping the gateway and every other state.db writer
+hermes sessions migrate-fts --writers-stopped
+```
+
+`--check-only` makes no logical database/schema/content changes and creates no backup. SQLite may still create or update its normal `state.db-shm` coordination sidecar when inspecting a WAL-mode database. The mutating command opens the database through a maintenance-only path that skips startup WAL/schema initialization, acquires `BEGIN IMMEDIATE`, revalidates schema and free space under that reserved writer lock, then creates and verifies a timestamped SQLite online backup beside `state.db` through a separate read connection while retaining the lock. This prevents a writer commit from falling into the migration but outside its rollback backup. The backup receives owner-only permissions on POSIX systems and the command fsyncs the file and parent directory where supported, then rechecks free space before migration. `--yes` skips only the final CLI prompt; it does not bypass writer attestation, backup, or free-space checks. Backup suppression requires the deliberately explicit `--unsafe-no-backup`. The whole-database staging figure and reserve are conservative planning estimates, not proven upper bounds; operators must retain additional headroom for repeated WAL frames and SQLite temp files. Temp-filesystem assessment honors a valid writable `SQLITE_TMPDIR` before Python's platform temp directory. The command refuses to mutate from inside a gateway process, structurally validates both canonical FTS5 tables and the `messages_fts_source` view, rejects missing, partial, or unsupported FTS schemas (including an ordinary/malformed object at the source-view name), rejects base-only schemas when the runtime supports trigram, permits valid base-only operation when trigram is unavailable, exits nonzero on safety failures, and never stops a gateway automatically. The local Hermes Console applies its own centralized confirmation before invoking the handler; the command is not exposed in hosted Console context. `VACUUM` remains a separate operation.
+
 **Files:**
-- Prefer create: `hermes_cli/subcommands/sessions_fts.py` if command extraction is warranted.
-- Otherwise modify narrowly: `hermes_cli/main.py`, `hermes_cli/console_engine.py`.
-- Test: focused CLI parser/handler tests.
+- `hermes_cli/session_fts.py`
+- `hermes_cli/main.py`
+- `hermes_cli/console_engine.py`
+- `tests/hermes_cli/test_session_fts_migration.py`
 
 **Safety requirements:**
 - Never migrate during `SessionDB.__init__`.

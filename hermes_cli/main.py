@@ -14138,6 +14138,19 @@ def main():
         help="Skip the timestamped backup copy (not recommended)",
     )
 
+    sessions_migrate_fts = sessions_subparsers.add_parser(
+        "migrate-fts",
+        help="Migrate session FTS indexes to external-content storage",
+        description=(
+            "Maintenance-window migration for the session search indexes. "
+            "Requires stopped writers, conservative free-space headroom, and "
+            "a verified online backup by default. VACUUM is never implicit."
+        ),
+    )
+    from hermes_cli.session_fts import configure_migrate_fts_parser
+
+    configure_migrate_fts_parser(sessions_migrate_fts)
+
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
     sessions_rename = sessions_subparsers.add_parser(
@@ -14212,6 +14225,19 @@ def main():
                 if report.get("backup_path"):
                     print(f"  A backup is preserved at: {report['backup_path']}")
                 print("  Keep state.db and the backup; do not delete them.")
+            return
+
+        if action == "migrate-fts":
+            from hermes_cli.session_fts import (
+                SessionFtsMaintenanceError,
+                run_external_fts_migration,
+            )
+
+            try:
+                run_external_fts_migration(args)
+            except SessionFtsMaintenanceError as exc:
+                print(f"Error: {exc}")
+                raise SystemExit(1) from exc
             return
 
         try:

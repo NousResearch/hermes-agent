@@ -1113,7 +1113,13 @@ class SessionDB:
     _IMPORT_MAX_SESSION_BYTES = 5 * 1024 * 1024
     _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 
-    def __init__(self, db_path: Path = None, read_only: bool = False):
+    def __init__(
+        self,
+        db_path: Path = None,
+        read_only: bool = False,
+        *,
+        _maintenance_open: bool = False,
+    ):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.read_only = read_only
 
@@ -1123,7 +1129,29 @@ class SessionDB:
         self._trigram_available = False
         self._fts_unavailable_warned = False
         self._conn = None
+        self._checkpoint_on_close = not _maintenance_open
+        self._fts_maintenance_transaction = False
         try:
+            if _maintenance_open:
+                if read_only:
+                    raise ValueError("maintenance-open SessionDB must be writable")
+                maintenance_uri = (
+                    f"{Path(self.db_path).expanduser().resolve().as_uri()}?mode=rw"
+                )
+                self._conn = sqlite3.connect(
+                    maintenance_uri,
+                    uri=True,
+                    check_same_thread=False,
+                    timeout=1.0,
+                    isolation_level=None,
+                )
+                self._conn.row_factory = sqlite3.Row
+                cursor = self._conn.cursor()
+                self._fts_enabled = self._sqlite_supports_fts5(cursor)
+                self._trigram_available = (
+                    self._fts_enabled and self._sqlite_supports_trigram(cursor)
+                )
+                return
             if read_only:
                 # Read-only attach for cross-profile aggregation: SELECT-only,
                 # so we skip schema init entirely (no DDL, no FTS probe, no
@@ -1204,6 +1232,16 @@ class SessionDB:
             _set_last_init_error(f"{type(exc).__name__}: {exc}")
             raise
 
+    @classmethod
+    def open_for_fts_maintenance(cls, db_path: Path) -> "SessionDB":
+        """Open an existing state DB without startup schema writes or repair.
+
+        Capability probes use only the connection's temporary schema. The
+        migration method can therefore acquire ``BEGIN IMMEDIATE`` before its
+        first target-database write.
+        """
+        return cls(db_path=db_path, _maintenance_open=True)
+
     # ── Core write helper ──
 
     @staticmethod
@@ -1262,6 +1300,19 @@ class SessionDB:
             self._warn_fts5_unavailable(exc)
             return False
 
+    def _sqlite_supports_trigram(self, cursor: sqlite3.Cursor) -> bool:
+        try:
+            cursor.execute(
+                "CREATE VIRTUAL TABLE temp._hermes_trigram_probe "
+                "USING fts5(x, tokenize='trigram')"
+            )
+            cursor.execute("DROP TABLE temp._hermes_trigram_probe")
+            return True
+        except sqlite3.OperationalError as exc:
+            if not self._is_fts5_unavailable_error(exc):
+                raise
+            return False
+
     @staticmethod
     def _drop_fts_triggers(cursor: sqlite3.Cursor) -> None:
         for trigger in _FTS_TRIGGERS:
@@ -1307,14 +1358,13 @@ class SessionDB:
         return [name for name in names if name not in present]
 
     @classmethod
-    def _create_fts_triggers(
+    def _fts_trigger_sql(
         cls,
-        cursor: sqlite3.Cursor,
         table_name: str,
         *,
         external: bool,
-    ) -> None:
-        """Install mode-correct write triggers for one FTS table."""
+    ) -> Dict[str, str]:
+        """Return canonical mode-correct write-trigger SQL for one FTS table."""
         cls._fts_trigger_names(table_name)  # Validate interpolated identifier.
         document_new = (
             "COALESCE(new.content, '') || ' ' || "
@@ -1326,12 +1376,14 @@ class SessionDB:
             "COALESCE(old.tool_name, '') || ' ' || "
             "COALESCE(old.tool_calls, '')"
         )
-        cursor.execute(
-            f"CREATE TRIGGER IF NOT EXISTS {table_name}_insert "
+        statements = {
+            f"{table_name}_insert": (
+                f"CREATE TRIGGER IF NOT EXISTS {table_name}_insert "
             "AFTER INSERT ON messages BEGIN "
             f"INSERT INTO {table_name}(rowid, content) "
             f"VALUES (new.id, {document_new}); END"
-        )
+            )
+        }
         if external:
             delete_old = (
                 f"INSERT INTO {table_name}({table_name}, rowid, content) "
@@ -1339,18 +1391,74 @@ class SessionDB:
             )
         else:
             delete_old = f"DELETE FROM {table_name} WHERE rowid = old.id"
-        cursor.execute(
+        statements[f"{table_name}_delete"] = (
             f"CREATE TRIGGER IF NOT EXISTS {table_name}_delete "
-            "AFTER DELETE ON messages BEGIN "
-            f"{delete_old}; END"
+            f"AFTER DELETE ON messages BEGIN {delete_old}; END"
         )
-        cursor.execute(
+        statements[f"{table_name}_update"] = (
             f"CREATE TRIGGER IF NOT EXISTS {table_name}_update "
             "AFTER UPDATE OF id, content, tool_name, tool_calls ON messages BEGIN "
             f"{delete_old}; "
             f"INSERT INTO {table_name}(rowid, content) "
             f"VALUES (new.id, {document_new}); END"
         )
+        return statements
+
+    @classmethod
+    def _create_fts_triggers(
+        cls,
+        cursor: sqlite3.Cursor,
+        table_name: str,
+        *,
+        external: bool,
+    ) -> None:
+        """Install mode-correct write triggers for one FTS table."""
+        for statement in cls._fts_trigger_sql(
+            table_name,
+            external=external,
+        ).values():
+            cursor.execute(statement)
+
+    @staticmethod
+    def _normalize_trigger_sql(sql: str) -> str:
+        parts = re.split(r"('(?:''|[^'])*')", sql)
+        normalized = "".join(
+            part
+            if index % 2
+            else re.sub(r"\s+", "", part.lower())
+            for index, part in enumerate(parts)
+        ).rstrip(";")
+        return normalized.replace("createtriggerifnotexists", "createtrigger", 1)
+
+    @classmethod
+    def _repair_fts_trigger_definitions(
+        cls,
+        cursor: sqlite3.Cursor,
+        table_name: str,
+    ) -> bool:
+        """Replace missing or noncanonical triggers; return whether repaired."""
+        external = cls._fts_table_uses_external_content(cursor, table_name)
+        expected = cls._fts_trigger_sql(table_name, external=external)
+        names = tuple(expected)
+        placeholders = ",".join("?" for _ in names)
+        rows = cursor.execute(
+            f"SELECT name, sql FROM sqlite_master "
+            f"WHERE type = 'trigger' AND name IN ({placeholders})",
+            names,
+        ).fetchall()
+        actual = {str(row[0]): str(row[1] or "") for row in rows}
+        current = all(
+            name in actual
+            and cls._normalize_trigger_sql(actual[name])
+            == cls._normalize_trigger_sql(statement)
+            for name, statement in expected.items()
+        )
+        if current:
+            return False
+        for name in names:
+            cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
+        cls._create_fts_triggers(cursor, table_name, external=external)
+        return True
 
     @classmethod
     def _repair_fts_triggers(
@@ -1370,6 +1478,85 @@ class SessionDB:
         return True
 
     @staticmethod
+    def _classify_fts_table_sql(table_name: str, sql: Optional[str]) -> str:
+        """Classify an exact supported canonical FTS5 table definition."""
+        if table_name not in {"messages_fts", "messages_fts_trigram"}:
+            raise ValueError(f"unsupported FTS table: {table_name}")
+        if not sql:
+            return "unsupported"
+
+        quoted_name = (
+            rf'(?:{re.escape(table_name)}|"{re.escape(table_name)}"|'
+            rf"`{re.escape(table_name)}`|\[{re.escape(table_name)}\])"
+        )
+        match = re.fullmatch(
+            rf"\s*CREATE\s+VIRTUAL\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+            rf"{quoted_name}\s+USING\s+fts5\s*\((.*)\)\s*;?\s*",
+            str(sql),
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if match is None:
+            return "unsupported"
+
+        body = re.sub(r"\s+", "", match.group(1).lower()).replace('"', "'")
+        tokens = body.split(",") if body else []
+        expected_inline = ["content"]
+        expected_external = [
+            "content",
+            "content='messages_fts_source'",
+            "content_rowid='id'",
+        ]
+        if table_name == "messages_fts_trigram":
+            expected_inline.append("tokenize='trigram'")
+            expected_external.append("tokenize='trigram'")
+
+        if len(tokens) == len(expected_inline) and set(tokens) == set(expected_inline):
+            return "inline"
+        if len(tokens) == len(expected_external) and set(tokens) == set(
+            expected_external
+        ):
+            return "external"
+        return "unsupported"
+
+    @staticmethod
+    def _classify_fts_source_sql(
+        object_type: Optional[str],
+        sql: Optional[str],
+    ) -> str:
+        """Classify the canonical external-content source view definition."""
+        if object_type is None and sql is None:
+            return "missing"
+        if object_type != "view" or not sql:
+            return "unsupported"
+        match = re.fullmatch(
+            r"\s*create\s+view\s+(?:if\s+not\s+exists\s+)?"
+            r"(?:messages_fts_source|\"messages_fts_source\"|"
+            r"`messages_fts_source`|\[messages_fts_source\])\s+as\s+"
+            r"(.+?)\s*;?\s*",
+            sql,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if match is None:
+            return "unsupported"
+        body_parts = re.split(r"('(?:''|[^'])*')", match.group(1).lower())
+        body = "".join(
+            part
+            if index % 2
+            else re.sub(
+                r"\s+",
+                "",
+                part.translate(str.maketrans("", "", '"`[]')),
+            )
+            for index, part in enumerate(body_parts)
+        ).rstrip(";")
+        expected = (
+            "selectid,coalesce(content,'')||' '||"
+            "coalesce(tool_name,'')||' '||"
+            "coalesce(tool_calls,'')ascontentfrommessages"
+        )
+        return "canonical" if body == expected else "unsupported"
+
+    @staticmethod
     def _fts_table_uses_external_content(
         cursor: sqlite3.Cursor,
         table_name: str,
@@ -1382,11 +1569,7 @@ class SessionDB:
         if row is None:
             return False
         sql = str(row[0] if not isinstance(row, sqlite3.Row) else row["sql"])
-        normalized = "".join(sql.lower().split())
-        return (
-            "content='messages_fts_source'" in normalized
-            or 'content="messages_fts_source"' in normalized
-        )
+        return SessionDB._classify_fts_table_sql(table_name, sql) == "external"
 
     @classmethod
     def _rebuild_fts_table(
@@ -1572,10 +1755,13 @@ class SessionDB:
         """
         with self._lock:
             if self._conn:
-                try:
-                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception as exc:
-                    logger.debug("WAL checkpoint (TRUNCATE) at close failed: %s", exc)
+                if self._checkpoint_on_close:
+                    try:
+                        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    except Exception as exc:
+                        logger.debug(
+                            "WAL checkpoint (TRUNCATE) at close failed: %s", exc
+                        )
                 self._conn.close()
                 self._conn = None
 
@@ -7532,6 +7718,20 @@ class SessionDB:
             "VALUES('integrity-check', 1)"
         )
 
+    def begin_fts_maintenance_transaction(self) -> None:
+        """Acquire the reserved writer lock used by guarded FTS maintenance."""
+        if self.read_only or self._conn is None:
+            raise sqlite3.OperationalError(
+                "FTS maintenance transaction requires a writable SessionDB"
+            )
+        with self._lock:
+            if self._conn.in_transaction:
+                raise sqlite3.OperationalError(
+                    "FTS maintenance transaction is already active"
+                )
+            self._conn.execute("BEGIN IMMEDIATE")
+            self._fts_maintenance_transaction = True
+
     def migrate_fts_to_external_content(self) -> Dict[str, Any]:
         """Explicitly migrate inline FTS indexes to external-content storage.
 
@@ -7552,24 +7752,58 @@ class SessionDB:
 
         with self._lock:
             cursor = self._conn.cursor()
-            self._conn.execute("BEGIN IMMEDIATE")
+            if self._conn.in_transaction and not self._fts_maintenance_transaction:
+                raise sqlite3.OperationalError(
+                    "refusing FTS migration inside an unrelated transaction"
+                )
+            if not self._conn.in_transaction:
+                self._conn.execute("BEGIN IMMEDIATE")
             try:
                 # Discover storage mode only after acquiring the cross-process
                 # SQLite write lock. Concurrent migrators therefore observe the
                 # latest committed schema instead of acting on stale mode data.
                 rows = cursor.execute(
-                    "SELECT name FROM sqlite_master "
+                    "SELECT name, sql FROM sqlite_master "
                     "WHERE type = 'table' AND name IN (?, ?) ORDER BY name",
                     self._FTS_TABLES,
                 ).fetchall()
                 existing = [str(row[0]) for row in rows]
                 if not existing:
                     raise sqlite3.OperationalError("no FTS5 tables are present")
-                external = [
-                    name
-                    for name in existing
-                    if self._fts_table_uses_external_content(cursor, name)
+                storage_kinds = {
+                    str(row[0]): self._classify_fts_table_sql(
+                        str(row[0]),
+                        str(row[1]) if row[1] is not None else None,
+                    )
+                    for row in rows
+                }
+                unsupported = [
+                    name for name, kind in storage_kinds.items() if kind == "unsupported"
                 ]
+                if unsupported:
+                    raise sqlite3.OperationalError(
+                        "unsupported canonical FTS schema: " + ", ".join(unsupported)
+                    )
+                external = [
+                    name for name, kind in storage_kinds.items() if kind == "external"
+                ]
+                source_row = cursor.execute(
+                    "SELECT type, sql FROM sqlite_master WHERE name = ? "
+                    "ORDER BY type LIMIT 1",
+                    ("messages_fts_source",),
+                ).fetchone()
+                source_kind = self._classify_fts_source_sql(
+                    str(source_row[0]) if source_row is not None else None,
+                    str(source_row[1])
+                    if source_row is not None and source_row[1] is not None
+                    else None,
+                )
+                if source_kind == "unsupported" or (
+                    external and source_kind != "canonical"
+                ):
+                    raise sqlite3.OperationalError(
+                        "unsupported messages_fts_source definition: " + source_kind
+                    )
                 if len(external) == len(existing):
                     previous_mode = "external"
                 elif not external:
@@ -7578,12 +7812,41 @@ class SessionDB:
                     previous_mode = "mixed"
                 to_migrate = [name for name in existing if name not in external]
                 if not to_migrate:
+                    revision_row = cursor.execute(
+                        "SELECT value FROM state_meta WHERE key = ?",
+                        (FTS_STORAGE_REVISION_KEY,),
+                    ).fetchone()
+                    revision_current = bool(
+                        revision_row
+                        and str(revision_row[0])
+                        == FTS_STORAGE_REVISION_EXTERNAL_V1
+                    )
+                    triggers_repaired = False
+                    for name in existing:
+                        triggers_repaired = (
+                            self._repair_fts_trigger_definitions(cursor, name)
+                            or triggers_repaired
+                        )
+                        self._validate_external_fts_table(cursor, name)
+                    cursor.execute(
+                        "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value "
+                        "WHERE state_meta.value IS NOT excluded.value",
+                        (
+                            FTS_STORAGE_REVISION_KEY,
+                            FTS_STORAGE_REVISION_EXTERNAL_V1,
+                        ),
+                    )
                     self._conn.commit()
+                    self._fts_maintenance_transaction = False
+                    changed = triggers_repaired or not revision_current
                     return {
                         "previous_mode": previous_mode,
                         "final_mode": "external",
                         "migrated_tables": [],
-                        "noop": True,
+                        "noop": not changed,
+                        "schema_changed": triggers_repaired,
+                        "metadata_changed": not revision_current,
                     }
 
                 if (
@@ -7640,8 +7903,10 @@ class SessionDB:
                     ),
                 )
                 self._conn.commit()
+                self._fts_maintenance_transaction = False
             except BaseException:
                 self._conn.rollback()
+                self._fts_maintenance_transaction = False
                 raise
 
             return {

@@ -609,3 +609,268 @@ db.migrate_fts_to_external_content()
         assert reopened._fts_trigger_count(reopened._conn.cursor()) == 6
     finally:
         reopened.close()
+
+
+def test_mixed_mode_migrates_only_inline_trigram(tmp_path):
+    db_path = tmp_path / "mixed-mode.db"
+    seeded = SessionDB(db_path=db_path)
+    try:
+        if not seeded._fts_enabled or not seeded._trigram_available:
+            pytest.skip("SQLite build lacks FTS5 trigram support")
+        seeded.create_session(session_id="s1", source="cli")
+        seeded.append_message("s1", role="user", content="mixed mode sentinel")
+    finally:
+        seeded.close()
+
+    raw = sqlite3.connect(db_path)
+    try:
+        raw.executescript(
+            """
+            DROP TRIGGER messages_fts_trigram_insert;
+            DROP TRIGGER messages_fts_trigram_delete;
+            DROP TRIGGER messages_fts_trigram_update;
+            DROP TABLE messages_fts_trigram;
+            CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(content, tokenize='trigram');
+            CREATE TRIGGER messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
+              INSERT INTO messages_fts_trigram(rowid, content)
+              VALUES (new.id, COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, ''));
+            END;
+            CREATE TRIGGER messages_fts_trigram_delete AFTER DELETE ON messages BEGIN
+              DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+            END;
+            CREATE TRIGGER messages_fts_trigram_update AFTER UPDATE OF id, content, tool_name, tool_calls ON messages BEGIN
+              DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+              INSERT INTO messages_fts_trigram(rowid, content)
+              VALUES (new.id, COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, ''));
+            END;
+            INSERT INTO messages_fts_trigram(rowid, content)
+            SELECT id, COALESCE(content, '') || ' ' || COALESCE(tool_name, '') || ' ' || COALESCE(tool_calls, '') FROM messages;
+            """
+        )
+        raw.commit()
+    finally:
+        raw.close()
+
+    maintenance = SessionDB.open_for_fts_maintenance(db_path)
+    try:
+        assert maintenance.fts_storage_mode() == "mixed"
+        report = maintenance.migrate_fts_to_external_content()
+        assert report["previous_mode"] == "mixed"
+        assert report["migrated_tables"] == ["messages_fts_trigram"]
+        assert maintenance.fts_storage_mode() == "external"
+        maintenance._conn.execute(
+            "INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)"
+        )
+        maintenance._conn.execute(
+            "INSERT INTO messages_fts_trigram(messages_fts_trigram, rank) "
+            "VALUES('integrity-check', 1)"
+        )
+    finally:
+        maintenance.close()
+
+
+def test_maintenance_open_skips_schema_and_metadata_repair(tmp_path):
+    db_path = tmp_path / "maintenance-open.db"
+    seeded = SessionDB(db_path=db_path)
+    try:
+        if not seeded._fts_enabled or not seeded._trigram_available:
+            pytest.skip("SQLite build lacks FTS5 trigram support")
+    finally:
+        seeded.close()
+
+    raw = sqlite3.connect(db_path)
+    try:
+        raw.executescript(LEGACY_INLINE_BOTH_SQL)
+        raw.execute("DROP TRIGGER messages_fts_delete")
+        raw.execute("DELETE FROM state_meta WHERE key = 'fts_storage_revision'")
+        raw.commit()
+    finally:
+        raw.close()
+
+    maintenance = SessionDB.open_for_fts_maintenance(db_path)
+    try:
+        missing = maintenance._conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'trigger' AND name = 'messages_fts_delete'"
+        ).fetchone()
+        revision = maintenance._conn.execute(
+            "SELECT value FROM state_meta WHERE key = 'fts_storage_revision'"
+        ).fetchone()
+        assert missing is None
+        assert revision is None
+    finally:
+        maintenance.close()
+
+
+def test_external_noop_validates_and_restores_storage_revision(tmp_path):
+    db_path = tmp_path / "external-noop-revision.db"
+    seeded = SessionDB(db_path=db_path)
+    try:
+        if not seeded._fts_enabled:
+            pytest.skip("SQLite build lacks FTS5")
+    finally:
+        seeded.close()
+
+    raw = sqlite3.connect(db_path)
+    try:
+        raw.execute("DELETE FROM state_meta WHERE key = 'fts_storage_revision'")
+        raw.commit()
+    finally:
+        raw.close()
+
+    maintenance = SessionDB.open_for_fts_maintenance(db_path)
+    try:
+        report = maintenance.migrate_fts_to_external_content()
+        assert report["noop"] is False
+        assert report["schema_changed"] is False
+        assert report["metadata_changed"] is True
+        revision = maintenance._conn.execute(
+            "SELECT value FROM state_meta WHERE key = 'fts_storage_revision'"
+        ).fetchone()
+        assert revision[0] == "external-content-v1"
+    finally:
+        maintenance.close()
+
+
+def test_external_maintenance_repairs_missing_trigger_and_reports_change(tmp_path):
+    db_path = tmp_path / "external-missing-trigger.db"
+    seeded = SessionDB(db_path=db_path)
+    try:
+        if not seeded._fts_enabled:
+            pytest.skip("SQLite build lacks FTS5")
+    finally:
+        seeded.close()
+
+    raw = sqlite3.connect(db_path)
+    try:
+        raw.execute("DROP TRIGGER messages_fts_insert")
+        raw.commit()
+    finally:
+        raw.close()
+
+    maintenance = SessionDB.open_for_fts_maintenance(db_path)
+    try:
+        report = maintenance.migrate_fts_to_external_content()
+        assert report["noop"] is False
+        assert report["schema_changed"] is True
+        assert report["metadata_changed"] is False
+        assert maintenance._conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'trigger' AND name = 'messages_fts_insert'"
+        ).fetchone()
+    finally:
+        maintenance.close()
+
+
+def test_external_maintenance_repairs_wrong_present_trigger_definitions(tmp_path):
+    db_path = tmp_path / "external-wrong-triggers.db"
+    seeded = SessionDB(db_path=db_path)
+    try:
+        if not seeded._fts_enabled:
+            pytest.skip("SQLite build lacks FTS5")
+        seeded.create_session(session_id="s1", source="cli")
+        message_id = seeded.append_message(
+            "s1", role="user", content="before trigger repair"
+        )
+    finally:
+        seeded.close()
+
+    raw = sqlite3.connect(db_path)
+    try:
+        raw.executescript(
+            """
+            DROP TRIGGER messages_fts_delete;
+            DROP TRIGGER messages_fts_update;
+            CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages BEGIN
+              DELETE FROM messages_fts WHERE rowid = old.id;
+            END;
+            CREATE TRIGGER messages_fts_update AFTER UPDATE ON messages BEGIN
+              DELETE FROM messages_fts WHERE rowid = old.id;
+              INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+            END;
+            """
+        )
+        raw.commit()
+    finally:
+        raw.close()
+
+    maintenance = SessionDB.open_for_fts_maintenance(db_path)
+    try:
+        report = maintenance.migrate_fts_to_external_content()
+        assert report["noop"] is False
+        assert report["schema_changed"] is True
+        maintenance._conn.execute(
+            "UPDATE messages SET content = ? WHERE id = ?",
+            ("after trigger repair", message_id),
+        )
+        maintenance._conn.commit()
+        maintenance._conn.execute(
+            "INSERT INTO messages_fts(messages_fts, rank) "
+            "VALUES('integrity-check', 1)"
+        )
+    finally:
+        maintenance.close()
+
+
+def test_migration_refuses_unrelated_caller_transaction(tmp_path):
+    db = SessionDB(db_path=tmp_path / "unrelated-transaction.db")
+    try:
+        if not db._fts_enabled:
+            pytest.skip("SQLite build lacks FTS5")
+        db._conn.execute("BEGIN IMMEDIATE")
+        with pytest.raises(sqlite3.OperationalError, match="unrelated transaction"):
+            db.migrate_fts_to_external_content()
+        assert db._conn.in_transaction is True
+        db._conn.rollback()
+    finally:
+        db.close()
+
+
+def test_external_maintenance_repairs_trigger_with_changed_literal(tmp_path):
+    db_path = tmp_path / "external-wrong-literal-trigger.db"
+    seeded = SessionDB(db_path=db_path)
+    try:
+        if not seeded._fts_enabled:
+            pytest.skip("SQLite build lacks FTS5")
+        seeded.create_session(session_id="s1", source="cli")
+    finally:
+        seeded.close()
+
+    canonical = SessionDB._fts_trigger_sql(
+        "messages_fts", external=True
+    )["messages_fts_insert"]
+    wrong = canonical.replace(" || ' ' || ", " || '' || ")
+    assert wrong != canonical
+    assert SessionDB._normalize_trigger_sql(wrong) != SessionDB._normalize_trigger_sql(
+        canonical
+    )
+
+    raw = sqlite3.connect(db_path)
+    try:
+        raw.execute("DROP TRIGGER messages_fts_insert")
+        raw.execute(wrong)
+        raw.commit()
+    finally:
+        raw.close()
+
+    maintenance = SessionDB.open_for_fts_maintenance(db_path)
+    try:
+        report = maintenance.migrate_fts_to_external_content()
+        assert report["noop"] is False
+        assert report["schema_changed"] is True
+    finally:
+        maintenance.close()
+
+    verified = SessionDB(db_path=db_path)
+    try:
+        message_id = verified.append_message(
+            "s1",
+            role="assistant",
+            content="alpha",
+            tool_name="beta",
+        )
+        assert any(hit["id"] == message_id for hit in verified.search_messages("alpha"))
+        assert any(hit["id"] == message_id for hit in verified.search_messages("beta"))
+        assert not verified.search_messages("alphabeta")
+    finally:
+        verified.close()

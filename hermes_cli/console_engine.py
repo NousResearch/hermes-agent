@@ -898,6 +898,15 @@ class HermesConsoleEngine:
             mutating=True,
             confirmation="Repair the session database?",
         )
+        self.register(
+            ("sessions", "migrate-fts"),
+            "sessions migrate-fts [--check-only] [--writers-stopped] "
+            "[--unsafe-no-backup] [--yes]",
+            "Migrate session FTS indexes to external-content storage.",
+            _sessions_migrate_fts,
+            mutating=True,
+            confirmation="Run guarded FTS storage migration or preflight?",
+        )
 
         self.register(
             ("profile",),
@@ -1504,6 +1513,29 @@ def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> str:
             print("Repaired session database.")
             return
         raise ConsoleCommandError(f"Repair failed: {report.get('error')}")
+
+    return _capture_output(_run)
+
+
+def _sessions_migrate_fts(_engine: HermesConsoleEngine, args: list[str]) -> str:
+    parser = _ArgumentParser(prog="sessions migrate-fts", add_help=False)
+    from hermes_cli.session_fts import (
+        SessionFtsMaintenanceError,
+        configure_migrate_fts_parser,
+        run_external_fts_migration,
+    )
+
+    configure_migrate_fts_parser(parser)
+    ns = parser.parse_args(args)
+    # The console engine invokes mutating handlers only after its own explicit
+    # confirmation. Avoid a second stdin prompt inside the console process.
+    ns.yes = True
+
+    def _run() -> None:
+        try:
+            run_external_fts_migration(ns)
+        except SessionFtsMaintenanceError as exc:
+            raise ConsoleCommandError(str(exc)) from exc
 
     return _capture_output(_run)
 

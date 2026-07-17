@@ -5480,9 +5480,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             resp = _submit_prompt_to_compute_host(rid, sid, session, queued["text"])
             if resp.get("error"):
                 message = str(((resp.get("error") or {}).get("message")) or "queued prompt failed")
-                with session["history_lock"]:
-                    session["running"] = False
-                    _clear_inflight_turn(session)
+                _finish_session_turn(session, session.get("agent"))
                 _emit("error", sid, {"message": message})
         else:
             _run_prompt_submit(rid, sid, session, queued["text"])
@@ -5492,8 +5490,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             f"{type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
-        with session["history_lock"]:
-            session["running"] = False
+        _finish_session_turn(session, session.get("agent"))
     return True
 
 
@@ -8807,14 +8804,75 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    agent = session.get("agent")
-    if agent is None or not hasattr(agent, "steer"):
-        return _err(rid, 4010, "agent does not support steer")
-    try:
-        accepted = agent.steer(text)
-    except Exception as exc:
-        return _err(rid, 5000, f"steer failed: {exc}")
+    assert session is not None
+    # Serialize against prompt completion. `running` is set/cleared under this
+    # same per-session lock, so a steer either lands in the active turn before
+    # completion wins the lock or is rejected after completion clears it. An
+    # idle steer must never remain queued for an unrelated future turn.
+    with session["history_lock"]:
+        if not session.get("running"):
+            return _err(rid, 4009, "session is not running")
+        if session.get("_compute_host_active") or _session_uses_compute_host(session):
+            return _err(rid, 4009, "session steer is unavailable for an isolated turn")
+        agent = session.get("agent")
+        if agent is None or not hasattr(agent, "steer"):
+            return _err(rid, 4010, "agent does not support steer")
+        try:
+            accepted = agent.steer(text)
+        except Exception as exc:
+            return _err(rid, 5000, f"steer failed: {exc}")
     return _ok(rid, {"status": "queued" if accepted else "rejected", "text": text})
+
+
+def _finish_session_turn_locked(session: dict, agent: Any) -> tuple[Any, Exception | None]:
+    """Close the current turn while the caller holds ``history_lock``."""
+    drain_steer = getattr(agent, "_drain_pending_steer", None)
+    dropped_steer = None
+    drain_error = None
+    try:
+        dropped_steer = drain_steer() if callable(drain_steer) else None
+    except Exception as exc:
+        drain_error = exc
+    session["running"] = False
+    session["last_active"] = time.time()
+    _clear_inflight_turn(session)
+    return dropped_steer, drain_error
+
+
+def _log_finished_session_steer(
+    dropped_steer: Any, drain_error: Exception | None
+) -> None:
+    if drain_error:
+        logger.warning("Failed to discard late /steer: %s", drain_error)
+    if dropped_steer:
+        logger.info("Discarded late /steer after its target turn completed")
+
+
+def _finish_session_turn(session: dict, agent: Any) -> None:
+    """Atomically close a turn and discard guidance it did not consume.
+
+    A steer can race the final provider response after the turn's last tool
+    batch. AIAgent normally preserves such guidance for a future turn; the
+    gateway must not let guidance accepted for one turn leak into an unrelated
+    later prompt.
+    """
+    with session["history_lock"]:
+        dropped_steer, drain_error = _finish_session_turn_locked(session, agent)
+    _log_finished_session_steer(dropped_steer, drain_error)
+
+
+def _claim_session_event_delivery(session: dict, event: dict, owner: str) -> Any:
+    """Claim a provisional notification turn or atomically roll it back."""
+    from tools.async_delegation import claim_event_delivery
+
+    try:
+        claim = claim_event_delivery(event, owner)
+    except Exception:
+        _finish_session_turn(session, session.get("agent"))
+        raise
+    if claim is None:
+        _finish_session_turn(session, session.get("agent"))
+    return claim
 
 
 @method("terminal.resize")
@@ -8840,6 +8898,7 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    assert session is not None
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps
@@ -8917,15 +8976,19 @@ def _(rid, params: dict) -> dict:
                     )
                 },
             )
-            with session["history_lock"]:
-                session["running"] = False
-                _clear_inflight_turn(session)
+            _finish_session_turn(session, session.get("agent"))
             return
+        dropped_steer = None
+        drain_error = None
         with session["history_lock"]:
-            if session.get("_turn_cancel_requested") or not session.get("running"):
-                session["running"] = False
-                _clear_inflight_turn(session)
-                return
+            cancelled = session.get("_turn_cancel_requested") or not session.get("running")
+            if cancelled:
+                dropped_steer, drain_error = _finish_session_turn_locked(
+                    session, session.get("agent")
+                )
+        if cancelled:
+            _log_finished_session_steer(dropped_steer, drain_error)
+            return
         _run_prompt_submit(rid, sid, session, text)
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
@@ -9191,9 +9254,9 @@ def _notification_poller_loop(
 
         rid = f"__notif__{int(time.time() * 1000)}"
         from tools.async_delegation import (
-            claim_event_delivery, complete_event_delivery, release_event_delivery,
+            complete_event_delivery, release_event_delivery,
         )
-        _claim = claim_event_delivery(evt, "tui-poller")
+        _claim = _claim_session_event_delivery(session, evt, "tui-poller")
         if _claim is None:
             continue
         try:
@@ -9207,8 +9270,7 @@ def _notification_poller_loop(
                 f"{type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
-            with session["history_lock"]:
-                session["running"] = False
+            _finish_session_turn(session, session.get("agent"))
 
     # Drain any remaining events after stop signal (process all pending
     # before exiting so nothing is lost on shutdown). Events owned by other
@@ -9259,9 +9321,9 @@ def _notification_poller_loop(
 
         rid = f"__notif__{int(time.time() * 1000)}"
         from tools.async_delegation import (
-            claim_event_delivery, complete_event_delivery, release_event_delivery,
+            complete_event_delivery, release_event_delivery,
         )
-        _claim = claim_event_delivery(evt, "tui-poller")
+        _claim = _claim_session_event_delivery(session, evt, "tui-poller")
         if _claim is None:
             continue
         try:
@@ -9275,8 +9337,7 @@ def _notification_poller_loop(
                 f"{type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
-            with session["history_lock"]:
-                session["running"] = False
+            _finish_session_turn(session, session.get("agent"))
 
     # Hand any other sessions' events back to the shared queue.
     for evt in deferred:
@@ -9779,10 +9840,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
             _clear_session_context(session_tokens)
-            with session["history_lock"]:
-                session["running"] = False
-                session["last_active"] = time.time()
-                _clear_inflight_turn(session)
+            _finish_session_turn(session, agent)
             _emit("session.info", sid, _session_info(agent, session))
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
@@ -9813,8 +9871,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     f"{type(_cont_exc).__name__}: {_cont_exc}",
                     file=sys.stderr,
                 )
-                with session["history_lock"]:
-                    session["running"] = False
+                _finish_session_turn(session, session.get("agent"))
 
         # Drain completion notifications that arrived during this turn.
         # The background poller handles between-turn delivery; this is
@@ -9845,9 +9902,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         break
                     session["running"] = True
                 from tools.async_delegation import (
-                    claim_event_delivery, complete_event_delivery, release_event_delivery,
+                    complete_event_delivery, release_event_delivery,
                 )
-                _claim = claim_event_delivery(_evt, "tui-post-turn")
+                _claim = _claim_session_event_delivery(session, _evt, "tui-post-turn")
                 if _claim is None:
                     continue
                 try:
@@ -9861,8 +9918,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         f"{type(_n_exc).__name__}: {_n_exc}",
                         file=sys.stderr,
                     )
-                    with session["history_lock"]:
-                        session["running"] = False
+                    _finish_session_turn(session, session.get("agent"))
         except Exception as _drain_exc:
             print(
                 f"[tui_gateway] completion queue drain failed: "

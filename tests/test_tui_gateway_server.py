@@ -5977,7 +5977,7 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
         def interrupt(self, *args, **kwargs):
             calls["interrupt_called"] = True
 
-    server._sessions["sid"] = _session(agent=_Agent())
+    server._sessions["sid"] = _session(agent=_Agent(), running=True)
     try:
         resp = server.handle_request(
             {
@@ -6015,8 +6015,259 @@ def test_session_steer_rejects_empty_text():
     assert resp["error"]["code"] == 4002
 
 
+def test_session_steer_rejects_idle_session_without_stashing_for_a_future_turn():
+    calls = {}
+
+    class _Agent:
+        def steer(self, text):
+            calls["steer_text"] = text
+            return True
+
+    server._sessions["sid"] = _session(agent=_Agent(), running=False)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.steer",
+                "params": {"session_id": "sid", "text": "late guidance"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["error"]["code"] == 4009
+    assert "steer_text" not in calls
+
+
+def test_session_steer_rejects_isolated_turn_instead_of_steering_dormant_agent():
+    calls = {}
+
+    class _Agent:
+        def steer(self, text):
+            calls["steer_text"] = text
+            return True
+
+    server._sessions["sid"] = _session(
+        agent=_Agent(),
+        running=True,
+        _compute_host_active=True,
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.steer",
+                "params": {"session_id": "sid", "text": "isolated guidance"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp is not None
+    assert resp["error"]["code"] == 4009
+    assert "steer_text" not in calls
+
+
+def test_session_steer_rejects_initial_compute_host_dispatch_window(monkeypatch):
+    session = _session(agent=None, running=True, _compute_host_active=False)
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *_args: True)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.steer",
+                "params": {"session_id": "sid", "text": "isolated guidance"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp is not None
+    assert resp["error"]["code"] == 4009
+
+
+def test_session_steer_rechecks_running_under_completion_lock():
+    calls = {}
+
+    class _Agent:
+        def steer(self, text):
+            calls["steer_text"] = text
+            return True
+
+    session = _session(agent=_Agent(), running=True)
+    server._sessions["sid"] = session
+    started = threading.Event()
+    response = {}
+
+    def send_steer():
+        started.set()
+        response["value"] = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.steer",
+                "params": {"session_id": "sid", "text": "completion race"},
+            }
+        )
+
+    session["history_lock"].acquire()
+    try:
+        worker = threading.Thread(target=send_steer)
+        worker.start()
+        assert started.wait(timeout=1)
+        # Model message.complete winning the same per-session lock.
+        session["running"] = False
+    finally:
+        session["history_lock"].release()
+    worker.join(timeout=1)
+    server._sessions.pop("sid", None)
+
+    assert not worker.is_alive()
+    assert response["value"]["error"]["code"] == 4009
+    assert "steer_text" not in calls
+
+
+def test_finish_session_turn_discards_steer_not_consumed_by_target_turn():
+    class _Agent:
+        def __init__(self):
+            self.pending_steer = "late guidance"
+
+        def _drain_pending_steer(self):
+            pending = self.pending_steer
+            self.pending_steer = None
+            return pending
+
+    agent = _Agent()
+    session = _session(
+        agent=agent,
+        running=True,
+        inflight_turn={"request_id": "turn-1"},
+    )
+
+    server._finish_session_turn(session, agent)
+
+    assert session["running"] is False
+    assert session["inflight_turn"] is None
+    assert agent.pending_steer is None
+
+
+def test_finish_session_turn_closes_even_when_late_steer_cleanup_fails():
+    class _Agent:
+        def _drain_pending_steer(self):
+            raise RuntimeError("broken steer slot")
+
+    agent = _Agent()
+    session = _session(
+        agent=agent,
+        running=True,
+        inflight_turn={"request_id": "turn-1"},
+    )
+
+    server._finish_session_turn(session, agent)
+
+    assert session["running"] is False
+    assert session["inflight_turn"] is None
+
+
+def test_finish_session_turn_does_not_clear_a_new_turn_started_after_cleanup():
+    drain_started = threading.Event()
+    allow_drain = threading.Event()
+
+    class _Agent:
+        def _drain_pending_steer(self):
+            drain_started.set()
+            assert allow_drain.wait(timeout=1)
+            return None
+
+    agent = _Agent()
+    session = _session(
+        agent=agent,
+        running=True,
+        inflight_turn={"request_id": "turn-1"},
+    )
+
+    finisher = threading.Thread(target=server._finish_session_turn, args=(session, agent))
+    finisher.start()
+    assert drain_started.wait(timeout=1)
+
+    next_turn_attempting = threading.Event()
+    next_turn_started = threading.Event()
+
+    def start_next_turn():
+        next_turn_attempting.set()
+        with session["history_lock"]:
+            assert session["running"] is False
+            session["running"] = True
+            next_turn_started.set()
+
+    starter = threading.Thread(target=start_next_turn)
+    starter.start()
+    assert next_turn_attempting.wait(timeout=1)
+    assert not next_turn_started.wait(timeout=0.05)
+    allow_drain.set()
+    finisher.join(timeout=1)
+    starter.join(timeout=1)
+
+    assert not finisher.is_alive()
+    assert not starter.is_alive()
+    assert next_turn_started.is_set()
+    assert session["running"] is True
+
+
+def test_claim_refusal_finalizes_provisional_notification_turn(monkeypatch):
+    from tools import async_delegation
+
+    class _Agent:
+        pending_steer = "arrived before claim"
+
+        def _drain_pending_steer(self):
+            pending = self.pending_steer
+            self.pending_steer = None
+            return pending
+
+    agent = _Agent()
+    session = _session(agent=agent, running=True)
+    monkeypatch.setattr(async_delegation, "claim_event_delivery", lambda *_args: None)
+
+    claim = server._claim_session_event_delivery(session, {"type": "completion"}, "test")
+
+    assert claim is None
+    assert session["running"] is False
+    assert agent.pending_steer is None
+
+
+def test_queued_dispatch_failure_discards_steer_accepted_in_dispatch_window(monkeypatch):
+    class _Agent:
+        pending_steer: str | None = None
+
+        def _drain_pending_steer(self):
+            pending = self.pending_steer
+            self.pending_steer = None
+            return pending
+
+    agent = _Agent()
+    session = _session(
+        agent=agent,
+        running=False,
+        queued_prompt={"text": "next turn", "transport": None},
+    )
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *_args: False)
+
+    def fail_dispatch(*_args):
+        agent.pending_steer = "accepted before synchronous failure"
+        raise RuntimeError("dispatch failed")
+
+    monkeypatch.setattr(server, "_run_prompt_submit", fail_dispatch)
+
+    assert server._drain_queued_prompt("rid", "sid", session) is True
+    assert session["running"] is False
+    assert agent.pending_steer is None
+
+
 def test_session_steer_errors_when_agent_has_no_steer_method():
-    server._sessions["sid"] = _session(agent=types.SimpleNamespace())  # no steer()
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(), running=True
+    )  # no steer()
     try:
         resp = server.handle_request(
             {

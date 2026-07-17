@@ -1887,21 +1887,40 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
 
 
 def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """AGENTS.md — top-level only (no recursive walk)."""
-    for name in ["AGENTS.md", "agents.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(
-                        result, "AGENTS.md", context_length=context_length,
-                        read_path=str(candidate),
-                    )
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
+    """AGENTS.md — prefer process cwd / project root, then HERMES_HOME.
+
+    Top-level only (no recursive walk). Project cwd wins so a repo's own
+    AGENTS.md remains authoritative when present. When the process cwd is
+    *not* the active profile (common for ``hermes -p <profile> -z …`` launched
+    from /, /tmp, or a container workdir that is not HERMES_HOME), fall back to
+    ``$HERMES_HOME/AGENTS.md`` so profile-level agent instructions still load
+    (#66118) — matching how ``SOUL.md`` is read from HERMES_HOME independently
+    of cwd.
+    """
+    search_dirs: list[Path] = [cwd_path]
+    try:
+        home = get_hermes_home().resolve()
+        if home not in search_dirs and home != cwd_path.resolve():
+            search_dirs.append(home)
+    except Exception as e:
+        logger.debug("Could not resolve HERMES_HOME for AGENTS.md fallback: %s", e)
+
+    for directory in search_dirs:
+        for name in ["AGENTS.md", "agents.md"]:
+            candidate = directory / name
+            if candidate.exists():
+                try:
+                    content = candidate.read_text(encoding="utf-8").strip()
+                    if content:
+                        content = _scan_context_content(content, name)
+                        # Label uses basename only — path is for read tracing.
+                        result = f"## {name}\n\n{content}"
+                        return _truncate_content(
+                            result, "AGENTS.md", context_length=context_length,
+                            read_path=str(candidate),
+                        )
+                except Exception as e:
+                    logger.debug("Could not read %s: %s", candidate, e)
     return ""
 
 

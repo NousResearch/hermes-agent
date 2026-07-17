@@ -308,6 +308,16 @@ def _gateway_loop_exception_handler(
     loop.default_exception_handler(context)
 
 
+def _redact_gateway_diagnostic(value: object) -> str:
+    """Return a fail-closed redaction for persisted or logged diagnostics."""
+    try:
+        from gateway.status import redact_runtime_text
+
+        return redact_runtime_text(str(value or ""))
+    except Exception:
+        return "[REDACTED]"
+
+
 def _redact_gateway_user_facing_secrets(text: str) -> str:
     """Secret redaction before text can leave the gateway.
 
@@ -4127,7 +4137,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "Fatal %s adapter error (%s): %s",
             adapter.platform.value,
             adapter.fatal_error_code or "unknown",
-            adapter.fatal_error_message or "unknown error",
+            _redact_gateway_diagnostic(adapter.fatal_error_message or "unknown error"),
         )
         # Phase 7 Unit 7d-B: a relay credential revoked by opt-out is not an
         # error to retry — render it as a clean "disabled" state, not red
@@ -4174,7 +4184,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         if not self.adapters and not self._failed_platforms:
-            self._exit_reason = adapter.fatal_error_message or "All messaging adapters disconnected"
+            self._exit_reason = _redact_gateway_diagnostic(
+                adapter.fatal_error_message or "All messaging adapters disconnected"
+            )
             if adapter.fatal_error_retryable:
                 self._exit_with_failure = True
                 logger.error("No connected messaging platforms remain. Shutting down gateway for service restart.")
@@ -7321,7 +7333,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             else startup_nonretryable_errors
                         )
                         target.append(
-                            f"{platform.value}: {adapter.fatal_error_message}"
+                            f"{platform.value}: "
+                            f"{_redact_gateway_diagnostic(adapter.fatal_error_message)}"
                         )
                         # Queue for reconnection if the error is retryable
                         if adapter.fatal_error_retryable:
@@ -8190,7 +8203,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         logger.warning(
                             "Reconnect %s: non-retryable error (%s), removing from retry queue",
-                            platform.value, adapter.fatal_error_message,
+                            platform.value,
+                            _redact_gateway_diagnostic(adapter.fatal_error_message),
                         )
                         # The adapter is about to be dropped from the queue
                         # without ever being installed on self.adapters, so
@@ -8288,6 +8302,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._systemd_watchdog = None
         await watchdog.stop()
 
+    async def _cancel_secondary_profile_reconnect_tasks(self) -> None:
+        """Cancel profile-scoped reconnects before tearing down their registry.
+
+        A reconnect can be waiting in adapter setup while shutdown begins. It
+        must not republish an adapter after the secondary registry is drained.
+        Waiting is bounded by the same adapter-cleanup budget; if a task does
+        not finish in time, the stopped runner state still prevents it from
+        installing an adapter when it eventually resumes.
+        """
+        pending = getattr(self, "_profile_failed_platforms", None)
+        if not isinstance(pending, dict):
+            return
+        current = asyncio.current_task()
+        tasks: list[asyncio.Task] = []
+        for profile_pending in pending.values():
+            if not isinstance(profile_pending, dict):
+                continue
+            for entry in profile_pending.values():
+                task = entry.get("task") if isinstance(entry, dict) else None
+                if isinstance(task, asyncio.Task) and task is not current and not task.done():
+                    tasks.append(task)
+        for task in tasks:
+            task.cancel()
+        timeout = self._adapter_disconnect_timeout_secs()
+        if tasks and timeout > 0:
+            _done, unfinished = await asyncio.wait(tasks, timeout=timeout)
+            if unfinished:
+                logger.warning(
+                    "Timed out waiting for %d secondary profile reconnect task(s) during shutdown",
+                    len(unfinished),
+                )
+        pending.clear()
+
     async def stop(
         self,
         *,
@@ -8383,6 +8430,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._draining = True
 
             await self._stop_systemd_watchdog()
+            await self._cancel_secondary_profile_reconnect_tasks()
 
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.
@@ -8974,7 +9022,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             adapter, platform, is_reconnect=True
                         )
 
-                    if success:
+                    if success and self._running:
                         profile_map = self._profile_adapters.setdefault(profile_name, {})
                         if platform not in profile_map:
                             profile_map[platform] = adapter
@@ -8987,6 +9035,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             return
                         # A newer reconnect already won the slot while this
                         # attempt was awaiting connect; do not replace it.
+                        await self._safe_adapter_disconnect(adapter, platform)
+                        return
+
+                    # Shutdown can begin while connect() is in flight. Do not
+                    # republish a newly connected adapter after the registry has
+                    # been drained; release its partial resources instead.
+                    if success:
                         await self._safe_adapter_disconnect(adapter, platform)
                         return
 
@@ -9010,6 +9065,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         exc_info=True,
                     )
 
+                if not self._running:
+                    return
                 attempts += 1
                 backoff = min(30 * (2 ** (attempts - 1)), 300)
                 logger.info(
@@ -9034,7 +9091,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self, profile_name: str, platform: Platform, adapter: BasePlatformAdapter
     ) -> None:
         """Schedule one runner-owned reconnect without sharing primary secrets."""
-        if not adapter.fatal_error_retryable:
+        if not self._running or not adapter.fatal_error_retryable:
             return
         pending = getattr(self, "_profile_failed_platforms", None)
         if not isinstance(pending, dict):
@@ -9087,15 +9144,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
         profile_map.pop(platform, None)
         await self._safe_adapter_disconnect(adapter, platform)
+        if not self._running:
+            return
         self._schedule_secondary_profile_reconnect(profile_name, platform, adapter)
         logger.error(
             "Fatal %s adapter error for multiplexed profile %s (%s): %s",
             platform.value,
             profile_name,
             adapter.fatal_error_code or "unknown",
-            _redact_gateway_user_facing_secrets(
-                adapter.fatal_error_message or "unknown error"
-            ),
+            _redact_gateway_diagnostic(adapter.fatal_error_message or "unknown error"),
         )
         # Reconnect is scoped to the profile's own config and secret mapping;
         # never rebuild a secondary adapter with the default profile's credentials.

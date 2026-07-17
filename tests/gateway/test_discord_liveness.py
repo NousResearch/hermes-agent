@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -25,7 +25,8 @@ from tests.gateway.test_discord_connect import (  # noqa: E402
 _ensure_discord_mock()
 
 import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
-from gateway.config import PlatformConfig  # noqa: E402
+from gateway.config import Platform, PlatformConfig  # noqa: E402
+from gateway.run import GatewayRunner  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
@@ -135,9 +136,9 @@ def test_default_liveness_bounds_trigger_timed_recovery(monkeypatch):
 
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 
-    assert adapter._liveness_interval_seconds == 20.0
-    assert adapter._liveness_failure_threshold == 3
-    assert adapter._heartbeat_ack_max_age_seconds == 75.0
+    assert adapter._liveness_interval_seconds == 15.0
+    assert adapter._liveness_failure_threshold == 2
+    assert adapter._heartbeat_ack_max_age_seconds == 60.0
     assert adapter._max_latency_seconds == 30.0
 
 
@@ -264,8 +265,38 @@ async def test_liveness_probe_does_not_call_rest_while_websocket_is_healthy(monk
 
 
 @pytest.mark.asyncio
+async def test_bot_task_exit_redacts_diagnostic_before_logging_and_notification(caplog, monkeypatch):
+    adapter = _make_adapter(monkeypatch)
+    diagnostic = (
+        "request failed at https://user:pass@example.invalid:8443/path?access_token=opaque#fragment "
+        "Bearer opaque-token-value-1234567890"
+    )
+    adapter._running = True
+    adapter._notify_fatal_error = AsyncMock()
+
+    async def fail():
+        raise RuntimeError(diagnostic)
+
+    task = asyncio.create_task(fail())
+    await asyncio.sleep(0)
+    adapter._bot_task = task
+    caplog.set_level("ERROR", logger="plugins.platforms.discord.adapter")
+
+    adapter._handle_bot_task_done(task)
+    await asyncio.sleep(0)
+
+    assert "user:pass@" not in caplog.text
+    assert ":8443" not in caplog.text
+    assert "access_token=opaque" not in caplog.text
+    assert "opaque-token-value-1234567890" not in caplog.text
+    assert "user:pass@" not in (adapter.fatal_error_message or "")
+    assert "opaque-token-value-1234567890" not in (adapter.fatal_error_message or "")
+    adapter._running = False
+
+
+@pytest.mark.asyncio
 async def test_liveness_probe_forces_reconnect_when_rest_succeeds_but_gateway_ack_is_stale(monkeypatch):
-    """A REST 200 must not hide the CLOSE_WAIT / stale-ACK Gateway failure mode."""
+    """A REST response must not hide a stale Gateway heartbeat failure."""
     adapter = _make_adapter(monkeypatch, interval=0.005, threshold=2, max_ack_age=0.01)
 
     def factory(**kwargs):
@@ -289,8 +320,7 @@ async def test_liveness_probe_forces_reconnect_when_rest_succeeds_but_gateway_ac
     # The sampler schedules the close + supervisor callback in a sibling task
     # so the fatal path cannot cancel/await itself through disconnect().
     for _ in range(200):
-        notification = adapter._liveness_notification_task
-        if notification and notification.done():
+        if handler.await_count:
             break
         await asyncio.sleep(0.01)
     else:
@@ -304,6 +334,39 @@ async def test_liveness_probe_forces_reconnect_when_rest_succeeds_but_gateway_ac
     handler.assert_awaited_once()
 
     await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_liveness_fatal_queues_primary_runner_reconnect_without_self_cancellation(monkeypatch):
+    adapter = _make_adapter(monkeypatch, interval=0.005, threshold=1, max_ack_age=0.01)
+
+    def factory(**kwargs):
+        bot = _LiveBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
+        _set_websocket_health(bot, ack_age=3600)
+        return bot
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._failed_platforms = {}
+    runner._running = True
+    runner.stop = AsyncMock()
+    runner.delivery_router = SimpleNamespace(adapters=runner.adapters)
+    runner.config = SimpleNamespace(platforms={Platform.DISCORD: adapter.config})
+    runner._update_platform_runtime_status = lambda *args, **kwargs: None
+    runner._adapter_disconnect_timeout_secs = lambda: 0.1
+    adapter.set_fatal_error_handler(runner._handle_adapter_fatal_error)
+    await _connect(adapter, monkeypatch, factory)
+
+    for _ in range(200):
+        if Platform.DISCORD in runner._failed_platforms:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("liveness fatal did not reach the runner reconnect queue")
+
+    assert adapter._liveness_notification_task is None or adapter._liveness_notification_task.done()
+    assert runner._failed_platforms[Platform.DISCORD]["attempts"] == 0
+    runner.stop.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -475,6 +538,93 @@ async def test_liveness_recovery_not_blocked_by_hanging_client_close(monkeypatch
     # Restore a cooperative fake close so the test can release the bot task.
     wedged.close = _LiveBot.close.__get__(wedged, _LiveBot)
     await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_liveness_close_timeout_aborts_aiohttp_transport_before_fatal_notification(
+    monkeypatch,
+):
+    """A close handshake timeout must abort the stale socket before reconnect."""
+    adapter = _make_adapter(monkeypatch, interval=60, threshold=1, max_ack_age=1.0)
+    handler = AsyncMock()
+    adapter.set_fatal_error_handler(handler)
+
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def hanging_close():
+        close_started.set()
+        while not release_close.is_set():
+            try:
+                await release_close.wait()
+            except asyncio.CancelledError:
+                # Model a close path that catches cancellation while unwinding.
+                continue
+
+    transport = Mock()
+    replacement_transport = Mock()
+    aiohttp_socket = SimpleNamespace(
+        close=hanging_close,
+        # aiohttp clears response.connection while cancellation unwinds close(),
+        # but its WebSocket writer still owns the underlying transport.
+        _response=SimpleNamespace(connection=None),
+        _conn=None,
+        _writer=SimpleNamespace(transport=transport),
+    )
+    gateway_websocket = SimpleNamespace(socket=aiohttp_socket)
+    replacement_websocket = SimpleNamespace(
+        socket=SimpleNamespace(
+            _response=SimpleNamespace(connection=None),
+            _conn=None,
+            _writer=SimpleNamespace(transport=replacement_transport),
+        )
+    )
+
+    class _StickyCloseClient:
+        def __init__(self):
+            self.ws = gateway_websocket
+            self._closing_task = None
+            self.close_attempts = 0
+
+        async def close(self):
+            if self._closing_task is not None:
+                return await self._closing_task
+
+            async def _close():
+                self.close_attempts += 1
+                if self.close_attempts == 1:
+                    # The library may publish a replacement WebSocket while the
+                    # old close handshake is still stuck. Recovery must never
+                    # abort the replacement transport.
+                    self.ws = replacement_websocket
+                    await hanging_close()
+
+            self._closing_task = asyncio.create_task(_close())
+            return await self._closing_task
+
+    client = _StickyCloseClient()
+
+    adapter._set_fatal_error(
+        "discord_websocket_health_stale",
+        "Discord Gateway WebSocket health check failed: socket_closed",
+        retryable=True,
+    )
+    notify_task = asyncio.create_task(adapter._notify_liveness_fatal_error(client))
+
+    await asyncio.wait_for(close_started.wait(), timeout=0.5)
+    done, _pending = await asyncio.wait({notify_task}, timeout=1.5)
+    finished_within_bound = notify_task in done
+    release_close.set()
+    if not notify_task.done():
+        await asyncio.wait_for(notify_task, timeout=0.5)
+
+    assert finished_within_bound is True
+    transport.abort.assert_called_once_with()
+    replacement_transport.abort.assert_not_called()
+    handler.assert_awaited_once()
+    assert client._closing_task is None
+    await client.close()
+    assert client.close_attempts == 2
 
 
 @pytest.mark.asyncio

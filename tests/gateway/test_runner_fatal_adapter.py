@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -6,6 +7,12 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.run import GatewayRunner
+
+
+_FATAL_DIAGNOSTIC = (
+    "request failed at https://user:pass@example.invalid:8443/path?access_token=opaque#fragment "
+    "Bearer opaque-token-value-1234567890"
+)
 
 
 class _FatalAdapter(BasePlatformAdapter):
@@ -28,6 +35,12 @@ class _FatalAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id):
         return {"id": chat_id}
+
+
+class _StartupFatalDiagnosticAdapter(_FatalAdapter):
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        self._set_fatal_error("startup_failure", _FATAL_DIAGNOSTIC, retryable=False)
+        return False
 
 
 class _RuntimeRetryableAdapter(BasePlatformAdapter):
@@ -67,6 +80,31 @@ async def test_runner_requests_clean_exit_for_nonretryable_startup_conflict(monk
 
 
 @pytest.mark.asyncio
+async def test_runner_redacts_nonretryable_startup_diagnostic(caplog, monkeypatch, tmp_path):
+    config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="token")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    monkeypatch.setattr(
+        runner,
+        "_create_adapter",
+        lambda platform, platform_config: _StartupFatalDiagnosticAdapter(),
+    )
+    caplog.set_level(logging.ERROR, logger="gateway.run")
+
+    ok = await runner.start()
+
+    assert ok is True
+    assert runner.exit_reason is not None
+    combined = f"{caplog.text}\n{runner.exit_reason}"
+    assert "user:pass@" not in combined
+    assert ":8443" not in combined
+    assert "access_token=opaque" not in combined
+    assert "opaque-token-value-1234567890" not in combined
+
+
+@pytest.mark.asyncio
 async def test_runner_queues_retryable_runtime_fatal_for_reconnection(monkeypatch, tmp_path):
     """Retryable runtime fatal errors queue the platform for reconnection
     AND keep the gateway alive — the background reconnect watcher recovers
@@ -99,6 +137,53 @@ async def test_runner_queues_retryable_runtime_fatal_for_reconnection(monkeypatc
     assert runner._exit_with_failure is False
     assert Platform.WHATSAPP in runner._failed_platforms
     assert runner._failed_platforms[Platform.WHATSAPP]["attempts"] == 0
+
+
+@pytest.mark.asyncio
+async def test_runtime_fatal_log_redacts_url_diagnostics(caplog, tmp_path):
+    config = GatewayConfig(
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _RuntimeRetryableAdapter()
+    diagnostic = _FATAL_DIAGNOSTIC
+    adapter._set_fatal_error("transport_stale", diagnostic, retryable=True)
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    runner.delivery_router.adapters = runner.adapters
+    runner.stop = AsyncMock()
+    caplog.set_level(logging.ERROR, logger="gateway.run")
+
+    await runner._handle_adapter_fatal_error(adapter)
+
+    rendered = caplog.text
+    assert "user:pass@" not in rendered
+    assert ":8443" not in rendered
+    assert "access_token=opaque" not in rendered
+    assert "opaque-token-value-1234567890" not in rendered
+    assert "#fragment" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_terminal_fatal_exit_reason_redacts_diagnostic(tmp_path):
+    config = GatewayConfig(
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _RuntimeRetryableAdapter()
+    adapter._set_fatal_error("transport_stale", _FATAL_DIAGNOSTIC, retryable=False)
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    runner.delivery_router.adapters = runner.adapters
+    runner.stop = AsyncMock()
+
+    await runner._handle_adapter_fatal_error(adapter)
+
+    assert runner.exit_reason is not None
+    assert "user:pass@" not in runner.exit_reason
+    assert ":8443" not in runner.exit_reason
+    assert "access_token=opaque" not in runner.exit_reason
+    assert "opaque-token-value-1234567890" not in runner.exit_reason
 
 
 @pytest.mark.asyncio

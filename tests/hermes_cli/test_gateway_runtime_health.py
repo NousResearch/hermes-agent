@@ -72,6 +72,36 @@ def test_runtime_health_lines_redact_and_flatten_untrusted_reason(monkeypatch):
     assert "\\n" not in lines[0]
 
 
+def test_runtime_health_lines_strip_url_credentials_and_query_values(monkeypatch):
+    diagnostic = (
+        "request failed at https://user:pass@example.invalid:8443/path?access_token=opaque#fragment "
+        "Bearer opaque-token-value-1234567890"
+    )
+    monkeypatch.setattr(
+        "gateway.status.read_runtime_status",
+        lambda: {
+            "gateway_state": "running",
+            "platforms": {
+                "discord": {
+                    "state": "retrying",
+                    "health": {
+                        "transport": "websocket",
+                        "last_health_reason": diagnostic,
+                    },
+                }
+            },
+        },
+    )
+
+    lines = _runtime_health_lines()
+
+    assert "user:pass@" not in lines[0]
+    assert ":8443" not in lines[0]
+    assert "access_token=opaque" not in lines[0]
+    assert "opaque-token-value-1234567890" not in lines[0]
+    assert "#fragment" not in lines[0]
+
+
 def test_runtime_status_running_pid_validates_live_gateway_record(monkeypatch):
     from gateway import status as status_mod
 

@@ -75,7 +75,16 @@ async def test_gateway_stop_stops_watchdog_before_session_drain():
     runner._systemd_watchdog = _OrderingWatchdog()
     runner._notify_active_sessions_of_shutdown = _notify_sessions
 
+    async def _cancel_secondary_reconnects() -> None:
+        order.append("secondary_reconnect_cancel")
+
+    runner._cancel_secondary_profile_reconnect_tasks = _cancel_secondary_reconnects
+
     with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
         await runner.stop()
 
-    assert order[:2] == ["watchdog_stop", "notify_sessions"]
+    assert order[:3] == [
+        "watchdog_stop",
+        "secondary_reconnect_cancel",
+        "notify_sessions",
+    ]

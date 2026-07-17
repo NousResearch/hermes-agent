@@ -2,6 +2,7 @@
 
 import logging
 import os
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -321,12 +322,36 @@ class TestGatewayConfigRoundtrip:
 
     @pytest.mark.parametrize(
         "raw",
-        [None, 0, -1, True, 1.5, "bad"],
+        [
+            None,
+            0,
+            -1,
+            True,
+            False,
+            1.5,
+            45.0,
+            float("nan"),
+            float("inf"),
+            "120.0",
+            "1e3",
+            "bad",
+            2_147_483_648,
+        ],
     )
     def test_systemd_watchdog_from_dict_disables_invalid_values(self, raw):
         config = GatewayConfig.from_dict({"systemd_watchdog_seconds": raw})
 
         assert config.systemd_watchdog_seconds == 0
+
+    def test_systemd_watchdog_constructor_normalizes_invalid_value(self):
+        config = GatewayConfig(systemd_watchdog_seconds=cast(int, 45.0))
+
+        assert config.systemd_watchdog_seconds == 0
+
+    def test_systemd_watchdog_from_dict_accepts_bounded_positive_integer(self):
+        config = GatewayConfig.from_dict({"systemd_watchdog_seconds": 2_147_483_647})
+
+        assert config.systemd_watchdog_seconds == 2_147_483_647
 
     def test_systemd_watchdog_from_dict_accepts_nested_positive_integer(self):
         config = GatewayConfig.from_dict(

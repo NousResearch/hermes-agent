@@ -14,6 +14,7 @@ concurrently under distinct configurations).
 import hashlib
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -44,6 +45,9 @@ _gateway_lock_handle = None
 # while another process holds the mutual-exclusion lock.
 _WINDOWS_LOCK_OFFSET = 1024 * 1024
 _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
+_RUNTIME_BEARER_TOKEN_RE = re.compile(
+    r"\bBearer[ \t]+([^\s\]\[<>()\"']+)", re.IGNORECASE
+)
 _gateway_running_pid_cache_lock = threading.Lock()
 _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple[Any, ...], Optional[int]]] = {}
 
@@ -795,10 +799,45 @@ def write_pid_file() -> None:
         raise
 
 
+def redact_runtime_text(text: str) -> str:
+    """Redact credentials and volatile URL components in persisted diagnostics."""
+    try:
+        redacted = redact_sensitive_text(text, force=True)
+    except Exception:
+        return "[REDACTED]"
+
+    redacted = _RUNTIME_BEARER_TOKEN_RE.sub("Bearer [REDACTED]", redacted)
+
+    def _replace_url(match: re.Match[str]) -> str:
+        raw_url = match.group(0)
+        try:
+            from urllib.parse import urlsplit, urlunsplit
+
+            parsed = urlsplit(raw_url)
+            if not parsed.scheme:
+                return "[REDACTED]"
+            if not parsed.netloc:
+                return urlunsplit((parsed.scheme, "", parsed.path, "", ""))
+            host = parsed.hostname
+            if not host:
+                return "[REDACTED]"
+            if ":" in host:
+                host = f"[{host}]"
+            return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+        except (TypeError, ValueError):
+            return "[REDACTED]"
+
+    return re.sub(
+        r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\]\[<>()]+",
+        _replace_url,
+        redacted,
+    )
+
+
 def _redact_runtime_value(value: Any) -> Any:
     """Redact strings in persisted runtime diagnostics without changing shape."""
     if isinstance(value, str):
-        return redact_sensitive_text(value, force=True)
+        return redact_runtime_text(value)
     if isinstance(value, dict):
         return {key: _redact_runtime_value(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -836,7 +875,7 @@ def write_runtime_status(
         payload["gateway_state"] = gateway_state
     if exit_reason is not _UNSET:
         payload["exit_reason"] = (
-            redact_sensitive_text(str(exit_reason), force=True)
+            redact_runtime_text(str(exit_reason))
             if exit_reason is not None
             else None
         )
@@ -857,8 +896,8 @@ def write_runtime_status(
         if error_code is not _UNSET:
             platform_payload["error_code"] = error_code
         if error_message is not _UNSET:
-            platform_payload["error_message"] = redact_sensitive_text(
-                str(error_message), force=True
+            platform_payload["error_message"] = redact_runtime_text(
+                str(error_message)
             ) if error_message is not None else None
         if health is not _UNSET:
             platform_payload["health"] = _redact_runtime_value(health) if isinstance(health, dict) else None

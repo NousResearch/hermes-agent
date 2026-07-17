@@ -30,6 +30,7 @@ if os.name == "posix":
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
+from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from gateway.status import terminate_pid
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -39,6 +40,7 @@ from gateway.restart import (
     is_gateway_supervisor_process,
     parse_restart_drain_timeout,
 )
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.config import (
     get_env_value,
     get_hermes_home,
@@ -2631,10 +2633,9 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         if current_hermes_raw
         else get_hermes_home()
     )
-    # Keep explicit custom paths lexical.  Resolving a non-existent custom
-    # path can rewrite it through host-specific symlinks (for example
-    # /opt -> /data00 in test/development images), which would bake a different
-    # HERMES_HOME into the generated service unit.
+    # Keep explicit custom paths lexical. Resolving a non-existent custom path
+    # can rewrite it through host-specific path mappings, which would bake a
+    # different HERMES_HOME into the generated service unit.
     current_default = Path.home() / ".hermes"
     target_default = Path(target_home_dir) / ".hermes"
 
@@ -2713,22 +2714,35 @@ def _stable_service_working_dir() -> str:
     return str(PROJECT_ROOT)
 
 
-def _systemd_watchdog_seconds() -> int:
-    """Resolve the config.yaml-only opt-in systemd watchdog setting."""
-    cfg = read_raw_config()
-    gateway_cfg = cfg.get("gateway", {}) if isinstance(cfg, dict) else {}
-    raw = gateway_cfg.get("systemd_watchdog_seconds", 0) if isinstance(gateway_cfg, dict) else 0
-    if isinstance(raw, bool):
-        return 0
+def _systemd_watchdog_seconds(hermes_home: str | Path | None = None) -> int:
+    """Resolve the effective opt-in watchdog setting for one service home.
+
+    Service generation must consume the same managed-overlay-aware config as the
+    running gateway. A context-local home override lets a system unit be built
+    for its target user without changing the invoking process environment.
+    """
+    override_token = None
+    if hermes_home is not None:
+        override_token = set_hermes_home_override(hermes_home)
     try:
-        seconds = float(raw)
-    except (TypeError, ValueError):
+        config = load_gateway_config()
+        return coerce_systemd_watchdog_seconds(
+            getattr(config, "systemd_watchdog_seconds", 0),
+        )
+    except Exception:
+        logger.debug("Could not resolve effective systemd watchdog configuration", exc_info=True)
         return 0
-    if not math.isfinite(seconds) or seconds <= 0:
-        return 0
-    if not seconds.is_integer():
-        return 0
-    return int(seconds)
+    finally:
+        if override_token is not None:
+            reset_hermes_home_override(override_token)
+
+
+def _systemd_watchdog_service_fields(hermes_home: str | Path | None = None) -> tuple[str, str]:
+    """Return the unit type and directives for one effective configuration."""
+    seconds = _systemd_watchdog_seconds(hermes_home)
+    if seconds <= 0:
+        return "simple", ""
+    return "notify", f"NotifyAccess=main\nWatchdogSec={seconds}s\n"
 
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
@@ -2768,17 +2782,13 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     # (#8202). 30s of headroom covers the worst case we've observed.
     _drain_timeout = int(_get_restart_drain_timeout() or 0)
     restart_timeout = max(60, _drain_timeout) + 30
-    _watchdog_seconds = _systemd_watchdog_seconds()
-    _systemd_type = "notify" if _watchdog_seconds > 0 else "simple"
-    _systemd_watchdog_directives = (
-        f"NotifyAccess=main\nWatchdogSec={_watchdog_seconds}s\n"
-        if _watchdog_seconds > 0
-        else ""
-    )
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
+        _systemd_type, _systemd_watchdog_directives = _systemd_watchdog_service_fields(
+            hermes_home
+        )
         profile_arg = _profile_arg_for_target_user(hermes_home, home_dir)
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
@@ -2829,6 +2839,9 @@ WantedBy=multi-user.target
 """
 
     hermes_home = str(get_hermes_home().resolve())
+    _systemd_type, _systemd_watchdog_directives = _systemd_watchdog_service_fields(
+        hermes_home
+    )
     profile_arg = _profile_arg(hermes_home)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
@@ -5286,11 +5299,11 @@ def _runtime_health_lines() -> list[str]:
     def _safe_runtime_text(value: object, *, limit: int = 240) -> str:
         """Render persisted diagnostics as one bounded, force-redacted line."""
         try:
-            from agent.redact import redact_sensitive_text
+            from gateway.status import redact_runtime_text
 
-            text = redact_sensitive_text(str(value or ""), force=True)
+            text = redact_runtime_text(str(value or ""))
         except Exception:
-            text = str(value or "")
+            text = "[REDACTED]"
         text = " ".join(text.split())
         return text[:limit] if text else "unknown error"
 

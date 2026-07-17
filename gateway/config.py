@@ -130,6 +130,50 @@ def _coerce_optional_positive_int(value: Any, key: str) -> Optional[int]:
     return parsed
 
 
+_SYSTEMD_WATCHDOG_MAX_SECONDS = 2_147_483_647
+
+
+def coerce_systemd_watchdog_seconds(
+    value: Any, key: str = "gateway.systemd_watchdog_seconds"
+) -> int:
+    """Return a finite, bounded positive watchdog interval or zero when disabled.
+
+    This normalization is shared by the runtime and service-unit generator so
+    `Type=notify` can never be emitted for a value that disables notifications
+    in the running gateway.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        logger.warning("Ignoring invalid %s (expected a positive integer)", key)
+        return 0
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw or not raw.isascii() or not raw.isdecimal():
+            logger.warning("Ignoring invalid %s (expected a positive integer)", key)
+            return 0
+        try:
+            parsed = int(raw, 10)
+        except (TypeError, ValueError, OverflowError):
+            logger.warning("Ignoring invalid %s (expected a positive integer)", key)
+            return 0
+    else:
+        logger.warning("Ignoring invalid %s (expected a positive integer)", key)
+        return 0
+    if parsed == 0:
+        return 0
+    if not 0 < parsed <= _SYSTEMD_WATCHDOG_MAX_SECONDS:
+        logger.warning(
+            "Ignoring invalid %s (expected an integer from 1 to %d)",
+            key,
+            _SYSTEMD_WATCHDOG_MAX_SECONDS,
+        )
+        return 0
+    return parsed
+
+
 def _coerce_dict(value: Any) -> Dict[str, Any]:
     """Return *value* when it is a mapping, otherwise an empty dict."""
     return value if isinstance(value, dict) else {}
@@ -790,6 +834,11 @@ class GatewayConfig:
     # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
     profile_routes: list = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
+            self.systemd_watchdog_seconds
+        )
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -962,26 +1011,19 @@ class GatewayConfig:
         else:
             systemd_watchdog_raw = nested_gateway.get("systemd_watchdog_seconds")
             systemd_watchdog_key = "gateway.systemd_watchdog_seconds"
-        systemd_watchdog_seconds = (
-            _coerce_optional_positive_int(
-                systemd_watchdog_raw,
-                systemd_watchdog_key,
-            )
-            or 0
+        systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
+            systemd_watchdog_raw,
+            systemd_watchdog_key,
         )
         if multiplex_profiles is None and isinstance(nested_gateway, dict):
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
             multiplex_profiles = nested_gateway.get("multiplex_profiles")
         # Operator override: GATEWAY_MULTIPLEX_PROFILES wins over config.yaml when
-        # set to a recognized value. Hosted deployments (Nous Portal / Fly) stamp
-        # it on the container so the single multiplexed gateway — which the
-        # connector now depends on for per-profile relay routing — is forced on at
-        # every boot regardless of the image's config.yaml, while self-hosted
-        # users keep setting gateway.multiplex_profiles in config.yaml. A blank or
-        # unrecognized env value falls through to config (the empty-secret trap:
-        # a provisioned-but-unpopulated Fly secret must not shadow config), so
-        # this is a genuine 3-tier chain: env > config.yaml > default False.
+        # set to a recognized value. This allows the process launcher to force the
+        # shared gateway mode while users can still configure it in config.yaml.
+        # Blank or unrecognized values fall through to config, so a provisioned
+        # but empty setting cannot shadow an explicit config value.
         env_multiplex = _env_multiplex_profiles_override()
         if env_multiplex is not None:
             multiplex_profiles = env_multiplex

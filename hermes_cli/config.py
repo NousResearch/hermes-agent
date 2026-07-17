@@ -2509,9 +2509,9 @@ DEFAULT_CONFIG = {
         # WebSocket's ready/open/heartbeat state; they never use Discord REST as
         # proof that Gateway events are still arriving. Set any value to 0 to
         # disable this compatibility-safe probe during a rollback.
-        "websocket_liveness_interval_seconds": 20,
-        "websocket_liveness_failure_threshold": 3,
-        "websocket_heartbeat_ack_max_age_seconds": 75,
+        "websocket_liveness_interval_seconds": 15,
+        "websocket_liveness_failure_threshold": 2,
+        "websocket_heartbeat_ack_max_age_seconds": 60,
         "websocket_max_latency_seconds": 30,
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
         # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES

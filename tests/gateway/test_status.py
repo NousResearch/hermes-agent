@@ -701,6 +701,41 @@ class TestGatewayRuntimeStatus:
         payload = status.read_runtime_status()
         assert "x" * 32 not in payload["platforms"]["discord"]["health"]["diagnostic"]
 
+    def test_write_runtime_status_strips_url_credentials_and_query_values(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        diagnostic = (
+            "request failed at https://user:pass@example.invalid:8443/path?access_token=opaque#fragment "
+            "Bearer opaque-token-value-1234567890"
+        )
+
+        status.write_runtime_status(
+            exit_reason=diagnostic,
+            platform="discord",
+            platform_state="fatal",
+            error_message=diagnostic,
+            health={"diagnostic": diagnostic},
+        )
+
+        payload = status.read_runtime_status()
+        persisted = json.dumps(payload)
+        assert "user:pass@" not in persisted
+        assert ":8443" not in persisted
+        assert "access_token=opaque" not in persisted
+        assert "opaque-token-value-1234567890" not in persisted
+        assert "#fragment" not in persisted
+
+    def test_write_runtime_status_strips_non_http_url_query_values(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        diagnostic = "request failed at file:///tmp/diagnostic?opaque=placeholder#fragment"
+
+        status.write_runtime_status(platform="discord", health={"diagnostic": diagnostic})
+
+        payload = status.read_runtime_status()
+        persisted = json.dumps(payload)
+        assert "opaque=placeholder" not in persisted
+        assert "#fragment" not in persisted
+        assert "file:///tmp/diagnostic" in persisted
+
     def test_write_runtime_status_preserves_or_clears_health_explicitly(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         health = {"transport": "websocket", "last_health_reason": "ack_stale"}

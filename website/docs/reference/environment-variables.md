@@ -209,9 +209,9 @@ The Discord Gateway WebSocket health settings are non-secret and belong in `conf
 
 | Config key | Default | Meaning |
 |------------|---------|---------|
-| `discord.websocket_liveness_interval_seconds` | `20` | Seconds between Gateway samples |
-| `discord.websocket_liveness_failure_threshold` | `3` | Consecutive unhealthy samples before retryable reconnect |
-| `discord.websocket_heartbeat_ack_max_age_seconds` | `75` | Maximum heartbeat ACK age |
+| `discord.websocket_liveness_interval_seconds` | `15` | Seconds between Gateway samples |
+| `discord.websocket_liveness_failure_threshold` | `2` | Consecutive unhealthy samples before retryable reconnect |
+| `discord.websocket_heartbeat_ack_max_age_seconds` | `60` | Maximum heartbeat ACK age |
 | `discord.websocket_max_latency_seconds` | `30` | Maximum finite heartbeat latency |
 | `gateway.systemd_watchdog_seconds` | `0` | Opt-in systemd event-loop watchdog; `0` keeps `Type=simple` |
 

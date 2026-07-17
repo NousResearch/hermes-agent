@@ -185,9 +185,9 @@ Discord Gateway WebSocket 健康参数属于 `config.yaml` 的非秘密配置，
 
 | 配置项 | 默认值 | 含义 |
 |--------|--------|------|
-| `discord.websocket_liveness_interval_seconds` | `20` | Gateway 采样间隔（秒） |
-| `discord.websocket_liveness_failure_threshold` | `3` | 触发可重试重连所需的连续异常次数 |
-| `discord.websocket_heartbeat_ack_max_age_seconds` | `75` | heartbeat ACK 最大年龄 |
+| `discord.websocket_liveness_interval_seconds` | `15` | Gateway 采样间隔（秒） |
+| `discord.websocket_liveness_failure_threshold` | `2` | 触发可重试重连所需的连续异常次数 |
+| `discord.websocket_heartbeat_ack_max_age_seconds` | `60` | heartbeat ACK 最大年龄 |
 | `discord.websocket_max_latency_seconds` | `30` | 有限 heartbeat latency 上限 |
 | `gateway.systemd_watchdog_seconds` | `0` | opt-in systemd 事件循环 watchdog；`0` 保持 `Type=simple` |
 

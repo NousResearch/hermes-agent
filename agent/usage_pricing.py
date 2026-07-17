@@ -1009,8 +1009,10 @@ def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     if route.provider in {"custom", "local", "unknown"}:
         return None
     try:
-        from agent.models_dev import get_model_info
+        from agent.models_dev import PROVIDER_TO_MODELS_DEV, get_model_info
 
+        if route.provider not in PROVIDER_TO_MODELS_DEV:
+            return None
         model_info = get_model_info(route.provider, route.model)
     except Exception:
         return None

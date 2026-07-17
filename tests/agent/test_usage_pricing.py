@@ -519,3 +519,43 @@ def test_deepseek_v4_flash_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $0.14/M + 500K output × $0.28/M = $0.14 + $0.14 = $0.28
     assert float(result.amount_usd) == 0.28
+
+
+def test_xiaomi_models_dev_fallback_reaches_usage_estimate(monkeypatch):
+    """Named providers missing the snapshot still produce dashboard cost data."""
+    from agent.models_dev import ModelInfo
+
+    model = ModelInfo(
+        id="MiMo-7B-RL",
+        name="MiMo 7B RL",
+        family="mimo",
+        provider_id="xiaomi",
+        cost_input=0.10,
+        cost_output=0.40,
+    )
+    monkeypatch.setattr("agent.models_dev.get_model_info", lambda provider, name: model)
+
+    result = estimate_usage_cost(
+        "MiMo-7B-RL",
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=500_000),
+        provider="xiaomi",
+    )
+
+    assert result.status == "estimated"
+    assert float(result.amount_usd) == 0.30
+    assert result.source == "provider_models_api"
+
+
+def test_unregistered_provider_does_not_guess_models_dev_pricing(monkeypatch):
+    """Only registered Hermes providers may use the models.dev fallback."""
+    calls = []
+
+    def get_model_info(provider, name):
+        calls.append((provider, name))
+        return None
+
+    monkeypatch.setattr("agent.models_dev.get_model_info", get_model_info)
+
+    assert get_pricing_entry("MiMo-7B-RL", provider="custom") is None
+    assert get_pricing_entry("MiMo-7B-RL", provider="unregistered-provider") is None
+    assert calls == []

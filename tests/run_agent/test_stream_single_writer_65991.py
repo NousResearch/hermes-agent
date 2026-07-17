@@ -138,5 +138,76 @@ class TestSingleWriterLoop:
         assert "-stale-tail" not in "".join(delivered)
 
 
+class TestCodexSingleWriter:
+    """The codex_responses path claims the sink and stops when superseded,
+    matching the chat_completions/anthropic/bedrock parity added in salvage."""
+
+    def _codex_event(self, event_type, **fields):
+        return SimpleNamespace(type=event_type, **fields)
+
+    def test_codex_stream_claims_writer_and_stops_when_superseded(self):
+        from agent.codex_runtime import run_codex_stream
+
+        agent = _make_agent()
+        agent.api_mode = "codex_responses"
+        delivered = []
+        agent.stream_delta_callback = lambda t: delivered.append(t)
+        agent._stream_callback = None
+
+        def event_gen():
+            yield self._codex_event(
+                "response.output_text.delta", delta="first", item_id="i1",
+            )
+            # A concurrent retry supersedes this stream between events.
+            agent._claim_stream_writer()
+            yield self._codex_event(
+                "response.output_text.delta", delta="-stale-tail", item_id="i1",
+            )
+            yield self._codex_event(
+                "response.completed",
+                response=SimpleNamespace(
+                    id="r1", status="completed", output=[], usage=None,
+                ),
+            )
+
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = event_gen()
+
+        run_codex_stream(agent, {"model": "gpt-5.3-codex"}, client=mock_client)
+
+        assert "".join(delivered) == "first"
+        assert "-stale-tail" not in "".join(delivered)
+
+    def test_codex_stream_undisturbed_when_sole_writer(self):
+        from agent.codex_runtime import run_codex_stream
+
+        agent = _make_agent()
+        agent.api_mode = "codex_responses"
+        delivered = []
+        agent.stream_delta_callback = lambda t: delivered.append(t)
+        agent._stream_callback = None
+
+        def event_gen():
+            yield self._codex_event(
+                "response.output_text.delta", delta="hello ", item_id="i1",
+            )
+            yield self._codex_event(
+                "response.output_text.delta", delta="world", item_id="i1",
+            )
+            yield self._codex_event(
+                "response.completed",
+                response=SimpleNamespace(
+                    id="r1", status="completed", output=[], usage=None,
+                ),
+            )
+
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = event_gen()
+
+        run_codex_stream(agent, {"model": "gpt-5.3-codex"}, client=mock_client)
+
+        assert "".join(delivered) == "hello world"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

@@ -1717,17 +1717,17 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     mqtt_user = os.getenv("MQTT_USER")
     mqtt_password = os.getenv("MQTT_PASSWORD")
     if mqtt_user and mqtt_password:
-        if Platform.MQTT not in config.platforms:
-            config.platforms[Platform.MQTT] = PlatformConfig()
-        config.platforms[Platform.MQTT].enabled = True
-        config.platforms[Platform.MQTT].token = mqtt_user  # token slot reused for username
-        config.platforms[Platform.MQTT].extra["password"] = mqtt_password
+        if Platform("mqtt") not in config.platforms:
+            config.platforms[Platform("mqtt")] = PlatformConfig()
+        config.platforms[Platform("mqtt")].enabled = True
+        config.platforms[Platform("mqtt")].token = mqtt_user  # token slot reused for username
+        config.platforms[Platform("mqtt")].extra["password"] = mqtt_password
         mqtt_broker = os.getenv("MQTT_BROKER")
         if mqtt_broker:
-            config.platforms[Platform.MQTT].extra["broker_host"] = mqtt_broker
+            config.platforms[Platform("mqtt")].extra["broker_host"] = mqtt_broker
         mqtt_ca_cert = os.getenv("MQTT_CA_CERT")
         if mqtt_ca_cert:
-            config.platforms[Platform.MQTT].extra["ca_cert"] = mqtt_ca_cert
+            config.platforms[Platform("mqtt")].extra["ca_cert"] = mqtt_ca_cert
 
     # Email
     email_addr = getenv("EMAIL_ADDRESS")

@@ -6,18 +6,16 @@ description: >
   MQTT broker adapter for Hermes Agent. Connects to an MQTT broker,
   subscribes to a configurable topic allowlist, and forwards each inbound
   message as a MessageEvent. Outbound messages publish to the topic provided
-  as chat_id. Built for Phoebe's existing MQTT mesh (Atlas broker, auth
-  required, optional TLS on 8883).
+  as chat_id. The adapter is observational by default — inbound events are
+  logged to a file rather than invoking the agent loop per event.
+  Set observational: false in extra to enable legacy agent-invoking behavior.
 
   Requires paho-mqtt. Configure via MQTT_USER / MQTT_PASSWORD env vars or
-  config.yaml platform extra. The adapter is observational by default —
-  inbound events are logged to a file rather than invoking the agent loop
-  per event. Set observational: false in extra to enable legacy
-  agent-invoking behavior.
+  config.yaml platform extra.
 
   MQTT has no native user-identity primitive; the adapter treats each topic
   as a channel and derives a nominal user_id from the first path segment.
-author: punchtaylor
+author: "PunchTaylor (@punchtaylor)"
 requires_env:
   - name: MQTT_USER
     description: "MQTT broker username"
@@ -29,7 +27,7 @@ requires_env:
     password: true
 optional_env:
   - name: MQTT_BROKER
-    description: "MQTT broker host (default: 192.168.1.212)"
+    description: "MQTT broker host (default: localhost)"
     prompt: "MQTT broker host"
     password: false
   - name: MQTT_CA_CERT

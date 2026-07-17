@@ -103,7 +103,7 @@ class MQTTAdapter(BasePlatformAdapter):
         self._broker_host: str = (
             os.getenv("MQTT_BROKER")
             or extra.get("broker_host")
-            or "192.168.1.212"
+            or "localhost"
         )
         self._username: str = config.token or os.getenv("MQTT_USER") or extra.get("username", "")
         self._password: str = os.getenv("MQTT_PASSWORD") or extra.get("password", "")
@@ -127,7 +127,7 @@ class MQTTAdapter(BasePlatformAdapter):
         ignore = extra.get("ignore_topics", [])
         self._ignore_topics: Set[str] = set(ignore) if isinstance(ignore, (list, tuple, set)) else set()
         # Always ignore our own publish prefix so we don't loop on send()
-        self._self_topic_prefix: str = extra.get("self_topic_prefix", "phoebe/hermes/")
+        self._self_topic_prefix: str = extra.get("self_topic_prefix", "hermes/")
 
         # Per-topic cooldown to prevent floods (chatty topics like presence/state
         # can fire many times per second; default 30s throttle is a reasonable
@@ -143,6 +143,7 @@ class MQTTAdapter(BasePlatformAdapter):
         # when it actually wakes up. Toggle off if you want the legacy
         # agent-invoking behavior (with send()-suppression preventing the loop).
         self._observational: bool = bool(extra.get("observational", True))
+        self._log_retained: bool = bool(extra.get("log_retained", False))
         log_default = (
             get_hermes_home()
             / f"mqtt-stream-{datetime.now().strftime('%Y-%m')}.md"
@@ -153,7 +154,7 @@ class MQTTAdapter(BasePlatformAdapter):
         )
 
         # Client identity for the broker
-        self._client_id: str = extra.get("client_id", "phoebe-hermes")
+        self._client_id: str = extra.get("client_id", "hermes-mqtt")
         self._keepalive: int = int(extra.get("keepalive", 60))
 
         # Connection state
@@ -295,7 +296,9 @@ class MQTTAdapter(BasePlatformAdapter):
             # delivered on subscription, not live events.
             is_retained = bool(getattr(msg, "retain", False))
 
-            # Cooldown to prevent floods on chatty topics
+            # Cooldown
+            if is_retained and not self._log_retained:
+                return to prevent floods on chatty topics
             if self._cooldown_seconds > 0:
                 now = time.time()
                 last = self._last_event_time.get(topic, 0.0)

@@ -52,8 +52,8 @@ import {
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
   resolveAuthMode,
-  resolveDisplayedRemoteAuthMode,
   resolveEnvRemoteAuth,
+  resolveInitialDisplayedRemoteAuthMode,
   resolveTestWsUrl,
   tokenPreview
 } from './connection-config'
@@ -5905,13 +5905,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   // resolved token auth and hide the session sign-in path.
   const remoteToken = effectiveRemoteToken(envOverride, envToken, decryptDesktopSecret(block.token))
   const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
-  let remoteAuthProbe = null
-
-  if (envOverride && !envToken && remoteUrl) {
-    remoteAuthProbe = await probeRemoteAuthMode(remoteUrl)
-  }
-
-  const authMode = resolveDisplayedRemoteAuthMode(envOverride, envToken, block.authMode, remoteAuthProbe)
+  const authMode = resolveInitialDisplayedRemoteAuthMode(envOverride, envToken, block.authMode)
 
   // The env override forces a plain remote connection. Otherwise reflect the
   // saved mode, preserving 'cloud' (a Hermes Cloud connection — Q6) so the UI

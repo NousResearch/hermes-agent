@@ -49,6 +49,8 @@ export function savedCloudConnectionUrl(config: Pick<GatewaySettingsState, 'mode
 }
 
 export function remoteAuthControlsVisible(config: Pick<GatewaySettingsState, 'mode' | 'envOverride'>): boolean {
+  // Environment overrides lock the URL/token fields but must not hide the
+  // session sign-in controls needed by tokenless remote URLs.
   return config.mode === 'remote'
 }
 

@@ -30,8 +30,8 @@ import {
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
   resolveAuthMode,
-  resolveDisplayedRemoteAuthMode,
   resolveEnvRemoteAuth,
+  resolveInitialDisplayedRemoteAuthMode,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   tokenPreview
@@ -277,33 +277,16 @@ test('effectiveRemoteToken never inherits a saved fallback token for an env-cont
   assert.equal(effectiveRemoteToken(false, '', 'saved-fallback-token'), 'saved-fallback-token')
 })
 
-test('resolveDisplayedRemoteAuthMode does not inherit saved auth for a tokenless env override', () => {
-  assert.equal(
-    resolveDisplayedRemoteAuthMode(true, '', 'token', {
-      reachable: false,
-      authMode: 'unknown',
-      error: 'connect ECONNREFUSED'
-    }),
-    'oauth'
-  )
+test('resolveInitialDisplayedRemoteAuthMode does not wait for a probe or inherit saved auth', () => {
+  assert.equal(resolveInitialDisplayedRemoteAuthMode(true, '', 'token'), 'oauth')
 })
 
-test('resolveDisplayedRemoteAuthMode prefers an explicit env token', () => {
-  assert.equal(resolveDisplayedRemoteAuthMode(true, ' env-token ', 'oauth'), 'token')
+test('resolveInitialDisplayedRemoteAuthMode prefers an explicit env token', () => {
+  assert.equal(resolveInitialDisplayedRemoteAuthMode(true, ' env-token ', 'oauth'), 'token')
 })
 
-test('resolveDisplayedRemoteAuthMode uses a reachable token-auth gateway probe', () => {
-  assert.equal(
-    resolveDisplayedRemoteAuthMode(true, '', 'oauth', {
-      reachable: true,
-      authMode: 'token'
-    }),
-    'token'
-  )
-})
-
-test('resolveDisplayedRemoteAuthMode preserves saved auth without an env override', () => {
-  assert.equal(resolveDisplayedRemoteAuthMode(false, '', 'oauth'), 'oauth')
+test('resolveInitialDisplayedRemoteAuthMode preserves saved auth without an env override', () => {
+  assert.equal(resolveInitialDisplayedRemoteAuthMode(false, '', 'oauth'), 'oauth')
 })
 
 test('resolveEnvRemoteAuth uses the advertised session flow when URL is set without a token', () => {

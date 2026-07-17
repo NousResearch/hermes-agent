@@ -138,6 +138,14 @@ def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
             continue
         issues.extend(validate_mcp_server_entry(name, cfg))
 
+    # Scope advisories are non-fatal: an unknown `scope` is normalized to
+    # "main" at registration time, not rejected. Surface them for the user
+    # without blocking the save (#LaneE subagent_only scope).
+    from hermes_cli.mcp_security import validate_mcp_scope as _validate_scope
+    for name, cfg in servers.items():
+        for adv in _validate_scope(name, cfg):
+            logger.warning(adv)
+
     if issues:
         return False, issues
 

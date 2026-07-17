@@ -21,6 +21,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem
 } from '@/components/ui/sidebar'
+import { TipKeybindLabel } from '@/components/ui/tooltip'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -30,6 +31,7 @@ import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $cronJobs } from '@/store/cron'
+import { $bindings } from '@/store/keybinds'
 import {
   $dismissedAutoProjectIds,
   $panesFlipped,
@@ -138,23 +140,35 @@ import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 const NON_SESSION_INITIAL_ROWS = 3
 const NON_SESSION_LOAD_STEP = 10
 
-const NEW_SESSION_KBD = comboTokens('mod+n')
-
 const SIDEBAR_NAV: SidebarNavItem[] = [
   {
     id: 'new-session',
     label: '',
     icon: props => <Codicon name="robot" {...props} />,
-    action: 'new-session'
+    action: 'new-session',
+    keybindActionId: 'session.new'
   },
   {
     id: 'skills',
     label: '',
     icon: props => <Codicon name="symbol-misc" {...props} />,
-    route: SKILLS_ROUTE
+    route: SKILLS_ROUTE,
+    keybindActionId: 'nav.skills'
   },
-  { id: 'messaging', label: '', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
-  { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
+  {
+    id: 'messaging',
+    label: '',
+    icon: props => <Codicon name="comment" {...props} />,
+    route: MESSAGING_ROUTE,
+    keybindActionId: 'nav.messaging'
+  },
+  {
+    id: 'artifacts',
+    label: '',
+    icon: props => <Codicon name="files" {...props} />,
+    route: ARTIFACTS_ROUTE,
+    keybindActionId: 'nav.artifacts'
+  }
 ]
 
 // Two modes via the `compact` height variant (styles.css):
@@ -313,6 +327,8 @@ export function ChatSidebar({
   const currentCwd = useStore($currentCwd)
   const gatewayState = useStore($gatewayState)
   const dismissedAutoProjects = useStore($dismissedAutoProjectIds)
+  const newSessionCombo = useStore($bindings)['session.new']?.[0]
+  const newSessionKbd = newSessionCombo ? comboTokens(newSessionCombo) : []
   const [searchQuery, setSearchQuery] = useState('')
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
   const [searchPending, setSearchPending] = useState(false)
@@ -1123,7 +1139,15 @@ export function ChatSidebar({
 
                       onNavigate(item)
                     }}
-                    tooltip={s.nav[item.id] ?? item.label}
+                    tooltip={
+                      item.keybindActionId
+                        ? {
+                            children: (
+                              <TipKeybindLabel actionId={item.keybindActionId} text={s.nav[item.id] ?? item.label} />
+                            )
+                          }
+                        : (s.nav[item.id] ?? item.label)
+                    }
                     type="button"
                   >
                     <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
@@ -1131,7 +1155,7 @@ export function ChatSidebar({
                     {isNewSession && (
                       <KbdGroup
                         className={cn('ml-auto opacity-55', newSessionKbdFlash && 'opacity-100!')}
-                        keys={[...NEW_SESSION_KBD]}
+                        keys={newSessionKbd}
                         size="sm"
                       />
                     )}

@@ -543,14 +543,12 @@ def _write_through_provider_state_to_global_root(
             except Exception:
                 return
     try:
-        if global_path.exists():
-            global_store = _load_auth_store(global_path)
-        else:
-            global_store = {}
-        if not isinstance(global_store, dict):
-            return
-        _store_provider_state(global_store, provider_id, dict(state), set_active=False)
-        auth_mod._save_auth_store(global_store, global_path)
+        auth_mod._persist_provider_state_to_store(
+            provider_id,
+            state,
+            global_path,
+            set_active=False,
+        )
     except Exception as exc:  # pragma: no cover - best effort
         logger.debug(
             "%s pool refresh: write-through to global root failed: %s",
@@ -826,6 +824,45 @@ class CredentialPool:
             logger.debug("Failed to sync xAI OAuth entry from auth.json: %s", exc)
         return entry
 
+    def _sync_xai_oauth_entry_from_pool_store(
+        self, entry: PooledCredential
+    ) -> PooledCredential:
+        """Adopt a token pair rotated by another pool instance.
+
+        Direct xAI integrations load a fresh ``CredentialPool`` for each
+        request. Their in-memory locks therefore cannot protect xAI's
+        single-use refresh token across concurrent requests or processes.
+        This helper is called while the shared auth-store lock is held and
+        re-reads the exact persisted row before a refresh POST is attempted.
+        """
+        if self.provider != "xai-oauth":
+            return entry
+        try:
+            persisted = next(
+                (
+                    payload
+                    for payload in read_credential_pool(self.provider)
+                    if isinstance(payload, dict) and payload.get("id") == entry.id
+                ),
+                None,
+            )
+            if not isinstance(persisted, dict):
+                return entry
+            stored = PooledCredential.from_dict(self.provider, persisted)
+            if (
+                stored.access_token != entry.access_token
+                or stored.refresh_token != entry.refresh_token
+            ):
+                logger.debug(
+                    "Pool entry %s: adopting xAI OAuth tokens rotated by another pool instance",
+                    entry.id,
+                )
+                self._replace_entry(entry, stored)
+                return stored
+        except Exception as exc:
+            logger.debug("Failed to sync xAI OAuth entry from credential pool: %s", exc)
+        return entry
+
     def _sync_nous_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync a Nous pool entry from auth.json if tokens differ.
 
@@ -1019,30 +1056,57 @@ class CredentialPool:
                 self._mark_exhausted(entry, None)
             return None
 
-        # Codex OAuth refresh tokens are single-use.  The sync→POST→write-back
-        # sequence below must run atomically across Hermes processes: otherwise
-        # two processes can both adopt the same on-disk token, both POST it, and
-        # the loser gets ``refresh_token_reused``.  Serialize the whole sequence
-        # through the shared cross-process auth-store flock (the same lock and
-        # extended-timeout pattern used by resolve_codex_runtime_credentials()).
-        # When a waiter finally acquires the lock, the in-lock re-sync below
-        # picks up the rotated token the winner persisted and skips the POST.
-        if self.provider == "openai-codex":
-            refresh_timeout_seconds = auth_mod.env_float(
-                "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20
+        # Codex and xAI OAuth refresh tokens are single-use.  The
+        # sync→POST→write-back sequence below must run atomically across Hermes
+        # processes: otherwise two processes can both adopt the same on-disk
+        # token, both POST it, and the loser gets ``refresh_token_reused``.
+        # Serialize the whole sequence through the shared cross-process
+        # auth-store flock (the same lock and extended-timeout pattern used by
+        # resolve_codex_runtime_credentials()).  When a waiter finally acquires
+        # the lock, the in-lock re-sync below picks up the rotated token the
+        # winner persisted and skips the POST.
+        if self.provider in ("openai-codex", "xai-oauth"):
+            sync_entry = (
+                self._sync_codex_entry_from_auth_store
+                if self.provider == "openai-codex"
+                else self._sync_xai_oauth_entry_from_pool_store
             )
-            lock_timeout = max(
-                float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS),
-                float(refresh_timeout_seconds) + 5.0,
-            )
-            with _auth_store_lock(timeout_seconds=lock_timeout):
-                synced = self._sync_codex_entry_from_auth_store(entry)
-                if synced is not entry:
-                    entry = synced
-                    if not force and not self._entry_needs_refresh(entry):
-                        return entry
-                return self._refresh_entry_impl(entry, force=force)
+            with _auth_store_lock(
+                timeout_seconds=self._single_use_refresh_lock_timeout()
+            ):
+                synced = sync_entry(entry)
+                if self.provider == "openai-codex":
+                    if synced is not entry:
+                        entry = synced
+                        if not force and not self._entry_needs_refresh(entry):
+                            return entry
+                    return self._refresh_entry_impl(entry, force=force)
+                if (
+                    synced.access_token != entry.access_token
+                    or synced.refresh_token != entry.refresh_token
+                ):
+                    return synced
+                return self._refresh_entry_impl(synced, force=force)
         return self._refresh_entry_impl(entry, force=force)
+
+    def _single_use_refresh_lock_timeout(self) -> float:
+        """Lock timeout for single-use-refresh-token providers.
+
+        Covers the configured refresh POST timeout plus a margin so a slow
+        token endpoint cannot make the flock give up before the refresh
+        resolves.  Reads the provider's ``HERMES_*_REFRESH_TIMEOUT_SECONDS``
+        override.
+        """
+        env_var = (
+            "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS"
+            if self.provider == "openai-codex"
+            else "HERMES_XAI_REFRESH_TIMEOUT_SECONDS"
+        )
+        refresh_timeout_seconds = auth_mod.env_float(env_var, 20)
+        return max(
+            float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS),
+            float(refresh_timeout_seconds) + 5.0,
+        )
 
     def _refresh_entry_impl(
         self, entry: PooledCredential, *, force: bool
@@ -1540,8 +1604,8 @@ class CredentialPool:
             self._persist(removed_ids=entries_to_prune)
         return available
 
-    def _select_unlocked(self) -> Optional[PooledCredential]:
-        available = self._available_entries(clear_expired=True, refresh=True)
+    def _select_unlocked(self, *, refresh: bool = True) -> Optional[PooledCredential]:
+        available = self._available_entries(clear_expired=True, refresh=refresh)
         if not available:
             self._current_id = None
             logger.info("credential pool: no available entries (all exhausted or empty)")
@@ -1668,6 +1732,35 @@ class CredentialPool:
 
     def try_refresh_current(self) -> Optional[PooledCredential]:
         with self._lock:
+            return self._try_refresh_current_unlocked()
+
+    def try_refresh_matching(
+        self, api_key_hint: Optional[str] = None
+    ) -> Optional[PooledCredential]:
+        """Force-refresh the entry that supplied ``api_key_hint``.
+
+        Direct provider integrations may reload the pool after a request has
+        already failed, so they cannot rely on ``current_id`` identifying the
+        issuing credential. With no hint, select an entry without first doing
+        the normal proactive refresh; the forced refresh below must consume a
+        rotating refresh token exactly once.
+        """
+        with self._lock:
+            entry = None
+            if api_key_hint:
+                entry = next(
+                    (
+                        candidate
+                        for candidate in self._entries
+                        if candidate.runtime_api_key == api_key_hint
+                    ),
+                    None,
+                )
+            else:
+                entry = self.current() or self._select_unlocked(refresh=False)
+            if entry is None:
+                return None
+            self._current_id = entry.id
             return self._try_refresh_current_unlocked()
 
     def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:

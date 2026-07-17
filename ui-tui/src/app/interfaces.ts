@@ -174,6 +174,7 @@ export interface UiState {
 
   sections: SectionVisibility
   sessionTitle: string
+  showCost: boolean
   showReasoning: boolean
   indicatorStyle: IndicatorStyle
   sid: null | string

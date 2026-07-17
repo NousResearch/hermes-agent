@@ -315,9 +315,12 @@ export interface SessionUndoResponse {
 }
 
 export interface SessionUsageResponse {
+  active_shells?: number
   active_subagents?: number
   cache_read?: number
   cache_write?: number
+  last_prompt?: number
+  session_cache_read?: number
   calls?: number
   compressions?: number
   context_max?: number

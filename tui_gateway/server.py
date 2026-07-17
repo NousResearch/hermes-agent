@@ -3243,7 +3243,22 @@ def _get_usage(agent) -> dict:
         "completion": g("session_completion_tokens"),
         "total": g("session_total_tokens"),
         "calls": g("session_api_calls"),
+        # Claude-style status-bar fields. Prefer last-call cache/prompt so
+        # hit% matches the latest API usage line (cache=R/prompt), not the
+        # cumulative session sum.
+        "cache_read": int(getattr(agent, "last_cache_read_tokens", 0) or 0),
+        "cache_write": int(getattr(agent, "last_cache_write_tokens", 0) or 0),
+        "session_cache_read": int(getattr(agent, "session_cache_read_tokens", 0) or 0),
+        "last_prompt": int(getattr(agent, "last_prompt_tokens", 0) or 0),
+        "cost_usd": float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0),
+        "cost_status": getattr(agent, "session_cost_status", None) or "unknown",
     }
+    # Fallback only when last-call is missing but session has cache history
+    # (e.g. restored agent mid-session without last_* fields).
+    if not usage["cache_read"]:
+        usage["cache_read"] = int(getattr(agent, "session_cache_read_tokens", 0) or 0)
+    if not usage["cache_write"]:
+        usage["cache_write"] = int(getattr(agent, "session_cache_write_tokens", 0) or 0)
     comp = getattr(agent, "context_compressor", None)
     if comp:
         # context_used is the *current-window* occupancy. Do NOT fall back to
@@ -3278,6 +3293,12 @@ def _get_usage(agent) -> dict:
     try:
         from tools.async_delegation import active_count as _async_active_count
         usage["active_subagents"] = _async_active_count()
+    except Exception:
+        pass
+    # Background shell / terminal processes (Claude Code "N shells").
+    try:
+        from tools.process_registry import process_registry
+        usage["active_shells"] = int(process_registry.count_running() or 0)
     except Exception:
         pass
     # Dev-only live credits-spent readout (L0 usage-aware-credits). Gated on

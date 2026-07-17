@@ -11,7 +11,7 @@ import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
-import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
+import { buildSubagentTree, fmtCost, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
@@ -374,8 +374,60 @@ const shortModelLabel = (model: string) =>
     .replace(/\b(\d+)\s+(\d+)\b/g, '$1.$2')
     .trim()
 
-const modelLabel = (model: string, effort?: string, fast?: boolean) =>
-  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+const modelLabel = (model: string, effort?: string, fast?: boolean) => {
+  const core = shortModelLabel(model)
+  const bracketed = core ? `[${core}]` : ''
+  return [bracketed, effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+}
+
+/**
+ * Claude-style cache line.
+ * Full:  `cache R=134k(96%) fresh=5k`
+ * Compact (narrow): `R=134k(96%)`
+ *
+ * Hit% uses last API prompt size (preferred) so it matches the backend
+ * log line `cache=R/prompt (N%)`, not the cumulative session sum.
+ */
+export const formatCacheFresh = (usage: Usage, compact = false): string => {
+  const cacheRead = Math.max(0, Number(usage.cache_read ?? 0) || 0)
+  if (cacheRead <= 0) {
+    return ''
+  }
+
+  // Denominator priority: last API prompt → context_used → cache_read itself.
+  const lastPrompt = Math.max(0, Number(usage.last_prompt ?? 0) || 0)
+  const ctxUsed = Math.max(0, Number(usage.context_used ?? 0) || 0)
+  const denom = lastPrompt > 0 ? lastPrompt : ctxUsed > 0 ? ctxUsed : cacheRead
+  const hit = Math.max(0, Math.min(100, Math.round((cacheRead / denom) * 100)))
+  const freshBase = lastPrompt > 0 ? lastPrompt : ctxUsed
+  const fresh = freshBase > 0 ? Math.max(0, freshBase - cacheRead) : 0
+
+  if (compact) {
+    return `R=${fmtK(cacheRead)}(${hit}%)`
+  }
+
+  const pieces = [`cache R=${fmtK(cacheRead)}(${hit}%)`]
+  if (freshBase > 0) {
+    pieces.push(`fresh=${fmtK(fresh)}`)
+  }
+  return pieces.join(' ')
+}
+
+/** Claude-like dollar amount with up to 3 decimals for larger sessions. */
+export const formatStatusCost = (usd?: number): string => {
+  if (usd == null || !Number.isFinite(usd) || usd <= 0) {
+    return ''
+  }
+  if (usd < 0.01) {
+    return '<$0.01'
+  }
+  // Prefer existing compact helper under $10; 3dp above that (Claude shows $127.093).
+  if (usd < 10) {
+    return fmtCost(usd)
+  }
+  // 3dp max (Claude shows $127.093); strip trailing zeros: 12.5 not 12.500
+  return `$${Number(usd.toFixed(3))}`
+}
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
@@ -418,8 +470,10 @@ export function StatusRule({
   lastTurnEndedAt,
   liveSessionCount,
   sessionStartedAt,
+  showCost = false,
   turnStartedAt,
   voiceLabel,
+  yolo = false,
   onSessionCountClick,
   t
 }: StatusRuleProps) {
@@ -439,6 +493,11 @@ export function StatusRule({
 
   const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  // Cache hit is high-signal — prefer full form, fall back to compact so it
+  // still appears on medium-width terminals instead of being shed as tail.
+  const cacheFull = formatCacheFresh(usage, false)
+  const cacheCompact = formatCacheFresh(usage, true)
+  const cachePinned = cacheCompact
 
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
@@ -468,7 +527,9 @@ export function StatusRule({
     slotWidth +
     stringWidth(' │ ') +
     stringWidth(modelText) +
-    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
+    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0) +
+    // Pin compact cache hit (`R=134k(96%)`) so it is not dropped by tail budget.
+    (cachePinned ? stringWidth(' │ ') + stringWidth(cachePinned) : 0)
 
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel, essentialWidth)
 
@@ -502,6 +563,24 @@ export function StatusRule({
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
 
+  // Decide cache BEFORE other tail segments so full form can claim budget first.
+  let cacheFreshText = ''
+  let showCache = false
+  if (cacheFull) {
+    const fullW = SEP + stringWidth(cacheFull)
+    const compactW = cacheCompact ? SEP + stringWidth(cacheCompact) : 0
+    // Compact width is already reserved in essentialWidth; only need extra
+    // budget to upgrade full = max(0, fullW - compactW).
+    const upgrade = Math.max(0, fullW - compactW)
+    if (upgrade === 0 || fits(upgrade)) {
+      cacheFreshText = cacheFull
+      showCache = true
+    } else {
+      cacheFreshText = cacheCompact
+      showCache = true
+    }
+  }
+
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
 
@@ -528,6 +607,19 @@ export function StatusRule({
     subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
 
   const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
+  // Claude-style cost / permissions / shells (cache decided above).
+  const costText = showCost ? formatStatusCost(usage.cost_usd) : ''
+  const permsText = yolo ? 'bypass permissions on' : ''
+  const shellCount =
+    typeof usage.active_shells === 'number' && usage.active_shells > 0
+      ? usage.active_shells
+      : 0
+  const shellsText = shellCount > 0 ? `${shellCount} shell${shellCount === 1 ? '' : 's'}` : ''
+
+  const showCostSeg = !!costText && fits(SEP + stringWidth(costText))
+  const showPerms = !!permsText && fits(SEP + stringWidth(permsText))
+  const showShells = !!shellsText && fits(SEP + stringWidth(shellsText))
+
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
@@ -589,11 +681,35 @@ export function StatusRule({
               {ctxLabel}
             </Text>
           ) : null}
+          {showCache ? (
+            <Text color={t.color.accent} wrap="truncate-end">
+              {' │ '}
+              {cacheFreshText}
+            </Text>
+          ) : null}
         </Box>
         {showBar ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
+          </Text>
+        ) : null}
+        {showCostSeg ? (
+          <Text color={t.color.accent} wrap="truncate-end">
+            {' │ '}
+            {costText}
+          </Text>
+        ) : null}
+        {showPerms ? (
+          <Text color={t.color.warn} wrap="truncate-end">
+            {' │ '}
+            {permsText}
+          </Text>
+        ) : null}
+        {showShells ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {shellsText}
           </Text>
         ) : null}
         {showDuration ? (
@@ -782,12 +898,16 @@ interface StatusRuleProps {
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
   sessionStartedAt?: null | number
+  /** When true, render estimated session $ cost (display.show_cost). */
+  showCost?: boolean
   status: string
   statusColor: string
   t: Theme
   turnStartedAt?: null | number
   usage: Usage
   voiceLabel?: string
+  /** Effective approval bypass (YOLO / approvals.mode=off). */
+  yolo?: boolean
   onSessionCountClick?: () => void
 }
 

@@ -132,6 +132,7 @@ describe('StatusRule background-subagent indicator', () => {
   it('spells out the auto-resume hint when idle with subagents in flight', () => {
     const element = StatusRule({
       ...baseProps,
+      cols: 140,
       usage: { ...baseProps.usage, active_subagents: 1 }
     })
 
@@ -141,6 +142,7 @@ describe('StatusRule background-subagent indicator', () => {
   it('pluralizes the resume hint for multiple in-flight subagents', () => {
     const element = StatusRule({
       ...baseProps,
+      cols: 140,
       usage: { ...baseProps.usage, active_subagents: 3 }
     })
 
@@ -419,5 +421,65 @@ describe('StatusRule idle-since read-out', () => {
     })
 
     expect(findComponentByName(element, 'IdleSince')).toBeNull()
+  })
+})
+
+describe('StatusRule Claude-style status extras', () => {
+  it('renders cache/fresh, cost, permissions, and shells when provided', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 160,
+      showCost: true,
+      yolo: true,
+      usage: {
+        ...baseProps.usage,
+        cache_read: 134_000,
+        last_prompt: 139_000,
+        context_used: 139_000,
+        context_max: 200_000,
+        context_percent: 70,
+        cost_usd: 127.093,
+        active_shells: 3
+      }
+    })
+
+    const rendered = textContent(element)
+    expect(rendered).toContain('cache R=')
+    expect(rendered).toContain('fresh=')
+    expect(rendered).toContain('$127.093')
+    expect(rendered).toContain('bypass permissions on')
+    expect(rendered).toContain('3 shells')
+    expect(rendered).toContain('[opus 4.8]')
+  })
+
+  it('hides cost when showCost is false', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 160,
+      showCost: false,
+      usage: { ...baseProps.usage, cost_usd: 12.5 }
+    })
+    expect(textContent(element)).not.toContain('$12')
+  })
+})
+
+describe('StatusRule cache hit pinning', () => {
+  it('always shows compact cache hit on medium width', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 72,
+      usage: {
+        ...baseProps.usage,
+        cache_read: 71_168,
+        last_prompt: 71_614,
+        context_used: 71_614,
+        context_max: 200_000,
+        context_percent: 36
+      }
+    })
+    const rendered = textContent(element)
+    // Compact form must appear even when full "cache R=… fresh=…" is too wide.
+    expect(rendered).toMatch(/R=.*\(/)
+    expect(rendered).toContain('%')
   })
 })

@@ -16,8 +16,7 @@ interface CompleteOptions {
   maxPollFailures?: number
 }
 
-const defaultSleep = (milliseconds: number) =>
-  new Promise<void>(resolve => window.setTimeout(resolve, milliseconds))
+const defaultSleep = (milliseconds: number) => new Promise<void>(resolve => window.setTimeout(resolve, milliseconds))
 
 export async function completeMcpDesktopOAuth({
   serverName,

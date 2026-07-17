@@ -362,6 +362,187 @@ class TestQueueConsumptionAfterCompletion:
         assert collected == texts
 
 
+class TestExplicitQueueManagement:
+    """Owner-scoped management over the existing slot + overflow FIFO."""
+
+    @staticmethod
+    def _event(
+        text: str,
+        *,
+        queue_id: str | None = None,
+        owner: str | None = None,
+        media_urls: list[str] | None = None,
+    ) -> MessageEvent:
+        metadata = {}
+        if queue_id is not None:
+            metadata["_hermes_explicit_queue"] = {
+                "id": queue_id,
+                "owner_user_id": owner,
+                "created_at": "2026-07-17T00:00:00+00:00",
+                "origin": "explicit",
+            }
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.DOCUMENT if media_urls else MessageType.TEXT,
+            source=MagicMock(),
+            message_id=f"m-{text}",
+            media_urls=list(media_urls or []),
+            media_types=["application/octet-stream"] if media_urls else [],
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _runner():
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._queued_events = {}
+        runner._running_agents = {}
+        return runner
+
+    def test_snapshot_and_replace_rebuild_slot_plus_overflow_without_reordering(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:user:managed"
+        other_key = "telegram:user:other"
+        events = [
+            self._event("head", queue_id="q-head", owner="alice"),
+            self._event("ordinary"),
+            self._event("tail", queue_id="q-tail", owner="alice"),
+        ]
+        other = self._event("other-session")
+        for event in events:
+            runner._enqueue_fifo(session_key, event, adapter)
+        runner._enqueue_fifo(other_key, other, adapter)
+
+        snapshot = runner._snapshot_fifo_events(session_key, adapter)
+        assert snapshot == events
+
+        runner._replace_fifo_events(session_key, adapter, snapshot[1:])
+
+        assert adapter._pending_messages[session_key] is events[1]
+        assert runner._queued_events[session_key] == [events[2]]
+        assert adapter._pending_messages[other_key] is other
+
+    def test_list_returns_only_calling_owner_explicit_items_in_owner_order(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:shared:list"
+        events = [
+            self._event("alice first", queue_id="q-a1", owner="alice"),
+            self._event("ordinary"),
+            self._event("bob secret", queue_id="q-b1", owner="bob"),
+            self._event("ping @everyone", queue_id="q-a2", owner="alice"),
+        ]
+        for event in events:
+            runner._enqueue_fifo(session_key, event, adapter)
+
+        items = runner._list_owned_explicit_queue_items(
+            session_key, "alice", adapter=adapter
+        )
+
+        assert [item["id"] for item in items] == ["q-a1", "q-a2"]
+        assert [item["position"] for item in items] == [1, 2]
+        assert all("owner_user_id" not in item for item in items)
+        assert all("media_urls" not in item for item in items)
+        assert all("bob secret" not in str(item) for item in items)
+        assert "@everyone" not in items[1]["preview"]
+
+    def test_remove_head_promotes_next_event_and_preserves_other_items(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:shared:remove"
+        head = self._event("alice", queue_id="q-a", owner="alice")
+        ordinary = self._event("ordinary")
+        other_owner = self._event("bob", queue_id="q-b", owner="bob")
+        tail = self._event("alice tail", queue_id="q-a2", owner="alice")
+        for event in (head, ordinary, other_owner, tail):
+            runner._enqueue_fifo(session_key, event, adapter)
+
+        assert runner._remove_owned_explicit_queue_item(
+            session_key, "alice", "q-a", adapter=adapter
+        ) is True
+
+        assert runner._snapshot_fifo_events(session_key, adapter) == [
+            ordinary,
+            other_owner,
+            tail,
+        ]
+        assert adapter._pending_messages[session_key] is ordinary
+        assert runner._remove_owned_explicit_queue_item(
+            session_key, "alice", "q-a", adapter=adapter
+        ) is False
+        assert runner._remove_owned_explicit_queue_item(
+            session_key, "alice", "q-b", adapter=adapter
+        ) is False
+
+    def test_clear_removes_only_owner_explicit_items_and_keeps_exact_order(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:shared:clear"
+        alice_head = self._event("a1", queue_id="q-a1", owner="alice")
+        ordinary = self._event("ordinary")
+        bob = self._event("b1", queue_id="q-b1", owner="bob")
+        identity_less = self._event("anon", queue_id="q-anon", owner=None)
+        alice_tail = self._event("a2", queue_id="q-a2", owner="alice")
+        for event in (alice_head, ordinary, bob, identity_less, alice_tail):
+            runner._enqueue_fifo(session_key, event, adapter)
+
+        removed = runner._clear_owned_explicit_queue_items(
+            session_key, "alice", adapter=adapter
+        )
+
+        assert removed == 2
+        assert runner._snapshot_fifo_events(session_key, adapter) == [
+            ordinary,
+            bob,
+            identity_less,
+        ]
+
+    def test_missing_owner_cannot_list_remove_or_clear_but_submission_survives(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:anonymous"
+        event = self._event("anonymous", queue_id="q-anon", owner=None)
+        runner._enqueue_fifo(session_key, event, adapter)
+
+        assert runner._list_owned_explicit_queue_items(
+            session_key, None, adapter=adapter
+        ) == []
+        assert runner._remove_owned_explicit_queue_item(
+            session_key, None, "q-anon", adapter=adapter
+        ) is False
+        assert runner._clear_owned_explicit_queue_items(
+            session_key, None, adapter=adapter
+        ) == 0
+        assert runner._snapshot_fifo_events(session_key, adapter) == [event]
+
+    def test_clear_does_not_interrupt_or_delete_queued_media(self, tmp_path):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:user:media"
+        media_path = tmp_path / "queued.bin"
+        media_path.write_bytes(b"queued-media")
+        event = self._event(
+            "media",
+            queue_id="q-media",
+            owner="alice",
+            media_urls=[str(media_path)],
+        )
+        runner._enqueue_fifo(session_key, event, adapter)
+        adapter._active_sessions[session_key] = asyncio.Event()
+        running_agent = MagicMock()
+        runner._running_agents[session_key] = running_agent
+
+        assert runner._clear_owned_explicit_queue_items(
+            session_key, "alice", adapter=adapter
+        ) == 1
+
+        running_agent.interrupt.assert_not_called()
+        assert not adapter._active_sessions[session_key].is_set()
+        assert media_path.read_bytes() == b"queued-media"
+
+
 class TestBusyInputModeQueueFifo:
     """Regression coverage for issue #28503.
 

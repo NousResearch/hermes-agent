@@ -4179,6 +4179,30 @@ class DiscordAdapter(BasePlatformAdapter):
         # Role allowlist is only consulted when configured.
         if not has_roles:
             return False
+        return self._has_allowed_role(
+            user_id,
+            author=author,
+            guild=guild,
+            is_dm=is_dm,
+        )
+
+    def _has_allowed_role(
+        self,
+        user_id: str,
+        *,
+        author=None,
+        guild=None,
+        is_dm: bool = False,
+    ) -> bool:
+        """Return whether the concrete Discord member matches an allowed role.
+
+        Native slash interactions require the same specific role evidence as
+        ordinary messages before the gateway can honor ``role_authorized``.
+        Presence of a role allowlist alone is not authorization.
+        """
+        allowed_roles = getattr(self, "_allowed_role_ids", set())
+        if not allowed_roles:
+            return False
 
         # DM path: roles require explicit opt-in via
         # ``discord.dm_role_auth_guild`` in config.yaml. Without this, a
@@ -4186,9 +4210,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # bot and bypass the allowlist (cross-guild leakage).
         if is_dm or guild is None:
             dm_guild_id = _read_dm_role_auth_guild()
-            if dm_guild_id is None:
-                return False
-            if self._client is None:
+            if dm_guild_id is None or self._client is None:
                 return False
             dm_guild = self._client.get_guild(dm_guild_id)
             if dm_guild is None:
@@ -4197,18 +4219,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 uid_int = int(user_id)
             except (TypeError, ValueError):
                 return False
-            m = dm_guild.get_member(uid_int)
-            if m is None:
+            member = dm_guild.get_member(uid_int)
+            if member is None:
                 return False
-            m_roles = getattr(m, "roles", None) or []
-            return any(getattr(r, "id", None) in allowed_roles for r in m_roles)
+            member_roles = getattr(member, "roles", None) or []
+            return any(getattr(role, "id", None) in allowed_roles for role in member_roles)
 
         # Guild path: role check is scoped to THIS guild only.
         # 1) Prefer the direct Member object passed in (correct guild by construction).
         direct_roles = getattr(author, "roles", None) if author is not None else None
         author_guild = getattr(author, "guild", None)
         if direct_roles and (author_guild is None or author_guild.id == guild.id):
-            if any(getattr(r, "id", None) in allowed_roles for r in direct_roles):
+            if any(getattr(role, "id", None) in allowed_roles for role in direct_roles):
                 return True
         # 2) Fallback: resolve the Member in the message's guild only — NEVER
         #    scan other mutual guilds (that is the cross-guild bypass bug).
@@ -4216,11 +4238,11 @@ class DiscordAdapter(BasePlatformAdapter):
             uid_int = int(user_id)
         except (TypeError, ValueError):
             return False
-        m = guild.get_member(uid_int)
-        if m is None:
+        member = guild.get_member(uid_int)
+        if member is None:
             return False
-        m_roles = getattr(m, "roles", None) or []
-        return any(getattr(r, "id", None) in allowed_roles for r in m_roles)
+        member_roles = getattr(member, "roles", None) or []
+        return any(getattr(role, "id", None) in allowed_roles for role in member_roles)
 
     def _warn_if_fail_closed_default(self) -> None:
         """Log once when Discord is rejecting traffic with no allowlist set."""
@@ -4869,6 +4891,167 @@ class DiscordAdapter(BasePlatformAdapter):
             return content
         return convert_table_to_bullets(content)
 
+    async def _dispatch_queue_manager_action(
+        self,
+        interaction: discord.Interaction,
+        typed_command: str,
+        action: str,
+        queue_id: Optional[str] = None,
+        *,
+        queue_ids: Optional[List[str]] = None,
+        session_key: Optional[str] = None,
+    ) -> Any:
+        """Dispatch one native queue-manager action through the gateway handler.
+
+        This deliberately bypasses :meth:`handle_message`, which would run the
+        adapter's busy/session delivery path and could post a gateway response.
+        Calling the registered handler directly still enters
+        ``GatewayRunner._handle_message``, preserving user authorization and
+        canonical slash-access checks for every manager interaction.
+        """
+        if self._message_handler is None:
+            raise RuntimeError("Discord queue manager requires a gateway message handler")
+
+        event = self._build_slash_event(interaction, typed_command)
+        marker: Dict[str, Any] = {"action": action}
+        if queue_id is not None:
+            marker["queue_id"] = str(queue_id)
+        if queue_ids is not None:
+            marker["queue_ids"] = [str(item) for item in queue_ids]
+        if session_key is not None:
+            marker["session_key"] = session_key
+        metadata = dict(event.metadata or {})
+        metadata["_hermes_native_discord_queue_management"] = marker
+        event.metadata = metadata
+        return await self._message_handler(event)
+
+    @staticmethod
+    def _queue_manager_items(result: Any) -> List[Dict[str, Any]]:
+        """Validate and project the gateway's structured list response."""
+        if not (
+            isinstance(result, dict)
+            and result.get("type") == "queue_management"
+            and result.get("action") == "list"
+            and result.get("ok") is True
+        ):
+            raise RuntimeError("Invalid queue manager list response")
+        raw_items = result.get("items")
+        if not isinstance(raw_items, list):
+            raise RuntimeError("Invalid queue manager item list")
+
+        safe_items: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for raw_item in raw_items:
+            if not isinstance(raw_item, dict):
+                continue
+            queue_id = raw_item.get("id") or raw_item.get("queue_id")
+            queue_id = str(queue_id or "").strip()
+            if not queue_id or queue_id in seen_ids:
+                continue
+            seen_ids.add(queue_id)
+            safe_items.append(
+                {
+                    "queue_id": queue_id,
+                    "preview": str(raw_item.get("preview") or ""),
+                    "has_media": bool(raw_item.get("has_media")),
+                    "created_at": raw_item.get("created_at"),
+                }
+            )
+        return safe_items
+
+    @staticmethod
+    def _queue_manager_session_key(result: Any) -> str:
+        """Read the private session continuity token from a list response."""
+        if not isinstance(result, dict):
+            raise RuntimeError("Invalid queue manager session response")
+        session_key = result.get("session_key")
+        if not isinstance(session_key, str) or not session_key:
+            raise RuntimeError("Invalid queue manager session key")
+        return session_key
+
+    def _queue_manager_allowed_mentions(self) -> Any:
+        """Keep all queue-manager interaction output mention-safe."""
+        return discord.AllowedMentions.none()
+
+    async def _open_queue_manager_slash(
+        self,
+        interaction: discord.Interaction,
+        typed_command: str,
+    ) -> None:
+        """Open the native queue manager without posting in the channel."""
+        if not await self._check_slash_authorization(interaction, typed_command):
+            return
+
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception as exc:
+            if not self._is_discord_unknown_interaction(exc):
+                raise
+            logger.warning(
+                "[Discord] %s queue manager: interaction expired before defer; "
+                "aborting without reading queue state.",
+                typed_command,
+            )
+            return
+
+        try:
+            result = await self._dispatch_queue_manager_action(
+                interaction, typed_command, "list"
+            )
+        except Exception:
+            logger.exception("[Discord] Failed to open private queue manager")
+            try:
+                await interaction.edit_original_response(
+                    content="Queue manager is temporarily unavailable.",
+                    view=None,
+                    allowed_mentions=self._queue_manager_allowed_mentions(),
+                )
+            except Exception:
+                logger.debug(
+                    "[Discord] Failed to edit unavailable queue manager response",
+                    exc_info=True,
+                )
+            return
+
+        if isinstance(result, str):
+            await interaction.edit_original_response(
+                content=result,
+                view=None,
+                allowed_mentions=self._queue_manager_allowed_mentions(),
+            )
+            return
+
+        try:
+            session_key = self._queue_manager_session_key(result)
+            items = self._queue_manager_items(result)
+            view = QueueManagerView(
+                adapter=self,
+                owner_user_id=str(interaction.user.id),
+                typed_command=typed_command,
+                items=items,
+                session_key=session_key,
+                original_interaction=interaction,
+            )
+            message = await interaction.edit_original_response(
+                content=view.render_content(),
+                view=view,
+                allowed_mentions=self._queue_manager_allowed_mentions(),
+            )
+            view._message = message
+        except Exception:
+            logger.exception("[Discord] Failed to open private queue manager")
+            try:
+                await interaction.edit_original_response(
+                    content="Queue manager is temporarily unavailable.",
+                    view=None,
+                    allowed_mentions=self._queue_manager_allowed_mentions(),
+                )
+            except Exception:
+                logger.debug(
+                    "[Discord] Failed to edit unavailable queue manager response",
+                    exc_info=True,
+                )
+
     async def _run_simple_slash(
         self,
         interaction: discord.Interaction,
@@ -5091,9 +5274,24 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
 
         @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
-        @discord.app_commands.describe(prompt="The prompt to queue")
-        async def slash_queue(interaction: discord.Interaction, prompt: str):
-            await self._run_simple_slash(interaction, f"/queue {prompt}", "Queued for the next turn.")
+        @discord.app_commands.describe(prompt="The prompt to queue (leave empty to manage your queue)")
+        async def slash_queue(interaction: discord.Interaction, prompt: str = ""):
+            if prompt.strip():
+                await self._run_simple_slash(
+                    interaction, f"/queue {prompt}", "Queued for the next turn."
+                )
+            else:
+                await self._open_queue_manager_slash(interaction, "/queue")
+
+        @tree.command(name="q", description="Queue a prompt for the next turn (doesn't interrupt)")
+        @discord.app_commands.describe(prompt="The prompt to queue (leave empty to manage your queue)")
+        async def slash_q(interaction: discord.Interaction, prompt: str = ""):
+            if prompt.strip():
+                await self._run_simple_slash(
+                    interaction, f"/q {prompt}", "Queued for the next turn."
+                )
+            else:
+                await self._open_queue_manager_slash(interaction, "/q")
 
         @tree.command(name="background", description="Run a prompt in the background")
         @discord.app_commands.describe(prompt="The prompt to run in the background")
@@ -5499,6 +5697,11 @@ class DiscordAdapter(BasePlatformAdapter):
         # Get channel topic (if available).
         # For forum threads, inherit the parent forum's topic.
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
+        interaction_guild = (
+            getattr(interaction, "guild", None)
+            or getattr(interaction.channel, "guild", None)
+        )
+        parent_id = self._get_parent_channel_id(interaction.channel) if is_thread else None
 
         source = self.build_source(
             chat_id=str(interaction.channel_id),
@@ -5508,11 +5711,22 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=(
+                str(getattr(interaction_guild, "id", "") or "")
+                or str(getattr(interaction, "guild_id", "") or "")
+                or None
+            ),
+            parent_chat_id=parent_id,
+            role_authorized=self._has_allowed_role(
+                str(interaction.user.id),
+                author=interaction.user,
+                guild=interaction_guild,
+                is_dm=is_dm,
+            ),
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
-        parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
         return MessageEvent(
             text=text,
             message_type=msg_type,
@@ -7777,7 +7991,509 @@ def _define_discord_view_classes() -> None:
     lazy install sets DISCORD_AVAILABLE=True but leaves the classes
     undefined, causing NameError on the first button interaction.
     """
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView
+    global ModelPickerView, ClarifyChoiceView, ChoicePickerView, QueueManagerView
+
+    class QueueManagerView(discord.ui.View):
+        """Ephemeral owner-scoped manager for explicitly queued prompts."""
+
+        PAGE_SIZE = 10
+        PREVIEW_LIMIT = 160
+        TIMEOUT_SECONDS = 180
+
+        def __init__(
+            self,
+            *,
+            adapter: DiscordAdapter,
+            owner_user_id: str,
+            typed_command: str,
+            items: List[Dict[str, Any]],
+            session_key: Optional[str] = None,
+            original_interaction: Optional[discord.Interaction] = None,
+        ) -> None:
+            super().__init__(timeout=self.TIMEOUT_SECONDS)
+            self.adapter = adapter
+            self.owner_user_id = str(owner_user_id)
+            self.typed_command = (
+                typed_command if typed_command in {"/queue", "/q"} else "/queue"
+            )
+            self.session_key = str(session_key or "")
+            self.original_interaction = original_interaction
+            self.page = 0
+            self.selected_queue_id: Optional[str] = None
+            self.confirming_clear = False
+            self._clear_queue_ids: Optional[List[str]] = None
+            self.expired = False
+            self._message = None
+            self._items: List[Dict[str, Any]] = []
+            self._set_items(items)
+
+        @staticmethod
+        def _neutralize_preview(value: Any, limit: int) -> str:
+            preview = " ".join(str(value or "").split()).replace("@", "@\u200b")
+            if not preview:
+                preview = "[empty]"
+            if utf16_len(preview) <= limit:
+                return preview
+            ellipsis = _DISCORD_ELLIPSIS
+            budget = max(0, limit - utf16_len(ellipsis))
+            return _truncate_discord_component_text(preview, budget).rstrip() + ellipsis
+
+        @classmethod
+        def _safe_item(cls, raw_item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            queue_id = raw_item.get("queue_id") or raw_item.get("id")
+            queue_id = str(queue_id or "").strip()
+            if not queue_id or utf16_len(queue_id) > _DISCORD_SELECT_FIELD_LIMIT:
+                return None
+            return {
+                "queue_id": queue_id,
+                "preview": cls._neutralize_preview(
+                    raw_item.get("preview"), cls.PREVIEW_LIMIT
+                ),
+                "has_media": bool(raw_item.get("has_media")),
+                "created_at": raw_item.get("created_at"),
+            }
+
+        def _set_items(self, items: List[Dict[str, Any]]) -> None:
+            safe_items: List[Dict[str, Any]] = []
+            seen_ids: set[str] = set()
+            for raw_item in items or []:
+                if not isinstance(raw_item, dict):
+                    continue
+                item = self._safe_item(raw_item)
+                if item is None or item["queue_id"] in seen_ids:
+                    continue
+                seen_ids.add(item["queue_id"])
+                safe_items.append(item)
+            self._items = safe_items
+            max_page = max(0, self.page_count - 1)
+            self.page = min(max(0, self.page), max_page)
+            if self.selected_queue_id not in seen_ids:
+                self.selected_queue_id = None
+            self._build_components()
+
+        @property
+        def page_count(self) -> int:
+            return max(1, (len(self._items) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+
+        def _page_items(self) -> List[Dict[str, Any]]:
+            start = self.page * self.PAGE_SIZE
+            return self._items[start : start + self.PAGE_SIZE]
+
+        def _item_for_id(self, queue_id: Optional[str]) -> Optional[Dict[str, Any]]:
+            if not queue_id:
+                return None
+            return next(
+                (item for item in self._items if item["queue_id"] == queue_id),
+                None,
+            )
+
+        def render_content(self) -> str:
+            if self.expired:
+                return (
+                    "**Queue manager expired.** No changes were made. "
+                    f"Run `{self.typed_command}` again to refresh it."
+                )
+            if self.confirming_clear:
+                return (
+                    f"**Clear all {len(self._items)} queued prompt(s)?**\n"
+                    "This only clears prompts queued by you in this session and "
+                    "cannot be undone."
+                )
+            if not self._items:
+                return (
+                    "**Your queue is empty.**\n"
+                    "Only prompts explicitly queued by you in this session appear here."
+                )
+
+            start = self.page * self.PAGE_SIZE
+            lines = ["**Your queued prompts**"]
+            for offset, item in enumerate(self._page_items(), start=1):
+                media = " 📎" if item["has_media"] else ""
+                selected = " ← selected" if item["queue_id"] == self.selected_queue_id else ""
+                lines.append(
+                    f"{start + offset}. {item['preview']}{media}{selected}"
+                )
+            lines.extend(
+                (
+                    "",
+                    f"Page {self.page + 1}/{self.page_count} · {len(self._items)} item(s)",
+                    "Select one prompt to delete it, or clear your whole queue.",
+                )
+            )
+            return "\n".join(lines)
+
+        def _build_components(self) -> None:
+            self.clear_items()
+            if self.confirming_clear:
+                confirm = discord.ui.Button(
+                    label="Confirm clear",
+                    style=discord.ButtonStyle.danger,
+                    custom_id="queue_manager_clear_confirm",
+                )
+                confirm.callback = self._on_clear_confirm
+                self.add_item(confirm)
+                cancel = discord.ui.Button(
+                    label="Cancel",
+                    style=discord.ButtonStyle.secondary,
+                    custom_id="queue_manager_clear_cancel",
+                )
+                cancel.callback = self._on_clear_cancel
+                self.add_item(cancel)
+                return
+
+            page_items = self._page_items()
+            if page_items:
+                options = []
+                start = self.page * self.PAGE_SIZE
+                for offset, item in enumerate(page_items, start=1):
+                    prefix = f"{start + offset}. "
+                    media = " 📎" if item["has_media"] else ""
+                    label_budget = max(
+                        0,
+                        _DISCORD_SELECT_FIELD_LIMIT
+                        - utf16_len(prefix)
+                        - utf16_len(media),
+                    )
+                    label = self._neutralize_preview(
+                        item["preview"], label_budget
+                    )
+                    options.append(
+                        discord.SelectOption(
+                            label=f"{prefix}{label}{media}",
+                            value=item["queue_id"],
+                            description=(
+                                "Selected"
+                                if item["queue_id"] == self.selected_queue_id
+                                else None
+                            ),
+                        )
+                    )
+                select = discord.ui.Select(
+                    placeholder="Select a queued prompt...",
+                    options=options,
+                    custom_id="queue_manager_select",
+                )
+                select.callback = self._on_select
+                self.add_item(select)
+
+            previous = discord.ui.Button(
+                label="Previous",
+                style=discord.ButtonStyle.secondary,
+                custom_id="queue_manager_previous",
+                disabled=self.page <= 0,
+            )
+            previous.callback = self._on_previous
+            self.add_item(previous)
+
+            next_button = discord.ui.Button(
+                label="Next",
+                style=discord.ButtonStyle.secondary,
+                custom_id="queue_manager_next",
+                disabled=self.page >= self.page_count - 1,
+            )
+            next_button.callback = self._on_next
+            self.add_item(next_button)
+
+            delete = discord.ui.Button(
+                label="Delete selected",
+                style=discord.ButtonStyle.danger,
+                custom_id="queue_manager_delete",
+                disabled=self._item_for_id(self.selected_queue_id) is None,
+            )
+            delete.callback = self._on_delete
+            self.add_item(delete)
+
+            clear = discord.ui.Button(
+                label="Clear all",
+                style=discord.ButtonStyle.danger,
+                custom_id="queue_manager_clear",
+                disabled=not self._items,
+            )
+            clear.callback = self._on_clear
+            self.add_item(clear)
+
+            refresh = discord.ui.Button(
+                label="Refresh",
+                style=discord.ButtonStyle.secondary,
+                custom_id="queue_manager_refresh",
+            )
+            refresh.callback = self._on_refresh
+            self.add_item(refresh)
+
+        async def _send_neutral(
+            self, interaction: discord.Interaction, message: str
+        ) -> None:
+            try:
+                await interaction.response.send_message(
+                    message,
+                    ephemeral=True,
+                    allowed_mentions=self.adapter._queue_manager_allowed_mentions(),
+                )
+            except Exception:
+                logger.debug(
+                    "[Discord] Queue manager neutral response failed",
+                    exc_info=True,
+                )
+
+        async def _authorized(self, interaction: discord.Interaction) -> bool:
+            user = getattr(interaction, "user", None)
+            if str(getattr(user, "id", "")) != self.owner_user_id:
+                await self._send_neutral(
+                    interaction,
+                    "This private queue manager belongs to another user.",
+                )
+                return False
+            if self.expired:
+                await self._send_neutral(
+                    interaction,
+                    "This queue manager has expired. Open a fresh one.",
+                )
+                return False
+            return await self.adapter._check_slash_authorization(
+                interaction, self.typed_command
+            )
+
+        async def _edit(self, interaction: discord.Interaction) -> None:
+            await interaction.response.edit_message(
+                content=self.render_content(),
+                view=self,
+                allowed_mentions=self.adapter._queue_manager_allowed_mentions(),
+            )
+
+        async def _dispatch_action(
+            self,
+            interaction: discord.Interaction,
+            action: str,
+            queue_id: Optional[str] = None,
+            queue_ids: Optional[List[str]] = None,
+        ) -> Any:
+            return await self.adapter._dispatch_queue_manager_action(
+                interaction,
+                self.typed_command,
+                action,
+                queue_id,
+                queue_ids=queue_ids,
+                session_key=self.session_key or None,
+            )
+
+        async def _refresh_items(self, interaction: discord.Interaction) -> bool:
+            result = await self._dispatch_action(interaction, "list")
+            if isinstance(result, str):
+                await self._send_neutral(
+                    interaction, "Queue management is not permitted for this user."
+                )
+                return False
+            try:
+                session_key = self.adapter._queue_manager_session_key(result)
+                if self.session_key and session_key != self.session_key:
+                    await self._send_neutral(
+                        interaction,
+                        "This queue manager no longer matches the current session. Open a fresh one.",
+                    )
+                    return False
+                if not self.session_key:
+                    self.session_key = session_key
+                items = self.adapter._queue_manager_items(result)
+            except Exception:
+                logger.exception("[Discord] Queue manager refresh failed")
+                await self._send_neutral(
+                    interaction, "Queue manager is temporarily unavailable."
+                )
+                return False
+            self._set_items(items)
+            return True
+
+        async def _on_select(self, interaction: discord.Interaction) -> None:
+            if not await self._authorized(interaction):
+                return
+            values = getattr(interaction, "data", {}).get("values", [])
+            queue_id = str(values[0]) if values else ""
+            if not await self._refresh_items(interaction):
+                return
+            if self._item_for_id(queue_id) is None:
+                await self._send_neutral(
+                    interaction,
+                    "That queued prompt is no longer available. Refresh the manager.",
+                )
+                return
+            self.selected_queue_id = queue_id
+            self._build_components()
+            await self._edit(interaction)
+
+        async def _on_previous(self, interaction: discord.Interaction) -> None:
+            if not await self._authorized(interaction):
+                return
+            if not await self._refresh_items(interaction):
+                return
+            if self.page <= 0:
+                await self._send_neutral(interaction, "You're already on the first page.")
+                return
+            self.page -= 1
+            self._build_components()
+            await self._edit(interaction)
+
+        async def _on_next(self, interaction: discord.Interaction) -> None:
+            if not await self._authorized(interaction):
+                return
+            if not await self._refresh_items(interaction):
+                return
+            if self.page >= self.page_count - 1:
+                await self._send_neutral(interaction, "You're already on the last page.")
+                return
+            self.page += 1
+            self._build_components()
+            await self._edit(interaction)
+
+        async def _on_delete(self, interaction: discord.Interaction) -> None:
+            if not await self._authorized(interaction):
+                return
+            queue_id = self.selected_queue_id
+            if not queue_id:
+                await self._send_neutral(
+                    interaction,
+                    "Select an available queued prompt before deleting.",
+                )
+                return
+            try:
+                result = await self._dispatch_action(
+                    interaction, "remove", queue_id
+                )
+            except Exception:
+                logger.exception("[Discord] Queue manager delete failed")
+                await self._send_neutral(
+                    interaction, "The queue changed before that prompt could be deleted."
+                )
+                return
+            if isinstance(result, str):
+                await self._send_neutral(
+                    interaction, "Queue management is not permitted for this user."
+                )
+                return
+            if not (
+                isinstance(result, dict)
+                and result.get("type") == "queue_management"
+                and result.get("action") == "remove"
+                and result.get("ok") is True
+                and result.get("removed") is True
+            ):
+                await self._send_neutral(
+                    interaction,
+                    "That queued prompt is no longer available. No change was made.",
+                )
+                return
+            self.selected_queue_id = None
+            if not await self._refresh_items(interaction):
+                return
+            await self._edit(interaction)
+
+        async def _on_clear(self, interaction: discord.Interaction) -> None:
+            if not await self._authorized(interaction):
+                return
+            if not await self._refresh_items(interaction):
+                return
+            if not self._items:
+                await self._send_neutral(interaction, "Your queue is already empty.")
+                return
+            self.confirming_clear = True
+            # Snapshot opaque IDs after the live list refresh. New submissions
+            # made while this confirmation is open must survive confirmation.
+            self._clear_queue_ids = [item["queue_id"] for item in self._items]
+            self._build_components()
+            await self._edit(interaction)
+
+        async def _on_clear_cancel(self, interaction: discord.Interaction) -> None:
+            if not await self._authorized(interaction):
+                return
+            if not self.confirming_clear:
+                await self._send_neutral(
+                    interaction, "That confirmation is no longer active."
+                )
+                return
+            if not await self._refresh_items(interaction):
+                return
+            self.confirming_clear = False
+            self._clear_queue_ids = None
+            self._build_components()
+            await self._edit(interaction)
+
+        async def _on_clear_confirm(self, interaction: discord.Interaction) -> None:
+            if not await self._authorized(interaction):
+                return
+            if not self.confirming_clear:
+                await self._send_neutral(
+                    interaction, "That confirmation is no longer active."
+                )
+                return
+            try:
+                result = await self._dispatch_action(
+                    interaction,
+                    "clear",
+                    queue_ids=self._clear_queue_ids or [],
+                )
+            except Exception:
+                logger.exception("[Discord] Queue manager clear failed")
+                await self._send_neutral(
+                    interaction, "Your queue could not be cleared. No change was made."
+                )
+                return
+            if isinstance(result, str):
+                await self._send_neutral(
+                    interaction, "Queue management is not permitted for this user."
+                )
+                return
+            if not (
+                isinstance(result, dict)
+                and result.get("type") == "queue_management"
+                and result.get("action") == "clear"
+                and result.get("ok") is True
+            ):
+                await self._send_neutral(
+                    interaction, "Your queue could not be cleared. No change was made."
+                )
+                return
+            if int(result.get("removed_count", 0) or 0) <= 0:
+                await self._send_neutral(
+                    interaction, "Your queue was already empty. No change was made."
+                )
+                return
+            self.confirming_clear = False
+            self._clear_queue_ids = None
+            self.selected_queue_id = None
+            if not await self._refresh_items(interaction):
+                return
+            await self._edit(interaction)
+
+        async def _on_refresh(self, interaction: discord.Interaction) -> None:
+            if not await self._authorized(interaction):
+                return
+            if not await self._refresh_items(interaction):
+                return
+            await self._edit(interaction)
+
+        async def on_timeout(self) -> None:
+            self.expired = True
+            for child in self.children:
+                child.disabled = True
+            try:
+                if self.original_interaction is not None:
+                    await self.original_interaction.edit_original_response(
+                        content=self.render_content(),
+                        view=self,
+                        allowed_mentions=self.adapter._queue_manager_allowed_mentions(),
+                    )
+                    return
+                if self._message is not None:
+                    await self._message.edit(
+                        content=self.render_content(),
+                        view=self,
+                        allowed_mentions=self.adapter._queue_manager_allowed_mentions(),
+                    )
+            except Exception:
+                logger.debug(
+                    "[Discord] Queue manager timeout edit failed",
+                    exc_info=True,
+                )
 
     class ExecApprovalView(discord.ui.View):
         """

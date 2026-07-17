@@ -159,6 +159,57 @@ async def test_registers_native_restart_slash_command(adapter):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_name", "typed_command"),
+    [("queue", "/queue"), ("q", "/q")],
+)
+async def test_queue_slash_with_prompt_preserves_native_command(
+    adapter, command_name, typed_command
+):
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    interaction = SimpleNamespace()
+    await adapter._client.tree.commands[command_name](
+        interaction, prompt="do this next"
+    )
+
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction,
+        f"{typed_command} do this next",
+        "Queued for the next turn.",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_name", "typed_command", "prompt"),
+    [
+        ("queue", "/queue", None),
+        ("q", "/q", None),
+        ("queue", "/queue", "   "),
+        ("q", "/q", "\t"),
+    ],
+)
+async def test_bare_queue_slash_opens_private_manager(
+    adapter, command_name, typed_command, prompt
+):
+    adapter._open_queue_manager_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    interaction = SimpleNamespace()
+    command = adapter._client.tree.commands[command_name]
+    if prompt is None:
+        await command(interaction)
+    else:
+        await command(interaction, prompt=prompt)
+
+    adapter._open_queue_manager_slash.assert_awaited_once_with(
+        interaction, typed_command
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter):
     class UnknownInteraction(Exception):
         status = 404
@@ -364,7 +415,7 @@ async def test_slash_command_registration_stays_under_discord_limit(adapter):
 
     # Native, high-priority commands are registered first and must survive
     # the cap — they are the core UX, not droppable overflow.
-    for native in ("status", "stop", "new", "model", "help"):
+    for native in ("status", "stop", "new", "model", "help", "queue", "q"):
         assert native in tree_names, f"/{native} (native) was dropped by the cap"
 
     # The cap must actually have dropped overflow — not every plugin fit.
@@ -538,10 +589,16 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
 
 
 def test_build_slash_event_preserves_thread_context(adapter):
+    role = SimpleNamespace(id=99)
+    channel = _FakeThreadChannel(channel_id=555, name="Planning", parent_id=100)
+    user = SimpleNamespace(display_name="Jezza", id=42, roles=[role])
+    adapter._allowed_role_ids = {99}
     interaction = SimpleNamespace(
-        channel=_FakeThreadChannel(channel_id=555, name="Planning"),
+        channel=channel,
         channel_id=555,
-        user=SimpleNamespace(display_name="Jezza", id=42),
+        guild=channel.guild,
+        guild_id=channel.guild.id,
+        user=user,
     )
 
     event = adapter._build_slash_event(interaction, "/status")
@@ -550,6 +607,10 @@ def test_build_slash_event_preserves_thread_context(adapter):
     assert event.source.chat_id == "555"
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "555"
+    assert event.source.parent_chat_id == "100"
+    assert event.source.guild_id == "1"
+    assert event.source.scope_id == "1"
+    assert event.source.role_authorized is True
     assert "TestGuild" in event.source.chat_name
 
 

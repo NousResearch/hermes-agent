@@ -460,6 +460,69 @@ async def test_running_agent_fastpath_status_always_works():
     assert "⛔" not in (result or "")
 
 
+@pytest.mark.asyncio
+async def test_native_queue_management_marker_still_obeys_queue_access_gate():
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": [],
+        }
+    )
+    src = _make_source(user_id="999")
+    sk = build_session_key(src)
+    runner._running_agents[sk] = MagicMock()
+
+    result = await runner._handle_message(
+        MessageEvent(
+            text="/queue",
+            source=src,
+            metadata={
+                "_hermes_native_discord_queue_management": {"action": "list"}
+            },
+        )
+    )
+
+    assert isinstance(result, str)
+    assert "⛔" in result
+    assert "/queue is admin-only here" in result
+
+
+@pytest.mark.asyncio
+async def test_allowed_native_queue_management_returns_structured_result_mid_run():
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": ["queue"],
+        }
+    )
+    src = _make_source(user_id="999")
+    sk = build_session_key(src)
+    running_agent = MagicMock()
+    runner._running_agents[sk] = running_agent
+    adapter = runner.adapters[Platform.DISCORD]
+    adapter._pending_messages = {}
+    runner._queued_events = {}
+
+    result = await runner._handle_message(
+        MessageEvent(
+            text="/q",
+            source=src,
+            metadata={
+                "_hermes_native_discord_queue_management": {"action": "list"}
+            },
+        )
+    )
+
+    assert result == {
+        "type": "queue_management",
+        "action": "list",
+        "ok": True,
+        "session_key": build_session_key(src),
+        "items": [],
+    }
+    running_agent.interrupt.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Alias resolution — /h aliases to /help; the gate must canonicalize before
 # checking access. /hist (history alias) is a real one to exercise.

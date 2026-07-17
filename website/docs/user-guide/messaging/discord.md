@@ -617,6 +617,19 @@ gateway:
 
 Use `/whoami` to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run.
 
+## Private Queue Manager
+
+Discord exposes exactly two queue command names: `/queue` and its alias `/q`. The optional `prompt` field determines the behavior:
+
+- **With a non-empty prompt:** Hermes treats the entire value as one explicit queue item and processes explicit items in FIFO order. It never interrupts the current agent. There are no text subcommands, and the first word is never interpreted as a queue operation. Queued messages that include media keep the normal queued-media behavior.
+- **Without a prompt in a native Discord slash interaction:** Hermes opens an ephemeral manager visible only to the caller. Sending a bare command as ordinary Gateway text still shows usage, as does a bare invocation in the CLI.
+
+The manager can view and selectively delete only the caller's unconsumed explicit queue items in the current session. It can clear those items only after a second confirmation step. Regular busy follow-ups, internal continuation work, and items queued by other users are not shown and cannot be deleted. Viewing or changing the queue does not interrupt the running agent.
+
+Queue IDs are opaque, valid only for the current process and session, and are not persisted. An open manager or its IDs may become stale after an item is consumed, after `/new` or `/reset`, or after a gateway restart; reopen the manager to refresh it. Deleting the original Discord message does not cancel its in-memory queue item.
+
+For privacy, the manager may show that an item contains media, but it does not expose local media paths or the contents of a message that the queued prompt replied to.
+
 ## Interactive Model Picker
 
 Send `/model` with no arguments in a Discord channel to open a dropdown-based model picker:

@@ -25,6 +25,7 @@ except ModuleNotFoundError:
     pass
 
 import asyncio
+import copy
 import concurrent.futures
 import dataclasses
 import inspect
@@ -32,6 +33,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shlex
 import site
 import sys
@@ -43,7 +45,7 @@ import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Awaitable, Callable, Dict, Optional, Any, List, Union, cast
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
@@ -1951,6 +1953,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    PrivateInteractionResult,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     merge_pending_message_event,
@@ -2064,6 +2067,12 @@ _CONVERSATION_SCOPED_STATE: tuple = (
 
 # Sentinel for "caller did not pass metadata" vs "caller passed None".
 _UNSET = object()
+
+# Private MessageEvent metadata contracts for explicit queue submissions and
+# native Discord queue management.  They stay out of the command registry so
+# /queue and /q retain their single public argument: the complete prompt.
+_EXPLICIT_QUEUE_METADATA_KEY = "_hermes_explicit_queue"
+_NATIVE_DISCORD_QUEUE_MANAGEMENT_KEY = "_hermes_native_discord_queue_management"
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
@@ -4887,6 +4896,306 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             queued_events.setdefault(session_key, []).append(queued_event)
         else:
             pending_slot[session_key] = queued_event
+
+    @staticmethod
+    def _queue_storage_available(adapter: Any) -> bool:
+        return isinstance(getattr(adapter, "_pending_messages", None), dict)
+
+    def _snapshot_fifo_events(
+        self, session_key: str, adapter: Any
+    ) -> List["MessageEvent"]:
+        """Return one session's FIFO as slot head followed by overflow tail."""
+        events: List[MessageEvent] = []
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if isinstance(pending_slot, dict):
+            head = pending_slot.get(session_key)
+            if head is not None:
+                events.append(head)
+        queued_events = getattr(self, "_queued_events", None)
+        if isinstance(queued_events, dict):
+            events.extend(queued_events.get(session_key) or [])
+        return events
+
+    def _replace_fifo_events(
+        self,
+        session_key: str,
+        adapter: Any,
+        events: List["MessageEvent"],
+    ) -> bool:
+        """Atomically rebuild one session's slot + overflow FIFO."""
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if not isinstance(pending_slot, dict):
+            return False
+        queued_events = getattr(self, "_queued_events", None)
+        if not isinstance(queued_events, dict):
+            queued_events = {}
+            self._queued_events = queued_events
+
+        if events:
+            pending_slot[session_key] = events[0]
+        else:
+            pending_slot.pop(session_key, None)
+        if len(events) > 1:
+            queued_events[session_key] = list(events[1:])
+        else:
+            queued_events.pop(session_key, None)
+        return True
+
+    @staticmethod
+    def _explicit_queue_metadata(event: "MessageEvent") -> Optional[Dict[str, Any]]:
+        metadata = getattr(event, "metadata", None)
+        marker = metadata.get(_EXPLICIT_QUEUE_METADATA_KEY) if isinstance(metadata, dict) else None
+        if not isinstance(marker, dict) or marker.get("origin") != "explicit":
+            return None
+        queue_id = marker.get("id")
+        if not isinstance(queue_id, str) or not queue_id:
+            return None
+        return marker
+
+    @staticmethod
+    def _normalize_queue_owner(owner_user_id: Any) -> Optional[str]:
+        if owner_user_id is None:
+            return None
+        owner = str(owner_user_id).strip()
+        return owner or None
+
+    @classmethod
+    def _owned_explicit_queue_metadata(
+        cls, event: "MessageEvent", owner_user_id: Any
+    ) -> Optional[Dict[str, Any]]:
+        owner = cls._normalize_queue_owner(owner_user_id)
+        if owner is None:
+            return None
+        marker = cls._explicit_queue_metadata(event)
+        if marker is None:
+            return None
+        marker_owner = cls._normalize_queue_owner(marker.get("owner_user_id"))
+        return marker if marker_owner == owner else None
+
+    @staticmethod
+    def _queue_item_preview(event: "MessageEvent") -> str:
+        """Return a bounded mention-safe preview without media paths."""
+        text = neutralize_untrusted_inline_text(
+            getattr(event, "text", "") or "", max_chars=160
+        ).replace("@", "＠")
+        if not text:
+            text = "[media]" if getattr(event, "media_urls", None) else "[empty]"
+        return text
+
+    def _list_owned_explicit_queue_items(
+        self,
+        session_key: str,
+        owner_user_id: Any,
+        *,
+        adapter: Any,
+    ) -> List[Dict[str, Any]]:
+        """Project only one owner's manageable explicit queue items."""
+        items: List[Dict[str, Any]] = []
+        for event in self._snapshot_fifo_events(session_key, adapter):
+            marker = self._owned_explicit_queue_metadata(event, owner_user_id)
+            if marker is None:
+                continue
+            items.append(
+                {
+                    "id": marker["id"],
+                    "position": len(items) + 1,
+                    "created_at": marker.get("created_at"),
+                    "origin": "explicit",
+                    "preview": self._queue_item_preview(event),
+                    "has_media": bool(getattr(event, "media_urls", None)),
+                }
+            )
+        return items
+
+    def _remove_owned_explicit_queue_item(
+        self,
+        session_key: str,
+        owner_user_id: Any,
+        queue_id: Any,
+        *,
+        adapter: Any,
+    ) -> bool:
+        """Remove one owned explicit item without touching agent/media state."""
+        owner = self._normalize_queue_owner(owner_user_id)
+        wanted_id = str(queue_id).strip() if queue_id is not None else ""
+        if owner is None or not wanted_id:
+            return False
+        events = self._snapshot_fifo_events(session_key, adapter)
+        kept: List[MessageEvent] = []
+        removed = False
+        for event in events:
+            marker = self._owned_explicit_queue_metadata(event, owner)
+            if not removed and marker is not None and marker["id"] == wanted_id:
+                removed = True
+                continue
+            kept.append(event)
+        if removed:
+            return self._replace_fifo_events(session_key, adapter, kept)
+        return False
+
+    def _clear_owned_explicit_queue_items(
+        self,
+        session_key: str,
+        owner_user_id: Any,
+        *,
+        adapter: Any,
+        queue_ids: Optional[List[str]] = None,
+    ) -> int:
+        """Remove selected owned explicit items while preserving every other event.
+
+        ``queue_ids`` is intentionally optional for internal FIFO maintenance,
+        but native Discord clear actions always provide the IDs captured at
+        confirmation time. That prevents a later submission from being removed
+        merely because it arrived while the confirmation UI was open.
+        """
+        owner = self._normalize_queue_owner(owner_user_id)
+        if owner is None:
+            return 0
+        selected_ids = (
+            {
+                queue_id
+                for value in queue_ids
+                if (queue_id := str(value).strip())
+            }
+            if queue_ids is not None
+            else None
+        )
+        events = self._snapshot_fifo_events(session_key, adapter)
+        kept: List[MessageEvent] = []
+        for event in events:
+            marker = self._owned_explicit_queue_metadata(event, owner)
+            should_remove = marker is not None and (
+                selected_ids is None or marker["id"] in selected_ids
+            )
+            if not should_remove:
+                kept.append(event)
+        removed = len(events) - len(kept)
+        if removed and not self._replace_fifo_events(session_key, adapter, kept):
+            return 0
+        return removed
+
+    def _new_explicit_queue_metadata(
+        self,
+        session_key: str,
+        owner_user_id: Any,
+        *,
+        adapter: Any,
+    ) -> Dict[str, Any]:
+        """Create a process-local opaque ID unique among live session items."""
+        live_ids = set()
+        for event in self._snapshot_fifo_events(session_key, adapter):
+            marker = self._explicit_queue_metadata(event)
+            if marker is not None:
+                live_ids.add(marker["id"])
+        while True:
+            queue_id = f"q-{secrets.token_hex(8)}"
+            if queue_id not in live_ids:
+                break
+        return {
+            "id": queue_id,
+            "owner_user_id": self._normalize_queue_owner(owner_user_id),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "origin": "explicit",
+        }
+
+    @staticmethod
+    def _native_discord_queue_management(event: "MessageEvent") -> Optional[Dict[str, Any]]:
+        """Recognize only private native Discord bare /queue or /q events."""
+        source = getattr(event, "source", None)
+        if getattr(source, "platform", None) != Platform.DISCORD:
+            return None
+        if event.get_command() not in {"queue", "q"}:
+            return None
+        if event.get_command_args().strip() or bool(getattr(event, "media_urls", None)):
+            return None
+        metadata = getattr(event, "metadata", None)
+        marker = (
+            metadata.get(_NATIVE_DISCORD_QUEUE_MANAGEMENT_KEY)
+            if isinstance(metadata, dict)
+            else None
+        )
+        if marker is True:
+            return {"action": "list"}
+        return marker if isinstance(marker, dict) else None
+
+    def _handle_native_queue_management(
+        self,
+        event: "MessageEvent",
+        session_key: str,
+        adapter: Any,
+        request: Dict[str, Any],
+    ) -> PrivateInteractionResult:
+        """Return an owner-safe result for a Discord ephemeral View."""
+        action = str(request.get("action") or "list").strip().lower()
+        owner = self._normalize_queue_owner(getattr(event.source, "user_id", None))
+        base = {"type": "queue_management", "action": action}
+        if action not in {"list", "remove", "clear"}:
+            return PrivateInteractionResult(
+                {**base, "ok": False, "error": "invalid_action"}
+            )
+        expected_session_key = request.get("session_key")
+        if expected_session_key is not None and expected_session_key != session_key:
+            # The View was opened in another channel/profile/session. Do not
+            # resolve or mutate a queue after routing changed underneath it.
+            return PrivateInteractionResult(
+                {**base, "ok": False, "error": "session_changed"}
+            )
+        if owner is None or not self._queue_storage_available(adapter):
+            return PrivateInteractionResult(
+                {**base, "ok": False, "error": "unavailable"}
+            )
+        if action in {"remove", "clear"} and not isinstance(
+            expected_session_key, str
+        ):
+            return PrivateInteractionResult(
+                {**base, "ok": False, "error": "invalid_action"}
+            )
+        if action == "clear" and not isinstance(request.get("queue_ids"), list):
+            return PrivateInteractionResult(
+                {**base, "ok": False, "error": "invalid_action"}
+            )
+        if action == "list":
+            return PrivateInteractionResult(
+                {
+                    **base,
+                    "ok": True,
+                    # Private adapter-only routing token. It is never rendered
+                    # or returned through normal chat delivery.
+                    "session_key": session_key,
+                    "items": self._list_owned_explicit_queue_items(
+                        session_key, owner, adapter=adapter
+                    ),
+                }
+            )
+        if action == "remove":
+            queue_id = request.get("queue_id") or request.get("id")
+            removed = self._remove_owned_explicit_queue_item(
+                session_key, owner, queue_id, adapter=adapter
+            )
+            if not removed:
+                return PrivateInteractionResult(
+                    {**base, "ok": False, "error": "not_found"}
+                )
+            return PrivateInteractionResult(
+                {
+                    **base,
+                    "ok": True,
+                    "removed": True,
+                    "queue_id": str(queue_id),
+                }
+            )
+        return PrivateInteractionResult(
+            {
+                **base,
+                "ok": True,
+                "removed_count": self._clear_owned_explicit_queue_items(
+                    session_key,
+                    owner,
+                    adapter=adapter,
+                    queue_ids=request.get("queue_ids"),
+                ),
+            }
+        )
 
     def _promote_queued_event(
         self,
@@ -10235,7 +10544,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         return switched
 
-    async def _handle_message(self, event: MessageEvent) -> Optional[str]:
+    async def _handle_message(self, event: MessageEvent) -> Any:
         """
         Handle an incoming message from any platform.
         
@@ -10639,6 +10948,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _denied is not None:
                     return _denied
 
+            _queue_management_request = self._native_discord_queue_management(event)
+            if _queue_management_request is not None:
+                adapter = self._adapter_for_source(source)
+                return self._handle_native_queue_management(
+                    event,
+                    _quick_key,
+                    adapter,
+                    _queue_management_request,
+                )
+
             # Telegram sends /start for bot launches/deep-links. Treat it as a
             # platform ping, not a user command: no help dump, no agent
             # interrupt, no queued text.
@@ -10698,23 +11017,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return "Usage: /queue <prompt>"
                 adapter = self._adapter_for_source(source)
                 if adapter:
-                    queued_event = MessageEvent(
+                    queued_metadata = copy.deepcopy(
+                        getattr(event, "metadata", None) or {}
+                    )
+                    queued_metadata[_EXPLICIT_QUEUE_METADATA_KEY] = (
+                        self._new_explicit_queue_metadata(
+                            _quick_key,
+                            getattr(source, "user_id", None),
+                            adapter=adapter,
+                        )
+                    )
+                    queued_event = dataclasses.replace(
+                        event,
                         text=queued_text,
-                        message_type=event.message_type if has_media else MessageType.TEXT,
-                        source=event.source,
-                        raw_message=event.raw_message,
-                        message_id=event.message_id,
+                        message_type=(
+                            event.message_type if has_media else MessageType.TEXT
+                        ),
                         media_urls=list(getattr(event, "media_urls", []) or []),
                         media_types=list(getattr(event, "media_types", []) or []),
-                        reply_to_message_id=event.reply_to_message_id,
-                        reply_to_text=event.reply_to_text,
-                        reply_to_author_id=event.reply_to_author_id,
-                        reply_to_author_name=event.reply_to_author_name,
-                        reply_to_is_own_message=event.reply_to_is_own_message,
-                        auto_skill=event.auto_skill,
-                        channel_prompt=event.channel_prompt,
-                        internal=event.internal,
-                        timestamp=event.timestamp,
+                        auto_skill=(
+                            list(event.auto_skill)
+                            if isinstance(event.auto_skill, list)
+                            else event.auto_skill
+                        ),
+                        metadata=queued_metadata,
                     )
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self._adapter_for_source(source))
@@ -11062,6 +11388,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _denied is not None:
                 return _denied
 
+        _queue_management_request = self._native_discord_queue_management(event)
+        if _queue_management_request is not None:
+            adapter = self._adapter_for_source(source)
+            return self._handle_native_queue_management(
+                event,
+                _quick_key,
+                adapter,
+                _queue_management_request,
+            )
+
         # Fire the ``command:<canonical>`` hook for any recognized slash
         # command — built-in OR plugin-registered. Handlers can return a
         # dict with ``{"decision": "deny" | "handled" | "rewrite", ...}``
@@ -11344,7 +11680,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "queue":
             queue_payload = event.get_command_args().strip()
-            if not queue_payload:
+            has_media = bool(getattr(event, "media_urls", None))
+            if not queue_payload and not has_media:
                 return "Usage: /queue <prompt>"
             try:
                 event.text = queue_payload

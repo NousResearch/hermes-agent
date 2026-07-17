@@ -426,6 +426,23 @@ class TestAgentMessageInterimDispatch:
         }))
         agent.tool_progress_callback.assert_not_called()
 
+    def test_show_commentary_off_suppresses_interim(self):
+        """display.show_commentary=false silences agentMessage interim
+        delivery on the app-server runtime (same contract as the
+        codex_responses commentary channel)."""
+        agent = _make_stub_agent()
+        agent.show_commentary = False
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_completed({
+            "type": "agentMessage", "id": "am-5", "text": "I'll check config.",
+        }))
+        agent._emit_interim_assistant_message.assert_not_called()
+        # Tool progress is unaffected by the commentary toggle.
+        bridge(_item_started({
+            "type": "commandExecution", "id": "cmd-1", "command": "ls",
+        }))
+        agent.tool_progress_callback.assert_called_once()
+
 
 class TestBridgeRobustness:
     def test_non_dict_notification_is_ignored(self):
@@ -544,6 +561,16 @@ class TestBridgeWiredInRuntime:
             valid_tool_names=set(),
             _sync_external_memory_for_turn=lambda **_: None,
             _spawn_background_review=lambda **_: None,
+            # Usage accounting attrs read by _record_codex_app_server_usage.
+            session_api_calls=0,
+            session_prompt_tokens=0,
+            session_completion_tokens=0,
+            session_reasoning_tokens=0,
+            session_cached_tokens=0,
+            session_total_tokens=0,
+            context_compressor=None,
+            event_callback=None,
+            _session_db=None,
         )
 
         codex_runtime.run_codex_app_server_turn(

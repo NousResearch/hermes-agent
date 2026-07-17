@@ -16,6 +16,7 @@ compatibility.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -23,61 +24,6 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 logger = logging.getLogger(__name__)
-
-
-def _codex_note_to_tool_progress(note: dict) -> tuple[str, str, dict] | None:
-    """Map a Codex app-server ``item/started`` notification to a Hermes
-    tool-progress event ``(tool_name, preview, args)``.
-
-    The Codex app-server runtime processes ``item/started`` notifications for
-    command execution, file changes, and MCP/dynamic tool calls, but never
-    surfaced them as Hermes tool-progress events — so gateways (Telegram, etc.)
-    showed no verbose "running X" breadcrumbs on this route while every other
-    provider did (#38835). Returns None for items that aren't tool-shaped.
-    """
-    if not isinstance(note, dict) or note.get("method") != "item/started":
-        return None
-    params = note.get("params") or {}
-    item = params.get("item") or {}
-    if not isinstance(item, dict):
-        return None
-
-    item_type = item.get("type") or ""
-    if item_type == "commandExecution":
-        command = item.get("command") or ""
-        return "exec_command", command, {"command": command, "cwd": item.get("cwd") or ""}
-
-    if item_type == "fileChange":
-        changes = item.get("changes") or []
-        preview = "file changes"
-        if isinstance(changes, list) and changes:
-            paths = [
-                str(change.get("path"))
-                for change in changes
-                if isinstance(change, dict) and change.get("path")
-            ]
-            if paths:
-                preview = ", ".join(paths[:3])
-                if len(paths) > 3:
-                    preview += f", +{len(paths) - 3} more"
-        return "apply_patch", preview, {"changes": changes}
-
-    if item_type == "mcpToolCall":
-        server = item.get("server") or "mcp"
-        tool = item.get("tool") or "unknown"
-        args = item.get("arguments") or {}
-        if not isinstance(args, dict):
-            args = {"arguments": args}
-        return f"mcp.{server}.{tool}", tool, args
-
-    if item_type == "dynamicToolCall":
-        tool = item.get("tool") or "unknown"
-        args = item.get("arguments") or {}
-        if not isinstance(args, dict):
-            args = {"arguments": args}
-        return tool, tool, args
-
-    return None
 
 
 def _coerce_usage_int(value: Any) -> int:
@@ -557,6 +503,11 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     def _fire_agent_message_completed(item: dict) -> None:
         text = item.get("text") or ""
         if not isinstance(text, str) or not text.strip():
+            return
+        # display.show_commentary=false — mid-turn narration stays off the
+        # visible interim path on this runtime too (same contract as the
+        # codex_responses commentary channel).
+        if not getattr(agent, "show_commentary", True):
             return
         emit = getattr(agent, "_emit_interim_assistant_message", None)
         if emit is None:

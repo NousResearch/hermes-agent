@@ -701,6 +701,7 @@ export function useSessionActions({
 
         let prefetchApplied = false
         let prefetchedMessageCount = 0
+        let prefetchedStoredSessionId: string | null = null
 
         // REST transcript prefetch and the gateway resume RPC are independent
         // — run them concurrently so a big session's wall time is
@@ -738,6 +739,7 @@ export function useSessionActions({
               localSnapshot = reconcileAuthoritativeMessages(storedMessages.messages, previousMessages)
               prefetchApplied = true
               prefetchedMessageCount = storedMessages.messages.length
+              prefetchedStoredSessionId = storedMessages.session_id || storedSessionId
 
               if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
                 setMessages(localSnapshot)
@@ -761,8 +763,13 @@ export function useSessionActions({
         // skip converting/reconciling the resume payload entirely — on a
         // 1000+-message session that second conversion plus the deep
         // equivalence compare costs over a second of main-thread time.
+        const resumedStoredSessionId = resumed.session_key || resumed.resumed
+
+        const prefetchMatchesResumedSession =
+          !prefetchedStoredSessionId || !resumedStoredSessionId || prefetchedStoredSessionId === resumedStoredSessionId
+
         const preferredMessages =
-          prefetchApplied && resumed.messages.length <= prefetchedMessageCount
+          prefetchApplied && prefetchMatchesResumedSession && resumed.messages.length <= prefetchedMessageCount
             ? localSnapshot
             : (() => {
                 const previousMessages = resumedSameSelectedSession

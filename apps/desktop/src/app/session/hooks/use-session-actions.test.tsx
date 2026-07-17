@@ -212,12 +212,14 @@ describe('createBackendSessionForSend profile routing', () => {
 // (b) arm $resumeFailedSessionId so use-route-resume can retry. A resume that
 // succeeds must NOT leave the flag armed.
 function ResumeHarness({
+  onStateUpdate,
   onReady,
   requestGateway,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionId = null,
   sessionStateByRuntimeIdRef
 }: {
+  onStateUpdate?: (sessionId: string, state: ClientSessionState) => void
   onReady: (resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
@@ -241,7 +243,12 @@ function ResumeHarness({
     selectedStoredSessionIdRef: ref<string | null>(selectedStoredSessionId),
     sessionStateByRuntimeIdRef: sessionStateByRuntimeIdRef ?? ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
-    updateSessionState: (_sessionId, updater) => updater({} as ClientSessionState)
+    updateSessionState: (sessionId, updater) => {
+      const next = updater({} as ClientSessionState)
+      onStateUpdate?.(sessionId, next)
+
+      return next
+    }
   })
 
   useEffect(() => {
@@ -372,6 +379,56 @@ describe('resumeSession failure recovery', () => {
     await resume!('stored-1', true)
 
     expect($messages.get().map(message => message.id)).toContain('user-optimistic')
+  })
+
+  it('uses the continuation projection when resume rotates an equal-length stored transcript', async () => {
+    const parentMessages = [
+      { content: 'question before compression', role: 'user', timestamp: 1 },
+      { content: 'answer before compression', role: 'assistant', timestamp: 2 }
+    ]
+
+    const continuationMessages = [
+      { content: 'prompt after compression', role: 'user', timestamp: 3 },
+      { content: 'answer after compression', role: 'assistant', timestamp: 4 }
+    ]
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: parentMessages,
+      session_id: 'stored-1'
+    } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'runtime-continuation',
+          session_key: 'stored-continuation',
+          resumed: 'stored-continuation',
+          message_count: continuationMessages.length,
+          messages: continuationMessages,
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, state) => (resumedState = state)}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-1', true)
+
+    const renderedMessages = JSON.stringify(resumedState?.messages)
+    expect(renderedMessages).toContain('prompt after compression')
+    expect(renderedMessages).toContain('answer after compression')
+    expect(renderedMessages).not.toContain('answer before compression')
   })
 
   it('does NOT throw out of the fallback when REST also fails (no unhandled rejection)', async () => {

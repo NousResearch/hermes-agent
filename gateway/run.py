@@ -12451,8 +12451,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # disambiguation: it tells the agent *which* prior message the user
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
-            # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
+            # guess (or answer for both subjects).
+            #
+            # The snippet limit must be generous enough to carry quoted
+            # content whose body the agent has never seen in this session —
+            # e.g. a reply to another participant's message, a bot post, or
+            # forwarded history. For those the quote is the only source of the
+            # information, not just a disambiguation pointer, so an overly
+            # tight cap silently drops content the user explicitly referenced.
+            # 4000 chars (~1-2k tokens) covers real-world quotes while staying
+            # well within context budgets; context compression handles the rest.
+            reply_snippet = event.reply_to_text[:4000]
             if getattr(event, "reply_to_is_own_message", False):
                 message_text = (
                     f'[Replying to your previous message: "{reply_snippet}"]\n\n'

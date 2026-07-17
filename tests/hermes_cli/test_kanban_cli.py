@@ -565,3 +565,26 @@ def test_run_slash_board_override_does_not_change_boards_show_current(kanban_hom
     out = kc.run_slash("--board beta boards show")
 
     assert "Current board: alpha" in out
+
+def test_run_slash_create_list_and_update_labels(kanban_home):
+    import re
+
+    out = kc.run_slash("create 'labelled work' --assignee alice --label qa --label frontend")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+
+    listed = kc.run_slash("list --label qa")
+    assert "labelled work" in listed
+    assert "{frontend,qa}" in listed
+
+    show = kc.run_slash(f"show {tid}")
+    assert "labels:    frontend, qa" in show
+
+    added = kc.run_slash(f"label add {tid} review")
+    assert "frontend, qa, review" in added
+
+    filtered = kc.run_slash("list --label review")
+    assert "labelled work" in filtered
+
+    kc.run_slash(f"label remove {tid} frontend")
+    labels = kc.run_slash(f"label list {tid}")
+    assert "qa, review" in labels

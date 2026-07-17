@@ -1502,7 +1502,7 @@ def test_archive_hides_from_default_list(kanban_home):
 def test_delete_archived_task_removes_related_rows(kanban_home):
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent")
-        tid = kb.create_task(conn, title="child", parents=[parent], assignee="worker")
+        tid = kb.create_task(conn, title="child", parents=[parent], assignee="worker", labels=["cleanup", "QA"])
         kb.add_comment(conn, tid, "user", "cleanup me")
         kb.claim_task(conn, tid)
         kb.complete_task(conn, tid, result="done")
@@ -1520,6 +1520,7 @@ def test_delete_archived_task_removes_related_rows(kanban_home):
         assert conn.execute("SELECT COUNT(*) FROM task_comments WHERE task_id = ?", (tid,)).fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id = ?", (tid,)).fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (tid,)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM task_labels WHERE task_id = ?", (tid,)).fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM kanban_notify_subs WHERE task_id = ?", (tid,)).fetchone()[0] == 0
 
 
@@ -1564,7 +1565,7 @@ def test_list_tasks_order_by(kanban_home):
 
 def test_delete_task_removes_task_and_cascades(kanban_home):
     with kb.connect() as conn:
-        t = kb.create_task(conn, title="to-delete", assignee="alice")
+        t = kb.create_task(conn, title="to-delete", assignee="alice", labels=["obsolete", "Backend"])
         kb.add_comment(conn, t, "user", "comment")
         kb.add_comment(conn, t, "user", "another")
         assert kb.delete_task(conn, t)
@@ -1572,6 +1573,7 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
         assert len(kb.list_comments(conn, t)) == 0
         assert len(kb.list_events(conn, t)) == 0
         assert len(kb.list_runs(conn, t)) == 0
+        assert conn.execute("SELECT COUNT(*) FROM task_labels WHERE task_id = ?", (t,)).fetchone()[0] == 0
 
 
 def test_delete_task_returns_false_for_missing_task(kanban_home):
@@ -4959,3 +4961,32 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+def test_task_labels_create_filter_and_update(kanban_home):
+    with kb.connect() as conn:
+        qa = kb.create_task(conn, title="qa task", labels=["QA", "frontend", "qa"])
+        kb.create_task(conn, title="backend task", labels=["backend"])
+
+        task = kb.get_task(conn, qa)
+        assert task.labels == ["frontend", "qa"]
+        assert [t.id for t in kb.list_tasks(conn, label="qa")] == [qa]
+        assert [t.id for t in kb.list_tasks(conn, labels=["qa", "frontend"])] == [qa]
+
+        assert kb.add_task_labels(conn, qa, ["review"], created_by="tester") == [
+            "frontend",
+            "qa",
+            "review",
+        ]
+        assert kb.remove_task_labels(conn, qa, ["frontend"]) == ["qa", "review"]
+        assert kb.set_task_labels(conn, qa, ["decision"], created_by="tester") == ["decision"]
+        assert kb.get_task(conn, qa).labels == ["decision"]
+
+
+def test_task_labels_reject_invalid_values(kanban_home):
+    with kb.connect() as conn:
+        with pytest.raises(ValueError):
+            kb.create_task(conn, title="bad", labels=["not ok!"])
+        tid = kb.create_task(conn, title="good")
+        with pytest.raises(ValueError):
+            kb.add_task_labels(conn, tid, ["bad,label"])

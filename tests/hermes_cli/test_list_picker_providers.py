@@ -115,6 +115,46 @@ def test_non_openrouter_rows_passed_through_unchanged(monkeypatch):
     assert result[1]["models"] == ["gemini-3-flash-preview"]
 
 
+def test_authenticated_kimi_row_keeps_k3_in_offline_gateway_picker(monkeypatch):
+    """Telegram/Discord pickers retain K3 when live model discovery is offline."""
+    import agent.models_dev as models_dev
+    import hermes_cli.auth as auth
+    import hermes_cli.models as models
+    import hermes_cli.providers as providers
+
+    monkeypatch.setenv("KIMI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        models_dev,
+        "PROVIDER_TO_MODELS_DEV",
+        {"kimi-coding": "kimi-for-coding"},
+    )
+    monkeypatch.setattr(
+        models_dev,
+        "fetch_models_dev",
+        lambda: {
+            "kimi-for-coding": {
+                "name": "Kimi Coding Plan",
+                "env": ["KIMI_API_KEY"],
+                "models": {},
+            }
+        },
+    )
+    monkeypatch.setattr(models, "cached_provider_model_ids", lambda *_a, **_kw: [])
+    monkeypatch.setattr(models, "CANONICAL_PROVIDERS", [])
+    monkeypatch.setattr(providers, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        auth,
+        "is_runtime_provider_routable",
+        lambda provider: provider == "kimi-coding",
+    )
+
+    result = model_switch.list_picker_providers(max_models=50)
+
+    kimi = next(row for row in result if row["slug"] == "kimi-coding")
+    assert "k3" in kimi["models"]
+    assert "kimi-for-coding" in kimi["models"]
+
+
 def test_include_moa_adds_virtual_provider_with_named_presets(monkeypatch):
     """Gateway pickers opt into a virtual MoA provider so presets are tappable."""
     base = [_make_provider("minimax", models=["MiniMax-M3"])]

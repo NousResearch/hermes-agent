@@ -87,7 +87,15 @@ class KimiProfile(ProviderProfile):
         # Enabled: prefer an explicit effort; only fall back to extra_body
         # thinking when no recognized effort is requested.
         effort = (reasoning_config.get("effort") or "").strip().lower()
-        if effort in {"low", "medium", "high"}:
+        model = str(context.get("model") or "").strip().lower()
+        base_url = str(context.get("base_url") or "")
+        if (
+            model == "k3"
+            and _is_confirmed_kimi_coding_url(base_url)
+            and effort in {"xhigh", "max", "ultra"}
+        ):
+            top_level["reasoning_effort"] = "max"
+        elif effort in {"low", "medium", "high"}:
             top_level["reasoning_effort"] = effort
         else:
             extra_body["thinking"] = {"type": "enabled"}

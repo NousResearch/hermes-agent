@@ -182,6 +182,55 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
+    def test_forwards_configured_api_mode_to_provider_resolver(self):
+        fbs = [
+            {
+                "provider": "kimi-coding",
+                "model": "k3",
+                "api_mode": "chat_completions",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(
+                _mock_client(base_url="https://api.kimi.com/coding/v1"),
+                "k3",
+            ),
+        ) as mock_rpc:
+            assert agent._try_activate_fallback() is True
+
+        assert mock_rpc.call_args.kwargs["api_mode"] == "chat_completions"
+        assert agent.base_url.rstrip("/") == "https://api.kimi.com/coding/v1"
+
+    def test_kimi_chat_completions_uses_real_resolver_through_fallback(self):
+        """The configured transport must reach the real resolver, not only a mock.
+
+        Kimi's bare ``/coding`` URL auto-detects as Anthropic Messages.  An
+        explicit ``chat_completions`` fallback must therefore reach
+        ``resolve_provider_client`` and build the OpenAI-compatible ``/v1``
+        client.  This is the integration boundary that originally produced a
+        404 when ``api_mode`` was dropped.
+        """
+        from agent.auxiliary_client import AnthropicAuxiliaryClient
+
+        fbs = [
+            {
+                "provider": "kimi-coding",
+                "model": "k3",
+                "base_url": "https://api.kimi.com/coding",
+                "api_key": "test-key",
+                "api_mode": "chat_completions",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+
+        assert agent._try_activate_fallback() is True
+        assert getattr(agent, "api_mode", None) == "chat_completions"
+        assert agent.client is not None
+        assert not isinstance(agent.client, AnthropicAuxiliaryClient)
+        assert agent.base_url.rstrip("/") == "https://api.kimi.com/coding/v1"
+
     def test_anthropic_host_custom_provider_uses_anthropic_messages(self):
         """A custom provider on the native api.anthropic.com host (no
         "/anthropic" path suffix, name != "anthropic") must resolve to the

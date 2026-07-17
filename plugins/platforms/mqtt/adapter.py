@@ -2,8 +2,8 @@
 
 Connects to an MQTT broker, subscribes to a configurable topic allowlist, and
 forwards each inbound message as a MessageEvent. Outbound messages publish to
-the topic provided as chat_id. Built for Phoebe's existing MQTT mesh
-(Atlas broker, auth required, optional TLS on 8883).
+the topic provided as chat_id. Built for an external MQTT mesh
+(broker, auth required, optional TLS on 8883).
 
 This adapter ships as a Hermes platform plugin under
 ``plugins/platforms/mqtt/``. The Hermes plugin loader scans the
@@ -309,7 +309,7 @@ class MQTTAdapter(BasePlatformAdapter):
                     return
                 self._last_event_time[topic] = now
 
-            # Decode payload — MQTT carries bytes; assume UTF-8 text content for Phoebe topics
+            # Decode payload — MQTT carries bytes; assume UTF-8 text content
             try:
                 payload_text = msg.payload.decode("utf-8", errors="replace")
             except Exception:

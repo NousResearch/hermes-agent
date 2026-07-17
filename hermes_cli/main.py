@@ -12073,18 +12073,23 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
 
 def _read_ssh_session_token_file(path: str) -> str:
     """Read and unlink a Desktop SSH token from its private runtime directory."""
+    if sys.platform == "win32":
+        from hermes_cli.windows_ssh_runtime import read_token
+        return read_token(path)
+
     import stat as _stat
     from pathlib import Path as _Path
+    from hermes_constants import get_hermes_home as _get_hermes_home
 
     if not os.path.isabs(path):
         raise SystemExit("--ssh-session-token-file must be absolute")
 
     token_path = _Path(path)
-    token_root = _Path.home() / ".hermes" / "desktop-ssh"
+    token_root = _get_hermes_home() / "desktop-ssh"
     try:
         relative = token_path.relative_to(token_root)
     except ValueError as exc:
-        raise SystemExit("--ssh-session-token-file must be under ~/.hermes/desktop-ssh") from exc
+        raise SystemExit("--ssh-session-token-file must be under the desktop-ssh directory") from exc
     if len(relative.parts) != 2 or not re.fullmatch(r"[0-9a-f]{32}", relative.parts[0]):
         raise SystemExit("--ssh-session-token-file has an invalid runtime path")
     if not re.fullmatch(r"[0-9a-f]{16}\.token", relative.parts[1]):

@@ -2,6 +2,7 @@ import argparse
 import os
 
 import pytest
+from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
 from hermes_cli.main import _read_ssh_session_token_file, cmd_dashboard
 from hermes_cli.subcommands.dashboard import build_dashboard_parser
@@ -43,15 +44,18 @@ def test_one_shot_token_file_rejects_non_starting_operations(operation):
 
 def test_token_file_is_read_and_unlinked_through_private_directory(tmp_path, monkeypatch):
     home = tmp_path / "home"
-    token_dir = home / ".hermes" / "desktop-ssh" / ("a" * 32)
+    hermes_home = home / ".hermes"
+    token_dir = hermes_home / "desktop-ssh" / ("a" * 32)
     token_dir.mkdir(parents=True, mode=0o700)
     token_path = token_dir / "0123456789abcdef.token"
     token_path.write_text("b" * 64)
     token_path.chmod(0o600)
-    monkeypatch.setattr("pathlib.Path.home", lambda: home)
-
-    assert _read_ssh_session_token_file(str(token_path)) == "b" * 64
-    assert not token_path.exists()
+    override = set_hermes_home_override(hermes_home)
+    try:
+        assert _read_ssh_session_token_file(str(token_path)) == "b" * 64
+        assert not token_path.exists()
+    finally:
+        reset_hermes_home_override(override)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink contract")
@@ -64,12 +68,14 @@ def test_token_file_rejects_symlink(tmp_path, monkeypatch):
     target.chmod(0o600)
     token_path = token_dir / "0123456789abcdef.token"
     token_path.symlink_to(target)
-    monkeypatch.setattr("pathlib.Path.home", lambda: home)
-
-    with pytest.raises(SystemExit, match="symlink|not accessible"):
-        _read_ssh_session_token_file(str(token_path))
-    assert not token_path.exists()
-    assert target.read_text() == "b" * 64
+    override = set_hermes_home_override(home / ".hermes")
+    try:
+        with pytest.raises(SystemExit, match="symlink|not accessible"):
+            _read_ssh_session_token_file(str(token_path))
+        assert not token_path.exists()
+        assert target.read_text() == "b" * 64
+    finally:
+        reset_hermes_home_override(override)
 
 
 def test_token_file_rejects_parent_escape(tmp_path, monkeypatch):
@@ -79,8 +85,10 @@ def test_token_file_rejects_parent_escape(tmp_path, monkeypatch):
     escaped = token_root.parent / "0123456789abcdef.token"
     escaped.write_text("b" * 64)
     escaped.chmod(0o600)
-    monkeypatch.setattr("pathlib.Path.home", lambda: home)
-
-    with pytest.raises(SystemExit, match="invalid runtime path"):
-        _read_ssh_session_token_file(str(token_root / ".." / escaped.name))
-    assert escaped.exists()
+    override = set_hermes_home_override(home / ".hermes")
+    try:
+        with pytest.raises(SystemExit, match="invalid runtime path"):
+            _read_ssh_session_token_file(str(token_root / ".." / escaped.name))
+        assert escaped.exists()
+    finally:
+        reset_hermes_home_override(override)

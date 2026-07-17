@@ -25,6 +25,7 @@ import {
 import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
+import { createRunStartAnchor } from './scroll-anchor'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -177,8 +178,25 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(() => onThreadEditOpen(beginEditHold), [beginEditHold])
   useEffect(() => onThreadEditClose(endEditHold), [endEditHold])
   useEffect(() => () => endEditHold(), [endEditHold])
-  // New run → snap to the latest turn.
-  useAuiEvent('thread.runStart', () => void scrollToBottom())
+  const runStartAnchorRef = useRef<ReturnType<typeof createRunStartAnchor> | null>(null)
+
+  useEffect(() => {
+    const anchor = createRunStartAnchor({ scrollToBottom, stopScroll })
+    runStartAnchorRef.current = anchor
+
+    return () => {
+      anchor.cancel()
+
+      if (runStartAnchorRef.current === anchor) {
+        runStartAnchorRef.current = null
+      }
+    }
+  }, [scrollToBottom, stopScroll])
+
+  // New run -> reveal the new assistant turn once, then release resize-follow
+  // so streamed token growth cannot keep pulling the viewport away from what
+  // the user is reading. The jump button remains the explicit tail-follow path.
+  useAuiEvent('thread.runStart', () => runStartAnchorRef.current?.anchor())
 
   // Reset the cap and pin to bottom on mount + every session switch (messages
   // swap in place on a long-lived runtime, so sessionKey is the only signal).

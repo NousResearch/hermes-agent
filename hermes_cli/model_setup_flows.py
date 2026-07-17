@@ -141,7 +141,7 @@ def _model_flow_openrouter(config, current_model=""):
         auth_type="api_key",
         api_key_env_vars=("OPENROUTER_API_KEY",),
     )
-    existing_key = get_env_value("OPENROUTER_API_KEY") or ""
+    existing_key = _resolve_existing_api_key("openrouter", pconfig)
     if not existing_key:
         print("Get one at: https://openrouter.ai/keys")
         print()
@@ -1906,12 +1906,10 @@ def _model_flow_kimi(config, current_model=""):
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    # Step 1: Check / prompt for API key
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    # Step 1: Check / prompt for API key.
+    # Resolves from ~/.hermes/.env → os.environ → credential pool (auth.json)
+    # so keys added via `hermes auth` are recognised (issue #65977).
+    existing_key = _resolve_existing_api_key(provider_id, pconfig)
 
     existing_key, abort = _prompt_api_key(
         pconfig, existing_key, provider_id=provider_id
@@ -1992,11 +1990,7 @@ def _model_flow_stepfun(config, current_model=""):
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    existing_key = _resolve_existing_api_key(provider_id, pconfig)
 
     existing_key, abort = _prompt_api_key(
         pconfig, existing_key, provider_id=provider_id
@@ -2530,6 +2524,34 @@ def _select_zai_endpoint(current_base: str) -> str:
     return options[selected][1].rstrip("/")
 
 
+def _resolve_existing_api_key(
+    provider_id: str, pconfig
+) -> str:
+    """Resolve an existing API key for a provider, checking sources in order.
+
+    1. ~/.hermes/.env (preferred for rotation)
+    2. os.environ (shell exports, CI injections)
+    3. credential pool in auth.json (keys stored via ``hermes auth``)
+
+    Returns empty string when no key is found in any source.
+    Mirrors ``_resolve_api_key_provider_secret`` in hermes_cli/auth.py.
+    """
+    from hermes_cli.config import get_env_value
+
+    for ev in pconfig.api_key_env_vars:
+        val = get_env_value(ev) or os.getenv(ev, "")
+        if val:
+            return val
+    try:
+        from hermes_cli.auth import _resolve_api_key_provider_secret
+
+        resolved, _source = _resolve_api_key_provider_secret(provider_id, pconfig)
+        return (resolved or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
     from hermes_cli.main import _prompt_api_key
@@ -2556,12 +2578,12 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    # Check / prompt for API key
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    # Check / prompt for API key.
+    # Resolves from ~/.hermes/.env → os.environ → credential pool (auth.json).
+    # The pool fallback covers keys added via `hermes auth` (e.g. Moonshot /
+    # DeepSeek) so the wizard doesn't prompt for a new key when one is
+    # already working (issue NousResearch/hermes-agent#65977).
+    existing_key = _resolve_existing_api_key(provider_id, pconfig)
 
     existing_key, abort = _prompt_api_key(
         pconfig, existing_key, provider_id=provider_id

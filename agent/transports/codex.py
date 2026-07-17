@@ -338,6 +338,14 @@ class ResponsesApiTransport(ProviderTransport):
             # headers while keeping ``prompt_cache_key`` in the body for
             # standard OpenAI routing as a belt-and-braces fallback.
             cache_scope_id = str(session_id or "").strip()
+            # OpenAI/Codex backend enforces 64-char limit on the session_id
+            # and x-client-request-id headers, mapping them internally to
+            # prompt_cache_key. Hash long IDs to stay within the limit;
+            # the hash is a cache-routing hint only, never a correctness bound.
+            if len(cache_scope_id) > 64:
+                cache_scope_id = "pck_" + hashlib.sha256(
+                    cache_scope_id.encode("utf-8", "replace")
+                ).hexdigest()[:24]
             if cache_scope_id:
                 existing_extra_headers = kwargs.get("extra_headers")
                 merged_extra_headers: Dict[str, str] = {}

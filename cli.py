@@ -6572,6 +6572,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.compact = bool(value)
         elif key_path == "display.tool_progress":
             self.tool_progress_mode = "off" if value is False else str(value)
+            # Sync the active agent's tool_progress_mode too — without
+            # this, ``/config set display.tool_progress new`` updates the
+            # CLI's cycle state but the running agent keeps emitting in
+            # the OLD mode. Mirrors the sync pattern in ``_toggle_verbose``
+            # (cli.py:8983-8986) so the tool_executor rendering path
+            # reflects the new mode this turn without waiting for an
+            # agent rebuild. Guarded with ``hasattr`` to stay defensive
+            # against agent variants that may not expose the attribute
+            # (test stubs, lightweight agent types).
+            agent = getattr(self, "agent", None)
+            if agent is not None and hasattr(agent, "tool_progress_mode"):
+                agent.tool_progress_mode = self.tool_progress_mode
 
     @staticmethod
     def _coerce_config_value(key_path: str, value: str):

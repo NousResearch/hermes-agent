@@ -366,3 +366,46 @@ class TestCompressionRestartRequired:
              patch.object(HermesCLI, "_propagate_config_live") as mock_propagate:
             cli_obj.process_command("/config set compression.threshold 0.75")
         mock_propagate.assert_not_called()
+
+
+class TestToolProgressActiveAgentSync:
+    """Regression tests for maintainer review finding 3: ``display.tool_progress``
+    used to update only ``self.tool_progress_mode`` but not the active agent's
+    copy. Without the sync, ``/config set display.tool_progress new`` cycled
+    the CLI's mode while the running agent kept emitting in the OLD mode —
+    a confusing UX where the ``/verbose`` toggle (cli.py:8964) worked but
+    the new ``/config set`` path did not.
+    """
+
+    def test_tool_progress_syncs_active_agent(self):
+        cli_obj = _make_cli()
+        # Active agent stub with tool_progress_mode attribute (matches the
+        # real agent class shape — see cli.py:8984 for the sync pattern).
+        cli_obj.agent = MagicMock()
+        cli_obj.agent.tool_progress_mode = "off"
+        with patch("cli._cprint"), \
+             patch("cli.save_config_value", return_value=True):
+            cli_obj.process_command("/config set display.tool_progress new")
+        assert cli_obj.tool_progress_mode == "new"
+        assert cli_obj.agent.tool_progress_mode == "new"
+
+    def test_tool_progress_no_agent_does_not_crash(self):
+        # cli_obj.agent is None in the default fixture — the sync guard
+        # must skip silently without raising AttributeError.
+        cli_obj = _make_cli()
+        assert cli_obj.agent is None
+        with patch("cli._cprint"), \
+             patch("cli.save_config_value", return_value=True):
+            cli_obj.process_command("/config set display.tool_progress all")
+        assert cli_obj.tool_progress_mode == "all"
+
+    def test_tool_progress_skips_agent_without_attribute(self):
+        # Defensive guard: agent variants that don't expose tool_progress_mode
+        # (test stubs, lightweight agent types) must not crash the sync.
+        cli_obj = _make_cli()
+        cli_obj.agent = MagicMock(spec=[])  # no attributes exposed
+        with patch("cli._cprint"), \
+             patch("cli.save_config_value", return_value=True):
+            cli_obj.process_command("/config set display.tool_progress verbose")
+        # CLI side still updates
+        assert cli_obj.tool_progress_mode == "verbose"

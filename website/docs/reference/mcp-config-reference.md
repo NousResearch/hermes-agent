@@ -61,6 +61,7 @@ mcp_servers:
 | `tools` | mapping | both | Filtering and utility-tool policy |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
+| `scope` | string | both | Restrict this server's tools to delegated subagents only (`subagent_only`) or to all agents (`main`, default) |
 
 ## `tools` policy keys
 
@@ -70,6 +71,7 @@ mcp_servers:
 | `exclude` | string or list | Blacklist server-native MCP tools |
 | `resources` | bool-like | Enable/disable `list_resources` + `read_resource` |
 | `prompts` | bool-like | Enable/disable `list_prompts` + `get_prompt` |
+| `scope` | string | Restrict only the `include`/`exclude`-selected tools to delegated subagents (`subagent_only`) or all agents (`main`, default) |
 
 ## Filtering semantics
 
@@ -154,6 +156,61 @@ Behavior:
 - no discovery
 - no tool registration
 - config remains in place for later reuse
+
+## `scope` — restrict a server or tool to delegated subagents
+
+`scope` controls **who may call** a server's tools. It has two values:
+
+- `main` (default) — the tool is available to the MAIN agent and all subagents.
+  This is exactly today's behavior; omitting `scope` is byte-for-byte identical.
+- `subagent_only` — the tool is **withheld from the MAIN agent's tool schema**
+  and exposed **only to subagents** spawned via `delegate_task`. Use this for
+  powerful or risky operations you want a focused worker to perform without the
+  top-level agent calling them directly. This *adds* a containment surface
+  (MAIN can no longer reach the tool); it never removes capability from a child.
+
+`scope` can be set at two granularities:
+
+1. **Server-level** — applies to every tool of the server (and its utility
+   tools):
+
+   ```yaml
+   mcp_servers:
+     risky-server:
+       command: npx
+       args: [risky-server]
+       scope: subagent_only
+   ```
+
+2. **`tools:`-level** — applies only to the tool set selected by
+   `tools.include` / `tools.exclude`. Precedence mirrors `include` over
+   `exclude`: if `include` is set and `tools.scope: subagent_only`, only those
+   included tools are scoped; the rest of the server's tools remain `main`
+   (visible to MAIN).
+
+   ```yaml
+   mcp_servers:
+     mixed-server:
+       url: https://example.internal/mcp
+       tools:
+         include: [dangerous_op, raw_query]
+         scope: subagent_only   # only dangerous_op + raw_query become subagent_only
+   ```
+
+**Unknown / misspelled `scope` values are not silently hidden.** A value other
+than `main` or `subagent_only` is logged as a warning and treated as `main`, so
+a typo keeps the tool visible rather than accidentally hiding it.
+
+### How child exposure works
+
+Both the MAIN agent and every delegated child funnel through the same tool
+registry and schema assembly. The MAIN agent passes `include_subagent_only=False`
+(which hides `subagent_only` tools), while a delegated child is constructed with
+`platform="subagent"` and passes `include_subagent_only=True`. The corresponding
+`mcp-<server>` toolset must also be present in the child's toolset set. Default
+`inherit_mcp_toolsets: true` preserves the parent's MCP toolsets automatically;
+when inheritance is disabled, include that server toolset explicitly in the
+delegation. In either case, the MAIN agent never sees the scoped tools.
 
 ## Empty result behavior
 

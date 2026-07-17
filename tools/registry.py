@@ -90,12 +90,13 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars", "dynamic_schema_overrides",
+        "max_result_size_chars", "dynamic_schema_overrides", "scope",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 scope: str = "main"):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -106,6 +107,14 @@ class ToolEntry:
         self.description = description
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
+        # Visibility scope. "main" (default) = visible to every agent.
+        # "subagent_only" = withheld from the MAIN agent's tool schema and
+        # exposed only to delegated subagents (platform="subagent"). Honored
+        # by get_definitions() when include_subagent_only is False. Unknown
+        # values are normalized to "main" by the caller (see
+        # tools/mcp_tool.py _normalize_mcp_scope) so a typo never silently
+        # hides a tool.
+        self.scope = scope
         # Optional zero-arg callable returning a dict of schema overrides
         # applied at get_definitions() time. Use for fields that depend on
         # runtime config (e.g. delegate_task's description must reflect the
@@ -376,6 +385,7 @@ class ToolRegistry:
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
+        scope: str = "main",
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
@@ -445,6 +455,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                scope=scope,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by
@@ -527,7 +538,8 @@ class ToolRegistry:
     # Schema retrieval
     # ------------------------------------------------------------------
 
-    def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
+    def get_definitions(self, tool_names: Set[str], quiet: bool = False,
+                        include_subagent_only: bool = False) -> List[dict]:
         """Return OpenAI-format tool schemas for the requested tool names.
 
         Only tools whose ``check_fn()`` returns True (or have no check_fn)
@@ -537,6 +549,14 @@ class ToolRegistry:
         etc.); TTL chosen so env-var changes (``hermes tools enable foo``)
         still take effect in near-real-time without forcing a full cache
         flush on every call.
+
+        ``include_subagent_only`` controls exposure of ``scope="subagent_only"``
+        tools (see ``ToolEntry.scope``). When ``False`` (the default, used for
+        MAIN agents), those tools are withheld from the returned schemas so the
+        model cannot call them directly. When ``True`` (used for delegated
+        subagents, which are constructed with ``platform="subagent"``), they are
+        included. This is the single choke point every ``tools/list``/schema
+        build passes through, so scoping lives here and nowhere else.
         """
         result = []
         # Per-call cache on top of the 30 s TTL — handles repeat probes of the
@@ -547,6 +567,16 @@ class ToolRegistry:
         for name in sorted(tool_names):
             entry = entries_by_name.get(name)
             if not entry:
+                continue
+            # Scope guard: subagent_only tools are withheld from non-subagent
+            # agents (MAIN). Delegated children pass include_subagent_only=True
+            # (they are subagents by construction: AIAgent(platform="subagent")).
+            if entry.scope == "subagent_only" and not include_subagent_only:
+                if not quiet:
+                    logger.debug(
+                        "Tool %s withheld from MAIN schema (scope=subagent_only)",
+                        name,
+                    )
                 continue
             if entry.check_fn:
                 if entry.check_fn not in check_results:

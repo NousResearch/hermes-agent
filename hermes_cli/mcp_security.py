@@ -179,3 +179,45 @@ def validate_mcp_server_entry(name: str, entry: dict[str, Any]) -> list[str]:
 
 def is_mcp_server_entry_suspicious(name: str, entry: dict[str, Any]) -> bool:
     return bool(validate_mcp_server_entry(name, entry))
+
+
+# Allowed values for the MCP server `scope` config key (server-level or
+# inside `tools:`). Unknown values are NOT rejected here — runtime
+# registration normalizes them to "main" with a warning (see
+# tools/mcp_tool._normalize_mcp_scope). We surface a non-fatal advisory so the
+# GUI/CLI can warn the user without blocking a save of an otherwise-valid
+# server. A typo in `scope` must never silently hide a tool, so the advisory
+# is informational, not a hard error.
+_MCP_ALLOWED_SCOPES = ("main", "subagent_only")
+
+
+def validate_mcp_scope(name: str, entry: dict[str, Any]) -> list[str]:
+    """Return advisory warnings about an MCP server's `scope` config.
+
+    Empty list means no issues. Unknown scope values (including inside the
+    `tools:` block) are reported as warnings; callers should not treat them as
+    hard errors because the runtime path defaults unknown scopes to "main".
+    """
+    if not isinstance(entry, dict):
+        return []
+
+    advisories: list[str] = []
+    server_scope = entry.get("scope")
+    if server_scope is not None and server_scope not in _MCP_ALLOWED_SCOPES:
+        advisories.append(
+            f"MCP server '{name}': unknown scope '{server_scope}'; will be "
+            f"treated as 'main' (tool visible to MAIN agent). Allowed: "
+            f"{', '.join(_MCP_ALLOWED_SCOPES)}"
+        )
+
+    tools_block = entry.get("tools")
+    if isinstance(tools_block, dict):
+        tools_scope = tools_block.get("scope")
+        if tools_scope is not None and tools_scope not in _MCP_ALLOWED_SCOPES:
+            advisories.append(
+                f"MCP server '{name}': unknown tools.scope '{tools_scope}'; "
+                f"will be treated as 'main'. Allowed: "
+                f"{', '.join(_MCP_ALLOWED_SCOPES)}"
+            )
+
+    return advisories

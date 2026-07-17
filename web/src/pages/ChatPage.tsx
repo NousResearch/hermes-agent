@@ -1202,6 +1202,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       raf2 = requestAnimationFrame(() => {
         raf2 = 0;
         syncMetricsRef.current?.();
+        // Fix #53641 / #27740: after a tab-switch resume the terminal grid has
+        // just been refitted by syncMetricsRef — the viewport may be stranded
+        // above the actual content bottom, making the pane appear black.
+        // scrollToBottom() re-anchors the viewport; refresh() redraws any rows
+        // that were skipped while the tab was hidden.
+        // This fires only on isActive=true transitions, never on normal resize
+        // or browser-focus events — safe for the user's scroll position.
+        const term = termRef.current;
+        if (term) {
+          try { term.scrollToBottom(); } catch { /* disposed */ }
+          try { term.refresh(0, term.rows - 1); } catch { /* disposed */ }
+        }
         const host = hostRef.current;
         const active = typeof document !== "undefined"
           ? document.activeElement
@@ -1259,13 +1271,33 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     const onResume = () => maybeReconnectOnPageResume();
 
-    document.addEventListener("visibilitychange", onResume);
+    // Fix #53641 / #27740: scroll the terminal to the bottom whenever the
+    // browser tab becomes visible again.  The `focus` / `online` / `pageshow`
+    // events are reconnect-only — scrolling there would be too aggressive
+    // (online can fire mid-session, focus fires every click).
+    // We guard on visibilityState === "visible" to avoid acting on the
+    // complementary "hidden" transition.  The rAF gives the browser one
+    // layout tick after the tab becomes visible so the terminal dimensions
+    // are settled before we reposition the viewport.
+    const onVisibilityChange = () => {
+      maybeReconnectOnPageResume();
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "visible"
+      ) {
+        requestAnimationFrame(() => {
+          try { termRef.current?.scrollToBottom(); } catch { /* disposed */ }
+        });
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("pageshow", onResume);
     window.addEventListener("focus", onResume);
     window.addEventListener("online", onResume);
 
     return () => {
-      document.removeEventListener("visibilitychange", onResume);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("pageshow", onResume);
       window.removeEventListener("focus", onResume);
       window.removeEventListener("online", onResume);

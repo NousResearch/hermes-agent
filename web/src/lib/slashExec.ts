@@ -131,6 +131,31 @@ export function parseSlash(command: string): { name: string; arg: string } {
   return m ? { name: m[1], arg: m[2].trim() } : { name: "", arg: "" };
 }
 
+/**
+ * Compute the next composer input string after applying a slash completion item.
+ *
+ * The server's "extras" completions (/compact, /details, /logs, etc.) return
+ * their text WITH a leading "/" while plain commands return bare names ("exit",
+ * "help").  replaceFrom is always 1 for slash completions, so naïve
+ * concatenation would produce "//compact".  This function strips the redundant
+ * leading slash, mirroring the TUI's Tab handler in useInputHandlers.ts.
+ */
+export function applySlashCompletion({
+  input,
+  itemText,
+  replaceFrom,
+}: {
+  input: string;
+  itemText: string;
+  replaceFrom: number;
+}): string {
+  const text =
+    input.startsWith("/") && itemText.startsWith("/") && replaceFrom > 0
+      ? itemText.slice(1)
+      : itemText;
+  return input.slice(0, replaceFrom) + text;
+}
+
 function parseCommandDispatch(raw: unknown): CommandDispatchResponse | null {
   if (!raw || typeof raw !== "object") return null;
 

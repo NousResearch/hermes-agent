@@ -1559,6 +1559,30 @@ class ReclaimBody(BaseModel):
     reason: Optional[str] = None
 
 
+class CancelBody(BaseModel):
+    reason: Optional[str] = None
+
+
+@router.post("/tasks/{task_id}/cancel")
+def cancel_task_endpoint(
+    task_id: str,
+    payload: CancelBody,
+    board: Optional[str] = Query(None),
+):
+    """Terminate active work and archive the task as one guarded action."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        result = kanban_db.cancel_task(conn, task_id, reason=payload.reason)
+        response = asdict(result)
+        if result.ok:
+            return response
+        status_code = 404 if result.outcome == "not_found" else 409
+        raise HTTPException(status_code=status_code, detail=response)
+    finally:
+        conn.close()
+
+
 @router.post("/tasks/{task_id}/reclaim")
 def reclaim_task_endpoint(
     task_id: str,

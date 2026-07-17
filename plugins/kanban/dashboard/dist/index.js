@@ -3069,10 +3069,17 @@
       const finalPatch = withCompletionSummary(patch, 1);
       if (!finalPatch) return Promise.resolve();
       setPatchErr(null);
-      return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug), {
-        method: "PATCH",
+      const isCancellation = finalPatch.status === "archived"
+        && data && data.task && data.task.status === "running";
+      const path = isCancellation
+        ? `${API}/tasks/${encodeURIComponent(props.taskId)}/cancel`
+        : `${API}/tasks/${encodeURIComponent(props.taskId)}`;
+      return SDK.fetchJSON(withBoard(path, boardSlug), {
+        method: isCancellation ? "POST" : "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(finalPatch),
+        body: JSON.stringify(isCancellation
+          ? { reason: "cancelled from dashboard" }
+          : finalPatch),
       }).then(function () { load(); props.onRefresh(); })
         .catch(function (e) { setPatchErr(parseApiErrorMessage(e)); });
     };
@@ -4043,8 +4050,12 @@
         b(tx(t, "complete", "Complete"),  { status: "done" },
           task.status === "running" || task.status === "ready" || task.status === "blocked",
           getDestructiveConfirm(t, "done")),
-        b(tx(t, "archive", "Archive"),   { status: "archived" }, task.status !== "archived",
-          getDestructiveConfirm(t, "archived")),
+        task.status === "running"
+          ? b(tx(t, "cancelTask", "Cancel task"), { status: "archived" }, true,
+              tx(t, "confirmCancelTask",
+                "Cancel this task? Its worker must terminate before the task is archived."))
+          : b(tx(t, "archive", "Archive"), { status: "archived" }, task.status !== "archived",
+              getDestructiveConfirm(t, "archived")),
       ),
       specifyMsg ? h("div", {
         className: specifyMsg.ok

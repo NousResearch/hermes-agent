@@ -1089,6 +1089,17 @@ class Event:
     run_id: Optional[int] = None
 
 
+@dataclass(frozen=True)
+class CancelResult:
+    """Explicit outcome of an operator cancellation request."""
+
+    ok: bool
+    task_id: str
+    outcome: str
+    idempotent: bool = False
+    termination: dict[str, Any] = field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -1225,7 +1236,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     ended_at            INTEGER,
     outcome             TEXT,
     -- outcome: completed | blocked | crashed | timed_out | spawn_failed |
-    --          gave_up | reclaimed | (null while still running)
+    --          gave_up | reclaimed | cancelled | (null while still running)
     summary             TEXT,
     metadata            TEXT,
     error               TEXT
@@ -3246,7 +3257,7 @@ def _end_run(
     """Close the currently-active run for ``task_id`` and clear the pointer.
 
     ``outcome`` is the semantic result (completed / blocked / crashed /
-    timed_out / spawn_failed / gave_up / reclaimed). ``status`` is the
+    timed_out / spawn_failed / gave_up / reclaimed / cancelled). ``status`` is the
     run-row status (usually just ``outcome``, but callers can pass it
     explicitly). Returns the closed run_id or ``None`` if no active run
     existed (e.g. a CLI user calling ``hermes kanban complete`` on a
@@ -5540,29 +5551,173 @@ def decompose_triage_task(
 
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Archive an inactive task.
+
+    Archival is a data-lifecycle operation, not worker control.  Any active
+    claim, PID, or run pointer makes this fail closed; callers that intend to
+    stop work must use :func:`cancel_task`.
+    """
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status != 'archived'",
+            "WHERE id = ? AND status NOT IN ('archived', 'running') "
+            "  AND claim_lock IS NULL AND worker_pid IS NULL "
+            "  AND current_run_id IS NULL",
             (task_id,),
         )
         if cur.rowcount != 1:
             return False
-        # If archive happened while a run was still in flight (e.g. user
-        # archived a running task from the dashboard), close that run with
-        # outcome='reclaimed' so attempt history isn't orphaned.
-        run_id = _end_run(
-            conn, task_id,
-            outcome="reclaimed", status="reclaimed",
-            summary="task archived with run still active",
-        )
-        _append_event(conn, task_id, "archived", None, run_id=run_id)
+        _append_event(conn, task_id, "archived")
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.
     recompute_ready(conn)
     return True
+
+
+def cancel_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+    signal_fn=None,
+) -> CancelResult:
+    """Terminate any active local worker and atomically archive its task.
+
+    The task transition is intentionally conditional on positive termination
+    proof.  If a claimed worker is remote, has no usable PID, survives the
+    signal sequence, or the task changes during termination, its claim and run
+    remain intact so the dispatcher cannot create a duplicate worker.
+    """
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_pid, current_run_id "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if not row:
+        return CancelResult(False, task_id, "not_found")
+
+    prior_cancel = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'cancelled' "
+        "LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row["status"] == "archived":
+        if prior_cancel:
+            return CancelResult(True, task_id, "cancelled", idempotent=True)
+        return CancelResult(False, task_id, "already_archived")
+    if row["status"] == "done":
+        return CancelResult(False, task_id, "already_completed")
+
+    snapshot = {
+        "status": row["status"],
+        "claim_lock": row["claim_lock"],
+        "worker_pid": row["worker_pid"],
+        "current_run_id": row["current_run_id"],
+    }
+    active = bool(
+        row["status"] == "running"
+        or row["claim_lock"] is not None
+        or row["worker_pid"] is not None
+        or row["current_run_id"] is not None
+    )
+    termination = _terminate_reclaimed_worker(
+        row["worker_pid"] if active else None,
+        row["claim_lock"] if active else None,
+        signal_fn=signal_fn,
+    )
+
+    if active and not termination.get("terminated"):
+        cancelled_elsewhere = False
+        with write_txn(conn):
+            current = conn.execute(
+                "SELECT status, claim_lock, worker_pid, current_run_id "
+                "FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            unchanged = bool(current) and all(
+                current[key] == value for key, value in snapshot.items()
+            )
+            cancelled_elsewhere = bool(
+                current
+                and current["status"] == "archived"
+                and conn.execute(
+                    "SELECT 1 FROM task_events "
+                    "WHERE task_id = ? AND kind = 'cancelled' LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+            )
+            if unchanged:
+                payload = {
+                    "reason": reason,
+                    "outcome": "termination_failed",
+                    **termination,
+                }
+                _append_event(
+                    conn, task_id, "cancel_failed", payload,
+                    run_id=row["current_run_id"],
+                )
+        if cancelled_elsewhere:
+            return CancelResult(
+                True, task_id, "cancelled", idempotent=True,
+                termination=termination,
+            )
+        return CancelResult(
+            False, task_id,
+            "termination_failed" if unchanged else "race_lost",
+            termination=termination,
+        )
+
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'archived', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ? AND status = ? AND claim_lock IS ? "
+            "AND worker_pid IS ? AND current_run_id IS ?",
+            (
+                task_id, snapshot["status"], snapshot["claim_lock"],
+                snapshot["worker_pid"], snapshot["current_run_id"],
+            ),
+        )
+        if cur.rowcount != 1:
+            current = conn.execute(
+                "SELECT status FROM tasks WHERE id = ?", (task_id,),
+            ).fetchone()
+            if (
+                current
+                and current["status"] == "archived"
+                and conn.execute(
+                    "SELECT 1 FROM task_events "
+                    "WHERE task_id = ? AND kind = 'cancelled' LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+            ):
+                return CancelResult(
+                    True, task_id, "cancelled", idempotent=True,
+                    termination=termination,
+                )
+            return CancelResult(
+                False, task_id, "race_lost", termination=termination,
+            )
+        run_id = _end_run(
+            conn, task_id,
+            outcome="cancelled", status="cancelled",
+            summary=reason or "cancelled by operator",
+            metadata=termination,
+        )
+        payload = {
+            "reason": reason,
+            "previous_status": snapshot["status"],
+            "previous_claim": snapshot["claim_lock"],
+            **termination,
+        }
+        _append_event(conn, task_id, "cancelled", payload, run_id=run_id)
+
+    recompute_ready(conn)
+    return CancelResult(
+        True, task_id, "cancelled", termination=termination,
+    )
 
 
 def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:

@@ -1143,7 +1143,19 @@ def test_dashboard_done_actions_prompt_for_completion_summary():
     assert "Completion summary" in bundle
     assert "result: summary" in bundle
     assert "body: JSON.stringify(patch)" in bundle
-    assert "body: JSON.stringify(finalPatch)" in bundle
+    assert ": finalPatch" in bundle
+
+
+def test_dashboard_running_archive_action_routes_through_cancel_endpoint():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    assert 'data.task.status === "running"' in bundle
+    assert '/cancel`' in bundle
+    assert 'method: isCancellation ? "POST" : "PATCH"' in bundle
+    assert 'tx(t, "cancelTask", "Cancel task")' in bundle
 
 
 def test_dashboard_surfaces_ready_blocked_error_inline():
@@ -1400,8 +1412,8 @@ def test_patch_status_done_without_summary_still_works(client):
         conn.close()
 
 
-def test_patch_status_archive_closes_running_run(client):
-    """PATCH to archived while running must close the in-flight run."""
+def test_patch_status_archive_refuses_running_task(client):
+    """Archival is not cancellation and must leave active work intact."""
     r = client.post("/api/plugins/kanban/tasks", json={"title": "z", "assignee": "worker"})
     tid = r.json()["task"]["id"]
     from hermes_cli import kanban_db as kb
@@ -1416,13 +1428,14 @@ def test_patch_status_archive_closes_running_run(client):
         f"/api/plugins/kanban/tasks/{tid}",
         json={"status": "archived"},
     )
-    assert r.status_code == 200, r.text
+    assert r.status_code == 409, r.text
     conn = kb.connect()
     try:
         task = kb.get_task(conn, tid)
-        assert task.status == "archived"
-        assert task.current_run_id is None
-        assert kb.latest_run(conn, tid).outcome == "reclaimed"
+        assert task.status == "running"
+        assert task.current_run_id == open_run.id
+        assert task.claim_lock is not None
+        assert kb.latest_run(conn, tid).ended_at is None
     finally:
         conn.close()
 
@@ -1963,6 +1976,56 @@ def test_reclaim_endpoint_releases_running_claim(client):
         assert row["claim_lock"] is None
     finally:
         conn2.close()
+
+
+def test_cancel_endpoint_returns_explicit_idempotent_outcome(client):
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="cancel before dispatch", assignee="x")
+    finally:
+        conn.close()
+
+    first = client.post(
+        f"/api/plugins/kanban/tasks/{t}/cancel",
+        json={"reason": "owner cancelled"},
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["outcome"] == "cancelled"
+    assert first.json()["idempotent"] is False
+
+    repeated = client.post(
+        f"/api/plugins/kanban/tasks/{t}/cancel",
+        json={},
+    )
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["outcome"] == "cancelled"
+    assert repeated.json()["idempotent"] is True
+
+
+def test_cancel_endpoint_fails_closed_without_termination_proof(client):
+    conn = kb.connect()
+    try:
+        t = kb.create_task(conn, title="claimed without pid", assignee="x")
+        assert kb.claim_task(conn, t)
+        before = kb.get_task(conn, t)
+    finally:
+        conn.close()
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t}/cancel",
+        json={"reason": "owner cancelled"},
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["outcome"] == "termination_failed"
+
+    conn = kb.connect()
+    try:
+        after = kb.get_task(conn, t)
+        assert after.status == "running"
+        assert after.claim_lock == before.claim_lock
+        assert after.current_run_id == before.current_run_id
+    finally:
+        conn.close()
 
 
 def test_reclaim_endpoint_409_for_non_running_task(client):

@@ -456,6 +456,20 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Human-readable reason (recorded on the reclaimed event)",
     )
 
+    p_cancel = sub.add_parser(
+        "cancel",
+        help="Terminate active work and archive the task atomically",
+    )
+    p_cancel.add_argument("task_id")
+    p_cancel.add_argument(
+        "--reason", default=None,
+        help="Human-readable reason (recorded on the cancelled event)",
+    )
+    p_cancel.add_argument(
+        "--json", action="store_true",
+        help="Emit the explicit cancellation outcome as JSON",
+    )
+
     p_reassign = sub.add_parser(
         "reassign",
         help="Reassign a task to a different profile, optionally reclaiming first",
@@ -962,6 +976,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "show":     _cmd_show,
             "assign":   _cmd_assign,
             "reclaim":  _cmd_reclaim,
+            "cancel":   _cmd_cancel,
             "reassign": _cmd_reassign,
             "diagnostics": _cmd_diagnostics,
             "diag":     _cmd_diagnostics,
@@ -1661,6 +1676,32 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
         return 1
     print(f"Reclaimed {args.task_id}")
     return 0
+
+
+def _cmd_cancel(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        result = kb.cancel_task(
+            conn, args.task_id,
+            reason=getattr(args, "reason", None),
+        )
+    payload = {
+        "ok": result.ok,
+        "task_id": result.task_id,
+        "outcome": result.outcome,
+        "idempotent": result.idempotent,
+        "termination": result.termination,
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    elif result.ok:
+        suffix = " (already cancelled)" if result.idempotent else ""
+        print(f"Cancelled {result.task_id}{suffix}")
+    else:
+        print(
+            f"cannot cancel {result.task_id}: {result.outcome}",
+            file=sys.stderr,
+        )
+    return 0 if result.ok else 1
 
 
 def _cmd_reassign(args: argparse.Namespace) -> int:

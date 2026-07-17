@@ -354,6 +354,11 @@ def test_kanban_autocomplete_includes_live_subcommands():
     assert "reclaim" in texts
     assert "reassign" in texts
 
+    doc = Document("/kanban ca", cursor_position=len("/kanban ca"))
+    texts = {c.text for c in completer.get_completions(doc, None)}
+
+    assert "cancel" in texts
+
 
 def test_kanban_not_gateway_only():
     # kanban is available in BOTH CLI and gateway surfaces.
@@ -365,8 +370,30 @@ def test_kanban_not_gateway_only():
 
 
 # ---------------------------------------------------------------------------
-# reclaim + reassign CLI smoke tests
+# reclaim + cancel + reassign CLI smoke tests
 # ---------------------------------------------------------------------------
+
+def test_run_slash_cancel_reports_explicit_idempotent_outcome(kanban_home):
+    import re
+
+    out = kc.run_slash("create 'cancel before dispatch' --assignee worker")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+
+    first = json.loads(kc.run_slash(
+        f"cancel {tid} --reason 'no longer needed' --json"
+    ))
+    assert first["ok"] is True
+    assert first["outcome"] == "cancelled"
+    assert first["idempotent"] is False
+
+    repeated = json.loads(kc.run_slash(f"cancel {tid} --json"))
+    assert repeated["ok"] is True
+    assert repeated["outcome"] == "cancelled"
+    assert repeated["idempotent"] is True
+
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "archived"
+
 
 def test_run_slash_reclaim_running_task(kanban_home):
     import re

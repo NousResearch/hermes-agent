@@ -55,6 +55,15 @@ class TestStepfunIdentity:
         assert normalize_provider("step") == "stepfun-plan"
         assert normalize_provider("stepfun-coding-plan") == "stepfun-plan"
 
+    def test_resolve_provider_aliases(self, monkeypatch):
+        # resolve_provider's alias map must match providers.py ALIASES so the
+        # auth-resolution path and the registry agree on these spellings.
+        from hermes_cli.auth import resolve_provider
+
+        monkeypatch.setenv("STEPFUN_API_KEY", "stepfun-test-key")
+        assert resolve_provider("stepfun-ai") == "stepfun"
+        assert resolve_provider("stepfun-step-plan") == "stepfun-plan"
+
     def test_labels(self):
         from hermes_cli.providers import _LABEL_OVERRIDES
 
@@ -203,26 +212,52 @@ class TestStepfunEnvAndDoctor:
 
 
 class TestStepfunMigration:
-    def _run(self, tmp_path, monkeypatch, model_cfg):
+    def _run(self, tmp_path, monkeypatch, model_cfg, env_seed=None):
+        """Run the v33→v34 migration against an isolated temp hermes home.
+
+        ``env_seed`` maps env-var names to values written into the temp
+        ``.env`` BEFORE the migration runs, so the migration's
+        ``get_env_value``/``save_env_value``/``remove_env_value`` helpers
+        read and write the temp home (never the developer's real ~/.hermes).
+        """
         import yaml
-        from hermes_constants import get_hermes_home
 
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
         cfg = {"_config_version": 33, "model": model_cfg}
         (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        (home / ".env").write_text(
+            "\n".join(f"{k}={v}" for k, v in (env_seed or {}).items()) + "\n",
+            encoding="utf-8",
+        )
 
         from hermes_cli import config as config_mod
 
         # `migrate_config` resolves config path via `hermes_cli.config.get_hermes_home`
         # (re-exported at module import), NOT the hermes_constants original — patch the
         # symbol the migration actually calls so reads AND writes land in tmp_path.
+        # This same symbol backs get_env_path()/get_config_path(), so env reads/writes
+        # (get_env_value/save_env_value/remove_env_value) are isolated too.
         monkeypatch.setattr(config_mod, "get_hermes_home", lambda: home)
         # Invalidate the raw-config cache so the temp file is read fresh.
         monkeypatch.setattr(config_mod, "_RAW_CONFIG_CACHE", {})
+        # Invalidate the .env cache and clear real-process env so get_env_value
+        # reads from the temp .env rather than a stale os.environ value.
+        monkeypatch.setattr(config_mod, "_env_cache", None)
+        for _k in ("STEPFUN_BASE_URL", "STEPFUN_STEP_PLAN_BASE_URL", "STEPFUN_API_KEY"):
+            monkeypatch.delenv(_k, raising=False)
 
         config_mod.migrate_config(interactive=False, quiet=True)
-        return yaml.safe_load((home / "config.yaml").read_text()) or {}
+        out = yaml.safe_load((home / "config.yaml").read_text()) or {}
+        out["_env"] = {
+            k: v
+            for k, v in (
+                line.split("=", 1)
+                for line in (home / ".env").read_text(encoding="utf-8").splitlines()
+                if "=" in line
+            )
+        }
+        return out
 
     def test_step_plan_config_migrated(self, tmp_path, monkeypatch):
         out = self._run(
@@ -237,3 +272,31 @@ class TestStepfunMigration:
             {"provider": "stepfun", "base_url": "https://api.stepfun.ai/v1", "default": "step-3.5-flash"},
         )
         assert out["model"]["provider"] == "stepfun"
+
+    def test_env_var_step_plan_migrated(self, tmp_path, monkeypatch):
+        # User configured Step Plan via STEPFUN_BASE_URL env var (no base_url in
+        # config.yaml). Migration must rewrite provider → stepfun-plan AND move
+        # the env value to the plan-specific var so it attaches to the right id.
+        plan_url = "https://api.stepfun.ai/step_plan/v1"
+        out = self._run(
+            tmp_path, monkeypatch,
+            {"provider": "stepfun", "default": "step-3.5-flash"},
+            env_seed={"STEPFUN_BASE_URL": plan_url},
+        )
+        assert out["model"]["provider"] == "stepfun-plan"
+        env = out["_env"]
+        assert env.get("STEPFUN_STEP_PLAN_BASE_URL") == plan_url
+        assert "STEPFUN_BASE_URL" not in env
+
+    def test_env_var_standard_untouched(self, tmp_path, monkeypatch):
+        # Plain /v1 URL under STEPFUN_BASE_URL → standard chat, env vars untouched.
+        std_url = "https://api.stepfun.ai/v1"
+        out = self._run(
+            tmp_path, monkeypatch,
+            {"provider": "stepfun", "default": "step-3.5-flash"},
+            env_seed={"STEPFUN_BASE_URL": std_url},
+        )
+        assert out["model"]["provider"] == "stepfun"
+        env = out["_env"]
+        assert env.get("STEPFUN_BASE_URL") == std_url
+        assert "STEPFUN_STEP_PLAN_BASE_URL" not in env

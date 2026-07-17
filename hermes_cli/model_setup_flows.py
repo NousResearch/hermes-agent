@@ -2095,7 +2095,7 @@ def _model_flow_stepfun(config, current_model="", provider_id="stepfun-plan"):
         if model_list:
             print(
                 f"  Could not auto-detect models from {pconfig.name} API — "
-                "showing Step Plan fallback catalog."
+                f"showing {pconfig.name} fallback catalog."
             )
 
     if model_list:

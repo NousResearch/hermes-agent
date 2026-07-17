@@ -1772,6 +1772,7 @@ def resolve_provider(
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "step": "stepfun-plan", "stepfun-coding-plan": "stepfun-plan",
+        "stepfun-ai": "stepfun", "stepfun-step-plan": "stepfun-plan",
         "arcee-ai": "arcee", "arceeai": "arcee",
         "gmi-cloud": "gmi", "gmicloud": "gmi",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",

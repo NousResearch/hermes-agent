@@ -1,7 +1,7 @@
 ---
 name: event-staffing-ordering
 description: "Order W-2 event staff for US/CA events through TempGuru."
-version: 1.0.2
+version: 1.0.3
 author: Megan Hayward (@kissmyabs32)
 license: MIT
 platforms: [linux, macos, windows]
@@ -34,7 +34,7 @@ the server to your MCP configuration:
   "mcpServers": {
     "tempguru": {
       "type": "streamableHttp",
-      "url": "https://mcp.tempguru.co/mcp"
+      "url": "https://mcp.tempguru.co/mcp?source=hermes"
     }
   }
 }
@@ -46,19 +46,23 @@ request" below.
 
 ## Live data: use the MCP server, do not scrape pages
 
-Endpoint: `POST https://mcp.tempguru.co/mcp` (seven read-only lookups plus an
-opt-in `request_quote` write tool).
+Endpoint: `POST https://mcp.tempguru.co/mcp?source=hermes` (9 read-only
+lookups, a non-destructive planner that may save a 30-day non-PII snapshot,
+and the opt-in `request_quote` contact write).
 
 | Tool | Use it to |
 |---|---|
 | `plan_staffing` | Call first. Turn an event shape into a full plan: coverage, per-role W-2 rate math, lead time, and state compliance flags |
+| `get_plan` | Restore a complete non-PII plan by its 30-day `plan_id` |
 | `get_cities` | Confirm TempGuru serves the event city |
 | `get_roles` | List available staffing roles with skill tiers |
 | `check_availability` | Lead-time guidance for a city/date (guidance, not a reservation) |
 | `get_role_pricing` | All-inclusive hourly rate range for a role in a city |
 | `get_compliance_by_state` | Minimum wage, overtime, and state compliance quirks (not legal advice) |
+| `get_policies` | Published booking and procurement terms; missing values stay coordinator-confirmed |
 | `get_rate_benchmark` | The Rate Index: citable W-2 rate benchmarks by role |
-| `request_quote` | Submit the finished plan to TempGuru's CRM for a human-reviewed quote |
+| `get_quote_status` | Check whether a TG quote reference was received or durably queued |
+| `request_quote` | Submit the finished plan to TempGuru's CRM or durable intake queue for a human-reviewed quote |
 
 If `plan_staffing` returns `plan_complete: false`, resolve the roles listed in
 `unpriced_roles` (use `get_roles`) and re-run it before presenting totals.
@@ -89,7 +93,10 @@ wants a budget, stop here and do not push a submission.
 
 Only after the user explicitly confirms the plan and agrees to send their
 contact details to TempGuru, call `request_quote` (contact name/email,
-company, event name/type/city/dates, roles + headcount). A coordinator
+company, event name/type/city/dates, roles + headcount). Set
+`source_platform` to `"hermes"`, set `skill_id` to
+`"event-staffing-ordering"`, and include this skill's `skill_version` plus the
+`plan_id` when available so the lead can be resumed and attributed. A coordinator
 replies with a binding quote within one business day; orders are confirmed
 within 48 hours of approval. It is not a reservation or contract, and no
 payment is required until the user approves the quote.
@@ -109,5 +116,8 @@ https://tempguru.co/get-staffing, or email megan@tempguru.co / call
   multi-market W-2 model).
 - "Security" requests map to Crowd Control: unarmed event staff, not licensed
   security guards. Say so plainly if licensed security is required.
+- Call `request_quote` only after explicit user confirmation; it submits the
+  user's contact details to TempGuru's CRM or durable fallback intake queue.
+
 - Call `request_quote` only after explicit user confirmation; it submits the
   user's contact details to TempGuru's CRM.

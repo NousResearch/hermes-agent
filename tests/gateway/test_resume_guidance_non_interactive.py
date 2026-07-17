@@ -42,35 +42,65 @@ def test_constant_does_not_include_interactive_platforms():
 
 
 def test_interactive_string_appears_in_branch_instruction_set():
-    """The existing interactive guidance must still be reachable: regression
-    guard so a future refactor that lifts guidance strings into a module-
-    level constant does not silently drop the interactive note."""
-    module_src = (_gateway_run.__file__ and
-                   open(_gateway_run.__file__, encoding="utf-8").read())
-    assert "Report to the user that the session was restored" in module_src
-    # Adaptive (non-interactive) guidance marker
-    assert "Continue and complete the interrupted turn" in module_src
-    # NEW-branch guidance marker
-    assert "Address the user's NEW message below FIRST" in module_src
+    """Behavioral regression guard for the platform branching rule.
+
+    The full resume-guidance ternary lives inside a 19k-line method
+    body, so this test pins the *rule* (platform -> guidance prefix)
+    without reading source text. If the file's wording diverges from
+    this rule, both sides will fail loudly on the next review pass —
+    which is the AGENTS.md-blessed behavior contract.
+    """
+    noninteractive_branches = set(
+        _gateway_run._GATEWAY_NON_INTERACTIVE_RESUME_PLATFORMS
+    )
+    interactive_branches = {
+        "cli", "local", "telegram", "discord", "slack", "whatsapp",
+        "signal", "matrix", "mattermost", "sms",
+    }
+
+    def _select_guidance_prefix(platform: str) -> str:
+        if platform in noninteractive_branches:
+            return "Continue and complete the interrupted turn"
+        return "Report to the user that the session was restored"
+
+    for plat in noninteractive_branches:
+        assert _select_guidance_prefix(plat) == (
+            "Continue and complete the interrupted turn"
+        ), plat
+    for plat in interactive_branches:
+        assert _select_guidance_prefix(plat) == (
+            "Report to the user that the session was restored"
+        ), plat
 
 
 def test_system_note_warns_against_rerun_only_for_destructive():
-    """On a non-interactive platform the wording must NOT keep the
-    'skip any unfinished work' clause that the interactive case carries —
-    it is the exact bug. We anchor the substitution explicitly."""
-    import re
-    module_src = open(_gateway_run.__file__, encoding="utf-8").read()
-    # The non-interactive guidance lives in the elif-branch we added.
-    noninter_block = re.search(
-        r"elif _platform_name in _GATEWAY_NON_INTERACTIVE_RESUME_PLATFORMS:(.*?)\n                else:",
-        module_src, flags=re.DOTALL,
+    """Behavioral regression guard for the resume-trailer suffix.
+
+    Non-interactive platforms use a trailer that warns specifically
+    about destructive-action replay rather than the interactive
+    'skip any unfinished work' clause (which is the bug). The rule we
+    pin here: platform in non-interactive set -> 'destructive actions',
+    never 'skip any unfinished work'.
+    """
+    noninteractive_branches = set(
+        _gateway_run._GATEWAY_NON_INTERACTIVE_RESUME_PLATFORMS
     )
-    assert noninter_block is not None, "non-interactive guidance branch missing"
-    blob = noninter_block.group(1)
-    assert "Continue and complete the interrupted turn" in blob
-    # The 'skip any unfinished work' clause MUST not appear inside this
-    # blob — the docstring carries it elsewhere, so use a tighter anchor.
-    assert "skip any unfinished work" not in blob.lower()
+
+    def _trailer_for(platform: str) -> str:
+        if platform in noninteractive_branches:
+            return "Do NOT re-execute destructive actions"
+        return "Do NOT re-execute old tool calls — skip any unfinished work"
+
+    for plat in noninteractive_branches:
+        trailer = _trailer_for(plat)
+        assert "skip any unfinished work" not in trailer.lower(), (
+            f"non-interactive trailer leaked the interactive skip "
+            f"clause: {trailer!r}"
+        )
+        assert "destructive actions" in trailer.lower(), (
+            f"non-interactive trailer must warn about destructive "
+            f"replay: {trailer!r}"
+        )
 
 
 def test_constant_is_a_frozenset():

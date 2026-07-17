@@ -54,23 +54,29 @@ import {
   transferMayContainImage,
   uploadChatImage,
 } from "@/lib/chatImagePaste";
+import { buildChatAttachScope, RESUME_NONCE_PARAM } from "@/lib/chat-resume";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
 
-// Stable per-browser token identifying THIS chat tab's keep-alive PTY session.
-// Sent as ?attach=; lets a refresh/disconnect reattach to the same live process
-// instead of spawning a fresh one. Per-localStorage, so other devices can't grab it.
-// ``rotate`` mints a new token — used when the user explicitly starts a fresh
-// session so the old keep-alive PTY is NOT reattached (the registry reaps it).
-const PTY_ATTACH_TOKEN_KEY = "hermes.pty.token.chat";
-function ptyAttachToken(rotate = false): string {
+// Stable per-tab token identifying the current keep-alive PTY session for a
+// specific chat scope. Sent as ?attach=; lets a refresh/disconnect reattach to
+// the same live process instead of spawning a fresh one. The scope includes
+// the selected resume target so switching sessions cannot accidentally
+// reattach to a previous session's PTY.
+const PTY_ATTACH_TOKEN_KEY_PREFIX = "hermes.pty.token.chat";
+function ptyAttachToken(scope: string, rotate = false): string {
+  const key = `${PTY_ATTACH_TOKEN_KEY_PREFIX}.${encodeURIComponent(scope)}`;
   let t = "";
   if (!rotate) {
     try {
-      t = window.localStorage.getItem(PTY_ATTACH_TOKEN_KEY) ?? "";
+      t = window.sessionStorage.getItem(key) ?? "";
     } catch {
-      /* private mode / storage blocked */
+      try {
+        t = window.localStorage.getItem(key) ?? "";
+      } catch {
+        /* private mode / storage blocked */
+      }
     }
   }
   if (!t) {
@@ -78,9 +84,13 @@ function ptyAttachToken(rotate = false): string {
     crypto.getRandomValues(a);
     t = Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
     try {
-      window.localStorage.setItem(PTY_ATTACH_TOKEN_KEY, t);
+      window.sessionStorage.setItem(key, t);
     } catch {
-      /* ignore */
+      try {
+        window.localStorage.setItem(key, t);
+      } catch {
+        /* ignore */
+      }
     }
   }
   return t;
@@ -291,15 +301,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // param changes do NOT remount the component. Resume-in-chat from the
   // Sessions page relies on `/chat?resume=<id>` changing at runtime, so we must
   // treat the current resume target as part of the PTY identity and rebuild the
-  // terminal session when it changes.
+  // terminal session when it changes. `resumeNonce` lets the Sessions page
+  // force a reopen even when the user clicks the already-active session.
   const resumeParam = searchParams.get("resume");
+  const resumeNonce = searchParams.get(RESUME_NONCE_PARAM);
   // Profile-scoped chat: spawn the PTY under the globally selected
   // management profile. Changing it remounts the terminal (key below /
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
-  const channel = useMemo(
-    () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
+  const attachScope = useMemo(
+    () => buildChatAttachScope(resumeParam, scopedProfile),
     [resumeParam, scopedProfile],
+  );
+  const channel = useMemo(
+    () => generateChannelId(`${resumeParam ?? ""}\0${resumeNonce ?? ""}\0${scopedProfile}`),
+    [resumeParam, resumeNonce, scopedProfile],
   );
   const titleScope = `${channel}\0${reconnectNonce}`;
   const sessionTitle =
@@ -907,7 +923,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Keep-alive identity: reattach to this tab's living PTY across
       // refresh/transient drops. A forced-fresh start rotates the token so
       // the previous keep-alive PTY is not reattached (registry reaps it).
-      params.attach = ptyAttachToken(forceFresh);
+      params.attach = ptyAttachToken(attachScope, forceFresh);
       // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).
@@ -1165,7 +1181,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         reconnectTimerRef.current = null;
       }
     };
-  }, [channel, clearReconnectTimer, resumeParam, scopedProfile, reconnectNonce]);
+  }, [attachScope, channel, clearReconnectTimer, resumeParam, scopedProfile, reconnectNonce]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.

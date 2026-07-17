@@ -69,6 +69,7 @@ import { useSystemActions } from "@/contexts/useSystemActions";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { buildResumeInChatUrl } from "@/lib/chat-resume";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 
@@ -451,7 +452,7 @@ function SessionRow({
           title={t.sessions.resumeInChat}
           onClick={(e) => {
             e.stopPropagation();
-            navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+            navigate(buildResumeInChatUrl(session.id));
           }}
         >
           <Play />

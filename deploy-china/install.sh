@@ -175,7 +175,7 @@ echo ""
 # ============================================================
 # 第1步：换国内源
 # ============================================================
-info "【第1步/共7步】换国内源，让下载飞起来..."
+info "【第1步】换国内源，让下载飞起来..."
 
 if [ "$INSTALL_MODE" = "1" ]; then
     case "$OS_ID" in
@@ -221,7 +221,7 @@ fi
 # ============================================================
 # 第2步：安装 Docker
 # ============================================================
-info "【第2步/共7步】安装 Docker..."
+info "【第2步】安装 Docker..."
 
 if [ "$INSTALL_MODE" = "1" ]; then
     command -v docker &>/dev/null
@@ -304,97 +304,176 @@ else
 fi
 
 # ============================================================
-# 第3步：从魔塔下载镜像
+# 第3步：选择镜像来源 + 版本 + 下载
 # ============================================================
-info "【第3步/共7步】从魔塔下载最新的 Hermes 镜像..."
 echo ""
-info "正在查询魔塔上的最新版本号..."
-
-DL_CMD="curl -sL --connect-timeout 10"
-command -v curl &>/dev/null || DL_CMD="wget -qO- --timeout=10"
-
-VERSION_LIST=$($DL_CMD \
-    "https://modelscope.cn/api/v1/models/aifengheguai/hermes-agent/repo/files?Revision=master&Root=" \
-    2>/dev/null | grep -o '"Name":"[^"]*\.tar"' | sed 's/"Name":"//;s/"//' 2>/dev/null)
-
-TAR_FILE=$(echo "$VERSION_LIST" | head -1 2>/dev/null)
-
-if [ -z "$TAR_FILE" ]; then
-    warn "从魔塔查询版本失败，改用默认文件名"
-    TAR_FILE="nousresearch_hermes-agent_latest.tar"
-fi
-
-DOWNLOAD_URL="https://modelscope.cn/models/aifengheguai/hermes-agent/resolve/master/${TAR_FILE}"
-
-info "当前版本：$TAR_FILE"
-info "文件大概 1-2GB，根据网速可能需要几分钟，请耐心等待..."
+info "【第3步】获取 Hermes 镜像..."
+echo ""
+info "请选择镜像来源："
+info "  1) 魔塔 ModelScope（国内下载快，推荐）"
+info "  2) Docker Hub（从国内镜像拉取）"
+echo ""
+read -p "请选择 [1/2]（直接回车默认 1）：" IMAGE_SOURCE </dev/tty
 echo ""
 
-# 记录临时文件，中断时自动清理
-TMP_FILES="$TMP_FILES $TAR_FILE"
-
-if command -v aria2c &>/dev/null; then
-    info "检测到 aria2（多线程下载器），速度更快！"
-    aria2c -s 16 -x 16 -k 1M "$DOWNLOAD_URL" 2>&1 | tail -5
-elif command -v curl &>/dev/null; then
-    info "正在用 curl 下载（看到进度条就说明在跑）..."
-    curl -L -o "$TAR_FILE" "$DOWNLOAD_URL"
+# ---------- 确保 curl 或 wget 可用（获取版本列表用）----------
+DL_QUERY=""
+if command -v curl &>/dev/null; then
+    DL_QUERY="curl -sL --connect-timeout 10"
+elif command -v wget &>/dev/null; then
+    DL_QUERY="wget -qO- --timeout=10"
 else
-    info "正在用 wget 下载..."
-    wget -O "$TAR_FILE" "$DOWNLOAD_URL"
-fi
-
-if [ ! -f "$TAR_FILE" ]; then
-    err "下载失败了！请检查网络"
-    cleanup
+    err "既没有 curl 也没有 wget，无法查询版本列表"
+    err "请手动选择版本后重试"
     exit 1
 fi
 
-# 下载完成，从清理列表移除
-TMP_FILES=""
-ok "镜像下载完成！文件大小：$(du -h "$TAR_FILE" | cut -f1)"
-
-# ============================================================
-# 第4步：加载镜像到 Docker
-# ============================================================
-info "【第4步/共7步】把镜像加载到 Docker 中..."
-
-if [[ "$TAR_FILE" == *.tar.gz ]] || [[ "$TAR_FILE" == *.tgz ]]; then
-    info "检测到压缩包，正在解压，请耐心等待..."
+# ---------- 方案 A：从魔塔下载 ----------
+if [ "$IMAGE_SOURCE" != "2" ]; then
+    info "正在查询魔塔上的可用版本..."
     echo ""
-    gzip -d "$TAR_FILE"
-    TAR_FILE="${TAR_FILE%.gz}"
-    TAR_FILE="${TAR_FILE%.tgz}.tar"
+
+    VERSION_LIST=$($DL_QUERY \
+        "https://modelscope.cn/api/v1/models/aifengheguai/hermes-agent/repo/files?Revision=master&Root=" \
+        2>/dev/null | grep -o '"Name":"[^"]*\.tar"' | sed 's/"Name":"//;s/"//' 2>/dev/null)
+
+    if [ -z "$VERSION_LIST" ]; then
+        warn "查询魔塔失败，使用默认版本"
+        VERSION_LIST="nousresearch_hermes-agent_latest.tar"
+    fi
+
+    echo ""
+    info "魔塔上可用的版本："
+    echo ""
+    echo "$VERSION_LIST" | nl -w2 -s') '
+    echo ""
+    read -p "请输入版本编号（直接回车选第1个）：" VER_CHOICE </dev/tty
+    TAR_FILE=$(echo "$VERSION_LIST" | sed -n "${VER_CHOICE:-1}p" 2>/dev/null)
+    if [ -z "$TAR_FILE" ]; then
+        TAR_FILE=$(echo "$VERSION_LIST" | head -1)
+    fi
+
+    DOWNLOAD_URL="https://modelscope.cn/models/aifengheguai/hermes-agent/resolve/master/${TAR_FILE}"
+    info "下载版本：$TAR_FILE"
+    info "文件大概 1-2GB，根据网速可能需要几分钟，请耐心等待..."
+    echo ""
+
+    TMP_FILES="$TMP_FILES $TAR_FILE"
+
+    if command -v aria2c &>/dev/null; then
+        info "检测到 aria2（多线程下载器），速度更快！"
+        aria2c -s 16 -x 16 -k 1M "$DOWNLOAD_URL" 2>&1 | tail -5
+    elif command -v curl &>/dev/null; then
+        info "正在用 curl 下载（看到进度条就说明在跑）..."
+        curl -L -o "$TAR_FILE" "$DOWNLOAD_URL"
+    else
+        info "正在用 wget 下载..."
+        wget -O "$TAR_FILE" "$DOWNLOAD_URL"
+    fi
+
+    if [ ! -f "$TAR_FILE" ]; then
+        err "下载失败！"
+        cleanup
+        exit 1
+    fi
+
+    TMP_FILES=""
+    ok "下载完成：$(du -h "$TAR_FILE" | cut -f1)"
+
+    # 加载镜像到 Docker
+    info "正在加载镜像到 Docker..."
+    if [[ "$TAR_FILE" == *.tar.gz ]] || [[ "$TAR_FILE" == *.tgz ]]; then
+        info "正在解压，请耐心等待..."
+        echo ""
+        gzip -d "$TAR_FILE"
+        TAR_FILE="${TAR_FILE%.gz}"
+        TAR_FILE="${TAR_FILE%.tgz}.tar"
+    fi
+    echo ""
+    info "正在加载镜像，请耐心等待..."
+    echo ""
+    docker load -i "$TAR_FILE" 2>&1 | tee /tmp/docker_load_output.txt
+    LOAD_EXIT_CODE=${PIPESTATUS[0]}
+    if [ $LOAD_EXIT_CODE -ne 0 ]; then
+        err "docker load 失败"
+        exit 1
+    fi
+    IMAGE_NAME=$(grep "Loaded image:" /tmp/docker_load_output.txt | sed 's/.*Loaded image: //')
+    if [ -z "$IMAGE_NAME" ]; then
+        warn "未识别镜像名，用默认值"
+        IMAGE_NAME="nousresearch/hermes-agent:main"
+    fi
+    rm -f "$TAR_FILE" /tmp/docker_load_output.txt 2>/dev/null
+    ok "镜像加载成功：$IMAGE_NAME"
+
+# ---------- 方案 B：从 Docker Hub 国内镜像拉取 ----------
+else
+    info "从 Docker Hub 国内镜像拉取..."
+    echo ""
+    info "请选择 Docker Hub 国内镜像源："
+    info "  1) 阿里云（registry.cn-hangzhou.aliyuncs.com）"
+    info "  2) 腾讯云（mirror.ccs.tencentyun.com）"
+    info "  3) 网易（hub-mirror.c.163.com）"
+    info "  4) DaoCloud（docker.m.daocloud.io）"
+    echo ""
+    read -p "请选择 [1-4]（直接回车默认 1）：" MIRROR_CHOICE </dev/tty
+
+    case "$MIRROR_CHOICE" in
+        2) DH_MIRROR="mirror.ccs.tencentyun.com" ;;
+        3) DH_MIRROR="hub-mirror.c.163.com" ;;
+        4) DH_MIRROR="docker.m.daocloud.io" ;;
+        *) DH_MIRROR="registry.cn-hangzhou.aliyuncs.com" ;;
+    esac
+    info "使用镜像：$DH_MIRROR"
+    echo ""
+
+    # 查询 Docker Hub 可用标签
+    info "正在查询 Docker Hub 上的可用版本..."
+    DH_TAGS=$($DL_QUERY \
+        "https://hub.docker.com/v2/repositories/nousresearch/hermes-agent/tags?page_size=20" \
+        2>/dev/null | grep -o '"name":"[^"]*"' | sed 's/"name":"//;s/"//' 2>/dev/null)
+
+    if [ -z "$DH_TAGS" ]; then
+        warn "查询 Docker Hub 失败，使用默认标签 latest"
+        DH_TAGS="latest"
+    fi
+
+    echo ""
+    info "Docker Hub 上可用的版本标签："
+    echo ""
+    echo "$DH_TAGS" | nl -w2 -s') '
+    echo ""
+    read -p "请输入版本编号（直接回车选第1个）：" TAG_CHOICE </dev/tty
+    DH_TAG=$(echo "$DH_TAGS" | sed -n "${TAG_CHOICE:-1}p" 2>/dev/null)
+    if [ -z "$DH_TAG" ]; then
+        DH_TAG=$(echo "$DH_TAGS" | head -1)
+    fi
+
+    # 从国内镜像拉取
+    # Docker Hub 镜像的国内加速格式：mirror/library/image:tag
+    FULL_IMAGE="${DH_MIRROR}/nousresearch/hermes-agent:${DH_TAG}"
+    info "拉取版本：$DH_TAG"
+    info "拉取地址：$FULL_IMAGE"
+    info "镜像大概 2-3GB，根据网速可能需要几分钟..."
+    echo ""
+    docker pull "$FULL_IMAGE" 2>&1
+    PULL_EXIT=$?
+    if [ $PULL_EXIT -ne 0 ]; then
+        err "Docker pull 失败，请换一个镜像源试试"
+        exit 1
+    fi
+
+    # 打回原名，方便后续启动
+    IMAGE_NAME="nousresearch/hermes-agent:${DH_TAG}"
+    docker tag "$FULL_IMAGE" "$IMAGE_NAME" 2>/dev/null || true
+    ok "镜像拉取成功：$IMAGE_NAME"
 fi
-
-echo ""
-info "正在把镜像加载到 Docker，文件较大，屏幕可能短时间不刷新，请耐心等待..."
-echo ""
-docker load -i "$TAR_FILE" 2>&1 | tee /tmp/docker_load_output.txt
-
-# 检查 docker load 是否真正成功
-LOAD_EXIT_CODE=${PIPESTATUS[0]}
-if [ $LOAD_EXIT_CODE -ne 0 ]; then
-    err "docker load 失败，请检查镜像文件是否损坏"
-    exit 1
-fi
-
-IMAGE_NAME=$(grep "Loaded image:" /tmp/docker_load_output.txt | sed 's/.*Loaded image: //')
-
-if [ -z "$IMAGE_NAME" ]; then
-    warn "没识别出镜像名，用默认的"
-    IMAGE_NAME="nousresearch/hermes-agent:latest"
-fi
-
-# docker load 成功后才删除 tar 包
-rm -f "$TAR_FILE" /tmp/docker_load_output.txt 2>/dev/null
-ok "镜像加载成功！镜像名：$IMAGE_NAME"
 
 # ============================================================
 # 第5步：启动容器
 # 端口映射：127.0.0.1:8787 → 容器内 8787
 # ============================================================
-info "【第5步/共7步】启动 Hermes Agent 容器..."
+info "【第4步】启动 Hermes Agent 容器..."
 
 docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^hermes-agent$'
 if [ $? -eq 0 ]; then

@@ -1631,7 +1631,7 @@ function WeixinOnboardingPanel({
       }
       await onChanged();
     } catch (applyError) {
-      setPhase("waiting");
+      resetSetup();
       setError(String(applyError));
     }
   };

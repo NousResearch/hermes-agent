@@ -29,7 +29,6 @@ import asyncio
 import base64
 import io
 import logging
-import secrets
 import threading
 import time
 import uuid
@@ -126,8 +125,11 @@ class WeixinQRSessionManager:
             return loop
 
     def _prune_expired(self) -> None:
-        """Evict expired sessions. Caller must hold ``self._lock``."""
+        """Evict expired and stale terminal sessions. Caller must hold ``self._lock``."""
         now = time.time()
+        # Sessions still in a non-terminal state whose deadline has passed.
+        # The background task may still be running — cancel it so it doesn't
+        # race with eviction.
         expired = [
             sid
             for sid, session in self._sessions.items()
@@ -142,6 +144,19 @@ class WeixinQRSessionManager:
             session = self._sessions.pop(sid, None)
             if session and session._task and not session._task.done():
                 session._task.cancel()
+
+        # Evict terminal sessions after a 5-minute retention window so the
+        # UI has time to display the final state (confirmed/failed/expired/
+        # cancelled) before the session is garbage-collected.
+        _TERMINAL_RETENTION = 300  # seconds
+        stale_terminal = [
+            sid
+            for sid, session in self._sessions.items()
+            if session.state in {"confirmed", "failed", "expired", "cancelled"}
+            and session.expires_at_ts + _TERMINAL_RETENTION <= now
+        ]
+        for sid in stale_terminal:
+            self._sessions.pop(sid, None)
 
     def start_session(
         self,
@@ -245,12 +260,15 @@ class WeixinQRSessionManager:
             import aiohttp
 
             connector = _make_ssl_connector()
-            ssl_ctx = _get_ssl_context() if connector is None else None
+            if connector is None:
+                # _make_ssl_connector() returns None when called outside an
+                # event loop (aiohttp 3.13+). Build a TCPConnector from the
+                # pre-built SSL context instead.
+                ssl_ctx = _get_ssl_context()
+                connector = aiohttp.TCPConnector(ssl=ssl_ctx) if ssl_ctx else None
             session_kwargs = {"trust_env": True}
             if connector is not None:
                 session_kwargs["connector"] = connector
-            elif ssl_ctx is not None:
-                session_kwargs["ssl"] = ssl_ctx
             async with aiohttp.ClientSession(**session_kwargs) as aiohttp_session:
                 session._aiohttp_session = aiohttp_session
                 session._current_base_url = ILINK_BASE_URL
@@ -438,7 +456,7 @@ def _render_qr_png_base64(data: str) -> str:
     """Render a QR code as a base64-encoded PNG string.
 
     Falls back to empty string if the ``qrcode`` package is unavailable.
-    The frontend will then display the raw URL as a fallback link.
+    The frontend will show an error message in that case.
     """
     try:
         import qrcode

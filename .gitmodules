@@ -17,3 +17,6 @@
 	path = vendor/SillyTavern
 	url = https://github.com/SillyTavern/SillyTavern.git
 	branch = release
+[submodule "vendor/shinka-osint"]
+	path = vendor/shinka-osint
+	url = https://github.com/zapabob/ShinkaEvolve-OSINT.git

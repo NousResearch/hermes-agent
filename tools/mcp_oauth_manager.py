@@ -587,14 +587,14 @@ class MCPOAuthManager:
         server_name: str,
         *,
         hermes_home: str | Path | None = None,
-    ) -> None:
+    ) -> _ProviderEntry | None:
         """Evict the provider from cache AND delete tokens from disk.
 
         Called by ``hermes mcp remove <name>`` and (indirectly) by
         ``hermes mcp login <name>`` during forced re-auth.
         """
         with self._entries_lock:
-            self._entries.pop(self._key(server_name, hermes_home), None)
+            entry = self._entries.pop(self._key(server_name, hermes_home), None)
 
         from tools.mcp_oauth import remove_oauth_tokens
         remove_oauth_tokens(server_name, hermes_home=hermes_home)
@@ -602,6 +602,20 @@ class MCPOAuthManager:
             "MCP OAuth '%s': evicted from cache and removed from disk",
             server_name,
         )
+        return entry
+
+    def restore_entry(
+        self,
+        server_name: str,
+        entry: _ProviderEntry | None,
+        *,
+        hermes_home: str | Path | None = None,
+    ) -> None:
+        """Restore a provider entry removed for a failed reauthorization."""
+        if entry is None:
+            return
+        with self._entries_lock:
+            self._entries.setdefault(self._key(server_name, hermes_home), entry)
 
     def evict(
         self,

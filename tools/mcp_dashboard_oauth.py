@@ -25,6 +25,7 @@ class DashboardOAuthFlow:
     profile: str | None
     hermes_home: str
     redirect_uri: str
+    reconnect_live: bool = False
     created_at: float = field(default_factory=time.time)
     status: str = "starting"
     authorization_url: str | None = None

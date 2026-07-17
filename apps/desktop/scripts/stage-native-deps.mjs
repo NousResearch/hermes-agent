@@ -14,12 +14,13 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
   chmodSync,
-  cpSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
-  rmSync,
+  rmdirSync,
+  unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -31,6 +32,52 @@ const require = createRequire(import.meta.url)
 
 function makeExecutable(filePath) {
   chmodSync(filePath, 0o755)
+}
+
+// ─── libuv-safe fs primitives ────────────────────────────────────────
+//
+// Node 24's native rewrite of fs.cpSync/fs.rmSync mishandles non-ASCII
+// Windows paths (observed on v24.11.1 with an accented Windows user name,
+// i.e. a default %LOCALAPPDATA%\hermes home): a recursive cpSync fails
+// with EIO "Access is denied" or hard-crashes the process, an overwriting
+// cpSync fails with a bogus errno-0 unlink error, and rmSync silently
+// deletes nothing — leaving a half-staged tree that breaks every retry.
+// copyFileSync/unlinkSync/rmdirSync/readdirSync go through libuv and
+// handle those paths correctly, so staging uses them exclusively.
+
+/** Recursively copy a directory without fs.cpSync. */
+function copyDirSync(srcDir, destDir) {
+  mkdirSync(destDir, { recursive: true })
+  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+    const src = join(srcDir, entry.name)
+    const dest = join(destDir, entry.name)
+    if (entry.isDirectory()) {
+      copyDirSync(src, dest)
+    } else {
+      copyFileSync(src, dest)
+    }
+  }
+}
+
+/**
+ * Recursively delete a directory without fs.rmSync (missing dir is fine),
+ * then verify the tree is actually gone — a silent no-op here surfaces
+ * later as an inexplicable staging failure, so fail loudly instead.
+ */
+function removeDirSync(dir) {
+  if (!existsSync(dir)) return
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      removeDirSync(full)
+    } else {
+      unlinkSync(full)
+    }
+  }
+  rmdirSync(dir)
+  if (existsSync(dir)) {
+    throw new Error(`[stage-native-deps] failed to remove ${dir}`)
+  }
 }
 
 function patchUnixTerminalAsarPaths(destRoot) {
@@ -74,7 +121,7 @@ function copyGlobByExt(srcDir, destDir, extensions) {
     }
     if (extensions.some((ext) => entry.name.endsWith(ext))) {
       mkdirSync(destDir, { recursive: true })
-      cpSync(join(srcDir, entry.name), join(destDir, entry.name))
+      copyFileSync(join(srcDir, entry.name), join(destDir, entry.name))
     }
   }
 }
@@ -96,12 +143,12 @@ function copyBuildRelease(srcDir, destDir) {
   mkdirSync(destDir, { recursive: true })
   for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
-      cpSync(join(srcDir, entry.name), join(destDir, entry.name), { recursive: true })
+      copyDirSync(join(srcDir, entry.name), join(destDir, entry.name))
       continue
     }
     if (entry.name === 'spawn-helper' || /\.(node|dll|exe)$/.test(entry.name)) {
       const destFile = join(destDir, entry.name)
-      cpSync(join(srcDir, entry.name), destFile)
+      copyFileSync(join(srcDir, entry.name), destFile)
       if (entry.name === 'spawn-helper') {
         makeExecutable(destFile)
       }
@@ -240,12 +287,12 @@ function validateStagedBinaries(destRoot, targetPlatform) {
 export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platform, arch = process.arch } = {}) {
   const hostMatch = platform === process.platform && arch === process.arch
 
-  rmSync(destRoot, { recursive: true, force: true })
+  removeDirSync(destRoot)
   mkdirSync(destRoot, { recursive: true })
 
   // package.json — needed so `require('node-pty')` resolves the package
   // (reads "main") rather than treating it as a directory with no entry.
-  cpSync(join(srcRoot, 'package.json'), join(destRoot, 'package.json'))
+  copyFileSync(join(srcRoot, 'package.json'), join(destRoot, 'package.json'))
 
   // lib/**/*.js — the JS surface node-pty's `main` points into.
   copyGlobByExt(join(srcRoot, 'lib'), join(destRoot, 'lib'), ['.js'])
@@ -261,16 +308,16 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
     mkdirSync(destPrebuild, { recursive: true })
     for (const entry of readdirSync(prebuildDir, { withFileTypes: true })) {
       if (entry.name === 'conpty' && entry.isDirectory()) {
-        cpSync(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'), { recursive: true })
+        copyDirSync(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'))
         continue
       }
       if (entry.isFile() && /\.(node|dll|exe)$/.test(entry.name)) {
-        cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
+        copyFileSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
         continue
       }
       if (entry.name === 'spawn-helper') {
         const destFile = join(destPrebuild, entry.name)
-        cpSync(join(prebuildDir, entry.name), destFile)
+        copyFileSync(join(prebuildDir, entry.name), destFile)
         makeExecutable(destFile)
       }
     }

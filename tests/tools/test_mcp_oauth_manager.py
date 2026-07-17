@@ -46,6 +46,34 @@ def test_manager_isolates_same_named_servers_by_profile_home(tmp_path, monkeypat
     assert providers[0].context.current_tokens.access_token == "TOKEN_A"
     assert providers[1].context.current_tokens.access_token == "TOKEN_B"
 
+
+def test_manager_explicit_home_removes_only_that_profiles_tokens(tmp_path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    profile_a = tmp_path / "profile-a"
+    profile_b = tmp_path / "profile-b"
+    paths = []
+    for home in (profile_a, profile_b):
+        token = set_hermes_home_override(home)
+        try:
+            storage = HermesTokenStorage("shared")
+            storage._tokens_path().parent.mkdir(parents=True, exist_ok=True)
+            storage._tokens_path().write_text('{"access_token":"x","token_type":"Bearer"}')
+            paths.append(storage._tokens_path())
+        finally:
+            reset_hermes_home_override(token)
+
+    token = set_hermes_home_override(profile_a)
+    try:
+        MCPOAuthManager().remove("shared", hermes_home=profile_b)
+    finally:
+        reset_hermes_home_override(token)
+
+    assert paths[0].exists()
+    assert not paths[1].exists()
+
 pytest.importorskip(
     "mcp.client.auth.oauth2",
     reason="MCP SDK 1.26.0+ required for OAuth support",

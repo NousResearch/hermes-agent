@@ -11415,9 +11415,6 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                     _save_mcp_server(flow.server_name, cfg)
                     flow.tools = [{"name": t, "description": d} for t, d in tools]
                     flow.mark_approved()
-                    from tools.mcp_tool import reconnect_mcp_server
-
-                    reconnect_mcp_server(flow.server_name)
                 except Exception:
                     storage.restore(backup)
                     raise
@@ -11450,6 +11447,7 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
             get_manager().evict(flow.server_name, hermes_home=flow.hermes_home)
         except Exception:
             pass
+        flow.mark_worker_done()
 
 
 @app.post("/api/mcp/servers/{name}/auth")
@@ -11474,27 +11472,6 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
         raise HTTPException(status_code=400, detail="This server uses header/API-key auth, not OAuth")
     cfg["auth"] = "oauth"
 
-    with _mcp_oauth_flows_lock:
-        pending = sum(
-            flow.status in {"starting", "authorization_required"}
-            for flow in _mcp_oauth_flows.values()
-        )
-        if pending >= _MAX_PENDING_MCP_OAUTH_FLOWS:
-            raise HTTPException(
-                status_code=429,
-                detail="Too many MCP OAuth flows are already in progress",
-            )
-        if any(
-            flow.server_name == name
-            and flow.hermes_home == flow_home
-            and flow.status in {"starting", "authorization_required"}
-            for flow in _mcp_oauth_flows.values()
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail=f"MCP OAuth for '{name}' is already in progress",
-            )
-
     flow_id = secrets.token_urlsafe(24)
     flow = DashboardOAuthFlow(
         flow_id=flow_id,
@@ -11505,6 +11482,25 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
         or _mcp_oauth_callback_url(request, name),
     )
     with _mcp_oauth_flows_lock:
+        pending = sum(
+            not flow.worker_done
+            for flow in _mcp_oauth_flows.values()
+        )
+        if pending >= _MAX_PENDING_MCP_OAUTH_FLOWS:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many MCP OAuth flows are already in progress",
+            )
+        if any(
+            flow.server_name == name
+            and flow.hermes_home == flow_home
+            and not flow.worker_done
+            for flow in _mcp_oauth_flows.values()
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"MCP OAuth for '{name}' is already in progress",
+            )
         _mcp_oauth_flows[flow_id] = flow
     threading.Thread(
         target=_run_dashboard_mcp_oauth,
@@ -11531,7 +11527,7 @@ async def mcp_oauth_flow_status(flow_id: str, request: Request):
     return snapshot
 
 
-@app.get("/api/mcp/oauth/callback/{server_name}")
+@app.get("/api/mcp/oauth/callback/{server_name:path}")
 async def mcp_oauth_callback(
     server_name: str,
     code: Optional[str] = None,

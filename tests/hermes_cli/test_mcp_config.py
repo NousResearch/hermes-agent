@@ -6,6 +6,7 @@ any actual MCP servers or API keys.
 """
 
 import argparse
+import os
 from pathlib import Path
 
 import pytest
@@ -569,6 +570,24 @@ class TestProbeEnvResolution:
             "headers": {"Authorization": "Bearer ${MCP_N8N_API_KEY}"},
         })
         assert resolved["headers"]["Authorization"] == "Bearer jwt-token-xyz"
+
+    def test_active_secret_scope_does_not_load_dotenv_into_process_env(
+        self, tmp_path, monkeypatch
+    ):
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+        from hermes_cli.mcp_config import _resolve_mcp_server_config
+
+        monkeypatch.setenv("MCP_SHARED_API_KEY", "default-secret")
+        token = set_secret_scope({"MCP_SHARED_API_KEY": "profile-secret"})
+        try:
+            resolved = _resolve_mcp_server_config({
+                "headers": {"Authorization": "Bearer ${MCP_SHARED_API_KEY}"},
+            })
+        finally:
+            reset_secret_scope(token)
+
+        assert resolved["headers"]["Authorization"] == "Bearer profile-secret"
+        assert os.environ["MCP_SHARED_API_KEY"] == "default-secret"
 
     def test_resolve_leaves_unset_var_literal(self, monkeypatch):
         from hermes_cli.mcp_config import _resolve_mcp_server_config

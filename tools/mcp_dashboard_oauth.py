@@ -35,6 +35,7 @@ class DashboardOAuthFlow:
     _callback_error: str | None = field(default=None, init=False, repr=False)
     _authorization_ready: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _callback_ready: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _worker_done: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     async def publish_authorization_url(self, url: str) -> None:
@@ -116,6 +117,13 @@ class DashboardOAuthFlow:
                 "authorization_url": self.authorization_url,
                 "error": self.error,
             }
+
+    def mark_worker_done(self) -> None:
+        self._worker_done.set()
+
+    @property
+    def worker_done(self) -> bool:
+        return self._worker_done.is_set()
 
 
 _current_dashboard_flow: contextvars.ContextVar[DashboardOAuthFlow | None] = (

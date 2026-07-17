@@ -229,6 +229,30 @@ def test_callback_url_is_stable_for_a_server():
     assert first == second == "https://agent.example/api/mcp/oauth/callback/reports"
 
 
+def test_callback_route_supports_server_names_with_slashes():
+    import asyncio
+
+    from hermes_cli import web_server
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-slash",
+        server_name="github/mcp",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/api/mcp/oauth/callback/github/mcp",
+    )
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=slash"))
+    web_server._mcp_oauth_flows[flow.flow_id] = flow
+
+    response = _client().get(
+        "/api/mcp/oauth/callback/github/mcp?code=abc&state=slash"
+    )
+
+    assert response.status_code == 200
+    assert flow._callback == ("abc", "slash")
+
+
 def test_flow_status_does_not_expose_authorization_code():
     from hermes_cli import web_server
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow

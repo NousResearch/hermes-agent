@@ -11,6 +11,7 @@ import {
   chatMessagesEquivalent,
   chatPartsEquivalent,
   isSessionGoneError,
+  preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
@@ -287,5 +288,42 @@ describe('reconcileResumeMessages', () => {
 
     const [out] = reconcileResumeMessages(next, previous)
     expect(out.parts.some(p => p.type === 'reasoning')).toBe(true)
+  })
+})
+
+describe('preserveLocalPendingTurnMessages', () => {
+  it('keeps an optimistic user turn and pending assistant when the server projection is behind', () => {
+    const next = [msg('1-user', 'user', 'first'), msg('2-assistant', 'assistant', 'first answer')]
+
+    const previous = [
+      ...next,
+      msg('user-optimistic', 'user', 'new question'),
+      msg('assistant-stream-1', 'assistant', 'partial answer', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user',
+      '2-assistant',
+      'user-optimistic',
+      'assistant-stream-1'
+    ])
+  })
+
+  it('drops the local copies once the same role ordinals are authoritative', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'new question'),
+      msg('assistant-stream-1', 'assistant', 'partial answer', { pending: true })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-user-stored', 'user', 'new question'),
+      msg('4-assistant-stored', 'assistant', 'complete answer')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
   })
 })

@@ -11,7 +11,7 @@ on ``_tui_input_modes_active`` so non-TUI one-shot CLI runs (which share
 """
 
 import unittest
-from unittest.mock import mock_open, patch
+from unittest.mock import mock_open, patch, MagicMock
 
 
 def _import_cli():
@@ -100,6 +100,7 @@ class TestResetTerminalInputModes(unittest.TestCase):
         with (
             patch.object(cli_mod, "_tui_input_modes_active", True),
             patch.object(cli_mod.sys, "stdout", fake),
+            patch.object(cli_mod.sys, "platform", "linux"),
             patch("builtins.open", m_open),
         ):
             cli_mod._reset_terminal_input_modes_on_exit()
@@ -107,6 +108,32 @@ class TestResetTerminalInputModes(unittest.TestCase):
         self.assertEqual(fake.written, [])
         m_open.assert_called_once_with("/dev/tty", "w", encoding="ascii")
         m_open().write.assert_called_once_with(cli_mod._TERMINAL_INPUT_MODE_RESET_SEQ)
+
+    def test_windows_fallback_to_con_device(self):
+        """Windows doesn't have /dev/tty — must use CON device instead."""
+        cli_mod = _import_cli()
+        fake = _FakeStream(isatty=False)
+        m_open = mock_open()
+        
+        # Mock sys module in cli's namespace to simulate Windows
+        original_sys = cli_mod.sys
+        mock_sys = MagicMock()
+        mock_sys.platform = "win32"
+        mock_sys.stdout = fake
+        
+        try:
+            cli_mod.sys = mock_sys
+            with (
+                patch.object(cli_mod, "_tui_input_modes_active", True),
+                patch("builtins.open", m_open),
+            ):
+                cli_mod._reset_terminal_input_modes_on_exit()
+
+            self.assertEqual(fake.written, [])
+            m_open.assert_called_once_with("CON", "w", encoding="ascii")
+            m_open().write.assert_called_once_with(cli_mod._TERMINAL_INPUT_MODE_RESET_SEQ)
+        finally:
+            cli_mod.sys = original_sys
 
     def test_swallows_stdout_errors(self):
         cli_mod = _import_cli()

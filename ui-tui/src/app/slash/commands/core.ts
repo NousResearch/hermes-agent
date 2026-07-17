@@ -377,7 +377,7 @@ export const coreCommands: SlashCommand[] = [
         return sys('nothing to copy — start a conversation first')
       }
 
-      const shouldUseTerminalClipboard = process.env['TMUX'] || process.env['STY'] || isRemoteShellSession(process.env)
+      const shouldUseTerminalClipboard = isRemoteShellSession(process.env)
 
       if (shouldUseTerminalClipboard) {
         writeOsc52Clipboard(target.text)

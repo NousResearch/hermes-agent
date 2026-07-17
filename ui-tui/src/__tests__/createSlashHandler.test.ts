@@ -4,9 +4,13 @@ import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
+import * as ClipboardModule from '../lib/clipboard.js'
+import * as Osc52Module from '../lib/osc52.js'
+import * as TerminalSetupModule from '../lib/terminalSetup.js'
 
 describe('createSlashHandler', () => {
   beforeEach(() => {
+    vi.restoreAllMocks()
     resetOverlayState()
     resetUiState()
   })
@@ -147,6 +151,51 @@ describe('createSlashHandler', () => {
       session_id: 'sid-abc',
       value: 'x-model --global'
     })
+  })
+
+  it('prefers OSC52 copy for remote sessions', async () => {
+    const writeClipboardText = vi.spyOn(ClipboardModule, 'writeClipboardText').mockResolvedValue(true)
+    const writeOsc52Clipboard = vi.spyOn(Osc52Module, 'writeOsc52Clipboard').mockReturnValue(true)
+    vi.spyOn(TerminalSetupModule, 'isRemoteShellSession').mockReturnValue(true)
+
+    const ctx = buildCtx({
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [{ role: 'assistant', text: 'remote answer' }])
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/copy')).toBe(true)
+    await vi.waitFor(() => {
+      expect(writeOsc52Clipboard).toHaveBeenCalledWith('remote answer')
+    })
+    expect(writeClipboardText).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('sent OSC52 copy sequence (terminal support required)')
+  })
+
+  it('keeps native-first copy in local tmux sessions', async () => {
+    const tmuxBackup = process.env.TMUX
+    process.env.TMUX = '/tmp/tmux-123/default,1,0'
+
+    const writeClipboardText = vi.spyOn(ClipboardModule, 'writeClipboardText').mockResolvedValue(true)
+    const writeOsc52Clipboard = vi.spyOn(Osc52Module, 'writeOsc52Clipboard').mockReturnValue(true)
+    vi.spyOn(TerminalSetupModule, 'isRemoteShellSession').mockReturnValue(false)
+
+    const ctx = buildCtx({
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [{ role: 'assistant', text: 'local answer' }])
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/copy')).toBe(true)
+    await vi.waitFor(() => {
+      expect(writeClipboardText).toHaveBeenCalledWith('local answer')
+    })
+    expect(writeOsc52Clipboard).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('copied to clipboard')
+
+    process.env.TMUX = tmuxBackup
   })
 
   it('applies /reasoning hide to the thinking section immediately', async () => {

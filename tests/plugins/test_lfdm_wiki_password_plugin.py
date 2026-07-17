@@ -112,7 +112,7 @@ async def test_authorized_request_sends_password_and_skips_llm(tmp_path, monkeyp
     result = mod._on_pre_gateway_dispatch(
         event=_event("give me the password for wiki, no other output needed"),
         gateway=gateway,
-        telemetry_schema_version="1",
+        telemetry_schema_version="hermes.observer.v1",
     )
 
     assert result == {"action": "skip", "reason": "lfdm_wiki_password_direct_response"}

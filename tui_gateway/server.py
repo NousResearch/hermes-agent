@@ -3947,6 +3947,22 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         _emit("tool.complete", sid, payload)
 
 
+def _session_is_codex_app_server(sid: str) -> bool:
+    """Whether the serve session's agent runs on the Codex app-server route.
+
+    On that route native tools execute *inside* Codex, so the authoritative
+    ``tool_start_callback`` / ``tool_complete_callback`` never fire and the
+    only tool signal is the progress callback. ``_on_tool_progress`` must
+    therefore relay ``tool.started`` / ``tool.completed`` on this route
+    instead of suppressing them (as it does for every other route, where the
+    authoritative emitters would otherwise be duplicated).
+    """
+    session = _sessions.get(sid)
+    if session is None:
+        return False
+    return getattr(session.get("agent"), "api_mode", "") == "codex_app_server"
+
+
 def _on_tool_progress(
     sid: str,
     event_type: str,
@@ -3960,7 +3976,42 @@ def _on_tool_progress(
     if event_type == "tool.started" and name:
         # `_on_tool_start` already emits the authoritative `tool.start` with
         # the stable tool id and args. Emitting another id-less progress row
-        # here makes the desktop live view diverge from hydrated history.
+        # here makes the desktop live view diverge from hydrated history — so
+        # suppress it. The codex app-server route is the exception: tools run
+        # inside Codex and `_on_tool_start` never fires, so this progress event
+        # is the *only* start signal and must be relayed (#66360).
+        if _session_is_codex_app_server(sid):
+            payload: dict[str, object] = {
+                "tool_id": "",
+                "name": str(name),
+                "context": _tool_ctx(str(name), _args or {}),
+            }
+            _emit("tool.start", sid, payload)
+        return
+    if event_type == "tool.completed" and name:
+        # Same rationale as tool.started: the normal route's authoritative
+        # `_on_tool_complete` emits `tool.complete` (and the tool executor also
+        # pushes a tool.completed progress event), so relay only on the codex
+        # app-server route to avoid a duplicate on normal routes (#66360).
+        if _session_is_codex_app_server(sid):
+            payload: dict[str, object] = {
+                "tool_id": str(_kwargs.get("tool_call_id") or ""),
+                "name": str(name),
+            }
+            result = _kwargs.get("result")
+            if result is not None:
+                try:
+                    payload["result"] = json.loads(result)
+                except (TypeError, ValueError):
+                    payload["result"] = result
+            if _kwargs.get("duration") is not None:
+                try:
+                    payload["duration_s"] = float(_kwargs["duration"])
+                except (TypeError, ValueError):
+                    pass
+            if _kwargs.get("is_error"):
+                payload["is_error"] = True
+            _emit("tool.complete", sid, payload)
         return
     if event_type == "tool.output_risk" and name:
         metadata = _kwargs.get("risk_metadata")

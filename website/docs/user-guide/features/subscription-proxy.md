@@ -72,8 +72,13 @@ automatically when the bearer approaches expiry.
 hermes proxy providers
 ```
 
-Currently shipped: `nous` (Nous Portal) and `xai` (xAI / Grok). More
-OAuth providers can be added by implementing the `UpstreamAdapter`
+Currently shipped:
+
+- `nous` — Nous Portal
+- `openai-codex` — ChatGPT Codex OAuth
+- `xai` — xAI / Grok
+
+More OAuth providers can be added by implementing the `UpstreamAdapter`
 interface in `hermes_cli/proxy/adapters/`.
 
 ## Check status
@@ -93,6 +98,34 @@ If you see `not logged in`, run `hermes portal`. If you see
 happens if you signed out from the Portal web UI) — just re-run
 `hermes portal`.
 
+## OpenAI Codex
+
+Authenticate the Codex subscription, then create a dedicated client-key file:
+
+```bash
+hermes auth add openai-codex
+printf '{"my-app":"replace-with-a-long-random-token"}\n' > ~/.hermes/proxy-clients.json
+chmod 0600 ~/.hermes/proxy-clients.json
+hermes proxy start --provider openai-codex \
+  --client-keys-file ~/.hermes/proxy-clients.json
+```
+
+The key file must be a non-empty JSON object mapping client labels to bearer
+tokens and must have mode `0600` (owner read/write only). The proxy refuses to
+start if the file is missing, malformed, or accessible by other users. Configure
+each client with its assigned token; unlike the Nous and xAI proxies, arbitrary
+bearer values are rejected for `openai-codex`.
+
+Codex supports only the Responses and model-list endpoints:
+
+| Path | Purpose |
+|------|---------|
+| `/v1/responses` | OpenAI Responses API (streaming + non-streaming) |
+| `/v1/models` | Model list |
+
+Clients that require `/v1/chat/completions` are not compatible with the Codex
+proxy unless they can use the Responses API instead.
+
 ## Allowed paths
 
 The proxy only forwards paths the upstream actually serves. For Nous
@@ -105,7 +138,8 @@ Portal:
 | `/v1/embeddings` | Embeddings |
 | `/v1/models` | Model list |
 
-Other paths (`/v1/images/generations`, `/v1/audio/speech`, etc.) return
+Each provider exposes only its listed paths. Other paths
+(`/v1/images/generations`, `/v1/audio/speech`, etc.) return
 404 with a clear error pointing at the allowed paths. This keeps stray
 clients from leaking weird requests to the upstream.
 
@@ -168,10 +202,10 @@ machines on your network use it:
 hermes proxy start --host 0.0.0.0 --port 8645
 ```
 
-⚠ **Be aware:** anyone on your network can now use your Portal
-subscription. The proxy has no auth of its own — it accepts any bearer.
-Use a firewall, VPN, or reverse proxy with proper auth if you expose
-this beyond your trusted network.
+⚠ **Be aware:** anyone on your network can now reach the proxy. The Nous and
+xAI providers accept any bearer; `openai-codex` requires a configured client
+key. Use a firewall, VPN, or reverse proxy with proper auth if you expose this
+beyond your trusted network.
 
 ## Rate limits
 
@@ -184,7 +218,7 @@ subscription quota. Monitor usage at
 
 The proxy is intentionally minimal. Per request:
 
-1. Receive `POST /v1/chat/completions` from your app
+1. Receive a request on a path allowed by the selected provider
 2. Look up the adapter's current credential (refresh if expiring)
 3. Forward the request body verbatim, with `Authorization: Bearer <minted-key>`
 4. Stream the response back unchanged (SSE preserved)

@@ -12,13 +12,17 @@ or rewrite request/response bodies. It's a credential-attaching forwarder.
 from __future__ import annotations
 
 import asyncio
+import hmac
+import json
 import logging
 import signal
-from typing import Optional
+from pathlib import Path
+from typing import Mapping, Optional
 
 try:
     import aiohttp
     from aiohttp import web
+
     AIOHTTP_AVAILABLE = True
 except ImportError:
     aiohttp = None  # type: ignore[assignment]
@@ -32,21 +36,19 @@ logger = logging.getLogger(__name__)
 # Headers we strip when forwarding to the upstream. ``host``/``content-length``
 # are recomputed by aiohttp; ``authorization`` is replaced with our bearer.
 # Everything else (content-type, accept, user-agent, x-* headers) passes through.
-_HOP_BY_HOP_HEADERS = frozenset(
-    {
-        "host",
-        "content-length",
-        "connection",
-        "keep-alive",
-        "proxy-authenticate",
-        "proxy-authorization",
-        "te",
-        "trailers",
-        "transfer-encoding",
-        "upgrade",
-        "authorization",  # we replace this one
-    }
-)
+_HOP_BY_HOP_HEADERS = frozenset({
+    "host",
+    "content-length",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+    "authorization",  # we replace this one
+})
 
 DEFAULT_PORT = 8645
 DEFAULT_HOST = "127.0.0.1"
@@ -85,7 +87,60 @@ def _filter_response_headers(headers) -> dict:
     return out
 
 
-def create_app(adapter: UpstreamAdapter) -> "web.Application":
+def _error_context(body: bytes) -> dict:
+    """Extract pool-relevant error metadata without logging request content."""
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError):
+        return {}
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return {}
+    context = {
+        "reason": error.get("code") or error.get("type"),
+        "reset_at": error.get("reset_at") or error.get("resets_at"),
+    }
+    return {key: value for key, value in context.items() if value is not None}
+
+
+def load_client_keys(path: Path) -> dict[str, str]:
+    """Load a label-to-token JSON map from an owner-only file."""
+    if path.stat().st_mode & 0o077:
+        raise ValueError(f"client key file must be mode 0600: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError("client key file must contain a non-empty JSON object")
+    keys = {}
+    for label, token in payload.items():
+        if (
+            not isinstance(label, str)
+            or not label.strip()
+            or not isinstance(token, str)
+            or not token
+        ):
+            raise ValueError("client key labels and tokens must be non-empty strings")
+        keys[label.strip()] = token
+    return keys
+
+
+def _authenticate_client(
+    header: Optional[str], client_keys: Mapping[str, str]
+) -> Optional[str]:
+    supplied = ""
+    if header and header.lower().startswith("bearer "):
+        supplied = header[7:].strip()
+    matched = None
+    for label, token in client_keys.items():
+        if hmac.compare_digest(supplied.encode(), token.encode()):
+            matched = label
+    return matched
+
+
+def create_app(
+    adapter: UpstreamAdapter,
+    *,
+    client_keys: Optional[Mapping[str, str]] = None,
+) -> "web.Application":
     """Build the aiohttp application bound to a specific upstream adapter."""
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError(
@@ -93,6 +148,8 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
             "pip install 'hermes-agent[messaging]' or `pip install aiohttp`."
         )
 
+    if adapter.name == "openai-codex" and not client_keys:
+        raise ValueError("OpenAI Codex proxy requires --client-keys-file")
     app = web.Application(client_max_size=MAX_REQUEST_BYTES)
     # AppKey ensures forward-compat with future aiohttp versions that strip
     # bare-string keys.
@@ -100,15 +157,24 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
     app[_adapter_key] = adapter
 
     async def handle_health(request: "web.Request") -> "web.Response":
-        return web.json_response(
-            {
-                "status": "ok",
-                "upstream": adapter.display_name,
-                "authenticated": adapter.is_authenticated(),
-            }
-        )
+        return web.json_response({
+            "status": "ok",
+            "upstream": adapter.display_name,
+            "authenticated": adapter.is_authenticated(),
+        })
 
     async def handle_proxy(request: "web.Request") -> "web.StreamResponse":
+        if client_keys:
+            authenticated_client = (
+                _authenticate_client(request.headers.get("Authorization"), client_keys)
+                or ""
+            )
+            if not authenticated_client:
+                logger.warning("proxy: rejected unauthenticated client")
+                return _json_error(
+                    401, "Invalid proxy client key.", code="invalid_client_key"
+                )
+
         # Extract the path *after* /v1
         rel_path = request.match_info.get("tail", "")
         rel_path = "/" + rel_path.lstrip("/")
@@ -143,11 +209,17 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
                 upstream_url = f"{upstream_url}?{request.query_string}"
 
             fwd_headers = _filter_request_headers(request.headers)
-            fwd_headers["Authorization"] = f"{active_cred.token_type} {active_cred.bearer}"
+            fwd_headers["Authorization"] = (
+                f"{active_cred.token_type} {active_cred.bearer}"
+            )
+            fwd_headers.update(active_cred.headers)
 
             logger.debug(
                 "proxy: forwarding %s %s -> %s (body=%d bytes)",
-                request.method, rel_path, upstream_url, len(body),
+                request.method,
+                rel_path,
+                upstream_url,
+                len(body),
             )
 
             try:
@@ -198,23 +270,57 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
             return session_or_response
         session = session_or_response
 
-        if upstream_resp.status in {401, 429}:
+        buffered_response_body = None
+        refresh_allowed = True
+        attempted_bearers = {cred.bearer}
+        while upstream_resp.status in {401, 429}:
+            failure_status = upstream_resp.status
+            failure_body = await upstream_resp.read()
             try:
                 retry_cred = adapter.get_retry_credential(
                     failed_credential=cred,
-                    status_code=upstream_resp.status,
+                    status_code=failure_status,
+                    error_context={
+                        **_error_context(failure_body),
+                        "allow_refresh": refresh_allowed,
+                    },
                 )
             except Exception as exc:
                 logger.warning("proxy: retry credential resolution failed: %s", exc)
                 retry_cred = None
 
-            if retry_cred is not None:
-                upstream_resp.release()
-                await session.close()
-                session_or_response, upstream_resp = await _open_upstream(retry_cred)
-                if upstream_resp is None:
-                    return session_or_response
-                session = session_or_response
+            if retry_cred is None:
+                if adapter.fail_closed_on_exhaustion:
+                    upstream_resp.release()
+                    await session.close()
+                    return _json_error(
+                        503,
+                        "All upstream credentials are exhausted or rejected.",
+                        code="credential_pool_exhausted",
+                    )
+                buffered_response_body = failure_body
+                break
+            if retry_cred.bearer in attempted_bearers:
+                if adapter.fail_closed_on_exhaustion:
+                    upstream_resp.release()
+                    await session.close()
+                    return _json_error(
+                        503,
+                        "All upstream credentials are exhausted or rejected.",
+                        code="credential_pool_exhausted",
+                    )
+                buffered_response_body = failure_body
+                break
+            if failure_status == 401:
+                refresh_allowed = False
+            attempted_bearers.add(retry_cred.bearer)
+            upstream_resp.release()
+            await session.close()
+            cred = retry_cred
+            session_or_response, upstream_resp = await _open_upstream(retry_cred)
+            if upstream_resp is None:
+                return session_or_response
+            session = session_or_response
 
         # Stream response back. Headers first, then chunked body.
         resp = web.StreamResponse(
@@ -224,6 +330,8 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         await resp.prepare(request)
 
         try:
+            if buffered_response_body:
+                await resp.write(buffered_response_body)
             async for chunk in upstream_resp.content.iter_any():
                 if chunk:
                     await resp.write(chunk)
@@ -249,6 +357,7 @@ async def run_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     shutdown_event: Optional[asyncio.Event] = None,
+    client_keys: Optional[Mapping[str, str]] = None,
 ) -> None:
     """Run the proxy in the current event loop until shutdown_event is set.
 
@@ -260,7 +369,7 @@ async def run_server(
             "pip install 'hermes-agent[messaging]' or `pip install aiohttp`."
         )
 
-    app = create_app(adapter)
+    app = create_app(adapter, client_keys=client_keys)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host=host, port=port)
@@ -268,7 +377,9 @@ async def run_server(
 
     logger.info(
         "proxy: listening on http://%s:%d/v1 -> %s",
-        host, port, adapter.display_name,
+        host,
+        port,
+        adapter.display_name,
     )
 
     stop_event = shutdown_event or asyncio.Event()
@@ -297,4 +408,5 @@ __all__ = [
     "DEFAULT_HOST",
     "DEFAULT_PORT",
     "AIOHTTP_AVAILABLE",
+    "load_client_keys",
 ]

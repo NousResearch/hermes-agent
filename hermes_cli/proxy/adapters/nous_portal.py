@@ -81,6 +81,7 @@ class NousPortalAdapter(UpstreamAdapter):
         *,
         failed_credential: UpstreamCredential,
         status_code: int,
+        error_context=None,
     ) -> Optional[UpstreamCredential]:
         _ = failed_credential
         if status_code != 401:

@@ -611,7 +611,7 @@ class FakeAdapter(UpstreamAdapter):
             expires_at="2099-01-01T00:00:00Z",
         )
 
-    def get_retry_credential(self, *, failed_credential, status_code):
+    def get_retry_credential(self, *, failed_credential, status_code, error_context=None):
         _ = failed_credential
         self.retry_calls += 1
         if status_code != 401 or not self._retry_bearer:

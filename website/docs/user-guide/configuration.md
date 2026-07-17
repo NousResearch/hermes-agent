@@ -1474,6 +1474,7 @@ display:
   platforms: {}           # Per-platform display overrides (see below)
   tool_progress_overrides: {}  # DEPRECATED — use display.platforms instead
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
+  show_commentary: true   # Codex models: deliver commentary-channel progress narration as visible mid-turn updates
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
@@ -1589,6 +1590,8 @@ Platforms without an override fall back to the global `tool_progress` value. Val
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
+
+`show_commentary` (default `true`) controls Codex Responses models' commentary channel — the polished progress narration these models produce alongside their private reasoning. When enabled, each completed commentary message is delivered as a visible mid-turn update (on the gateway this also requires `interim_assistant_messages`). Set it to `false` if the extra narration annoys you: commentary then falls back to the reasoning channel and is only shown when `show_reasoning` is enabled.
 
 ## Privacy
 

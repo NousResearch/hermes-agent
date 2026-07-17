@@ -1906,6 +1906,12 @@ DEFAULT_CONFIG = {
             "last_lines": 2,
         },
         "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
+        # Codex Responses models narrate progress in a dedicated commentary
+        # channel. When true (default), completed commentary messages are
+        # delivered as visible mid-turn updates via the interim message path.
+        # When false, commentary falls back to the reasoning channel and is
+        # only visible when show_reasoning is enabled.
+        "show_commentary": True,
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)

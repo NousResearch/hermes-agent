@@ -940,7 +940,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     on_reasoning_delta=_on_reasoning_delta,
                     on_commentary_message=(
                         _on_commentary_message
-                        if getattr(agent, "interim_assistant_callback", None) is not None
+                        if (
+                            getattr(agent, "interim_assistant_callback", None) is not None
+                            and getattr(agent, "show_commentary", True)
+                        )
                         else None
                     ),
                     on_first_delta=on_first_delta,

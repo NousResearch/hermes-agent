@@ -1359,6 +1359,19 @@ def init_agent(
     except Exception:
         _agent_cfg = {}
 
+    # Codex commentary visibility (display.show_commentary, default true).
+    # When true, completed Codex phase=commentary messages are delivered as
+    # visible mid-turn updates through the interim message path. When false,
+    # commentary falls back to the reasoning channel (visible only with
+    # show_reasoning enabled).
+    agent.show_commentary = True
+    try:
+        _display_section = _agent_cfg.get("display", {})
+        if isinstance(_display_section, dict):
+            agent.show_commentary = bool(_display_section.get("show_commentary", True))
+    except Exception:
+        agent.show_commentary = True
+
     # LM Studio can either be explicitly preloaded through LM Studio's
     # management API (the historical Hermes behavior) or left to LM Studio's
     # just-in-time / Auto-Evict chat-completions path.  Keep the default

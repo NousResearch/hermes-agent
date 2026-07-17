@@ -305,6 +305,24 @@ class TestCmdUpdateTermuxUvBootstrap:
 class TestCmdUpdateBranchFallback:
     """cmd_update falls back to main when current branch has no remote counterpart."""
 
+    def test_cmd_update_fails_closed_when_shared_update_lock_is_busy(
+        self, mock_args, monkeypatch, capsys
+    ):
+        from hermes_cli import main as hm
+        from hermes_cli.update_lock import UpdateLockBusyError
+
+        monkeypatch.setattr(
+            hm,
+            "acquire_update_lock",
+            lambda _root: (_ for _ in ()).throw(UpdateLockBusyError("busy")),
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_update(mock_args)
+
+        assert exc.value.code != 0
+        assert "already running" in capsys.readouterr().err
+
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_update_falls_back_to_main_when_branch_not_on_remote(

@@ -399,6 +399,11 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli.update_lock import (
+    UpdateLockBusyError,
+    UpdateLockError,
+    acquire_update_lock,
+)
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
 from hermes_cli.subcommands.cron import build_cron_parser
@@ -9329,6 +9334,7 @@ def _get_update_check_result(
         "branch_ignored": False,
         "current_version": head_sha[:7],
         "latest_version": target_sha[:7],
+        "latest_sha": target_sha,
         "compare_ref": compare_branch,
         "behind": behind,
         "update_available": update_available,
@@ -10248,11 +10254,36 @@ def _discard_lockfile_churn(git_cmd, repo_root):
 
 
 def cmd_update(args):
+    """Run one source-checkout update under the shared single-flight lock."""
+    if getattr(args, "_update_lock_held", False):
+        return _cmd_update_locked(args)
+    if not (PROJECT_ROOT / ".git").exists():
+        return _cmd_update_locked(args)
+
+    try:
+        update_lock = acquire_update_lock(PROJECT_ROOT)
+    except UpdateLockBusyError as exc:
+        print(
+            f"✗ Another Hermes update is already running; refusing to start a concurrent update ({exc}).",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+    except UpdateLockError as exc:
+        print(f"✗ Could not acquire the Hermes update lock: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+    try:
+        return _cmd_update_locked(args)
+    finally:
+        update_lock.release()
+
+
+def _cmd_update_locked(args):
     """Update Hermes Agent to the latest version.
 
-    Thin wrapper around ``_cmd_update_impl``: installs hangup protection,
-    runs the update, then restores stdio on the way out (even on
-    ``sys.exit`` or unhandled exceptions).
+    The caller owns the checkout-scoped update lock. This helper also serves
+    auto-update, whose outer lock covers its check, backup, update, and
+    verification as one critical section.
     """
     from hermes_cli.config import (
         detect_install_method,

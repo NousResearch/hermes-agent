@@ -19,9 +19,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NoReturn
 
 from hermes_constants import get_hermes_home
+from hermes_cli.update_lock import (
+    UpdateLockBusyError,
+    UpdateLockError,
+    acquire_update_lock,
+)
 
 
 STATUS_FILENAME = "update-status.json"
@@ -201,10 +206,33 @@ def _verify_health() -> tuple[bool, str]:
         return True, "no gateway runtime status present"
 
     state = str(runtime.get("gateway_state") or "")
-    if state in {"startup_failed", "failed", "stopped"}:
+    if state in {"startup_failed", "failed"}:
         reason = runtime.get("exit_reason") or "gateway reported unhealthy state"
         return False, str(reason)
+    if state == "stopped":
+        return True, "gateway state: stopped (operator stopped gateway)"
     return True, f"gateway state: {state or 'unknown'}"
+
+
+def _verify_expected_sha(expected_sha: str) -> tuple[bool, str]:
+    """Verify that the checked update commit is contained in the current HEAD."""
+    from hermes_cli.main import PROJECT_ROOT
+
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", expected_sha, "HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return False, f"could not verify expected update {expected_sha}: {exc}"
+    if result.returncode == 0:
+        return True, "expected update commit is an ancestor of HEAD"
+    detail = _command_detail(result)
+    suffix = f": {detail}" if detail else ""
+    return False, f"checked update {expected_sha} is not contained in current HEAD{suffix}"
 
 
 def _status_payload(
@@ -269,8 +297,21 @@ def cmd_auto_status(_args) -> None:
     print(f"  Detailed log:     {_display(status.get('logPath') or get_log_path())}")
 
 
-def _run_existing_update(args, branch: str | None) -> None:
+def _run_existing_update(
+    args,
+    branch: str | None,
+    *,
+    expected_sha: str | None = None,
+) -> None:
+    from hermes_cli.config import is_managed
     from hermes_cli.main import cmd_update
+
+    if is_managed():
+        raise AutoUpdateError(
+            STATUS_UPDATE_FAILED,
+            "automatic update is unavailable for managed installations",
+            EXIT_UPDATE_FAILED,
+        )
 
     update_args = SimpleNamespace(
         gateway=False,
@@ -280,6 +321,7 @@ def _run_existing_update(args, branch: str | None) -> None:
         yes=True,
         branch=branch,
         force=getattr(args, "force", False),
+        _update_lock_held=True,
     )
     try:
         cmd_update(update_args)
@@ -291,6 +333,10 @@ def _run_existing_update(args, branch: str | None) -> None:
                 f"update failed with exit code {code}",
                 EXIT_UPDATE_FAILED,
             ) from exc
+    if expected_sha:
+        ok, detail = _verify_expected_sha(expected_sha)
+        if not ok:
+            raise AutoUpdateError(STATUS_UPDATE_FAILED, detail, EXIT_UPDATE_FAILED)
 
 
 def _parse_time(value: str) -> tuple[int, int, str]:
@@ -359,10 +405,64 @@ def _run_launchctl(args: list[str]) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(cmd, 127, stdout="", stderr=str(exc))
 
 
+def _command_detail(result: subprocess.CompletedProcess) -> str:
+    details = []
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    if stdout:
+        details.append(f"stdout: {stdout}")
+    if stderr:
+        details.append(f"stderr: {stderr}")
+    return "; ".join(details)
+
+
+def _is_missing_scheduler(result: subprocess.CompletedProcess) -> bool:
+    output = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
+    if result.returncode == 127 and "errno" in output:
+        return False
+    return any(
+        marker in output
+        for marker in (
+            "could not find",
+            "does not exist",
+            "no such file",
+            "no such process",
+            "not found",
+            "not loaded",
+            "service not loaded",
+            "unit not loaded",
+        )
+    )
+
+
+def _require_command_success(
+    result: subprocess.CompletedProcess,
+    operation: str,
+    *,
+    allow_missing: bool = False,
+) -> None:
+    if result.returncode == 0:
+        return
+    if allow_missing and _is_missing_scheduler(result):
+        return
+    detail = _command_detail(result)
+    suffix = f": {detail}" if detail else ""
+    raise RuntimeError(f"{operation} failed with exit code {result.returncode}{suffix}")
+
+
 def _enable_launchd(hour: int, minute: int, schedule: str, plan_schedules: list[str]) -> tuple[str, Path]:
     plist_path = _launchd_plist_path()
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     get_log_path().parent.mkdir(parents=True, exist_ok=True)
+    had_plist = plist_path.exists()
+
+    target = _launchd_target()
+    if had_plist:
+        _require_command_success(
+            _run_launchctl(["bootout", target, str(plist_path)]),
+            "launchctl bootout",
+            allow_missing=True,
+        )
 
     intervals = _calendar_intervals(schedule, plan_schedules)
     start_calendar_interval: dict[str, int] | list[dict[str, int]] = (
@@ -380,13 +480,12 @@ def _enable_launchd(hour: int, minute: int, schedule: str, plan_schedules: list[
     with plist_path.open("wb") as handle:
         plistlib.dump(payload, handle, sort_keys=True)
 
-    target = _launchd_target()
-    _run_launchctl(["bootout", target, str(plist_path)])
     result = _run_launchctl(["bootstrap", target, str(plist_path)])
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(detail or "launchctl bootstrap failed")
-    _run_launchctl(["enable", f"{target}/{LAUNCHD_LABEL}"])
+    _require_command_success(result, "launchctl bootstrap")
+    _require_command_success(
+        _run_launchctl(["enable", f"{target}/{LAUNCHD_LABEL}"]),
+        "launchctl enable",
+    )
     return "launchd", plist_path
 
 
@@ -394,7 +493,11 @@ def _disable_launchd() -> tuple[str, Path, bool]:
     plist_path = _launchd_plist_path()
     existed = plist_path.exists()
     target = _launchd_target()
-    _run_launchctl(["bootout", target, str(plist_path)])
+    _require_command_success(
+        _run_launchctl(["bootout", target, str(plist_path)]),
+        "launchctl bootout",
+        allow_missing=True,
+    )
     if existed:
         plist_path.unlink()
     return "launchd", plist_path, existed
@@ -484,23 +587,34 @@ def _enable_systemd(hour: int, minute: int, schedule: str, plan_schedules: list[
         ),
         encoding="utf-8",
     )
-    _systemctl_user(["daemon-reload"])
+    _require_command_success(
+        _systemctl_user(["daemon-reload"]),
+        "systemctl --user daemon-reload",
+    )
     result = _systemctl_user(["enable", "--now", timer_path.name])
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(detail or "systemctl --user enable --now failed")
+    _require_command_success(result, "systemctl --user enable --now")
     return "systemd-user", timer_path
 
 
 def _disable_systemd() -> tuple[str, Path, bool]:
     service_path, timer_path = _systemd_paths()
     existed = service_path.exists() or timer_path.exists()
-    if shutil.which("systemctl"):
-        _systemctl_user(["disable", "--now", timer_path.name])
+    if not shutil.which("systemctl"):
+        if existed:
+            raise RuntimeError("systemctl is unavailable; scheduler files were kept")
+        return "systemd-user", timer_path, False
+
+    _require_command_success(
+        _systemctl_user(["disable", "--now", timer_path.name]),
+        "systemctl --user disable --now",
+        allow_missing=True,
+    )
+    _require_command_success(
+        _systemctl_user(["daemon-reload"]),
+        "systemctl --user daemon-reload",
+    )
     service_path.unlink(missing_ok=True)
     timer_path.unlink(missing_ok=True)
-    if shutil.which("systemctl"):
-        _systemctl_user(["daemon-reload"])
     return "systemd-user", timer_path, existed
 
 
@@ -531,6 +645,10 @@ def cmd_auto_enable(args) -> None:
             _plan_hour, _plan_minute, plan_schedule = _parse_time(value)
             if plan_schedule not in plan_schedules:
                 plan_schedules.append(plan_schedule)
+        if schedule in plan_schedules:
+            raise ValueError(
+                f"plan time {schedule} must differ from the update time"
+            )
         scheduler_type, scheduler_path = _enable_scheduler(
             hour,
             minute,
@@ -687,12 +805,55 @@ def cmd_auto_plan(args) -> None:
 
 def cmd_auto_run_scheduled(_args) -> None:
     status = read_status()
+    if not bool(status.get("enabled")):
+        return
     if _scheduled_action_for_now(status) == "plan":
         return cmd_auto_plan(SimpleNamespace(branch=None))
     return cmd_auto_run_now(SimpleNamespace(branch=None, force=False))
 
 
+def _record_lock_failure(message: str) -> NoReturn:
+    started_at = _utc_now()
+    current_version = _current_version()
+    write_status(
+        _status_payload(
+            status=STATUS_UPDATE_FAILED,
+            last_run_at=started_at,
+            previous_version=current_version,
+            current_version=current_version,
+            error=message,
+        )
+    )
+    append_log(
+        "end",
+        result=STATUS_UPDATE_FAILED,
+        previous_version=current_version,
+        current_version=current_version,
+        error=message,
+    )
+    print(f"✗ Auto-update run failed ({STATUS_UPDATE_FAILED}): {message}", file=sys.stderr)
+    raise SystemExit(EXIT_UPDATE_FAILED)
+
+
 def cmd_auto_run_now(args) -> None:
+    from hermes_cli.main import PROJECT_ROOT
+
+    try:
+        update_lock = acquire_update_lock(PROJECT_ROOT)
+    except UpdateLockBusyError as exc:
+        _record_lock_failure(
+            f"another Hermes update is already running; auto-update is busy ({exc})"
+        )
+    except UpdateLockError as exc:
+        _record_lock_failure(f"could not acquire the auto-update lock: {exc}")
+
+    try:
+        return _cmd_auto_run_now_locked(args)
+    finally:
+        update_lock.release()
+
+
+def _cmd_auto_run_now_locked(args) -> None:
     from hermes_cli.backup import create_pre_update_backup
     from hermes_cli.main import _get_update_check_result, _resolve_update_branch
 
@@ -752,6 +913,14 @@ def cmd_auto_run_now(args) -> None:
             print("✓ Already up to date.")
             return
 
+        expected_sha = check.get("latest_sha")
+        if check.get("install_method") == "git" and not expected_sha:
+            raise AutoUpdateError(
+                STATUS_UPDATE_FAILED,
+                "update check reported an available git update without an expected latest SHA",
+                EXIT_UPDATE_FAILED,
+            )
+
         backup = create_pre_update_backup()
         if backup is None:
             raise AutoUpdateError(
@@ -761,7 +930,11 @@ def cmd_auto_run_now(args) -> None:
             )
         backup_path = str(backup)
 
-        _run_existing_update(args, getattr(args, "branch", None))
+        _run_existing_update(
+            args,
+            getattr(args, "branch", None),
+            expected_sha=str(expected_sha) if expected_sha else None,
+        )
 
         ok, detail = _verify_health()
         if not ok:

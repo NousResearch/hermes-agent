@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import update_auto
+from hermes_cli.update_lock import UpdateLock
 
 
 def _args(**overrides):
@@ -19,6 +20,16 @@ def _args(**overrides):
 
 def _read_status(hermes_home):
     return json.loads((hermes_home / "state" / "update-status.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_auto_update_lock(tmp_path, monkeypatch):
+    lock_path = tmp_path / "source-checkout" / ".git" / "hermes-update.lock"
+    monkeypatch.setattr(
+        update_auto,
+        "acquire_update_lock",
+        lambda _project_root: UpdateLock(lock_path).acquire(),
+    )
 
 
 def test_write_status_uses_stable_schema_and_profile_home(tmp_path, monkeypatch):
@@ -161,6 +172,116 @@ def test_enable_creates_expected_launchd_plist_on_macos(tmp_path, monkeypatch, c
     assert "03:00" in out
 
 
+def test_enable_launchd_requires_bootstrap_success_and_reports_both_streams(
+    tmp_path, monkeypatch, capsys
+):
+    _hermes_home, calls = _set_macos_scheduler_env(tmp_path, monkeypatch)
+
+    def failed_bootstrap(args):
+        calls.append(args)
+        if args[0] == "bootstrap":
+            return subprocess.CompletedProcess(
+                ["launchctl"] + args,
+                1,
+                stdout="bootstrap stdout",
+                stderr="bootstrap stderr",
+            )
+        return subprocess.CompletedProcess(["launchctl"] + args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(update_auto, "_run_launchctl", failed_bootstrap)
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_enable(_args(time="03:00"))
+
+    assert exc.value.code == 1
+    assert update_auto.read_status()["enabled"] is False
+    error = capsys.readouterr().err
+    assert "bootstrap stdout" in error
+    assert "bootstrap stderr" in error
+
+
+def test_enable_launchd_requires_enable_success(tmp_path, monkeypatch, capsys):
+    _hermes_home, calls = _set_macos_scheduler_env(tmp_path, monkeypatch)
+
+    def failed_enable(args):
+        calls.append(args)
+        if args[0] == "enable":
+            return subprocess.CompletedProcess(
+                ["launchctl"] + args,
+                1,
+                stdout="enable stdout",
+                stderr="enable stderr",
+            )
+        return subprocess.CompletedProcess(["launchctl"] + args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(update_auto, "_run_launchctl", failed_enable)
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_enable(_args(time="03:00"))
+
+    assert exc.value.code == 1
+    assert update_auto.read_status()["enabled"] is False
+    error = capsys.readouterr().err
+    assert "enable stdout" in error
+    assert "enable stderr" in error
+
+
+def test_enable_systemd_requires_daemon_reload_success(tmp_path, monkeypatch, capsys):
+    hermes_home, _calls = _set_linux_scheduler_env(tmp_path, monkeypatch)
+    calls = []
+
+    def failed_reload(args):
+        calls.append(args)
+        if args == ["daemon-reload"]:
+            return subprocess.CompletedProcess(
+                ["systemctl", "--user"] + args,
+                1,
+                stdout="reload stdout",
+                stderr="reload stderr",
+            )
+        return subprocess.CompletedProcess(["systemctl", "--user"] + args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(update_auto, "_systemctl_user", failed_reload)
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_enable(_args(time="03:00"))
+
+    assert exc.value.code == 1
+    assert calls == [["daemon-reload"]]
+    assert update_auto.read_status()["enabled"] is False
+    error = capsys.readouterr().err
+    assert "reload stdout" in error
+    assert "reload stderr" in error
+
+
+def test_enable_systemd_requires_enable_now_success(tmp_path, monkeypatch, capsys):
+    hermes_home, _calls = _set_linux_scheduler_env(tmp_path, monkeypatch)
+    calls = []
+
+    def failed_enable(args):
+        calls.append(args)
+        if args == ["enable", "--now", "hermes-auto-update.timer"]:
+            return subprocess.CompletedProcess(
+                ["systemctl", "--user"] + args,
+                1,
+                stdout="enable stdout",
+                stderr="enable stderr",
+            )
+        return subprocess.CompletedProcess(["systemctl", "--user"] + args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(update_auto, "_systemctl_user", failed_enable)
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_enable(_args(time="03:00"))
+
+    assert exc.value.code == 1
+    assert calls == [["daemon-reload"], ["enable", "--now", "hermes-auto-update.timer"]]
+    assert update_auto.read_status()["enabled"] is False
+    error = capsys.readouterr().err
+    assert "enable stdout" in error
+    assert "enable stderr" in error
+
+
 def test_enable_with_plan_time_creates_single_launchd_scheduler_with_two_triggers(tmp_path, monkeypatch):
     hermes_home, _calls = _set_macos_scheduler_env(tmp_path, monkeypatch)
 
@@ -223,6 +344,46 @@ def test_disable_removes_only_hermes_launchd_plist(tmp_path, monkeypatch, capsys
     assert status["schedulerType"] is None
     assert status["schedulerPath"] is None
     assert "disabled" in capsys.readouterr().out
+
+
+def test_disable_launchd_keeps_file_and_status_when_bootout_fails(
+    tmp_path, monkeypatch, capsys
+):
+    hermes_home, calls = _set_macos_scheduler_env(tmp_path, monkeypatch)
+    launch_agents = tmp_path / "Library" / "LaunchAgents"
+    launch_agents.mkdir(parents=True)
+    plist_path = launch_agents / f"{update_auto.LAUNCHD_LABEL}.plist"
+    plist_path.write_text("hermes", encoding="utf-8")
+    update_auto.write_status(
+        {
+            "enabled": True,
+            "mode": "scheduled",
+            "schedule": "03:00",
+            "schedulerType": "launchd",
+            "schedulerPath": str(plist_path),
+        }
+    )
+
+    def failed_bootout(args):
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            ["launchctl"] + args,
+            1,
+            stdout="bootout stdout",
+            stderr="bootout stderr",
+        )
+
+    monkeypatch.setattr(update_auto, "_run_launchctl", failed_bootout)
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_disable(_args())
+
+    assert exc.value.code == 1
+    assert plist_path.exists()
+    assert _read_status(hermes_home)["enabled"] is True
+    error = capsys.readouterr().err
+    assert "bootout stdout" in error
+    assert "bootout stderr" in error
 
 
 def test_disable_is_idempotent_when_launchd_plist_missing(tmp_path, monkeypatch, capsys):
@@ -325,6 +486,46 @@ def test_disable_removes_only_hermes_systemd_user_files(tmp_path, monkeypatch):
     assert status["schedule"] is None
 
 
+def test_disable_systemd_keeps_files_and_status_when_stop_fails(tmp_path, monkeypatch, capsys):
+    hermes_home, _calls = _set_linux_scheduler_env(tmp_path, monkeypatch)
+    systemd_dir = tmp_path / ".config" / "systemd" / "user"
+    systemd_dir.mkdir(parents=True)
+    service_path = systemd_dir / "hermes-auto-update.service"
+    timer_path = systemd_dir / "hermes-auto-update.timer"
+    service_path.write_text("service", encoding="utf-8")
+    timer_path.write_text("timer", encoding="utf-8")
+    update_auto.write_status(
+        {
+            "enabled": True,
+            "mode": "scheduled",
+            "schedule": "03:00",
+            "schedulerType": "systemd-user",
+            "schedulerPath": str(timer_path),
+        }
+    )
+
+    def failed_stop(args):
+        return subprocess.CompletedProcess(
+            ["systemctl", "--user"] + args,
+            1,
+            stdout="stop stdout",
+            stderr="stop stderr",
+        )
+
+    monkeypatch.setattr(update_auto, "_systemctl_user", failed_stop)
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_disable(_args())
+
+    assert exc.value.code == 1
+    assert service_path.exists()
+    assert timer_path.exists()
+    assert _read_status(hermes_home)["enabled"] is True
+    error = capsys.readouterr().err
+    assert "stop stdout" in error
+    assert "stop stderr" in error
+
+
 def test_status_output_shows_enabled_schedule(tmp_path, monkeypatch, capsys):
     hermes_home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -356,6 +557,45 @@ def test_scheduled_dispatcher_uses_most_recent_configured_time():
     assert update_auto._scheduled_action_for_now(status, datetime(2026, 5, 27, 21, 5)) == "plan"
     assert update_auto._scheduled_action_for_now(status, datetime(2026, 5, 28, 3, 59)) == "plan"
     assert update_auto._scheduled_action_for_now(status, datetime(2026, 5, 28, 4, 5)) == "run"
+
+
+def test_run_scheduled_is_noop_when_persisted_status_is_disabled(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    update_auto.write_status(
+        {
+            "enabled": False,
+            "schedule": "04:00",
+            "planSchedule": ["21:00"],
+        }
+    )
+    monkeypatch.setattr(
+        update_auto,
+        "cmd_auto_plan",
+        lambda _args: pytest.fail("disabled scheduled trigger must not plan"),
+    )
+    monkeypatch.setattr(
+        update_auto,
+        "cmd_auto_run_now",
+        lambda _args: pytest.fail("disabled scheduled trigger must not run"),
+    )
+
+    assert update_auto.cmd_auto_run_scheduled(_args()) is None
+    assert _read_status(hermes_home)["enabled"] is False
+
+
+def test_enable_rejects_plan_time_equal_to_update_time_without_scheduler_call(
+    tmp_path, monkeypatch, capsys
+):
+    hermes_home, calls = _set_macos_scheduler_env(tmp_path, monkeypatch)
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_enable(_args(time="03:00", plan_time=["03:00"]))
+
+    assert exc.value.code == 2
+    assert calls == []
+    assert not (hermes_home / "state" / "update-status.json").exists()
+    assert "must differ" in capsys.readouterr().err
 
 
 def test_plan_prints_concise_notice_and_records_status(tmp_path, monkeypatch, capsys):
@@ -462,6 +702,7 @@ def test_run_now_success_reuses_existing_update_flow_and_logs(tmp_path, monkeypa
     assert called_args.yes is True
     assert called_args.no_backup is True
     assert called_args.backup is False
+    assert called_args._update_lock_held is True
     data = _read_status(hermes_home)
     assert data["status"] == update_auto.STATUS_SUCCESS
     assert data["previousVersion"] == "oldsha"
@@ -477,6 +718,114 @@ def test_run_now_success_reuses_existing_update_flow_and_logs(tmp_path, monkeypa
     assert "current=newsha" in log_text
     assert "backup=" in log_text
     assert "Auto-update run complete" in capsys.readouterr().out
+
+
+def test_run_now_fails_when_available_git_update_has_no_expected_sha(
+    tmp_path, monkeypatch, capsys
+):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from hermes_cli import backup
+    from hermes_cli import main as hm
+
+    monkeypatch.setattr(
+        hm,
+        "_get_update_check_result",
+        lambda **_kw: {
+            "update_available": True,
+            "install_method": "git",
+            "latest_version": "newsha",
+        },
+    )
+    monkeypatch.setattr(
+        backup,
+        "create_pre_update_backup",
+        lambda: pytest.fail("missing expected SHA must abort before backup"),
+    )
+    monkeypatch.setattr(
+        hm,
+        "cmd_update",
+        lambda _args: pytest.fail("missing expected SHA must abort before update"),
+    )
+    monkeypatch.setattr(update_auto, "_current_version", lambda: "oldsha")
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_run_now(_args())
+
+    assert exc.value.code == update_auto.EXIT_UPDATE_FAILED
+    data = _read_status(hermes_home)
+    assert data["status"] == update_auto.STATUS_UPDATE_FAILED
+    assert "SHA" in data["error"]
+    assert "update_failed" in capsys.readouterr().err
+
+
+def test_run_now_fails_when_checked_latest_sha_is_not_in_current_head(
+    tmp_path, monkeypatch, capsys
+):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from hermes_cli import backup
+    from hermes_cli import main as hm
+
+    monkeypatch.setattr(
+        hm,
+        "_get_update_check_result",
+        lambda **_kw: {
+            "update_available": True,
+            "install_method": "git",
+            "latest_version": "newsha",
+            "latest_sha": "0123456789abcdef0123456789abcdef01234567",
+        },
+    )
+    monkeypatch.setattr(
+        backup,
+        "create_pre_update_backup",
+        lambda: hermes_home / "backups" / "pre-update.zip",
+    )
+    monkeypatch.setattr(hm, "cmd_update", lambda _args: None)
+    monkeypatch.setattr(update_auto, "_verify_expected_sha", lambda _sha: (False, "not an ancestor"))
+    monkeypatch.setattr(update_auto, "_verify_health", lambda: (True, "ok"))
+    monkeypatch.setattr(update_auto, "_current_version", lambda: "newsha")
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_run_now(_args())
+
+    assert exc.value.code == update_auto.EXIT_UPDATE_FAILED
+    data = _read_status(hermes_home)
+    assert data["status"] == update_auto.STATUS_UPDATE_FAILED
+    assert "not an ancestor" in data["error"]
+    assert "update_failed" in capsys.readouterr().err
+
+
+def test_run_now_reports_lock_busy_without_checking_or_updating(tmp_path, monkeypatch, capsys):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from hermes_cli.update_lock import UpdateLockBusyError
+    from hermes_cli import main as hm
+
+    monkeypatch.setattr(
+        update_auto,
+        "acquire_update_lock",
+        lambda _root: (_ for _ in ()).throw(UpdateLockBusyError("busy")),
+    )
+    monkeypatch.setattr(
+        hm,
+        "_get_update_check_result",
+        lambda **_kw: pytest.fail("busy update must not check for updates"),
+    )
+    monkeypatch.setattr(update_auto, "_current_version", lambda: "oldsha")
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_run_now(_args())
+
+    assert exc.value.code == update_auto.EXIT_UPDATE_FAILED
+    data = _read_status(hermes_home)
+    assert data["status"] == update_auto.STATUS_UPDATE_FAILED
+    assert "busy" in data["error"]
+    assert "already running" in capsys.readouterr().err
 
 
 def test_run_now_up_to_date_skips_backup_and_update(tmp_path, monkeypatch, capsys):
@@ -615,3 +964,56 @@ def test_run_now_records_health_failure_after_update(tmp_path, monkeypatch, caps
     assert "health check failed" in data["error"]
     assert "gateway startup failed" in data["error"]
     assert "health_failed" in capsys.readouterr().err
+
+
+def test_run_now_does_not_report_success_when_managed_update_returns_normally(
+    tmp_path, monkeypatch
+):
+    """A managed install's normal-return guard must not become auto-update success."""
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_MANAGED", "homebrew")
+
+    from hermes_cli import backup
+    from hermes_cli import main as hm
+
+    monkeypatch.setattr(
+        hm,
+        "_get_update_check_result",
+        lambda **_kw: {
+            "update_available": True,
+            "current_version": "oldsha",
+            "latest_version": "newsha",
+            "behind": 1,
+        },
+    )
+    monkeypatch.setattr(
+        backup,
+        "create_pre_update_backup",
+        lambda: hermes_home / "backups" / "pre-update.zip",
+    )
+    monkeypatch.setattr(update_auto, "_current_version", lambda: "oldsha")
+    monkeypatch.setattr(update_auto, "_verify_health", lambda: (True, "ok"))
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_run_now(_args())
+
+    assert exc.value.code == update_auto.EXIT_UPDATE_FAILED
+    data = _read_status(hermes_home)
+    assert data["status"] == update_auto.STATUS_UPDATE_FAILED
+    assert "managed" in data["error"].lower()
+
+
+def test_verify_health_treats_operator_stopped_gateway_as_informational(monkeypatch):
+    from gateway import status as gateway_status
+
+    monkeypatch.setattr(
+        gateway_status,
+        "read_runtime_status",
+        lambda: {"gateway_state": "stopped"},
+    )
+
+    ok, detail = update_auto._verify_health()
+
+    assert ok is True
+    assert "stopped" in detail

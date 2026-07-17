@@ -265,6 +265,12 @@ class ResponsesApiTransport(ProviderTransport):
         # the cache-scope routing headers below. Falls back to session_id when
         # there is no static content to hash.
         cache_key = _content_cache_key(instructions, response_tools) or session_id
+        # The backend rejects prompt_cache_key > 64 chars with HTTP 400.
+        # When _content_cache_key falls back to session_id the key can be
+        # arbitrarily long (e.g. "paperclip:company:<uuid>:agent:<uuid>" at
+        # 97 chars).  Hash over-length keys so they always fit.
+        if cache_key and len(cache_key) > 64:
+            cache_key = f"pck_{hashlib.sha256(cache_key.encode('utf-8', 'replace')).hexdigest()[:24]}"
         # xAI Responses takes prompt_cache_key in extra_body (set further
         # down); GitHub Models opts out of cache-key routing entirely.
         if not is_github_responses and not is_xai_responses and cache_key:

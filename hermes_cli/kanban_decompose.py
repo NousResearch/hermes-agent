@@ -44,21 +44,24 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
-from hermes_cli import profiles as profiles_mod
+
 
 logger = logging.getLogger(__name__)
+
+
+_DEFAULT_CONTEXT_BUDGET_TOKENS = 150_000
+_MIN_CONTEXT_BUDGET_TOKENS = 32_000
 
 
 _SYSTEM_PROMPT = """You are the Kanban decomposer for the Hermes Agent board.
 
 A user dropped a rough idea into the Triage column. Your job is to break it
-into a small graph of concrete child tasks and route each one to the best-
-matching profile from the available roster.
+into a small graph of concrete child tasks. Decomposition is an estimate and
+planning action only: it must never assign work or start a worker.
 
 You will be given:
   - The original task title and body
-  - The list of available profiles (each with name + description)
-  - The fallback "default_assignee" used when no profile fits
+  - A target maximum context budget for one fresh worker session
 
 Output a single JSON object with this exact shape:
 
@@ -69,24 +72,39 @@ Output a single JSON object with this exact shape:
       {
         "title": "<concrete task title, imperative voice, <= 80 chars>",
         "body":  "<detailed spec for the worker on this child task>",
-        "assignee": "<profile name from the roster, or null for default>",
-        "parents": [<int>, ...]
+        "parents": [<int>, ...],
+        "estimated_context_tokens": <rough integer estimate>
       },
       ...
     ]
   }
 
 Rules:
+  - The context-budget estimate is intentionally rough, not a promise. It
+    includes the worker's base prompt, task spec, likely repository/file/tool
+    output, and implementation conversation. Keep every child at or below the
+    supplied budget with sensible margin.
+  - Optional calibration context may summarize outcomes from similar completed
+    tasks. Use it to calibrate estimates and their range, but never treat it as
+    a point guarantee. The current task's scope and uncertainty take priority.
+  - If no calibration context is present, estimate normally from the task
+    description; do not claim that historical evidence exists.
+  - First look for semantic seams. Split only at those seams; never create
+    arbitrary micro-tasks merely to hit a number.
+  - Among valid semantic splits, choose the FEWEST workers and the LARGEST
+    pieces that fit the budget. The objective is minimum handoffs and minimum
+    duplicate worker context, not maximum parallelism.
+  - If the whole task is plausibly within budget, return fanout=false. If a
+    semantic child would exceed budget, split that child further at its own
+    semantic seams before returning the graph.
   - "parents" is a list of INDICES (0-based) into this same "tasks" list,
     expressing actual data dependencies. Tasks with no parents run in
     PARALLEL. Tasks with parents wait until every parent completes.
-  - Prefer parallelism. If two tasks can be done independently, give
-    them no parents so the dispatcher fans them out at once.
-  - Use 2-6 tasks for normal work. Don't create 20 tiny tasks. Don't
-    cram everything into 1 task.
-  - Pick assignees from the roster by matching the task to the profile's
-    DESCRIPTION (not just the name). When nothing matches well, use null
-    and the system will route to the default_assignee.
+  - Prefer parallelism only when it does not add a handoff or duplicate work.
+    If two tasks can be done independently, give them no parents so the
+    dispatcher can fan them out at once.
+  - Use 2-6 tasks for normal work. Don't create 20 tiny tasks. Do not cram
+    clearly over-budget work into 1 task.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
 
@@ -98,12 +116,11 @@ return:
     "rationale": "<one sentence>",
     "title": "<tightened title>",
     "body":  "<concrete spec for a single worker>",
-    "assignee": "<profile name from the roster, or null for default>"
+    "estimated_context_tokens": <rough integer estimate>
   }
 
-In that case the task stays as one work item, just with a tightened spec and
-a concrete assignee. If no profile fits, use null and the system will route to
-the default_assignee.
+In that case the task stays as one work item with a tightened spec. It remains
+unassigned until an explicit take or batch-take action.
 
 No preamble, no closing remarks, no code fences. Output only the JSON object.
 """
@@ -114,11 +131,41 @@ Title: {title}
 Body:
 {body}
 
-Available profiles (assignees you may pick from):
-{roster}
+Maximum rough context budget per fresh worker: {context_budget_tokens:,} tokens
+{calibration_context}"""
 
-Default assignee (used when no profile fits a task): {default_assignee}
-"""
+
+def _calibration_context(task_id: str, title: str, body: str,
+                         context_budget_tokens: int) -> str:
+    """Ask optional plugins for bounded, aggregate-only estimate calibration.
+
+    The decomposer remains usable without plugins.  A plugin may return either
+    a string or ``{"context": "..."}``; raw history is deliberately not a
+    core concern and callers cap the injected aggregate to keep this auxiliary
+    prompt bounded.
+    """
+    try:
+        from hermes_cli.plugins import invoke_hook
+        results = invoke_hook(
+            "kanban_decomposer_context",
+            task_id=task_id,
+            title=title,
+            body=body,
+            context_budget_tokens=context_budget_tokens,
+        )
+    except Exception as exc:
+        logger.debug("decompose: calibration context hook failed: %s", exc)
+        return ""
+
+    parts: list[str] = []
+    for result in results or []:
+        if isinstance(result, dict):
+            result = result.get("context", "")
+        if isinstance(result, str) and result.strip():
+            parts.append(result.strip())
+    if not parts:
+        return ""
+    return "\n\nCalibration context:\n" + "\n\n".join(parts)[:4_000] + "\n"
 
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
@@ -177,95 +224,24 @@ def _load_config() -> dict:
         return {}
 
 
-def _resolve_orchestrator_profile(cfg: dict) -> str:
-    """Resolve which profile owns the root/orchestration task after fan-out.
 
-    Falls back to the active default profile when ``kanban.orchestrator_profile``
-    is unset, so a task is never stranded for lack of an orchestrator.
+def _resolve_context_budget_tokens(cfg: dict) -> int:
+    """Resolve the decomposer's coarse per-worker context cap.
+
+    This is a planning guardrail, not a runtime token counter: actual context
+    varies with tool calls and model behavior. Keep a defensible lower bound so
+    malformed configuration cannot force pathological micro-task fanout.
     """
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    explicit = (kanban_cfg.get("orchestrator_profile") or "").strip()
-    if explicit:
-        try:
-            if profiles_mod.profile_exists(explicit):
-                return explicit
-        except Exception:
-            pass
-    # Fall back to the active default profile.
+    raw = kanban_cfg.get("decomposer_context_budget_tokens")
+    if raw is None:
+        return _DEFAULT_CONTEXT_BUDGET_TOKENS
     try:
-        return profiles_mod.get_active_profile_name() or "default"
-    except Exception:
-        return "default"
+        budget = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_CONTEXT_BUDGET_TOKENS
+    return max(_MIN_CONTEXT_BUDGET_TOKENS, budget)
 
-
-def _resolve_default_assignee(cfg: dict) -> str:
-    """Resolve which profile catches child tasks the orchestrator can't route."""
-    kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    explicit = (kanban_cfg.get("default_assignee") or "").strip()
-    if explicit:
-        try:
-            if profiles_mod.profile_exists(explicit):
-                return explicit
-        except Exception:
-            pass
-    try:
-        return profiles_mod.get_active_profile_name() or "default"
-    except Exception:
-        return "default"
-
-
-def _build_roster() -> tuple[list[dict], set[str]]:
-    """Return (roster_for_prompt, valid_assignee_names).
-
-    Each roster entry is ``{name, description, has_description}``. The
-    valid-set is used after the LLM responds to rewrite invalid
-    assignees to the default fallback.
-    """
-    roster: list[dict] = []
-    valid: set[str] = set()
-    try:
-        all_profiles = profiles_mod.list_profiles()
-    except Exception as exc:
-        logger.warning("decompose: failed to list profiles: %s", exc)
-        return roster, valid
-    for p in all_profiles:
-        desc = (p.description or "").strip()
-        roster.append({
-            "name": p.name,
-            "description": desc or f"(no description; profile named {p.name!r})",
-            "has_description": bool(desc),
-        })
-        valid.add(p.name)
-    return roster, valid
-
-
-def _format_roster(roster: list[dict]) -> str:
-    if not roster:
-        return "  (no profiles installed — decomposer cannot route work)"
-    lines = []
-    for entry in roster:
-        tag = "" if entry["has_description"] else " ⚠ undescribed"
-        lines.append(f"  - {entry['name']}{tag}: {entry['description']}")
-    return "\n".join(lines)
-
-
-def _normalize_assignee_choice(
-    assignee: object,
-    *,
-    default_assignee: str,
-    valid_names: set[str],
-) -> str:
-    """Return a valid assignee, falling back to ``default_assignee``.
-
-    Fan-out children and the single-task fallback should share the same
-    routing guarantee: promoted work must not be left unassigned.
-    """
-    if not isinstance(assignee, str) or not assignee.strip():
-        return default_assignee
-    chosen = assignee.strip()
-    if chosen not in valid_names:
-        return default_assignee
-    return chosen
 
 
 def decompose_task(
@@ -291,11 +267,7 @@ def decompose_task(
         )
 
     cfg = _load_config()
-    orchestrator = _resolve_orchestrator_profile(cfg)
-    default_assignee = _resolve_default_assignee(cfg)
-    kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
-    roster, valid_names = _build_roster()
+    context_budget_tokens = _resolve_context_budget_tokens(cfg)
 
     try:
         from agent.auxiliary_client import call_llm  # type: ignore
@@ -303,12 +275,17 @@ def decompose_task(
         logger.debug("decompose: auxiliary client import failed: %s", exc)
         return DecomposeOutcome(task_id, False, "auxiliary client unavailable")
 
+    title = _truncate(task.title or "", 400)
+    body = _truncate(task.body or "(no body)", 4000)
+    calibration_context = _calibration_context(
+        task.id, title, body, context_budget_tokens,
+    )
     user_msg = _USER_TEMPLATE.format(
         task_id=task.id,
-        title=_truncate(task.title or "", 400),
-        body=_truncate(task.body or "(no body)", 4000),
-        roster=_format_roster(roster),
-        default_assignee=default_assignee,
+        title=title,
+        body=body,
+        context_budget_tokens=context_budget_tokens,
+        calibration_context=calibration_context,
     )
 
     try:
@@ -350,13 +327,7 @@ def decompose_task(
         new_body = parsed.get("body")
         title_val = new_title.strip() if isinstance(new_title, str) and new_title.strip() else None
         body_val = new_body if isinstance(new_body, str) and new_body.strip() else None
-        assignee_val = None
-        if not task.assignee:
-            assignee_val = _normalize_assignee_choice(
-                parsed.get("assignee"),
-                default_assignee=default_assignee,
-                valid_names=valid_names,
-            )
+
         if title_val is None and body_val is None:
             return DecomposeOutcome(
                 task_id, False, "decomposer returned fanout=false with no title/body",
@@ -367,8 +338,9 @@ def decompose_task(
                 task_id,
                 title=title_val,
                 body=body_val,
-                assignee=assignee_val,
+                assignee=None,
                 author=audit_author,
+                auto_promote=False,
             )
         if not ok:
             return DecomposeOutcome(
@@ -385,8 +357,8 @@ def decompose_task(
             task_id, False, "decomposer returned fanout=true with empty tasks list",
         )
 
-    # Rewrite invalid assignees to the default fallback. Never leave a
-    # task with assignee=None — the user explicitly does not want that.
+    # Assignment is deliberately outside decomposition. The later explicit
+    # take / batch-take action selects assignees for the whole graph.
     children: list[dict] = []
     for idx, entry in enumerate(raw_tasks):
         if not isinstance(entry, dict):
@@ -401,22 +373,7 @@ def decompose_task(
         body = entry.get("body")
         if not isinstance(body, str):
             body = ""
-        assignee = entry.get("assignee")
-        chosen = _normalize_assignee_choice(
-            assignee,
-            default_assignee=default_assignee,
-            valid_names=valid_names,
-        )
-        if (
-            isinstance(assignee, str)
-            and assignee.strip()
-            and assignee.strip() not in valid_names
-        ):
-            logger.info(
-                "decompose: task %s child %d picked unknown assignee %r — "
-                "routing to default_assignee %r",
-                task_id, idx, assignee, default_assignee,
-            )
+
         parents = entry.get("parents") or []
         if not isinstance(parents, list):
             parents = []
@@ -425,7 +382,7 @@ def decompose_task(
         children.append({
             "title": title.strip()[:200],
             "body": body.strip(),
-            "assignee": chosen,
+            "assignee": None,
             "parents": clean_parents,
         })
 
@@ -434,10 +391,10 @@ def decompose_task(
             child_ids = kb.decompose_triage_task(
                 conn,
                 task_id,
-                root_assignee=orchestrator,
+                root_assignee=None,
                 children=children,
                 author=audit_author,
-                auto_promote=auto_promote,
+                auto_promote=False,
             )
     except ValueError as exc:
         return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")

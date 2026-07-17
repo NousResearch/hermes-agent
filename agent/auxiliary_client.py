@@ -5178,20 +5178,20 @@ def resolve_provider_client(
             or _read_main_model(),
             provider,
         )
-        if provider == "copilot-acp":
+        if provider in {"copilot-acp", "claude-code-acp", "codex-acp"}:
             api_key = str(creds.get("api_key", "")).strip()
             base_url = str(creds.get("base_url", "")).strip()
             command = str(creds.get("command", "")).strip() or None
             args = list(creds.get("args") or [])
             if not final_model:
                 logger.warning(
-                    "resolve_provider_client: copilot-acp requested but no model "
+                    "resolve_provider_client: ACP provider requested but no model "
                     "was provided or configured"
                 )
                 return None, None
             if not api_key or not base_url:
                 logger.warning(
-                    "resolve_provider_client: copilot-acp requested but external "
+                    "resolve_provider_client: ACP provider requested but external "
                     "process credentials are incomplete"
                 )
                 return None, None

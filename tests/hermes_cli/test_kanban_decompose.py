@@ -75,6 +75,51 @@ def _patch_list_profiles(names: list[str]):
     ]
 
 
+def test_context_budget_resolver_defaults_and_bounds_values():
+    assert decomp._resolve_context_budget_tokens({}) == 150_000
+    assert decomp._resolve_context_budget_tokens(
+        {"kanban": {"decomposer_context_budget_tokens": "120000"}}
+    ) == 120_000
+    assert decomp._resolve_context_budget_tokens(
+        {"kanban": {"decomposer_context_budget_tokens": "invalid"}}
+    ) == 150_000
+    assert decomp._resolve_context_budget_tokens(
+        {"kanban": {"decomposer_context_budget_tokens": 1}}
+    ) == 32_000
+
+
+def test_decompose_passes_context_budget_and_policy_to_llm(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="budget-aware task", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "fits",
+        "title": "Do the work",
+        "body": "Implement it.",
+        "assignee": "worker",
+        "estimated_context_tokens": 110_000,
+    })
+    patches = _patch_list_profiles(["worker"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload) as call_llm, _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"decomposer_context_budget_tokens": 120_000}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    messages = call_llm.call_args.kwargs["messages"]
+    assert "FEWEST workers" in messages[0]["content"]
+    assert "semantic seams" in messages[0]["content"]
+    assert "120,000 tokens" in messages[1]["content"]
+
+
 def test_decompose_with_fanout_creates_children(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="ship a feature", triage=True)
@@ -107,13 +152,13 @@ def test_decompose_with_fanout_creates_children(kanban_home):
         c0 = kb.get_task(conn, outcome.child_ids[0])
         c1 = kb.get_task(conn, outcome.child_ids[1])
     assert root.status == "todo"
-    assert c0.status == "ready"
+    assert c0.status == "todo"
     assert c1.status == "todo"
-    assert c0.assignee == "researcher"
-    assert c1.assignee == "engineer"
+    assert c0.assignee is None
+    assert c1.assignee is None
 
 
-def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
+def test_decompose_fanout_false_leaves_task_unassigned(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="just one thing", triage=True)
 
@@ -143,10 +188,10 @@ def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
     with kb.connect() as conn:
         task = kb.get_task(conn, tid)
     assert task is not None
-    # specify path with no parents -> recompute_ready flips to 'ready'
-    assert task.status == "ready"
+    # Explicit take, not decomposition, makes a parent-free task ready.
+    assert task.status == "todo"
     assert task.title == "Tightened title"
-    assert task.assignee == "fallback"
+    assert task.assignee is None
 
 
 def test_decompose_fanout_false_preserves_existing_assignee(kanban_home):
@@ -187,7 +232,7 @@ def test_decompose_fanout_false_preserves_existing_assignee(kanban_home):
     assert task.title == "Tightened title"
 
 
-def test_decompose_fanout_false_uses_valid_llm_assignee(kanban_home):
+def test_decompose_fanout_false_ignores_valid_llm_assignee(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="route me", triage=True)
 
@@ -216,10 +261,10 @@ def test_decompose_fanout_false_uses_valid_llm_assignee(kanban_home):
     with kb.connect() as conn:
         task = kb.get_task(conn, tid)
     assert task is not None
-    assert task.assignee == "engineer"
+    assert task.assignee is None
 
 
-def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
+def test_decompose_fanout_false_ignores_invalid_llm_assignee(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="route me safely", triage=True)
 
@@ -248,10 +293,10 @@ def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
     with kb.connect() as conn:
         task = kb.get_task(conn, tid)
     assert task is not None
-    assert task.assignee == "fallback"
+    assert task.assignee is None
 
 
-def test_decompose_unknown_assignee_falls_back_to_default(kanban_home):
+def test_decompose_ignores_unknown_llm_assignee(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="x", triage=True)
 
@@ -289,8 +334,9 @@ def test_decompose_unknown_assignee_falls_back_to_default(kanban_home):
     assert outcome.child_ids and len(outcome.child_ids) == 1
     with kb.connect() as conn:
         child = kb.get_task(conn, outcome.child_ids[0])
-    # 'made_up' wasn't in roster, so assignee rewritten to 'fallback'
-    assert child.assignee == "fallback"
+    # Decomposition preserves the graph but never turns an LLM routing hint
+    # into a worker assignment.
+    assert child.assignee is None
 
 
 def test_decompose_handles_malformed_llm_json(kanban_home):

@@ -648,6 +648,10 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        # A board-local concurrency policy, deliberately metadata rather than
+        # a separately persisted pool entity.
+        "agent_limit": 10,
+        "executor": "hermes-worker",
         "created_at": None,
         "archived": False,
     }
@@ -675,6 +679,8 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
+    agent_limit: Optional[int] = None,
+    executor: Optional[str] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -698,6 +704,19 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
+    if agent_limit is not None:
+        try:
+            parsed_limit = int(agent_limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("agent_limit must be a positive integer") from exc
+        if parsed_limit < 1:
+            raise ValueError("agent_limit must be a positive integer")
+        meta["agent_limit"] = parsed_limit
+    if executor is not None:
+        normalized_executor = str(executor).strip().lower()
+        if normalized_executor not in {"hermes-worker", "claude-code", "codex"}:
+            raise ValueError("executor must be hermes-worker, claude-code, or codex")
+        meta["executor"] = normalized_executor
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -857,6 +876,7 @@ class Task:
     tenant: Optional[str]
     branch_name: Optional[str] = None
     project_id: Optional[str] = None
+    executor: str = "hermes-worker"
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
@@ -943,6 +963,7 @@ class Task:
             workspace_path=row["workspace_path"],
             branch_name=row["branch_name"] if "branch_name" in keys else None,
             project_id=row["project_id"] if "project_id" in keys else None,
+            executor=(row["executor"] if "executor" in keys and row["executor"] else "hermes-worker"),
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
@@ -1112,6 +1133,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- the task's worktree is anchored under the project's primary repo with a
     -- deterministic branch name instead of a random wt/<task-id> fallback.
     project_id           TEXT,
+    executor             TEXT NOT NULL DEFAULT 'hermes-worker',
     claim_lock           TEXT,
     claim_expires        INTEGER,
     tenant               TEXT,
@@ -1864,6 +1886,8 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "tasks", "branch_name", "branch_name TEXT")
     if "project_id" not in cols:
         _add_column_if_missing(conn, "tasks", "project_id", "project_id TEXT")
+    if "executor" not in cols:
+        _add_column_if_missing(conn, "tasks", "executor", "executor TEXT NOT NULL DEFAULT 'hermes-worker'")
     if "idempotency_key" not in cols:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
@@ -2408,6 +2432,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    executor: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2491,6 +2516,9 @@ def create_task(
                 project_repo = str(project_obj.primary_path)
 
     parents = tuple(p for p in parents if p)
+    executor = str(executor or (project_obj.executor if project_obj else None) or read_board_metadata(board if board else get_current_board()).get("executor") or "hermes-worker").strip().lower()
+    if executor not in {"hermes-worker", "claude-code", "codex"}:
+        raise ValueError("executor must be hermes-worker, claude-code, or codex")
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -2634,10 +2662,10 @@ def create_task(
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
-                        branch_name, project_id, tenant, idempotency_key,
+                        branch_name, project_id, executor, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2652,6 +2680,7 @@ def create_task(
                         workspace_path,
                         branch_name,
                         project_id,
+                        executor,
                         tenant,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
@@ -5233,6 +5262,7 @@ def specify_triage_task(
     body: Optional[str] = None,
     assignee: Optional[str] = None,
     author: Optional[str] = None,
+    auto_promote: bool = True,
 ) -> bool:
     """Flesh out a triage task and promote it to ``todo``.
 
@@ -5241,10 +5271,10 @@ def specify_triage_task(
     False when the task is missing or not in the ``triage`` column — callers
     should surface that as "nothing to specify" rather than an error.
 
-    ``todo`` (not ``ready``) is the correct landing column: ``recompute_ready``
-    promotes parent-free / parent-done todos to ``ready`` on the next
-    dispatcher tick, which keeps the normal parent-gating behaviour intact
-    for specified tasks that happen to have open parents.
+    ``todo`` (not ``ready``) is the correct landing column. By default,
+    ``recompute_ready`` promotes parent-free / parent-done todos to ``ready``
+    immediately. Callers that are only estimating or decomposing can pass
+    ``auto_promote=False`` to leave the task inert until explicit take.
 
     ``author`` is recorded on an audit comment only when at least one of
     ``title`` / ``body`` / ``assignee`` actually changed — avoids noisy
@@ -5308,11 +5338,9 @@ def specify_triage_task(
             {"changed_fields": changed_fields} if changed_fields else None,
         )
     # Outside the write_txn above, so we don't nest BEGIN IMMEDIATE — the
-    # ready-promotion pass opens its own IMMEDIATE txn. This runs the same
-    # logic the dispatcher would on its next tick, so a specified task
-    # with no open parents flips straight to 'ready' here instead of
-    # idling in 'todo' until the next sweep.
-    recompute_ready(conn)
+    # ready-promotion pass opens its own IMMEDIATE txn.
+    if auto_promote:
+        recompute_ready(conn)
     return True
 
 
@@ -5328,16 +5356,15 @@ def decompose_triage_task(
     """Fan a triage task out into child tasks and promote the root to ``todo``.
 
     The root task stays alive and becomes the parent of every child —
-    when all children reach ``done``, the root promotes to ``ready`` and
-    its assignee (typically the orchestrator profile) wakes back up to
-    judge completion or spawn more work.
+    when all children reach ``done``, the root promotes to ``ready``.
+    Decomposition does not choose an assignee; an explicit take action does.
 
     ``children`` is a list of dicts, each shaped like::
 
         {
             "title": "...",
             "body": "...",                     # optional
-            "assignee": "profile-name",        # optional, None -> default fallback
+            "assignee": "profile-name",        # optional; normally None until take
             "parents": [0, 2],                 # indices into this same children list
         }
 
@@ -5495,7 +5522,8 @@ def decompose_triage_task(
                 (cid, task_id),
             )
 
-        # Flip the root: triage -> todo, set assignee to the orchestrator.
+        # Flip the root: triage -> todo. Assignment, if requested by another
+        # caller, is intentionally explicit via root_assignee.
         sets = ["status = 'todo'"]
         params: list[Any] = []
         if root_assignee is not None:
@@ -6011,7 +6039,7 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # for operators who want a tighter/looser probe cadence.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
-# Within this window a GitHub PR URL in a comment blocks re-spawn.
+# Within this window an open GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
 # Pattern matching a GitHub PR URL in task comments.
@@ -6019,6 +6047,26 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+
+
+def _is_open_github_pr(pr_url: str) -> bool:
+    """Return whether GitHub currently reports ``pr_url`` as open.
+
+    The respawn guard must never infer PR status from a URL alone: merged or
+    closed PRs are terminal and must not leave ready work parked for a day.
+    If GitHub cannot be queried (offline dispatcher, missing ``gh``, timeout,
+    or authentication error), fail open so a stale URL cannot block execution.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "state", "--jq", ".state"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and result.stdout.strip().upper() == "OPEN"
 
 
 @dataclass
@@ -7283,9 +7331,10 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         arrives AFTER that completion — that's a deliberate re-run request.
 
     ``"active_pr"``
-        A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        An open GitHub PR URL appears in a recent task comment (within
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds). A prior worker already opened
+        an active PR; re-spawning risks a duplicate PR on the same task.
+        Closed, merged, and unresolvable PR URLs do not guard the task.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -7360,20 +7409,23 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         requeued_after = conn.execute(
             "SELECT 1 FROM task_events "
             "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+            "AND kind IN ('status', 'promoted', 'promoted_manual', 'unblocked', 'reclaimed') "
             "LIMIT 1",
             (task_id, completed_at),
         ).fetchone()
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. Open GitHub PR URL in a recent comment — a prior worker already
+    #    opened work that is still pending review. URL presence alone is not
+    #    enough: merged/closed PRs must release the task immediately.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+        match = _RESPAWN_GUARD_PR_URL_RE.search(c["body"] or "")
+        if match and _is_open_github_pr(match.group(0)):
             return "active_pr"
 
     return None
@@ -8318,6 +8370,12 @@ def _default_spawn(
         # turn, prints text, exits rc=0, and the dispatcher records a
         # protocol violation (incident 2026-06-09 t_d9cbe312).
         cmd.append("-Q")
+    # External coding harnesses are a distinct execution path, not providers:
+    # one process owns exactly one native ACP session and then writes the
+    # ordinary Kanban completion/block transition itself.
+    if task.executor in {"claude-code", "codex"}:
+        env["HERMES_KANBAN_EXECUTOR"] = task.executor
+        cmd = [sys.executable, "-m", "agent.acp_task_executor"]
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and
@@ -8464,6 +8522,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     lines.append("")
     lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
     lines.append(f"Status:   {task.status}")
+    lines.append(f"Executor: {task.executor}")
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
     lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")

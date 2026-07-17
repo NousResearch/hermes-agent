@@ -1903,6 +1903,27 @@ def test_respawn_guard_recent_success_bypassed_by_requeue(kanban_home):
         assert kb.check_respawn_guard(conn, t) is None
 
 
+def test_respawn_guard_recent_success_bypassed_by_manual_promote(kanban_home):
+    """promote_task logs 'promoted_manual'; the guard must honor it the same
+    as auto-DAG 'promoted', or every batch re-take of a recently completed
+    task silently parks until the success window elapses."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="rerun-me-manual", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'completed', ?, ?)",
+            (t, now - 120, now - 60),
+        )
+        assert kb.check_respawn_guard(conn, t) == "recent_success"
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, 'promoted_manual', ?)",
+            (t, now - 10),
+        )
+        assert kb.check_respawn_guard(conn, t) is None
+
+
 def test_respawn_guard_stale_success_not_guarded(kanban_home):
     """A completed run outside the guard window does not block re-spawn."""
     with kb.connect() as conn:
@@ -1917,8 +1938,9 @@ def test_respawn_guard_stale_success_not_guarded(kanban_home):
     assert reason is None
 
 
-def test_respawn_guard_active_pr_in_comment(kanban_home):
-    """A GitHub PR URL in a recent comment triggers active_pr."""
+def test_respawn_guard_active_pr_in_comment(kanban_home, monkeypatch):
+    """Only a currently open GitHub PR in a recent comment triggers active_pr."""
+    monkeypatch.setattr(kb, "_is_open_github_pr", lambda _url: True)
     with kb.connect() as conn:
         t = kb.create_task(conn, title="has-pr", assignee="alice")
         kb.add_comment(
@@ -1927,6 +1949,67 @@ def test_respawn_guard_active_pr_in_comment(kanban_home):
         )
         reason = kb.check_respawn_guard(conn, t)
     assert reason == "active_pr"
+
+
+@pytest.mark.parametrize("state", ["CLOSED", "MERGED"])
+def test_respawn_guard_ignores_closed_or_merged_pr_in_comment(
+    kanban_home, monkeypatch, state
+):
+    """A merged or closed PR URL must not strand a ready task for 24 hours."""
+    monkeypatch.setattr(kb, "_is_open_github_pr", lambda _url: False)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title=f"{state.lower()}-pr", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "PR: https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_ignores_pr_when_status_cannot_be_checked(
+    kanban_home, monkeypatch
+):
+    """A GitHub lookup failure fails open rather than parking work on a URL."""
+    monkeypatch.setattr(kb, "_is_open_github_pr", lambda _url: False)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="unavailable-pr", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "PR: https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "expected"),
+    [
+        (0, "OPEN\n", True),
+        (0, "CLOSED\n", False),
+        (0, "MERGED\n", False),
+        (1, "", False),
+    ],
+)
+def test_is_open_github_pr_queries_gh_status(
+    monkeypatch, returncode, stdout, expected
+):
+    """The PR guard relies only on `gh` reporting an OPEN state."""
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout)
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+
+    assert kb._is_open_github_pr("https://github.com/acme/widgets/pull/42") is expected
+    assert calls == [
+        (
+            ["gh", "pr", "view", "https://github.com/acme/widgets/pull/42", "--json", "state", "--jq", ".state"],
+            {"capture_output": True, "text": True, "timeout": 10},
+        )
+    ]
 
 
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
@@ -2016,9 +2099,10 @@ def test_dispatch_respawn_guard_skips_recent_success(
 
 
 def test_dispatch_respawn_guard_skips_active_pr(
-    kanban_home, all_assignees_spawnable
+    kanban_home, all_assignees_spawnable, monkeypatch
 ):
     """dispatch_once skips (but does not block) a task with an active PR comment."""
+    monkeypatch.setattr(kb, "_is_open_github_pr", lambda _url: True)
     spawned_ids = []
 
     def fake_spawn(task, workspace):

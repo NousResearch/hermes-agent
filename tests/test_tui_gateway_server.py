@@ -1,5 +1,6 @@
 import json
 import os
+import platform
 import subprocess
 import sys
 import threading
@@ -8129,6 +8130,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
     started = threading.Event()
     release = threading.Event()
     done = threading.Event()
+    monkeypatch.setattr(server, "_voice_tts_enabled", lambda: False)
 
     class _Agent:
         model = "model-live"
@@ -8737,15 +8739,22 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
         return _Resp()
 
     import urllib.request
+    import webbrowser
+
+    def _forbid_browser_side_effect(*_args, **_kwargs):
+        raise AssertionError("browser launch side effect escaped test isolation")
 
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    monkeypatch.setattr(subprocess, "Popen", _forbid_browser_side_effect)
+    monkeypatch.setattr("builtins.open", _forbid_browser_side_effect)
+    monkeypatch.setattr(webbrowser, "open", _forbid_browser_side_effect)
     launched = ChromeDebugLaunch(launched=True)
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         with (
             patch(
                 "hermes_cli.browser_connect.launch_chrome_debug",
                 return_value=launched,
-            ),
+            ) as launch_chrome_debug,
             patch("hermes_cli.browser_connect.local_port_in_use", return_value=False),
         ):
             resp = server.handle_request(
@@ -8759,6 +8768,7 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
         "Chromium-family browser launched and listening on port 9222",
     ]
     assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
+    launch_chrome_debug.assert_called_once_with(9222, platform.system())
 
 
 def test_browser_manage_connect_finds_ipv6_only_browser(monkeypatch):

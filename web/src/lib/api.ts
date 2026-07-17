@@ -732,7 +732,7 @@ export const api = {
   getToolsets: (profile?: string) =>
     fetchJSON<ToolsetInfo[]>(`/api/tools/toolsets${profileQuery(profile)}`),
   toggleToolset: (name: string, enabled: boolean, profile?: string) =>
-    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
+    fetchJSON<{ ok: boolean; name: string; platform: string; enabled: boolean }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}`,
       {
         method: "PUT",
@@ -2205,6 +2205,8 @@ export interface ToolsetInfo {
   name: string;
   label: string;
   description: string;
+  platform: string;
+  platform_label: string;
   enabled: boolean;
   configured: boolean;
   tools: string[];

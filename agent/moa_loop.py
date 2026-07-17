@@ -430,8 +430,11 @@ def _run_references_parallel(
             ] = idx
         # Collect every reference before returning — the aggregator needs the
         # complete set, so there is no early-exit / first-completed path here.
+        # Apply a per-reference timeout so a hung model API cannot freeze the
+        # entire agent turn indefinitely (issue class: bare future.result()).
+        _REFERENCE_TIMEOUT = 300  # 5 minutes per reference
         for future, idx in futures.items():
-            results[idx] = future.result()
+            results[idx] = future.result(timeout=_REFERENCE_TIMEOUT)
 
     return [r for r in results if r is not None]
 

@@ -915,6 +915,7 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    labels: list[str] = field(default_factory=list)
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1191,6 +1192,14 @@ CREATE TABLE IF NOT EXISTS task_comments (
     author     TEXT NOT NULL,
     body       TEXT NOT NULL,
     created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS task_labels (
+    task_id    TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    created_by TEXT,
+    PRIMARY KEY (task_id, label)
 );
 
 CREATE TABLE IF NOT EXISTS task_events (
@@ -2321,6 +2330,21 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    # Ensure additive side tables introduced after v1 exist even when tests or
+    # recovery tooling exercise the migration function against a hand-built
+    # legacy connection without running the full SCHEMA_SQL script first.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_labels (
+            task_id    TEXT NOT NULL,
+            label      TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            created_by TEXT,
+            PRIMARY KEY (task_id, label)
+        )
+        """
+    )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2332,6 +2356,8 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_task_labels_label ON task_labels(label)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_task_labels_task ON task_labels(task_id)")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
@@ -2709,6 +2735,138 @@ def _claimer_id() -> str:
 # Task creation / mutation
 # ---------------------------------------------------------------------------
 
+_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def normalize_label(label: Any) -> str:
+    """Return a canonical task label or raise ValueError."""
+    text = str(label or "").strip().lower().replace(" ", "-")
+    if not text:
+        raise ValueError("label cannot be empty")
+    if "," in text:
+        raise ValueError(
+            f"label {label!r} contains a comma; pass labels separately"
+        )
+    if not _LABEL_RE.match(text):
+        raise ValueError(
+            f"invalid label {label!r}; use lowercase letters, numbers, '-' or '_' "
+            "up to 64 chars, starting with a letter or number"
+        )
+    return text
+
+
+def normalize_labels(labels: Optional[Iterable[Any]]) -> list[str]:
+    if labels is None:
+        return []
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in labels:
+        label = normalize_label(raw)
+        if label in seen:
+            continue
+        seen.add(label)
+        cleaned.append(label)
+    return cleaned
+
+
+def labels_for_task(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    rows = conn.execute(
+        "SELECT label FROM task_labels WHERE task_id = ? ORDER BY label ASC",
+        (task_id,),
+    ).fetchall()
+    return [str(r["label"]) for r in rows]
+
+
+def labels_for_tasks(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, list[str]]:
+    ids = [tid for tid in task_ids if tid]
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT task_id, label FROM task_labels WHERE task_id IN ({placeholders}) "
+        "ORDER BY task_id ASC, label ASC",
+        ids,
+    ).fetchall()
+    out: dict[str, list[str]] = {tid: [] for tid in ids}
+    for row in rows:
+        out.setdefault(row["task_id"], []).append(str(row["label"]))
+    return out
+
+
+def set_task_labels(
+    conn: sqlite3.Connection,
+    task_id: str,
+    labels: Iterable[Any],
+    *,
+    created_by: Optional[str] = None,
+) -> list[str]:
+    normalized = normalize_labels(labels)
+    row = conn.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not row:
+        raise ValueError(f"unknown task: {task_id}")
+    now = int(time.time())
+    with write_txn(conn):
+        conn.execute("DELETE FROM task_labels WHERE task_id = ?", (task_id,))
+        for label in normalized:
+            conn.execute(
+                "INSERT INTO task_labels (task_id, label, created_at, created_by) "
+                "VALUES (?, ?, ?, ?)",
+                (task_id, label, now, created_by),
+            )
+        _append_event(
+            conn,
+            task_id,
+            "labels_set",
+            {"labels": normalized, "created_by": created_by},
+        )
+    return normalized
+
+
+def add_task_labels(
+    conn: sqlite3.Connection,
+    task_id: str,
+    labels: Iterable[Any],
+    *,
+    created_by: Optional[str] = None,
+) -> list[str]:
+    normalized = normalize_labels(labels)
+    row = conn.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not row:
+        raise ValueError(f"unknown task: {task_id}")
+    now = int(time.time())
+    with write_txn(conn):
+        for label in normalized:
+            conn.execute(
+                "INSERT OR IGNORE INTO task_labels (task_id, label, created_at, created_by) "
+                "VALUES (?, ?, ?, ?)",
+                (task_id, label, now, created_by),
+            )
+        if normalized:
+            _append_event(
+                conn,
+                task_id,
+                "labels_added",
+                {"labels": normalized, "created_by": created_by},
+            )
+    return labels_for_task(conn, task_id)
+
+
+def remove_task_labels(conn: sqlite3.Connection, task_id: str, labels: Iterable[Any]) -> list[str]:
+    normalized = normalize_labels(labels)
+    row = conn.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not row:
+        raise ValueError(f"unknown task: {task_id}")
+    with write_txn(conn):
+        for label in normalized:
+            conn.execute(
+                "DELETE FROM task_labels WHERE task_id = ? AND label = ?",
+                (task_id, label),
+            )
+        if normalized:
+            _append_event(conn, task_id, "labels_removed", {"labels": normalized})
+    return labels_for_task(conn, task_id)
+
+
 def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
     if assignee is None:
@@ -2742,6 +2900,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    labels: Optional[Iterable[Any]] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2870,6 +3029,8 @@ def create_task(
                 "capabilities (e.g. `web`, `browser`, `terminal`)."
             )
         skills_list = cleaned
+
+    labels_list = normalize_labels(labels)
 
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
@@ -3001,6 +3162,12 @@ def create_task(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
                     )
+                for label in labels_list:
+                    conn.execute(
+                        "INSERT INTO task_labels (task_id, label, created_at, created_by) "
+                        "VALUES (?, ?, ?, ?)",
+                        (task_id, label, now, created_by),
+                    )
                 _append_event(
                     conn,
                     task_id,
@@ -3012,6 +3179,7 @@ def create_task(
                         "tenant": tenant,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
+                        "labels": list(labels_list) if labels_list else None,
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
@@ -3039,7 +3207,11 @@ def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> l
 
 def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    return Task.from_row(row) if row else None
+    if not row:
+        return None
+    task = Task.from_row(row)
+    task.labels = labels_for_task(conn, task.id)
+    return task
 
 
 # Canonical sort-order mappings for ``hermes kanban list --sort``.
@@ -3068,7 +3240,10 @@ def list_tasks(
     order_by: Optional[str] = None,
     workflow_template_id: Optional[str] = None,
     current_step_key: Optional[str] = None,
+    label: Optional[str] = None,
+    labels: Optional[Iterable[Any]] = None,
 ) -> list[Task]:
+    label_filters = normalize_labels(([label] if label is not None else []) + list(labels or []))
     query = "SELECT * FROM tasks WHERE 1=1"
     params: list[Any] = []
     if assignee is not None:
@@ -3091,6 +3266,12 @@ def list_tasks(
     if current_step_key is not None:
         query += " AND current_step_key = ?"
         params.append(current_step_key)
+    for label_filter in label_filters:
+        query += (
+            " AND EXISTS (SELECT 1 FROM task_labels tl "
+            "WHERE tl.task_id = tasks.id AND tl.label = ?)"
+        )
+        params.append(label_filter)
     if not include_archived and status != "archived":
         query += " AND status != 'archived'"
     if order_by is not None:
@@ -3105,7 +3286,11 @@ def list_tasks(
     if limit:
         query += f" LIMIT {int(limit)}"
     rows = conn.execute(query, params).fetchall()
-    return [Task.from_row(r) for r in rows]
+    tasks = [Task.from_row(r) for r in rows]
+    label_map = labels_for_tasks(conn, [t.id for t in tasks])
+    for task in tasks:
+        task.labels = label_map.get(task.id, [])
+    return tasks
 
 
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
@@ -5920,6 +6105,7 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM task_labels WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         return cur.rowcount == 1
@@ -5943,6 +6129,7 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM task_labels WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
     recompute_ready(conn)
     return True
@@ -8804,6 +8991,8 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     lines.append(f"Status:   {task.status}")
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
+    if task.labels:
+        lines.append("Labels:   " + ", ".join(task.labels))
     lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
     if task.max_runtime_seconds is not None:
         terminal_timeout = _worker_terminal_timeout_env(

@@ -2,7 +2,9 @@
 
 import logging
 import os
+from types import SimpleNamespace
 from unittest.mock import patch
+from unittest.mock import MagicMock
 
 from agent.secret_scope import reset_secret_scope, set_secret_scope
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -762,6 +764,7 @@ class TestLoadGatewayConfig:
         assert Platform.API_SERVER not in config.get_connected_platforms()
 
     def test_dispatches_zalo_yaml_config_hook_from_config_yaml(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("ZALO_ALLOWED_USERS", raising=False)
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -772,7 +775,7 @@ class TestLoadGatewayConfig:
             "    allow_from:\n"
             "      - \"u1\"\n"
             "      - \"u2\"\n"
-            "    dm_only: true\n"
+            "    group_policy: disabled\n"
             "    connection_mode: polling\n"
             "    poll_timeout_seconds: 11\n"
             "    gateway_restart_notification: false\n",
@@ -785,11 +788,46 @@ class TestLoadGatewayConfig:
 
         zalo = config.platforms[Platform("zalo")]
         assert zalo.enabled is True
-        assert zalo.extra["allowed_users"] == ["u1", "u2"]
-        assert zalo.extra["dm_only"] is True
+        assert zalo.extra["allow_from"] == ["u1", "u2"]
+        assert zalo.extra["group_policy"] == "disabled"
+        assert os.environ["ZALO_ALLOWED_USERS"] == "u1,u2"
         assert zalo.extra["connection_mode"] == "polling"
         assert zalo.extra["poll_timeout_seconds"] == 11
         assert zalo.gateway_restart_notification is False
+
+        # Exercise the real registry-driven gateway authorization path. The
+        # YAML hook must feed the registered env contract rather than rely on
+        # a second, adapter-local authorization decision.
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = config
+        runner.adapters = {
+            Platform("zalo"): SimpleNamespace(
+                enforces_own_access_policy=False,
+                authorization_is_upstream=False,
+            )
+        }
+        runner.pairing_store = MagicMock()
+        runner.pairing_store.is_approved.return_value = False
+
+        assert runner._is_user_authorized(
+            SessionSource(
+                platform=Platform("zalo"),
+                user_id="u1",
+                chat_id="chat-1",
+                chat_type="dm",
+            )
+        )
+        assert not runner._is_user_authorized(
+            SessionSource(
+                platform=Platform("zalo"),
+                user_id="stranger",
+                chat_id="chat-1",
+                chat_type="dm",
+            )
+        )
 
     def test_bridges_nested_gateway_platforms_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

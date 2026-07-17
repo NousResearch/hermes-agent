@@ -1,91 +1,36 @@
 name: zalo-platform
 label: Zalo
 kind: platform
-version: 0.2.0
+version: 1.0.0
 description: >
-  Official Zalo Bot Platform channel for Hermes Agent, with long polling for
-  local development and authenticated webhooks for production.
+  Official Zalo Bot Platform channel for Hermes Agent. Uses long polling for
+  local development or an authenticated HTTPS webhook for production.
 author: Hermes Agent contributors
 requires_env:
   - name: ZALO_BOT_TOKEN
-    description: "Zalo Bot Platform token from Zalo Bot Manager"
+    description: "Bot token sent by Zalo Bot Manager after bot creation"
     prompt: "Zalo bot token"
     password: true
     url: "https://docs.zaloplatforms.com/docs/BOT/create_bot"
 optional_env:
+  - name: ZALO_WEBHOOK_SECRET
+    description: "8-256 character secret used to authenticate Zalo webhook requests"
+    prompt: "Webhook secret (production webhook mode only)"
+    password: true
+    url: "https://docs.zaloplatforms.com/docs/BOT/apis/setWebhook"
   - name: ZALO_ALLOWED_USERS
-    description: "Comma-separated Zalo user IDs allowed to talk to this bot"
+    description: "Comma-separated Zalo user IDs allowed to use Hermes"
     prompt: "Allowed Zalo users"
     password: false
   - name: ZALO_ALLOW_ALL_USERS
-    description: "Allow all Zalo users to talk to this bot"
+    description: "Explicitly allow every Zalo user (development only)"
     prompt: "Allow all Zalo users? (true/false)"
     password: false
-  - name: ZALO_DM_ONLY
-    description: "Ignore Zalo group/channel messages and only respond in private chats"
-    prompt: "Only respond in private chats? (true/false)"
-    password: false
-  - name: ZALO_API_BASE
-    description: "Zalo Bot API base URL (default: https://bot-api.zaloplatforms.com)"
-    prompt: "Zalo API base URL"
-    password: false
-  - name: ZALO_POLL_TIMEOUT_SECONDS
-    description: "Long-poll HTTP timeout in seconds (default: 25)"
-    prompt: "Poll timeout seconds"
-    password: false
-  - name: ZALO_POLL_INTERVAL_SECONDS
-    description: "Delay between long-poll requests after each response (default: 1)"
-    prompt: "Poll interval seconds"
-    password: false
-  - name: ZALO_CONNECTION_MODE
-    description: "Connection mode: auto, polling, or webhook (default: auto)."
-    prompt: "Connection mode"
-    password: false
-  - name: ZALO_PARSE_MODE
-    description: "Text formatting mode for sendMessage: markdown, html, or blank for plain text"
-    prompt: "Zalo parse mode"
-    password: false
   - name: ZALO_HOME_CHANNEL
-    description: "Default chat ID for cron / notification delivery"
+    description: "Default Zalo chat ID for cron and notification delivery"
     prompt: "Home chat ID"
     password: false
   - name: ZALO_HOME_CHANNEL_NAME
-    description: "Human label for the home chat"
-    prompt: "Home chat label"
-    password: false
-  - name: ZALO_WEBHOOK_URL
-    description: "Public HTTPS webhook URL configured in Zalo Bot Manager"
-    prompt: "Webhook public URL"
-    password: false
-  - name: ZALO_WEBHOOK_PUBLIC_URL
-    description: "Alias for ZALO_WEBHOOK_URL, accepted for compatibility with alternate Zalo setup guides"
-    prompt: "Webhook public URL alias"
-    password: false
-  - name: ZALO_WEBHOOK_SECRET
-    description: "Secret token expected in the X-Bot-Api-Secret-Token webhook header"
-    prompt: "Webhook secret"
-    password: true
-  - name: ZALO_WEBHOOK_PATH
-    description: "Local webhook path to listen on (default: /zalo/webhook)"
-    prompt: "Webhook path"
-    password: false
-  - name: ZALO_WEBHOOK_HOST
-    description: "Local webhook bind host (default: 127.0.0.1)"
-    prompt: "Webhook bind host"
-    password: false
-  - name: ZALO_WEBHOOK_PORT
-    description: "Local webhook bind port (default: 18787)"
-    prompt: "Webhook bind port"
-    password: false
-  - name: ZALO_WEBHOOK_AUTO_REGISTER
-    description: "Call setWebhook on startup when webhook URL and secret are configured"
-    prompt: "Auto-register webhook? (true/false)"
-    password: false
-  - name: ZALO_DELETE_WEBHOOK_ON_POLLING_START
-    description: "When using long polling, call deleteWebhook on startup to clear a stale Bot Platform webhook (default: false)"
-    prompt: "Delete stale webhook before polling? (true/false)"
-    password: false
-  - name: ZALO_DELETE_WEBHOOK_ON_DISCONNECT
-    description: "Call deleteWebhook when the adapter disconnects from webhook mode (default: false)"
-    prompt: "Delete webhook on disconnect? (true/false)"
+    description: "Display name for the default Zalo chat"
+    prompt: "Home chat name"
     password: false

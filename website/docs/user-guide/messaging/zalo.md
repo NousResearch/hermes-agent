@@ -1,113 +1,124 @@
 ---
 sidebar_position: 18
 title: "Zalo"
-description: "Set up Hermes Agent as a Zalo Bot Platform bot"
+description: "Set up Hermes Agent as an official Zalo Bot Platform bot"
 ---
 
 # Zalo Setup
 
-Run Hermes Agent as a [Zalo](https://zalo.me/) bot via the Zalo Bot Platform API. The adapter lives as a bundled platform plugin under `plugins/platforms/zalo/`, so it can be enabled without editing core gateway code.
+Hermes can run as an official [Zalo Bot Platform](https://docs.zaloplatforms.com/docs/BOT/create_bot) bot. Zalo is a bundled platform plugin, so it uses the same gateway setup, authorization, pairing, cron delivery, and channel configuration as the other Hermes messaging platforms.
 
-> Run `hermes gateway setup` and pick **Zalo** for a guided walk-through.
+> Run `hermes gateway setup` and select **Zalo** for guided credential setup.
 
-## How the bot responds
+## Capabilities
 
-| Context | Behavior |
-|---------|----------|
-| **1:1 chat** | Responds to each allowed user message |
-| **Group/channel chat** | Ignored when `ZALO_DM_ONLY=true`; otherwise routed through normal allowlist checks |
-| **Cron / notifications** | Delivered to `ZALO_HOME_CHANNEL` when configured |
+| Capability | Support |
+|---|---|
+| Private and group chats | Yes (group support is currently beta in Zalo) |
+| Text and typing indicators | Yes |
+| Inbound images, voice messages, and stickers | Yes |
+| Outbound images | Yes, from a public HTTP(S) URL |
+| Cron and notification delivery | Yes, through the configured home channel |
+| Streaming edits, threads, and reactions | No |
 
-Inbound text, image, voice, sticker, and supported link content are normalized into Hermes message events when Zalo exposes their content to the bot. Zalo may send `message.unsupported.received` without the original content for protected or unsupported messages; Hermes reports that limitation instead of guessing what was sent.
+Zalo may emit `message.unsupported.received` without the original content for protected or unsupported messages. Hermes reports that limitation and does not try to infer content Zalo omitted.
 
-## Step 1: Create a Zalo bot
+## 1. Create the bot
 
-1. Open Zalo Bot Manager.
-2. Create a bot and copy the Bot Platform token.
-3. Disable any platform-side auto-reply behavior that would compete with Hermes replies.
+1. Open Zalo and find the **Zalo Bot Manager** Official Account.
+2. Select **Create bot** and complete the Bot Creator flow.
+3. Copy the bot token Zalo sends to you.
 
-## Step 2: Choose long polling or webhook mode
-
-For local development, use long polling. Hermes calls `getUpdates` and no public URL is required. The default `ZALO_CONNECTION_MODE=auto` uses webhook mode when a webhook URL and secret are present, and polling otherwise. Set `ZALO_CONNECTION_MODE=polling` or `ZALO_CONNECTION_MODE=webhook` when you want to force one mode.
-
-For production, use webhook mode. Expose the local webhook listener through a stable HTTPS URL such as a reverse proxy, Cloudflare Tunnel, or another tunnel with a fixed hostname.
-
-Zalo treats long polling and webhooks as mutually exclusive. If a webhook was set earlier and you are switching back to long polling, either delete the webhook in Zalo Bot Manager or set `ZALO_DELETE_WEBHOOK_ON_POLLING_START=true` once so Hermes calls `deleteWebhook` before polling.
-
-```bash
-# Example local tunnel for development
-cloudflared tunnel --url http://localhost:18787
-```
-
-Set the public URL in Zalo Bot Manager if you are not using `webhook_auto_register: true`.
-
-## Step 3: Configure Hermes
-
-Add credentials to `~/.hermes/.env`:
+Store the token in `~/.hermes/.env`:
 
 ```env
 ZALO_BOT_TOKEN=YOUR_ZALO_BOT_TOKEN
-# Required only for webhook mode.
-ZALO_WEBHOOK_SECRET=generate-a-long-random-secret-8-to-256-chars
 ```
 
-Keep normal operator settings in `~/.hermes/config.yaml`:
+## 2. Configure access
+
+Keep non-secret behavior in `~/.hermes/config.yaml`. An allowlist is recommended for real deployments:
 
 ```yaml
 platforms:
   zalo:
     enabled: true
-
-    # Access control. Prefer an allowlist for real deployments.
     allow_from:
       - USER_ID_1
       - USER_ID_2
-    # allow_all_users: true
-    dm_only: true
 
-    # Long polling defaults.
-    connection_mode: auto
-    poll_timeout_seconds: 25
-    poll_interval_seconds: 1
-    # Optional: clear a stale webhook before polling.
-    # delete_webhook_on_polling_start: true
+    # Zalo group chat support is beta. Disable it for a DM-only bot.
+    group_policy: disabled
 
-    # Optional webhook mode.
-    webhook_url: https://your-public-host.example.com/zalo/webhook
-    webhook_host: 127.0.0.1
-    webhook_port: 18787
-    webhook_path: /zalo/webhook
-    # webhook_auto_register: true
-    # delete_webhook_on_disconnect: false
+    # Local development transport.
+    connection_mode: polling
 
-    # Optional cron / notification target.
     home_channel:
       platform: zalo
       chat_id: USER_OR_CHAT_ID
       name: Zalo Home
 
-    # Disable gateway shutdown/restart/startup lifecycle pings on Zalo.
-    # Defaults to true when omitted.
+    # Optional: suppress gateway restart lifecycle notices.
     gateway_restart_notification: false
 ```
 
-Restart the gateway:
+You can use `ZALO_ALLOWED_USERS` instead of `allow_from`. An explicit environment value takes precedence over YAML. Open access requires `ZALO_ALLOW_ALL_USERS=true` (or the global gateway equivalent).
+
+## 3. Choose a transport
+
+### Polling for local development
+
+`connection_mode: polling` calls Zalo's `getUpdates` API. Zalo documents polling and webhooks as mutually exclusive, so Hermes calls `deleteWebhook` before polling starts. This makes switching from webhook mode predictable, but it also changes the bot's remote webhook setting.
+
+Optional polling configuration:
+
+```yaml
+platforms:
+  zalo:
+    connection_mode: polling
+    poll_timeout_seconds: 30
+```
+
+### Webhook for production
+
+Zalo recommends webhooks for production to avoid missed events. Create an 8-256 character secret and put it in `~/.hermes/.env`:
+
+```env
+ZALO_WEBHOOK_SECRET=YOUR_RANDOM_WEBHOOK_SECRET
+```
+
+Then configure the public HTTPS URL and local listener:
+
+```yaml
+platforms:
+  zalo:
+    connection_mode: webhook
+    webhook_url: https://bot.example.com/zalo/webhook
+    webhook_host: 127.0.0.1
+    webhook_port: 18787
+    webhook_path: /zalo/webhook
+```
+
+On startup, Hermes validates the HTTPS URL and secret, starts the listener, and calls Zalo's `setWebhook`. Every inbound request must carry the matching `X-Bot-Api-Secret-Token` header.
+
+If `connection_mode` is omitted, `auto` selects webhook mode when either webhook setting is present and polling otherwise. Partial webhook configuration fails closed.
+
+## 4. Start and verify
 
 ```bash
 hermes gateway restart
+hermes gateway status
 ```
 
-## Relationship to other Zalo work
-
-This adapter uses the official Zalo Bot Platform API and is packaged as a bundled platform plugin. It is different from Zalo personal-account bridges such as zca-js/HZCA-style automation, which use unofficial personal-account sessions and carry different account-policy risk. It is also intentionally narrower than older core-adapter proposals: the plugin path keeps Zalo self-contained while still getting gateway setup, allowlists, cron delivery, status, config UI entries, and system-prompt hints through the platform registry.
+Send the bot a Zalo message. If pairing is enabled and the sender is not already allowed, approve the pairing request through the normal Hermes gateway flow.
 
 ## Troubleshooting
 
 | Symptom | Check |
-|---------|-------|
-| Bot never replies | Confirm `ZALO_BOT_TOKEN`, gateway logs, and whether the user is in `ZALO_ALLOWED_USERS`. |
-| Group messages are ignored | Check `ZALO_DM_ONLY`. This is intentional when private-chat-only mode is enabled. |
-| Webhook starts but receives nothing | Check the public HTTPS URL, `ZALO_WEBHOOK_PATH`, and Bot Manager webhook settings. |
-| Long polling receives nothing after webhook testing | Clear the Bot Platform webhook or set `ZALO_DELETE_WEBHOOK_ON_POLLING_START=true` for the long-polling profile. |
-| Zalo reports an unsupported message | Ask the user to resend the content as plain text or as a supported image or voice message. Zalo can intentionally omit content for some unsupported events. |
-| Gateway shutdown/restart notices are noisy | Set `platforms.zalo.gateway_restart_notification: false`. |
+|---|---|
+| Bot never replies | Verify the bot token, sender allowlist or pairing status, and gateway logs. |
+| Polling startup fails | Confirm Zalo API access; Hermes must successfully clear the remote webhook before polling. |
+| Webhook startup fails | Use a public HTTPS URL and an 8-256 character `ZALO_WEBHOOK_SECRET`. |
+| Webhook receives nothing | Confirm the reverse proxy routes the public path to the configured local host, port, and path. |
+| Group messages are ignored | Check `group_policy`; Zalo group support is currently beta. |
+| Message is reported unsupported | Ask the user to resend it as text, an image, or a voice message. |

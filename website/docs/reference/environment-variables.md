@@ -574,30 +574,16 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 
 ### Zalo Bot Platform
 
-Used by the bundled Zalo platform plugin (`plugins/platforms/zalo/`). See [Messaging Gateway → Zalo](/user-guide/messaging/zalo) for full setup. Keep credentials in environment variables; most non-secret operator settings can also be set under `platforms.zalo` in `config.yaml`, with environment variables taking precedence.
+Used by the bundled Zalo platform plugin (`plugins/platforms/zalo/`). See [Messaging Gateway → Zalo](/user-guide/messaging/zalo) for full setup. Credentials stay in environment variables; transport and behavior settings belong under `platforms.zalo` in `config.yaml`.
 
 | Variable | Description |
 |----------|-------------|
 | `ZALO_BOT_TOKEN` | Bot Platform token from Zalo Bot Manager. Required. |
-| `ZALO_ALLOWED_USERS` | Comma-separated Zalo user/chat IDs allowed to talk to the bot. |
+| `ZALO_WEBHOOK_SECRET` | 8-256 character secret used to authenticate webhook requests in production webhook mode. |
+| `ZALO_ALLOWED_USERS` | Comma-separated Zalo user IDs allowed to talk to the bot. YAML `allow_from` is also supported. |
 | `ZALO_ALLOW_ALL_USERS` | Dev-only escape hatch that accepts any user. Default: `false`. |
-| `ZALO_DM_ONLY` | Ignore Zalo group/channel messages and respond only in private chats. |
-| `ZALO_API_BASE` | Zalo Bot API base URL. Defaults to `https://bot-api.zaloplatforms.com`. |
-| `ZALO_POLL_TIMEOUT_SECONDS` | Long-poll HTTP timeout in seconds. Default: `25`. |
-| `ZALO_POLL_INTERVAL_SECONDS` | Delay between long-poll requests. Default: `1`. |
-| `ZALO_CONNECTION_MODE` | Connection mode: `auto`, `polling`, or `webhook`. Default: `auto`. |
-| `ZALO_PARSE_MODE` | Outbound text parse mode: `markdown`, `html`, or blank for plain text. |
 | `ZALO_HOME_CHANNEL` | Default delivery target for cron jobs with `deliver: zalo`. |
 | `ZALO_HOME_CHANNEL_NAME` | Human label for the home channel. |
-| `ZALO_WEBHOOK_URL` | Public HTTPS webhook URL configured in Zalo Bot Manager. Enables webhook mode when paired with `ZALO_WEBHOOK_SECRET`. |
-| `ZALO_WEBHOOK_PUBLIC_URL` | Alias for `ZALO_WEBHOOK_URL`, accepted for compatibility with earlier Zalo adapter docs. |
-| `ZALO_WEBHOOK_SECRET` | Secret token expected in the `X-Bot-Api-Secret-Token` webhook header. |
-| `ZALO_WEBHOOK_PATH` | Local webhook path. Default: `/zalo/webhook`. |
-| `ZALO_WEBHOOK_HOST` | Local webhook bind host. Default: `127.0.0.1`. |
-| `ZALO_WEBHOOK_PORT` | Local webhook bind port. Default: `18787`. |
-| `ZALO_WEBHOOK_AUTO_REGISTER` | Call `setWebhook` on startup when URL and secret are configured. |
-| `ZALO_DELETE_WEBHOOK_ON_POLLING_START` | When using long polling, call `deleteWebhook` on startup to clear a stale Bot Platform webhook. Default: `false`. |
-| `ZALO_DELETE_WEBHOOK_ON_DISCONNECT` | Call `deleteWebhook` when the adapter disconnects from webhook mode. Default: `false`. |
 
 ### ntfy (push notifications)
 

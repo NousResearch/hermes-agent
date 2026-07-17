@@ -136,6 +136,12 @@ export const sessionCommands: SlashCommand[] = [
       // confirmation flow. Do not treat these as resume targets merely
       // because the TUI has an interactive picker for bare `/sessions`.
       if (['list', 'ls', 'browse', 'delete', 'rename', 'prune'].includes(subcommand ?? '')) {
+        const destructive = subcommand === 'delete' || subcommand === 'prune'
+        const confirmed = /(?:^|\s)(?:--yes|-y)(?=\s|$)/i.test(trimmed)
+        if (destructive && !confirmed) {
+          ctx.transcript.sys('confirmation required: rerun with --yes')
+          return
+        }
         return ctx.gateway.gw
           .request<SlashExecResponse>('slash.exec', { command: `sessions ${trimmed}`, session_id: ctx.sid })
           .then(

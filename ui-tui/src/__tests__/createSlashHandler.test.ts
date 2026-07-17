@@ -57,6 +57,16 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it.each(['delete archived-session', 'prune --days 30'])('requires --yes before forwarding /sessions %s from the TUI', arg => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)(`/sessions ${arg}`)).toBe(true)
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('confirmation required: rerun with --yes')
+  })
+
   it('canonicalizes a session-manager alias before routing it through the slash worker', () => {
     patchUiState({ sid: 'sid-abc' })
     const ctx = buildCtx()

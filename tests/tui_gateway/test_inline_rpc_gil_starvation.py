@@ -185,14 +185,9 @@ def test_model_options_pool_uses_request_time_runtime_snapshot(server, monkeypat
     from hermes_cli.inventory import ConfigContext
 
     agent = SimpleNamespace(
-        model="transitional-live-model",
-        provider="transitional-live-provider",
-        base_url="https://transitional.invalid/v1",
-        _primary_runtime={
-            "model": "request-model",
-            "provider": "request-provider",
-            "base_url": "https://request.invalid/v1",
-        },
+        model="request-model",
+        provider="request-provider",
+        base_url="https://request.invalid/v1",
     )
     server._sessions["session-1"] = {"agent": agent}
 
@@ -257,11 +252,6 @@ def test_model_options_pool_uses_request_time_runtime_snapshot(server, monkeypat
         agent.model = "half-switched-model"
         agent.provider = "half-switched-provider"
         agent.base_url = "https://half-switched.invalid/v1"
-        agent._primary_runtime = {
-            "model": "later-model",
-            "provider": "later-provider",
-            "base_url": "https://later.invalid/v1",
-        }
         release_worker.set()
 
         assert response_written.wait(timeout=2)
@@ -337,6 +327,87 @@ def test_model_options_pool_snapshot_preserves_custom_provider_identity(server, 
         base_url="https://request.invalid/v1",
         config_provider="custom:configured-provider",
     )
+def test_model_options_pool_snapshots_active_fallback_runtime(server, monkeypatch):
+    """A queued picker read must report the live fallback, not its primary."""
+    agent = SimpleNamespace(
+        model="fallback-model",
+        provider="fallback-provider",
+        base_url="https://fallback.invalid/v1",
+        _primary_runtime={
+            "model": "primary-model",
+            "provider": "primary-provider",
+            "base_url": "https://primary.invalid/v1",
+        },
+    )
+    server._sessions["session-1"] = {"agent": agent}
+
+    def echo_runtime_snapshot(rid, params):
+        return server._ok(rid, params[server._MODEL_OPTIONS_RUNTIME_SNAPSHOT])
+
+    monkeypatch.setitem(server._methods, "model.options", echo_runtime_snapshot)
+
+    worker_entered = threading.Event()
+    release_worker = threading.Event()
+    response_written = threading.Event()
+    original_handle_request = server.handle_request
+
+    def blocked_handle_request(request):
+        if request.get("method") == "model.options":
+            worker_entered.set()
+            if not release_worker.wait(timeout=2):
+                raise TimeoutError("model.options worker was not released")
+        return original_handle_request(request)
+
+    monkeypatch.setattr(server, "handle_request", blocked_handle_request)
+
+    class CaptureTransport:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, frame):
+            self.frames.append(frame)
+            response_written.set()
+            return True
+
+        def close(self):
+            pass
+
+    transport = CaptureTransport()
+    request = {
+        "id": "models",
+        "method": "model.options",
+        "params": {"session_id": "session-1"},
+    }
+
+    try:
+        assert server.dispatch(request, transport) is None
+        assert worker_entered.wait(timeout=1)
+
+        agent.model = "later-model"
+        agent.provider = "later-provider"
+        agent.base_url = "https://later.invalid/v1"
+        release_worker.set()
+
+        assert response_written.wait(timeout=2)
+    finally:
+        release_worker.set()
+
+    assert request == {
+        "id": "models",
+        "method": "model.options",
+        "params": {"session_id": "session-1"},
+    }
+    assert transport.frames == [
+        {
+            "jsonrpc": "2.0",
+            "id": "models",
+            "result": {
+                "model": "fallback-model",
+                "provider": "fallback-provider",
+                "base_url": "https://fallback.invalid/v1",
+            },
+        }
+    ]
 
 
 def test_rpc_pool_workers_supports_concurrent_long_handlers(server):

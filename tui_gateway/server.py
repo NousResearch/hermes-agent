@@ -1567,17 +1567,10 @@ def _freeze_model_options_request(req: dict, params: dict) -> dict:
         if agent is None:
             runtime_snapshot = None
         else:
-            primary_runtime = getattr(agent, "_primary_runtime", None)
-            if isinstance(primary_runtime, dict):
-                runtime_snapshot = {
-                    key: primary_runtime.get(key) or ""
-                    for key in ("model", "provider", "base_url")
-                }
-            else:
-                runtime_snapshot = {
-                    key: getattr(agent, key, "") or ""
-                    for key in ("model", "provider", "base_url")
-                }
+            runtime_snapshot = {
+                key: getattr(agent, key, "") or ""
+                for key in ("model", "provider", "base_url")
+            }
 
     worker_params = dict(params)
     worker_params[_MODEL_OPTIONS_RUNTIME_SNAPSHOT] = runtime_snapshot

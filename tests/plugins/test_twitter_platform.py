@@ -1,9 +1,11 @@
 import inspect
+import asyncio
 import json
 import stat
 from unittest.mock import Mock
 
 import pytest
+import httpx
 
 from gateway.config import PlatformConfig
 
@@ -95,3 +97,57 @@ def test_state_survives_restart_and_profile_switch(monkeypatch, tmp_path):
 
     monkeypatch.setenv("HERMES_HOME", str(second))
     assert not TwitterState.load().seen("999")
+
+
+@pytest.mark.asyncio
+async def test_write_timeout_is_not_retried():
+    from plugins.platforms.twitter.client import AmbiguousWriteError, XClient
+
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadTimeout("uncertain", request=request)
+
+    client = XClient(
+        token="token",
+        transport=httpx.MockTransport(handler),
+        max_pending=2,
+        max_wait_seconds=1,
+    )
+    with pytest.raises(AmbiguousWriteError):
+        await client.create_post("hello", reply_to="123")
+    assert calls == 1
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_queue_overflow_fails_before_network():
+    from plugins.platforms.twitter.queue import RateQueue
+
+    queue = RateQueue(max_pending=1, max_wait_seconds=1)
+    blocker = asyncio.Event()
+    first = asyncio.create_task(queue.run("write", blocker.wait))
+    await asyncio.sleep(0)
+    with pytest.raises(RuntimeError, match="queue is full"):
+        await queue.run("write", lambda: asyncio.sleep(0))
+    blocker.set()
+    await first
+
+
+@pytest.mark.asyncio
+async def test_client_keeps_large_ids_as_strings():
+    from plugins.platforms.twitter.client import XClient
+
+    def handler(request):
+        assert request.url.path == "/2/tweets"
+        assert json.loads(request.content)["reply"]["in_reply_to_tweet_id"] == (
+            "9007199254740993"
+        )
+        return httpx.Response(201, json={"data": {"id": "9007199254740994"}})
+
+    client = XClient(token="token", transport=httpx.MockTransport(handler))
+    result = await client.create_post("hello", reply_to="9007199254740993")
+    assert result == "9007199254740994"
+    await client.close()

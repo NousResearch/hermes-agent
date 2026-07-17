@@ -659,6 +659,48 @@ async def test_processing_hook_offloads_contended_ledger(adapter, monkeypatch):
     await processing
 
 
+@pytest.mark.asyncio
+async def test_recovery_scan_offloads_ledger_writes(adapter, monkeypatch):
+    def slow_scan_start(_channels):
+        import time
+        time.sleep(0.1)
+        return "scan"
+
+    monkeypatch.setattr(adapter, "_record_recovery_scan_start", slow_scan_start)
+    monkeypatch.setattr(adapter, "_missed_message_backfill_channels", lambda: set())
+    scan = asyncio.create_task(adapter._run_missed_message_backfill())
+    await asyncio.sleep(0.01)
+
+    assert scan.done() is False
+    await scan
+
+
+@pytest.mark.asyncio
+async def test_send_offloads_final_delivery_ledger_write(adapter, monkeypatch):
+    channel = FakeChannel(channel_id=123)
+    channel.send = AsyncMock(return_value=SimpleNamespace(id=9011))
+    channel.fetch_message = AsyncMock()
+    adapter._client.get_channel = lambda _channel_id: channel
+
+    def slow_record(**_kwargs):
+        import time
+        time.sleep(0.1)
+
+    monkeypatch.setattr(adapter, "_record_discord_response", slow_record)
+    sending = asyncio.create_task(
+        adapter.send(
+            "123",
+            "done",
+            reply_to="104",
+            metadata={"notify": True},
+        )
+    )
+    await asyncio.sleep(0.01)
+
+    assert sending.done() is False
+    assert (await sending).success is True
+
+
 def test_final_delivery_remains_complete_after_processing_hook(adapter):
     message = make_message(message_id=91)
     event = MessageEvent(

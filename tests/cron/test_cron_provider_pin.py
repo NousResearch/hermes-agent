@@ -155,8 +155,9 @@ class TestProviderDriftGuard:
 
 
 class TestCronAuthFallbackApiMode:
-    def test_fallback_forwards_explicit_api_mode(self, tmp_path):
+    def test_fallback_forwards_explicit_api_mode(self, tmp_path, monkeypatch):
         """Cron auth failover must preserve the fallback entry's wire protocol."""
+        from hermes_cli import runtime_provider as rp
         from hermes_cli.auth import AuthError
 
         (tmp_path / "config.yaml").write_text(
@@ -166,21 +167,27 @@ class TestCronAuthFallbackApiMode:
             "fallback_providers:\n"
             "  - provider: kimi-coding\n"
             "    model: k3\n"
-            "    base_url: https://api.kimi.com/coding/v1\n"
+            "    base_url: https://api.kimi.com/coding\n"
             "    api_mode: chat_completions\n"
         )
         calls = []
+        real_resolve = rp.resolve_runtime_provider
+        monkeypatch.setattr(
+            rp,
+            "_resolve_runtime_provider_impl",
+            lambda **_kwargs: {
+                "api_key": "test-key",
+                "base_url": "https://api.kimi.com/coding",
+                "provider": "kimi-coding",
+                "api_mode": "anthropic_messages",
+            },
+        )
 
         def fake_resolve(**kwargs):
             calls.append(kwargs)
             if len(calls) == 1:
                 raise AuthError("primary credentials unavailable")
-            return {
-                "api_key": "test-key",
-                "base_url": "https://api.kimi.com/coding/v1",
-                "provider": "kimi-coding",
-                "api_mode": kwargs.get("explicit_api_mode"),
-            }
+            return real_resolve(**kwargs)
 
         fake_db = MagicMock()
         with (
@@ -206,6 +213,9 @@ class TestCronAuthFallbackApiMode:
         assert final_response == "ok"
         assert calls[1]["explicit_api_mode"] == "chat_completions"
         assert calls[1]["target_model"] == "k3"
+        agent_kwargs = mock_agent_cls.call_args.kwargs
+        assert agent_kwargs["api_mode"] == "chat_completions"
+        assert agent_kwargs["base_url"] == "https://api.kimi.com/coding/v1"
 
 
 class TestCreateJobSnapshot:

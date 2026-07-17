@@ -537,9 +537,7 @@ class TestSessionLifecycle:
 
         provisional = db.get_session(sid)
         assert provisional["source"] == "unknown"
-        assert json.loads(provisional["model_config"]) == {
-            "_repaired_missing_session_row": "update_token_counts"
-        }
+        assert provisional["model_config"] is None
 
         db.create_session(
             sid,
@@ -560,8 +558,8 @@ class TestSessionLifecycle:
         assert repaired["input_tokens"] == 100
         assert repaired["output_tokens"] == 50
 
-    def test_session_meta_refresh_preserves_repair_marker_until_promotion(self, db):
-        """Valid object metadata refreshes keep a provisional row repairable."""
+    def test_session_meta_refresh_preserves_internal_repair_provenance(self, db):
+        """Metadata refreshes cannot consume internal repair provenance."""
         sid = "cron-meta-interleaving"
         db.update_token_counts(
             sid,
@@ -580,7 +578,6 @@ class TestSessionLifecycle:
         assert json.loads(refreshed["model_config"]) == {
             "runtime": "saved",
             "optional": None,
-            "_repaired_missing_session_row": "update_token_counts",
         }
 
         db.create_session(
@@ -616,7 +613,7 @@ class TestSessionLifecycle:
         assert refreshed["model_config"] == replacement
 
     def test_authoritative_create_preserves_legitimate_unknown_source(self, db):
-        """Only explicitly marked repair rows are eligible for promotion."""
+        """Only internally registered repair rows are eligible for promotion."""
         db.create_session(
             "imported-session",
             source="unknown",

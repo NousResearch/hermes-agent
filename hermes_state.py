@@ -38,7 +38,6 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 
 logger = logging.getLogger(__name__)
 
-_MISSING_SESSION_REPAIR_MARKER = "_repaired_missing_session_row"
 _MISSING_SESSION_REPAIR_WRITERS = frozenset(
     {"record_auxiliary_usage", "update_token_counts"}
 )
@@ -1108,6 +1107,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+);
+
+CREATE TABLE IF NOT EXISTS provisional_session_repairs (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    repair_writer TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -3365,37 +3369,28 @@ class SessionDB:
         user_id: Optional[str] = None,
         model_config_json: Optional[str] = None,
     ) -> None:
-        """Promote an accounting-created provisional row to a known source."""
+        """Promote an internally registered accounting-repair row."""
         source_norm = str(source or "").strip().lower()
         if source_norm in {"", "unknown"}:
             return
 
-        marker_path = f"$.{_MISSING_SESSION_REPAIR_MARKER}"
-        conn.execute(
+        promoted = conn.execute(
             """UPDATE sessions SET
                    source = ?,
                    user_id = COALESCE(user_id, ?),
-                   model_config = NULLIF(
-                       json_remove(
-                           COALESCE(?, model_config, '{}'),
-                           ?
-                       ),
-                       '{}'
-                   )
+                   model_config = COALESCE(?, model_config)
                WHERE id = ?
-                 AND source = 'unknown'
-                 AND json_valid(COALESCE(model_config, '{}'))
-                 AND json_extract(COALESCE(model_config, '{}'), ?) IN
-                     ('record_auxiliary_usage', 'update_token_counts')""",
-            (
-                source,
-                user_id,
-                model_config_json,
-                marker_path,
-                session_id,
-                marker_path,
-            ),
+                 AND EXISTS (
+                     SELECT 1 FROM provisional_session_repairs
+                      WHERE session_id = sessions.id
+                 )""",
+            (source, user_id, model_config_json, session_id),
         )
+        if promoted.rowcount:
+            conn.execute(
+                "DELETE FROM provisional_session_repairs WHERE session_id = ?",
+                (session_id,),
+            )
 
     def _insert_session_row(
         self,
@@ -4400,44 +4395,15 @@ class SessionDB:
         """Update model_config and optionally model for an existing session.
 
         Uses COALESCE so that passing model=None leaves the stored model
-        column unchanged.  Routes through _execute_write for the standard
-        BEGIN IMMEDIATE + jitter-retry + lock guarantee. Repair markers from
-        a token-accounting fallback survive this metadata refresh so a later
-        authoritative create can still promote the provisional source when the
-        replacement is a valid JSON object. Malformed/non-object legacy values
-        retain update_session_meta's original replacement semantics.
+        column unchanged. Routes through _execute_write for the standard
+        BEGIN IMMEDIATE + jitter-retry + lock guarantee. Accounting-repair
+        provenance lives in a separate internal table, so arbitrary public
+        model_config values never affect promotion eligibility.
         """
         def _do(conn):
-            config_to_store = model_config_json
-            current = conn.execute(
-                "SELECT source, model_config FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-            if current is not None and current["source"] == "unknown":
-                try:
-                    existing_config = json.loads(current["model_config"] or "{}")
-                    replacement_config = (
-                        json.loads(model_config_json)
-                        if model_config_json is not None
-                        else None
-                    )
-                    if (
-                        isinstance(existing_config, dict)
-                        and isinstance(replacement_config, dict)
-                        and existing_config.get(_MISSING_SESSION_REPAIR_MARKER)
-                        in _MISSING_SESSION_REPAIR_WRITERS
-                    ):
-                        replacement_config[_MISSING_SESSION_REPAIR_MARKER] = (
-                            existing_config[_MISSING_SESSION_REPAIR_MARKER]
-                        )
-                        config_to_store = json.dumps(replacement_config)
-                except (TypeError, ValueError):
-                    # Preserve update_session_meta's existing permissive
-                    # behavior for malformed/non-object legacy values.
-                    pass
             conn.execute(
                 "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
-                (config_to_store, model, session_id),
+                (model_config_json, model, session_id),
             )
         self._execute_write(_do)
 
@@ -4508,34 +4474,39 @@ class SessionDB:
             raise ValueError(f"unsupported missing-session repair writer: {repair_writer}")
 
         fallback_source = str(source or "").strip()
-        source_is_unknown = (
-            not fallback_source or fallback_source.lower() == "unknown"
-        )
-        if source_is_unknown:
+        if not fallback_source or fallback_source.lower() == "unknown":
             fallback_source = "unknown"
-            fallback_model_config = json.dumps(
-                {_MISSING_SESSION_REPAIR_MARKER: repair_writer}
-            )
-        else:
-            fallback_model_config = None
 
-        conn.execute(
+        inserted = conn.execute(
             """INSERT OR IGNORE INTO sessions
-               (id, source, model, model_config, started_at)
-               VALUES (?, ?, ?, ?, ?)""",
+               (id, source, model, started_at)
+               VALUES (?, ?, ?, ?)""",
             (
                 session_id,
                 fallback_source,
                 model,
-                fallback_model_config,
                 time.time(),
             ),
         )
-        self._promote_missing_session_repair_row(
-            conn,
-            session_id=session_id,
-            source=fallback_source,
-        )
+        if inserted.rowcount:
+            conn.execute(
+                """INSERT INTO provisional_session_repairs
+                   (session_id, repair_writer) VALUES (?, ?)""",
+                (session_id, repair_writer),
+            )
+        elif fallback_source.lower() != "unknown":
+            # A later accounting path may know the real source. Preserve that
+            # provenance without consuming provisional status; only an
+            # authoritative create_session may finish promotion/backfill.
+            conn.execute(
+                """UPDATE sessions SET source = ?
+                   WHERE id = ? AND source = 'unknown'
+                     AND EXISTS (
+                         SELECT 1 FROM provisional_session_repairs
+                          WHERE session_id = sessions.id
+                     )""",
+                (fallback_source, session_id),
+            )
 
     def update_token_counts(
         self,
@@ -4658,9 +4629,9 @@ class SessionDB:
         )
         def _do(conn):
             # Keep fallback row creation in the same write transaction as the
-            # counters. The marker lets a later authoritative create_session
-            # safely promote this provisional source without rewriting a
-            # legitimate source="unknown" row.
+            # counters. The internal repair registration lets a later
+            # authoritative create_session safely finish metadata backfill
+            # without trusting caller-controlled session fields.
             self._insert_accounting_fallback_row(
                 conn,
                 session_id=session_id,

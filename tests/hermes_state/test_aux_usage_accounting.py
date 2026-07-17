@@ -129,9 +129,7 @@ class TestRecordAuxiliaryUsage:
 
         provisional = db.get_session(sid)
         assert provisional["source"] == "unknown"
-        assert json.loads(provisional["model_config"]) == {
-            "_repaired_missing_session_row": "record_auxiliary_usage"
-        }
+        assert provisional["model_config"] is None
 
         db.update_token_counts(
             sid,
@@ -159,6 +157,36 @@ class TestRecordAuxiliaryUsage:
             "",
             "title_generation",
         ]
+
+    def test_known_source_accounting_repair_backfills_authoritative_user(self, db):
+        sid = "known-source-accounting-first"
+        db.update_token_counts(
+            sid,
+            input_tokens=10,
+            source="cron",
+        )
+
+        db.create_session(sid, source="cron", user_id="owner")
+
+        repaired = db.get_session(sid)
+        assert repaired["source"] == "cron"
+        assert repaired["user_id"] == "owner"
+        assert repaired["input_tokens"] == 10
+
+    def test_public_marker_like_model_config_does_not_grant_repair_provenance(self, db):
+        sid = "legitimate-unknown"
+        marker_config = {
+            "_repaired_missing_session_row": "record_auxiliary_usage",
+            "preserve": True,
+        }
+        db.create_session(sid, source="unknown", model_config=marker_config)
+
+        db.create_session(sid, source="cron", user_id="owner")
+
+        preserved = db.get_session(sid)
+        assert preserved["source"] == "unknown"
+        assert preserved["user_id"] is None
+        assert json.loads(preserved["model_config"]) == marker_config
 
 
 class TestSchemaMigrationV22:

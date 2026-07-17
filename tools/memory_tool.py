@@ -184,6 +184,7 @@ class MemoryStore:
         """
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
+        mem_dir.chmod(mem_dir.stat().st_mode | 0o755)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
         self.user_entries = self._read_file(mem_dir / "USER.md")
@@ -250,6 +251,7 @@ class MemoryStore:
         """
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.parent.chmod(lock_path.parent.stat().st_mode | 0o755)
 
         if fcntl is None and msvcrt is None:
             yield
@@ -309,6 +311,7 @@ class MemoryStore:
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
         get_memory_dir().mkdir(parents=True, exist_ok=True)
+        get_memory_dir().chmod(get_memory_dir().stat().st_mode | 0o755)
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:

@@ -355,13 +355,18 @@ export function useVoiceConversation({
         }
 
         if (!response.pending && !busy) {
+          // Whole reply spoken. Fall through to the restart guard at the bottom
+          // instead of returning: `status` is already 'idle' here, because the
+          // last speak() set it, so setStatus('idle') changes nothing, React
+          // bails out, and no re-render arrives to run this effect again. The
+          // mic then waited for an unrelated render, which was the variable 4-8s
+          // delay before recording resumed. Reaching startListening() in this
+          // same pass is the whole fix.
           awaitingSpokenResponseRef.current = false
           consumePendingResponse()
           resetSpeechBuffer()
           pendingStartRef.current = true
           setStatus('idle')
-
-          return
         }
       }
 

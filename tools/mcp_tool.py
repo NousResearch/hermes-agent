@@ -330,6 +330,28 @@ _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
+_MCP_SHUTDOWN_GRACE_SECONDS = 10.0
+_MCP_CANCEL_GRACE_SECONDS = 2.0
+# Per-name locks make reap -> spawn -> registration -> teardown atomic even if
+# duplicate MCPServerTask instances are created concurrently. Store the owning
+# event loop too so isolated test/CLI loops do not reuse a lock across loops.
+_stdio_lifecycle_locks: Dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
+
+
+def _get_stdio_lifecycle_lock(server_name: str) -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    with _lock:
+        entry = _stdio_lifecycle_locks.get(server_name)
+        if entry is not None and entry[0] is loop:
+            return entry[1]
+        if entry is not None and entry[1].locked():
+            raise RuntimeError(
+                f"MCP server '{server_name}' has an active stdio lifecycle on "
+                "a different event loop"
+            )
+        lifecycle_lock = asyncio.Lock()
+        _stdio_lifecycle_locks[server_name] = (loop, lifecycle_lock)
+        return lifecycle_lock
 # While parked (reconnect budget exhausted, tools deregistered) the run task
 # wakes on this cadence and attempts one revival probe. Without it a parked
 # server is unrevivable: its tools are out of the registry, so no tool call
@@ -2217,7 +2239,13 @@ class MCPServerTask:
         return "reconnect"
 
     async def _run_stdio(self, config: dict):
-        """Run the server using stdio transport."""
+        """Run one stdio lifecycle while holding the per-server spawn guard."""
+        lifecycle_lock = _get_stdio_lifecycle_lock(self.name)
+        async with lifecycle_lock:
+            return await self._run_stdio_locked(config)
+
+    async def _run_stdio_locked(self, config: dict):
+        """Run the server using stdio transport with exclusive ownership."""
         if not _MCP_AVAILABLE:
             raise ImportError(
                 f"MCP server '{self.name}' requires the 'mcp' Python SDK, but "
@@ -2301,7 +2329,11 @@ class MCPServerTask:
         # available for scoped call sites.  Run in a worker thread: the
         # reaper blocks up to 2s (SIGTERM → wait → SIGKILL) when orphans
         # exist, which would otherwise stall the shared MCP event loop.
-        await asyncio.to_thread(_kill_orphaned_mcp_children)
+        await asyncio.to_thread(
+            _kill_orphaned_mcp_children,
+            include_active=True,
+            server_name=self.name,
+        )
 
         # Snapshot child PIDs before spawning so we can track the new one.
         pids_before = _snapshot_child_pids()
@@ -2415,6 +2447,14 @@ class MCPServerTask:
                             # Nothing left to reap — drop the pgid entry so
                             # PID-reuse can't surface stale pgroup state later.
                             _stdio_pgids.pop(pid, None)
+            # Reap synchronously before run() can spawn a replacement. The
+            # active sweep is a per-server concurrency guard for bookkeeping
+            # races: never permit two live stdio trees for one server name.
+            await asyncio.to_thread(
+                _kill_orphaned_mcp_children,
+                include_active=True,
+                server_name=self.name,
+            )
 
     # Content types a real MCP Streamable-HTTP endpoint may return on the
     # initial POST/GET. Anything else on a 2xx response means the URL is not
@@ -3032,7 +3072,7 @@ class MCPServerTask:
                     return
 
                 self._reconnect_retries += 1
-                if self._reconnect_retries > _MAX_RECONNECT_RETRIES:
+                if self._reconnect_retries >= _MAX_RECONNECT_RETRIES:
                     logger.warning(
                         "MCP server '%s' failed after %d reconnection attempts, "
                         "parking; will self-probe every %ds until it recovers: %s",
@@ -3114,18 +3154,39 @@ class MCPServerTask:
         # returning "reconnect".
         self._reconnect_event.set()
         if self._task and not self._task.done():
-            try:
-                await asyncio.wait_for(self._task, timeout=10)
-            except asyncio.TimeoutError:
+            done, _pending = await asyncio.wait(
+                {self._task}, timeout=_MCP_SHUTDOWN_GRACE_SECONDS
+            )
+            if not done:
                 logger.warning(
-                    "MCP server '%s' shutdown timed out, cancelling task",
+                    "MCP server '%s' shutdown timed out; force-reaping its "
+                    "process tree before cancelling the transport task",
                     self.name,
                 )
+                # A hung SDK __aexit__ may not respond to cancellation while
+                # its stdio child is alive. Kill the owned group first so pipe
+                # readers unblock, then cancel and wait without letting
+                # asyncio.wait_for extend its own timeout during cancellation.
+                await asyncio.to_thread(
+                    _kill_orphaned_mcp_children,
+                    include_active=True,
+                    server_name=self.name,
+                )
                 self._task.cancel()
-                try:
-                    await self._task
-                except asyncio.CancelledError:
-                    pass
+                done, _pending = await asyncio.wait(
+                    {self._task}, timeout=_MCP_CANCEL_GRACE_SECONDS
+                )
+                if not done:
+                    logger.error(
+                        "MCP server '%s' transport task ignored cancellation "
+                        "after process-tree reap; abandoning task during shutdown",
+                        self.name,
+                    )
+                else:
+                    try:
+                        self._task.result()
+                    except asyncio.CancelledError:
+                        pass
         if self._pending_refresh_tasks:
             for task in list(self._pending_refresh_tasks):
                 task.cancel()
@@ -3133,6 +3194,13 @@ class MCPServerTask:
             self._pending_refresh_tasks.clear()
         self._deregister_tools()
         self.session = None
+        # Last-resort teardown for a hung/cancelled transport whose context
+        # manager never completed its own cleanup bookkeeping.
+        await asyncio.to_thread(
+            _kill_orphaned_mcp_children,
+            include_active=True,
+            server_name=self.name,
+        )
 
     def _deregister_tools(self) -> None:
         """Drop this server's tools from the global registry (idempotent).
@@ -5783,7 +5851,7 @@ def _kill_orphaned_mcp_children(
         pids: Dict[int, str] = {}
         for opid in _orphan_stdio_pids:
             owner = _orphan_stdio_pid_servers.get(opid, "orphan")
-            if server_name is not None and owner != server_name:
+            if server_name is not None and owner not in (server_name, "orphan"):
                 continue
             pids[opid] = owner
         for opid in pids:
@@ -5866,8 +5934,22 @@ def _kill_orphaned_mcp_children(
     # existence check before escalating to SIGKILL.
     from gateway.status import _pid_exists
     for pid, server_name in pids.items():
-        if not _pid_exists(pid):
-            continue  # Good — exited after SIGTERM
+        pid_alive = _pid_exists(pid)
+        pgid = pgids.get(pid)
+        pgroup_alive = False
+        if (
+            not pid_alive
+            and pgid is not None
+            and pgid != _my_pgid
+            and getattr(os, "killpg", None) is not None
+        ):
+            try:
+                os.killpg(pgid, 0)
+                pgroup_alive = True
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        if not pid_alive and not pgroup_alive:
+            continue  # Good — leader and descendants exited after SIGTERM
         _send_signal(pid, _sigkill, server_name)
         logger.warning(
             "Force-killed MCP process %d (%s) after SIGTERM timeout",

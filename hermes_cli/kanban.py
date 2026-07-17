@@ -80,6 +80,10 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        "failure_fingerprint": t.failure_fingerprint,
+        "failure_recurrences": t.failure_recurrences,
+        "failure_frozen_at": t.failure_frozen_at,
+        "failure_frozen": t.failure_frozen_at is not None,
     }
 
 
@@ -2154,7 +2158,9 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
-            if not kb.unblock_task(conn, tid):
+            if not kb.unblock_task(
+                conn, tid, actor=author or _profile_author(), reason=reason,
+            ):
                 failed.append(tid)
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:

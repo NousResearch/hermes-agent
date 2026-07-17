@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -124,14 +125,13 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
-# After a task has been blocked, unblocked, and re-blocked this many times for
-# the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
-# unblocker (usually a cron) and routes the task to ``triage`` instead of back
-# to ``blocked`` — breaking the infinite unblock↔re-block loop and forcing a
-# human-in-the-loop decision. Mirrors the dispatcher's ``DEFAULT_FAILURE_LIMIT``
-# spirit (default 2) but counts a different signal: manual unblock recurrences,
-# not dispatcher spawn/crash/timeout failures.
-BLOCK_RECURRENCE_LIMIT = 2
+# A materially identical failure/block outcome may run three times. The third
+# occurrence atomically freezes the task; there is never a fourth automatic
+# attempt. This is deliberately independent from ``failure_limit`` (the retry
+# budget for process/spawn failures, not a durable same-root-cause breaker).
+FAILURE_RECURRENCE_LIMIT = 3
+# Backward-compatible name used by older callers/tests.
+BLOCK_RECURRENCE_LIMIT = FAILURE_RECURRENCE_LIMIT
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
@@ -915,6 +915,13 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Durable recurring-outcome circuit breaker. The fingerprint hashes
+    # normalized kind/reason/error, so volatile ids and timestamps do not split
+    # one root cause into fake uniques. A non-NULL frozen timestamp forbids all
+    # automatic claims/rearms until an audited operator rearm.
+    failure_fingerprint: Optional[str] = None
+    failure_recurrences: int = 0
+    failure_frozen_at: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -998,6 +1005,21 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            failure_fingerprint=(
+                row["failure_fingerprint"]
+                if "failure_fingerprint" in keys and row["failure_fingerprint"]
+                else None
+            ),
+            failure_recurrences=(
+                int(row["failure_recurrences"])
+                if "failure_recurrences" in keys and row["failure_recurrences"] is not None
+                else 0
+            ),
+            failure_frozen_at=(
+                int(row["failure_frozen_at"])
+                if "failure_frozen_at" in keys and row["failure_frozen_at"] is not None
+                else None
             ),
         )
 
@@ -1176,7 +1198,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Stable recurring failure/block state. Unlike consecutive_failures this
+    -- survives ordinary unblock/reclaim cycles and freezes on occurrence 3.
+    failure_fingerprint TEXT,
+    failure_recurrences INTEGER NOT NULL DEFAULT 0,
+    failure_frozen_at   INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1985,6 +2012,20 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "failure_fingerprint" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "failure_fingerprint", "failure_fingerprint TEXT"
+        )
+    if "failure_recurrences" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "failure_recurrences",
+            "failure_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+    if "failure_frozen_at" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "failure_frozen_at", "failure_frozen_at INTEGER"
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -3432,6 +3473,8 @@ def recompute_ready(
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if is_task_frozen(conn, task_id):
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for human review — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -3877,6 +3920,8 @@ def reclaim_task(
     Returns True if a reclaim happened, False if the task isn't in a
     reclaimable state (not running, or doesn't exist).
     """
+    if is_task_frozen(conn, task_id):
+        return False
     row = conn.execute(
         "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
         (task_id,),
@@ -4177,7 +4222,10 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
-                       block_recurrences = 0
+                       block_recurrences = 0,
+                       failure_fingerprint = NULL,
+                       failure_recurrences = 0,
+                       failure_frozen_at = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                 """,
@@ -4194,7 +4242,10 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
-                       block_recurrences = 0
+                       block_recurrences = 0,
+                       failure_fingerprint = NULL,
+                       failure_recurrences = 0,
+                       failure_frozen_at = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                    AND current_run_id = ?
@@ -4877,6 +4928,121 @@ def edit_completed_task_result(
     return True
 
 
+_ISO_TIMESTAMP_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b",
+    re.IGNORECASE,
+)
+_UUID_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
+_VOLATILE_LABELED_REQUEST_ID_RE = re.compile(
+    r"\b(?:request|req)[\s_-]*id\b\s*(?:=|:)?\s*"
+    r"[a-z0-9][a-z0-9._-]{5,}\b",
+    re.IGNORECASE,
+)
+_VOLATILE_NAMED_ID_RE = re.compile(
+    r"\b(?:t|req(?:uest)?|run|job|trace|span)[_:\-][a-z0-9_-]{6,}\b",
+    re.IGNORECASE,
+)
+_ATTACHED_DIAGNOSTIC_SUFFIX_RE = re.compile(r"([.-])([A-Z][A-Z0-9_]{2,})$")
+_ERRNO_NAMES = frozenset(errno.errorcode.values())
+
+
+def _replace_volatile_id(match: re.Match[str], replacement: str) -> str:
+    """Replace an id while retaining an attached POSIX-style error code."""
+    diagnostic = _ATTACHED_DIAGNOSTIC_SUFFIX_RE.search(match.group(0))
+    if diagnostic and diagnostic.group(2) in _ERRNO_NAMES:
+        return replacement + diagnostic.group(1) + diagnostic.group(2)
+    return replacement
+
+
+def _normalize_failure_text(value: Optional[str]) -> str:
+    """Remove volatile identity/time noise while preserving root-cause text."""
+    # Preserve case until IDs are replaced: punctuation-attached POSIX error
+    # codes are diagnostic, while ordinary dotted/hyphenated ID parts remain
+    # part of the volatile identifier.
+    text = " ".join((value or "").strip().split())
+    text = _ISO_TIMESTAMP_RE.sub("<timestamp>", text)
+    text = _UUID_RE.sub("<uuid>", text)
+    text = _VOLATILE_LABELED_REQUEST_ID_RE.sub(
+        lambda match: _replace_volatile_id(match, "request id <id>"), text,
+    )
+    text = _VOLATILE_NAMED_ID_RE.sub(
+        lambda match: _replace_volatile_id(match, "<id>"), text,
+    )
+    text = text.lower()
+    text = re.sub(r"\bpid\s*[=:]?\s*\d+\b", "pid <n>", text)
+    text = re.sub(r"\b0x[0-9a-f]+\b", "<address>", text)
+    text = re.sub(r"\b\d{10,}\b", "<number>", text)
+    max_length = 2000
+    if len(text) <= max_length:
+        return text
+    omission_marker = " <...> "
+    head_length = (max_length - len(omission_marker)) // 2
+    tail_length = max_length - len(omission_marker) - head_length
+    return text[:head_length] + omission_marker + text[-tail_length:]
+
+
+def failure_fingerprint(
+    *, kind: Optional[str], reason: Optional[str] = None,
+    error: Optional[str] = None,
+) -> str:
+    """Return a stable digest for one structured failure/block outcome."""
+    canonical = json.dumps(
+        {
+            "kind": (kind or "unknown").strip().lower(),
+            "reason": _normalize_failure_text(reason),
+            "error": _normalize_failure_text(error),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _record_failure_recurrence_locked(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    kind: str,
+    reason: Optional[str] = None,
+    error: Optional[str] = None,
+) -> tuple[str, int, Optional[int]]:
+    """Persist one outcome under the caller's write transaction."""
+    row = conn.execute(
+        "SELECT failure_fingerprint, failure_recurrences, failure_frozen_at "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return "", 0, None
+    fingerprint = failure_fingerprint(kind=kind, reason=reason, error=error)
+    same = row["failure_fingerprint"] == fingerprint
+    recurrences = int(row["failure_recurrences"] or 0) + 1 if same else 1
+    frozen_at = row["failure_frozen_at"]
+    if frozen_at is None and recurrences >= FAILURE_RECURRENCE_LIMIT:
+        frozen_at = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET failure_fingerprint = ?, failure_recurrences = ?, "
+        "failure_frozen_at = ? WHERE id = ?",
+        (fingerprint, recurrences, frozen_at, task_id),
+    )
+    payload = {
+        "fingerprint": fingerprint,
+        "recurrences": recurrences,
+        "limit": FAILURE_RECURRENCE_LIMIT,
+        "outcome_kind": kind,
+    }
+    _append_event(conn, task_id, "failure_recurrence_recorded", payload)
+    if frozen_at is not None and not row["failure_frozen_at"]:
+        _append_event(
+            conn, task_id, "failure_frozen",
+            {**payload, "reason": reason, "error": error, "frozen_at": frozen_at},
+        )
+    return fingerprint, recurrences, int(frozen_at) if frozen_at is not None else None
+
+
 def block_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4920,24 +5086,31 @@ def block_task(
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            "SELECT status, current_run_id, block_kind, block_recurrences "
+            "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if cur_row is None:
             return False
-        prev_kind = cur_row["block_kind"] if "block_kind" in cur_row.keys() else None
-        prev_recurrences = (
-            int(cur_row["block_recurrences"])
-            if "block_recurrences" in cur_row.keys()
-            and cur_row["block_recurrences"] is not None
-            else 0
+        if cur_row["status"] not in ("running", "ready"):
+            return False
+        if (
+            expected_run_id is not None
+            and cur_row["current_run_id"] != int(expected_run_id)
+        ):
+            return False
+        fingerprint, recurrences, frozen_at = _record_failure_recurrence_locked(
+            conn,
+            task_id,
+            kind=f"blocked:{kind or 'legacy'}",
+            reason=reason,
         )
 
         # Dependency blocks never enter the human ``blocked`` bucket — they
         # wait in ``todo`` and let ``recompute_ready`` gate on parents. Routing
         # here (rather than ``blocked``) is what keeps a cron from ever seeing
         # a dependency-wait as something to "unblock".
-        if kind == "dependency":
+        if kind == "dependency" and frozen_at is None:
             cur = conn.execute(
                 """
                 UPDATE tasks
@@ -4979,16 +5152,7 @@ def block_task(
             )
             return True
 
-        # Truly-blocked kinds. Increment the unblock-loop counter when this is a
-        # re-block for the SAME reason after a prior unblock. block_task only
-        # fires from running/ready (i.e. AFTER an unblock returned the task to
-        # the work pool), so a stored block_kind that matches the incoming kind
-        # means: blocked → unblocked → about-to-re-block for the same cause.
-        # An un-typed (None) block compares as "same" to a prior un-typed block.
-        same_cause = prev_kind == kind
-        recurrences = prev_recurrences + 1 if same_cause else 1
-
-        if recurrences >= BLOCK_RECURRENCE_LIMIT:
+        if frozen_at is not None:
             # Loop detected — stop letting the unblocker spin this task. Route
             # to triage for a human-in-the-loop decision instead of blocked.
             cur = conn.execute(
@@ -5022,8 +5186,9 @@ def block_task(
                 {
                     "reason": reason,
                     "kind": kind,
+                    "fingerprint": fingerprint,
                     "recurrences": recurrences,
-                    "limit": BLOCK_RECURRENCE_LIMIT,
+                    "limit": FAILURE_RECURRENCE_LIMIT,
                 },
                 run_id=run_id,
             )
@@ -5112,6 +5277,11 @@ def promote_task(
     ``(False, reason)`` if refused. ``dry_run=True`` validates the
     promotion would succeed without mutating state.
     """
+    if is_task_frozen(conn, task_id):
+        return False, (
+            "task is frozen after three materially identical outcomes; "
+            "explicit rearm required"
+        )
     row = conn.execute(
         "SELECT status FROM tasks WHERE id = ?", (task_id,)
     ).fetchone()
@@ -5163,7 +5333,13 @@ def promote_task(
     return True, None
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> bool:
     """Transition ``blocked``/``scheduled`` or a frozen triage task.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
@@ -5179,10 +5355,33 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # write snapshot. Reading it before BEGIN IMMEDIATE lets a newer loop
         # event land while this call is waiting and then be released by stale
         # state from the previous generation.
-        frozen_triage = is_block_loop_frozen(conn, task_id)
+        frozen_triage = is_task_frozen(conn, task_id)
+        authoritative_change = False
+        if frozen_triage:
+            freeze_event = conn.execute(
+                "SELECT MAX(id) AS event_id FROM task_events WHERE task_id = ? "
+                "AND kind IN ('failure_frozen', 'block_loop_detected')",
+                (task_id,),
+            ).fetchone()
+            freeze_event_id = int(freeze_event["event_id"] or 0) if freeze_event else 0
+            changed = conn.execute(
+                "SELECT payload FROM task_events WHERE task_id = ? AND id > ? "
+                "AND kind = 'specified' ORDER BY id DESC LIMIT 1",
+                (task_id, freeze_event_id),
+            ).fetchone()
+            if changed and changed["payload"]:
+                try:
+                    authoritative_change = bool(
+                        json.loads(changed["payload"]).get("changed_fields")
+                    )
+                except (TypeError, ValueError):
+                    authoritative_change = False
+            if not (reason and reason.strip()) and not authoritative_change:
+                return False
         stale = conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ? "
-            "AND (status IN ('blocked', 'scheduled') OR (status = 'triage' AND ?))",
+            "AND (status IN ('blocked', 'scheduled') "
+            "OR (status IN ('triage', 'todo') AND ?))",
             (task_id, int(frozen_triage)),
         ).fetchone()
         if stale and stale["current_run_id"]:
@@ -5222,16 +5421,41 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # start for the dispatcher's retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
+            "consecutive_failures = 0, last_failure_error = NULL, "
+            "failure_fingerprint = CASE WHEN ? THEN NULL ELSE failure_fingerprint END, "
+            "failure_recurrences = CASE WHEN ? THEN 0 ELSE failure_recurrences END, "
+            "failure_frozen_at = CASE WHEN ? THEN NULL ELSE failure_frozen_at END, "
+            "block_recurrences = CASE WHEN ? THEN 0 ELSE block_recurrences END "
             "WHERE id = ? AND (status IN ('blocked', 'scheduled') "
-            "OR (status = 'triage' AND ?))",
-            (new_status, task_id, int(frozen_triage)),
+            "OR (status IN ('triage', 'todo') AND ?))",
+            (
+                new_status,
+                int(frozen_triage), int(frozen_triage),
+                int(frozen_triage), int(frozen_triage),
+                task_id, int(frozen_triage),
+            ),
         )
         if cur.rowcount != 1:
             return False
+        if frozen_triage:
+            _append_event(
+                conn,
+                task_id,
+                "failure_rearmed",
+                {
+                    "actor": (actor or "operator").strip(),
+                    "reason": reason.strip() if reason else None,
+                    "authoritative_change": authoritative_change,
+                },
+            )
         _append_event(
             conn, task_id, "unblocked",
-            {"status": new_status} if new_status != "ready" else None,
+            {
+                "status": new_status,
+                "actor": actor,
+                "reason": reason,
+                "rearmed": frozen_triage,
+            },
         )
         return True
 
@@ -7101,8 +7325,12 @@ def _record_task_failure(
         ).fetchone()
         if row is None:
             return False
+        if row["status"] not in ("running", "ready"):
+            return False
         failures = int(row["consecutive_failures"]) + 1
-        cur_status = row["status"]
+        fingerprint, recurrences, frozen_at = _record_failure_recurrence_locked(
+            conn, task_id, kind=outcome, error=error,
+        )
 
         # Per-task override wins over both caller-supplied and default
         # thresholds. None (the common case) falls through.
@@ -7116,26 +7344,27 @@ def _record_task_failure(
             effective_limit = int(failure_limit)
             limit_source = "dispatcher"
 
-        if force_trip or failures >= effective_limit:
+        if force_trip or failures >= effective_limit or frozen_at is not None:
             # Trip the breaker.
+            terminal_status = "triage" if frozen_at is not None else "blocked"
             if release_claim:
                 # Spawn path: still running, also clear claim state.
                 conn.execute(
-                    "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('running', 'ready')",
-                    (failures, error[:500], task_id),
+                    (terminal_status, failures, error[:500], task_id),
                 )
             else:
                 # Timeout/crash path: task is already at ``ready``
                 # with claim cleared; just flip to blocked + update
                 # counter fields.
                 conn.execute(
-                    "UPDATE tasks SET status = 'blocked', "
+                    "UPDATE tasks SET status = ?, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('ready', 'running')",
-                    (failures, error[:500], task_id),
+                    (terminal_status, failures, error[:500], task_id),
                 )
             run_id = None
             if end_run:
@@ -7157,6 +7386,9 @@ def _record_task_failure(
                 "limit_source": limit_source,
                 "error": error[:500],
                 "trigger_outcome": outcome,
+                "fingerprint": fingerprint,
+                "recurrences": recurrences,
+                "frozen": frozen_at is not None,
             }
             if event_payload_extra:
                 payload.update(event_payload_extra)
@@ -7261,14 +7493,18 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
-def is_block_loop_frozen(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return whether the block-loop breaker still forbids automation.
+def is_task_frozen(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return whether the durable recurring-outcome breaker forbids automation.
 
-    ``block_loop_detected`` is a circuit breaker, not merely another triage
-    reason. Once emitted, automation must not recycle the task. Only a later
-    authoritative ``unblocked`` event releases it; comments and cosmetic
-    status/body/specification events deliberately do not.
+    New boards use the persisted ``failure_frozen_at`` state. The event query is
+    retained as a compatibility fallback for boards frozen by pre-migration
+    versions, where a later explicit ``unblocked`` event was the rearm marker.
     """
+    row = conn.execute(
+        "SELECT failure_frozen_at FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row and row["failure_frozen_at"] is not None:
+        return True
     loop = conn.execute(
         "SELECT MAX(id) AS event_id FROM task_events "
         "WHERE task_id = ? AND kind = 'block_loop_detected'",
@@ -7283,6 +7519,11 @@ def is_block_loop_frozen(conn: sqlite3.Connection, task_id: str) -> bool:
         (task_id, loop_event_id),
     ).fetchone()
     return rearm is None
+
+
+def is_block_loop_frozen(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Backward-compatible alias for :func:`is_task_frozen`."""
+    return is_task_frozen(conn, task_id)
 
 def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.

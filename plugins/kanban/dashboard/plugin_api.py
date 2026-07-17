@@ -855,8 +855,16 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             elif s == "ready":
                 # Re-open a blocked/scheduled task, or just an explicit status set.
                 current = kanban_db.get_task(conn, task_id)
-                if current and current.status in ("blocked", "scheduled", "triage"):
-                    ok = kanban_db.unblock_task(conn, task_id)
+                if current and (
+                    current.status in ("blocked", "scheduled")
+                    or kanban_db.is_task_frozen(conn, task_id)
+                ):
+                    ok = kanban_db.unblock_task(
+                        conn,
+                        task_id,
+                        actor="dashboard-operator",
+                        reason=payload.block_reason,
+                    )
                 else:
                     # Direct status write for drag-drop (todo -> ready etc).
                     ok = _set_status_direct(conn, task_id, "ready")
@@ -1152,6 +1160,7 @@ class BulkTaskBody(BaseModel):
     priority: Optional[int] = None
     archive: bool = False
     result: Optional[str] = None
+    block_reason: Optional[str] = None
     summary: Optional[str] = None
     metadata: Optional[dict] = None
     reclaim_first: bool = False
@@ -1195,8 +1204,16 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         ok = kanban_db.block_task(conn, tid)
                     elif s == "ready":
                         cur = kanban_db.get_task(conn, tid)
-                        if cur and cur.status in ("blocked", "scheduled"):
-                            ok = kanban_db.unblock_task(conn, tid)
+                        if cur and (
+                            cur.status in ("blocked", "scheduled")
+                            or kanban_db.is_task_frozen(conn, tid)
+                        ):
+                            ok = kanban_db.unblock_task(
+                                conn,
+                                tid,
+                                actor="dashboard-operator",
+                                reason=payload.block_reason,
+                            )
                         else:
                             ok = _set_status_direct(conn, tid, "ready")
                     elif s == "running":

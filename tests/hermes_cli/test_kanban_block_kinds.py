@@ -78,27 +78,29 @@ def test_unblock_does_not_reset_recurrence_counter(kanban_home: Path) -> None:
         assert t.block_kind == "needs_input"  # kind preserved for comparison
 
 
-def test_same_cause_reblock_routes_to_triage(kanban_home: Path) -> None:
-    """Dale's loop: block → unblock → re-block same kind → triage."""
+def test_same_cause_third_block_routes_to_triage(kanban_home: Path) -> None:
+    """Dale's loop gets exactly three attempts before terminal triage."""
     with kb.connect_closing() as conn:
         tid = _running_task(conn)
-        kb.block_task(conn, tid, reason="need creds", kind="needs_input")
-        kb.unblock_task(conn, tid)
-        _make_running_again(conn, tid)
-        kb.block_task(conn, tid, reason="still need creds", kind="needs_input")
+        for attempt in range(3):
+            kb.block_task(conn, tid, reason="need creds", kind="needs_input")
+            if attempt < 2:
+                kb.unblock_task(conn, tid)
+                _make_running_again(conn, tid)
         t = kb.get_task(conn, tid)
         assert t.status == "triage"
-        assert t.block_recurrences == 2
+        assert t.block_recurrences == 3
 
 
 def test_untyped_block_loop_also_protected(kanban_home: Path) -> None:
     """Legacy un-typed blocks (kind=None) still trip the breaker."""
     with kb.connect_closing() as conn:
         tid = _running_task(conn)
-        kb.block_task(conn, tid, reason="a")
-        kb.unblock_task(conn, tid)
-        _make_running_again(conn, tid)
-        kb.block_task(conn, tid, reason="a again")
+        for attempt in range(3):
+            kb.block_task(conn, tid, reason="a")
+            if attempt < 2:
+                kb.unblock_task(conn, tid)
+                _make_running_again(conn, tid)
         assert kb.get_task(conn, tid).status == "triage"
 
 
@@ -118,15 +120,16 @@ def test_different_kinds_do_not_compound(kanban_home: Path) -> None:
 def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
     with kb.connect_closing() as conn:
         tid = _running_task(conn)
-        kb.block_task(conn, tid, reason="x", kind="capability")
-        kb.unblock_task(conn, tid)
-        _make_running_again(conn, tid)
-        kb.block_task(conn, tid, reason="x", kind="capability")
+        for attempt in range(3):
+            kb.block_task(conn, tid, reason="x", kind="capability")
+            if attempt < 2:
+                kb.unblock_task(conn, tid)
+                _make_running_again(conn, tid)
         events = [e for e in kb.list_events(conn, tid)
                   if e.kind == "block_loop_detected"]
         assert events, "expected a block_loop_detected event"
         payload = events[-1].payload or {}
-        assert payload.get("recurrences") == 2
+        assert payload.get("recurrences") == 3
         assert payload.get("kind") == "capability"
 
 

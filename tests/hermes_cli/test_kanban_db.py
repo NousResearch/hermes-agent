@@ -7,6 +7,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import types
 import unittest.mock
@@ -1805,6 +1806,375 @@ def test_dispatch_reclaims_stale_before_spawning(kanban_home):
     assert res.reclaimed == 1
 
 
+def test_identical_block_loop_runs_exactly_three_times_then_freezes(
+    kanban_home, all_assignees_spawnable
+):
+    """The recurring-outcome breaker trips on attempt three, never attempt two."""
+    attempts = []
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="looping", assignee="alice")
+
+        for attempt in range(1, 4):
+            claimed = kb.claim_task(conn, task_id, claimer=f"host:{attempt}")
+            assert claimed is not None
+            attempts.append(claimed.current_run_id)
+            assert kb.block_task(
+                conn,
+                task_id,
+                kind="needs_input",
+                reason=(
+                    f"upstream request req-{attempt:08d} failed at "
+                    f"2026-07-16T10:0{attempt}:00Z"
+                ),
+            )
+            if attempt < 3:
+                task = kb.get_task(conn, task_id)
+                assert task.status == "blocked"
+                assert task.failure_frozen_at is None
+                assert kb.unblock_task(conn, task_id) is True
+
+        frozen = kb.get_task(conn, task_id)
+        assert frozen.status == "triage"
+        assert frozen.failure_recurrences == 3
+        assert frozen.failure_fingerprint
+        assert frozen.failure_frozen_at is not None
+
+        # Every automatic/direct path must leave the third-attempt freeze intact.
+        assert kb.claim_task(conn, task_id) is None
+        assert kb.promote_task(conn, task_id, actor="cron", force=True)[0] is False
+        assert kb.reclaim_task(conn, task_id, reason="periodic sweep") is False
+        assert kb.recompute_ready(conn) == 0
+        assert kb.unblock_task(conn, task_id) is False
+        result = kb.dispatch_once(conn, dry_run=True)
+
+    assert len(attempts) == 3
+    assert all(row[0] != task_id for row in result.spawned)
+
+
+def test_materially_different_block_reason_starts_a_new_recurrence(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="changing failure", assignee="alice")
+        for reason in ("database unavailable", "missing OAuth approval"):
+            assert kb.claim_task(conn, task_id) is not None
+            assert kb.block_task(
+                conn, task_id, kind="capability", reason=reason,
+            ) is True
+            task = kb.get_task(conn, task_id)
+            assert task.failure_recurrences == 1
+            assert task.failure_frozen_at is None
+            assert kb.unblock_task(conn, task_id) is True
+
+
+def test_frozen_task_requires_audited_rearm_reason(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="looping", assignee="alice")
+        for attempt in range(3):
+            assert kb.claim_task(conn, task_id) is not None
+            assert kb.block_task(
+                conn, task_id, kind="needs_input", reason="same blocker",
+            ) is True
+            if attempt < 2:
+                assert kb.unblock_task(conn, task_id) is True
+
+        assert kb.unblock_task(conn, task_id) is False
+        assert kb.unblock_task(
+            conn,
+            task_id,
+            actor="cto",
+            reason="credentials were rotated and verified",
+        ) is True
+
+        task = kb.get_task(conn, task_id)
+        assert task.status == "ready"
+        assert task.failure_fingerprint is None
+        assert task.failure_recurrences == 0
+        assert task.failure_frozen_at is None
+        rearm = [e for e in kb.list_events(conn, task_id) if e.kind == "failure_rearmed"]
+        assert rearm[-1].payload == {
+            "actor": "cto",
+            "reason": "credentials were rotated and verified",
+            "authoritative_change": False,
+        }
+
+
+def test_authoritative_spec_change_can_rearm_without_free_text_reason(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="looping", assignee="alice")
+        for attempt in range(3):
+            assert kb.claim_task(conn, task_id) is not None
+            assert kb.block_task(
+                conn, task_id, kind="capability", reason="missing binary",
+            )
+            if attempt < 2:
+                assert kb.unblock_task(conn, task_id)
+
+        assert kb.specify_triage_task(
+            conn,
+            task_id,
+            body="Use the bundled binary at /opt/tool/bin/tool.",
+            author="operator",
+            respect_block_loop_freeze=False,
+        )
+        assert kb.get_task(conn, task_id).status == "todo"
+        assert kb.unblock_task(conn, task_id, actor="operator")
+
+        task = kb.get_task(conn, task_id)
+        assert task.status == "ready"
+        assert task.failure_frozen_at is None
+        rearm = [e for e in kb.list_events(conn, task_id) if e.kind == "failure_rearmed"][-1]
+        assert rearm.payload["authoritative_change"] is True
+
+
+def test_task_failure_fingerprint_normalizes_volatile_values(kanban_home):
+    first = kb.failure_fingerprint(
+        kind="blocked",
+        reason="task t_deadbeef request 550e8400-e29b-41d4-a716-446655440000 "
+        "failed at 2026-07-16T10:01:02Z pid 1234",
+    )
+    second = kb.failure_fingerprint(
+        kind="blocked",
+        reason="task t_cafebabe request 123e4567-e89b-12d3-a456-426614174000 "
+        "failed at 2026-07-17T11:12:13+00:00 pid 9876",
+    )
+    assert first == second
+
+
+def test_task_failure_fingerprint_normalizes_labeled_request_ids(kanban_home):
+    """Common request_id syntax must not evade same-root-cause detection."""
+    fingerprints = {
+        kb.failure_fingerprint(
+            kind="crashed",
+            error=f"{label} failed at {timestamp}: connection reset",
+        )
+        for label, timestamp in (
+            ("request_id=01J2ABCDEF1234567890", "2026-07-16T10:01:02Z"),
+            ("request id 01J2ZZZZZZ9876543210", "2026-07-17T11:12:13Z"),
+            ("request-id: 01J2QQQQQQ1234567890", "2026-07-18T12:13:14Z"),
+        )
+    }
+    assert len(fingerprints) == 1
+
+
+def test_task_failure_fingerprint_preserves_changed_root_cause(kanban_home):
+    shared_noise = (
+        "request_id=01J2ABCDEF1234567890 at "
+        "2026-07-16T10:01:02Z"
+    )
+    connection_reset = kb.failure_fingerprint(
+        kind="crashed", error=f"{shared_noise}: connection reset",
+    )
+    permission_denied = kb.failure_fingerprint(
+        kind="crashed", error=f"{shared_noise}: permission denied",
+    )
+    assert connection_reset != permission_denied
+
+
+def test_task_failure_fingerprint_preserves_attached_request_error_suffix(
+    kanban_home,
+):
+    connection_reset = kb.failure_fingerprint(
+        kind="crashed",
+        error="request_id=01J2ABCDEF1234567890:ECONNRESET",
+    )
+    permission_denied = kb.failure_fingerprint(
+        kind="crashed",
+        error="request_id=01J2ZZZZZZ9876543210:EPERM",
+    )
+
+    assert connection_reset != permission_denied
+
+
+@pytest.mark.parametrize("separator", [".", "-"])
+def test_task_failure_fingerprint_preserves_punctuation_attached_error_suffix(
+    kanban_home,
+    separator,
+):
+    connection_reset = kb.failure_fingerprint(
+        kind="crashed",
+        error=f"request_id=01J2ABCDEF1234567890{separator}ECONNRESET",
+    )
+    permission_denied = kb.failure_fingerprint(
+        kind="crashed",
+        error=f"request_id=01J2ZZZZZZ9876543210{separator}EPERM",
+    )
+
+    assert connection_reset != permission_denied
+
+
+def test_task_failure_fingerprint_preserves_named_id_error_suffix(kanban_home):
+    connection_reset = kb.failure_fingerprint(
+        kind="crashed",
+        error="req-00000001-ECONNRESET",
+    )
+    permission_denied = kb.failure_fingerprint(
+        kind="crashed",
+        error="req-00000002-EPERM",
+    )
+
+    assert connection_reset != permission_denied
+
+
+def test_task_failure_fingerprint_normalizes_dotted_and_hyphenated_ids(kanban_home):
+    fingerprints = {
+        kb.failure_fingerprint(
+            kind="crashed",
+            error=f"request_id={request_id}: connection reset",
+        )
+        for request_id in (
+            "build.release-000001",
+            "deploy.candidate-000002",
+            "ABC123.RELEASE",
+            "XYZ987-CANDIDATE",
+            "ABC123.EXAMPLE",
+            "XYZ987-EXPERIMENT",
+        )
+    }
+
+    assert len(fingerprints) == 1
+
+
+def test_task_failure_fingerprint_preserves_long_diagnostic_tail(kanban_home):
+    shared_prefix = "trace frame: shared diagnostic context\n" * 80
+    assert len(shared_prefix) > 2000
+
+    connection_reset = kb.failure_fingerprint(
+        kind="crashed",
+        error=f"{shared_prefix}RootCause: ECONNRESET",
+    )
+    permission_denied = kb.failure_fingerprint(
+        kind="crashed",
+        error=f"{shared_prefix}RootCause: EPERM",
+    )
+
+    assert connection_reset != permission_denied
+
+
+def test_concurrent_third_failure_freezes_once(kanban_home):
+    """Racing reports for attempt three cannot double-count or permit attempt four."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="racing failure", assignee="alice")
+        for _ in range(2):
+            claimed = kb.claim_task(conn, task_id)
+            assert claimed is not None
+            assert kb.block_task(
+                conn,
+                task_id,
+                kind="transient",
+                reason="upstream connection reset",
+                expected_run_id=claimed.current_run_id,
+            )
+            assert kb.unblock_task(conn, task_id)
+        third = kb.claim_task(conn, task_id)
+        assert third is not None
+
+    barrier = threading.Barrier(2)
+
+    def report_third_failure() -> bool:
+        with kb.connect() as conn:
+            barrier.wait(timeout=5)
+            return kb.block_task(
+                conn,
+                task_id,
+                kind="transient",
+                reason="upstream connection reset",
+                expected_run_id=third.current_run_id,
+            )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: report_third_failure(), range(2)))
+
+    assert sorted(results) == [False, True]
+    with kb.connect() as conn:
+        frozen = kb.get_task(conn, task_id)
+        assert frozen is not None
+        assert frozen.status == "triage"
+        assert frozen.failure_recurrences == 3
+        assert frozen.failure_frozen_at is not None
+        assert kb.claim_task(conn, task_id) is None
+        assert len([
+            event for event in kb.list_events(conn, task_id)
+            if event.kind == "failure_frozen"
+        ]) == 1
+
+
+def test_unrelated_progress_does_not_rearm_frozen_task(kanban_home):
+    with kb.connect() as conn:
+        frozen_id = kb.create_task(conn, title="frozen", assignee="alice")
+        for attempt in range(3):
+            claimed = kb.claim_task(conn, frozen_id)
+            assert claimed is not None
+            assert kb.block_task(
+                conn,
+                frozen_id,
+                kind="capability",
+                reason="missing credential",
+                expected_run_id=claimed.current_run_id,
+            )
+            if attempt < 2:
+                assert kb.unblock_task(conn, frozen_id)
+
+        unrelated_id = kb.create_task(conn, title="unrelated", assignee="bob")
+        assert kb.claim_task(conn, unrelated_id) is not None
+        assert kb.complete_task(conn, unrelated_id, result="done")
+        kb.add_comment(conn, frozen_id, "operator", "unrelated board work completed")
+        kb.recompute_ready(conn)
+
+        frozen = kb.get_task(conn, frozen_id)
+        assert frozen is not None
+        assert frozen.status == "triage"
+        assert frozen.failure_recurrences == 3
+        assert frozen.failure_frozen_at is not None
+        assert kb.claim_task(conn, frozen_id) is None
+        assert kb.unblock_task(conn, frozen_id) is False
+
+
+def test_process_failure_breaker_freezes_on_third_identical_root_cause(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="crashing", assignee="alice")
+        for attempt, pid in enumerate((1111, 2222, 3333), start=1):
+            assert kb.claim_task(conn, task_id) is not None
+            kb._record_task_failure(
+                conn,
+                task_id,
+                error=f"pid {pid} exited with code 17 at 1784218{attempt:03d}",
+                outcome="crashed",
+                release_claim=True,
+            )
+            task = kb.get_task(conn, task_id)
+            if attempt == 1:
+                assert task.status == "ready"
+            elif attempt == 2:
+                assert task.status == "blocked"
+                assert task.failure_frozen_at is None
+                assert kb.unblock_task(conn, task_id) is True
+            else:
+                assert task.status == "triage"
+                assert task.failure_recurrences == 3
+                assert task.failure_frozen_at is not None
+
+
+def test_three_identical_rejected_review_rounds_are_terminal(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="review loop", assignee="reviewer")
+        for round_number in range(1, 4):
+            assert kb.claim_task(conn, task_id) is not None
+            assert kb.block_task(
+                conn,
+                task_id,
+                kind="needs_input",
+                reason="review rejected: requested regression test still missing",
+            )
+            task = kb.get_task(conn, task_id)
+            if round_number < 3:
+                assert task.status == "blocked"
+                assert kb.unblock_task(conn, task_id)
+
+        task = kb.get_task(conn, task_id)
+        assert task.status == "triage"
+        assert task.failure_recurrences == 3
+        assert kb.claim_review_task(conn, task_id) is None
+
+
 # ---------------------------------------------------------------------------
 # Respawn guard (check_respawn_guard + dispatch_once integration)
 # ---------------------------------------------------------------------------
@@ -1834,7 +2204,9 @@ def test_respawn_guard_explicit_rearm_releases_block_loop(kanban_home):
             "VALUES (?, 'block_loop_detected', '{}', 100)",
             (t,),
         )
-        assert kb.unblock_task(conn, t) is True
+        assert kb.unblock_task(
+            conn, t, actor="operator", reason="root cause was corrected",
+        ) is True
         assert kb.check_respawn_guard(conn, t) is None
 
 
@@ -1874,14 +2246,16 @@ def test_unblock_rechecks_frozen_triage_inside_write_transaction(
             (t,),
         )
         calls = []
-        original = kb.is_block_loop_frozen
+        original = kb.is_task_frozen
 
         def observed(c, task_id):
             calls.append(c.in_transaction)
             return original(c, task_id)
 
-        monkeypatch.setattr(kb, "is_block_loop_frozen", observed)
-        assert kb.unblock_task(conn, t) is True
+        monkeypatch.setattr(kb, "is_task_frozen", observed)
+        assert kb.unblock_task(
+            conn, t, actor="operator", reason="root cause was corrected",
+        ) is True
 
     assert calls == [True]
 

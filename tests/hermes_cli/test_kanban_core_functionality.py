@@ -357,7 +357,8 @@ def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spa
         res = kb.dispatch_once(conn, failure_limit=3)
         assert tid in res.auto_blocked
         task = kb.get_task(conn, tid)
-        assert task.status == "blocked"
+        assert task.status == "triage"
+        assert task.failure_frozen_at is not None
     finally:
         conn.close()
 
@@ -1607,9 +1608,10 @@ def test_run_on_block_with_reason(kanban_home):
         conn.close()
 
 
-def test_run_on_spawn_failure_records_failed_runs(kanban_home, all_assignees_spawnable):
-    """Each spawn_failed event closes a run with outcome='spawn_failed',
-    and the Nth failure closes a run with outcome='gave_up'."""
+def test_run_on_spawn_failure_freezes_after_three_identical_runs(
+    kanban_home, all_assignees_spawnable,
+):
+    """The durable recurrence breaker caps identical spawn failures at three."""
     def _bad(task, ws):
         raise RuntimeError("no PATH")
 
@@ -1620,12 +1622,15 @@ def test_run_on_spawn_failure_records_failed_runs(kanban_home, all_assignees_spa
             kb.dispatch_once(conn, spawn_fn=_bad, failure_limit=5)
 
         runs = kb.list_runs(conn, tid)
-        # 5 claim attempts → 5 runs. Final one is gave_up, earlier ones
-        # are spawn_failed.
-        assert len(runs) == 5
+        # failure_limit=5 remains a process retry budget; the recurring-root-
+        # cause breaker independently guarantees no fourth identical run.
+        assert len(runs) == 3
         assert runs[-1].outcome == "gave_up"
         assert all(r.outcome == "spawn_failed" for r in runs[:-1])
         assert runs[-1].error and "no PATH" in runs[-1].error
+        task = kb.get_task(conn, tid)
+        assert task.status == "triage"
+        assert task.failure_frozen_at is not None
     finally:
         conn.close()
 
@@ -4368,10 +4373,11 @@ def test_repeated_timeouts_trip_the_circuit_breaker(kanban_home, monkeypatch):
             kb.enforce_max_runtime(conn, signal_fn=_signal)
 
         final = kb.get_task(conn, tid)
-        # After 3 consecutive timeouts with failure_limit=3, task should
-        # be auto-blocked, not looping forever as ``ready``.
-        assert final.status == "blocked", \
-            f"expected blocked after 3 timeouts, got {final.status}"
+        # After three materially identical timeouts the durable breaker
+        # freezes terminally rather than entering the ordinary blocked bucket.
+        assert final.status == "triage", \
+            f"expected triage after 3 timeouts, got {final.status}"
+        assert final.failure_frozen_at is not None
         assert final.consecutive_failures >= 3
         # ``gave_up`` event emitted (plus 3 ``timed_out`` events).
         kinds = [

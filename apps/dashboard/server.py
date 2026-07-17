@@ -1905,6 +1905,30 @@ def sample_crypto_trending() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Data-source registry (§0.3). Each entry declares its cache TTL and a
+# live/sample pair; Api.fetch_source(name, *args) wraps _cached uniformly so a
+# new upstream is a one-liner here plus a live_*/sample_* function. Positional
+# args are forwarded to both functions and, unless an explicit key is given,
+# folded into the cache key. The convention: no source ships without a sample.
+# ---------------------------------------------------------------------------
+SOURCES: dict[str, dict] = {
+    "quakes": {"ttl": QUAKES_TTL, "live": live_quakes, "sample": sample_quakes},
+    "crypto:global": {"ttl": CRYPTO_GLOBAL_TTL,
+                      "live": live_crypto_global, "sample": sample_crypto_global},
+    "crypto:trending": {"ttl": CRYPTO_TRENDING_TTL,
+                        "live": live_crypto_trending, "sample": sample_crypto_trending},
+    "gaming:free": {"ttl": GAMING_TTL, "live": live_free_games, "sample": sample_free_games},
+    "gaming:deals": {"ttl": GAMING_TTL, "live": live_steam_deals, "sample": sample_steam_deals},
+    "standings": {"ttl": STANDINGS_TTL, "live": live_standings, "sample": sample_standings},
+    "scores": {"ttl": SCORES_TTL, "live": live_scores, "sample": sample_scores},
+    "teamsched": {"ttl": TEAM_SCHEDULE_TTL,
+                  "live": live_team_schedule, "sample": sample_team_schedule},
+    "teamnews": {"ttl": TEAM_NEWS_TTL, "live": live_team_news, "sample": sample_team_news},
+    "trials": {"ttl": TRIALS_TTL, "live": live_trials, "sample": sample_trials},
+}
+
+
+# ---------------------------------------------------------------------------
 # API dispatch: try cache → live → sample
 # ---------------------------------------------------------------------------
 class Api:
@@ -2007,6 +2031,16 @@ class Api:
         # Cache samples briefly too, so an offline session isn't re-reading disk.
         CACHE.set(key, result, min(ttl, 60))
         return result
+
+    def fetch_source(self, name: str, *args, key: str | None = None):
+        """Registry-driven fetch: look up a declared source and run it through
+        the standard cache → live → sample path (§0.3)."""
+        spec = SOURCES[name]
+        if key is None:
+            key = name if not args else f"{name}:{':'.join(str(a).lower() for a in args)}"
+        return self._cached(key, spec["ttl"],
+                            lambda: spec["live"](*args),
+                            lambda: spec["sample"](*args))
 
     def news(self, params: dict) -> dict:
         limit = max(1, min(int(params.get("limit", ["30"])[0]), 60))
@@ -2175,10 +2209,10 @@ class Api:
                             lambda: live_stock_history(sym), lambda: sample_stock_history(sym))
 
     def gaming_free(self, params: dict) -> dict:
-        return self._cached("gaming:free", GAMING_TTL, live_free_games, sample_free_games)
+        return self.fetch_source("gaming:free")
 
     def gaming_deals(self, params: dict) -> dict:
-        return self._cached("gaming:deals", GAMING_TTL, live_steam_deals, sample_steam_deals)
+        return self.fetch_source("gaming:deals")
 
     def pubmed(self, params: dict) -> dict:
         query = " ".join(params.get("q", [""])[0].split())[:200] or "clinical medicine"
@@ -2216,8 +2250,7 @@ class Api:
 
     def trials(self, params: dict) -> dict:
         query = " ".join(params.get("q", [""])[0].split())[:200] or "South Africa"
-        return self._cached(f"trials:{query.lower()}", TRIALS_TTL,
-                            lambda: live_trials(query), lambda: sample_trials(query))
+        return self.fetch_source("trials", query)
 
     def podcast(self, params: dict) -> dict:
         url = params.get("url", [""])[0].strip()
@@ -2228,7 +2261,7 @@ class Api:
                             lambda: live_podcast(url), lambda: sample_podcast(url))
 
     def quakes(self, params: dict) -> dict:
-        return self._cached("quakes", QUAKES_TTL, live_quakes, sample_quakes)
+        return self.fetch_source("quakes")
 
     def fx(self, params: dict) -> dict:
         base = re.sub(r"[^A-Za-z]", "", params.get("base", ["USD"])[0].upper())[:3] or "USD"
@@ -2256,9 +2289,7 @@ class Api:
         league = params.get("league", ["nba"])[0].lower()
         if league not in SPORT_LEAGUES:
             raise ApiError(400, f"unknown league {league!r}")
-        return self._cached(f"standings:{league}", STANDINGS_TTL,
-                            lambda: live_standings(league),
-                            lambda: sample_standings(league))
+        return self.fetch_source("standings", league)
 
     def team_schedule(self, params: dict) -> dict:
         league = params.get("league", ["nba"])[0].lower()
@@ -2267,17 +2298,13 @@ class Api:
         team = re.sub(r"[^A-Za-z0-9 .-]", "", params.get("team", [""])[0]).strip()[:32]
         if not team:
             raise ApiError(400, "missing team")
-        return self._cached(f"teamsched:{league}:{team.lower()}", TEAM_SCHEDULE_TTL,
-                            lambda: live_team_schedule(league, team),
-                            lambda: sample_team_schedule(league, team))
+        return self.fetch_source("teamsched", league, team)
 
     def team_news(self, params: dict) -> dict:
         team = re.sub(r"[^A-Za-z0-9 .&-]", "", params.get("team", [""])[0]).strip()[:48]
         if not team:
             raise ApiError(400, "missing team")
-        return self._cached(f"teamnews:{team.lower()}", TEAM_NEWS_TTL,
-                            lambda: live_team_news(team),
-                            lambda: sample_team_news(team))
+        return self.fetch_source("teamnews", team)
 
     def social(self, params: dict) -> dict:
         network = params.get("network", ["hn"])[0].lower()
@@ -2298,19 +2325,13 @@ class Api:
         league = params.get("league", ["nba"])[0].lower()
         if league not in SPORT_LEAGUES:
             raise ApiError(400, f"unknown league {league!r}; valid: {list(SPORT_LEAGUES)}")
-        return self._cached(
-            f"scores:{league}", SCORES_TTL,
-            lambda: live_scores(league),
-            lambda: sample_scores(league),
-        )
+        return self.fetch_source("scores", league)
 
     def crypto_global(self, params: dict) -> dict:
-        return self._cached("crypto:global", CRYPTO_GLOBAL_TTL,
-                            live_crypto_global, sample_crypto_global)
+        return self.fetch_source("crypto:global")
 
     def crypto_trending(self, params: dict) -> dict:
-        return self._cached("crypto:trending", CRYPTO_TRENDING_TTL,
-                            live_crypto_trending, sample_crypto_trending)
+        return self.fetch_source("crypto:trending")
 
     def worldstate(self, params: dict) -> dict:
         cached = CACHE.get("worldstate")

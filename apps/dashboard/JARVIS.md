@@ -82,6 +82,26 @@ system) so it is one-click reversible, and a `reflect` automation action lets it
 run nightly. Model-augmented reflection (letting Claude write richer proposals)
 is a future enhancement on top of the current deterministic heuristics.
 
+## Adding a data source (the §0.3 convention)
+
+Every external upstream flows through the `SOURCES` registry in `server.py`:
+
+```python
+SOURCES["quakes"] = {"ttl": QUAKES_TTL, "live": live_quakes, "sample": sample_quakes}
+```
+
+A new endpoint is then three small pieces:
+1. a `live_<name>(...)` fetcher and a `sample_<name>(...)` offline fixture
+   (same return shape — **no source ships without a sample**, so offline mode
+   and the e2e suite stay green);
+2. one `SOURCES[...]` entry;
+3. an `Api` method that calls `self.fetch_source("<name>", *args)` and a route
+   in the dispatch table.
+
+`fetch_source` wraps the standard cache → live → sample path and folds any
+positional args into the cache key (lowercased), so callers never re-implement
+the try-live/fallback dance.
+
 ## Deliberately rejected (keeps the ethos intact)
 
 - FastAPI/uvicorn/Express — the stdlib `http.server` already serves REST + SSE.

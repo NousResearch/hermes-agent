@@ -46,7 +46,10 @@ Effort key: **S** < ½ day · **M** ~1 day · **L** multi-day.
   by RSS, inline HTML5 player) shipped earlier; now the news widget gains
   per-source 🔇 mute and 📌 pin (synced state, filtered/sorted client-side)
   with an unmute bar — shipped.
-- ⬜ Still pending: §0.3 registry, and the remaining
+- ✅ **§0.3 data-source registry** — `SOURCES` table + `Api.fetch_source()`
+  collapse the try-live→cache→sample boilerplate; ten endpoints refactored onto
+  it and the convention documented in JARVIS.md — shipped.
+- ⬜ Still remaining from the original list:
   §5 widgets (air quality/pollen, weather alerts, space weather, flights,
   RSS-reader folders).
 

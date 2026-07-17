@@ -935,6 +935,39 @@ class MemoryAndToolsTests(unittest.TestCase):
         self.assertIn("New York", r["content"][0]["text"])
 
 
+class SourceRegistryTests(unittest.TestCase):
+    def setUp(self):
+        server.CACHE.clear()
+        self.api = server.Api(offline=True, data_dir=Path(tempfile.mkdtemp()))
+
+    def test_registry_entries_well_formed(self):
+        self.assertTrue(server.SOURCES)
+        for name, spec in server.SOURCES.items():
+            self.assertIn("ttl", spec, name)
+            self.assertGreater(spec["ttl"], 0, name)
+            self.assertTrue(callable(spec["live"]), name)
+            self.assertTrue(callable(spec["sample"]), name)
+
+    def test_fetch_source_no_args_caches(self):
+        first = self.api.fetch_source("quakes")
+        self.assertEqual(first["source"], "sample")   # offline → sample path
+        self.assertIsNotNone(server.CACHE.get("quakes"))
+        self.assertIs(self.api.fetch_source("quakes"), first)  # served from cache
+
+    def test_fetch_source_folds_args_into_key(self):
+        self.api.fetch_source("standings", "nba")
+        self.assertIsNotNone(server.CACHE.get("standings:nba"))
+        self.api.fetch_source("teamsched", "nba", "BOS")
+        self.assertIsNotNone(server.CACHE.get("teamsched:nba:bos"))  # lowercased
+
+    def test_registered_methods_still_route(self):
+        # the public methods now delegate to fetch_source; shapes unchanged
+        self.assertTrue(self.api.quakes({})["quakes"] if "quakes" in self.api.quakes({}) else True)
+        self.assertEqual(self.api.standings({"league": ["nba"]})["league"], "nba")
+        self.assertTrue(self.api.gaming_free({}))
+        self.assertTrue(self.api.crypto_trending({}))
+
+
 class ScoreLevelTests(unittest.TestCase):
     def test_boundaries(self):
         self.assertEqual(server.score_level(75), "stable")

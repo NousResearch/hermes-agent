@@ -97,8 +97,17 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
     assert mock_run.call_count == 4
 
 
-def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
-    """Passive update checks must not trigger SSH auth for official installs."""
+@pytest.mark.parametrize(
+    "origin_url",
+    [
+        "git@github.com:NousResearch/hermes-agent.git",
+        "https://github.com/NousResearch/hermes-agent.git",
+    ],
+)
+def test_check_for_updates_official_origin_uses_read_only_https_probe(
+    tmp_path, origin_url
+):
+    """Official passive checks must neither trigger SSH auth nor mutate Git."""
     import hermes_cli.banner as banner
 
     repo_dir = tmp_path / "hermes-agent"
@@ -110,7 +119,7 @@ def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
         if cmd == ["git", "remote", "get-url", "origin"]:
-            return MagicMock(returncode=0, stdout="git@github.com:NousResearch/hermes-agent.git\n")
+            return MagicMock(returncode=0, stdout=f"{origin_url}\n")
         if cmd == ["git", "rev-parse", "HEAD"]:
             return MagicMock(returncode=0, stdout="local-sha\n")
         if cmd == [
@@ -127,10 +136,11 @@ def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
 
     assert result == 1
     assert ["git", "fetch", "origin", "--quiet"] not in calls
+    assert not any(cmd[:2] == ["git", "fetch"] for cmd in calls)
 
 
-def test_check_via_local_git_shallow_clone_behind_reports_no_count(tmp_path):
-    """Shallow installer clones must report presence-only, never a bogus count.
+def test_check_via_local_git_shallow_fork_behind_reports_no_count(tmp_path):
+    """Shallow fork clones must report presence-only, never a bogus count.
 
     On a ``git clone --depth 1`` checkout the history stops at one commit, so
     counting ``HEAD..origin/main`` across the shallow boundary yields a huge
@@ -149,7 +159,7 @@ def test_check_via_local_git_shallow_clone_behind_reports_no_count(tmp_path):
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
         if cmd == ["git", "remote", "get-url", "origin"]:
-            return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
+            return MagicMock(returncode=0, stdout="https://github.com/example/hermes-agent.git\n")
         if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
             return MagicMock(returncode=0, stdout="true\n")
         if cmd[:2] == ["git", "fetch"]:
@@ -170,8 +180,8 @@ def test_check_via_local_git_shallow_clone_behind_reports_no_count(tmp_path):
     assert ["git", "fetch", "origin", "--depth", "1", "--quiet"] in calls
 
 
-def test_check_via_local_git_shallow_clone_up_to_date(tmp_path):
-    """Shallow clone whose tip matches upstream reports up-to-date (0)."""
+def test_check_via_local_git_shallow_fork_up_to_date(tmp_path):
+    """Shallow fork whose tip matches its origin reports up-to-date (0)."""
     import hermes_cli.banner as banner
 
     repo_dir = tmp_path / "hermes-agent"
@@ -180,7 +190,7 @@ def test_check_via_local_git_shallow_clone_up_to_date(tmp_path):
 
     def fake_run(cmd, **kwargs):
         if cmd == ["git", "remote", "get-url", "origin"]:
-            return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
+            return MagicMock(returncode=0, stdout="https://github.com/example/hermes-agent.git\n")
         if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
             return MagicMock(returncode=0, stdout="true\n")
         if cmd[:2] == ["git", "fetch"]:
@@ -197,8 +207,8 @@ def test_check_via_local_git_shallow_clone_up_to_date(tmp_path):
     assert result == 0
 
 
-def test_check_via_local_git_full_clone_keeps_exact_count(tmp_path):
-    """Full (non-shallow) clones keep the exact rev-list count path."""
+def test_check_via_local_git_full_fork_keeps_exact_count(tmp_path):
+    """Full (non-shallow) fork clones keep the exact rev-list count path."""
     import hermes_cli.banner as banner
 
     repo_dir = tmp_path / "hermes-agent"
@@ -207,7 +217,7 @@ def test_check_via_local_git_full_clone_keeps_exact_count(tmp_path):
 
     def fake_run(cmd, **kwargs):
         if cmd == ["git", "remote", "get-url", "origin"]:
-            return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
+            return MagicMock(returncode=0, stdout="https://github.com/example/hermes-agent.git\n")
         if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
             return MagicMock(returncode=0, stdout="false\n")
         if cmd[:2] == ["git", "fetch"]:

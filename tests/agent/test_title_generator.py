@@ -446,7 +446,8 @@ class TestAutoTitleDuplicateHandling:
     def test_dedupes_duplicate_title_via_lineage(self):
         db = MagicMock()
         db.get_session_title.return_value = None
-        db.set_session_title.side_effect = [ValueError("in use"), True]
+        # Atomic write path: collision raises ValueError, retry persists.
+        db.set_auto_title_if_empty.side_effect = [ValueError("in use"), True]
         db.get_next_title_in_lineage.return_value = "Debugging Import Error #2"
         with patch(
             "agent.title_generator.generate_title",
@@ -455,11 +456,32 @@ class TestAutoTitleDuplicateHandling:
             seen = []
             auto_title_session(db, "sess-1", "hi", "hello", title_callback=seen.append)
         db.get_next_title_in_lineage.assert_called_once_with("Debugging Import Error")
-        assert db.set_session_title.call_args_list[-1][0] == (
+        assert db.set_auto_title_if_empty.call_args_list[-1][0] == (
             "sess-1",
             "Debugging Import Error #2",
         )
         # callback fires with the actually-persisted (deduped) title
+        assert seen == ["Debugging Import Error #2"]
+
+    def test_dedupes_duplicate_title_via_lineage_legacy_store(self):
+        # Store without set_auto_title_if_empty: same dedup via the plain
+        # set_session_title fallback.
+        db = MagicMock(
+            spec=["get_session_title", "set_session_title", "get_next_title_in_lineage"]
+        )
+        db.get_session_title.return_value = None
+        db.set_session_title.side_effect = [ValueError("in use"), True]
+        db.get_next_title_in_lineage.return_value = "Debugging Import Error #2"
+        with patch(
+            "agent.title_generator.generate_title",
+            return_value="Debugging Import Error",
+        ):
+            seen = []
+            auto_title_session(db, "sess-1", "hi", "hello", title_callback=seen.append)
+        assert db.set_session_title.call_args_list[-1][0] == (
+            "sess-1",
+            "Debugging Import Error #2",
+        )
         assert seen == ["Debugging Import Error #2"]
 
     def test_swallows_value_error_without_lineage_support(self):
@@ -473,11 +495,21 @@ class TestAutoTitleDuplicateHandling:
         ):
             auto_title_session(db, "sess-1", "hi", "hello")  # must not raise
 
-    def test_not_found_raises_runtime_error_internally(self):
-        # set_session_title returning False (session vanished) -> RuntimeError
-        # in the persist helper, swallowed by auto_title_session, no callback.
+    def test_manual_title_race_skips_without_callback(self):
+        # Atomic predicate fails (manual /title landed while generation was in
+        # flight) -> nothing persisted, no callback fired.
         from agent.title_generator import _persist_session_title
         db = MagicMock()
+        db.set_auto_title_if_empty.return_value = False
+        assert _persist_session_title(db, "sess-1", "Some Title") is None
+        db.set_session_title.assert_not_called()
+
+    def test_not_found_raises_runtime_error_internally(self):
+        # Legacy store (no atomic write): set_session_title returning False
+        # (session vanished) -> RuntimeError in the persist helper, swallowed
+        # by auto_title_session, no callback.
+        from agent.title_generator import _persist_session_title
+        db = MagicMock(spec=["get_session_title", "set_session_title"])
         db.set_session_title.return_value = False
         with pytest.raises(RuntimeError):
             _persist_session_title(db, "missing", "Some Title")

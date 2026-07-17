@@ -181,6 +181,11 @@ DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 # effect of normal API traffic.
 DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 
+# Auto-decomposed work must have an execution bound even when the triage root
+# omitted one. Ten minutes is long enough for a normal worker turn while still
+# letting the dispatcher recover a healthy-but-stuck child deterministically.
+DECOMPOSE_DEFAULT_MAX_RUNTIME_SECONDS = 10 * 60
+
 # Grace added to a claim when a reclaim is deferred because the previous
 # host-local worker is still alive after a termination attempt. Releasing the
 # claim in that state would spawn a duplicate alongside the surviving worker —
@@ -2015,6 +2020,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_events_run "
         "ON task_events(run_id, id)"
     )
+    # Batch ``recompute_ready`` and diagnostics both filter task_events
+    # by kind. Without this index, ``WHERE kind IN ('blocked', 'unblocked')
+    # GROUP BY task_id`` scans every event row.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_kind "
+        "ON task_events(kind)"
+    )
 
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
@@ -2123,6 +2135,7 @@ _REBUILD_SPECS = {
         (
             "CREATE INDEX idx_events_task ON task_events(task_id, created_at)",
             "CREATE INDEX idx_events_run ON task_events(run_id, id)",
+            "CREATE INDEX idx_events_kind ON task_events(kind)",
         ),
     ),
     "task_comments": (
@@ -5409,7 +5422,8 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, workspace_kind, workspace_path, "
+            "max_runtime_seconds "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -5424,6 +5438,11 @@ def decompose_triage_task(
         # override with its own 'workspace_kind' / 'workspace_path'.
         root_ws_kind = root_row["workspace_kind"] or "scratch"
         root_ws_path = root_row["workspace_path"]
+        child_max_runtime_seconds = (
+            root_row["max_runtime_seconds"]
+            if root_row["max_runtime_seconds"] is not None
+            else DECOMPOSE_DEFAULT_MAX_RUNTIME_SECONDS
+        )
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -5449,8 +5468,8 @@ def decompose_triage_task(
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, max_runtime_seconds, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -5459,6 +5478,7 @@ def decompose_triage_task(
                     child_ws_kind,
                     child_ws_path,
                     tenant,
+                    child_max_runtime_seconds,
                     now,
                     (author or "decomposer"),
                 ),

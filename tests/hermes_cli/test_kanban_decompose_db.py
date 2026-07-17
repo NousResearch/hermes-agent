@@ -21,7 +21,10 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
-def _create_triage(conn, title="rough idea", body=None, assignee=None, tenant=None):
+def _create_triage(
+    conn, title="rough idea", body=None, assignee=None, tenant=None,
+    max_runtime_seconds=None,
+):
     return kb.create_task(
         conn,
         title=title,
@@ -29,6 +32,7 @@ def _create_triage(conn, title="rough idea", body=None, assignee=None, tenant=No
         assignee=assignee,
         tenant=tenant,
         triage=True,
+        max_runtime_seconds=max_runtime_seconds,
     )
 
 
@@ -66,6 +70,28 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
     # Second child has parents=[0] → stays in todo until c0 completes.
     assert c1.status == "todo"
     assert c1.assignee == "engineer"
+
+
+@pytest.mark.parametrize(
+    ("root_limit", "expected_child_limit"),
+    [(240, 240), (None, 600)],
+)
+def test_decompose_bounds_child_runtime(
+    kanban_home, root_limit, expected_child_limit,
+):
+    with kb.connect() as conn:
+        tid = _create_triage(conn, max_runtime_seconds=root_limit)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orchestrator",
+            children=[{"title": "research"}, {"title": "build"}],
+        )
+        assert child_ids is not None
+        assert {
+            kb.get_task(conn, child_id).max_runtime_seconds
+            for child_id in child_ids
+        } == {expected_child_limit}
 
 
 def test_decompose_returns_none_when_task_missing(kanban_home):

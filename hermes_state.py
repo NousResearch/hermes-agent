@@ -990,16 +990,13 @@ class SessionDB:
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
     # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
     _CHECKPOINT_EVERY_N_WRITES = 50
-    # Merge fragmented FTS5 segments every N successful writes. The message
-    # triggers append one segment per insert; left unmaintained these grow
-    # into tens of thousands of segments, so every MATCH must scan them all
-    # and every insert pays a growing automerge cost — which lengthens the
-    # write-lock hold time and starves competing writers (gateway + cron
-    # processes share one state.db), surfacing as "database is locked".
-    # 'optimize' is a no-op once the index is already merged, so an idle DB
-    # pays almost nothing; the cadence is deliberately coarse so the one-off
-    # merge cost is amortised far below the checkpoint cadence.
-    _OPTIMIZE_EVERY_N_WRITES = 1000
+    # Retain the existing coarse 1000-write maintenance cadence, but give each
+    # FTS5 index only one positive-rank merge command per pass. SQLite treats
+    # that rank as an approximate output-page budget. A 500-page budget keeps
+    # routine work small while automerge handles normal background compaction;
+    # unlike ``optimize``, it cannot chase every remaining segment in one write.
+    _FTS_MERGE_EVERY_N_WRITES = 1000
+    _FTS_MERGE_MAX_PAGES_PER_INDEX = 500
     # Session imports intentionally use a lower cap than exports: import holds
     # one BEGIN IMMEDIATE transaction, so bounded batches avoid starving live
     # gateway/CLI writers. The dashboard accepts one exported JSON/JSONL file
@@ -1281,8 +1278,8 @@ class SessionDB:
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
                     self._try_wal_checkpoint()
-                if self._write_count % self._OPTIMIZE_EVERY_N_WRITES == 0:
-                    self._try_optimize_fts()
+                if self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0:
+                    self._try_incremental_merge_fts()
                 return result
             except sqlite3.OperationalError as exc:
                 err_msg = str(exc).lower()
@@ -1332,21 +1329,19 @@ class SessionDB:
         except Exception as exc:
             logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
 
-    def _try_optimize_fts(self) -> None:
-        """Best-effort FTS5 segment merge. Never raises.
-
-        Runs on the ``_OPTIMIZE_EVERY_N_WRITES`` cadence from the write hot
-        path (off the lock — ``optimize_fts`` re-acquires ``self._lock``
-        itself, mirroring ``_try_wal_checkpoint``). ``read_only`` connections
-        never reach the write path, so this is implicitly skipped for them.
-        Once the index is merged the 'optimize' command is close to free, so
-        the steady-state cost is negligible; the expensive case is only the
-        first merge of a long-neglected index.
-        """
+    def _try_incremental_merge_fts(self) -> None:
+        """Run one bounded FTS5 merge pass without failing the completed write."""
+        if not self._fts_enabled:
+            return
         try:
-            self.optimize_fts()
-        except Exception:
-            pass  # Best effort — never fatal.
+            self._merge_fts_incrementally(
+                max_pages=self._FTS_MERGE_MAX_PAGES_PER_INDEX
+            )
+        except sqlite3.Error as exc:
+            # Routine maintenance is best effort, but unexpected SQLite errors
+            # must remain visible instead of being silently mistaken for an
+            # optional missing index.
+            logger.warning("FTS incremental merge failed: %s", exc)
 
     def close(self):
         """Close the database connection.
@@ -7223,6 +7218,42 @@ class SessionDB:
                         "FTS optimize failed for %s: %s", tbl, exc
                     )
         return optimized
+
+    def _merge_fts_incrementally(self, *, max_pages: int) -> int:
+        """Issue one positive-rank FTS5 ``merge`` per present index.
+
+        A positive rank tells SQLite to stop after approximately that many
+        output pages. This method deliberately does not loop: one invocation
+        executes at most one merge command for each table in ``_FTS_TABLES``.
+        Missing tables are valid schema variants; all other SQLite errors
+        propagate to the caller.
+        """
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int):
+            raise TypeError("max_pages must be an integer")
+        if max_pages <= 0:
+            raise ValueError("max_pages must be greater than zero")
+
+        merged = 0
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name IN (?, ?)",
+                self._FTS_TABLES,
+            ).fetchall()
+            present = {row[0] for row in rows}
+            if "messages_fts" not in present:
+                raise sqlite3.OperationalError(
+                    "required FTS5 index is missing: messages_fts"
+                )
+            for tbl in self._FTS_TABLES:
+                if tbl not in present:
+                    continue
+                self._conn.execute(
+                    f"INSERT INTO {tbl}({tbl}, rank) VALUES('merge', ?)",
+                    (max_pages,),
+                )
+                merged += 1
+        return merged
 
     def vacuum(self) -> int:
         """Run VACUUM to reclaim disk space after large deletes.

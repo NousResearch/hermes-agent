@@ -8636,6 +8636,18 @@ def _default_spawn(
         # This only happens in test fixtures where the isolated
         # HERMES_HOME never had profiles created.
         pass
+    # Isolation boundary: do not leak the dispatcher/gateway profile's
+    # terminal.* config into an assignee worker running on a different profile.
+    # `env = dict(os.environ)` above copies the dispatcher's already-exported
+    # TERMINAL_* values (docker image/volumes/network, container limits, ssh
+    # target, backend, sandbox, ...). Strip the profile-derived ones so the
+    # child `hermes -p <assignee>` rebuilds them from the assignee profile via
+    # config.apply_terminal_config_to_env, instead of inheriting the
+    # dispatcher's or failing to receive its own (#66541). The task-specific
+    # TERMINAL_CWD / TERMINAL_TIMEOUT are re-applied below.
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+    for _terminal_env_var in TERMINAL_CONFIG_ENV_MAP.values():
+        env.pop(_terminal_env_var, None)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

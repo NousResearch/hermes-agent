@@ -30,6 +30,7 @@ def _ensure_discord_mock():
     discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4, purple=lambda: 5)
     discord_mod.Interaction = object
     discord_mod.Embed = MagicMock
+    discord_mod.Object = lambda *, id: SimpleNamespace(id=id)
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
@@ -853,3 +854,35 @@ async def test_iter_candidates_keeps_latest_messages_when_window_exceeds_limit(a
         got.append(msg.id)
 
     assert got == [2, 3, 4]
+
+
+def test_recovery_cursor_round_trip_is_channel_scoped(adapter):
+    adapter._advance_discord_recovery_cursor("123", "1001")
+    adapter._advance_discord_recovery_cursor("456", "2002")
+
+    assert adapter._discord_recovery_cursor("123") == "1001"
+    assert adapter._discord_recovery_cursor("456") == "2002"
+
+
+@pytest.mark.asyncio
+async def test_iter_candidates_uses_persisted_channel_cursor(adapter, monkeypatch):
+    class CursorChannel(FakeChannel):
+        def history(self, **kwargs):
+            self.history_kwargs = kwargs
+
+            async def _gen():
+                yield make_message(message_id=11, channel=self)
+
+            return _gen()
+
+    channel = CursorChannel(channel_id=123)
+    adapter._client.get_channel = lambda _channel_id: channel
+    adapter._advance_discord_recovery_cursor("123", "10")
+    monkeypatch.setattr(discord, "Object", lambda *, id: SimpleNamespace(id=id))
+
+    got = []
+    async for message in adapter._iter_missed_message_backfill_candidates({"123"}):
+        got.append(message.id)
+
+    assert got == [11]
+    assert getattr(channel.history_kwargs["after"], "id", None) == 10

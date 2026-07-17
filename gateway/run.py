@@ -2609,6 +2609,51 @@ def _get_channel_override(
     return None
 
 
+def _get_topic_toolsets_override(
+    user_config: Dict[str, Any],
+    platform_key: str,
+    thread_id: Optional[str],
+) -> Optional[List[str]]:
+    """Return the per-topic toolset list for this thread, or None.
+
+    Reads ``platforms.<platform>.extra.topic_toolsets`` — a mapping of a
+    forum-topic / thread id to the list of toolsets enabled for messages
+    arriving in that topic::
+
+        platforms:
+          telegram:
+            extra:
+              topic_toolsets:
+                "137": [telegram, skills]
+                "141": [telegram, web_search, files]
+
+    The per-topic list replaces the platform-level toolsets wholesale, so
+    the existing MCP-allowlist semantics apply to it unchanged. A missing
+    or empty entry means "no override" for that topic — an empty list does
+    NOT disable all toolsets. Complements ``channel_overrides`` (per-topic
+    model / provider / system_prompt) with per-topic tool scoping.
+    """
+    if not thread_id:
+        return None
+    thread_key = str(thread_id)
+    platform_cfg = (user_config.get("platforms") or {}).get(platform_key)
+    if not isinstance(platform_cfg, dict):
+        return None
+    extra = platform_cfg.get("extra")
+    if not isinstance(extra, dict):
+        return None
+    topic_toolsets = extra.get("topic_toolsets")
+    if not isinstance(topic_toolsets, dict):
+        return None
+    toolsets = topic_toolsets.get(thread_key)
+    if toolsets is None and thread_key.isdigit():
+        # YAML users often write bare integer topic ids; accept both.
+        toolsets = topic_toolsets.get(int(thread_key))
+    if not isinstance(toolsets, (list, tuple, set)) or not toolsets:
+        return None
+    return sorted({str(t) for t in toolsets})
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -13907,6 +13952,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             from hermes_cli.tools_config import _get_platform_tools
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            topic_toolsets = _get_topic_toolsets_override(
+                user_config, platform_key, getattr(source, "thread_id", None)
+            )
+            if topic_toolsets is not None:
+                enabled_toolsets = topic_toolsets
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
@@ -17787,6 +17837,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        topic_toolsets = _get_topic_toolsets_override(
+            user_config, platform_key, getattr(source, "thread_id", None)
+        )
+        if topic_toolsets is not None:
+            enabled_toolsets = topic_toolsets
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 

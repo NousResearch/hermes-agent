@@ -825,6 +825,30 @@ async def test_iter_candidates_applies_one_global_scan_limit(adapter, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_iter_candidates_round_robins_configured_channels(adapter, monkeypatch):
+    first = FakeChannel(
+        channel_id=123,
+        history_messages=[
+            make_message(message_id=1),
+            make_message(message_id=2),
+            make_message(message_id=3),
+        ],
+    )
+    second = FakeChannel(
+        channel_id=456,
+        history_messages=[make_message(message_id=4)],
+    )
+    adapter._client.get_channel = lambda channel_id: {123: first, 456: second}[channel_id]
+    monkeypatch.setattr(adapter, "_missed_message_backfill_limit", lambda: 3)
+
+    got = []
+    async for message in adapter._iter_missed_message_backfill_candidates({"123", "456"}):
+        got.append(message.id)
+
+    assert 4 in got
+
+
+@pytest.mark.asyncio
 async def test_iter_candidates_keeps_latest_messages_when_window_exceeds_limit(adapter, monkeypatch):
     class RealisticChannel(FakeChannel):
         def history(self, **kwargs):
@@ -862,6 +886,42 @@ def test_recovery_cursor_round_trip_is_channel_scoped(adapter):
 
     assert adapter._discord_recovery_cursor("123") == "1001"
     assert adapter._discord_recovery_cursor("456") == "2002"
+
+
+@pytest.mark.asyncio
+async def test_cursor_does_not_advance_past_incomplete_dispatched_message(adapter, monkeypatch):
+    channel = FakeChannel(
+        channel_id=123,
+        history_messages=[
+            make_message(message_id=1),
+            make_message(message_id=2),
+        ],
+    )
+    for message in channel._history_messages:
+        message.channel = channel
+    adapter._client.get_channel = lambda _channel_id: channel
+    monkeypatch.setattr(adapter, "_missed_message_backfill_channels", lambda: {"123"})
+    monkeypatch.setattr(adapter, "_should_backfill_discord_message", AsyncMock(return_value=True))
+    monkeypatch.setattr(adapter, "_dispatch_recovered_message", AsyncMock(side_effect=[True, True]))
+    monkeypatch.setattr(adapter, "_missed_message_backfill_max_dispatches", lambda: 10)
+
+    await adapter._run_missed_message_backfill()
+
+    assert adapter._discord_recovery_cursor("123") is None
+
+
+def test_final_delivery_advances_channel_cursor(adapter):
+    message = make_message(message_id=103, channel=FakeChannel(channel_id=123))
+    adapter._record_discord_message_seen(message, status="processing")
+
+    adapter._record_discord_response(
+        reply_to="103",
+        result=SimpleNamespace(success=True, message_id="9010"),
+        content="done",
+        final=True,
+    )
+
+    assert adapter._discord_recovery_cursor("123") == "103"
 
 
 @pytest.mark.asyncio

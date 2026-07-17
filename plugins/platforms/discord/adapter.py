@@ -2057,15 +2057,6 @@ class DiscordAdapter(BasePlatformAdapter):
                     admitted = await self._dispatch_recovered_message(message)
                     if admitted:
                         dispatched += 1
-                    channel_id = str(
-                        getattr(getattr(message, "channel", None), "id", "")
-                    )
-                    if channel_id and message_id:
-                        await asyncio.to_thread(
-                            self._advance_discord_recovery_cursor,
-                            channel_id,
-                            message_id,
-                        )
                 except asyncio.CancelledError:
                     self._dedup.discard(message_id)
                     self._record_recovery_attempt(message, status="cancelled")
@@ -2149,18 +2140,29 @@ class DiscordAdapter(BasePlatformAdapter):
                         continue
                 candidate_channels.append(channel)
 
-        yielded = 0
-        for channel in candidate_channels:
-            async for item in self._iter_channel_and_thread_messages(
+        iterators = [
+            self._iter_channel_and_thread_messages(
                 channel,
                 limit=limit,
                 after=after,
                 seen_channels=seen,
-            ):
+            ).__aiter__()
+            for channel in candidate_channels
+        ]
+        yielded = 0
+        while iterators and yielded < limit:
+            next_round = []
+            for iterator in iterators:
+                try:
+                    item = await iterator.__anext__()
+                except StopAsyncIteration:
+                    continue
                 yield item
                 yielded += 1
+                next_round.append(iterator)
                 if yielded >= limit:
                     return
+            iterators = next_round
 
     async def _iter_channel_and_thread_messages(self, channel: Any, *, limit: int, after: Any, seen_channels: set[str]):
         """Yield history from a channel plus active/recent archived child threads."""
@@ -2459,6 +2461,18 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
         self._with_discord_recovery_db(_op)
+        if completed:
+            def _channel_for_message(conn):
+                row = conn.execute(
+                    "SELECT COALESCE(thread_id, channel_id) FROM discord_messages "
+                    "WHERE message_id=?",
+                    (reply_to,),
+                ).fetchone()
+                return str(row[0]) if row and row[0] else None
+
+            channel_id = self._with_discord_recovery_db(_channel_for_message)
+            if channel_id:
+                self._advance_discord_recovery_cursor(channel_id, reply_to)
 
     def _discord_message_is_persistently_complete(self, message_id: str) -> bool:
         if not message_id:

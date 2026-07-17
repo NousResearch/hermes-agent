@@ -175,9 +175,39 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       let startingRouteToken = getRouteToken()
 
+      // Set to the stored id of the session this submit mints once it creates a
+      // brand-new chat. A create re-homes the route to the chat it just minted
+      // (navigate → new URL), and that commit can land a beat late relative to
+      // the re-pin (the route is render-synced and only settles on the next
+      // paint), so an attachment upload's await can straddle the advance. The
+      // raw route token (pathname:search:hash) can't tell that expected delayed
+      // commit apart from an unrelated navigation, so for the created-session
+      // window we drop the token comparison and instead assert the route still
+      // *identifies the session we created* — the delayed commit resolves to
+      // exactly that stored id, while the pre-commit new-chat route resolves to
+      // null (still ours). Any other resolved id is a real switch. Without this
+      // the first "attachment + text" send on a new chat was silently aborted
+      // as a phantom drift (no prompt.submit, a stranded route that 404s
+      // "Session not found").
+      let createdFreshSessionStoredId: null | string = null
+
+      const routeDriftedFromTarget = (): boolean => {
+        if (createdFreshSessionStoredId !== null) {
+          // Created-session window: the only routes that still belong to this
+          // submit are the created session itself or the not-yet-committed
+          // new-chat route (resolves to null). A different session id means the
+          // user navigated away for real.
+          const routed = getRoutedStoredSessionId()
+
+          return routed !== null && routed !== createdFreshSessionStoredId
+        }
+
+        return getRouteToken() !== startingRouteToken
+      }
+
       const sessionContextDrifted = (): boolean =>
         targetStartedInCurrentView &&
-        (selectedStoredSessionIdRef.current !== startingStoredSessionId || getRouteToken() !== startingRouteToken)
+        (selectedStoredSessionIdRef.current !== startingStoredSessionId || routeDriftedFromTarget())
 
       const targetIsCurrentView = (): boolean => targetStartedInCurrentView && !sessionContextDrifted()
 
@@ -430,6 +460,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // pipeline; the closures (seedOptimistic et al) see the new value.
         startingStoredSessionId = selectedStoredSessionIdRef.current
         startingRouteToken = getRouteToken()
+        // Remember the stored id we just minted so routeDriftedFromTarget can
+        // accept the delayed route commit to this exact session (and the
+        // pre-commit new-chat route) while still rejecting a switch to another.
+        createdFreshSessionStoredId = selectedStoredSessionIdRef.current ?? sessionId
 
         seedOptimistic(sessionId)
       }

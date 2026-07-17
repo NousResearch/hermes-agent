@@ -13,7 +13,6 @@ from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_r
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
-
 class TestPerJobToolsetMcpMerge:
     """A per-job enabled_toolsets allowlist must not silently drop MCP servers."""
 
@@ -77,7 +76,6 @@ class TestPerJobToolsetMcpMerge:
         assert m_platform.call_args[0][1] == "cron"
         assert set(result) == set(sentinel)
 
-
 class TestResolveOrigin:
     def test_full_origin(self):
         job = {
@@ -134,7 +132,6 @@ class TestResolveOrigin:
         """
         job = {"origin": non_dict_origin}
         assert _resolve_origin(job) is None
-
 
 class TestResolveDeliveryTarget:
     def test_origin_delivery_preserves_thread_id(self):
@@ -463,7 +460,6 @@ class TestResolveDeliveryTarget:
 
         assert _resolve_delivery_targets({"deliver": []}) == []
 
-
 class TestRoutingIntents:
     """``all`` routing intent expands at fire time."""
 
@@ -551,7 +547,6 @@ class TestRoutingIntents:
             targets = _resolve_delivery_targets({"deliver": token, "origin": None})
             platforms = sorted(t["platform"].lower() for t in targets)
             assert platforms == ["discord", "telegram"], f"token={token!r} -> {platforms}"
-
 
 class TestDeliverResultWrapping:
     """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
@@ -926,7 +921,6 @@ class TestDeliverResultWrapping:
         send_mock.assert_called_once()
         assert send_mock.call_args.kwargs["thread_id"] == "17585"
 
-
 class TestDeliverResultErrorReturns:
     """Verify _deliver_result returns error strings on failure, None on success."""
 
@@ -955,7 +949,6 @@ class TestDeliverResultErrorReturns:
         result = _deliver_result(job, "Output.")
         assert result is not None
         assert "no delivery target" in result
-
 
 class TestRunJobSessionPersistence:
     def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):
@@ -1821,7 +1814,6 @@ class TestRunJobSessionPersistence:
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
         assert fake_db.close.call_count == 2
 
-
 class TestRunJobConfigLogging:
     """Verify that config.yaml parse failures are logged, not silently swallowed."""
 
@@ -1895,7 +1887,6 @@ class TestRunJobConfigLogging:
 
         assert any("failed to parse prefill messages" in r.message for r in caplog.records), \
             f"Expected 'failed to parse prefill messages' warning in logs, got: {[r.message for r in caplog.records]}"
-
 
 class TestRunJobConfigEnvVarExpansion:
     """Verify that ${VAR} references in config.yaml are expanded when running cron jobs."""
@@ -2112,7 +2103,6 @@ class TestRunJobConfigEnvVarExpansion:
         kwargs = mock_agent_cls.call_args.kwargs
         # Unresolved refs are kept verbatim — _expand_env_vars contract
         assert kwargs["model"] == "${_HERMES_TEST_CRON_UNSET_VAR}"
-
 
 class TestRunJobModelResolution:
     """Verify defensive model resolution for jobs stored with ``model: null``.
@@ -2353,7 +2343,6 @@ class TestRunJobModelResolution:
         assert error is None
         assert mock_agent_cls.call_args.kwargs["model"] == "explicit-model"
 
-
 class TestRunJobSkillBacked:
     def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):
         job = {
@@ -2559,7 +2548,6 @@ class TestRunJobSkillBacked:
         assert "Instructions for maps." in prompt_arg
         assert "Combine the results." in prompt_arg
 
-
 class TestSilentDelivery:
     """Verify that [SILENT] responses suppress delivery while still saving output."""
 
@@ -2702,7 +2690,6 @@ class TestSilentDelivery:
             delivery_error=None,
         )
 
-
 class TestOneShotDispatchClaim:
     """run_one_job must claim a finite one-shot's dispatch BEFORE run_job so a
     tick that dies mid-execution can't re-fire it forever (issue #38758)."""
@@ -2777,7 +2764,6 @@ class TestBuildJobPromptSilentHint:
         prompt_pos = result.index("My custom prompt")
         assert system_pos < prompt_pos
 
-
 class TestParseWakeGate:
     """Unit tests for _parse_wake_gate — pure function, no side effects."""
 
@@ -2837,7 +2823,6 @@ class TestParseWakeGate:
         from cron.scheduler import _parse_wake_gate
         multi = '{"wakeAgent": false}\nactually this is the real output'
         assert _parse_wake_gate(multi) is True
-
 
 class TestRunJobWakeGate:
     """Integration tests for run_job wake-gate short-circuit."""
@@ -2975,7 +2960,6 @@ class TestRunJobWakeGate:
         script_fn.assert_not_called()
         agent_cls.assert_called_once()
 
-
 class TestBuildJobPromptMissingSkill:
     """Verify that a missing skill logs a warning and does not crash the job."""
 
@@ -3017,6 +3001,7 @@ class TestBuildJobPromptMissingSkill:
         assert "go" in result
 
 
+
 class TestBuildJobPromptAbsoluteSkillPath:
     """Cron jobs may store absolute skill paths; normalize before skill_view."""
 
@@ -3040,6 +3025,7 @@ class TestBuildJobPromptAbsoluteSkillPath:
 
         assert seen_names == ["alpha-skill"]
         assert "Do alpha." in result
+
 
 
 class TestBuildJobPromptBumpUse:
@@ -3088,7 +3074,6 @@ class TestBuildJobPromptBumpUse:
         assert "go" in result
         # The error should be logged at DEBUG level, not crash
         assert any("failed to bump" in r.message for r in caplog.records)
-
 
 class TestSendMediaViaAdapter:
     """Unit tests for _send_media_via_adapter — routes files to typed adapter methods."""
@@ -3146,7 +3131,6 @@ class TestSendMediaViaAdapter:
         self._run_with_loop(adapter, "123", media_files, None, {"id": "j3"})
         adapter.send_voice.assert_called_once()
         adapter.send_image_file.assert_called_once()
-
 
 class TestParallelTick:
     """Verify that tick() runs due jobs concurrently and isolates ContextVars."""
@@ -3267,7 +3251,6 @@ class TestParallelTick:
         end_s1 = [t for action, jid, t in call_times if action == "end" and jid == "s1"][0]
         start_s2 = [t for action, jid, t in call_times if action == "start" and jid == "s2"][0]
         assert start_s2 >= end_s1, "Jobs ran concurrently despite max_parallel=1"
-
 
 class TestDeliverResultTimeoutCancelsFuture:
     """When future.result(timeout=60) raises TimeoutError in the live adapter
@@ -3957,7 +3940,6 @@ class TestDeliverResultTimeoutCancelsFuture:
         sent_metadata = adapter.send.call_args[1]["metadata"]
         assert not sent_metadata.get("direct_messages_topic_id")
 
-
 class TestDeliverResultLiveAdapterUnconfirmed:
     """Regression for #47056.
 
@@ -4038,7 +4020,6 @@ class TestDeliverResultLiveAdapterUnconfirmed:
         assert result is None
         standalone_send.assert_not_awaited()
 
-
 class TestDeliverOriginUnresolvableIsLocal:
     """Regression for #43014.
 
@@ -4073,7 +4054,6 @@ class TestDeliverOriginUnresolvableIsLocal:
         result = self._deliver(job, monkeypatch)
         assert result is not None
         assert "no delivery target resolved" in result
-
 
 class TestSendMediaTimeoutCancelsFuture:
     """Same orphan-coroutine guarantee for _send_media_via_adapter's
@@ -4139,7 +4119,6 @@ class TestSendMediaTimeoutCancelsFuture:
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == str(fast.resolve())
-
 
 class TestCronDeliveryTargets:
     """``cron_delivery_targets`` powers the dashboard delivery dropdown.
@@ -4212,7 +4191,6 @@ class TestCronDeliveryTargets:
 
         assert cron_delivery_targets() == []
 
-
 class TestHomeTargetEnvVarRegistry:
     """Regression: ``_HOME_TARGET_ENV_VARS`` must include every gateway
     platform that supports cron-driven outbound delivery. Missing an
@@ -4234,7 +4212,6 @@ class TestHomeTargetEnvVarRegistry:
         from cron.scheduler import _HOME_TARGET_ENV_VARS
 
         assert _HOME_TARGET_ENV_VARS.get("whatsapp") == "WHATSAPP_HOME_CHANNEL"
-
 
 class TestCronDeliveryMirror:
     """cron.mirror_delivery / per-job attach_to_session: opt-in append of a
@@ -4618,7 +4595,6 @@ class TestCronDeliveryMirror:
         store.get_or_create_session.assert_not_called()
         mirror_mock.assert_not_called()
 
-
 class TestCronContinuableSurfaceInChannel:
     """cron_continuable_surface: in_channel — deliver a continuable cron FLAT
     into a channel (no dedicated thread), so a plain channel reply continues the
@@ -4942,3 +4918,40 @@ class TestMultiTargetDeliveryContinuesOnFailure:
         assert "a@example.com" in result
         assert "b@example.com" in result
         assert mock_pool.submit.call_count == 2
+
+class TestCronMemoryAccess:
+    """Cron agents get MEMORY.md/USER.md context but cannot write to local stores."""
+
+    def test_run_job_passes_skip_memory_false(self, tmp_path):
+        """skip_memory=False lets cron agents read user memory context."""
+        job = {"id": "mem-test", "name": "memory test", "prompt": "hello"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs.get("skip_memory") is False, (
+            "Cron must pass skip_memory=False so agents inherit memory context"
+        )
+        assert kwargs.get("platform") == "cron", (
+            "Agent must receive platform='cron' for dispatch-site write-block"
+        )
+

@@ -1057,6 +1057,7 @@ class GatewayStreamConsumer:
                     and self._last_sent_text
                     and self.cfg.cursor
                     and self._last_sent_text.endswith(self.cfg.cursor)
+                    and self._flood_strikes == 0
                 ):
                     clean_text = self._last_sent_text[:-len(self.cfg.cursor)]
                     try:
@@ -1849,7 +1850,17 @@ class GatewayStreamConsumer:
                             self._last_sent_text = ""
                             self._notify_new_message()
                         else:
-                            self._last_sent_text = text
+                            raw_response = getattr(result, "raw_response", None)
+                            visible_content = (
+                                raw_response.get("visible_content")
+                                if isinstance(raw_response, dict)
+                                else None
+                            )
+                            self._last_sent_text = (
+                                visible_content
+                                if isinstance(visible_content, str)
+                                else text
+                            )
                         # Successful edit — reset flood strike counter
                         self._flood_strikes = 0
                         return True

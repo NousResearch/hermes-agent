@@ -4343,6 +4343,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # (#48648).  The full content is delivered when finalize=True.
         _preview_key = (str(chat_id), str(message_id))
         _saturated_preview = False
+        _preview_raw_response = None
         if finalize:
             # Any saturation state for this message is finished with — the
             # final edit always delivers real (full) content.
@@ -4354,6 +4355,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             content = self._truncate_stream_overflow_preview(content)
             _saturated_preview = True
+            _preview_raw_response = {
+                "preview_truncated": True,
+                "visible_content": content,
+            }
             # Saturated-preview dedup: past the cap, every progressive edit
             # truncates to the same text. Re-sending it is a visual no-op that
             # still burns flood budget (Telegram counts the request and answers
@@ -4361,7 +4366,11 @@ class TelegramAdapter(BasePlatformAdapter):
             # stream trips flood control (200s+ penalties) and hangs the final
             # delivery. Skip silently until finalize.
             if self._last_overflow_preview.get(_preview_key) == content:
-                return SendResult(success=True, message_id=message_id)
+                return SendResult(
+                    success=True,
+                    message_id=message_id,
+                    raw_response=_preview_raw_response,
+                )
         elif not finalize:
             # Content shrank back under the cap (segment break / new message
             # id) — clear stale saturation state so dedup can't mask a real
@@ -4377,7 +4386,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = content
-                return SendResult(success=True, message_id=message_id)
+                return SendResult(
+                    success=True,
+                    message_id=message_id,
+                    raw_response=_preview_raw_response,
+                )
 
             formatted = self.format_message(content)
             try:
@@ -4426,14 +4439,28 @@ class TelegramAdapter(BasePlatformAdapter):
                 truncated = self._truncate_stream_overflow_preview(content)
                 if self._last_overflow_preview.get(_preview_key) == truncated:
                     # Saturated-preview dedup (see pre-flight path above).
-                    return SendResult(success=True, message_id=message_id)
+                    return SendResult(
+                        success=True,
+                        message_id=message_id,
+                        raw_response={
+                            "preview_truncated": True,
+                            "visible_content": truncated,
+                        },
+                    )
                 await self._bot.edit_message_text(
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=truncated,
                 )
                 self._last_overflow_preview[_preview_key] = truncated
-                return SendResult(success=True, message_id=message_id)
+                return SendResult(
+                    success=True,
+                    message_id=message_id,
+                    raw_response={
+                        "preview_truncated": True,
+                        "visible_content": truncated,
+                    },
+                )
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
             # to a normal final send instead of leaving a truncated partial.

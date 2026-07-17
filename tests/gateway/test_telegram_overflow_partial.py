@@ -8,7 +8,7 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 from plugins.platforms.telegram.adapter import TelegramAdapter
-from gateway.stream_consumer import GatewayStreamConsumer
+from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
 def _message(message_id: int | str) -> SimpleNamespace:
@@ -136,5 +136,62 @@ async def test_stream_consumer_fallback_sends_tail_after_partial_overflow():
     assert adapter.send.await_args.kwargs["content"] == "world"
     assert adapter.send.await_args.kwargs["metadata"] == {"thread_id": "77", "notify": True}
     adapter.delete_message.assert_not_awaited()
+    assert consumer.final_response_sent is True
+    assert consumer.final_content_delivered is True
+
+
+@pytest.mark.asyncio
+async def test_stream_consumer_tracks_saturated_preview_and_recovers_after_timeout(
+    telegram_adapter,
+):
+    """A truncated progressive edit must never count as the complete final answer."""
+    content = "word " * 120
+    telegram_adapter._bot.edit_message_text = AsyncMock(return_value=True)
+    real_edit = telegram_adapter.edit_message
+
+    async def edit_then_timeout(*args, **kwargs):
+        if kwargs.get("finalize"):
+            return SendResult(
+                success=False,
+                error="TimedOut: Timed out",
+                retryable=True,
+            )
+        return await real_edit(*args, **kwargs)
+
+    telegram_adapter.edit_message = edit_then_timeout
+    telegram_adapter.send = AsyncMock(
+        return_value=SendResult(success=True, message_id="fresh-final")
+    )
+    telegram_adapter.delete_message = AsyncMock(return_value=True)
+
+    consumer = GatewayStreamConsumer(
+        telegram_adapter,
+        "12345",
+        config=StreamConsumerConfig(cursor=""),
+    )
+    consumer._already_sent = True
+    consumer._message_id = "201"
+
+    assert await consumer._send_or_edit(content, finalize=False) is True
+    visible_preview = telegram_adapter._bot.edit_message_text.await_args.kwargs["text"]
+    assert len(visible_preview) < len(content)
+    assert consumer._last_sent_text == visible_preview
+
+    assert await consumer._send_or_edit(
+        content,
+        finalize=True,
+        is_turn_final=True,
+    ) is False
+    assert consumer.final_response_sent is False
+    assert consumer.final_content_delivered is False
+    assert consumer._fallback_final_send is True
+
+    await consumer._send_fallback_final(content)
+
+    delivered = "".join(
+        call.kwargs["content"]
+        for call in telegram_adapter.send.await_args_list
+    )
+    assert delivered == content
     assert consumer.final_response_sent is True
     assert consumer.final_content_delivered is True

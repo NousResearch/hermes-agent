@@ -138,6 +138,7 @@ async def test_turn_final_flood_keeps_complete_preview_without_fresh_resend():
 
     adapter.send.assert_not_awaited()
     adapter.delete_message.assert_not_awaited()
+    assert adapter.edit_message.await_count == 1
     assert consumer.message_id == "preview-1"
     assert consumer.final_response_sent is True
     assert consumer.final_content_delivered is True

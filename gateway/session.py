@@ -1577,17 +1577,40 @@ class SessionStore:
             logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
 
     def set_expiry_finalized(
-        self, entry: SessionEntry, *, clear_model_override: bool = True
+        self,
+        entry: SessionEntry,
+        *,
+        clear_model_override: bool = True,
     ) -> None:
-        """Mark a session entry expiry-finalized in memory, sessions.json, AND state.db.
+        """Durably close an expired session, then mark its routing entry finalized.
 
         Single write-path for the expiry watcher (#9006): keeps the durable
-        state.db flag in sync with the JSON routing index so the flag
-        survives sessions.json pruning/loss.
+        state.db boundary in sync with the JSON routing index so it survives
+        sessions.json pruning/loss.
 
-        ``clear_model_override=False`` preserves the give-up path's original
-        behavior (flag only, no override drop).
+        The DB boundary is written first. If it fails, the in-memory flag stays
+        false so the watcher retries instead of recording a false success that
+        stale-route recovery could resurrect (#61220).
         """
+        if self._db:
+            finalizer = getattr(self._db, "finalize_expired_session", None)
+            try:
+                if callable(finalizer):
+                    finalizer(entry.session_id)
+                else:
+                    # Compatibility with older/custom SessionDB facades. The
+                    # recovery query's expiry flag guard still blocks revival.
+                    setter = getattr(self._db, "set_expiry_finalized", None)
+                    if callable(setter):
+                        setter(entry.session_id, True)
+            except Exception as exc:
+                logger.warning(
+                    "Session DB expiry finalization failed for %s: %s",
+                    entry.session_id,
+                    exc,
+                )
+                raise
+
         with self._lock:
             entry.expiry_finalized = True
             if clear_model_override:
@@ -1596,32 +1619,6 @@ class SessionStore:
                 # rehydrate it after the in-memory override was popped.
                 entry.model_override = None
             self._save()
-        if self._db:
-            setter = getattr(self._db, "set_expiry_finalized", None)
-            if callable(setter):
-                try:
-                    setter(entry.session_id, True)
-                except Exception as exc:
-                    logger.debug(
-                        "Session DB expiry_finalized write failed for %s: %s",
-                        entry.session_id, exc,
-                    )
-            try:
-                # Expiry finalization is a real conversation boundary. Without
-                # a durable ``session_reset`` end_reason, later agent cleanup can
-                # close the row as ``agent_close``; stale-route recovery treats
-                # that as resumable and resurrects the expired full history.
-                #
-                # promote_to_session_reset is conditional: it only promotes
-                # live rows or rows ended with ``agent_close``.  Explicit
-                # boundaries (compression, session_reset, new_command, etc.)
-                # are preserved — the first writer wins.
-                self._db.promote_to_session_reset(entry.session_id)
-            except Exception as exc:
-                logger.debug(
-                    "Session DB promote_to_session_reset failed for %s: %s",
-                    entry.session_id, exc,
-                )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.

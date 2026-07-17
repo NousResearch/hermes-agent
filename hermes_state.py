@@ -1980,6 +1980,45 @@ class SessionDB:
 
         self._execute_write(_do)
 
+    def finalize_expired_session(self, session_id: str) -> bool:
+        """Atomically persist an expiry boundary and its finalized flag.
+
+        Ordinary ``agent_close`` / ``ws_orphan_reap`` rows remain recoverable
+        because those reasons can mean resource eviction rather than a logical
+        conversation boundary. Expiry is different: once finalized, the old
+        transcript must not be reopened. Update both facts in one SQLite
+        transaction so recovery cannot observe a partially finalized row.
+
+        Existing explicit boundaries (compression, /new, session switch, and
+        similar reasons) are preserved while still recording that expiry
+        cleanup completed. Returns ``False`` only when the row is absent or
+        ``session_id`` is empty.
+        """
+        if not session_id:
+            return False
+        now = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                """
+                UPDATE sessions
+                   SET expiry_finalized = 1,
+                       ended_at = CASE
+                           WHEN ended_at IS NULL
+                             OR end_reason IN ('agent_close', 'ws_orphan_reap')
+                           THEN ? ELSE ended_at END,
+                       end_reason = CASE
+                           WHEN ended_at IS NULL
+                             OR end_reason IN ('agent_close', 'ws_orphan_reap')
+                           THEN 'session_reset' ELSE end_reason END
+                 WHERE id = ?
+                """,
+                (now, session_id),
+            )
+            return cursor.rowcount
+
+        return bool(self._execute_write(_do))
+
     # ── Gateway routing index (replaces sessions.json, #9006 follow-up) ────
 
     def save_gateway_routing_entry(
@@ -2223,6 +2262,7 @@ class SessionDB:
                 SELECT * FROM sessions
                 WHERE session_key = ?
                   AND source = ?
+                  AND COALESCE(expiry_finalized, 0) = 0
                   AND (ended_at IS NULL OR end_reason IN ('agent_close', 'ws_orphan_reap'))
                   AND (COALESCE(message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
@@ -2248,6 +2288,7 @@ class SessionDB:
                   AND COALESCE(chat_id, '') = COALESCE(?, '')
                   AND COALESCE(chat_type, '') = COALESCE(?, '')
                   AND COALESCE(thread_id, '') = COALESCE(?, '')
+                  AND COALESCE(expiry_finalized, 0) = 0
                   AND (ended_at IS NULL OR end_reason IN ('agent_close', 'ws_orphan_reap'))
                   AND (COALESCE(message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1

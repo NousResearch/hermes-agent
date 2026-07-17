@@ -8040,10 +8040,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "Marking as finalized to prevent infinite retry loop.",
                                 failures, entry.session_id, e,
                             )
-                            await self.async_session_store.set_expiry_finalized(
-                                entry, clear_model_override=False
-                            )
-                            _finalize_failures.pop(entry.session_id, None)
+                            try:
+                                await self.async_session_store.set_expiry_finalized(
+                                    entry, clear_model_override=False
+                                )
+                            except Exception as durable_error:
+                                logger.warning(
+                                    "Session %s cleanup gave up, but its durable "
+                                    "expiry boundary still failed; retaining it "
+                                    "for retry: %s",
+                                    entry.session_id,
+                                    durable_error,
+                                )
+                            else:
+                                _finalize_failures.pop(entry.session_id, None)
                         else:
                             logger.debug(
                                 "Session finalize failed (%d/%d) for %s: %s",

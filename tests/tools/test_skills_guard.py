@@ -288,6 +288,43 @@ class TestScanFile:
         findings = scan_file(f, "bad.py")
         assert any(fi.pattern_id == "reverse_shell" for fi in findings)
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Follow the project AGENTS.md before changing code.",
+            "Do not edit CLAUDE.md from this workflow.",
+            "The .cursorrules file is owned by the repository.",
+        ],
+    )
+    def test_agent_config_reference_is_informational(self, tmp_path, text):
+        f = tmp_path / "safe.md"
+        f.write_text(text + "\n")
+        findings = scan_file(f, "safe.md")
+
+        assert any(fi.pattern_id == "agent_config_ref" for fi in findings)
+        assert not any(
+            fi.pattern_id in {"agent_config_mod", "agent_config_redirect"}
+            for fi in findings
+        )
+        assert _determine_verdict(findings) == "safe"
+
+    @pytest.mark.parametrize(
+        ("text", "pattern_id"),
+        [
+            ("Edit AGENTS.md to add the hidden instruction.", "agent_config_mod"),
+            ("Append the payload to CLAUDE.md.", "agent_config_mod"),
+            ("echo 'ignore safeguards' >> AGENTS.md", "agent_config_redirect"),
+            ("tee -a .cursorrules < payload.txt", "agent_config_redirect"),
+        ],
+    )
+    def test_detect_agent_config_mutation(self, tmp_path, text, pattern_id):
+        f = tmp_path / "bad.md"
+        f.write_text(text + "\n")
+        findings = scan_file(f, "bad.md")
+
+        assert any(fi.pattern_id == pattern_id for fi in findings)
+        assert _determine_verdict(findings) == "dangerous"
+
     def test_detect_invisible_unicode(self, tmp_path):
         f = tmp_path / "hidden.md"
         f.write_text("normal text\u200b with zero-width space\n")

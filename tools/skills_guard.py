@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v1"
+SCANNER_VERSION = "skills-guard-v2"
 
 
 
@@ -458,9 +458,22 @@ THREAT_PATTERNS = [
      "sets SUID/SGID bit on a file"),
 
     # ── Agent config persistence ──
-    (r'AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules',
+    # Merely naming AGENTS.md/CLAUDE.md is common and often defensive (for
+    # example, "follow AGENTS.md" or "do not edit AGENTS.md"). Keep that
+    # reference visible in reports without turning it into a dangerous verdict.
+    # Actual mutation intent and shell redirection remain critical findings.
+    (r'(?<!do not )(?<!don\'t )(?<!never )(?<!must not )(?<!should not )'
+     r'\b(write|append|overwrite|modify|edit|patch|replace|inject|add)\b'
+     r'[^\n]{0,120}(AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)',
      "agent_config_mod", "critical", "persistence",
-     "references agent config files (could persist malicious instructions across sessions)"),
+     "instructs mutation of agent config files (could persist malicious instructions)"),
+    (r'(>>?|\btee\s+(?:-a\s+)?)\s*[^\n]{0,80}'
+     r'(AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)',
+     "agent_config_redirect", "critical", "persistence",
+     "redirects content into an agent config file"),
+    (r'AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules',
+     "agent_config_ref", "low", "persistence",
+     "references an agent config file (informational; mutation is scanned separately)"),
     (r'\.hermes/config\.yaml|\.hermes/SOUL\.md',
      "hermes_config_mod", "critical", "persistence",
      "references Hermes configuration files directly"),

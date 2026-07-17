@@ -1767,8 +1767,23 @@ class ShellFileOperations(FileOperations):
         if not self._has_command(base_cmd):
             return LintResult(skipped=True, message=f"{base_cmd} not available")
 
-        # Run linter
-        cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
+        # Run linter. The shell linters shell out to native Windows
+        # toolchains (node, npx/tsc, go, rustfmt, python).  Git Bash
+        # single-quotes the {file} argument, which suppresses MSYS
+        # POSIX->Windows argument conversion, so a bash-form path like
+        # ``/e/project/x.js`` reaches native ``node`` verbatim and is
+        # resolved against the current drive root -> ``Cannot find module
+        # E:\e\project\x.js`` (#66494).  Hand these tools the same
+        # Windows-native path the terminal backend already uses for its
+        # cwd instead of the ``/e/...`` bash form.  Off Windows the path is
+        # left untouched so genuine POSIX names (backslashes and all) survive.
+        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
+        if _IS_WINDOWS:
+            native = _msys_to_windows_path(path).replace("\\", "/")
+            file_arg = "'" + native.replace("'", "'\"'\"'") + "'"
+        else:
+            file_arg = self._escape_shell_arg(path)
+        cmd = linter_cmd.replace("{file}", file_arg)
         result = self._exec(cmd, timeout=30)
 
         if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):

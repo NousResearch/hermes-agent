@@ -152,6 +152,52 @@ class TestCheckLintBracePaths:
         assert "SyntaxError" in result.output
 
 
+class TestCheckLintWindowsNativePath:
+    """#66494: the shell linters shell out to native Windows toolchains
+    (node, tsc, go, rustfmt, python).  On Windows the {file} argument must
+    be a Windows-native path, not a Git Bash ``/e/...`` path.  Native node
+    resolves ``/e/project/x.js`` against the current drive root, producing
+    ``E:\\e\\project\\x.js`` -> ``Cannot find module``.  The lint must reuse
+    the same MSYS->Windows translation the terminal backend uses for its cwd.
+    """
+
+    @pytest.fixture()
+    def ops(self):
+        obj = ShellFileOperations.__new__(ShellFileOperations)
+        obj._command_cache = {}
+        return obj
+
+    def test_msys_path_translated_to_windows_native(self, ops):
+        import tools.environments.local as local_env
+
+        with patch.object(local_env, "_IS_WINDOWS", True), \
+             patch.object(ops, "_has_command", return_value=True), \
+             patch.object(ops, "_exec") as mock_exec:
+            mock_exec.return_value = MagicMock(exit_code=0, stdout="")
+            result = ops._check_lint("/e/project/Fina/js/models.js")
+
+        assert result.success is True
+        cmd = mock_exec.call_args[0][0]
+        # node must receive the Windows-native drive path, forward-slash form.
+        assert "'E:/project/Fina/js/models.js'" in cmd
+        # and NOT the raw MSYS path that node mis-resolves against the drive root.
+        assert "/e/project/Fina/js/models.js" not in cmd
+        assert cmd.startswith("node --check")
+
+    def test_posix_path_unchanged_off_windows(self, ops):
+        import tools.environments.local as local_env
+
+        with patch.object(local_env, "_IS_WINDOWS", False), \
+             patch.object(ops, "_has_command", return_value=True), \
+             patch.object(ops, "_exec") as mock_exec:
+            mock_exec.return_value = MagicMock(exit_code=0, stdout="")
+            result = ops._check_lint("/home/user/app/models.js")
+
+        assert result.success is True
+        cmd = mock_exec.call_args[0][0]
+        assert "'/home/user/app/models.js'" in cmd
+
+
 class TestCheckLintInproc:
     """Verify in-process linters (.py via ast.parse, .json, .yaml, .toml).
 

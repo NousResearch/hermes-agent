@@ -70,9 +70,12 @@ def publish_manifest(spec: "NodeSpec", cfg: "ControllerConfig") -> None:
         c.disconnect()
 
 
-def unpublish_manifest(host: str, cfg: "ControllerConfig") -> None:
-    """Clear the retained registry topic for a host (publish empty payload, retain=True)."""
-    topic = f"{cfg.namespace}/registry/{host}"
+def unpublish_manifest(host: str, cfg: "ControllerConfig", namespace: str | None = None) -> None:
+    """Clear the retained registry topic for a host (publish empty payload, retain=True).
+    If namespace is provided, use it (multi-tenant remove case).
+    """
+    ns = namespace or cfg.namespace
+    topic = f"{ns}/registry/{host}"
     c = _mqtt_client(cfg, f"unpublish-{host}")
     c.connect(cfg.broker, _broker_port(cfg), keepalive=15)
     c.loop_start()

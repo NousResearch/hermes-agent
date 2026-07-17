@@ -443,12 +443,12 @@ def remove_node(host: str, cfg: ControllerConfig, purge: bool = False) -> None:
 
     # Clear retained topics.
     try:
-        registry.unpublish_manifest(host, cfg)
+        registry.unpublish_manifest(host, cfg, namespace=node_namespace)
     except Exception as e:
         print(f"  [warn] could not clear registry topic: {e}")
     try:
         # Also clear the alive retained topic.
-        _clear_retained(cfg, f"{cfg.namespace}/{host}/alive")
+        _clear_retained(cfg, f"{node_namespace}/{host}/alive")
     except Exception as e:
         print(f"  [warn] could not clear alive topic: {e}")
 

@@ -310,6 +310,13 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
             and not _is_placeholder_shape(cleaned))
 
 
+def _is_provider_enabled(provider_id: str, providers: Any = None) -> bool:
+    """Profile-aware ``providers.<name>.enabled`` gate (default enabled)."""
+    from hermes_cli.config import is_provider_id_enabled
+
+    return is_provider_id_enabled(provider_id, providers)
+
+
 # Known API-key prefixes per provider. Only listed providers get prefix validation; everyone else
 # is fail-open. Keeps an obviously malformed key in .env (truncated paste, wrong provider's key)
 # from silently shadowing a valid credential-pool entry and producing opaque 401s.
@@ -371,6 +378,9 @@ def _model_level_key_env(provider_id: str) -> str:
 
 def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
+    if not _is_provider_enabled(provider_id):
+        return "", ""
+
     profile = _credential_profile(provider_id)
     owned = profile.resolve_api_key_secret() if profile else None
     if owned is not None:  # provider-owned resolution (token validation / exchange) is final
@@ -1345,6 +1355,8 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     Hermes-initiated flow, or Hermes-scoped routing config for keyless cloud-SDK providers. Ambient
     borrowed credentials (gh CLI, qwen-cli, ~/.claude/.credentials.json) never count."""
     normalized = (provider_id or "").strip().lower()
+    if not _is_provider_enabled(normalized):
+        return False
     for check, best_effort in _EXPLICIT_CONFIG_CHECKS:
         try:
             if check(normalized):
@@ -1518,7 +1530,8 @@ def _logged_in_oauth_active_provider(*, skip_free_tier: bool = False) -> Optiona
             from hermes_cli.anon_auth import free_inference_active, has_guest
             if has_guest() and (skip_free_tier or not free_inference_active()):
                 return None  # this guest carries no inference here (or is being discounted): not a login
-        if _maybe and _maybe in PROVIDER_REGISTRY and get_auth_status(_maybe).get("logged_in"):
+        if (_maybe and _maybe in PROVIDER_REGISTRY and _is_provider_enabled(_maybe)
+                and get_auth_status(_maybe).get("logged_in")):
             return _maybe
     except Exception as e:
         logger.debug("Could not pre-read active auth provider: %s", e)
@@ -1547,6 +1560,13 @@ def _config_model_provider() -> tuple[Any, Optional[str]]:
         # openrouter is absent from PROVIDER_REGISTRY on purpose, so it needs its own rung (#109397);
         # a non-openrouter base_url under it is a deliberate mirror (#10622), not a contradiction.
         if provider == "openrouter" or provider in PROVIDER_REGISTRY:
+            return model_cfg, provider
+        # A pin naming a provider that left core for a labs plugin (#144788 moved copilot out of
+        # the registry) still names its disable switch. Surface the disabled pin so resolve_provider's
+        # enabled gate fails closed instead of dropping it here — dropping it would let a stale
+        # auth.json active_provider (or nothing at all) answer for a provider the user turned off.
+        # Enabled-but-unresolvable pins keep the historical fall-through to the auto ladder.
+        if provider and not _is_provider_enabled(provider):
             return model_cfg, provider
         # Bare ``providers:`` name (the ``custom:<name>`` intent spelled without the prefix); reuse the
         # runtime's own lookup so disabled / endpoint-less entries stay excluded.
@@ -1588,7 +1608,8 @@ def _env_key_auto_detected(
 
     ambient = {p.name for p in list_providers() if p.ambient_credentials}  # never per-pid lookups: a miss walks the ladder
     for pid, pconfig in _canonical_registry_rows():
-        if pconfig.auth_type != "api_key" or pid in _NO_AUTO_DETECT_PROVIDERS or pid in ambient:
+        if (pconfig.auth_type != "api_key" or pid in _NO_AUTO_DETECT_PROVIDERS or pid in ambient
+                or not _is_provider_enabled(pid)):
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(scoped_key_env(env_var)):
@@ -1630,6 +1651,19 @@ def resolve_provider(
     normalized = (requested or "auto").strip().lower()
     normalized = _plugin_aliases().get(normalized, normalized)
 
+    # Explicit (non-"auto") requests check the disable gate BEFORE the registry branch. A
+    # provider that left core for a labs plugin (#144788 moved copilot out) is absent from the
+    # registry, so a registry-branch gate alone would never run for it and the request would
+    # fall through to "Unknown provider" — while the user's ``providers.<name>.enabled: false``
+    # is the louder, truer answer. Alias-aware: ``is_provider_id_enabled`` expands profile
+    # aliases and the left-core id groups, so an explicit ``github-copilot`` honours a
+    # ``providers.copilot.enabled: false`` pin.
+    if normalized != "auto" and not _is_provider_enabled(normalized):
+        raise AuthError(
+            f"Provider '{normalized}' is disabled in config "
+            f"(providers.{normalized}.enabled: false).",
+            provider=normalized, code="provider_disabled")
+
     if normalized in ("openrouter", "custom") or _registry_lookup(normalized) is not None:
         return normalized
     if normalized != "auto":
@@ -1640,14 +1674,24 @@ def resolve_provider(
         raise AuthError(f"Unknown provider '{normalized}'." + tail, code="invalid_provider")
 
     if explicit_api_key or explicit_base_url:  # one-off CLI creds always mean openrouter/custom
+        if not _is_provider_enabled("openrouter"):
+            raise AuthError(
+                "Provider 'openrouter' is disabled in config "
+                "(providers.openrouter.enabled: false).",
+                provider="openrouter", code="provider_disabled")
         return "openrouter"
 
     _model_cfg, cfg_provider = _config_model_provider()
     if cfg_provider:
+        if not _is_provider_enabled(cfg_provider):
+            raise AuthError(
+                f"Provider '{cfg_provider}' is disabled in config "
+                f"(providers.{cfg_provider}.enabled: false).",
+                provider=cfg_provider, code="provider_disabled")
         return cfg_provider
 
     _scoped_key_env = _scoped_key_env_reader()
-    if _openrouter_auto_detected(_scoped_key_env):
+    if _is_provider_enabled("openrouter") and _openrouter_auto_detected(_scoped_key_env):
         _refuse_env_adoption_if_config_corrupt()
         return "openrouter"
 
@@ -1680,7 +1724,7 @@ def resolve_provider(
     if not skip_free_tier:
         try:
             from hermes_cli.anon_auth import free_inference_active
-            if free_inference_active():
+            if _is_provider_enabled("nous") and free_inference_active():
                 return "nous"
         except Exception as exc:
             logger.debug("free tier check during provider resolution skipped: %s", exc)
@@ -1689,7 +1733,8 @@ def resolve_provider(
     try:
         from agent.bedrock_adapter import has_aws_credentials
         from hermes_cli.anon_auth import on_local_desktop_backend  # a laptop: no EC2 metadata lookup
-        if has_aws_credentials(instance_metadata=not on_local_desktop_backend()):
+        if (_is_provider_enabled("bedrock")
+                and has_aws_credentials(instance_metadata=not on_local_desktop_backend())):
             return "bedrock"
     except ImportError:
         pass  # boto3 not installed
@@ -2037,6 +2082,11 @@ def _provider_env_base_url(pconfig: ProviderConfig) -> str:
 
 def get_api_key_provider_status(provider_id: str) -> dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
+    if not _is_provider_enabled(provider_id):
+        return {
+            "configured": False, "logged_in": False, "provider": provider_id,
+            "disabled": True,
+        }
     pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
@@ -2100,6 +2150,11 @@ def get_external_process_provider_status(provider_id: str) -> dict[str, Any]:
 
     ``configured``/``logged_in`` are structural (executable resolves or TCP endpoint set): the
     subprocess owns real auth. ``auth_verified``/``auth_source`` carry positive evidence only."""
+    if not _is_provider_enabled(provider_id):
+        return {
+            "configured": False, "logged_in": False, "provider": provider_id,
+            "disabled": True,
+        }
     pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
@@ -2129,6 +2184,11 @@ def get_auth_status(provider_id: Optional[str] = None) -> dict[str, Any]:
     target = (provider_id or get_active_provider() or "").strip().lower()
     if not target:
         return {"logged_in": False}
+    if not _is_provider_enabled(target):
+        return {
+            "logged_in": False, "configured": False, "provider": target,
+            "disabled": True,
+        }
     status_fn_name = _BESPOKE_STATUS_FUNCTIONS.get(target)
     if status_fn_name:
         return globals()[status_fn_name]()
@@ -2217,6 +2277,10 @@ _API_KEY_BASE_URL_RESOLVERS: dict[str, Callable[[str, str, str], str]] = {
 
 def resolve_api_key_provider_credentials(provider_id: str) -> dict[str, Any]:
     """Resolve API key and base URL for an API-key provider."""
+    if not _is_provider_enabled(provider_id):
+        return {
+            "provider": provider_id, "api_key": "", "base_url": "", "source": "disabled"}
+
     pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         raise AuthError(
@@ -2251,6 +2315,11 @@ def resolve_api_key_provider_credentials(provider_id: str) -> dict[str, Any]:
 
 def resolve_external_process_provider_credentials(provider_id: str) -> dict[str, Any]:
     """Resolve runtime details for local subprocess-backed providers."""
+    if not _is_provider_enabled(provider_id):
+        return {
+            "provider": provider_id, "api_key": "", "base_url": "", "command": "", "args": [],
+            "source": "disabled"}
+
     pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         raise AuthError(

@@ -60,7 +60,10 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "cleanup_progress": False,
     # Per-turn credit notices ("• Grant spent · $X top-up left" and usage-band
     # warnings). On by default; per-message-cost platforms (SMS/iMessage) can opt
-    # down. Depletion / restored notices ignore this and always deliver.
+    # down. Depletion / restored notices ignore this filter and always deliver
+    # when emitted. This is a render-layer per-platform refinement; the global
+    # display.credits_notices switch still gates emission upstream (off = nothing,
+    # including depleted). See should_show_credit_notice.
     "show_credits": True,
 }
 
@@ -254,6 +257,21 @@ def should_show_credit_notice(
       stops or resumes responding on these, so even a muted platform needs them.
     * Routine credit notices (grant-spent footer, usage-band warnings) follow the
       resolved ``show_credits`` setting for the platform.
+
+    Precedence. This is a render-layer refinement, not the master switch. The
+    global ``display.credits_notices`` setting gates *emission* upstream in
+    ``AIAgent._emit_credits_notices`` (run_agent.py): when it is false, no credit
+    notice is emitted at all, including depleted/restored, and this filter never
+    runs. So "always deliver" above is relative to this filter (it never drops
+    depleted/restored); the global off-switch still wins because emission never
+    happens. The two are orthogonal layers, and this function deliberately does
+    not re-read ``credits_notices``.
+
+    Scope. This governs the gateway platform notice callback
+    (``gateway/run.py``) and the CLI REPL flush (``cli.py``). It does NOT cover
+    the TUI/desktop notification path: ``tui_gateway/server.py`` forwards notices
+    straight to the ``notification.show`` WS event, so ``show_credits`` has no
+    effect there. Wiring that path is out of scope for this setting.
     """
     key = notice_key or ""
     if not key.startswith("credits."):

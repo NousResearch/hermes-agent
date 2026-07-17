@@ -449,6 +449,29 @@ class TestShouldShowCreditNotice:
         off = {"display": {"platforms": {"sms": {"show_credits": False}}}}
         assert should_show_credit_notice(off, "sms", "credits.depleted") is True
 
+    def test_render_filter_is_orthogonal_to_global_credits_notices_gate(self):
+        """Precedence contract: this render filter does NOT re-read the global
+        display.credits_notices switch. That switch gates emission upstream in
+        AIAgent._emit_credits_notices (covered by
+        tests/run_agent/test_credits_notices_toggle.py: credits_notices=false
+        emits nothing, including depleted). Here, a config with credits_notices
+        false must not change this filter's decisions: it only ever sees notices
+        that were already emitted, so it keeps honoring show_credits and always
+        passes depleted/restored. The two gates are separate layers."""
+        from gateway.display_config import should_show_credit_notice
+
+        cfg = {
+            "display": {
+                "credits_notices": False,  # upstream emit gate; not this filter's concern
+                "platforms": {"signal": {"show_credits": True}},
+            }
+        }
+        # Depleted passes regardless of the (upstream) global gate value here.
+        assert should_show_credit_notice(cfg, "signal", "credits.depleted") is True
+        # Routine still follows the per-platform show_credits (True), unaffected
+        # by credits_notices being false in the same config blob.
+        assert should_show_credit_notice(cfg, "signal", "credits.grant_spent") is True
+
 
 # ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms

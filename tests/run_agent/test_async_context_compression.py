@@ -760,6 +760,122 @@ class TestFinalizeTurnWiring:
         assert result["final_response"] == "done"
 
 
+class TestConfigTelemetryKillSwitch:
+    """Task 8: operable without code edits — config block, telemetry, kill switch."""
+
+    def test_default_config_ships_disabled_shadow_block(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        bg = DEFAULT_CONFIG["compression"]["background"]
+        assert bg["enabled"] is False
+        assert bg["shadow_only"] is True
+        assert bg["prepare_threshold"] == pytest.approx(0.65)
+        assert bg["apply_threshold"] == pytest.approx(0.82)
+        assert bg["min_delta_tokens"] == 20_000
+        assert bg["min_frozen_messages"] == 12
+        assert bg["max_candidate_age_turns"] == 12
+        assert bg["max_workers"] == 1
+        assert bg["foreground_priority"] is True
+        assert bg["fallback_sync"] is True
+        assert bg["apply_only_between_turns"] is True
+        # The shipped defaults and the dataclass defaults must never drift.
+        assert BackgroundCompressionConfig.from_dict(bg) == BackgroundCompressionConfig()
+
+    def test_gateway_cache_signature_busts_on_background_config_edit(self):
+        from gateway.run import GatewayRunner
+
+        on = GatewayRunner._extract_cache_busting_config(
+            {"compression": {"background": {"enabled": True}}}
+        )
+        off = GatewayRunner._extract_cache_busting_config(
+            {"compression": {"background": {"enabled": False}}}
+        )
+        assert "compression.background" in on
+        assert on["compression.background"] != off["compression.background"]
+
+    def test_kill_switch_via_config_set_restores_baseline(self):
+        from hermes_cli.config import _set_nested
+
+        config = {"compression": {"background": {"enabled": True,
+                                                 "shadow_only": False}}}
+        _set_nested(config, "compression.background.enabled", False)
+        cfg = BackgroundCompressionConfig.from_dict(
+            config["compression"]["background"]
+        )
+        assert cfg.enabled is False
+
+        agent = _fake_agent(cfg, _fake_engine())
+        assert maybe_prepare_background_compression(
+            agent, _make_messages(), current_tokens=90_000, current_turn=1
+        ) is False
+        assert agent.background_compression is None
+        assert maybe_apply_prepared_candidate(
+            agent, _make_messages(), "sys", current_tokens=90_000, current_turn=1
+        ) is None
+
+    def test_telemetry_snapshot_counts_lifecycle_events(self):
+        msgs = _make_messages()
+        ctl = _prepare_ready_controller(msgs)
+        snap = ctl.telemetry_snapshot()
+        assert snap["candidate_started"] == 1
+        assert snap["candidate_ready"] == 1
+        assert snap["candidate_failed"] == 0
+        assert snap["state"] == "ready"
+        assert snap["candidate_prepare_ms"]["count"] == 1
+        assert snap["candidate_prepare_ms"]["p50_ms"] >= 0.0
+
+    def test_telemetry_counts_worker_failure_as_provider_error(self):
+        ctl = BackgroundCompressionController(_enabled_config())
+
+        def broken(prefix):
+            raise RuntimeError("provider 500")
+
+        assert ctl.try_start_preparation(
+            session_id="sess-1", messages=_make_messages(),
+            prefix_count=10, current_turn=1, source_prompt_tokens=100_000,
+            prepare_fn=broken,
+        )
+        assert ctl.wait_until_settled(timeout=5.0)
+        snap = ctl.telemetry_snapshot()
+        assert snap["candidate_failed"] == 1
+        assert snap["background_provider_error"] == 1
+
+    def test_apply_records_duration_and_suffix_preserved(self):
+        msgs = _make_messages()
+        cfg = _enabled_config(shadow_only=False)
+        ctl = _prepare_ready_controller(msgs, config=cfg)
+        agent = _fake_agent(cfg, _fake_engine(), controller=ctl)
+
+        with patch(
+            "agent.conversation_compression.apply_prepared_candidate",
+            return_value=(["compressed"], "new-prompt"),
+        ):
+            result = maybe_apply_prepared_candidate(
+                agent, msgs, "sys", current_tokens=90_000, current_turn=4
+            )
+        assert result == (["compressed"], "new-prompt")
+        snap = ctl.telemetry_snapshot()
+        assert snap["candidate_apply_ms"]["count"] == 1
+        # Helper froze len(msgs) - 4 messages; the 4-message suffix survived.
+        assert snap["suffix_messages_preserved"] == 4
+
+    def test_apply_failure_counts_sync_fallback(self):
+        msgs = _make_messages()
+        cfg = _enabled_config(shadow_only=False)
+        ctl = _prepare_ready_controller(msgs, config=cfg)
+        agent = _fake_agent(cfg, _fake_engine(), controller=ctl)
+
+        with patch(
+            "agent.conversation_compression.apply_prepared_candidate",
+            side_effect=RuntimeError("db locked"),
+        ):
+            result = maybe_apply_prepared_candidate(
+                agent, msgs, "sys", current_tokens=90_000, current_turn=4
+            )
+        assert result is None
+        assert ctl.telemetry_snapshot()["sync_fallback_count"] == 1
+
+
 class TestAgentLifecycleIntegration:
     """Real-agent surface: hooks exist, are safe, and honor session boundaries."""
 

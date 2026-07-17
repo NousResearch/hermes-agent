@@ -16407,6 +16407,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "codex_app_server_auto"),
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
+        # Whole background-compression block: parsed once at agent init
+        # (agent.background_compression_config), so any edit — including the
+        # kill switch `compression.background.enabled false` — must rebuild
+        # the cached agent on the next message.
+        ("compression", "background"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
     )

@@ -329,8 +329,51 @@ class BackgroundCompressionController:
         with self._lock:
             return self._candidate
 
-    def _bump(self, key: str) -> None:
-        self.stats[key] = self.stats.get(key, 0) + 1
+    def _bump(self, key: str, amount: int = 1) -> None:
+        self.stats[key] = self.stats.get(key, 0) + amount
+
+    _TELEMETRY_COUNTERS = (
+        "candidate_started",
+        "candidate_ready",
+        "candidate_failed",
+        "candidate_discarded_stale",
+        "candidate_applied",
+        "candidate_cancelled",
+        "candidate_shadow_validated",
+        "sync_fallback_count",
+        "suffix_messages_preserved",
+        "background_provider_error",
+    )
+
+    def telemetry_snapshot(self) -> Dict[str, Any]:
+        """Structured metrics for logs, /status surfaces and the benchmark.
+
+        Counters default to 0 so dashboards see a stable shape; duration
+        distributions are summarised as count/p50/p95/max in milliseconds.
+        """
+        def _dist(values: List[float]) -> Dict[str, Any]:
+            if not values:
+                return {"count": 0, "p50_ms": None, "p95_ms": None, "max_ms": None}
+            ordered = sorted(values)
+            return {
+                "count": len(ordered),
+                "p50_ms": ordered[len(ordered) // 2],
+                "p95_ms": ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))],
+                "max_ms": ordered[-1],
+            }
+
+        with self._lock:
+            stats = dict(self.stats)
+            state = self._state.value
+            generation = self._generation
+        snapshot: Dict[str, Any] = {
+            key: stats.get(key, 0) for key in self._TELEMETRY_COUNTERS
+        }
+        snapshot["state"] = state
+        snapshot["generation"] = generation
+        snapshot["candidate_prepare_ms"] = _dist(list(self.prepare_durations_ms))
+        snapshot["candidate_apply_ms"] = _dist(list(self.apply_durations_ms))
+        return snapshot
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -448,7 +491,14 @@ class BackgroundCompressionController:
                     current = True
                 else:
                     current = False
-            self._bump("candidate_failed" if current else "candidate_discarded_stale")
+            if current:
+                self._bump("candidate_failed")
+                # The dominant failure source is the summariser provider call
+                # (timeout / 4xx / 5xx); count it separately so a flaky aux
+                # model is visible without log spelunking.
+                self._bump("background_provider_error")
+            else:
+                self._bump("candidate_discarded_stale")
             logger.debug(
                 "background compression preparation failed (gen=%d current=%s): %s",
                 generation, current, exc,
@@ -758,6 +808,10 @@ def maybe_apply_prepared_candidate(
         return None
     if result is not None:
         controller.apply_durations_ms.append((time.monotonic() - started) * 1000.0)
+        controller._bump(
+            "suffix_messages_preserved",
+            max(0, len(messages) - candidate.prefix_message_count),
+        )
     return result
 
 

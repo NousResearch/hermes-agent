@@ -1945,6 +1945,16 @@ def init_agent(
         _bg_compression_raw if isinstance(_bg_compression_raw, dict) else None
     )
     agent.background_compression = None
+    if agent.background_compression_config.enabled:
+        _ra().logger.info(
+            "background compression enabled: shadow_only=%s prepare>=%.0f%% "
+            "apply>=%.0f%% min_delta=%d workers=%d",
+            agent.background_compression_config.shadow_only,
+            agent.background_compression_config.prepare_threshold * 100,
+            agent.background_compression_config.apply_threshold * 100,
+            agent.background_compression_config.min_delta_tokens,
+            agent.background_compression_config.max_workers,
+        )
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).

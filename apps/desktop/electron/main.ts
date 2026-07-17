@@ -2675,7 +2675,9 @@ async function applyUpdates(opts = {}) {
         // Best-effort: fall back to bare `hermes update` if branch detection fails.
       }
 
-      rememberLog(`[updates] no staged updater; surfacing manual \`${command}\` for ${installKind} install at ${updateRoot}`)
+      rememberLog(
+        `[updates] no staged updater; surfacing manual \`${command}\` for ${installKind} install at ${updateRoot}`
+      )
       emitUpdateProgress({ stage: 'manual', message: command, percent: null, installKind })
 
       return { ok: true, manual: true, command, hermesRoot: updateRoot, installKind }

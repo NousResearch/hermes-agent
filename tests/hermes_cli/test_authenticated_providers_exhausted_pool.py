@@ -95,3 +95,22 @@ def test_opaque_legacy_pool_value_stays_visible(monkeypatch):
     )
 
     assert _credential_pool_is_usable("opencode-go", raw_pool_present=True)
+
+
+def test_picker_shows_exhausted_pool_provider(monkeypatch):
+    """The interactive picker must include providers whose credential pool
+    entries are all exhausted, so the user can still switch to a different
+    model under the same provider."""
+    from hermes_cli.model_switch import list_picker_providers
+
+    _patch_opencode_pool(monkeypatch, available=False)
+    providers = list_picker_providers(
+        current_provider="alibaba",
+        user_providers={},
+        custom_providers=[],
+    )
+    slugs = [p["slug"] for p in providers]
+    assert "opencode-go" in slugs, (
+        "Picker must show exhausted-pool providers so the user can select "
+        "a different model under the same provider"
+    )

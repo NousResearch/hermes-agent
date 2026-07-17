@@ -1496,6 +1496,7 @@ def list_authenticated_providers(
     refresh: bool = False,
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
+    for_picker: bool = False,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1843,6 +1844,20 @@ def list_authenticated_providers(
             try:
                 if _credential_pool_is_usable(hermes_slug):
                     has_creds = True
+                elif for_picker:
+                    # For the interactive /model picker, also show providers
+                    # whose credential pool has entries but all are temporarily
+                    # rate-limited.  Rate limits are per-model for many
+                    # providers (e.g. Google Gemini) — switching to a different
+                    # model under the same provider may work even when all keys
+                    # are in cooldown.
+                    try:
+                        from agent.credential_pool import load_pool
+                        _pool = load_pool(hermes_slug)
+                        if _pool.has_credentials():
+                            has_creds = True
+                    except Exception:
+                        pass
             except Exception as exc:
                 logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
         # Fallback: check external credential files directly.
@@ -2488,6 +2503,7 @@ def list_picker_providers(
         custom_providers=custom_providers,
         max_models=max_models,
         current_model=current_model,
+        for_picker=True,
     )
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)

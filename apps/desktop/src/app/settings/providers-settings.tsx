@@ -21,7 +21,7 @@ import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 }
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
+import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
@@ -300,6 +300,36 @@ function NoProviderKeys() {
   )
 }
 
+// Surfaces the "Local / custom endpoint" entry point directly in the API-keys
+// tab so users can add any OpenAI-compatible endpoint (Zyphra, vLLM, Ollama…)
+// from the GUI. The composer pill and the providers "have an API key" affordance
+// both dead-end on the env-var-driven key catalog, which never lists a custom
+// endpoint — so without this row there is no reachable Desktop path to it.
+// The whole row is the button so the click target and a11y focus match the
+// visible area (the chevron + gutter are inside the button, not beside it).
+// Pass reason: null — the onboarding overlay renders an unmapped reason string
+// verbatim as a banner (see ReasonNotice in onboarding/index.tsx), and we don't
+// want a raw identifier like "providers-keys-tab" showing as literal text.
+function LocalEndpointRow({ onOpen }: { onOpen: (reason: null | string) => void }) {
+  const { t } = useI18n()
+  const copy = t.settings.providers.localEndpoint
+
+  return (
+    <RowButton
+      className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)"
+      onClick={() => onOpen(null)}
+    >
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span className="truncate text-[length:var(--conversation-text-font-size)] font-semibold">{copy.title}</span>
+        <span className="truncate text-[length:var(--conversation-caption-font-size)] leading-5 text-muted-foreground">
+          {copy.description}
+        </span>
+      </div>
+      <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+    </RowButton>
+  )
+}
+
 export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSettingsProps) {
   const { t } = useI18n()
   const { rowProps, vars } = useEnvCredentials()
@@ -417,6 +447,7 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
 
     return (
       <SettingsContent>
+        <LocalEndpointRow onOpen={startManualLocalEndpoint} />
         {keyGroups.length > 0 ? (
           <div className="grid gap-3">
             <SearchField

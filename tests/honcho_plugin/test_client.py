@@ -773,6 +773,57 @@ class TestGetHonchoClient:
         mock_h3.assert_called_once()
         assert mock_h3.call_args.kwargs["timeout"] == 300.0
 
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_honcho_json_timeout_does_not_thrash_singleton(self, tmp_path):
+        """Regression: a timeout configured in honcho.json must not rebuild the
+        client on every no-config call. The staleness check used to resolve the
+        timeout without reading honcho.json, so it permanently disagreed with
+        the built client and reset the singleton on each access."""
+        config_file = tmp_path / "honcho.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "cloud-key",
+            "hosts": {"hermes": {"workspace": "ws", "requestTimeout": 120}},
+        }))
+
+        fake_honcho_1 = MagicMock(name="Honcho_v1")
+        fake_honcho_2 = MagicMock(name="Honcho_v2")
+
+        with patch("plugins.memory.honcho.client.resolve_config_path", return_value=config_file), \
+             patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+            with patch("honcho.Honcho", return_value=fake_honcho_1) as mock_h1:
+                client1 = get_honcho_client()
+
+            assert client1 is fake_honcho_1
+            assert mock_h1.call_args.kwargs["timeout"] == 120.0
+
+            # Repeated no-config calls (the session manager hot path) must
+            # return the cached client, not rebuild.
+            with patch("honcho.Honcho", return_value=fake_honcho_2) as mock_h2:
+                client2 = get_honcho_client()
+                client3 = get_honcho_client()
+
+            assert client2 is fake_honcho_1
+            assert client3 is fake_honcho_1
+            mock_h2.assert_not_called()
+
+            # A real honcho.json timeout change is still detected.
+            config_file.write_text(json.dumps({
+                "apiKey": "cloud-key",
+                "hosts": {"hermes": {"workspace": "ws", "requestTimeout": 240}},
+            }))
+            st = config_file.stat()
+            os.utime(config_file, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+            with patch("honcho.Honcho", return_value=fake_honcho_2) as mock_h3:
+                client4 = get_honcho_client()
+
+            assert client4 is fake_honcho_2
+            mock_h3.assert_called_once()
+            assert mock_h3.call_args.kwargs["timeout"] == 240.0
+
 
 class TestResolveSessionNameGatewayKey:
     """Regression tests for gateway_session_key priority in resolve_session_name.

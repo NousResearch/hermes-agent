@@ -1,13 +1,87 @@
-FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
-# Node 22 LTS source stage. Debian trixie's bundled nodejs is pinned to 20.x
-# which reached EOL in April 2026 — we copy node + npm + corepack from the
-# upstream node:22 image instead so we can stay on a supported LTS without
-# waiting for Debian 14 (forky, ~mid-2027).  Bookworm-based slim image used
-# so the produced binary links against glibc 2.36, which runs cleanly on
-# our Debian 13 (trixie, glibc 2.41) runtime.  Bumping to a new Node major
-# is a one-line ARG change; see #4977.
-FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS node_source
+# syntax=docker/dockerfile:1
+#
+# Multi-arch Hermes image: linux/amd64, linux/arm64, linux/riscv64.
+#
+# amd64/arm64 are UNCHANGED from before: uv and Node are copied from the
+# upstream images. riscv64 has no manifest for those images and no manylinux
+# riscv64 wheels for the native Python deps, so it takes alternate paths gated
+# on TARGETARCH, each marked `# riscv64:`:
+#   - uv and Node come from checksum-pinned riscv64 tarballs, selected via the
+#     `FROM <name>_${TARGETARCH}` per-arch-stage pattern below. BuildKit prunes
+#     the unreferenced (image-based) stages, so the riscv64-less uv/node images
+#     are never pulled on a riscv64 build.
+#   - a rustup toolchain + a few build deps are added so uv compiles the native
+#     wheels from sdist (no-op on amd64/arm64, which use prebuilt wheels).
+#   - npm uses `npm ci` (npm 10.9.x `npm install` crashes reconciling optional
+#     deps on a platform absent from the lockfile), and Playwright is skipped
+#     (no riscv64 Chromium).
+#   - the web dashboard (Tailwind v4 -> lightningcss + @tailwindcss/oxide, no
+#     riscv64 napi binary) is built on the BUILD host by CI and injected via
+#     the build context; only the TUI builds in-image on riscv64. See the
+#     docker-publish.yml change that ships with this.
+
+# TARGETARCH must be declared before the FROM stages that interpolate it.
+ARG TARGETARCH
+
+# ---------- uv source (per-arch) ----------
+# amd64/arm64: the upstream uv image (its manifest covers both). riscv64:
+# download Astral's standalone riscv64 binary into a debian stage. Only the
+# stage named uv_${TARGETARCH} is referenced below, so on riscv64 the two
+# image stages are pruned and the uv image (no riscv64 manifest) is not pulled.
+FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_amd64
+FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_arm64
+FROM debian:13.4 AS uv_riscv64
+ARG UV_VERSION=0.11.6
+ARG UV_RISCV64_SHA256=0e3ead8667b51b07b5fb9d114bcd1914a5fe3159e6959a584dc2f89c6724e123
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    rm -rf /var/lib/apt/lists/*; \
+    curl -fsSL --retry 3 -o /tmp/uv.tar.gz \
+        "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-riscv64gc-unknown-linux-gnu.tar.gz"; \
+    printf '%s  %s\n' "${UV_RISCV64_SHA256}" /tmp/uv.tar.gz | sha256sum -c; \
+    tar -C /usr/local/bin --strip-components=1 -xzf /tmp/uv.tar.gz \
+        uv-riscv64gc-unknown-linux-gnu/uv uv-riscv64gc-unknown-linux-gnu/uvx; \
+    chmod 0755 /usr/local/bin/uv /usr/local/bin/uvx; \
+    rm /tmp/uv.tar.gz
+FROM uv_${TARGETARCH} AS uv_source
+
+# ---------- Node 22 LTS source (per-arch) ----------
+# Debian trixie's bundled nodejs is pinned to 20.x which reached EOL in April
+# 2026 — we take node + npm + corepack from the upstream node:22 image instead
+# so we can stay on a supported LTS without waiting for Debian 14 (forky,
+# ~mid-2027). Bookworm-based slim image is used so the produced binary links
+# against glibc 2.36, which runs cleanly on our Debian 13 (trixie, glibc 2.41)
+# runtime. Bumping to a new Node major is a one-line ARG change; see #4977.
+#
+# riscv64: nodejs.org/dist ships no riscv64 build; the Node project's
+# unofficial-builds sub-project cross-compiles it (Ubuntu 24.04, glibc 2.39,
+# which also runs on trixie). Extracting the whole prefix lays down
+# /usr/local/bin/node + lib/node_modules/{npm,corepack}, so the COPY --from
+# below is identical across arches.
+FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS node_amd64
+FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS node_arm64
+FROM debian:13.4 AS node_riscv64
+ARG NODE_VERSION=22.22.3
+ARG NODE_RISCV64_SHA256=7a2c78e87eb154d450c5cccc6f9a8b3de1a0854ee78f3ef92a2d7e4c71d4985f
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl xz-utils; \
+    rm -rf /var/lib/apt/lists/*; \
+    curl -fsSL --retry 3 -o /tmp/node.tar.xz \
+        "https://unofficial-builds.nodejs.org/download/release/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-riscv64.tar.xz"; \
+    printf '%s  %s\n' "${NODE_RISCV64_SHA256}" /tmp/node.tar.xz | sha256sum -c; \
+    tar -C /usr/local --strip-components=1 \
+        --exclude='*/CHANGELOG.md' --exclude='*/LICENSE' --exclude='*/README.md' \
+        -xJf /tmp/node.tar.xz; \
+    rm /tmp/node.tar.xz
+FROM node_${TARGETARCH} AS node_source
+
 FROM debian:13.4
+
+# Re-declare in this stage so the conditional riscv64 RUN steps below can
+# read it (ARG does not cross FROM boundaries).
+ARG TARGETARCH
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
 # Do not write .pyc files at runtime: /opt/hermes is immutable in the
@@ -31,31 +105,59 @@ RUN apt-get update && \
     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
+# riscv64: there are no manylinux riscv64 wheels for the native Python
+# extensions (cryptography, pydantic-core, jiter, pynacl, ...), so they compile
+# from sdist during `uv sync` below. That needs a C/C++ toolchain plus Rust,
+# and Debian trixie's rustc (1.85) is too old for some crates (davey/openmls
+# needs the 1.87 `unsigned_is_multiple_of`), so install rustup. This block is a
+# no-op on amd64/arm64 (their wheels are prebuilt), keeping those images lean.
+# The RUSTUP/CARGO env is harmless on amd64/arm64 (the dirs just won't exist).
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo
+ENV PATH=/usr/local/cargo/bin:${PATH}
+ARG RUST_VERSION=1.96.0
+RUN set -eu; \
+    if [ "${TARGETARCH:-amd64}" = "riscv64" ]; then \
+        apt-get update; \
+        # libssl-dev/pkg-config: native Rust crates (davey/openmls). libjpeg-dev
+        # + zlib1g-dev: Pillow compiles from source on riscv64 (no wheel) and is
+        # pulled by the [matrix] extra via mautrix[encryption]; amd64/arm64 use
+        # Pillow wheels so they need neither.
+        apt-get install -y --no-install-recommends g++ make pkg-config libssl-dev libjpeg-dev zlib1g-dev; \
+        rm -rf /var/lib/apt/lists/*; \
+        curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/rustup-init.sh https://sh.rustup.rs; \
+        sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "${RUST_VERSION}" --no-modify-path; \
+        rm /tmp/rustup-init.sh; \
+        chmod -R a+rX "${RUSTUP_HOME}" "${CARGO_HOME}"; \
+        rustc --version; \
+    fi
+
 # ---------- s6-overlay install ----------
 # s6-overlay provides supervision for the main hermes process, the dashboard,
 # and per-profile gateways. /init becomes PID 1 below — see ENTRYPOINT.
 #
-# Multi-arch: BuildKit auto-populates TARGETARCH (amd64 / arm64). s6-overlay
-# uses tarball names keyed on the kernel arch string (x86_64 / aarch64), so
-# we map between them inline. The noarch + symlinks tarballs are
+# Multi-arch: BuildKit auto-populates TARGETARCH. s6-overlay uses tarball names
+# keyed on the kernel arch string (x86_64 / aarch64 / riscv64), so we map
+# between them inline. The noarch + symlinks tarballs are
 # architecture-independent and reused as-is.
 #
 # We use `curl` instead of `ADD` for the per-arch tarball because `ADD`
 # evaluates its URL at parse time, before any ARG / TARGETARCH substitution
-# — splitting one URL per arch into two ADDs would download both on every
-# build and leave dead bytes in the cache. A single curl + arch-keyed URL
-# is simpler and cache-friendlier.
+# — splitting one URL per arch into multiple ADDs would download them all on
+# every build and leave dead bytes in the cache. A single curl + arch-keyed
+# URL is simpler and cache-friendlier.
 #
 # Supply-chain integrity: every tarball is checksum-verified against the
-# upstream-published SHA256. To bump S6_OVERLAY_VERSION, fetch the four
+# upstream-published SHA256. To bump S6_OVERLAY_VERSION, fetch the per-arch
 # `.sha256` files from the corresponding release and update the ARGs. The
 # checksum lookup happens during build, so a compromised release artifact
 # fails the build loudly instead of silently producing a tampered image.
-ARG TARGETARCH
 ARG S6_OVERLAY_VERSION=3.2.3.0
 ARG S6_OVERLAY_NOARCH_SHA256=b720f9d9340efc8bb07528b9743813c836e4b02f8693d90241f047998b4c53cf
 ARG S6_OVERLAY_X86_64_SHA256=a93f02882c6ed46b21e7adb5c0add86154f01236c93cd82c7d682722e8840563
 ARG S6_OVERLAY_AARCH64_SHA256=0952056ff913482163cc30e35b2e944b507ba1025d78f5becbb89367bf344581
+# riscv64: s6-overlay publishes a first-class riscv64 tarball.
+ARG S6_OVERLAY_RISCV64_SHA256=a4a4ed5eb17562879d07189cc4b3b9cd146c2d88855792fa95d99e0decbfcaf8
 ARG S6_OVERLAY_SYMLINKS_SHA256=a60dc5235de3ecbcf874b9c1f18d73263ab99b289b9329aa950e8729c4789f0e
 ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz /tmp/
 ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-symlinks-noarch.tar.xz /tmp/
@@ -63,6 +165,7 @@ RUN set -eu; \
     case "${TARGETARCH:-amd64}" in \
         amd64) s6_arch="x86_64"; s6_arch_sha="${S6_OVERLAY_X86_64_SHA256}" ;; \
         arm64) s6_arch="aarch64"; s6_arch_sha="${S6_OVERLAY_AARCH64_SHA256}" ;; \
+        riscv64) s6_arch="riscv64"; s6_arch_sha="${S6_OVERLAY_RISCV64_SHA256}" ;; \
         *) echo "Unsupported TARGETARCH=${TARGETARCH} for s6-overlay" >&2; exit 1 ;; \
     esac; \
     curl -fsSL --retry 3 -o /tmp/s6-overlay-arch.tar.xz \
@@ -94,10 +197,10 @@ RUN useradd -u 10000 -m -d /opt/data hermes
 COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
 
 # Node 22 LTS: copy the node binary plus the bundled npm + corepack JS
-# installs from the upstream image.  npm and npx are recreated as symlinks
-# because they're symlinks in the source image (and need to live on PATH).
-# See node_source stage at the top of the file for the version-bump
-# rationale (#4977).
+# installs from the (per-arch) node_source stage.  npm and npx are recreated as
+# symlinks because they're symlinks in the source image (and need to live on
+# PATH).  See the node_source stages at the top of the file for the
+# version-bump rationale (#4977).
 COPY --chmod=0755 --from=node_source /usr/local/bin/node /usr/local/bin/
 COPY --from=node_source /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 COPY --from=node_source /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/corepack
@@ -135,8 +238,19 @@ COPY apps/shared/ apps/shared/
 # guards against a future regression if the source npm version changes.
 ENV npm_config_install_links=false
 
-RUN npm install --prefer-offline --no-audit && \
-    npx playwright install --with-deps chromium --only-shell && \
+# amd64/arm64: `npm install` + bundle Playwright Chromium (browser tools).
+# riscv64: `npm install` crashes reconciling optional deps that have no riscv64
+# entry in the lockfile (npm 10.9.x: "Cannot read properties of undefined
+# (reading 'os')"), so use `npm ci`, which installs straight from the lockfile.
+# Playwright has no riscv64 Chromium, so it is skipped (browser-automation
+# tools are unavailable on riscv64).
+RUN set -eu; \
+    if [ "${TARGETARCH:-amd64}" = "riscv64" ]; then \
+        npm ci --no-audit; \
+    else \
+        npm install --prefer-offline --no-audit; \
+        npx playwright install --with-deps chromium --only-shell; \
+    fi; \
     npm cache clean --force
 
 # ---------- Layer-cached Python dependency install ----------
@@ -177,10 +291,27 @@ RUN npm install --prefer-offline --no-audit && \
 # avoids the cross-platform failures that kept [matrix] out of [all]
 # while still making Matrix work in the published container. Fixes #30399.
 #
+# riscv64 note: with no manylinux riscv64 wheels, every native extension
+# compiles from sdist here against the rustup toolchain installed above, so
+# this is the long pole on riscv64 (tens of minutes). riscv64 enumerates
+# `[all]` MINUS `[dev]` (ty + ruff, two large dev-only Rust workspaces) to skip
+# a needless long compile; amd64/arm64 keep `--extra all`. libolm-dev is
+# installed above for every arch, so `--extra matrix` builds on riscv64 too and
+# stays in dependency-set parity with amd64/arm64.
+#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+RUN set -eu; \
+    if [ "${TARGETARCH:-amd64}" = "riscv64" ]; then \
+        uv sync --frozen --no-install-project \
+            --extra cron --extra cli --extra pty --extra mcp --extra homeassistant \
+            --extra sms --extra acp --extra google --extra web --extra youtube \
+            --extra messaging --extra anthropic --extra bedrock --extra azure-identity \
+            --extra hindsight --extra matrix; \
+    else \
+        uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix; \
+    fi
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't
@@ -188,8 +319,19 @@ RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra 
 COPY web/ web/
 COPY ui-tui/ ui-tui/
 COPY apps/shared/ apps/shared/
-RUN cd web && npm run build && \
-    cd ../ui-tui && npm run build
+# riscv64: the web dashboard CANNOT be built in-image — Tailwind v4's Vite
+# pipeline pulls lightningcss + @tailwindcss/oxide, Rust/napi modules with no
+# riscv64 binary on npm, and there is no riscv64 `node` base image to build them
+# under. Its output (hermes_cli/web_dist) is arch-independent, so CI cross-builds
+# it on the host and injects it via the build context; the `COPY --link ... . .`
+# below carries it into the image. Without it the riscv64 image ships
+# dashboard-less (the dashboard service is gated off by default). See docker.yml.
+# ui-tui (esbuild) builds on every arch.
+RUN set -eu; \
+    if [ "${TARGETARCH:-amd64}" != "riscv64" ]; then \
+        ( cd web && npm run build ); \
+    fi; \
+    cd ui-tui && npm run build
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.

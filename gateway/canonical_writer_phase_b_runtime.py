@@ -76,6 +76,7 @@ PHASE_B_FULL_CANARY_ANCHOR_PATH = Path(
 
 _ROOT_UID = 0
 _ROOT_GID = 0
+_ANONYMOUS_SECRET_DIRECTORY = Path("/run")
 _AUTHORITY_MODE = 0o400
 _AUTHORITY_APPEND_DIRECTORY_MODE = 0o700
 _AUTHORITY_LOCK_MODE = 0o600
@@ -1086,26 +1087,135 @@ def install_fixed_phase_b_resume_approval(
         return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
 
 
+def _validate_anonymous_secret_descriptor(descriptor: int) -> None:
+    try:
+        os.set_inheritable(descriptor, False)
+        os.fchmod(descriptor, 0o400)
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_uid != _ROOT_UID
+            or opened.st_gid != _ROOT_GID
+            or opened.st_nlink != 0
+            or stat.S_IMODE(opened.st_mode) != 0o400
+            or os.get_inheritable(descriptor)
+        ):
+            _fail("phase_b_runtime_anonymous_secret_identity_invalid")
+    except PhaseBRuntimeError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise PhaseBRuntimeError(
+            "phase_b_runtime_anonymous_secret_identity_invalid"
+        ) from exc
+
+
+def _open_anonymous_secret_descriptor() -> int:
+    """Return one root-owned, unlinked, close-on-exec anonymous inode."""
+
+    creator = getattr(os, "memfd_create", None)
+    if callable(creator):
+        descriptor: int | None = None
+        succeeded = False
+        try:
+            descriptor = creator(
+                "muncho-phase-b-credential",
+                getattr(os, "MFD_CLOEXEC", 0),
+            )
+            _validate_anonymous_secret_descriptor(descriptor)
+            succeeded = True
+            return descriptor
+        except PhaseBRuntimeError:
+            raise
+        except (OSError, TypeError, ValueError) as exc:
+            raise PhaseBRuntimeError(
+                "phase_b_runtime_anonymous_secret_unavailable"
+            ) from exc
+        finally:
+            if descriptor is not None and not succeeded:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+    required_flags = (
+        getattr(os, "O_CLOEXEC", 0),
+        getattr(os, "O_DIRECTORY", 0),
+        getattr(os, "O_EXCL", 0),
+        getattr(os, "O_NOFOLLOW", 0),
+        getattr(os, "O_TMPFILE", 0),
+    )
+    if any(type(flag) is not int or flag == 0 for flag in required_flags):
+        _fail("phase_b_runtime_anonymous_secret_unavailable")
+
+    directory_descriptor: int | None = None
+    descriptor: int | None = None
+    succeeded = False
+    try:
+        try:
+            directory_descriptor = _open_trusted_absolute_directory(
+                _ANONYMOUS_SECRET_DIRECTORY
+            )
+        except PhaseBRuntimeError as exc:
+            raise PhaseBRuntimeError(
+                "phase_b_runtime_anonymous_secret_directory_invalid"
+            ) from exc
+        directory = os.fstat(directory_descriptor)
+        if (
+            not stat.S_ISDIR(directory.st_mode)
+            or directory.st_uid != _ROOT_UID
+            or directory.st_gid != _ROOT_GID
+            or stat.S_IMODE(directory.st_mode) & 0o022
+            or os.get_inheritable(directory_descriptor)
+        ):
+            _fail("phase_b_runtime_anonymous_secret_directory_invalid")
+        descriptor = os.open(
+            ".",
+            os.O_RDWR | os.O_CLOEXEC | os.O_EXCL | os.O_TMPFILE,
+            0o400,
+            dir_fd=directory_descriptor,
+        )
+        _validate_anonymous_secret_descriptor(descriptor)
+        succeeded = True
+        return descriptor
+    except PhaseBRuntimeError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise PhaseBRuntimeError(
+            "phase_b_runtime_anonymous_secret_unavailable"
+        ) from exc
+    finally:
+        if directory_descriptor is not None:
+            try:
+                os.close(directory_descriptor)
+            except OSError:
+                pass
+        if descriptor is not None and not succeeded:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
 @contextlib.contextmanager
 def _secret_descriptor(secret: bytearray) -> Iterator[int]:
     if not isinstance(secret, bytearray) or not 24 <= len(secret) <= 4096:
         _fail("phase_b_runtime_secret_invalid")
-    creator = getattr(os, "memfd_create", None)
-    if not callable(creator):
-        _fail("phase_b_runtime_memfd_unavailable")
-    descriptor = creator(
-        "muncho-phase-b-credential",
-        getattr(os, "MFD_CLOEXEC", 0),
-    )
+    descriptor = _open_anonymous_secret_descriptor()
     try:
-        os.fchmod(descriptor, 0o400)
-        offset = 0
-        while offset < len(secret):
-            written = os.write(descriptor, secret[offset:])
-            if written <= 0:
-                _fail("phase_b_runtime_secret_transport_failed")
-            offset += written
-        os.fsync(descriptor)
+        try:
+            offset = 0
+            while offset < len(secret):
+                written = os.write(descriptor, secret[offset:])
+                if written <= 0:
+                    _fail("phase_b_runtime_secret_transport_failed")
+                offset += written
+            os.fsync(descriptor)
+        except PhaseBRuntimeError:
+            raise
+        except (OSError, TypeError, ValueError) as exc:
+            raise PhaseBRuntimeError(
+                "phase_b_runtime_secret_transport_failed"
+            ) from exc
         yield descriptor
     finally:
         try:

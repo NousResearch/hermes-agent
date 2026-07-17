@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -15,6 +16,299 @@ from gateway import canonical_writer_phase_b_runtime as runtime
 
 
 REVISION = "a" * 40
+
+
+def _anonymous_stat(*, directory: bool, mode: int, nlink: int = 0):
+    return SimpleNamespace(
+        st_mode=(stat.S_IFDIR if directory else stat.S_IFREG) | mode,
+        st_uid=0,
+        st_gid=0,
+        st_nlink=nlink,
+    )
+
+
+def _install_anonymous_descriptor_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name, value in {
+        "O_CLOEXEC": 0x01,
+        "O_DIRECTORY": 0x02,
+        "O_EXCL": 0x04,
+        "O_NOFOLLOW": 0x08,
+        "O_TMPFILE": 0x10,
+    }.items():
+        monkeypatch.setattr(runtime.os, name, value, raising=False)
+
+
+def test_secret_descriptor_uses_unlinked_otmpfile_when_memfd_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_anonymous_descriptor_flags(monkeypatch)
+    monkeypatch.setattr(runtime.os, "memfd_create", None, raising=False)
+    opens: list[tuple[object, ...]] = []
+    closed: list[int] = []
+    writes: list[tuple[int, bytes]] = []
+    inheritable: dict[int, bool] = {}
+
+    def open_descriptor(path, flags, mode=0o777, *, dir_fd=None):
+        opens.append((path, flags, mode, dir_fd))
+        return 11
+
+    monkeypatch.setattr(
+        runtime,
+        "_open_trusted_absolute_directory",
+        lambda path: 10,
+    )
+    monkeypatch.setattr(runtime.os, "open", open_descriptor)
+    monkeypatch.setattr(
+        runtime.os,
+        "fstat",
+        lambda descriptor: (
+            _anonymous_stat(directory=True, mode=0o755, nlink=2)
+            if descriptor == 10
+            else _anonymous_stat(directory=False, mode=0o400)
+        ),
+    )
+    monkeypatch.setattr(
+        runtime.os,
+        "set_inheritable",
+        lambda descriptor, value: inheritable.__setitem__(descriptor, value),
+    )
+    monkeypatch.setattr(
+        runtime.os,
+        "get_inheritable",
+        lambda descriptor: inheritable.get(descriptor, False),
+    )
+    monkeypatch.setattr(runtime.os, "fchmod", lambda descriptor, mode: None)
+    monkeypatch.setattr(
+        runtime.os,
+        "write",
+        lambda descriptor, value: writes.append((descriptor, bytes(value)))
+        or len(value),
+    )
+    monkeypatch.setattr(runtime.os, "fsync", lambda descriptor: None)
+    monkeypatch.setattr(runtime.os, "close", closed.append)
+
+    secret = bytearray(b"A" * 64)
+    with runtime._secret_descriptor(secret) as descriptor:
+        assert descriptor == 11
+        assert closed == [10]
+
+    assert closed == [10, 11]
+    assert writes == [(11, bytes(secret))]
+    assert opens[0][0] == "."
+    assert opens[0][2] == 0o400
+    assert opens[0][3] == 10
+    assert opens[0][1] & runtime.os.O_TMPFILE
+    assert opens[0][1] & runtime.os.O_EXCL
+    assert inheritable == {11: False}
+
+
+def test_anonymous_secret_fallback_rejects_writable_run_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_anonymous_descriptor_flags(monkeypatch)
+    monkeypatch.setattr(runtime.os, "memfd_create", None, raising=False)
+    monkeypatch.setattr(
+        runtime,
+        "_open_trusted_absolute_directory",
+        lambda path: 10,
+    )
+    monkeypatch.setattr(
+        runtime.os,
+        "fstat",
+        lambda _descriptor: _anonymous_stat(
+            directory=True,
+            mode=0o777,
+            nlink=2,
+        ),
+    )
+    monkeypatch.setattr(runtime.os, "set_inheritable", lambda *_args: None)
+    monkeypatch.setattr(runtime.os, "get_inheritable", lambda _descriptor: False)
+    closed: list[int] = []
+    monkeypatch.setattr(runtime.os, "close", closed.append)
+
+    with pytest.raises(
+        runtime.PhaseBRuntimeError,
+        match="phase_b_runtime_anonymous_secret_directory_invalid",
+    ):
+        runtime._open_anonymous_secret_descriptor()
+
+    assert closed == [10]
+
+
+def test_anonymous_secret_fallback_rejects_linked_inode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_anonymous_descriptor_flags(monkeypatch)
+    monkeypatch.setattr(runtime.os, "memfd_create", None, raising=False)
+    monkeypatch.setattr(
+        runtime,
+        "_open_trusted_absolute_directory",
+        lambda path: 10,
+    )
+    monkeypatch.setattr(
+        runtime.os,
+        "open",
+        lambda _path, _flags, _mode=0o777, *, dir_fd=None: 11,
+    )
+    monkeypatch.setattr(
+        runtime.os,
+        "fstat",
+        lambda descriptor: (
+            _anonymous_stat(directory=True, mode=0o755, nlink=2)
+            if descriptor == 10
+            else _anonymous_stat(directory=False, mode=0o400, nlink=1)
+        ),
+    )
+    monkeypatch.setattr(runtime.os, "set_inheritable", lambda *_args: None)
+    monkeypatch.setattr(runtime.os, "get_inheritable", lambda _descriptor: False)
+    monkeypatch.setattr(runtime.os, "fchmod", lambda *_args: None)
+    closed: list[int] = []
+    monkeypatch.setattr(runtime.os, "close", closed.append)
+
+    with pytest.raises(
+        runtime.PhaseBRuntimeError,
+        match="phase_b_runtime_anonymous_secret_identity_invalid",
+    ):
+        runtime._open_anonymous_secret_descriptor()
+
+    assert closed == [10, 11]
+
+
+def test_memfd_remains_preferred_and_must_be_unlinked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime.os, "memfd_create", lambda *_args: 12, raising=False)
+    monkeypatch.setattr(
+        runtime.os,
+        "fstat",
+        lambda _descriptor: _anonymous_stat(directory=False, mode=0o400),
+    )
+    inheritable: dict[int, bool] = {}
+    monkeypatch.setattr(
+        runtime.os,
+        "set_inheritable",
+        lambda descriptor, value: inheritable.__setitem__(descriptor, value),
+    )
+    monkeypatch.setattr(
+        runtime.os,
+        "get_inheritable",
+        lambda descriptor: inheritable.get(descriptor, False),
+    )
+    monkeypatch.setattr(
+        runtime.os,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail("O_TMPFILE fallback was used"),
+    )
+    monkeypatch.setattr(runtime.os, "fchmod", lambda *_args: None)
+
+    assert runtime._open_anonymous_secret_descriptor() == 12
+    assert inheritable == {12: False}
+
+
+@pytest.mark.parametrize(
+    ("status", "inheritable"),
+    (
+        (_anonymous_stat(directory=False, mode=0o400, nlink=1), False),
+        (
+            SimpleNamespace(
+                st_mode=stat.S_IFREG | 0o400,
+                st_uid=1,
+                st_gid=0,
+                st_nlink=0,
+            ),
+            False,
+        ),
+        (
+            SimpleNamespace(
+                st_mode=stat.S_IFREG | 0o400,
+                st_uid=0,
+                st_gid=1,
+                st_nlink=0,
+            ),
+            False,
+        ),
+        (_anonymous_stat(directory=False, mode=0o600), False),
+        (_anonymous_stat(directory=False, mode=0o400), True),
+    ),
+)
+def test_anonymous_secret_identity_rejects_unsafe_inode(
+    monkeypatch: pytest.MonkeyPatch,
+    status,
+    inheritable: bool,
+) -> None:
+    monkeypatch.setattr(runtime.os, "set_inheritable", lambda *_args: None)
+    monkeypatch.setattr(runtime.os, "fchmod", lambda *_args: None)
+    monkeypatch.setattr(runtime.os, "fstat", lambda _descriptor: status)
+    monkeypatch.setattr(
+        runtime.os,
+        "get_inheritable",
+        lambda _descriptor: inheritable,
+    )
+
+    with pytest.raises(
+        runtime.PhaseBRuntimeError,
+        match="phase_b_runtime_anonymous_secret_identity_invalid",
+    ):
+        runtime._validate_anonymous_secret_descriptor(11)
+
+
+def test_anonymous_secret_fallback_requires_all_linux_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_anonymous_descriptor_flags(monkeypatch)
+    monkeypatch.setattr(runtime.os, "memfd_create", None, raising=False)
+    monkeypatch.setattr(runtime.os, "O_TMPFILE", 0, raising=False)
+    monkeypatch.setattr(
+        runtime,
+        "_open_trusted_absolute_directory",
+        lambda _path: pytest.fail("directory was opened"),
+    )
+
+    with pytest.raises(
+        runtime.PhaseBRuntimeError,
+        match="phase_b_runtime_anonymous_secret_unavailable",
+    ):
+        runtime._open_anonymous_secret_descriptor()
+
+
+def test_secret_descriptor_closes_after_write_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime, "_open_anonymous_secret_descriptor", lambda: 11)
+    monkeypatch.setattr(
+        runtime.os,
+        "write",
+        lambda *_args: (_ for _ in ()).throw(OSError("write failed")),
+    )
+    closed: list[int] = []
+    monkeypatch.setattr(runtime.os, "close", closed.append)
+
+    with pytest.raises(
+        runtime.PhaseBRuntimeError,
+        match="phase_b_runtime_secret_transport_failed",
+    ):
+        with runtime._secret_descriptor(bytearray(b"A" * 64)):
+            pytest.fail("descriptor was yielded")
+
+    assert closed == [11]
+
+
+def test_secret_descriptor_closes_after_consumer_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime, "_open_anonymous_secret_descriptor", lambda: 11)
+    monkeypatch.setattr(runtime.os, "write", lambda _fd, value: len(value))
+    monkeypatch.setattr(runtime.os, "fsync", lambda _fd: None)
+    closed: list[int] = []
+    monkeypatch.setattr(runtime.os, "close", closed.append)
+
+    with pytest.raises(RuntimeError, match="consumer failed"):
+        with runtime._secret_descriptor(bytearray(b"A" * 64)):
+            raise RuntimeError("consumer failed")
+
+    assert closed == [11]
 
 
 def _systemd_result(

@@ -976,6 +976,10 @@ def _open_admin_config(
         return admin_config, session
     except SchemaReconciliationRuntimeError:
         raise
+    except phase_b_runtime.PhaseBRuntimeError as exc:
+        raise SchemaReconciliationRuntimeError(
+            "schema_reconciliation_runtime_admin_secret_transport_failed"
+        ) from exc
     except BaseException as exc:
         raise SchemaReconciliationRuntimeError(
             "schema_reconciliation_runtime_admin_authentication_failed"

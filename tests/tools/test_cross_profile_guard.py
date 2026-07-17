@@ -252,7 +252,7 @@ class TestSystemPromptActiveProfile:
         src = Path("agent/system_prompt.py").read_text()
         assert "Active Hermes profile" in src
         assert "cross_profile=True" in src
-        assert "~/.hermes/profiles/" in src
+        assert "/profiles/<name>/" in src or "/profiles/{active_profile}" in src
         # Both branches present (default and named profile).
         assert "Active Hermes profile: default" in src
         assert "Active Hermes profile: {active_profile}" in src

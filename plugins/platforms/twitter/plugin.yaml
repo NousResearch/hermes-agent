@@ -4,6 +4,8 @@ kind: platform
 version: 1.0.0
 description: OAuth 2.0 Twitter/X gateway adapter for public mentions and direct messages.
 author: NousResearch
+# OAuth access and refresh tokens are profile-scoped files created by the
+# interactive setup flow. They are intentionally not environment variables.
 optional_env:
   - name: TWITTER_ALLOWED_USERS
     description: Comma-separated numeric X user IDs allowed to trigger Hermes

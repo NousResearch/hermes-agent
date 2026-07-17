@@ -374,6 +374,45 @@ def test_skills_hub_gh_token_hides_windows(monkeypatch):
     assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
 
 
+def test_tui_dependency_install_hides_npm_window(tmp_path, monkeypatch):
+    """The TUI npm-install call (main.py, gated by _tui_need_npm_install) was
+    spawned with no creationflags at all — not even the weaker
+    windows_hide_flags() used elsewhere in this same file. On a system where
+    Windows Terminal is the default terminal-delegation handler, an
+    unflagged console-subsystem child (npm.cmd) gets its own new, VISIBLE
+    console even though the parent is a windowless pythonw.exe Scheduled
+    Task — confirmed empirically on a live Windows install 2026-07-16."""
+    from hermes_cli import main as main_mod
+    from hermes_cli import _subprocess_compat
+
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tui_dir / "dist" / "entry.js").parent.mkdir(parents=True)
+    (tui_dir / "dist" / "entry.js").write_text("console.log('tui')")
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"C:/bin/{name}.cmd")
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="", returncode=0)
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    npm_calls = _spawns(captured, "install", "--workspace", "ui-tui")
+    assert len(npm_calls) == 1, captured
+    assert npm_calls[0][1].get("creationflags") == _CREATE_NO_WINDOW
+
+
 def test_tui_slash_worker_hides_python_window(monkeypatch):
     from tui_gateway import server
 

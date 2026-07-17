@@ -20,6 +20,7 @@ import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   session: SessionInfo
@@ -68,6 +69,7 @@ export function SidebarSessionRow({
 }: SidebarSessionRowProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
+  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(session.profile)
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at, r)
   const handleLabel = `Reorder ${title}`
@@ -161,6 +163,12 @@ export function SidebarSessionRow({
 
           startSessionDrag({ id: session.id, profile: session.profile || 'default', title }, event)
         }}
+        // Hovering a row from another profile (the all-profiles view) telegraphs
+        // a cross-profile resume — start that backend's spawn now so the click
+        // doesn't pay the full cold boot. Same-profile rows no-op inside
+        // prewarmProfileBackend.
+        onPointerEnter={startPrewarm}
+        onPointerLeave={cancelPrewarm}
         ref={ref}
         style={style}
         {...rest}

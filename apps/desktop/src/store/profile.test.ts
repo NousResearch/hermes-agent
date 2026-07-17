@@ -18,7 +18,9 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, $profiles, ensureGatewayProfile, refreshProfiles } = await import('./profile')
+const { $activeGatewayProfile, $profiles, ensureGatewayProfile, prewarmProfileBackend, refreshProfiles } =
+  await import('./profile')
+
 const { $connection } = await import('./session')
 const { queryClient } = await import('@/lib/query-client')
 const { getProfiles } = await import('@/hermes')
@@ -112,6 +114,42 @@ describe('profile-scoped cache invalidation', () => {
 
     expect(queryClient.invalidateQueries).toHaveBeenCalled()
     expect(resetStarmapGraph).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
+  it('kicks getConnection for a non-active profile', () => {
+    getConnection.mockResolvedValue(localConn())
+
+    prewarmProfileBackend('warm-basic')
+
+    expect(getConnection).toHaveBeenCalledWith('warm-basic')
+  })
+
+  it('skips the profile the gateway is already on', () => {
+    $activeGatewayProfile.set('warm-active')
+
+    prewarmProfileBackend('warm-active')
+
+    expect(getConnection).not.toHaveBeenCalled()
+  })
+
+  it('throttles repeat pre-warms for the same profile within the interval', () => {
+    getConnection.mockResolvedValue(localConn())
+
+    prewarmProfileBackend('warm-throttle-a')
+    prewarmProfileBackend('warm-throttle-a')
+    prewarmProfileBackend('warm-throttle-b')
+
+    const calls = getConnection.mock.calls.map(([name]) => name)
+    expect(calls.filter(name => name === 'warm-throttle-a')).toHaveLength(1)
+    expect(calls.filter(name => name === 'warm-throttle-b')).toHaveLength(1)
+  })
+
+  it('swallows spawn failures — error UX belongs to the real switch', () => {
+    getConnection.mockRejectedValue(new Error('spawn failed'))
+
+    expect(() => prewarmProfileBackend('warm-failing')).not.toThrow()
   })
 })
 

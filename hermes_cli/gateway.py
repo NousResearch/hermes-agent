@@ -3982,7 +3982,17 @@ def generate_launchd_plist() -> str:
     
     <key>KeepAlive</key>
     <true/>
-    
+
+    <!-- ThrottleInterval raises launchd's default 10s minimum respawn interval
+         to 30s so a crash-looping gateway can't hammer launchd into a rapid
+         respawn storm; ExitTimeOut gives the gateway 25s of graceful-drain
+         headroom before launchd escalates from SIGTERM to SIGKILL on stop. -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>ExitTimeOut</key>
+    <integer>25</integer>
+
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
     
@@ -4855,6 +4865,39 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         _exit_diag("atexit.hook", sys_exc=repr(sys.exc_info()))
 
     _atexit.register(_atexit_hook)
+
+    # Portable, app-level respawn-storm circuit breaker. launchd/systemd have
+    # their own throttles, but this backstop works on every platform (and covers
+    # supervisors that lack a respawn floor). Set HERMES_GATEWAY_MAX_STARTS<=0 to
+    # disable. Kept best-effort: a bookkeeping failure must never block startup.
+    try:
+        import time as _time
+
+        from gateway.status import record_start_and_check_storm
+
+        try:
+            _max_starts = int(os.getenv("HERMES_GATEWAY_MAX_STARTS", "5"))
+        except ValueError:
+            _max_starts = 5
+        try:
+            _win = float(os.getenv("HERMES_GATEWAY_START_WINDOW_S", "120"))
+        except ValueError:
+            _win = 120.0
+        _storm = (
+            record_start_and_check_storm(max_starts=_max_starts, window_s=_win)
+            if _max_starts > 0
+            else None
+        )
+        if _storm is not None:
+            logger.warning(
+                "Gateway (re)started %d times in %.0fs — backing off %.0fs to break a respawn storm.",
+                _storm.count,
+                _storm.window_s,
+                _storm.backoff_s,
+            )
+            _time.sleep(_storm.backoff_s)
+    except Exception as _be:
+        logger.debug("respawn-storm breaker check failed (non-fatal): %s", _be)
 
     success = False
     try:

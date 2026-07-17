@@ -18,6 +18,7 @@ for reinstall when scopes/commands change.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -178,16 +179,28 @@ def slack_manifest_command(args) -> int:
     else:
         messaging_experience = "assistant"
 
-    if getattr(args, "slashes_only", False):
-        from hermes_cli.commands import slack_app_manifest
+    # CLI logging writes only to rotating log files (no console handler), so
+    # mirror manifest-generation warnings — e.g. commands skipped for
+    # exceeding Slack's name-length limit — to stderr where the operator can
+    # see them. stdout stays reserved for the manifest JSON.
+    commands_logger = logging.getLogger("hermes_cli.commands")
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setLevel(logging.WARNING)
+    stderr_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    commands_logger.addHandler(stderr_handler)
+    try:
+        if getattr(args, "slashes_only", False):
+            from hermes_cli.commands import slack_app_manifest
 
-        manifest = slack_app_manifest()["features"]["slash_commands"]
-    else:
-        manifest = _build_full_manifest(
-            name,
-            description,
-            messaging_experience=messaging_experience,
-        )
+            manifest = slack_app_manifest()["features"]["slash_commands"]
+        else:
+            manifest = _build_full_manifest(
+                name,
+                description,
+                messaging_experience=messaging_experience,
+            )
+    finally:
+        commands_logger.removeHandler(stderr_handler)
 
     payload = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
 

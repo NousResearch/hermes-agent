@@ -437,6 +437,8 @@ The prefix is applied on both sides automatically: `hermes slack manifest` emits
 
 The default (empty prefix) leaves all command names unchanged.
 
+Slack caps slash-command names at 32 characters. If the prefix pushes a command name over that limit, `hermes slack manifest` omits it from the generated manifest and prints a warning to stderr listing the affected commands. As long as the prefixed `hermes` entry point itself still fits, the omitted commands remain reachable via `/<prefix>hermes <subcommand>`; with a prefix so long that even the entry point is dropped, the only fix is a shorter prefix.
+
 ### Working-State Status Line
 
 While the agent processes a message, Slack shows a status line next to the bot

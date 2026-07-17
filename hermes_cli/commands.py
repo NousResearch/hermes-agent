@@ -1346,12 +1346,13 @@ def slack_app_manifest(request_url: str = "https://hermes-agent.local/slack/comm
     """
     prefix = slack_command_prefix()
     slashes = []
+    skipped: list[str] = []
     for name, desc, usage in slack_native_slashes():
         slash_name = f"{prefix}{name}"
         # Slack caps slash-command names at 32 chars. A long prefix can push a
-        # name over; skip those so the manifest stays valid — they remain
-        # reachable via /{prefix}hermes <subcommand>.
+        # name over; skip those so the manifest stays valid (warned below).
         if len(slash_name) > _SLACK_NAME_LIMIT:
+            skipped.append(slash_name)
             continue
         entry = {
             "command": f"/{slash_name}",
@@ -1362,6 +1363,28 @@ def slack_app_manifest(request_url: str = "https://hermes-agent.local/slack/comm
         if usage:
             entry["usage_hint"] = usage
         slashes.append(entry)
+    if skipped:
+        catchall = f"{prefix}hermes"
+        if catchall in skipped:
+            # Even the catch-all entry point does not fit, so there is no
+            # /<prefix>hermes fallback to point at — only a shorter prefix helps.
+            tail = (
+                f"The /{catchall} entry point itself does not fit — use a "
+                "shorter command_prefix."
+            )
+        else:
+            tail = (
+                f"They remain reachable via /{catchall} <subcommand>; use a "
+                "shorter command_prefix to register them as native slashes."
+            )
+        logger.warning(
+            "Slack manifest: skipped %d command(s) whose prefixed name exceeds "
+            "Slack's %d-char slash-command limit: %s. %s",
+            len(skipped),
+            _SLACK_NAME_LIMIT,
+            ", ".join(sorted(skipped)),
+            tail,
+        )
     return {"features": {"slash_commands": slashes}}
 
 

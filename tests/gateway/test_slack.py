@@ -10,6 +10,7 @@ We mock the slack modules at import time to avoid collection errors.
 
 import asyncio
 import contextlib
+import logging
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch, call
@@ -276,6 +277,22 @@ class TestSlackCommandPrefix:
         assert all(s["command"].startswith("/myorg-") for s in slashes)
         assert any(s["command"] == "/myorg-hermes" for s in slashes)
 
+    def test_manifest_silent_when_all_prefixed_names_fit(self, monkeypatch, caplog):
+        from hermes_cli import commands as cmds
+
+        monkeypatch.setenv("HERMES_SLACK_COMMAND_PREFIX", "myorg-")
+        monkeypatch.setattr(
+            cmds,
+            "slack_native_slashes",
+            lambda: [("hermes", "d", ""), ("model", "d", "")],
+        )
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.commands"):
+            slashes = cmds.slack_app_manifest()["features"]["slash_commands"]
+
+        assert [s["command"] for s in slashes] == ["/myorg-hermes", "/myorg-model"]
+        # Nothing was skipped, so the generator must stay silent.
+        assert not caplog.records
+
     def test_manifest_default_has_no_prefix(self, monkeypatch):
         from hermes_cli.commands import slack_app_manifest
 
@@ -286,7 +303,7 @@ class TestSlackCommandPrefix:
         assert any(s["command"] == "/hermes" for s in slashes)
         assert all(not s["command"].startswith("/myorg-") for s in slashes)
 
-    def test_manifest_skips_prefixed_name_over_slack_limit(self, monkeypatch):
+    def test_manifest_skips_prefixed_name_over_slack_limit(self, monkeypatch, caplog):
         from hermes_cli import commands as cmds
 
         monkeypatch.setenv("HERMES_SLACK_COMMAND_PREFIX", "myorg-")
@@ -296,11 +313,42 @@ class TestSlackCommandPrefix:
             "slack_native_slashes",
             lambda: [("hermes", "d", ""), (long_name, "d", ""), ("model", "d", "")],
         )
-        names = [s["command"] for s in cmds.slack_app_manifest()["features"]["slash_commands"]]
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.commands"):
+            names = [s["command"] for s in cmds.slack_app_manifest()["features"]["slash_commands"]]
 
         assert "/myorg-hermes" in names
         assert "/myorg-model" in names
         assert f"/myorg-{long_name}" not in names
+
+        # The skip is warned, naming the dropped command and the fallback path.
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert f"myorg-{long_name}" in message
+        assert "/myorg-hermes <subcommand>" in message
+
+    def test_manifest_warns_when_catchall_itself_over_limit(self, monkeypatch, caplog):
+        from hermes_cli import commands as cmds
+
+        # 27-char prefix: "hermes" (6) no longer fits (33 > 32) but "model"
+        # (5) still does — the warning must not advise the dead fallback.
+        prefix = "x" * 26 + "-"
+        monkeypatch.setenv("HERMES_SLACK_COMMAND_PREFIX", prefix)
+        monkeypatch.setattr(
+            cmds,
+            "slack_native_slashes",
+            lambda: [("hermes", "d", ""), ("model", "d", "")],
+        )
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.commands"):
+            names = [s["command"] for s in cmds.slack_app_manifest()["features"]["slash_commands"]]
+
+        assert names == [f"/{prefix}model"]
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert f"{prefix}hermes" in message
+        assert "<subcommand>" not in message
+        assert "shorter command_prefix" in message
 
 
 # ---------------------------------------------------------------------------

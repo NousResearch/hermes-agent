@@ -1,6 +1,7 @@
 import inspect
 import asyncio
 import json
+import os
 import socket
 import stat
 from unittest.mock import AsyncMock, Mock
@@ -40,6 +41,19 @@ def test_settings_reject_unsafe_limits():
                 extra={"client_id": "client", "poll_interval_seconds": 0}
             )
         )
+
+
+def test_apply_yaml_config_uses_nested_platform_block(monkeypatch):
+    from plugins.platforms.twitter.adapter import apply_yaml_config
+
+    monkeypatch.delenv("TWITTER_ALLOWED_USERS", raising=False)
+    nested = {
+        "client_id": "nested-client",
+        "allowed_users": ["42"],
+        "home_channel": "timeline",
+    }
+    assert apply_yaml_config({}, nested)["client_id"] == "nested-client"
+    assert os.environ["TWITTER_ALLOWED_USERS"] == "42"
 
 
 def test_adapter_send_signature_matches_base():
@@ -360,6 +374,9 @@ def test_twitter_tools_are_gated_by_profile_oauth(monkeypatch, tmp_path):
     save_tokens({"access_token": "test"})
     assert twitter_available()
 
+    save_tokens({"access_token": "expired", "expires_at": 1})
+    assert not twitter_available()
+
 
 @pytest.mark.asyncio
 async def test_standalone_sender_uses_fresh_client(monkeypatch, tmp_path):
@@ -379,6 +396,27 @@ async def test_standalone_sender_uses_fresh_client(monkeypatch, tmp_path):
 
     assert result == {"success": True, "message_id": "901"}
     client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_rejects_invalid_routes_and_oversized_text(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(PlatformConfig(extra={"client_id": "client"}))
+    adapter._client = Mock()
+    adapter._client.create_post = AsyncMock(return_value="1")
+    adapter._client.send_dm = AsyncMock(return_value="2")
+
+    invalid_post = await adapter.send("tweet:not-an-id:anchor", "bad")
+    invalid_dm = await adapter.send("dm:../../tokens", "bad")
+    oversized = await adapter.send("timeline", "x" * 281)
+
+    assert not invalid_post.success
+    assert not invalid_dm.success
+    assert not oversized.success
+    adapter._client.create_post.assert_not_awaited()
+    adapter._client.send_dm.assert_not_awaited()
 
 
 def test_conversation_context_is_bounded_and_chronological():

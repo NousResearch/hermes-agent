@@ -2,6 +2,7 @@ import asyncio
 import logging
 import mimetypes
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -268,6 +269,25 @@ class TwitterAdapter(BasePlatformAdapter):
         if self._client is None:
             return SendResult(success=False, error="Twitter is not connected")
         try:
+            if len(content) > MAX_MESSAGE_LENGTH:
+                raise ValueError(
+                    f"Twitter content exceeds {MAX_MESSAGE_LENGTH} characters"
+                )
+            public_parts = chat_id.split(":")
+            valid_public = (
+                len(public_parts) == 3
+                and public_parts[0] == "tweet"
+                and public_parts[1].isdigit()
+                and public_parts[2].isdigit()
+            )
+            valid_dm = bool(
+                re.fullmatch(r"dm:[0-9]+(?:-[0-9]+)*", chat_id)
+            )
+            if chat_id != "timeline" and not valid_public and not valid_dm:
+                raise ValueError(
+                    "Twitter destination must be timeline, "
+                    "tweet:<conversation_id>:<anchor_id>, or dm:<conversation_id>"
+                )
             is_dm = chat_id.startswith("dm:")
             media_ids = await self._upload_images(metadata, for_dm=is_dm)
             if chat_id == "timeline":
@@ -742,7 +762,9 @@ def is_connected(config: PlatformConfig) -> bool:
 
 
 def apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> dict:
-    cfg = yaml_cfg.get("twitter") or {}
+    cfg = platform_cfg if isinstance(platform_cfg, dict) else {}
+    if not cfg:
+        cfg = yaml_cfg.get("twitter") or {}
     allowed = cfg.get("allowed_users")
     if allowed is not None and not os.getenv("TWITTER_ALLOWED_USERS"):
         os.environ["TWITTER_ALLOWED_USERS"] = ",".join(map(str, allowed))

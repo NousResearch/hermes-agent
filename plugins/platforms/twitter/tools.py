@@ -9,7 +9,8 @@ from .oauth import load_tokens, refresh_if_needed
 
 
 def twitter_available() -> bool:
-    return load_tokens() is not None
+    tokens = load_tokens()
+    return bool(tokens and (not tokens.expired() or tokens.refresh_token))
 
 
 async def handle_bookmarks(args: dict, **kwargs) -> str:

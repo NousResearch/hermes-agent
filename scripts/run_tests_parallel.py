@@ -590,7 +590,33 @@ def _slice_files(
     return target
 
 
+def _make_stdio_glyph_safe() -> None:
+    """Keep status glyphs from killing the runner on narrow console encodings.
+
+    On native Windows, piped or legacy-console stdio defaults to a locale
+    codec (usually cp1252) that cannot encode the ✓/✗ progress glyphs — the
+    first per-file status line then dies with UnicodeEncodeError before a
+    single test result is reported. Declare the runner's own output UTF-8
+    (what CI and every modern terminal already are), with errors="replace"
+    as the can't-crash backstop; where the encoding can't be changed, fall
+    back to errors="replace" alone so glyphs degrade to "?" instead of
+    killing the run. On already-UTF-8 stdio this is a no-op.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            try:
+                reconfigure(errors="replace")
+            except Exception:
+                pass
+
+
 def main() -> int:
+    _make_stdio_glyph_safe()
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,

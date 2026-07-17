@@ -4371,8 +4371,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 worker_thread.start()
             except BaseException:
                 _release_fire_reservations()
-                raise
+                logger.error("cron fire: worker thread start failed")
+                return web.json_response(
+                    {"error": "cron fire dispatch unavailable"}, status=503
+                )
             supervisor = _wait_for_fire_worker()
+            task = None
             try:
                 task = asyncio.create_task(
                     supervisor,
@@ -4380,15 +4384,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             except BaseException:
                 # Avoid an unawaited-coroutine warning if task construction
-                # itself fails. The worker remains authoritative and will
-                # release from its finally block.
+                # itself fails. The dedicated worker remains authoritative, so
+                # the accepted fire can continue without asyncio task tracking.
                 supervisor.close()
-                raise
-            try:
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
-            except (TypeError, AttributeError):
-                pass
+                logger.error("cron fire: supervisor task start failed")
+            if task is not None:
+                try:
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+                except (TypeError, AttributeError):
+                    pass
 
             return web.json_response({"status": "accepted", "job_id": job_id}, status=202)
 

@@ -8357,6 +8357,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _phase_elapsed(),
             )
 
+            # Re-read the operator-configured drain window for restart flows so
+            # a just-applied safety bump does not require an extra preliminary
+            # restart to take effect. Plain shutdown keeps its startup value to
+            # avoid unexpectedly lengthening operator/system stop commands.
+            if self._restart_requested:
+                try:
+                    self._restart_drain_timeout = self._load_restart_drain_timeout()
+                except Exception as _e:
+                    logger.debug("Failed to refresh restart_drain_timeout at shutdown: %s", _e)
             timeout = self._restart_drain_timeout
 
             # Pre-mark sessions as resume_pending BEFORE the drain wait.

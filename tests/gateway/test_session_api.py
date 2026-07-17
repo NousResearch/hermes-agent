@@ -7,7 +7,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server import APIServerAdapter, _session_chat_runtime_overrides
 from hermes_state import SessionDB
 
 
@@ -598,7 +598,7 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
     [
         ("chat", "model", {"bad": "shape"}, "invalid_model"),
         ("chat/stream", "provider", ["bad"], "invalid_provider"),
-        ("chat", "reasoning_effort", "ultra", "invalid_reasoning_effort"),
+        ("chat", "reasoning_effort", "extreme", "invalid_reasoning_effort"),
         ("chat/stream", "reasoning_effort", {"bad": "shape"}, "invalid_reasoning_effort"),
         ("chat", "service_tier", "turbo", "invalid_service_tier"),
         ("chat/stream", "service_tier", True, "invalid_service_tier"),
@@ -626,6 +626,17 @@ async def test_session_chat_rejects_invalid_request_controls(
         data = await resp.json()
 
     assert data["error"]["code"] == error_code
+
+
+@pytest.mark.parametrize("effort", ["max", "ultra"])
+def test_session_chat_accepts_all_supported_reasoning_efforts(effort):
+    parsed_effort, service_tier, err = _session_chat_runtime_overrides(
+        {"reasoning_effort": effort}
+    )
+
+    assert err is None
+    assert parsed_effort == effort
+    assert service_tier is None
 
 
 @pytest.mark.asyncio

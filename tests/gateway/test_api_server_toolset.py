@@ -262,7 +262,11 @@ class TestApiServerAdapterToolset:
         from gateway.config import PlatformConfig
 
         adapter = APIServerAdapter(PlatformConfig())
-        session_override = {"model": "session-model", "provider": "session-provider"}
+        session_override = {
+            "model": "session-model",
+            "provider": "session-provider",
+            "api_mode": "responses",
+        }
         with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
              patch("gateway.run._resolve_runtime_agent_kwargs_for_provider") as mock_provider, \
              patch("gateway.run._resolve_gateway_model", return_value="global-model"), \
@@ -281,7 +285,7 @@ class TestApiServerAdapterToolset:
                 "api_key": "session-key",
                 "base_url": None,
                 "provider": "session-provider",
-                "api_mode": None,
+                "api_mode": "chat_completions",
                 "command": None,
                 "args": [],
                 "credential_pool": None,
@@ -297,6 +301,56 @@ class TestApiServerAdapterToolset:
             assert kwargs["model"] == "session-model"
             assert kwargs["provider"] == "session-provider"
             assert kwargs["api_key"] == "session-key"
+            assert kwargs["api_mode"] == "responses"
+
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    def test_route_credentials_are_used_to_resolve_unconfigured_provider(self):
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig())
+        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("gateway.run._resolve_runtime_agent_kwargs_for_provider") as mock_provider, \
+             patch("gateway.run._resolve_gateway_model", return_value="global-model"), \
+             patch("gateway.run._load_gateway_config", return_value={}), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_kwargs.return_value = {
+                "api_key": "global-key",
+                "base_url": None,
+                "provider": "global-provider",
+                "api_mode": None,
+                "command": None,
+                "args": [],
+            }
+            mock_provider.return_value = {
+                "api_key": "route-key",
+                "base_url": "https://route.invalid/v1",
+                "provider": "anthropic",
+                "api_mode": "anthropic_messages",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+            }
+            mock_agent_cls.return_value = MagicMock()
+
+            adapter._create_agent(
+                request_route={
+                    "model": "claude-route-model",
+                    "provider": "anthropic",
+                    "api_key": "route-key",
+                    "base_url": "https://route.invalid/v1",
+                }
+            )
+
+            mock_provider.assert_called_once_with(
+                "anthropic",
+                api_key="route-key",
+                base_url="https://route.invalid/v1",
+                target_model="claude-route-model",
+            )
+            kwargs = mock_agent_cls.call_args.kwargs
+            assert kwargs["api_key"] == "route-key"
+            assert kwargs["base_url"] == "https://route.invalid/v1"
 
     @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
     def test_routed_provider_resolution_failure_does_not_reuse_default_credentials(self):

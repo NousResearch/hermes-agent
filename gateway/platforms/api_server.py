@@ -437,10 +437,14 @@ def _session_chat_runtime_overrides(
                 status=400,
             )
         reasoning_effort = reasoning_effort.strip().lower()
-        if reasoning_effort not in {"none", "minimal", "low", "medium", "high", "xhigh"}:
+        from hermes_constants import VALID_REASONING_EFFORTS
+
+        valid_reasoning_efforts = {"none", *VALID_REASONING_EFFORTS}
+        if reasoning_effort not in valid_reasoning_efforts:
             return None, None, web.json_response(
                 _openai_error(
-                    "reasoning_effort must be one of: none, minimal, low, medium, high, xhigh",
+                    "reasoning_effort must be one of: "
+                    + ", ".join(sorted(valid_reasoning_efforts)),
                     code="invalid_reasoning_effort",
                 ),
                 status=400,
@@ -1795,6 +1799,7 @@ class APIServerAdapter(BasePlatformAdapter):
             runner = _gateway_runner_ref()
             if runner is None:
                 return None
+            runner._rehydrate_session_model_override(session_key)
             override = runner._session_model_overrides.get(session_key)
             return dict(override) if isinstance(override, dict) else None
         except Exception:
@@ -1878,25 +1883,39 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             effective_route = route
         if effective_route:
+            if effective_route.get("model"):
+                model = effective_route["model"]
             if effective_route.get("provider"):
-                # Provider selection must resolve a complete, matching runtime.
-                # Never retain the default provider's credentials on failure.
+                # Resolve against route credentials and the selected model so
+                # provider-specific transports never inherit the default
+                # provider's credentials or stale API mode.
                 from gateway.run import _resolve_runtime_agent_kwargs_for_provider
 
                 provider_kwargs = _resolve_runtime_agent_kwargs_for_provider(
-                    effective_route["provider"]
+                    effective_route["provider"],
+                    api_key=effective_route.get("api_key"),
+                    base_url=effective_route.get("base_url"),
+                    target_model=model,
                 )
                 provider_kwargs.pop("model", None)
                 runtime_kwargs.update(provider_kwargs)
-            if effective_route.get("model"):
-                model = effective_route["model"]
-            # Per-route secrets are upstream provider credentials. Never log
-            # them (compare _check_auth: caller auth stays the global bearer
-            # key checked with hmac.compare_digest).
-            if effective_route.get("api_key"):
-                runtime_kwargs["api_key"] = effective_route["api_key"]
-            if effective_route.get("base_url"):
-                runtime_kwargs["base_url"] = effective_route["base_url"]
+            # Live session overrides may carry transport/runtime details in
+            # addition to route credentials. Explicit values win over the
+            # provider-derived defaults for this turn.
+            for key in (
+                "api_key",
+                "base_url",
+                "api_mode",
+                "credential_pool",
+                "command",
+                "args",
+                "max_tokens",
+            ):
+                value = effective_route.get(key)
+                if value is not None:
+                    runtime_kwargs[key] = value
+            if effective_route.get("api_key") and "credential_pool" not in effective_route:
+                runtime_kwargs["credential_pool"] = None
             logger.debug(
                 "api_server model route applied: model=%s provider=%s",
                 model,

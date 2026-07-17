@@ -200,3 +200,40 @@ class TestStepfunEnvAndDoctor:
         assert any(
             url == "https://api.stepfun.ai/step_plan/v1/models" for url, _, _ in calls
         )
+
+
+class TestStepfunMigration:
+    def _run(self, tmp_path, monkeypatch, model_cfg):
+        import yaml
+        from hermes_constants import get_hermes_home
+
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        cfg = {"_config_version": 33, "model": model_cfg}
+        (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+        from hermes_cli import config as config_mod
+
+        # `migrate_config` resolves config path via `hermes_cli.config.get_hermes_home`
+        # (re-exported at module import), NOT the hermes_constants original — patch the
+        # symbol the migration actually calls so reads AND writes land in tmp_path.
+        monkeypatch.setattr(config_mod, "get_hermes_home", lambda: home)
+        # Invalidate the raw-config cache so the temp file is read fresh.
+        monkeypatch.setattr(config_mod, "_RAW_CONFIG_CACHE", {})
+
+        config_mod.migrate_config(interactive=False, quiet=True)
+        return yaml.safe_load((home / "config.yaml").read_text()) or {}
+
+    def test_step_plan_config_migrated(self, tmp_path, monkeypatch):
+        out = self._run(
+            tmp_path, monkeypatch,
+            {"provider": "stepfun", "base_url": "https://api.stepfun.ai/step_plan/v1", "default": "step-3.5-flash"},
+        )
+        assert out["model"]["provider"] == "stepfun-plan"
+
+    def test_standard_config_untouched(self, tmp_path, monkeypatch):
+        out = self._run(
+            tmp_path, monkeypatch,
+            {"provider": "stepfun", "base_url": "https://api.stepfun.ai/v1", "default": "step-3.5-flash"},
+        )
+        assert out["model"]["provider"] == "stepfun"

@@ -3389,7 +3389,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # =============================================================================
@@ -6278,6 +6278,26 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     "delegation.max_concurrent_children now caps background "
                     "delegations too."
                 )
+
+    # ── Version 33 → 34: legacy `stepfun` step-plan id → `stepfun-plan` ──
+    # The bare `stepfun` id now means the standard chat API (api.stepfun.ai/v1).
+    # Configs that used `stepfun` for the Step Plan endpoint are identified by a
+    # base_url path containing `/step_plan/` and rewritten to `stepfun-plan`.
+    # Standard `/v1` configs (or ones with no base_url) are left as `stepfun`.
+    if current_ver < 34:
+        config = read_raw_config()
+        model_cfg = config.get("model")
+        if isinstance(model_cfg, dict) and model_cfg.get("provider") == "stepfun":
+            base_url = str(model_cfg.get("base_url") or "")
+            if "/step_plan/" in base_url:
+                model_cfg["provider"] = "stepfun-plan"
+                config["model"] = model_cfg
+                _persist_migration(config)
+                results["config_added"].append(
+                    "model.provider stepfun → stepfun-plan (Step Plan endpoint)"
+                )
+                if not quiet:
+                    print("  ✓ Migrated StepFun Step Plan config to provider 'stepfun-plan'")
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
     # Users can hand-edit mcp_servers, and older installs may already contain a

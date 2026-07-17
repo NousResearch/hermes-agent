@@ -4827,6 +4827,13 @@ class AIAgent:
         if visible:
             return visible
         content = assistant_msg.get("content")
+        # Normalize multimodal content-parts list to plain text (#66267)
+        if isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(part.get("text", ""))
+            content = "\n".join(text_parts) if text_parts else ""
         return self._strip_think_blocks(content or "").strip()
 
     def _interim_text_was_delivered(self, text: str) -> bool:

@@ -62,6 +62,7 @@ def _make_runner():
     runner._exit_with_failure = False
     runner._exit_cleanly = False
     runner._failed_platforms = {}
+    runner._background_tasks = set()
     runner.adapters = {}
     runner.delivery_router = MagicMock()
     runner._running_agents = {}

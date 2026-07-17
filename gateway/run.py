@@ -6621,6 +6621,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_task = asyncio.create_task(_run_restart())
         return True
 
+    def _spawn_background_task(self, coro):
+        """Schedule a long-lived background task and keep a strong reference to it.
+
+        asyncio only holds a *weak* reference to a running task, so the result of
+        a bare ``asyncio.create_task(...)`` can be garbage-collected mid-flight if
+        nothing else references it. Registering the task in ``self._background_tasks``
+        keeps it alive and ensures it is cancelled during shutdown (see the
+        ``_background_tasks`` teardown in ``_stop_impl``).
+        """
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
     # Drain-timeout reasons set by _stop_impl() when a still-running turn is
     # force-interrupted; "restart_interrupted" is set by
     # SessionStore.suspend_recently_active() on crash recovery (no
@@ -7547,7 +7561,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Process in batches of 100 with event-loop yield points to avoid
             # O(n^2) event-loop blocking when recovering thousands of watchers.
             for i, watcher in enumerate(watchers):
-                asyncio.create_task(self._run_process_watcher(watcher))
+                self._spawn_background_task(self._run_process_watcher(watcher))
                 logger.info("Resumed watcher for recovered process %s", watcher.get("session_id"))
                 if i % 100 == 99:
                     await asyncio.sleep(0)
@@ -7555,18 +7569,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.error("Recovered watcher setup error: %s", e)
 
         # Start background session expiry watcher to finalize expired sessions
-        asyncio.create_task(self._session_expiry_watcher())
+        self._spawn_background_task(self._session_expiry_watcher())
 
         # Start background kanban notifier — delivers `completed`, `blocked`,
         # `spawn_auto_blocked`, and `crashed` events to gateway subscribers
         # so human-in-the-loop workflows hear back without polling.
-        asyncio.create_task(self._kanban_notifier_watcher())
+        self._spawn_background_task(self._kanban_notifier_watcher())
 
         # Start background kanban dispatcher — spawns workers for ready
         # tasks. Gated by `kanban.dispatch_in_gateway` (default True).
         # When false, users run `hermes kanban daemon` externally or
         # simply don't use kanban; this loop becomes a no-op.
-        asyncio.create_task(self._kanban_dispatcher_watcher())
+        self._spawn_background_task(self._kanban_dispatcher_watcher())
 
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
@@ -7575,13 +7589,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 len(self._failed_platforms),
                 ", ".join(p.value for p in self._failed_platforms),
             )
-        asyncio.create_task(self._platform_reconnect_watcher())
+        self._spawn_background_task(self._platform_reconnect_watcher())
 
         # Start background handoff watcher — picks up CLI sessions marked
         # handoff_state='pending' in state.db and re-binds them to the
         # destination platform's home channel, then forges a synthetic user
         # turn so the agent kicks off the new chat.
-        asyncio.create_task(self._handoff_watcher())
+        self._spawn_background_task(self._handoff_watcher())
 
         # Start background async-delegation watcher — drains completion events
         # from delegate_task(background=true) subagents and injects each
@@ -12255,7 +12269,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 watchers = process_registry.pending_watchers
                 process_registry.pending_watchers = []
                 for i, watcher in enumerate(watchers):
-                    asyncio.create_task(self._run_process_watcher(watcher))
+                    self._spawn_background_task(self._run_process_watcher(watcher))
                     if i % 100 == 99:
                         await asyncio.sleep(0)
             except Exception as e:

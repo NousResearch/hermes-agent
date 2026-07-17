@@ -18,6 +18,7 @@ Method reference: https://chromedevtools.github.io/devtools-protocol/
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 from typing import Any, Dict, Optional
@@ -75,7 +76,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 
-def _run_async(coro):
+def _run_async(coro, *, timeout: float = 30.0):
     """Run an async coroutine from a sync handler, safe inside or outside a loop."""
     try:
         loop = asyncio.get_running_loop()
@@ -87,7 +88,7 @@ def _run_async(coro):
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
-            return future.result()
+            return future.result(timeout=timeout)
     return asyncio.run(coro)
 
 
@@ -497,15 +498,16 @@ def browser_cdp(
 
     try:
         result = _run_async(
-            _cdp_call(endpoint, method, call_params, target_id, safe_timeout)
+            _cdp_call(endpoint, method, call_params, target_id, safe_timeout),
+            timeout=max(safe_timeout, 30.0),
         )
     except asyncio.TimeoutError as exc:
         return tool_error(
             f"CDP call timed out after {safe_timeout}s: {exc}",
             method=method,
         )
-    except TimeoutError as exc:
-        return tool_error(str(exc), method=method)
+    except concurrent.futures.TimeoutError as exc:
+        return tool_error(f"CDP call timed out at thread boundary: {exc}", method=method)
     except RuntimeError as exc:
         return tool_error(str(exc), method=method)
     except WebSocketException as exc:

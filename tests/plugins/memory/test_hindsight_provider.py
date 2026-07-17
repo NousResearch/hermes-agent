@@ -273,6 +273,45 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
 
+    def test_embedded_profile_env_includes_database_url_from_config(self):
+        """embed_database_url config key must appear as HINDSIGHT_EMBED_API_DATABASE_URL
+        in the generated profile env (issue #21818)."""
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "embed_database_url": "postgresql+asyncpg://user:pass@localhost/hindsight",
+        })
+        assert "HINDSIGHT_EMBED_API_DATABASE_URL" in env, (
+            "embed_database_url config key must be written as "
+            "HINDSIGHT_EMBED_API_DATABASE_URL in the profile env"
+        )
+        assert env["HINDSIGHT_EMBED_API_DATABASE_URL"] == "postgresql+asyncpg://user:pass@localhost/hindsight"
+
+    def test_embedded_profile_env_includes_database_url_from_env(self, monkeypatch):
+        """HINDSIGHT_EMBED_API_DATABASE_URL env var must fall through to profile env
+        when embed_database_url is not in config."""
+        monkeypatch.setenv("HINDSIGHT_EMBED_API_DATABASE_URL", "sqlite:///./hindsight.db")
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+        assert env.get("HINDSIGHT_EMBED_API_DATABASE_URL") == "sqlite:///./hindsight.db", (
+            "HINDSIGHT_EMBED_API_DATABASE_URL env var must be forwarded to the "
+            "profile env when not set in config"
+        )
+
+    def test_embedded_profile_env_omits_database_url_when_unset(self, monkeypatch):
+        """When neither config nor env provides a database URL, the key must be absent."""
+        monkeypatch.delenv("HINDSIGHT_EMBED_API_DATABASE_URL", raising=False)
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+        assert "HINDSIGHT_EMBED_API_DATABASE_URL" not in env, (
+            "HINDSIGHT_EMBED_API_DATABASE_URL must be absent when neither config "
+            "nor env provides a value"
+        )
+
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
 
@@ -1117,6 +1156,7 @@ class TestConfigSchema:
             "retain_every_n_turns", "retain_async", "retain_context",
             "recall_max_tokens", "recall_max_input_chars",
             "recall_prompt_preamble",
+            "embed_database_url",
         }
         assert expected_keys.issubset(keys), f"Missing: {expected_keys - keys}"
 

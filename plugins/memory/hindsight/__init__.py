@@ -337,6 +337,18 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     if current_database_url:
         env_values["HINDSIGHT_EMBED_API_DATABASE_URL"] = str(current_database_url)
 
+    # Database URL for the embedded store. Canonical config key is
+    # embed_database_url; fall back to the environment variable so that
+    # operators who already set HINDSIGHT_EMBED_API_DATABASE_URL in their
+    # shell do not need to duplicate it in config.yaml.
+    embed_db_url = (
+        config.get("embed_database_url")
+        or config.get("embedDatabaseUrl")
+        or os.environ.get("HINDSIGHT_EMBED_API_DATABASE_URL", "")
+    )
+    if embed_db_url:
+        env_values["HINDSIGHT_EMBED_API_DATABASE_URL"] = str(embed_db_url)
+
     idle_timeout = (
         config.get("idle_timeout")
         if config.get("idle_timeout") is not None
@@ -753,6 +765,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "llm_base_url", "description": "Endpoint URL (e.g. http://192.168.1.10:8080/v1)", "default": "", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}},
             {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
             {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
+            {"key": "embed_database_url", "description": "Database URL for the embedded vector store (e.g. postgresql+asyncpg://user:pass@host/db). Set HINDSIGHT_EMBED_API_DATABASE_URL as env fallback.", "default": "", "when": {"mode": "local_embedded"}},
             {"key": "bank_id", "description": "Memory bank name (static fallback when bank_id_template is unset)", "default": "hermes"},
             {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}. Example: hermes-{profile}", "default": ""},
             {"key": "bank_mission", "description": "Mission/purpose description for the memory bank"},

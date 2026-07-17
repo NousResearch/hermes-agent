@@ -1041,6 +1041,15 @@ function findGitBash() {
     candidates.push(path.join(localAppData, 'Programs', 'Git', 'bin', 'bash.exe'))
   }
 
+  // Package-manager install locations — kept in sync with
+  // tools/environments/local.py:_find_bash() and scripts/install.ps1.
+  const userProfile = process.env.USERPROFILE || ''
+  if (userProfile) {
+    candidates.push(path.join(userProfile, 'scoop', 'apps', 'git', 'current', 'usr', 'bin', 'bash.exe'))  // Scoop
+  }
+  candidates.push(path.join('C:\\ProgramData', 'chocolatey', 'lib', 'git', 'tools', 'git', 'bin', 'bash.exe'))  // Chocolatey
+  candidates.push(path.join('C:\\', 'msys64', 'usr', 'bin', 'bash.exe'))  // MSYS2
+
   for (const candidate of candidates) {
     if (fileExists(candidate)) return candidate
   }

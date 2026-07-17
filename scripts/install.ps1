@@ -701,6 +701,12 @@ function Set-GitBashEnvVar {
     if ($pf86) { $candidates += "$pf86\Git\bin\bash.exe" }
     $candidates += "${env:LocalAppData}\Programs\Git\bin\bash.exe"
 
+    # Package-manager install locations — kept in sync with
+    # tools/environments/local.py:_find_bash() and apps/desktop/electron/main.cjs.
+    if ($env:USERPROFILE) { $candidates += "$env:USERPROFILE\scoop\apps\git\current\usr\bin\bash.exe" }  # Scoop
+    $candidates += "${env:ProgramData}\chocolatey\lib\git\tools\git\bin\bash.exe"                       # Chocolatey
+    $candidates += "C:\msys64\usr\bin\bash.exe"                                                          # MSYS2
+
     foreach ($candidate in $candidates) {
         if ($candidate -and (Test-Path $candidate)) {
             [Environment]::SetEnvironmentVariable("HERMES_GIT_BASH_PATH", $candidate, "User")

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shopify GMC Misrepresentation Auditor"
+  short_description: "Audit a public Shopify store for GMC misrepresentation risks and generate the HTML report"
+  default_prompt: "Use $shopify-gmc-misrepresentation-auditor to run the store-level and product-level GMC audit and generate the HTML report with evidence and remediation priorities."

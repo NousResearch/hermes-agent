@@ -69,3 +69,29 @@ def test_tokens_follow_active_hermes_home(monkeypatch, tmp_path):
     stored = second / "twitter" / "oauth2.json"
     assert json.loads(stored.read_text())["access_token"] == "two"
     assert stat.S_IMODE(stored.stat().st_mode) == 0o600
+
+
+def test_branch_anchor_follows_mapped_bot_ancestor(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.state import TwitterState
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    state = TwitterState.load(max_seen=100, max_branches=100)
+    state.map_bot_post("9007199254740993", "123")
+    assert state.resolve_anchor("456", ["42", "9007199254740993"]) == "123"
+    assert state.resolve_anchor("789", ["42"]) == "789"
+
+
+def test_state_survives_restart_and_profile_switch(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.state import TwitterState
+
+    first = tmp_path / "a"
+    second = tmp_path / "b"
+    monkeypatch.setenv("HERMES_HOME", str(first))
+    state = TwitterState.load()
+    state.mark_seen("999")
+    state.advance_mentions("999")
+    state.save()
+    assert TwitterState.load().seen("999")
+
+    monkeypatch.setenv("HERMES_HOME", str(second))
+    assert not TwitterState.load().seen("999")

@@ -80,6 +80,55 @@ def test_resolve_runtime_provider_raises_autherror_when_unresolved(monkeypatch):
     assert "not a static API key" in msg
 
 
+def test_vertex_auth_status_uses_adc_credential_detector(monkeypatch):
+    import agent.vertex_adapter as va
+    from hermes_cli.auth import get_auth_status
+
+    monkeypatch.setattr(va, "has_vertex_credentials", lambda: True)
+
+    assert get_auth_status("vertex") == {
+        "logged_in": True,
+        "provider": "vertex",
+    }
+
+
+def test_vertex_adc_surfaces_in_task_model_options(monkeypatch):
+    import agent.models_dev as models_dev
+    import agent.vertex_adapter as va
+    import hermes_cli.model_switch as model_switch
+    import hermes_cli.models as models
+    from hermes_cli.inventory import ConfigContext, build_models_payload
+
+    monkeypatch.setattr(models_dev, "fetch_models_dev", lambda: {})
+    monkeypatch.setattr(va, "has_vertex_credentials", lambda: True)
+    monkeypatch.setattr(
+        model_switch,
+        "_credential_pool_is_usable",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(models, "cached_provider_model_ids", lambda provider: [])
+
+    payload = build_models_payload(
+        ConfigContext(
+            current_provider="openai-codex",
+            current_model="gpt-test",
+            current_base_url="",
+            user_providers={},
+            custom_providers=[],
+        ),
+        include_unconfigured=True,
+        picker_hints=True,
+    )
+    vertex = next(row for row in payload["providers"] if row["slug"] == "vertex")
+
+    assert vertex["authenticated"] is True
+    assert vertex["source"] == "canonical"
+    assert vertex["models"] == [
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview",
+    ]
+
+
 def test_vertex_extra_body_thinking_config():
     from providers import get_provider_profile
 

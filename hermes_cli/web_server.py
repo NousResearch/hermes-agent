@@ -6285,16 +6285,25 @@ def _catalog_provider_env_metadata() -> dict:
 async def get_env_vars(profile: Optional[str] = None):
     with _profile_scope(profile):
         env_on_disk = load_env()
+        try:
+            from agent.vertex_adapter import has_vertex_credentials
+            vertex_credentials_configured = bool(has_vertex_credentials())
+        except Exception:
+            vertex_credentials_configured = False
     channel_keys = _channel_managed_env_keys()
     catalog_meta = _catalog_provider_env_metadata()
 
     def _row(var_name: str, info: dict, *, custom: bool = False) -> dict:
         value = env_on_disk.get(var_name)
         cat_meta = catalog_meta.get(var_name) or {}
+        is_set = bool(value) or (
+            var_name == "VERTEX_CREDENTIALS_PATH"
+            and vertex_credentials_configured
+        )
         # Hand OPTIONAL_ENV_VARS prose wins where present; the catalog fills any
         # gaps (description/url) and always supplies provider grouping hints.
         return {
-            "is_set": bool(value),
+            "is_set": is_set,
             "redacted_value": redact_key(value) if value else None,
             "description": info.get("description") or cat_meta.get("description", ""),
             "url": info.get("url") if info.get("url") is not None else cat_meta.get("url"),

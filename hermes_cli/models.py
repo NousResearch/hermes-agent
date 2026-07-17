@@ -544,6 +544,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "us.meta.llama4-maverick-17b-instruct-v1:0",
         "us.meta.llama4-scout-17b-instruct-v1:0",
     ],
+    # Vertex exposes Gemini through Google's OpenAI-compatible endpoint and
+    # does not provide a /models listing route. Keep its curated catalog here
+    # so every model picker shares the same source as the setup flow.
+    "vertex": [
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview",
+    ],
     # Azure Foundry: user-provided endpoint and model.
     # Empty list because models depend on the endpoint configuration.
     "azure-foundry": [],

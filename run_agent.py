@@ -4828,6 +4828,17 @@ class AIAgent:
         if visible:
             return visible
         content = assistant_msg.get("content")
+        if isinstance(content, list):
+            # Anthropic block-form content (thinking/text blocks). Keep only
+            # visible text blocks — thinking is never interim-deliverable.
+            parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") == "text" and isinstance(block.get("text"), str):
+                        parts.append(block["text"])
+                elif isinstance(block, str):
+                    parts.append(block)
+            content = "".join(parts)
         return self._strip_think_blocks(content or "").strip()
 
     def _interim_text_was_delivered(self, text: str) -> bool:

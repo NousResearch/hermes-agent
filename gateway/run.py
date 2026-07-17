@@ -3007,6 +3007,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
+        self._busy_input_mode_by_platform = self._load_busy_input_mode_by_platform()
         self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
@@ -5126,6 +5127,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return "interrupt"
 
     @staticmethod
+    def _load_busy_input_mode_by_platform() -> dict[str, str]:
+        """Startup snapshot of display.platforms.<platform>.busy_input_mode.
+
+        Loaded once like _load_busy_input_mode(), so changing an override in
+        config requires a gateway restart, matching the global mode's
+        lifecycle. Keeping this off the per-message path preserves the busy
+        handler's invariant that no config is read inside the ack cooldown.
+        Invalid values are dropped here (with a warning from _normalise) so
+        resolution falls back to the global mode.
+        """
+        from gateway.display_config import _normalise
+
+        cfg = _load_gateway_runtime_config()
+        platforms = cfg_get(cfg, "display", "platforms", default=None)
+        overrides: dict[str, str] = {}
+        if isinstance(platforms, dict):
+            for plat, settings in platforms.items():
+                if not isinstance(settings, dict):
+                    continue
+                val = settings.get("busy_input_mode")
+                if val is None:
+                    continue
+                normalised = _normalise("busy_input_mode", val)
+                if normalised is not None:
+                    overrides[str(plat)] = normalised
+        return overrides
+
+    def _effective_busy_input_mode(self, platform: "Platform") -> str:
+        """busy_input_mode for *platform*: per-platform override or global."""
+        overrides = getattr(self, "_busy_input_mode_by_platform", None) or {}
+        return overrides.get(_platform_config_key(platform), self._busy_input_mode)
+
+    @staticmethod
     def _load_busy_text_mode() -> str:
         """Resolve normal busy TEXT follow-up behavior.
 
@@ -5648,26 +5682,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         running_agent = self._running_agents.get(session_key)
 
-        # Resolve per-platform busy_input_mode (display.platforms.<platform>.busy_input_mode)
-        # falling back to the global/env-loaded self._busy_input_mode.
-        #
-        # Precedence note: self._busy_input_mode is loaded at startup by
-        # _load_busy_input_mode() which honours HERMES_GATEWAY_BUSY_INPUT_MODE
-        # env var > config.display.busy_input_mode.  The display_config resolver
-        # reads display.busy_input_mode at resolution level 2, which outranks
-        # the env var.  This is safe because startup syncs the config value into
-        # the env var (run.py:1130), so the two always agree.  If that sync
-        # is ever removed, an externally-set env var would be silently ignored
-        # for platforms without an explicit display override.
-        from gateway.display_config import resolve_display_setting
-        gw_config = _load_gateway_config()
-        plat_key = _platform_config_key(event.source.platform)
-        effective_mode = resolve_display_setting(
-            gw_config,
-            plat_key,
-            "busy_input_mode",
-            self._busy_input_mode,
-        )
+        # Per-platform busy_input_mode override (display.platforms.<platform>),
+        # resolved from the startup-loaded snapshot so this per-message path
+        # never reads config (the ack-cooldown debounce below relies on that).
+        effective_mode = self._effective_busy_input_mode(event.source.platform)
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
         if (
             event.message_type == MessageType.TEXT
@@ -5808,8 +5826,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         status_parts = []
         busy_ack_detail_enabled = bool(
             resolve_display_setting(
-                gw_config,
-                plat_key,
+                _load_gateway_config(),
+                _platform_config_key(event.source.platform),
                 "busy_ack_detail",
                 True,
             )
@@ -9902,18 +9920,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
-            # Resolve the per-platform busy_input_mode once for this priority
-            # running-agent path, so display.platforms.<platform>.busy_input_mode
-            # overrides apply here too — not only in
-            # _handle_active_session_busy_message. Falls back to the global,
-            # env-loaded self._busy_input_mode when there is no override.
-            from gateway.display_config import resolve_display_setting
-            _effective_busy_mode = resolve_display_setting(
-                _load_gateway_config(),
-                _platform_config_key(source.platform),
-                "busy_input_mode",
-                self._busy_input_mode,
-            )
+            # Per-platform busy_input_mode override for the priority
+            # running-agent path too, sharing the startup-loaded resolution
+            # with _handle_active_session_busy_message.
+            _effective_busy_mode = self._effective_busy_input_mode(source.platform)
 
             _telegram_followup_grace = float(
                 os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")

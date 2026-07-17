@@ -341,20 +341,74 @@ class TestCodexBuildKwargs:
         assert kw["prompt_cache_key"].startswith("pck_")
         assert len(kw["prompt_cache_key"]) <= 64
 
-    def test_codex_backend_overlength_cache_scope_is_stable(self, transport):
-        session_id = "paperclip:company:" + "a" * 80
-        kwargs = {
-            "model": "gpt-5.4",
-            "messages": [{"role": "user", "content": "Hi"}],
-            "tools": [],
-            "session_id": session_id,
-            "is_codex_backend": True,
-        }
+    @pytest.mark.parametrize("length", [64, 65])
+    def test_codex_cache_scope_boundary(self, transport, length):
+        session_id = "s" * length
+        scope = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            session_id=session_id,
+            is_codex_backend=True,
+            request_overrides={"extra_headers": {"x-test": "1"}},
+        )["extra_headers"]
 
-        first = transport.build_kwargs(**kwargs)["extra_headers"]["session_id"]
-        second = transport.build_kwargs(**kwargs)["extra_headers"]["session_id"]
+        assert scope["x-test"] == "1"
+        assert len(scope["session_id"]) <= 64
+        assert scope["x-client-request-id"] == scope["session_id"]
+        if length == 64:
+            assert scope["session_id"] == session_id
+        else:
+            assert scope["session_id"].startswith("pck_")
+            assert scope["session_id"] != session_id
 
-        assert first == second
+    def test_codex_backend_overlength_cache_scope_is_stable_and_collision_resistant(self, transport):
+        common = "paperclip:company:" + "a" * 80
+
+        def cache_scope(session_id):
+            return transport.build_kwargs(
+                model="gpt-5.4",
+                messages=[{"role": "user", "content": "Hi"}],
+                tools=[],
+                session_id=session_id,
+                is_codex_backend=True,
+            )["extra_headers"]["session_id"]
+
+        assert cache_scope(common + "1") == cache_scope(common + "1")
+        assert cache_scope(common + "1") != cache_scope(common + "2")
+
+    def test_long_override_keys_are_bounded_at_build_and_preflight(self, transport):
+        long_key = "paperclip:" + "x" * 130
+        kwargs = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            request_overrides={"prompt_cache_key": long_key},
+        )
+        assert len(kwargs["prompt_cache_key"]) <= 64
+
+        middleware_payload = dict(kwargs)
+        middleware_payload["prompt_cache_key"] = long_key
+        preflight = transport.preflight_kwargs(middleware_payload)
+        assert preflight["prompt_cache_key"].startswith("pck_")
+        assert len(preflight["prompt_cache_key"]) <= 64
+
+    def test_xai_long_override_key_is_bounded_at_build_and_preflight(self, transport):
+        long_key = "paperclip:" + "x" * 130
+        kwargs = transport.build_kwargs(
+            model="grok-4.3",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_xai_responses=True,
+            request_overrides={"extra_body": {"prompt_cache_key": long_key}},
+        )
+        assert len(kwargs["extra_body"]["prompt_cache_key"]) <= 64
+
+        middleware_payload = dict(kwargs)
+        middleware_payload["extra_body"] = {"prompt_cache_key": long_key}
+        preflight = transport.preflight_kwargs(middleware_payload)
+        assert preflight["extra_body"]["prompt_cache_key"].startswith("pck_")
+        assert len(preflight["extra_body"]["prompt_cache_key"]) <= 64
 
     def test_codex_backend_no_headers_without_session_id(self, transport):
         messages = [{"role": "user", "content": "Hi"}]

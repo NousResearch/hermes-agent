@@ -1163,6 +1163,35 @@ def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
     ]
 
 
+def test_codex_final_preflight_bounds_middleware_cache_key(monkeypatch):
+    """Execution middleware cannot reintroduce an over-length provider key."""
+    agent = _build_agent(monkeypatch)
+    setattr(agent, "_disable_streaming", True)
+    captured = {}
+    long_key = "paperclip:" + "x" * 130
+
+    def _execution_middleware(request, next_call, **_context):
+        replacement = dict(request)
+        replacement["prompt_cache_key"] = long_key
+        return next_call(replacement)
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(
+        "hermes_cli.middleware.run_llm_execution_middleware",
+        _execution_middleware,
+    )
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Say OK")
+
+    assert result["completed"] is True
+    assert captured["prompt_cache_key"].startswith("pck_")
+    assert len(captured["prompt_cache_key"]) <= 64
+
+
 def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):
     """Regression: empty response.output + valid output_text should succeed,
     not trigger retry/fallback. The validation stage must defer to

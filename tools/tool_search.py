@@ -72,6 +72,9 @@ class ToolSearchConfig:
     search_default_limit: int
     max_search_limit: int
     defer_core: bool  # When True, _HERMES_DEFERRABLE_CORE_TOOLS may be deferred
+    defer_always_core: bool  # When True, even _HERMES_ALWAYS_CORE_TOOLS are deferred;
+                             # only bridge tools remain visible (~1.6 KB payload).
+                             # Requires defer_core=True. Best for budget providers (Groq).
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -94,15 +97,15 @@ class ToolSearchConfig:
         if raw is True:
             return cls(enabled="auto", threshold_pct=10.0,
                        search_default_limit=5, max_search_limit=20,
-                       defer_core=False)
+                       defer_core=False, defer_always_core=False)
         if raw is False:
             return cls(enabled="off", threshold_pct=10.0,
                        search_default_limit=5, max_search_limit=20,
-                       defer_core=False)
+                       defer_core=False, defer_always_core=False)
         if not isinstance(raw, dict):
             return cls(enabled="auto", threshold_pct=10.0,
                        search_default_limit=5, max_search_limit=20,
-                       defer_core=False)
+                       defer_core=False, defer_always_core=False)
 
         enabled_raw = str(raw.get("enabled", "auto")).strip().lower()
         if enabled_raw in ("true", "1", "yes"):
@@ -124,12 +127,16 @@ class ToolSearchConfig:
         defer_core_raw = raw.get("defer_core", False)
         defer_core = bool(defer_core_raw) if not isinstance(defer_core_raw, bool) else defer_core_raw
 
+        defer_always_core_raw = raw.get("defer_always_core", False)
+        defer_always_core = bool(defer_always_core_raw) if not isinstance(defer_always_core_raw, bool) else defer_always_core_raw
+
         return cls(
             enabled=enabled,
             threshold_pct=threshold_pct,
             search_default_limit=search_default_limit,
             max_search_limit=max_search_limit,
             defer_core=defer_core,
+            defer_always_core=defer_always_core,
         )
 
 
@@ -166,7 +173,7 @@ def load_config() -> ToolSearchConfig:
 # ---------------------------------------------------------------------------
 
 
-def _core_tool_names(defer_core: bool = False) -> frozenset:
+def _core_tool_names(defer_core: bool = False, defer_always_core: bool = False) -> frozenset:
     """Return the set of tool names that must NEVER be deferred.
 
     When ``defer_core`` is False (the default), this is the full
@@ -177,10 +184,17 @@ def _core_tool_names(defer_core: bool = False) -> frozenset:
     tts, ha_*, kanban_*, computer_use) become eligible for deferral exactly
     like MCP and plugin tools.
 
+    When ``defer_always_core`` is True, the protected set is empty — all
+    built-in tools are eligible for deferral.  Only the bridge tools
+    (tool_search / tool_describe / tool_call) remain visible, protected by
+    the BRIDGE_TOOL_NAMES guard in is_deferrable_tool_name().
+
     Imported lazily because ``toolsets`` imports from ``tools.registry``
     and we don't want a hard cycle.
     """
     try:
+        if defer_always_core:
+            return frozenset()  # nothing protected; bridge tools guarded separately
         if defer_core:
             from toolsets import _HERMES_ALWAYS_CORE_TOOLS
             return frozenset(_HERMES_ALWAYS_CORE_TOOLS)
@@ -204,14 +218,16 @@ def is_deferrable_tool_name(name: str, config: Optional["ToolSearchConfig"] = No
     if name in BRIDGE_TOOL_NAMES:
         return False
     defer_core = config.defer_core if config is not None else False
-    if name in _core_tool_names(defer_core=defer_core):
+    defer_always_core = config.defer_always_core if config is not None else False
+    if name in _core_tool_names(defer_core=defer_core, defer_always_core=defer_always_core):
         return False
     # Check registry toolset for MCP prefix.
     try:
         from tools.registry import registry
         entry = registry.get_entry(name)
         if entry is None:
-            return False
+            # Built-in tool not in registry — deferrable only when defer_always_core
+            return defer_always_core
         if entry.toolset.startswith("mcp-"):
             return True
         # Non-MCP, non-core → plugin tool, eligible.

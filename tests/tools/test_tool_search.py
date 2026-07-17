@@ -727,3 +727,73 @@ class TestDeferCoreTrue:
         assert captured.get("called_with", {}).get("path") == "/tmp/test.txt", (
             f"Handler was not called with the correct arguments: {captured!r}"
         )
+
+
+class TestDeferAlwaysCoreTrue:
+    """Tests for defer_always_core=True — fully lazy mode where only bridge tools are visible."""
+
+    def test_config_parses_defer_always_core(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_core": True, "defer_always_core": True}
+        )
+        assert cfg.defer_always_core is True
+        assert cfg.defer_core is True
+
+    def test_config_defer_always_core_defaults_false(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"enabled": "on", "defer_core": True})
+        assert cfg.defer_always_core is False
+
+    def test_config_legacy_bool_shape_defer_always_core_false(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw(True)
+        assert cfg.defer_always_core is False
+        cfg2 = ToolSearchConfig.from_raw(False)
+        assert cfg2.defer_always_core is False
+
+    def test_always_core_tools_are_deferrable(self):
+        """With defer_always_core=True, terminal/memory/delegate_task must be deferrable."""
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+        from toolsets import _HERMES_ALWAYS_CORE_TOOLS
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_core": True, "defer_always_core": True}
+        )
+        for name in _HERMES_ALWAYS_CORE_TOOLS:
+            assert is_deferrable_tool_name(name, cfg), (
+                f"Expected {name!r} to be deferrable with defer_always_core=True"
+            )
+
+    def test_bridge_tools_never_deferrable_with_defer_always_core(self):
+        """Bridge tools must remain visible even with defer_always_core=True."""
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name, BRIDGE_TOOL_NAMES
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_core": True, "defer_always_core": True}
+        )
+        for name in BRIDGE_TOOL_NAMES:
+            assert not is_deferrable_tool_name(name, cfg), (
+                f"Bridge tool {name!r} must never be deferrable"
+            )
+
+    def test_classify_tools_defer_always_core(self):
+        """With defer_always_core=True, all non-bridge tools move to deferred."""
+        from tools.tool_search import ToolSearchConfig, classify_tools, BRIDGE_TOOL_NAMES
+        from toolsets import _HERMES_ALWAYS_CORE_TOOLS
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_core": True, "defer_always_core": True}
+        )
+        # Build fake schemas for always-core tools only (bridge tools are added
+        # after classification via bridge_tool_schemas(), not passed as input)
+        all_tools = [
+            {"type": "function", "function": {"name": n, "description": f"desc {n}", "parameters": {}}}
+            for n in _HERMES_ALWAYS_CORE_TOOLS
+        ]
+        visible, deferred = classify_tools(all_tools, cfg)
+        deferred_names = {t["function"]["name"] for t in deferred}
+
+        # All always-core tools must move to deferred
+        for name in _HERMES_ALWAYS_CORE_TOOLS:
+            assert name in deferred_names, f"{name} should be deferred with defer_always_core=True"
+
+        # visible should be empty (bridge tools are injected separately)
+        assert visible == [], f"Expected no visible tools, got: {[t['function']['name'] for t in visible]}"

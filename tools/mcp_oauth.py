@@ -630,6 +630,13 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None):
         Opens the browser automatically when possible; always prints the URL
         as a fallback for headless/SSH/gateway environments.
         """
+        from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
+
+        dashboard_flow = get_dashboard_oauth_flow()
+        if dashboard_flow is not None:
+            await dashboard_flow.publish_authorization_url(authorization_url)
+            return
+
         # Fail fast at the authorization boundary in non-interactive contexts
         # (systemd gateway, cron, background MCP discovery). A cached-but-unusable
         # token (expired/revoked, refresh rejected) makes the SDK fall through to
@@ -743,6 +750,12 @@ def _make_callback_waiter(port: int):
     """
 
     async def _wait() -> tuple[str, str | None]:
+        from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
+
+        dashboard_flow = get_dashboard_oauth_flow()
+        if dashboard_flow is not None:
+            return await dashboard_flow.wait_for_callback()
+
         # Reject before binding the callback listener in non-interactive
         # contexts. Reaching here means the SDK entered the authorization-code
         # flow (a valid or refreshable token would never call the callback
@@ -972,6 +985,13 @@ def _configure_callback_port(
     consolidation PR.
     """
     global _oauth_port
+    from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
+
+    dashboard_flow = get_dashboard_oauth_flow()
+    if dashboard_flow is not None:
+        cfg["_resolved_port"] = 0
+        cfg["redirect_uri"] = dashboard_flow.redirect_uri
+        return 0
     requested = int(cfg.get("redirect_port", 0))
     # Precedence: explicit config port → cached client-registration port →
     # fresh ephemeral port. The cached port keeps re-auth consistent with the

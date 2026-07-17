@@ -3668,7 +3668,6 @@ class SessionDB:
             seen.add(child_id)
             lineage.append(child_id)
             current = child_id
-            lineage.append(current)
         return lineage
 
     def get_forward_compression_lineage(self, session_id: str) -> List[str]:

@@ -1,4 +1,11 @@
-@import 'tailwindcss';
+/*
+ * Pin Tailwind's scan root to the renderer source tree. The desktop updater
+ * builds from a locally managed checkout whose Git exclude rules may hide
+ * apps/desktop/src from automatic source detection. Tailwind honors those
+ * rules, so relying on auto-detection can silently emit theme/base CSS with
+ * no utilities and package an app whose entire pane layout renders as block.
+ */
+@import 'tailwindcss' source('.');
 @plugin '@tailwindcss/typography';
 @import 'tw-shimmer';
 @import 'katex/dist/katex.min.css';

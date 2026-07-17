@@ -14,11 +14,14 @@ function makeDist(extra) {
   return { tempRoot, distDir }
 }
 
-test('checkDistBuilt passes when index.html + an assets JS bundle exist', () => {
+const structuralCss = '.flex{display:flex}.flex-row{flex-direction:row}.min-h-0{min-height:0}'
+
+test('checkDistBuilt passes when index.html + renderer JS + structural CSS exist', () => {
   const { tempRoot, distDir } = makeDist(d => {
     fs.writeFileSync(path.join(d, 'index.html'), '<!doctype html><div id=root></div>', 'utf8')
     fs.mkdirSync(path.join(d, 'assets'))
     fs.writeFileSync(path.join(d, 'assets', 'index-abc123.js'), 'console.log(1)', 'utf8')
+    fs.writeFileSync(path.join(d, 'assets', 'index-abc123.css'), structuralCss, 'utf8')
   })
   try {
     assert.deepEqual(checkDistBuilt(distDir), { ok: true })
@@ -72,12 +75,44 @@ test('checkDistBuilt fails when assets/ has no JS bundle', () => {
     fs.writeFileSync(path.join(d, 'index.html'), '<!doctype html>', 'utf8')
     fs.mkdirSync(path.join(d, 'assets'))
     // CSS only, no JS — still a blank page at runtime.
-    fs.writeFileSync(path.join(d, 'assets', 'index-abc123.css'), 'body{}', 'utf8')
+    fs.writeFileSync(path.join(d, 'assets', 'index-abc123.css'), structuralCss, 'utf8')
   })
   try {
     const result = checkDistBuilt(distDir)
     assert.equal(result.ok, false)
     assert.match(result.error, /no built JS bundle/)
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('checkDistBuilt fails when assets/ has no CSS bundle', () => {
+  const { tempRoot, distDir } = makeDist(d => {
+    fs.writeFileSync(path.join(d, 'index.html'), '<!doctype html>', 'utf8')
+    fs.mkdirSync(path.join(d, 'assets'))
+    fs.writeFileSync(path.join(d, 'assets', 'index-abc123.js'), 'console.log(1)', 'utf8')
+  })
+  try {
+    const result = checkDistBuilt(distDir)
+    assert.equal(result.ok, false)
+    assert.match(result.error, /no built CSS bundle/)
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('checkDistBuilt fails when Tailwind omitted structural utilities', () => {
+  const { tempRoot, distDir } = makeDist(d => {
+    fs.writeFileSync(path.join(d, 'index.html'), '<!doctype html>', 'utf8')
+    fs.mkdirSync(path.join(d, 'assets'))
+    fs.writeFileSync(path.join(d, 'assets', 'index-abc123.js'), 'console.log(1)', 'utf8')
+    fs.writeFileSync(path.join(d, 'assets', 'index-abc123.css'), '@layer base{body{margin:0}}', 'utf8')
+  })
+  try {
+    const result = checkDistBuilt(distDir)
+    assert.equal(result.ok, false)
+    assert.match(result.error, /missing structural Tailwind utilities/)
+    assert.match(result.error, /\.flex\{display:flex\}/)
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }

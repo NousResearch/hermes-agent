@@ -138,6 +138,21 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
 
 T = TypeVar("T")
 
+def get_default_db_path() -> Path:
+    """Return the default state.db path, respecting HERMES_HOME at call time.
+
+    Unlike the module-level ``DEFAULT_DB_PATH`` constant (which is frozen at
+    import time), this function reads ``HERMES_HOME`` on every call.  This
+    prevents test fixtures that set ``HERMES_HOME`` via ``monkeypatch.setenv``
+    from leaking sessions into the production database.
+
+    See https://github.com/NousResearch/hermes-agent/issues/50681
+    """
+    return get_hermes_home() / "state.db"
+
+
+# Backward compatibility: keep the module-level constant for external code
+# that imports it directly.  Prefer ``get_default_db_path()`` in new code.
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
 SCHEMA_VERSION = 22
@@ -1011,7 +1026,7 @@ class SessionDB:
     _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path = db_path or get_default_db_path()
         self.read_only = read_only
 
         self._lock = threading.Lock()

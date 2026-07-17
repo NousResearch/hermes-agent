@@ -14174,12 +14174,12 @@ def main():
         # raw file path instead.
         if action == "repair":
             from hermes_state import (
-                DEFAULT_DB_PATH,
+                get_default_db_path,
                 _db_opens_cleanly,
                 repair_state_db_schema,
             )
 
-            db_path = DEFAULT_DB_PATH
+            db_path = get_default_db_path()
             if not db_path.exists():
                 print(f"No session database at {db_path} (nothing to repair).")
                 return

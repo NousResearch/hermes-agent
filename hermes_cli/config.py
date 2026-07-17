@@ -2706,6 +2706,10 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
+        # Exactly one long-running runtime may dispatch due jobs for a
+        # HERMES_HOME. "auto" deterministically selects the gateway; use
+        # "desktop" only for an intentional Desktop-only installation.
+        "scheduler_owner": "auto",
         # Active cron SCHEDULER provider (Axis B — the trigger that decides
         # WHEN a due job fires). Empty string = the built-in in-process 60s
         # ticker (default). Name an installed provider (plugins/cron_providers/<name>/ or

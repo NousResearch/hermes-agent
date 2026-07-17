@@ -138,25 +138,42 @@ _log = logging.getLogger(__name__)
 # when the same module is used across TestClient instances or uvicorn reloads.
 # ---------------------------------------------------------------------------
 
-def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
-    """Tick the cron scheduler from inside the desktop dashboard backend.
+def _start_desktop_cron_ticker(
+    stop_event: "threading.Event", interval: int = 60, *, provider: Any = None
+) -> None:
+    """Run the resolved provider for an explicitly owned Desktop ticker."""
+    if provider is None:
+        from cron.scheduler_provider import resolve_cron_scheduler
 
-    The scheduler tick loop normally lives in ``hermes gateway run`` — but the
-    desktop app spawns a ``hermes dashboard`` backend, not a gateway, so a cron
-    a user creates in the app would never fire. We run the resolved cron
-    scheduler provider here (no live adapters; delivery falls back to the
-    per-platform send path).
-
-    Cross-process safe: the built-in provider's ``cron.scheduler.tick`` takes
-    the ``cron/.tick.lock`` file lock, so this never double-fires alongside a
-    real gateway on the same HERMES_HOME — whichever process grabs the lock
-    first wins the tick.
-    """
-    from cron.scheduler_provider import resolve_cron_scheduler
-
-    provider = resolve_cron_scheduler()
+        provider = resolve_cron_scheduler()
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
     provider.start(stop_event, interval=interval)
+
+
+def _start_desktop_cron_scheduler_if_owned() -> tuple[
+    "threading.Event | None", "threading.Thread | None"
+]:
+    """Start Desktop's fallback ticker only when it owns automatic dispatch."""
+    if os.getenv("HERMES_DESKTOP") != "1":
+        return None, None
+
+    from cron.scheduler_provider import resolve_owned_cron_scheduler
+
+    provider = resolve_owned_cron_scheduler("desktop")
+    if provider is None:
+        _log.info("Desktop cron scheduler not started by ownership policy")
+        return None, None
+
+    stop_event = threading.Event()
+    thread = threading.Thread(
+        target=_start_desktop_cron_ticker,
+        args=(stop_event,),
+        kwargs={"provider": provider},
+        daemon=True,
+        name="desktop-cron-ticker",
+    )
+    thread.start()
+    return stop_event, thread
 
 
 def _warm_gateway_module() -> None:
@@ -194,20 +211,9 @@ async def _lifespan(app: "FastAPI"):
     # the server socket is already open and accepting probes.
     asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
 
-    # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
-    # since the app has no gateway running the scheduler. Server `hermes
-    # dashboard` is unaffected — it relies on its own gateway.
-    cron_stop: "threading.Event | None" = None
-    cron_thread: "threading.Thread | None" = None
-    if os.getenv("HERMES_DESKTOP") == "1":
-        cron_stop = threading.Event()
-        cron_thread = threading.Thread(
-            target=_start_desktop_cron_ticker,
-            args=(cron_stop,),
-            daemon=True,
-            name="desktop-cron-ticker",
-        )
-        cron_thread.start()
+    # Desktop remains available when the default gateway owns scheduling; an
+    # explicit desktop owner preserves the Desktop-only fallback.
+    cron_stop, cron_thread = _start_desktop_cron_scheduler_if_owned()
 
     # Reap idle/dead keep-alive PTY sessions in the background (30-min TTL).
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))

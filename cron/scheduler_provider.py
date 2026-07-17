@@ -19,9 +19,109 @@ selected via the `cron.provider` config key (empty = built-in).
 """
 from __future__ import annotations
 
+import io
+import logging
 import threading
 from abc import ABC, abstractmethod
 from typing import Any
+
+
+logger = logging.getLogger("cron.scheduler_provider")
+
+_CRON_SCHEDULER_RUNTIME_OWNERS = frozenset({"gateway", "desktop"})
+
+
+def _read_scheduler_owner_config_strict() -> dict[str, Any] | None:
+    """Read scheduler ownership without the normal tolerant config fallback."""
+    from hermes_cli import managed_scope
+    from hermes_cli.config import get_config_path
+    from utils import fast_safe_load
+
+    def _read_mapping(path) -> dict[str, Any]:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                raw = handle.read()
+        except FileNotFoundError:
+            return {}
+        meaningful = [
+            line.split("#", 1)[0].strip()
+            for line in raw.splitlines()
+            if line.split("#", 1)[0].strip() not in {"", "---", "..."}
+        ]
+        if not meaningful:
+            return {}
+        parsed = fast_safe_load(io.StringIO(raw))
+        if not isinstance(parsed, dict):
+            raise ValueError("config root must be a mapping")
+        return parsed
+
+    try:
+        user_config = _read_mapping(get_config_path())
+        managed_dir = managed_scope.get_managed_dir()
+        managed_config = (
+            _read_mapping(managed_dir / "config.yaml")
+            if managed_dir is not None
+            else {}
+        )
+        user_cron = user_config.get("cron", {})
+        managed_cron = managed_config.get("cron", {})
+        if "cron" in user_config and not isinstance(user_cron, dict):
+            raise ValueError("cron section must be a mapping")
+        if "cron" in managed_config and not isinstance(managed_cron, dict):
+            raise ValueError("managed cron section must be a mapping")
+        effective_cron = dict(user_cron)
+        effective_cron.update(managed_cron)
+        return {"cron": effective_cron}
+    except Exception:
+        logger.error(
+            "Unable to read a valid cron.scheduler_owner; scheduler startup disabled. "
+            "Set it to auto, gateway, or desktop in config.yaml."
+        )
+        return None
+
+
+def resolve_cron_scheduler_owner(*, config: dict[str, Any] | None = None) -> str | None:
+    """Resolve the single automatic scheduler owner, failing closed on errors."""
+    if config is None:
+        config = _read_scheduler_owner_config_strict()
+        if config is None:
+            return None
+    if not isinstance(config, dict):
+        logger.error("Invalid configuration root; scheduler startup disabled.")
+        return None
+    cron_config = config.get("cron", {})
+    if "cron" in config and not isinstance(cron_config, dict):
+        logger.error("Invalid cron configuration shape; scheduler startup disabled.")
+        return None
+    raw_owner = cron_config.get("scheduler_owner", "auto")
+    owner = raw_owner.strip().lower() if isinstance(raw_owner, str) else None
+    if owner == "auto":
+        return "gateway"
+    if owner in _CRON_SCHEDULER_RUNTIME_OWNERS:
+        return owner
+    logger.error(
+        "Invalid cron.scheduler_owner; scheduler startup disabled. "
+        "Use auto, gateway, or desktop in config.yaml."
+    )
+    return None
+
+
+def should_start_cron_scheduler(
+    runtime_owner: str, *, config: dict[str, Any] | None = None
+) -> bool:
+    """Return whether this long-running runtime owns automatic dispatch."""
+    if runtime_owner not in _CRON_SCHEDULER_RUNTIME_OWNERS:
+        raise ValueError("Unknown cron scheduler runtime owner")
+    return resolve_cron_scheduler_owner(config=config) == runtime_owner
+
+
+def resolve_owned_cron_scheduler(
+    runtime_owner: str, *, config: dict[str, Any] | None = None
+) -> "CronScheduler | None":
+    """Resolve the provider only after the shared ownership gate succeeds."""
+    if not should_start_cron_scheduler(runtime_owner, config=config):
+        return None
+    return resolve_cron_scheduler()
 
 
 class CronScheduler(ABC):
@@ -119,10 +219,6 @@ def resolve_cron_scheduler() -> "CronScheduler":
     False`` falls back to the built-in with a warning — cron must never be left
     without a trigger.
     """
-    import logging
-
-    logger = logging.getLogger("cron.scheduler_provider")
-
     name = ""
     try:
         from hermes_cli.config import cfg_get, load_config

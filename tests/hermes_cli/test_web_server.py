@@ -7766,7 +7766,7 @@ class TestValidateProviderCredential:
 
 
 class TestDesktopCronTicker:
-    """The dashboard backend fires cron jobs itself only when desktop-spawned."""
+    """Desktop cron fallback runs only when config assigns Desktop ownership."""
 
     def _client(self):
         try:
@@ -7777,7 +7777,26 @@ class TestDesktopCronTicker:
 
         return TestClient(app)
 
-    def test_ticker_runs_when_desktop(self, monkeypatch, _isolate_hermes_home):
+    def test_ticker_runs_for_explicit_desktop_owner(
+        self, monkeypatch, _isolate_hermes_home
+    ):
+        import threading
+        import cron.scheduler as sched
+
+        called = threading.Event()
+        monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+            "cron:\n  scheduler_owner: desktop\n",
+            encoding="utf-8",
+        )
+
+        with self._client():
+            assert called.wait(3.0), "expected cron tick for explicit desktop owner"
+
+    def test_ticker_skipped_for_default_gateway_owner(
+        self, monkeypatch, _isolate_hermes_home
+    ):
         import threading
         import cron.scheduler as sched
 
@@ -7786,7 +7805,7 @@ class TestDesktopCronTicker:
         monkeypatch.setenv("HERMES_DESKTOP", "1")
 
         with self._client():
-            assert called.wait(3.0), "expected cron tick under HERMES_DESKTOP=1"
+            assert not called.wait(0.5), "gateway owner must suppress Desktop ticker"
 
     def test_ticker_skipped_without_desktop(self, monkeypatch, _isolate_hermes_home):
         import threading

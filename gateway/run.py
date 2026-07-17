@@ -21092,6 +21092,34 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     InProcessCronScheduler().start(stop_event, adapters=adapters, loop=loop, interval=interval)
 
 
+def _start_gateway_cron_scheduler_if_owned(runner, stop_event, loop):
+    """Start cron only when the shared ownership policy selects this gateway."""
+    from cron.scheduler_provider import (
+        InProcessCronScheduler,
+        resolve_owned_cron_scheduler,
+    )
+
+    provider = resolve_owned_cron_scheduler("gateway")
+    if provider is None:
+        logger.info("Gateway cron scheduler not started by ownership policy")
+        return None, None
+
+    start_kwargs = {"adapters": runner.adapters, "loop": loop}
+    if isinstance(provider, InProcessCronScheduler):
+        start_kwargs["can_dispatch"] = lambda: not (
+            runner._draining or runner._external_drain_active
+        )
+    thread = threading.Thread(
+        target=provider.start,
+        args=(stop_event,),
+        kwargs=start_kwargs,
+        daemon=True,
+        name="cron-scheduler",
+    )
+    thread.start()
+    return provider, thread
+
+
 # Upper bound for cooperatively draining the cron ticker on shutdown. The cron
 # thread delivers via ``safe_schedule_threadsafe`` and blocks on
 # ``future.result(timeout=60)`` (see cron/scheduler.py::_deliver_result), so a
@@ -21584,30 +21612,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             raise SystemExit(runner.exit_code)
         return True
     
-    # Start the background cron scheduler via the resolved provider so
-    # scheduled jobs fire automatically. The built-in provider is the
-    # historical in-process 60s ticker; an external provider (e.g. chronos)
-    # may arm a schedule and return. Pass the event loop so cron delivery can
-    # use live adapters (E2EE support).
-    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
+    # Both gateway and Desktop consult the same ownership helper so only one
+    # long-running runtime dispatches this profile's cron registry.
     cron_stop = threading.Event()
-    cron_provider = resolve_cron_scheduler()
-    cron_start_kwargs = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
-    # External cron providers own their remote scheduling contract. Only the
-    # in-process ticker polls local due jobs, so only it receives the local
-    # external-drain dispatch gate.
-    if isinstance(cron_provider, InProcessCronScheduler):
-        cron_start_kwargs["can_dispatch"] = lambda: not (
-            runner._draining or runner._external_drain_active
-        )
-    cron_thread = threading.Thread(
-        target=cron_provider.start,
-        args=(cron_stop,),
-        kwargs=cron_start_kwargs,
-        daemon=True,
-        name="cron-scheduler",
+    cron_provider, cron_thread = _start_gateway_cron_scheduler_if_owned(
+        runner, cron_stop, asyncio.get_running_loop()
     )
-    cron_thread.start()
 
     # Gateway-only periodic housekeeping (channel dir, cache cleanup, paste
     # sweep, curator) — runs independently of which cron provider is active.
@@ -21646,11 +21656,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # silently dropped (#58818). Awaiting keeps the loop alive so the in-flight
     # delivery finishes before we tear down.
     cron_stop.set()
-    try:
-        cron_provider.stop()
-    except Exception as e:
-        logger.debug("Cron provider stop() error: %s", e)
-    if not await _await_thread_exit(cron_thread, timeout=_CRON_SHUTDOWN_DRAIN_TIMEOUT):
+    if cron_provider is not None:
+        try:
+            cron_provider.stop()
+        except Exception as e:
+            logger.debug("Cron provider stop() error: %s", e)
+    if cron_thread is not None and not await _await_thread_exit(
+        cron_thread, timeout=_CRON_SHUTDOWN_DRAIN_TIMEOUT
+    ):
         logger.warning(
             "Cron ticker did not exit within %.0fs of shutdown — an in-flight "
             "delivery may have been dropped.", _CRON_SHUTDOWN_DRAIN_TIMEOUT,

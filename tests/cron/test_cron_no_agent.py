@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import patch
 
 import pytest
@@ -208,6 +209,43 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert error is None
     assert "RAM 92% on host" in final_response
     assert "RAM 92% on host" in doc
+
+
+def test_run_job_no_agent_refreshes_external_secrets_before_subprocess(hermes_env):
+    """Script-only cron must refresh external secrets before building child env."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    script_path = hermes_env / "scripts" / "needs-secret.sh"
+    script_path.write_text(
+        '#!/bin/bash\n'
+        'test "$PERSONAL_HUB_CRON_SECRET" = "fresh-per-run"\n'
+        'echo secret-loaded\n'
+    )
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="needs-secret.sh",
+        no_agent=True,
+        deliver="local",
+    )
+    os.environ.pop("PERSONAL_HUB_CRON_SECRET", None)
+
+    def load_secret(**_kwargs):
+        os.environ["PERSONAL_HUB_CRON_SECRET"] = "fresh-per-run"
+
+    try:
+        with patch("hermes_cli.env_loader.reset_secret_source_cache") as reset, \
+             patch("hermes_cli.env_loader.load_hermes_dotenv", side_effect=load_secret) as load:
+            success, _doc, final_response, error = run_job(job)
+    finally:
+        os.environ.pop("PERSONAL_HUB_CRON_SECRET", None)
+
+    assert success is True
+    assert error is None
+    assert final_response == "secret-loaded"
+    reset.assert_called_once_with()
+    load.assert_called_once_with(hermes_home=hermes_env)
 
 
 def test_run_job_no_agent_empty_output_is_silent(hermes_env):

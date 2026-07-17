@@ -337,6 +337,9 @@ _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
 _running_lock = threading.Lock()
+# Keep reset + reload atomic when multiple jobs start together. The loader
+# publishes into process-global os.environ before child environments are built.
+_cron_secret_refresh_lock = threading.RLock()
 
 # Job IDs the gateway shutdown path force-killed the tool subprocess of
 # while still in ``_running_job_ids`` (see ``mark_running_jobs_interrupted``
@@ -2587,6 +2590,15 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+def _refresh_cron_runtime_secrets() -> None:
+    """Refresh dotenv and configured external secrets for the active home."""
+    from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
+
+    with _cron_secret_refresh_lock:
+        reset_secret_source_cache()
+        load_hermes_dotenv(hermes_home=_get_hermes_home())
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -2633,6 +2645,10 @@ def run_job(
             err = "no_agent=True but no script is set for this job"
             logger.error("Job '%s': %s", job_id, err)
             return False, "", "", err
+
+        # no_agent returns before the normal agent bootstrap below. Refresh
+        # external sources now, before _run_job_script constructs child env.
+        _refresh_cron_runtime_secrets()
 
         # Apply workdir if configured — lets scripts use predictable relative
         # paths. For no_agent jobs this is just the subprocess cwd (not an
@@ -2948,12 +2964,7 @@ def run_job(
         # is set (mirrors startup), and the Bitwarden value-cache keeps the
         # forced re-pull off the network. load_hermes_dotenv also handles the
         # utf-8/latin-1 encoding fallback internally.
-        from hermes_cli.env_loader import (
-            load_hermes_dotenv,
-            reset_secret_source_cache,
-        )
-        reset_secret_source_cache()
-        load_hermes_dotenv(hermes_home=_get_hermes_home())
+        _refresh_cron_runtime_secrets()
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:

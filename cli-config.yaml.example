@@ -850,6 +850,12 @@ platform_toolsets:
   teams: [hermes-teams]
   google_chat: [hermes-google_chat]
 
+# Exactly one long-running runtime should dispatch due jobs for a HERMES_HOME.
+# auto (default) selects the gateway; desktop is an explicit Desktop-only fallback.
+# Invalid values fail closed so competing runtimes cannot both start a ticker.
+cron:
+  scheduler_owner: "auto"  # auto | gateway | desktop
+
 # =============================================================================
 # Gateway Platform Settings
 # =============================================================================

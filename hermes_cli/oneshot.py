@@ -606,18 +606,17 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
             0o600,
         )
         try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(json.dumps(report, indent=2) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
+            handle = os.fdopen(descriptor, "w", encoding="utf-8")
         except BaseException:
-            # fdopen owns the descriptor after successful construction. If
-            # construction itself failed, close the still-open descriptor.
             try:
                 os.close(descriptor)
             except OSError:
                 pass
             raise
+        with handle:
+            handle.write(json.dumps(report, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, out)
         temporary = None
     except Exception:

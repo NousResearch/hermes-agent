@@ -1637,6 +1637,107 @@ def test_atomic_usage_replace_error_removes_current_temp_and_preserves_target(
     assert list(tmp_path.glob(".usage.json.tmp-*")) == []
 
 
+@pytest.mark.parametrize("failure_stage", ["write", "flush", "fsync"])
+def test_atomic_usage_owned_handle_failure_never_raw_closes_reused_descriptor(
+    monkeypatch,
+    tmp_path,
+    failure_stage,
+):
+    usage_path = tmp_path / "usage.json"
+    original = b'{"earlier":true}\n'
+    usage_path.write_bytes(original)
+    real_fdopen = oneshot.os.fdopen
+    real_fsync = oneshot.os.fsync
+    real_close = oneshot.os.close
+    state = {"handle_closed": False, "raw_close_calls": []}
+
+    class FailingOwnedHandle:
+        def __init__(self, descriptor, *args, **kwargs):
+            self._handle = real_fdopen(descriptor, *args, **kwargs)
+
+        def __enter__(self):
+            self._handle.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            try:
+                return self._handle.__exit__(exc_type, exc, traceback)
+            finally:
+                # The descriptor number can now be reused by unrelated code.
+                state["handle_closed"] = True
+
+        def write(self, value):
+            if failure_stage == "write":
+                raise OSError("body write failed")
+            return self._handle.write(value)
+
+        def flush(self):
+            if failure_stage == "flush":
+                raise OSError("body flush failed")
+            return self._handle.flush()
+
+        def fileno(self):
+            return self._handle.fileno()
+
+    def close_spy(descriptor):
+        state["raw_close_calls"].append((descriptor, state["handle_closed"]))
+        if not state["handle_closed"]:
+            real_close(descriptor)
+
+    def fsync_spy(descriptor):
+        if failure_stage == "fsync":
+            raise OSError("body fsync failed")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(oneshot.os, "fdopen", FailingOwnedHandle)
+    monkeypatch.setattr(oneshot.os, "close", close_spy)
+    monkeypatch.setattr(oneshot.os, "fsync", fsync_spy)
+
+    oneshot._write_usage_file(str(usage_path), {"completed": True})
+
+    assert state["handle_closed"] is True
+    assert state["raw_close_calls"] == []
+    assert usage_path.read_bytes() == original
+    assert list(tmp_path.glob(".usage.json.tmp-*")) == []
+
+
+def test_atomic_usage_fdopen_construction_failure_closes_raw_descriptor_once(
+    monkeypatch,
+    tmp_path,
+):
+    usage_path = tmp_path / "usage.json"
+    original = b'{"earlier":true}\n'
+    usage_path.write_bytes(original)
+    real_open = oneshot.os.open
+    real_close = oneshot.os.close
+    opened = []
+    close_calls = []
+
+    def open_spy(*args, **kwargs):
+        descriptor = real_open(*args, **kwargs)
+        opened.append(descriptor)
+        return descriptor
+
+    def close_spy(descriptor):
+        close_calls.append(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(oneshot.os, "open", open_spy)
+    monkeypatch.setattr(
+        oneshot.os,
+        "fdopen",
+        Mock(side_effect=OSError("fdopen construction failed")),
+    )
+    monkeypatch.setattr(oneshot.os, "close", close_spy)
+
+    oneshot._write_usage_file(str(usage_path), {"completed": True})
+
+    assert len(opened) == 1
+    assert close_calls == opened
+    assert usage_path.read_bytes() == original
+    assert list(tmp_path.glob(".usage.json.tmp-*")) == []
+
+
 def test_normal_cleanup_releases_non_daemon_mcp_like_thread():
     completed = _run_watchdog_subprocess("mcp_release")
 

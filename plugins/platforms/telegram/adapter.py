@@ -4486,13 +4486,21 @@ class TelegramAdapter(BasePlatformAdapter):
             _is_transient = any(m in err_str for m in _transient_markers)
             if _is_transient:
                 safe_error = _redact_telegram_error_text(e)
+                error_type = e.__class__.__name__
                 logger.warning(
                     "[%s] Transient network error editing message %s (will retry): %s",
                     self.name,
                     message_id,
                     safe_error,
                 )
-                return SendResult(success=False, error=safe_error, retryable=True)
+                # Preserve the exception kind after redaction so the stream
+                # consumer can distinguish a safe-to-retry ConnectTimeout from
+                # an ambiguous read/write timeout that may already have landed.
+                return SendResult(
+                    success=False,
+                    error=f"{error_type}: {safe_error}",
+                    retryable=True,
+                )
             safe_error = _redact_telegram_error_text(e)
             logger.error(
                 "[%s] Failed to edit Telegram message %s: %s",

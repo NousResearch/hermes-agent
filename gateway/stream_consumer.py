@@ -1227,9 +1227,15 @@ class GatewayStreamConsumer:
 
     @staticmethod
     def _send_failure_may_have_delivered(result_or_exc: Any) -> bool:
-        """Return True for timeout failures where retrying may duplicate."""
+        """Return True for post-connect timeouts where retrying may duplicate."""
         error = str(getattr(result_or_exc, "error", None) or result_or_exc).lower()
         name = result_or_exc.__class__.__name__.lower()
+        compact_error = re.sub(r"[^a-z]", "", error)
+        # A connection timeout occurs before any request reaches the platform,
+        # so retrying cannot duplicate delivery. Keep this aligned with
+        # BasePlatformAdapter._is_timeout_error and _is_retryable_error.
+        if "connecttimeout" in name or "connecttimeout" in compact_error:
+            return False
         is_timeout = (
             "timeout" in error
             or "timed out" in error

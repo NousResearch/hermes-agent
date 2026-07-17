@@ -273,6 +273,26 @@ async def test_telegram_long_flood_result_keeps_retry_after():
 
 
 @pytest.mark.asyncio
+async def test_telegram_connect_timeout_preserves_safe_retry_classification():
+    class ConnectTimeout(Exception):
+        pass
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    bot = MagicMock()
+    bot.edit_message_text = AsyncMock(
+        side_effect=ConnectTimeout("connection timed out")
+    )
+    adapter._bot = bot
+
+    result = await adapter.edit_message("123", "456", "Final answer", finalize=False)
+
+    assert result.success is False
+    assert result.error == "ConnectTimeout: connection timed out"
+    assert result.retryable is True
+    assert GatewayStreamConsumer._send_failure_may_have_delivered(result) is False
+
+
+@pytest.mark.asyncio
 async def test_ambiguous_empty_tail_timeout_preserves_duplicate_suppression():
     adapter = _adapter()
     adapter.send.return_value = SimpleNamespace(
@@ -322,3 +342,12 @@ def test_timeout_exception_is_treated_as_ambiguous_delivery():
     assert GatewayStreamConsumer._send_failure_may_have_delivered(
         TimedOut("request timed out")
     ) is True
+
+
+def test_connect_timeout_is_not_treated_as_ambiguous_delivery():
+    class ConnectTimeout(Exception):
+        pass
+
+    assert GatewayStreamConsumer._send_failure_may_have_delivered(
+        ConnectTimeout("connection timed out")
+    ) is False

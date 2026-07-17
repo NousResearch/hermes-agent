@@ -743,8 +743,21 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     teaching subagents a fake container path while still helping them avoid
     guessing `/workspace/...` for local repo tasks.
     """
+    from agent.runtime_cwd import (
+        resolve_authoritative_tool_cwd,
+        resolve_tool_cwd,
+    )
+
+    authoritative = resolve_authoritative_tool_cwd()
+    if authoritative:
+        try:
+            text = os.path.abspath(os.path.expanduser(authoritative))
+        except Exception:
+            return None
+        return text if os.path.isabs(text) and os.path.isdir(text) else None
+
     candidates = [
-        os.getenv("TERMINAL_CWD"),
+        resolve_tool_cwd(),
         getattr(
             getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None
         ),
@@ -1906,16 +1919,30 @@ def _run_single_child(
 
         child_task_id = _subagent_id or f"subagent-{task_index}-{_uuid.uuid4().hex[:8]}"
         parent_task_id = getattr(parent_agent, "_current_task_id", None)
-        # Seed the child's session-cwd record from the parent's (cwd rearch):
-        # children share the parent's container, and today they inherit the
-        # parent's live env.cwd implicitly. Seeding at spawn preserves that
-        # starting directory while keeping the child's subsequent `cd`s
-        # isolated in its own record (a child's cd no longer bleeds back into
-        # the parent once readers flip to the record store).
+        # Seed the child's isolated session-cwd record from the resolved parent
+        # workspace, not the shared/default record. The task-local authoritative
+        # cron cwd must win over stale terminal state.
         try:
-            from tools.terminal_tool import get_session_cwd, record_session_cwd
+            from agent.runtime_cwd import (
+                resolve_authoritative_tool_cwd,
+                resolve_tool_cwd,
+            )
+            from tools.terminal_tool import (
+                get_authoritative_session_cwd,
+                get_session_cwd,
+                record_session_cwd,
+            )
 
-            record_session_cwd(child_task_id, get_session_cwd(parent_task_id))
+            live_authoritative_cwd = get_authoritative_session_cwd(parent_task_id)
+            authoritative_cwd = resolve_authoritative_tool_cwd()
+            parent_cwd = (
+                live_authoritative_cwd
+                or authoritative_cwd
+                or get_session_cwd(parent_task_id)
+                or resolve_tool_cwd()
+            )
+            if parent_cwd:
+                record_session_cwd(child_task_id, parent_cwd)
         except Exception as e:
             logger.debug("Child cwd seed failed: %s", e)
         wall_start = time.time()
@@ -1963,7 +1990,11 @@ def _run_single_child(
                 stream_callback=_relay_child_text,
             )
 
-        _child_future = _timeout_executor.submit(_run_with_thread_capture)
+        from tools.thread_context import propagate_context_to_thread
+
+        _child_future = _timeout_executor.submit(
+            propagate_context_to_thread(_run_with_thread_capture)
+        )
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
@@ -2576,11 +2607,13 @@ def delegate_task(
             # normally, but if the parent is interrupted while a child is
             # wedged, the abandoned worker must not block interpreter exit.
             from tools.daemon_pool import DaemonThreadPoolExecutor
+            from tools.thread_context import propagate_context_to_thread
+
             with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
                 for i, t, child in children:
                     future = executor.submit(
-                        _run_single_child,
+                        propagate_context_to_thread(_run_single_child),
                         task_index=i,
                         goal=t["goal"],
                         child=child,

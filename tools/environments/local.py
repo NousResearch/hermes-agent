@@ -1501,18 +1501,26 @@ class LocalEnvironment(BaseEnvironment):
         Always defers to the base class for stripping the marker text from
         ``result["output"]`` so output formatting is identical.
         """
-        # Snapshot pre-existing cwd, defer to base for parsing + marker
-        # stripping, then validate / normalize whatever it assigned.
-        prev_cwd = self.cwd
+        # Snapshot the command's own starting cwd (BaseEnvironment.execute
+        # supplies it explicitly); direct parser callers fall back to the
+        # current value for compatibility. The parsed marker in result["cwd"]
+        # is authoritative for this command — never re-read shared self.cwd.
+        previous_cwd = result.get("_hermes_previous_cwd", self.cwd)
         super()._extract_cwd_from_output(result)
-        if self.cwd != prev_cwd:
-            normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
-            if normalized and os.path.isdir(normalized):
-                self.cwd = normalized
-            else:
-                # Stale / non-existent path — keep previous cwd; _run_bash
-                # will resolve a safe fallback on the next call if needed.
-                self.cwd = prev_cwd
+        parsed_cwd = result.get("cwd")
+        if not isinstance(parsed_cwd, str) or not parsed_cwd:
+            return
+
+        normalized = _msys_to_windows_path(parsed_cwd) if _IS_WINDOWS else parsed_cwd
+        if normalized and os.path.isdir(normalized):
+            command_cwd = normalized
+        else:
+            # Stale / non-existent marker — preserve this command's own starting
+            # cwd, not whichever session most recently mutated the shared env.
+            command_cwd = previous_cwd
+
+        result["cwd"] = command_cwd
+        self.cwd = command_cwd
 
     def cleanup(self):
         """Clean up temp files."""

@@ -79,6 +79,26 @@ def test_live_tracking_cwd_wins_over_relative_terminal_cwd(_isolated_cwd, monkey
     assert resolved == (workspace / "target.py")
 
 
+def test_authoritative_context_cwd_beats_stale_default_record(tmp_path, monkeypatch):
+    from agent.runtime_cwd import (
+        reset_authoritative_session_cwd,
+        set_authoritative_session_cwd,
+    )
+
+    cron_cwd = tmp_path / "cron"
+    stale_cwd = tmp_path / "stale"
+    cron_cwd.mkdir()
+    stale_cwd.mkdir()
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {"default": str(stale_cwd)})
+
+    tokens = set_authoritative_session_cwd(str(cron_cwd))
+    try:
+        assert ft._authoritative_workspace_root("default") == str(cron_cwd)
+        assert ft._resolve_path_for_task("target.py", "default") == cron_cwd / "target.py"
+    finally:
+        reset_authoritative_session_cwd(tokens)
+
+
 def test_absolute_terminal_cwd_used_verbatim(_isolated_cwd, monkeypatch):
     """An absolute TERMINAL_CWD is the resolution base (no live tracking)."""
     workspace, decoy = _isolated_cwd

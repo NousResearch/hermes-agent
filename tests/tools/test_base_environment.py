@@ -375,6 +375,7 @@ class TestExtractCwdFromOutput:
         env._extract_cwd_from_output(result)
 
         assert env.cwd == "/home/user"
+        assert result["cwd"] == "/home/user"
         assert marker not in result["output"]
 
     def test_missing_marker(self):

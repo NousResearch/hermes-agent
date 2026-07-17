@@ -31,6 +31,31 @@ def _isolate_approval_state(monkeypatch):
     yield
 
 
+@pytest.mark.parametrize("platform", ["slack", "api_server"])
+def test_bound_gateway_with_empty_source_beats_stale_process_cron_flag(
+    monkeypatch, platform
+):
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    tokens = set_session_vars(source="", platform=platform)
+    try:
+        assert approval._is_cron_approval_context() is False
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_task_local_cron_source_needs_no_process_flag(monkeypatch):
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    tokens = set_session_vars(source="cron", platform="")
+    try:
+        assert approval._is_cron_approval_context() is True
+    finally:
+        clear_session_vars(tokens)
+
+
 class TestRequestToolApproval:
     def test_session_cached_approval_short_circuits(self, monkeypatch):
         monkeypatch.setattr(approval, "is_approved", lambda sk, pk: True)

@@ -141,6 +141,48 @@ async def test_turn_final_flood_commits_empty_tail_as_fresh_message():
 
 
 @pytest.mark.asyncio
+async def test_turn_final_timeout_with_complete_preview_does_not_fresh_resend():
+    """An ambiguous final-edit timeout must not duplicate a complete preview.
+
+    Telegram may apply an edit server-side but time out before returning the
+    acknowledgement.  If the last streaming frame already contains the entire
+    answer, treating that timeout as a confirmed failure enters the fresh-final
+    fallback and can leave two identical messages when preview cleanup also
+    fails on the degraded connection.
+    """
+    adapter = _adapter()
+    adapter.edit_message.return_value = SendResult(
+        success=False,
+        error="Timed out",
+        retryable=True,
+    )
+
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "chat-1",
+        StreamConsumerConfig(cursor=" ▉"),
+    )
+    final_text = "The complete answer"
+    consumer._message_id = "preview-1"
+    consumer._preview_message_ids = {"preview-1"}
+    consumer._last_sent_text = f"{final_text} ▉"
+    consumer._already_sent = True
+
+    ok = await consumer._send_or_edit(
+        final_text,
+        finalize=True,
+        is_turn_final=True,
+    )
+
+    assert ok is True
+    assert consumer._fallback_final_send is False
+    assert consumer.final_response_sent is True
+    assert consumer.final_content_delivered is True
+    adapter.send.assert_not_awaited()
+    adapter.delete_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_empty_tail_commit_honors_retry_after(monkeypatch):
     adapter = _adapter()
     adapter.send.side_effect = [

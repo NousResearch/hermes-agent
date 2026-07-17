@@ -1228,11 +1228,20 @@ class GatewayStreamConsumer:
     @staticmethod
     def _send_failure_may_have_delivered(result_or_exc: Any) -> bool:
         """Return True for timeout failures where retrying may duplicate."""
-        if getattr(result_or_exc, "retryable", None) is True:
-            return False
         error = str(getattr(result_or_exc, "error", None) or result_or_exc).lower()
         name = result_or_exc.__class__.__name__.lower()
-        return "timeout" in error or "timed out" in error or "timeout" in name
+        is_timeout = (
+            "timeout" in error
+            or "timed out" in error
+            or "timeout" in name
+        )
+        if is_timeout:
+            # ``retryable`` means another idempotent request may be attempted;
+            # it does not mean the first request definitely failed before
+            # reaching the platform. Telegram marks transport timeouts
+            # retryable even when the server may already have applied the edit.
+            return True
+        return False
 
     def _fallback_flood_retry_delay(self, result: Any) -> float | None:
         """Return a bounded retry delay for a fallback send, if safe to retry."""
@@ -1806,6 +1815,25 @@ class GatewayStreamConsumer:
                         self._flood_strikes = 0
                         return True
                     else:
+                        if (
+                            finalize
+                            and is_turn_final
+                            and self._visible_prefix() == text
+                            and self._send_failure_may_have_delivered(result)
+                        ):
+                            # The complete answer is already visible in the last
+                            # streaming frame, and a timeout cannot tell us
+                            # whether Telegram applied this cosmetic final edit
+                            # before the acknowledgement was lost. Treat that
+                            # outcome as delivered instead of fresh-sending the
+                            # same answer and best-effort deleting the preview —
+                            # during the same degraded connection the delete can
+                            # fail, leaving two identical messages on screen.
+                            self._already_sent = True
+                            self._final_response_sent = True
+                            self._final_content_delivered = True
+                            self._fallback_final_send = False
+                            return True
                         immediate_final_fallback = False
                         if (
                             finalize

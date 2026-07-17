@@ -10931,9 +10931,12 @@ async def delete_cron_job(job_id: str, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_delete_cron_job_sync, job_id, profile)
 
 
-def _fire_cron_job_for_profile(profile: str, job_id: str, reservation) -> bool:
-    """Run one cron job under the already-reserved owner generation."""
-    _profile_name, home = _cron_profile_home(profile)
+def _fire_cron_job_for_profile(
+    profile: str, job_id: str, reservation, pinned_home: Path
+) -> bool:
+    """Run one cron job under the reserved generation and its pinned home."""
+    del profile  # The caller already resolved and pinned this profile's home.
+    home = pinned_home
     from cron import jobs as cron_jobs
     from hermes_constants import (
         reset_hermes_home_override,
@@ -11005,6 +11008,7 @@ async def cron_fire_webhook(request: Request):
     # The authoritative worker thread starts before 202 is returned, so event-
     # loop task cancellation cannot silently drop an accepted fire.
     _profile_name, fire_home = _cron_profile_home(profile)
+    fire_home = fire_home.expanduser().resolve()
     from cron.scheduler_runtime import reserve_active_scheduler_provider
 
     scheduler_reservation = reserve_active_scheduler_provider(hermes_home=fire_home)
@@ -11029,7 +11033,9 @@ async def cron_fire_webhook(request: Request):
 
     def _fire_worker() -> None:
         try:
-            _fire_cron_job_for_profile(profile, job_id, scheduler_reservation)
+            _fire_cron_job_for_profile(
+                profile, job_id, scheduler_reservation, fire_home
+            )
         except BaseException:
             _log.error("Cron dashboard fire worker failed")
         finally:

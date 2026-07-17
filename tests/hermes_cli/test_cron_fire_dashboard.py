@@ -143,7 +143,7 @@ def test_valid_token_accepts_and_fires(monkeypatch):
     monkeypatch.setattr(
         web_server,
         "_fire_cron_job_for_profile",
-        lambda p, j, r: fired.append((p, j)) or True,
+        lambda p, j, r, home: fired.append((p, j)) or True,
     )
 
     client, pa, ph = _client(auth_required=False)

@@ -91,12 +91,17 @@ def test_fire_cron_job_scopes_store_and_runtime_home_together(
             return True
 
     reservation = type("Reservation", (), {"provider": RecordingProvider()})()
+    monkeypatch.setattr(
+        web_server,
+        "_cron_profile_home",
+        lambda _profile: (_ for _ in ()).throw(AssertionError("home re-resolved")),
+    )
 
     outer_token = set_hermes_home_override(default_home)
     try:
         assert (
             web_server._fire_cron_job_for_profile(
-                "worker_alpha", "worker-job", reservation
+                "worker_alpha", "worker-job", reservation, worker_home
             )
             is True
         )

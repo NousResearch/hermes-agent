@@ -2319,6 +2319,8 @@ def run_conversation(
 
                 if env_var_enabled("HERMES_DUMP_REQUESTS"):
                     agent._dump_api_request_debug(api_kwargs, reason="preflight")
+                    # Response dumper fires on success/error boundaries below;
+                    # the request dumper alone can't tell us what came back.
 
                 # This object is private to the in-process MoA facade.  Add it
                 # only after middleware, hooks, and debug dumps so none of them
@@ -5112,6 +5114,13 @@ def run_conversation(
                         agent._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
                         )
+                    # Mirror the request dump with a response-side capture so the
+                    # provider's actual failure body/status is on disk for triage.
+                    agent._dump_api_response_debug(
+                        reason="non_retryable_client_error",
+                        error=api_error,
+                        status=getattr(api_error, "status_code", None),
+                    )
                     # Terminal — flush buffered context so the user sees
                     # what was tried before the abort.
                     agent._flush_status_buffer()
@@ -5453,6 +5462,11 @@ def run_conversation(
                         agent._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
+                    agent._dump_api_response_debug(
+                        reason="max_retries_exhausted",
+                        error=api_error,
+                        status=getattr(api_error, "status_code", None),
+                    )
                     agent._persist_session(messages, conversation_history)
                     _billing_block = None
                     if classified.reason == FailoverReason.billing:

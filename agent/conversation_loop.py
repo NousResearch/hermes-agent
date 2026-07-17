@@ -616,6 +616,10 @@ def run_conversation(
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
+    # Commentary deduplication spans all provider continuations and tool calls
+    # within one user turn, but must not suppress the same phrase next turn.
+    agent._delivered_interim_texts = set()
+
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
     final_response = None
@@ -1642,12 +1646,16 @@ def run_conversation(
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":
                     status = getattr(response, "status", None)
+                    if isinstance(status, str):
+                        status = status.strip().lower()
                     incomplete_details = getattr(response, "incomplete_details", None)
                     incomplete_reason = None
                     if isinstance(incomplete_details, dict):
                         incomplete_reason = incomplete_details.get("reason")
                     else:
                         incomplete_reason = getattr(incomplete_details, "reason", None)
+                    if incomplete_reason is not None:
+                        incomplete_reason = str(incomplete_reason).strip().lower()
                     if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
                         # Responses API max-output exhaustion is a normal
                         # Codex incomplete turn.  Let the Codex-specific
@@ -1657,6 +1665,8 @@ def run_conversation(
                         # emits "Response truncated due to output length
                         # limit" and stops gateway turns.
                         finish_reason = "incomplete"
+                    elif status == "incomplete" and incomplete_reason == "content_filter":
+                        finish_reason = "content_filter"
                     else:
                         finish_reason = "stop"
                 elif agent.api_mode == "anthropic_messages":
@@ -2615,6 +2625,31 @@ def run_conversation(
                         f"{agent.log_prefix}⚠️  Server rejected image content — "
                         f"switching to text-only mode for this session"
                         + (". Stripped images from history and retrying." if _imgs_removed else "."),
+                        force=True,
+                    )
+                    continue
+
+                # ── Bedrock AnthropicBedrock SDK streaming failure ──
+                # The Anthropic SDK's stream accumulator raises RuntimeError
+                # "Unexpected event order" when Bedrock returns an error event
+                # before message_start (throttling, overload, validation).
+                # Fall back to the native Converse API path for the rest of
+                # this session — it handles these errors gracefully.  Ref: #28156.
+                if (
+                    isinstance(api_error, RuntimeError)
+                    and "unexpected event order" in str(api_error).lower()
+                    and getattr(agent, "provider", "") == "bedrock"
+                    and agent.api_mode == "anthropic_messages"
+                    and not getattr(agent, "_bedrock_converse_fallback_attempted", False)
+                ):
+                    agent._bedrock_converse_fallback_attempted = True
+                    agent.api_mode = "bedrock_converse"
+                    agent._bedrock_region = getattr(agent, "_bedrock_region", None) or "us-east-1"
+                    agent.client = None  # Drop the AnthropicBedrock client
+                    agent._client_kwargs = {}
+                    agent._vprint(
+                        f"{agent.log_prefix}⚠️  AnthropicBedrock SDK streaming failed — "
+                        f"falling back to native Converse API for this session.",
                         force=True,
                     )
                     continue
@@ -4459,27 +4494,48 @@ def run_conversation(
                     or interim_has_codex_message_items
                 ):
                     last_msg = messages[-1] if messages else None
-                    # Duplicate detection: two consecutive incomplete assistant
-                    # messages with identical content AND reasoning are collapsed.
-                    # For provider-state-only changes (encrypted reasoning
-                    # items or replayable message ids/phases/statuses differ
-                    # while visible content/reasoning are unchanged), compare
-                    # those opaque payloads too so we don't silently drop the
-                    # newer continuation state.
-                    last_codex_items = last_msg.get("codex_reasoning_items") if isinstance(last_msg, dict) else None
-                    interim_codex_items = interim_msg.get("codex_reasoning_items")
-                    last_codex_message_items = last_msg.get("codex_message_items") if isinstance(last_msg, dict) else None
-                    interim_codex_message_items = interim_msg.get("codex_message_items")
-                    duplicate_interim = (
+                    # Duplicate detection: compare only visible content
+                    # (content + reasoning).  Opaque provider state
+                    # (encrypted reasoning items, message item ids/phases)
+                    # drifts per continuation even when the visible output
+                    # is identical, so including it in the comparison defeats
+                    # dedup and causes message storms (#52711).
+                    last_interim_visible = (
+                        agent._interim_assistant_visible_text(last_msg)
+                        if isinstance(last_msg, dict)
+                        else ""
+                    )
+                    current_interim_visible = agent._interim_assistant_visible_text(interim_msg)
+                    if last_interim_visible or current_interim_visible:
+                        same_visible_output = last_interim_visible == current_interim_visible
+                    else:
+                        # Preserve the existing reasoning-only behavior when
+                        # neither response has text eligible for interim delivery.
+                        same_visible_output = (
+                            (last_msg.get("content") or "") == (interim_msg.get("content") or "")
+                            and (last_msg.get("reasoning") or "") == (interim_msg.get("reasoning") or "")
+                        ) if isinstance(last_msg, dict) else False
+                    visible_duplicate = (
                         isinstance(last_msg, dict)
                         and last_msg.get("role") == "assistant"
                         and last_msg.get("finish_reason") == "incomplete"
-                        and (last_msg.get("content") or "") == (interim_msg.get("content") or "")
-                        and (last_msg.get("reasoning") or "") == (interim_msg.get("reasoning") or "")
-                        and last_codex_items == interim_codex_items
-                        and last_codex_message_items == interim_codex_message_items
+                        and same_visible_output
                     )
-                    if not duplicate_interim:
+                    if visible_duplicate:
+                        # Update replay state in-place so the latest provider
+                        # payload is preserved without re-emitting identical
+                        # user-visible commentary.
+                        for _key in (
+                            "content",
+                            "reasoning",
+                            "reasoning_content",
+                            "reasoning_details",
+                            "codex_reasoning_items",
+                            "codex_message_items",
+                        ):
+                            if _key in interim_msg:
+                                last_msg[_key] = interim_msg[_key]
+                    else:
                         messages.append(interim_msg)
                         agent._emit_interim_assistant_message(interim_msg)
 
@@ -4812,8 +4868,23 @@ def run_conversation(
                 # a LATER tool round.
                 agent._post_tool_empty_retried = False
 
+                previous_msg = messages[-1] if messages else None
+                current_interim_visible = agent._interim_assistant_visible_text(assistant_msg)
+                previous_interim_visible = (
+                    agent._interim_assistant_visible_text(previous_msg)
+                    if isinstance(previous_msg, dict)
+                    else ""
+                )
+                duplicate_previous_interim = (
+                    bool(current_interim_visible)
+                    and isinstance(previous_msg, dict)
+                    and previous_msg.get("role") == "assistant"
+                    and previous_msg.get("finish_reason") == "incomplete"
+                    and previous_interim_visible == current_interim_visible
+                )
                 messages.append(assistant_msg)
-                agent._emit_interim_assistant_message(assistant_msg)
+                if not duplicate_previous_interim:
+                    agent._emit_interim_assistant_message(assistant_msg)
                 try:
                     # Persist the assistant tool-call turn before any tool
                     # side effects run. If a destructive tool restarts or

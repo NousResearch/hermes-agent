@@ -1,6 +1,7 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import logging
+import ntpath
 import os
 import platform
 import re
@@ -46,6 +47,46 @@ def _msys_to_windows_path(cwd: str) -> str:
     drive = m.group(1).upper()
     tail = (m.group(2) or "").replace('/', '\\')
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
+
+
+def _resolve_local_initial_cwd(cwd: str) -> str:
+    """Resolve the local backend's initial cwd to an absolute host path.
+
+    ``TERMINAL_CWD`` can be populated from config.yaml before the terminal
+    backend is created.  If that value is relative and happens to match the
+    directory Hermes was already launched from (for example ``hermes-agent``
+    while the process cwd is ``~/.hermes/hermes-agent``), passing it through
+    unchanged makes the wrapper run ``cd hermes-agent`` *inside* the project
+    and fail with a confusing nested-path error.  Anchor relative local cwd
+    values once, up front, so both ``subprocess.Popen(cwd=...)`` and the
+    in-shell ``cd`` use the same absolute directory.
+    """
+    expanded = os.path.expanduser(cwd) if cwd else os.getcwd()
+    if _IS_WINDOWS:
+        expanded = _msys_to_windows_path(expanded)
+        # Use the Windows-aware check explicitly: when _IS_WINDOWS is
+        # patched in tests on a POSIX host, os.path.isabs would reject
+        # ``C:\Users\x`` and mangle it through the relative branch.
+        import ntpath
+        if ntpath.isabs(expanded):
+            return expanded
+    if os.path.isabs(expanded):
+        return expanded
+
+    candidate = os.path.abspath(expanded)
+    current = os.getcwd()
+
+    # Common recovery for config values like ``hermes-agent`` when Hermes was
+    # launched from that directory already.  ``os.path.abspath`` would point at
+    # a nonexistent nested ``./hermes-agent``; use the current directory instead.
+    if not os.path.isdir(candidate):
+        wanted_parts = Path(expanded).parts
+        current_parts = Path(current).parts
+        if wanted_parts and len(wanted_parts) <= len(current_parts):
+            if current_parts[-len(wanted_parts):] == wanted_parts:
+                return current
+
+    return candidate
 
 
 def _windows_to_msys_path(cwd: str) -> str:
@@ -613,8 +654,19 @@ def _find_bash() -> str:
             return candidate
 
     if candidates:
-        # Last resort: return the first path even if the probe failed, so the
-        # caller still sees the real bash error instead of "not found".
+        probe_details = "\n".join(
+            detail
+            for candidate in candidates
+            if (detail := _bash_probe_details_cache.get(candidate))
+        )
+        if _mandatory_aslr_enabled() is True or _looks_like_msys_spawn_failure(
+            probe_details
+        ):
+            raise RuntimeError(_git_bash_aslr_help(candidates[0], probe_details))
+
+        # Last resort for failures unrelated to the known MSYS/ASLR class:
+        # return the first path so the caller still sees the real bash error
+        # instead of the less useful "not found" message.
         return candidates[0]
 
     raise RuntimeError(
@@ -625,14 +677,100 @@ def _find_bash() -> str:
 
 
 _bash_starts_cache: dict[str, bool] = {}
+_bash_probe_details_cache: dict[str, str] = {}
+_mandatory_aslr_enabled_cache: "bool | None" = None
+
+_BASH_EXTERNAL_PROGRAM_PROBE = "/usr/bin/true; /usr/bin/cat --version >/dev/null"
+
+
+def _looks_like_msys_spawn_failure(details: str) -> bool:
+    """Match Git-for-Windows child-launch failures associated with ASLR."""
+    lowered = details.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "dofork:",
+            "child_copy:",
+            "0xc0000142",
+            "0xc0000005",
+        )
+    )
+
+
+def _mandatory_aslr_enabled() -> "bool | None":
+    """Return Windows' system-wide ForceRelocateImages state when available."""
+    global _mandatory_aslr_enabled_cache
+    if _mandatory_aslr_enabled_cache is not None:
+        return _mandatory_aslr_enabled_cache
+
+    try:
+        powershell = shutil.which("powershell.exe") or "powershell.exe"
+        result = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-ProcessMitigation -System).Aslr.ForceRelocateImages.ToString()",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=windows_hide_flags(),
+        )
+        if result.returncode != 0:
+            return None
+        value = (result.stdout or "").strip().upper()
+        if value == "ON":
+            _mandatory_aslr_enabled_cache = True
+            return True
+        if value in {"OFF", "NOTSET"}:
+            _mandatory_aslr_enabled_cache = False
+            return False
+    except Exception as exc:
+        logger.debug("Could not query Windows Mandatory ASLR state: %s", exc)
+    return None
+
+
+def _git_root_from_bash(bash: str) -> str:
+    """Resolve Git's root from either <root>/bin or <root>/usr/bin bash."""
+    bin_dir = ntpath.dirname(ntpath.normpath(bash))
+    if ntpath.basename(bin_dir).lower() != "bin":
+        return ntpath.dirname(bin_dir)
+    parent = ntpath.dirname(bin_dir)
+    if ntpath.basename(parent).lower() == "usr":
+        return ntpath.dirname(parent)
+    return parent
+
+
+def _git_bash_aslr_help(bash: str, details: str = "") -> str:
+    """Build the targeted per-program Mandatory-ASLR remediation."""
+    git_root = _git_root_from_bash(bash)
+    escaped_root = git_root.replace("'", "''")
+    detail_line = f"\nGit Bash probe output: {details[:500]}" if details else ""
+    return (
+        f"Git Bash at {bash} cannot launch required MSYS child processes while "
+        "Windows Mandatory ASLR (ForceRelocateImages) is enabled, or its output "
+        f"matches that Git-for-Windows failure class.{detail_line}\n"
+        "Reinstalling Git will not change the Windows mitigation policy. Open "
+        "PowerShell as Administrator and run:\n"
+        f"$gitRoot = '{escaped_root}'\n"
+        'Get-Item "$gitRoot\\bin\\bash.exe", "$gitRoot\\usr\\bin\\*.exe" '
+        "-ErrorAction SilentlyContinue | ForEach-Object { "
+        "Set-ProcessMitigation -Name $_.FullName -Disable ForceRelocateImages }\n"
+        "Then restart Hermes. If the override is blocked or later re-applied, "
+        "ask your Windows administrator to allow this per-program exception."
+    )
 
 
 def _bash_starts(bash: str) -> bool:
-    """True if *bash* can run a trivial non-login command.
+    """True if *bash* can launch external MSYS programs.
 
     Uses ``--noprofile --norc`` so a broken login post-install
     (``Directory \\drivers\\etc``) does not falsely condemn an otherwise
-    usable bash.  Cached per path for the process lifetime.
+    usable bash. The external ``true`` and ``cat`` calls are intentional:
+    a builtin-only ``exit 0`` probe misses Git-for-Windows fork/spawn failures
+    under system-wide Mandatory ASLR. Cached per path for the process lifetime.
     """
     cached = _bash_starts_cache.get(bash)
     if cached is not None:
@@ -640,7 +778,7 @@ def _bash_starts(bash: str) -> bool:
 
     try:
         result = subprocess.run(
-            [bash, "--noprofile", "--norc", "-c", "exit 0"],
+            [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
             capture_output=True,
             text=True,
             timeout=15,
@@ -649,8 +787,10 @@ def _bash_starts(bash: str) -> bool:
         ok = result.returncode == 0
         if not ok:
             combined = f"{result.stdout or ''}{result.stderr or ''}"
+            _bash_probe_details_cache[bash] = combined.strip()[:2000]
             logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
     except Exception as exc:
+        _bash_probe_details_cache[bash] = str(exc)[:2000]
         logger.debug("bash probe error for %s: %s", bash, exc)
         ok = False
 
@@ -1102,9 +1242,8 @@ class LocalEnvironment(BaseEnvironment):
     """
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
-        if cwd:
-            cwd = os.path.expanduser(cwd)
-        super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        cwd = _resolve_local_initial_cwd(cwd)
+        super().__init__(cwd=cwd, timeout=timeout, env=env)
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -1314,31 +1453,14 @@ class LocalEnvironment(BaseEnvironment):
                 pass
 
     def _update_cwd(self, result: dict):
-        """Read CWD from temp file (local-only, no round-trip needed).
+        """Update cwd from the stdout marker emitted by the wrapped command.
 
-        Skip the assignment when the path no longer exists as a directory —
-        ``pwd -P`` on a deleted cwd can leave a stale value in the marker
-        file, and propagating it would re-wedge the next ``Popen``.  The
-        ``_run_bash`` recovery path will resolve a safe fallback if needed.
-
-        On Windows, the value written by Git Bash's ``pwd -P`` is in
-        MSYS form (``/c/Users/x``). Translate it to native Windows form
-        before validating with ``os.path.isdir`` and before storing on
-        ``self.cwd``; otherwise the isdir check rejects every valid
-        result and ``_run_bash`` later prints a misleading "cwd is
-        missing" warning on every command.
+        The base command wrapper already appends ``pwd -P`` to stdout inside a
+        session-specific marker, so the local backend can share the same parser
+        as remote backends instead of re-reading the temp file it just wrote.
+        ``_extract_cwd_from_output`` keeps the local Windows normalization and
+        stale-path rollback semantics intact.
         """
-        try:
-            with open(self._cwd_file, encoding="utf-8") as f:
-                cwd_path = f.read().strip()
-            if _IS_WINDOWS:
-                cwd_path = _msys_to_windows_path(cwd_path)
-            if cwd_path and os.path.isdir(cwd_path):
-                self.cwd = cwd_path
-        except (OSError, FileNotFoundError):
-            pass
-
-        # Still strip the marker from output so it's not visible
         self._extract_cwd_from_output(result)
 
     def _extract_cwd_from_output(self, result: dict):

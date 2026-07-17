@@ -272,7 +272,13 @@ def test_auto_reset_does_not_recover_session_being_ended(tmp_path):
     assert entry.session_id != old.session_id
     assert entry.was_auto_reset is True
     db.reopen_session.assert_not_called()
-    db.end_session.assert_called_once_with(old.session_id, "session_reset")
+    # Auto-reset now writes through promote_to_session_reset (upgrades
+    # accidental agent_close/ws_orphan_reap ends) with the specific
+    # auditable reason — a suspended session resets as "suspended".
+    db.promote_to_session_reset.assert_called_once_with(
+        old.session_id, "suspended"
+    )
+    db.end_session.assert_not_called()
 
 
 def test_legacy_and_off_lock_saves_share_one_serialization_lock(tmp_path):

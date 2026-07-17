@@ -705,6 +705,100 @@ function Test-Python {
     return $false
 }
 
+$script:GitInstallFailureReason = $null
+$script:GitBashPath = $null
+$script:GitBashProbeOutput = $null
+
+function Test-GitBashCompatibility {
+    <#
+    .SYNOPSIS
+    Verify that Git Bash can launch external MSYS programs, not just evaluate
+    shell builtins. Mandatory ASLR can allow bash.exe itself to start while
+    every child linked to msys-2.0.dll fails during fork/spawn.
+    #>
+    param([Parameter(Mandatory = $true)][string]$BashPath)
+
+    $script:GitBashProbeOutput = $null
+    if (-not (Test-Path -LiteralPath $BashPath)) {
+        $script:GitBashProbeOutput = "bash.exe was not found at $BashPath"
+        return $false
+    }
+
+    $process = New-Object System.Diagnostics.Process
+    try {
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $BashPath
+        $startInfo.Arguments = '--noprofile --norc -c "/usr/bin/true; /usr/bin/cat --version >/dev/null"'
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $process.StartInfo = $startInfo
+
+        if (-not $process.Start()) {
+            $script:GitBashProbeOutput = "bash.exe did not start"
+            return $false
+        }
+        if (-not $process.WaitForExit(15000)) {
+            try { $process.Kill() } catch { }
+            $script:GitBashProbeOutput = "Git Bash compatibility probe timed out"
+            return $false
+        }
+
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $script:GitBashProbeOutput = ("$stdout`n$stderr").Trim()
+        return ($process.ExitCode -eq 0)
+    } catch {
+        $script:GitBashProbeOutput = $_.Exception.Message
+        return $false
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Test-MandatoryAslrEnabled {
+    <# Return true only when Windows reports system-wide ForceRelocateImages=ON. #>
+    try {
+        $cmd = Get-Command Get-ProcessMitigation -ErrorAction SilentlyContinue
+        if (-not $cmd) { return $false }
+        $mitigations = & $cmd -System
+        $value = $mitigations.Aslr.ForceRelocateImages
+        return ($null -ne $value -and $value.ToString().ToUpperInvariant() -eq "ON")
+    } catch {
+        return $false
+    }
+}
+
+function Get-GitRootFromBashPath {
+    param([Parameter(Mandatory = $true)][string]$BashPath)
+
+    $binDir = Split-Path -Path $BashPath -Parent
+    if ((Split-Path -Path $binDir -Leaf) -ine "bin") {
+        return (Split-Path -Path $binDir -Parent)
+    }
+
+    $parent = Split-Path -Path $binDir -Parent
+    if ((Split-Path -Path $parent -Leaf) -ieq "usr") {
+        return (Split-Path -Path $parent -Parent)
+    }
+    return $parent
+}
+
+function New-GitBashAslrFailureReason {
+    param([Parameter(Mandatory = $true)][string]$BashPath)
+
+    $gitRoot = Get-GitRootFromBashPath -BashPath $BashPath
+    $escapedRoot = $gitRoot -replace "'", "''"
+    return @(
+        "Git Bash at $BashPath cannot launch required MSYS child processes because Windows Mandatory ASLR (ForceRelocateImages) is enabled system-wide. Reinstalling Git will not change this policy."
+        "Open PowerShell as Administrator and run:"
+        "`$gitRoot = '$escapedRoot'"
+        'Get-Item "$gitRoot\bin\bash.exe", "$gitRoot\usr\bin\*.exe" -ErrorAction SilentlyContinue | ForEach-Object { Set-ProcessMitigation -Name $_.FullName -Disable ForceRelocateImages }'
+        "Then rerun Hermes setup. If the override is blocked or later re-applied, ask your Windows administrator to allow this per-program exception."
+    ) -join [Environment]::NewLine
+}
+
 function Install-Git {
     <#
     .SYNOPSIS
@@ -737,13 +831,31 @@ function Install-Git {
     ``HERMES_GIT_BASH_PATH`` (User scope) so Hermes can find it in a fresh
     shell without a second PATH refresh.
     #>
+    $script:GitInstallFailureReason = $null
     Write-Info "Checking Git..."
 
     if (Get-Command git -ErrorAction SilentlyContinue) {
         $version = git --version
         Write-Success "Git found ($version)"
         Set-GitBashEnvVar
-        return $true
+        if ($script:GitBashPath -and (Test-GitBashCompatibility -BashPath $script:GitBashPath)) {
+            Write-Success "Git Bash can launch MSYS programs"
+            return $true
+        }
+
+        if ($script:GitBashPath -and (Test-MandatoryAslrEnabled)) {
+            $script:GitInstallFailureReason = New-GitBashAslrFailureReason -BashPath $script:GitBashPath
+            Write-Err $script:GitInstallFailureReason
+            return $false
+        }
+
+        if ($script:GitBashPath) {
+            $probeDetail = if ($script:GitBashProbeOutput) { ": $script:GitBashProbeOutput" } else { "" }
+            Write-Warn "System Git Bash could not launch required MSYS programs$probeDetail"
+        } else {
+            Write-Warn "Git is on PATH, but its Git Bash installation could not be located."
+        }
+        Write-Info "Trying a Hermes-managed PortableGit install instead..."
     }
 
     # Download PortableGit into $HermesHome\git.  Always works as long as
@@ -854,8 +966,25 @@ function Install-Git {
         $version = & $gitExe --version
         Write-Success "Git $version installed to $gitDir (portable, user-scoped)"
         Set-GitBashEnvVar
+        if (-not $script:GitBashPath) {
+            throw "PortableGit extraction did not produce a usable bash.exe"
+        }
+        if (-not (Test-GitBashCompatibility -BashPath $script:GitBashPath)) {
+            if (Test-MandatoryAslrEnabled) {
+                $script:GitInstallFailureReason = New-GitBashAslrFailureReason -BashPath $script:GitBashPath
+            } else {
+                $probeDetail = if ($script:GitBashProbeOutput) { " Probe output: $script:GitBashProbeOutput" } else { "" }
+                $script:GitInstallFailureReason = "Git Bash at $script:GitBashPath exists but cannot launch required MSYS programs.$probeDetail"
+            }
+            throw $script:GitInstallFailureReason
+        }
+        Write-Success "Git Bash can launch MSYS programs"
         return $true
     } catch {
+        if ($script:GitInstallFailureReason) {
+            Write-Err $script:GitInstallFailureReason
+            return $false
+        }
         Write-Err "Could not install portable Git: $_"
         Write-Info ""
         Write-Info "Fallback: install Git manually from https://git-scm.com/download/win"
@@ -872,6 +1001,7 @@ function Set-GitBashEnvVar {
     ``HERMES_GIT_BASH_PATH`` (User env scope) so Hermes can find it even before
     PATH propagation completes in a newly-spawned shell.
     #>
+    $script:GitBashPath = $null
     $candidates = @()
 
     # Our own portable Git install is ALWAYS checked first, so a broken
@@ -908,6 +1038,7 @@ function Set-GitBashEnvVar {
         if ($candidate -and (Test-Path $candidate)) {
             [Environment]::SetEnvironmentVariable("HERMES_GIT_BASH_PATH", $candidate, "User")
             $env:HERMES_GIT_BASH_PATH = $candidate
+            $script:GitBashPath = $candidate
             Write-Info "Set HERMES_GIT_BASH_PATH=$candidate"
             return
         }
@@ -3293,7 +3424,12 @@ $InstallStages += @(
 # process), and throws cleanly if uv truly isn't installed yet.
 function Stage-Uv               { if (-not (Install-Uv))     { throw "uv installation failed" } }
 function Stage-Python           { Resolve-UvCmd; if (-not (Test-Python))    { throw "Python $PythonVersion not available" } }
-function Stage-Git              { if (-not (Install-Git))    { throw "Git not available and auto-install failed -- install from https://git-scm.com/download/win then re-run" } }
+function Stage-Git              {
+    if (-not (Install-Git)) {
+        if ($script:GitInstallFailureReason) { throw $script:GitInstallFailureReason }
+        throw "Git not available and auto-install failed -- install from https://git-scm.com/download/win then re-run"
+    }
+}
 # Node is optional (browser tools degrade gracefully without it).  Surface
 # failure to the JSON contract as skipped=true / reason rather than ok=true,
 # so a GUI driver consuming the manifest can distinguish "node ready" from

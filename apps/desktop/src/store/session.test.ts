@@ -222,16 +222,23 @@ describe('workspaceCwdForNewSession', () => {
     $currentCwd.set('/live/session/path')
     $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
 
+    // Bare new sessions are intentionally DETACHED across every mode
+    // (#57911): neither sticky local nor sticky remote cwd is an accept-
+    // able bare-default, and the configured-default-pre-attaches rule
+    // only kicks in for an explicit ``applyConfiguredDefaultProjectDir``.
     expect(workspaceCwdForNewSession()).toBe('')
 
+    // Even after the user has been working in a remote backend's first
+    // project, a bare Cmd+N stays detached until they enter a project
+    // scope or the operator configured an explicit default.
     setCurrentCwd('/backend/project-a')
-    expect(workspaceCwdForNewSession()).toBe('/backend/project-a')
+    expect(workspaceCwdForNewSession()).toBe('')
 
     $connection.set({ baseUrl: 'http://backend-b', mode: 'remote' } as never)
     expect(workspaceCwdForNewSession()).toBe('')
 
     setCurrentCwd('/backend/project-b')
-    expect(workspaceCwdForNewSession()).toBe('/backend/project-b')
+    expect(workspaceCwdForNewSession()).toBe('')
 
     // Back on local with no configured default: a bare new chat is detached and
     // never reads the remote keys (nor inherits the sticky local workspace).

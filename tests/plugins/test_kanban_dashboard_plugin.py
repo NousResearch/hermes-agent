@@ -752,6 +752,19 @@ def test_add_link_cycle_rejected(client):
 # ---------------------------------------------------------------------------
 
 
+def test_dashboard_removes_dispatch_nudge_and_documents_standalone_api():
+    """The dashboard cannot mutate dispatch; its standalone API contract stays visible."""
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    docs = (repo_root / "website" / "docs" / "user-guide" / "features" / "kanban.md").read_text()
+
+    assert "Nudge dispatcher" not in bundle
+    assert "onNudgeDispatch" not in bundle
+    assert "`dry_run=true` previews dispatch" in docs
+    assert "`dry_run=false` is standalone-only" in docs
+    assert "returns 409 while `kanban.dispatch_in_gateway: true`" in docs
+
+
 def test_dispatch_refuses_mutation_while_gateway_owns_dispatch(client, monkeypatch):
     """Dashboard POST must not bypass the gateway-owned dispatcher."""
     from hermes_cli import config

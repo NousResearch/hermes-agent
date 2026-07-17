@@ -840,3 +840,64 @@ class TestPlatformSlashCommand:
         runner = _make_runner()
         out = await runner._handle_platform_command(self._make_event("/platform"))
         assert "Gateway platforms" in out
+
+
+# --- Supervised task wrapper (_spawn_supervised) ---
+
+class TestSpawnSupervised:
+    """Verify the task-level supervision wrapper around watcher launches."""
+
+    @pytest.mark.asyncio
+    async def test_clean_synchronous_return_is_not_respawned(self):
+        # A supervised coro that returns immediately (clean exit) must be
+        # invoked EXACTLY ONCE — a clean return means deliberate shutdown or a
+        # gated no-op watcher; respawning it would busy-spin the event loop.
+        runner = _make_runner()
+        calls = {"n": 0}
+
+        async def _coro():
+            calls["n"] += 1
+            return
+
+        runner._spawn_supervised(lambda: _coro(), "clean_watcher")
+
+        # Drive the loop so the done-callback fires; if it (wrongly) respawned,
+        # the count would keep climbing across these ticks.
+        for _ in range(50):
+            await asyncio.sleep(0)
+
+        assert calls["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_exception_restart_bounded_by_ceiling(self, monkeypatch):
+        # A coro that always raises is restarted with backoff, but the restart
+        # chain is capped: initial launch + _MAX_SUPERVISED_RESTARTS respawns.
+        runner = _make_runner()
+        calls = {"n": 0}
+
+        # Collapse the backoff sleeps to a single loop-yield so the restart
+        # chain converges fast. Bind the real sleep BEFORE patching so the
+        # replacement still yields control (and doesn't recurse into itself).
+        real_sleep = asyncio.sleep
+
+        async def _instant_sleep(_delay):
+            await real_sleep(0)
+
+        monkeypatch.setattr("gateway.run.asyncio.sleep", _instant_sleep)
+
+        async def _coro():
+            calls["n"] += 1
+            raise RuntimeError("boom")
+
+        runner._spawn_supervised(lambda: _coro(), "always_raises")
+
+        expected = runner._MAX_SUPERVISED_RESTARTS + 1
+        for _ in range(500):
+            await real_sleep(0)
+            if calls["n"] >= expected:
+                break
+        # A few extra ticks to prove the chain has stopped (no over-restart).
+        for _ in range(20):
+            await real_sleep(0)
+
+        assert calls["n"] == expected

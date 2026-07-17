@@ -78,6 +78,10 @@ Speech-to-text supports six providers: local faster-whisper (free, runs on-devic
 
 - **[IDE Integration (ACP)](/user-guide/features/acp)** — Use Hermes Agent inside ACP-compatible editors such as VS Code, Zed, and JetBrains. Hermes runs as an ACP server, rendering chat messages, tool activity, file diffs, and terminal commands inside your editor.
 
+## Agent-to-Agent (A2A)
+
+- **[A2A Server](/user-guide/features/a2a)** — Run Hermes Agent as an [Agent2Agent](https://a2a-protocol.org) server so other agents can discover it (via an Agent Card) and delegate tasks over JSON-RPC + SSE. Turns Hermes into a callable worker for orchestrators like LangGraph, CrewAI, and Google ADK.
+
 ## Programmatic Access
 
 - **[API Server](/user-guide/features/api-server)** — Expose Hermes as an OpenAI-compatible HTTP endpoint. Any frontend that speaks the OpenAI format — Open WebUI, LobeChat, LibreChat, NextChat, ChatBox — can connect and use Hermes as a backend with its full toolset.

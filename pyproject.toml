@@ -215,6 +215,16 @@ teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"]  # aiohttp 3.14.1:
 # to it, which is already provided by the `mcp` extra.
 computer-use = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
 acp = ["agent-client-protocol==0.9.0"]
+# A2A (Agent2Agent) server — exposes Hermes as a remote agent that other agents
+# can call over JSON-RPC + SSE. See plugins/platforms/a2a/ and
+# .plans/a2a-protocol.md.
+# Pinned to the pydantic-based 0.3.x line (the one the broad A2A client
+# ecosystem targets) rather than the proto-first 1.x. The http-server extra
+# pulls the Starlette/uvicorn/sse stack the adapter serves on. starlette==1.0.1
+# is pinned directly for CVE-2026-48710 (BadHost) — a2a-sdk[http-server] pulls
+# Starlette transitively with no upper bound, so pin the patched floor here the
+# same way the web/mcp/computer-use extras do.
+a2a = ["a2a-sdk[http-server]==0.3.26", "starlette==1.0.1"]  # starlette: CVE-2026-48710
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
 # The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious
 # 2.4.6 release (Mini Shai-Hulud worm); 2.4.6 was removed from PyPI and the
@@ -299,6 +309,7 @@ all = [
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",
+  "hermes-agent[a2a]",
   "hermes-agent[google]",
   "hermes-agent[web]",
   "hermes-agent[youtube]",
@@ -308,6 +319,7 @@ all = [
 hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
+hermes-a2a = "plugins.platforms.a2a.entry:main"
 
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]

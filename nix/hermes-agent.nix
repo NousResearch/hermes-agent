@@ -211,6 +211,7 @@ stdenv.mkDerivation (finalAttrs: {
         "hermes"
         "hermes-agent"
         "hermes-acp"
+        "hermes-a2a"
       ]
     }
 

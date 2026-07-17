@@ -2918,6 +2918,44 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
+    # Agent2Agent protocol server. This is a bundled platform plugin, but its
+    # standalone console entry point reads the same section so gateway-managed
+    # and standalone launches share one behavioral configuration surface.
+    "a2a": {
+        "enabled": False,
+        "host": "127.0.0.1",
+        "port": 9100,
+        "public_url": None,
+        # Maximum number of blocking AIAgent turns serviced concurrently.
+        "max_concurrency": 16,
+        # In-memory context/session LRU cap.
+        "max_sessions": 512,
+        # Retained protocol tasks and per-task status-history bounds.
+        "max_tasks": 2048,
+        "max_task_history": 100,
+        # Peer-visible tool metadata: preview (bounded), none, or full.
+        "tool_io": "preview",
+    },
+
+    # Default tools for the bundled A2A platform plugin. Keeping this in the
+    # generic platform tool configuration makes `hermes tools` selections and
+    # agent.disabled_toolsets authoritative for remotely callable sessions.
+    "platform_toolsets": {
+        "a2a": [
+            "web",
+            "terminal",
+            "file",
+            "vision",
+            "skills",
+            "browser",
+            "todo",
+            "memory",
+            "session_search",
+            "code_execution",
+            "delegation",
+        ],
+    },
+
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {

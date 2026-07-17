@@ -4418,6 +4418,18 @@ class APIServerAdapter(BasePlatformAdapter):
         current_user = {"role": "user", "content": user_message}
         agent_messages = result.get("messages") if isinstance(result, dict) else None
 
+        # Mid-turn context compression rewrites the agent's in-memory history,
+        # so ``agent_messages`` is no longer an extension of ``prior`` — the
+        # exact-prefix match below fails and falls through to the append
+        # branch, duplicating the (uncompressed, full-size) prior history
+        # behind the already-compacted transcript. ``history_compressed`` is
+        # an explicit signal (set in agent/conversation_compression.py) that
+        # this happened: the agent transcript alone is the canonical
+        # post-compression history, so return it verbatim instead of guessing
+        # from a prefix comparison.
+        if result.get("history_compressed") and isinstance(agent_messages, list) and agent_messages:
+            return list(agent_messages)
+
         if isinstance(agent_messages, list) and agent_messages:
             turn_start = APIServerAdapter._response_messages_turn_start_index(
                 conversation_history,

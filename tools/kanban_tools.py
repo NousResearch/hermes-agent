@@ -442,6 +442,60 @@ def _admin_actor_kwargs() -> dict[str, Any]:
     }
 
 
+def _enforce_board_pin(args: dict, tool_name: str) -> Optional[str]:
+    """Pin a task-scoped admin tool to the dispatcher-pinned board.
+
+    The ``_require_orchestrator_tool`` envelope validates the actor
+    triple on the board the dispatcher pinned via ``HERMES_KANBAN_BOARD``
+    (PR fixes #19534 / friends), but the per-call ``board=`` argument
+    can still send the *mutation* to a different DB. When two boards
+    collide on the same task id + run_id + assignee triple (e.g.
+    seed/test data, a forged cross-tenant card), the
+    ``_assert_fresh_admin_actor`` CAS inside the target DB passes and
+    the change lands on the wrong board (PR #65372).
+
+    Close this hole at the handler boundary: when the call is
+    task-scoped (``HERMES_KANBAN_TASK`` is set), an explicit ``board``
+    that does not match ``HERMES_KANBAN_BOARD`` fails closed *before*
+    the requested DB is opened. Orchestrators without
+    ``HERMES_KANBAN_TASK`` keep full override freedom — they're not
+    pinned to a single board.
+
+    Returns ``None`` on success, or a ``tool_error`` string when the
+    call must be rejected. Handlers should ``return`` the error
+    verbatim.
+    """
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return None  # not task-scoped: no pin to enforce
+    explicit = args.get("board")
+    if not explicit:
+        return None  # omitted → resolves to the env-pinned board
+    pinned = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+    if not pinned:
+        return tool_error(
+            f"{tool_name}: task-scoped call passed board={explicit!r} but no "
+            f"HERMES_KANBAN_BOARD is pinned — refusing to target a cross-board "
+            f"DB without an authoritative anchor."
+        )
+    try:
+        from hermes_cli import kanban_db as _kb
+        pinned_norm = _kb._normalize_board_slug(pinned) or pinned
+        explicit_norm = _kb._normalize_board_slug(explicit)
+    except ValueError:
+        # An invalid slug surfaces from the handler itself; don't double
+        # report it here — let the existing ``_normalize_board_slug``
+        # message win.
+        return None
+    if explicit_norm is None or explicit_norm == pinned_norm:
+        return None
+    return tool_error(
+        f"{tool_name}: task-scoped call is pinned to board {pinned_norm!r} "
+        f"via HERMES_KANBAN_BOARD and cannot target {explicit_norm!r}. "
+        f"Cross-board admin operations are not allowed from a task-scoped "
+        f"context — drop the ``board`` argument to use the pinned board."
+    )
+
+
 def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
     """Compact task shape for board-listing tools."""
     parents = kb.parent_ids(conn, task.id)
@@ -554,6 +608,9 @@ def _handle_list(args: dict, **kw) -> str:
     guard = _require_orchestrator_tool("kanban_list")
     if guard:
         return guard
+    pin_guard = _enforce_board_pin(args, "kanban_list")
+    if pin_guard:
+        return pin_guard
     assignee = args.get("assignee")
     status = args.get("status")
     tenant = args.get("tenant")
@@ -1172,6 +1229,9 @@ def _handle_reassign(args: dict, **kw) -> str:
     guard = _require_orchestrator_tool("kanban_reassign")
     if guard:
         return guard
+    pin_guard = _enforce_board_pin(args, "kanban_reassign")
+    if pin_guard:
+        return pin_guard
     task_id, error = _required_nonempty_string(args, "task_id")
     if error:
         return tool_error(error)
@@ -1237,6 +1297,9 @@ def _handle_archive(args: dict, **kw) -> str:
     guard = _require_orchestrator_tool("kanban_archive")
     if guard:
         return guard
+    pin_guard = _enforce_board_pin(args, "kanban_archive")
+    if pin_guard:
+        return pin_guard
     task_ids, error = _parse_admin_task_ids(args)
     if error:
         return tool_error(error)
@@ -1290,6 +1353,9 @@ def _handle_notify_subscribe(args: dict, **kw) -> str:
     guard = _require_orchestrator_tool("kanban_notify_subscribe")
     if guard:
         return guard
+    pin_guard = _enforce_board_pin(args, "kanban_notify_subscribe")
+    if pin_guard:
+        return pin_guard
     task_ids, error = _parse_admin_task_ids(args)
     if error:
         return tool_error(error)
@@ -1359,6 +1425,9 @@ def _handle_unblock(args: dict, **kw) -> str:
     guard = _require_orchestrator_tool("kanban_unblock")
     if guard:
         return guard
+    pin_guard = _enforce_board_pin(args, "kanban_unblock")
+    if pin_guard:
+        return pin_guard
     tid = args.get("task_id")
     if not tid:
         return tool_error("task_id is required")

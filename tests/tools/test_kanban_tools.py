@@ -2615,6 +2615,479 @@ def test_board_param_in_all_schemas():
 
 
 # ---------------------------------------------------------------------------
+# Task-scoped admin tools must be pinned to HERMES_KANBAN_BOARD (PR #65372).
+#
+# The pre-fix vulnerability: ``_require_orchestrator_tool`` validates the
+# (task_id, run_id, assignee) triple on the DB the dispatcher pinned via
+# HERMES_KANBAN_BOARD, but the handlers themselves open a *different* DB
+# when the caller passes ``board=<slug>``. If two boards happen to contain
+# a task with the same id sharing the same run_id and assignee — i.e. the
+# actor triple — the ``_assert_fresh_admin_actor`` CAS passes inside the
+# target DB and the mutation lands on the wrong board.
+#
+# The fix is a single shared guard: when HERMES_KANBAN_TASK is set (the
+# task-scoped anchor), reject any explicit ``board`` that does not match
+# the pinned board BEFORE the handler opens the requested DB. Orchestrators
+# without HERMES_KANBAN_TASK keep the existing override freedom.
+# ---------------------------------------------------------------------------
+
+
+def _seed_cross_board_actor(monkeypatch, tmp_path):
+    """Seed two DBs ('default' + 'alt') with a colliding actor triple.
+
+    Both boards end up with a running task whose id / run_id / assignee
+    matches what the dispatcher would pin (HERMES_KANBAN_TASK /
+    HERMES_KANBAN_RUN_ID / notifier profile). Without the guard, any
+    task-scoped admin tool that passes ``board="alt"`` would satisfy
+    its ``_assert_fresh_admin_actor`` CAS on the wrong board and mutate
+    a sibling task there.
+
+    Returns the fixture state with the alt-board victim task id that
+    callers use to assert no cross-board mutation landed.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-orchestrator")
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    # Pin the dispatcher's board env to 'default' so _require_orchestrator_tool
+    # resolves its own freshness check to the default DB.
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    # Shared triple used by both boards for the actor collision.
+    actor_task_id = "t_collision"
+    actor_run_id = 9001
+    profile = "test-orchestrator"
+
+    # Default board: the dispatcher's actual worker ctx.
+    conn = kb.connect()
+    try:
+        kb.create_task(conn, title="default-actor", assignee=profile)
+        for row in conn.execute(
+            "SELECT id FROM tasks WHERE title = 'default-actor'"
+        ).fetchall():
+            conn.execute(
+                "UPDATE tasks SET id = ? WHERE id = ?",
+                (actor_task_id, row["id"]),
+            )
+        assert kb.claim_task(conn, actor_task_id)
+        run_row = conn.execute(
+            "SELECT id FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (actor_task_id,),
+        ).fetchone()
+        assert run_row is not None
+        conn.execute(
+            "UPDATE task_runs SET id = ?, profile = ? WHERE id = ?",
+            (actor_run_id, profile, run_row["id"]),
+        )
+        conn.execute(
+            "UPDATE tasks SET assignee = ?, current_run_id = ? "
+            "WHERE id = ?",
+            (profile, actor_run_id, actor_task_id),
+        )
+    finally:
+        conn.close()
+
+    # Alt board: same triple but a different physical DB.
+    conn = kb.connect(board="alt")
+    try:
+        kb.create_task(conn, title="alt-actor", assignee=profile)
+        alt_row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'alt-actor'"
+        ).fetchone()
+        # Force the alt row into the running triple that the CAS expects,
+        # without going through claim_task (which requires status='ready').
+        conn.execute(
+            "INSERT INTO task_runs (id, task_id, profile, status, started_at) "
+            "VALUES (?, ?, ?, 'running', ?)",
+            (actor_run_id, alt_row["id"], profile, int(__import__('time').time())),
+        )
+        conn.execute(
+            "UPDATE tasks SET id = ?, status = 'running', "
+            "assignee = ?, current_run_id = ? WHERE id = ?",
+            (actor_task_id, profile, actor_run_id, alt_row["id"]),
+        )
+
+        kb.create_task(conn, title="alt-victim", assignee="peer")
+        victim_row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'alt-victim'"
+        ).fetchone()
+        victim_id = victim_row["id"]
+        conn.execute(
+            "UPDATE tasks SET id = ? WHERE id = ?",
+            ("t_victim_alt", victim_id),
+        )
+    finally:
+        conn.close()
+
+    return {
+        "actor_task_id": actor_task_id,
+        "actor_run_id": actor_run_id,
+        "profile": profile,
+        "victim_id": "t_victim_alt",
+    }
+
+
+def test_task_scoped_reassign_cross_board_is_rejected(monkeypatch, tmp_path):
+    """Task-scoped orchestrator pinned to board 'default' must NOT be
+    able to mutate board 'alt' by passing ``board='alt'`` even when
+    the actor triple collides on both boards."""
+    seed = _seed_cross_board_actor(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", seed["actor_task_id"])
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(seed["actor_run_id"]))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_reassign({
+        "task_id": seed["victim_id"],
+        "profile": "evil-claim",
+        "board": "alt",
+    })
+    payload = json.loads(out)
+    assert payload.get("error"), (
+        f"expected cross-board reassign to fail, got {payload!r}"
+    )
+    # The alt-board victim must be untouched.
+    with kb.connect(board="alt") as conn:
+        victim = kb.get_task(conn, seed["victim_id"])
+    assert victim is not None
+    assert victim.assignee == "peer", (
+        f"alt board victim was mutated cross-board: assignee={victim.assignee!r}"
+    )
+
+
+def test_task_scoped_archive_cross_board_is_rejected(monkeypatch, tmp_path):
+    """Same guarantee for kanban_archive."""
+    seed = _seed_cross_board_actor(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", seed["actor_task_id"])
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(seed["actor_run_id"]))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_archive({
+        "task_ids": [seed["victim_id"]],
+        "board": "alt",
+    })
+    payload = json.loads(out)
+    assert payload.get("error") or payload.get("ok") is False, (
+        f"expected cross-board archive to fail closed, got {payload!r}"
+    )
+    with kb.connect(board="alt") as conn:
+        victim = kb.get_task(conn, seed["victim_id"])
+    assert victim is not None
+    assert victim.status != "archived", (
+        f"alt board victim was archived cross-board: status={victim.status!r}"
+    )
+
+
+def test_task_scoped_notify_subscribe_cross_board_is_rejected(
+    monkeypatch, tmp_path,
+):
+    """Same guarantee for kanban_notify_subscribe — a write that
+    silently mutates the wrong board's subscription table."""
+    seed = _seed_cross_board_actor(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", seed["actor_task_id"])
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(seed["actor_run_id"]))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_notify_subscribe({
+        "task_ids": [seed["victim_id"]],
+        "platform": "discord",
+        "chat_id": "leak-chat",
+        "board": "alt",
+    })
+    payload = json.loads(out)
+    assert payload.get("error") or payload.get("ok") is False, (
+        f"expected cross-board subscribe to fail closed, got {payload!r}"
+    )
+    with kb.connect(board="alt") as conn:
+        subs = kb.list_notify_subs(conn, seed["victim_id"])
+    assert subs == [], (
+        f"alt board victim got a subscription cross-board: {subs!r}"
+    )
+
+
+def test_task_scoped_unblock_cross_board_is_rejected(monkeypatch, tmp_path):
+    """kanban_unblock must also be pinned; even when the caller
+    passes ``task_id=HERMES_KANBAN_TASK`` (same id collision as the
+    actor triple), opening the alt DB and calling ``unblock_task``
+    would mutate a different physical task there.
+
+    Without ``_enforce_worker_task_ownership`` triggering (which already
+    blocks foreign task IDs), the only thing standing between a
+    task-scoped orchestrator and the alt board's same-id task is the
+    cross-board guard we're adding here.
+    """
+    seed = _seed_cross_board_actor(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", seed["actor_task_id"])
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(seed["actor_run_id"]))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Put the alt-board actor task (same id, different DB) into the
+    # 'blocked' state so an unblock flip is observable, then RESTORE
+    # the running-triple claim/run/assignee so ``_assert_fresh_admin_actor``
+    # would happily pass on the alt DB. Without the cross-board guard,
+    # ``_handle_unblock`` then proceeds and flips the alt row back to
+    # 'ready'.
+    with kb.connect(board="alt") as conn:
+        kb.block_task(conn, seed["actor_task_id"], reason="poisoned")
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', "
+            "current_run_id = ?, assignee = ? WHERE id = ?",
+            (seed["actor_run_id"], seed["profile"], seed["actor_task_id"]),
+        )
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (seed["actor_task_id"],),
+        ).fetchone()
+    assert row["status"] == "blocked", (
+        f"alt board setup didn't reach blocked state: {row['status']!r}"
+    )
+
+    out = kt._handle_unblock({
+        "task_id": seed["actor_task_id"],
+        "board": "alt",
+    })
+    payload = json.loads(out)
+    assert payload.get("error"), (
+        f"expected cross-board unblock to fail, got {payload!r}"
+    )
+    with kb.connect(board="alt") as conn:
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (seed["actor_task_id"],),
+        ).fetchone()
+    assert row["status"] == "blocked", (
+        f"alt board victim was unblocked cross-board: status={row['status']!r}"
+    )
+
+
+def test_task_scoped_list_cross_board_does_not_recompute(
+    monkeypatch, tmp_path,
+):
+    """kanban_list(board='alt') calls recompute_ready(conn) on the alt
+    DB, which is a write side effect. The guard must block it from a
+    task-scoped orchestrator pinned to the default board."""
+    seed = _seed_cross_board_actor(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", seed["actor_task_id"])
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(seed["actor_run_id"]))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Stage an alt board 'todo' task that would be auto-promoted to
+    # 'ready' by recompute_ready; assertions then guard the lack of
+    # side effect.
+    with kb.connect(board="alt") as conn:
+        kb.create_task(
+            conn, title="alt-promotable", assignee="peer",
+        )
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'alt-promotable'"
+        ).fetchone()
+        conn.execute(
+            "UPDATE tasks SET status = 'todo' WHERE id = ?",
+            (row["id"],),
+        )
+        promotable_id = row["id"]
+
+    out = kt._handle_list({"board": "alt", "limit": 10})
+    payload = json.loads(out)
+    assert payload.get("error"), (
+        f"expected cross-board list to fail, got {payload!r}"
+    )
+    with kb.connect(board="alt") as conn:
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (promotable_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "todo", (
+        f"alt board recompute ran cross-board: status={row['status']!r}"
+    )
+
+
+def test_task_scoped_explicit_board_matching_pin_succeeds(monkeypatch, tmp_path):
+    """When the task-scoped orchestrator's explicit ``board`` matches
+    HERMES_KANBAN_BOARD, behaviour is preserved (no regression)."""
+    seed = _seed_cross_board_actor(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", seed["actor_task_id"])
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(seed["actor_run_id"]))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Create a same-board target on the default board to reassign.
+    with kb.connect() as conn:
+        kb.create_task(conn, title="same-board-target", assignee="old-profile")
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'same-board-target'"
+        ).fetchone()
+        same_board_target = row["id"]
+
+    out = kt._handle_reassign({
+        "task_id": same_board_target,
+        "profile": "new-profile",
+        "board": "default",
+    })
+    payload = json.loads(out)
+    assert payload.get("ok") is True, payload
+
+
+def test_task_scoped_omitted_board_preserves_behaviour(monkeypatch, tmp_path):
+    """Omitting the ``board`` arg must still resolve to the pinned
+    board. No regression."""
+    seed = _seed_cross_board_actor(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", seed["actor_task_id"])
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(seed["actor_run_id"]))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        kb.create_task(conn, title="omitted-board-target", assignee="old-profile")
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'omitted-board-target'"
+        ).fetchone()
+        target = row["id"]
+
+    out = kt._handle_reassign({
+        "task_id": target,
+        "profile": "new-profile",
+    })
+    payload = json.loads(out)
+    assert payload.get("ok") is True, payload
+
+
+def test_task_scoped_explicit_board_without_pin_fails_closed(monkeypatch, tmp_path):
+    """If the task-scoped orchestrator has no HERMES_KANBAN_BOARD pin
+    but passes an explicit board=, that is also a cross-board attempt:
+    there is no anchor to compare against, so fail closed. Even when
+    the alt DB happens to have a matching target task, the cross-board
+    mutation must be rejected."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-orchestrator")
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kb.connect() as conn:
+        kb.create_task(conn, title="no-pin-actor", assignee="test-orchestrator")
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'no-pin-actor'"
+        ).fetchone()
+        actor_task_id = row["id"]
+        assert kb.claim_task(conn, actor_task_id)
+        run = kb.latest_run(conn, actor_task_id)
+        run_id = run.id
+    # Seed the alt board with a cross-board mutatable victim so the
+    # pre-fix code (which had no guard) would mutate it on success.
+    with kb.connect(board="alt") as conn:
+        kb.create_task(conn, title="no-pin-victim", assignee="peer")
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'no-pin-victim'"
+        ).fetchone()
+        alt_victim = row["id"]
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", actor_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from tools import kanban_tools as kt
+
+    out = kt._handle_reassign({
+        "task_id": alt_victim,
+        "profile": "new-profile",
+        "board": "alt",
+    })
+    payload = json.loads(out)
+    assert payload.get("error"), (
+        f"expected explicit-board-without-pin to fail, got {payload!r}"
+    )
+    with kb.connect(board="alt") as conn:
+        task = kb.get_task(conn, alt_victim)
+    assert task.assignee == "peer", (
+        f"alt victim mutated cross-board despite no HERMES_KANBAN_BOARD pin:"
+        f" assignee={task.assignee!r}"
+    )
+
+
+def test_non_task_scoped_orchestrator_keeps_board_override(monkeypatch, tmp_path):
+    """An orchestrator profile WITHOUT HERMES_KANBAN_TASK is not pinned
+    and may legitimately target alt boards via ``board=``. Guard must
+    not trigger for that case."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "cli-orchestrator")
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kb.connect(board="alt") as conn:
+        kb.create_task(conn, title="alt-free-target", assignee="old-profile")
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'alt-free-target'"
+        ).fetchone()
+        alt_target = row["id"]
+
+    from tools import kanban_tools as kt
+    out = kt._handle_reassign({
+        "task_id": alt_target,
+        "profile": "new-profile",
+        "board": "alt",
+    })
+    payload = json.loads(out)
+    assert payload.get("ok") is True, payload
+    with kb.connect(board="alt") as conn:
+        task = kb.get_task(conn, alt_target)
+    assert task.assignee == "new-profile"
+
+
+
+# ---------------------------------------------------------------------------
 # kanban_create auto-subscribe behaviour
 #
 # When a worker calls kanban_create from inside a session that has a

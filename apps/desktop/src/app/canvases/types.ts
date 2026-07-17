@@ -35,21 +35,36 @@ export interface CanvasDatum {
   value: number
 }
 
+export interface CanvasChartDatum {
+  label: string
+  [key: string]: number | string | undefined
+}
+
+export interface CanvasChartSeries {
+  color?: string
+  key: string
+  label: string
+}
+
 export interface BarChartBlock {
-  data: CanvasDatum[]
+  data: CanvasChartDatum[]
   id: string
+  series: CanvasChartSeries[]
+  stacked?: boolean
   title: string
   type: 'bar-chart'
 }
 export interface LineChartBlock {
-  data: CanvasDatum[]
+  data: CanvasChartDatum[]
   id: string
+  series: CanvasChartSeries[]
   title: string
   type: 'line-chart'
 }
 export interface AreaChartBlock {
-  data: CanvasDatum[]
+  data: CanvasChartDatum[]
   id: string
+  series: CanvasChartSeries[]
   title: string
   type: 'area-chart'
 }

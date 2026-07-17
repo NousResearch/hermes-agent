@@ -13,7 +13,7 @@ Before asking for clarification, list existing `*.canvas.json` files for the act
 
 Keep execution quiet: inspect once, write once, validate once. Do not narrate reasoning or tool steps.
 
-The JSON preserves `schema`, `id`, `title`, `profile`, `intent`, `source`, `updatedAt`, raw `data`, and a free-form `document`. The document is the report page: design its sections, hierarchy, and elements from the user's request. Use any composition of `text`, `kpi`, `table`, `list`, `chart`, `image`, `divider`, and `callout`. Charts declare type (`bar`, `line`, `area`, `pie`, `donut`), labels, and series. Do not use domain templates, fixed report blocks, or empty placeholder sections.
+The JSON preserves `schema`, `id`, `title`, `profile`, `intent`, `source`, `updatedAt`, raw `data`, and a free-form `document`. The document is the report page: design its sections, hierarchy, and elements from the user's request. Use any composition of `text`, `kpi`, `table`, `list`, `chart`, `image`, `divider`, and `callout`. Charts declare `type` (`bar`, `stackedBar`, `line`, `area`, `pie`, or `donut`), `labels`, and one or more `series`, each with `name`, optional `color`, and a numeric `data` array aligned to `labels`. Preserve every requested series; use `stackedBar` only when the categories form parts of one total. Do not use domain templates, fixed report blocks, or empty placeholder sections.
 
 Minimum valid shape:
 

@@ -16,6 +16,7 @@ import {
   Cell,
   Line,
   LineChart,
+  Legend,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -24,7 +25,7 @@ import {
   YAxis
 } from 'recharts'
 
-import type { CanvasBlock, CanvasDatum } from './types'
+import type { CanvasBlock, CanvasChartSeries, CanvasDatum } from './types'
 
 const FALLBACK_COLORS = ['#ff385f', '#ff6b84', '#ff96a8', '#ffc2cc', '#5c667a']
 
@@ -34,6 +35,10 @@ function blockTitle(title: string) {
 
 function chartColor(item: CanvasDatum, index: number) {
   return item.color || FALLBACK_COLORS[index % FALLBACK_COLORS.length]
+}
+
+function seriesColor(series: CanvasChartSeries, index: number) {
+  return series.color || FALLBACK_COLORS[index % FALLBACK_COLORS.length]
 }
 
 function KpisBlock({ block }: { block: Extract<CanvasBlock, { type: 'kpis' }> }) {
@@ -63,11 +68,17 @@ function BarChartBlock({ block }: { block: Extract<CanvasBlock, { type: 'bar-cha
             <XAxis axisLine={false} dataKey="label" fontSize={12} tickLine={false} />
             <YAxis axisLine={false} fontSize={12} tickLine={false} />
             <Tooltip cursor={{ fill: 'rgba(255, 56, 95, 0.08)' }} />
-            <Bar dataKey="value" radius={[6, 6, 2, 2]}>
-              {block.data.map((item, index) => (
-                <Cell fill={chartColor(item, index)} key={item.label} />
-              ))}
-            </Bar>
+            {block.series.length > 1 ? <Legend /> : null}
+            {block.series.map((series, index) => (
+              <Bar
+                dataKey={series.key}
+                fill={seriesColor(series, index)}
+                key={series.key}
+                name={series.label}
+                radius={block.stacked ? undefined : [6, 6, 2, 2]}
+                stackId={block.stacked ? 'canvas-stack' : undefined}
+              />
+            ))}
           </BarChart>
         </ResponsiveContainer>
       </div>
@@ -85,7 +96,18 @@ function LineChartBlock({ block }: { block: Extract<CanvasBlock, { type: 'line-c
             <XAxis axisLine={false} dataKey="label" fontSize={12} tickLine={false} />
             <YAxis axisLine={false} fontSize={12} tickLine={false} />
             <Tooltip />
-            <Line dataKey="value" dot={false} stroke="#ff385f" strokeWidth={2.5} type="monotone" />
+            {block.series.length > 1 ? <Legend /> : null}
+            {block.series.map((series, index) => (
+              <Line
+                dataKey={series.key}
+                dot={false}
+                key={series.key}
+                name={series.label}
+                stroke={seriesColor(series, index)}
+                strokeWidth={2.5}
+                type="monotone"
+              />
+            ))}
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -101,15 +123,28 @@ function AreaChartBlock({ block }: { block: Extract<CanvasBlock, { type: 'area-c
         <ResponsiveContainer height="100%" width="100%">
           <AreaChart data={block.data} margin={{ top: 4, right: 8, left: -22, bottom: 0 }}>
             <defs>
-              <linearGradient id={`canvas-area-${block.id}`} x1="0" x2="0" y1="0" y2="1">
-                <stop offset="5%" stopColor="#ff385f" stopOpacity={0.4} />
-                <stop offset="95%" stopColor="#ff385f" stopOpacity={0.03} />
-              </linearGradient>
+              {block.series.map((series, index) => (
+                <linearGradient id={`canvas-area-${block.id}-${series.key}`} key={series.key} x1="0" x2="0" y1="0" y2="1">
+                  <stop offset="5%" stopColor={seriesColor(series, index)} stopOpacity={0.4} />
+                  <stop offset="95%" stopColor={seriesColor(series, index)} stopOpacity={0.03} />
+                </linearGradient>
+              ))}
             </defs>
             <XAxis axisLine={false} dataKey="label" fontSize={12} tickLine={false} />
             <YAxis axisLine={false} fontSize={12} tickLine={false} />
             <Tooltip />
-            <Area dataKey="value" fill={`url(#canvas-area-${block.id})`} stroke="#ff385f" strokeWidth={2.5} type="monotone" />
+            {block.series.length > 1 ? <Legend /> : null}
+            {block.series.map((series, index) => (
+              <Area
+                dataKey={series.key}
+                fill={`url(#canvas-area-${block.id}-${series.key})`}
+                key={series.key}
+                name={series.label}
+                stroke={seriesColor(series, index)}
+                strokeWidth={2.5}
+                type="monotone"
+              />
+            ))}
           </AreaChart>
         </ResponsiveContainer>
       </div>

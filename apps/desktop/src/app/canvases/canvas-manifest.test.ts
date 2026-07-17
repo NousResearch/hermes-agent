@@ -104,6 +104,44 @@ describe('parseCanvasManifest', () => {
     expect(manifest.blocks.map(block => block.type)).toEqual(['line-chart', 'pie-chart'])
   })
 
+  it('preserves every series and renders stacked bars as one stack', () => {
+    const manifest = parseCanvasManifest(
+      JSON.stringify({
+        schema: 'hermes.canvas/v1',
+        id: 'channels',
+        title: 'Channels',
+        source: {},
+        document: [
+          {
+            children: [
+              {
+                kind: 'chart',
+                labels: ['Search', 'Direct'],
+                series: [
+                  { data: [12, 8], name: 'New users' },
+                  { data: [5, 4], name: 'Returning users' }
+                ],
+                type: 'stackedBar'
+              }
+            ]
+          }
+        ]
+      }),
+      'default'
+    )
+
+    const chart = manifest.blocks[0]
+    expect(chart).toMatchObject({
+      series: [
+        { key: 'series-0', label: 'New users' },
+        { key: 'series-1', label: 'Returning users' }
+      ],
+      stacked: true,
+      type: 'bar-chart'
+    })
+    expect(chart).toMatchObject({ data: [{ label: 'Search', 'series-0': 12, 'series-1': 5 }] })
+  })
+
   it('renders flat document sections produced by Hermes', () => {
     const manifest = parseCanvasManifest(
       JSON.stringify({

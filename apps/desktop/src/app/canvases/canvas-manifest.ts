@@ -87,6 +87,13 @@ function chartRows(value: unknown): CanvasDatum[] {
   )
 }
 
+function singleSeriesChart(data: CanvasDatum[]) {
+  return {
+    data: data.map(item => ({ label: item.label, 'series-0': item.value })),
+    series: [{ key: 'series-0', label: 'Value' }]
+  }
+}
+
 function documentBlocks(payload: JsonObject): CanvasBlock[] {
   const documentObject = object(payload.document)
   const document = Array.isArray(payload.document)
@@ -167,18 +174,36 @@ function documentBlocks(payload: JsonObject): CanvasBlock[] {
           })
       }
       if (kind === 'divider') blocks.push({ type: 'divider', id: `${sectionIndex}-${index}` })
-      const directChartType = ['bar', 'line', 'area', 'pie', 'donut', 'doughnut', 'stackedBar'].includes(kind)
+      const directChartType = ['bar', 'line', 'area', 'pie', 'donut', 'doughnut', 'stackedBar', 'stacked-bar'].includes(kind)
         ? kind
         : ''
       if (kind === 'chart' || directChartType) {
         const labels = Array.isArray(item?.labels) ? item.labels.map(value => String(value)) : []
-        const series = Array.isArray(item?.series) ? object(item.series[0]) : null
-        const values = Array.isArray(series?.data) ? series.data : []
-        const chartData = labels.map((label, valueIndex) => ({ label, value: number(values[valueIndex]) }))
+        const series = (Array.isArray(item?.series) ? item.series : [])
+          .map((entry, seriesIndex) => {
+            const source = object(entry)
+            const values = Array.isArray(source?.data) ? source.data : []
+            if (!values.length) return null
+            return {
+              color: string(source?.color),
+              key: `series-${seriesIndex}`,
+              label: string(source?.name, string(source?.label, `Series ${seriesIndex + 1}`)),
+              values
+            }
+          })
+          .filter((entry): entry is { color: string; key: string; label: string; values: unknown[] } => Boolean(entry))
+        const chartData = labels.map((label, valueIndex) =>
+          series.reduce<Record<string, number | string>>(
+            (row, entry) => ({ ...row, [entry.key]: number(entry.values[valueIndex]) }),
+            { label }
+          )
+        )
         // Canvas writers commonly use `kind: "chart", type: "line"` rather
         // than `chartType`. Accept both forms (and the Chart.js spelling
         // `doughnut`) so valid graphs never disappear or degrade unexpectedly.
         const chartType = string(item?.chartType, string(item?.variant, string(item?.type, directChartType)))
+          .toLowerCase()
+          .replace(/[-_\s]/g, '')
         const blockType =
           chartType === 'pie' || chartType === 'donut' || chartType === 'doughnut'
             ? 'pie-chart'
@@ -187,13 +212,30 @@ function documentBlocks(payload: JsonObject): CanvasBlock[] {
               : chartType === 'area'
                 ? 'area-chart'
                 : 'bar-chart'
-        if (chartData.length)
-          blocks.push({
-            type: blockType,
-            id: `${sectionIndex}-${index}`,
-            title: string(item?.title, string(series?.name, title)),
-            data: chartData
-          })
+        if (chartData.length) {
+          const chartTitle = string(item?.title, string(series[0]?.label, title))
+          if (blockType === 'pie-chart') {
+            blocks.push({
+              type: 'pie-chart',
+              id: `${sectionIndex}-${index}`,
+              title: chartTitle,
+              data: labels.map((label, valueIndex) => ({
+                color: series[0]?.color || undefined,
+                label,
+                value: number(series[0]?.values[valueIndex])
+              }))
+            })
+          } else {
+            blocks.push({
+              type: blockType,
+              id: `${sectionIndex}-${index}`,
+              series: series.map(({ color, key, label }) => ({ color: color || undefined, key, label })),
+              stacked: chartType === 'stackedbar',
+              title: chartTitle,
+              data: chartData
+            })
+          }
+        }
       }
     })
   })
@@ -219,7 +261,7 @@ function genericDataBlocks(payload: JsonObject): CanvasBlock[] {
       const numeric = chartRows(record)
 
       if (numeric.length === entries.length && entries.length > 1 && entries.length <= 24 && key !== 'totals') {
-        blocks.push({ type: 'bar-chart', id: `data-${index}`, title, data: numeric })
+        blocks.push({ type: 'bar-chart', id: `data-${index}`, title, ...singleSeriesChart(numeric) })
       } else {
         blocks.push({
           type: 'kpis',
@@ -233,7 +275,7 @@ function genericDataBlocks(payload: JsonObject): CanvasBlock[] {
     if (!table) return
     const chart = chartRows(value)
     if (chart.length === table.rows.length && chart.length > 1 && chart.length <= 24 && table.columns.length <= 2) {
-      blocks.push({ type: 'bar-chart', id: `data-chart-${index}`, title, data: chart })
+      blocks.push({ type: 'bar-chart', id: `data-chart-${index}`, title, ...singleSeriesChart(chart) })
     } else {
       blocks.push({ type: 'table', id: `data-table-${index}`, title, ...table })
     }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,14 @@ class SecretSourceRefreshError(RuntimeError):
             f"secret source refresh failed "
             f"(source={source}, type={source_type}, stage={stage})"
         )
+
+
+@dataclass(frozen=True)
+class StrictDotenvRefresh:
+    """One atomic strict-refresh result, including its exact expanded config."""
+
+    loaded_files: tuple[Path, ...]
+    secrets_config: dict[str, Any]
 
 
 def get_secret_source(env_var: str) -> str | None:
@@ -405,7 +414,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
 
 def refresh_hermes_dotenv_strict(
     *, hermes_home: str | os.PathLike
-) -> list[Path]:
+) -> StrictDotenvRefresh:
     """Refresh no-agent secrets or raise a sanitized fail-closed error.
 
     Ordinary startup remains fail-open through ``load_hermes_dotenv``. This
@@ -471,7 +480,7 @@ def refresh_hermes_dotenv_strict(
         ) from None
 
     if not enabled:
-        return loaded
+        return StrictDotenvRefresh(tuple(loaded), cfg)
 
     for source in enabled:
         try:
@@ -513,7 +522,7 @@ def refresh_hermes_dotenv_strict(
     # must be applied after external sources, even when a source is configured
     # to override existing environment values.
     _apply_managed_env()
-    return loaded
+    return StrictDotenvRefresh(tuple(loaded), cfg)
 
 
 def _load_unique_yaml_mapping(config_path: Path) -> dict:

@@ -47,12 +47,13 @@ def _patch_enabled_source(monkeypatch, *, alias: str = "CUSTOM_BOOTSTRAP") -> No
     import agent.secret_sources.registry as registry
     import hermes_cli.env_loader as env_loader
 
+    config = {
+        "test-source": {"enabled": True, "token_alias": alias},
+    }
     monkeypatch.setattr(
         env_loader,
-        "_load_secrets_config_strict",
-        lambda _home: {
-            "test-source": {"enabled": True, "token_alias": alias},
-        },
+        "refresh_hermes_dotenv_strict",
+        lambda **_kwargs: env_loader.StrictDotenvRefresh((), config),
     )
     monkeypatch.setattr(
         registry,
@@ -75,8 +76,7 @@ def test_prepare_no_agent_child_env_is_immutable_and_strips_bootstrap_vars(
     monkeypatch.setenv("CUSTOM_BOOTSTRAP", "configured-bootstrap")
     _patch_enabled_source(monkeypatch)
 
-    with patch("hermes_cli.env_loader.refresh_hermes_dotenv_strict"):
-        pinned_home, child_env = scheduler._prepare_no_agent_child_environment()
+    pinned_home, child_env = scheduler._prepare_no_agent_child_environment()
 
     assert pinned_home == home.resolve()
     assert isinstance(child_env, MappingProxyType)
@@ -91,10 +91,12 @@ def test_prepare_no_agent_child_env_is_immutable_and_strips_bootstrap_vars(
 def test_prepare_strips_environment_expanded_bootstrap_alias(tmp_path, monkeypatch):
     import agent.secret_sources.registry as registry
     import cron.scheduler as scheduler
+    import hermes_cli.env_loader as env_loader
 
     home = tmp_path / "profile"
     home.mkdir()
-    (home / "config.yaml").write_text(
+    config_path = home / "config.yaml"
+    config_path.write_text(
         "secrets:\n"
         "  test-source:\n"
         "    enabled: true\n"
@@ -107,7 +109,26 @@ def test_prepare_strips_environment_expanded_bootstrap_alias(tmp_path, monkeypat
         registry, "_ordered_enabled_sources", lambda _cfg: [_ProtectedSource()]
     )
 
-    with patch("hermes_cli.env_loader.refresh_hermes_dotenv_strict"):
+    exact_refresh_config = {
+        "test-source": {
+            "enabled": True,
+            "token_alias": "EXPANDED_BOOTSTRAP_TOKEN",
+        }
+    }
+
+    def refresh_then_replace_config(**_kwargs):
+        config_path.write_text(
+            "secrets:\n"
+            "  test-source:\n"
+            "    enabled: true\n"
+            "    token_alias: DIFFERENT_BOOTSTRAP_TOKEN\n"
+        )
+        return env_loader.StrictDotenvRefresh((), exact_refresh_config)
+
+    with patch(
+        "hermes_cli.env_loader.refresh_hermes_dotenv_strict",
+        side_effect=refresh_then_replace_config,
+    ):
         _pinned_home, child_env = scheduler._prepare_no_agent_child_environment()
 
     assert "EXPANDED_BOOTSTRAP_TOKEN" not in child_env
@@ -127,8 +148,9 @@ def test_prepare_no_agent_child_env_loads_exact_canonical_home(
     def reset(path: Path, **_kwargs) -> None:
         calls.append(("reset", path))
 
-    def load(*, hermes_home: Path, **_kwargs) -> None:
+    def load(*, hermes_home: Path, **_kwargs) -> list[Path]:
         calls.append(("load", hermes_home))
+        return []
 
     with patch("hermes_cli.env_loader.reset_secret_source_cache", side_effect=reset), patch(
         "hermes_cli.env_loader.load_hermes_dotenv", side_effect=load
@@ -147,9 +169,10 @@ def test_prepare_no_agent_child_env_rotates_across_consecutive_runs(tmp_path, mo
     monkeypatch.setattr(scheduler, "_hermes_home", home)
     values = iter(("first", "second"))
 
-    def load(*, hermes_home: Path, **_kwargs) -> None:
+    def load(*, hermes_home: Path, **_kwargs) -> list[Path]:
         assert hermes_home == home.resolve()
         os.environ["PERSONAL_HUB_CRON_SECRET"] = next(values)
+        return []
 
     try:
         with patch("hermes_cli.env_loader.reset_secret_source_cache"), patch(
@@ -180,12 +203,13 @@ def test_prepare_no_agent_child_env_two_homes_cannot_interleave(tmp_path, monkey
     beta_loaded = threading.Event()
     original_sanitize = local_env._sanitize_subprocess_env
 
-    def load(*, hermes_home: Path, **_kwargs) -> None:
+    def load(*, hermes_home: Path, **_kwargs) -> list[Path]:
         name = hermes_home.name
         os.environ["PROFILE_SCOPED_SECRET"] = name
         os.environ["HERMES_HOME"] = f"contaminated-by-{name}"
         if name == "beta":
             beta_loaded.set()
+        return []
 
     def sanitize(env: dict[str, str]) -> dict[str, str]:
         if env.get("PROFILE_SCOPED_SECRET") == "alpha":
@@ -447,7 +471,9 @@ def test_strict_refresh_with_no_enabled_sources_is_successful(tmp_path, monkeypa
     home = tmp_path / "profile"
     home.mkdir()
     _install_strict_source(monkeypatch, _StrictTestSource(FetchResult()))
-    assert env_loader.refresh_hermes_dotenv_strict(hermes_home=home) == []
+    result = env_loader.refresh_hermes_dotenv_strict(hermes_home=home)
+    assert result.loaded_files == ()
+    assert result.secrets_config == {}
 
 
 def test_claim_heartbeat_passes_exact_prepared_snapshot_and_home(tmp_path, monkeypatch):

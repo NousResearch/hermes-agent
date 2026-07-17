@@ -2647,18 +2647,15 @@ def _prepare_no_agent_child_environment() -> tuple[Path, Mapping[str, str]]:
     so later profile refreshes or caller mistakes cannot alter the child view.
     """
     from agent.secret_sources.registry import _ordered_enabled_sources
-    from hermes_cli.env_loader import (
-        _load_secrets_config_strict,
-        refresh_hermes_dotenv_strict,
-    )
+    from hermes_cli.env_loader import refresh_hermes_dotenv_strict
     from tools.environments.local import _sanitize_subprocess_env
 
     with _cron_secret_refresh_lock:
         pinned_home = _get_hermes_home().expanduser().resolve()
-        refresh_hermes_dotenv_strict(hermes_home=pinned_home)
+        refresh = refresh_hermes_dotenv_strict(hermes_home=pinned_home)
 
         child_env = _sanitize_subprocess_env(os.environ.copy())
-        secrets_cfg = _load_secrets_config_strict(pinned_home)
+        secrets_cfg = refresh.secrets_config
         for source in _ordered_enabled_sources(secrets_cfg):
             source_cfg = secrets_cfg.get(source.name)
             source_cfg = source_cfg if isinstance(source_cfg, dict) else {}

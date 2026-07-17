@@ -232,7 +232,10 @@ def test_run_job_no_agent_refreshes_external_secrets_before_subprocess(hermes_en
     os.environ.pop("PERSONAL_HUB_CRON_SECRET", None)
 
     def load_secret(**_kwargs):
+        from hermes_cli.env_loader import StrictDotenvRefresh
+
         os.environ["PERSONAL_HUB_CRON_SECRET"] = "fresh-per-run"
+        return StrictDotenvRefresh((), {})
 
     try:
         with patch(

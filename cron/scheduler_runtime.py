@@ -286,6 +286,7 @@ class OwnedSchedulerRuntime:
         self._state_lock = threading.Lock()
         self._active_policy: SchedulerOwnershipPolicy | None = None
         self._active_generation: int | None = None
+        self._active_home: Path | None = None
 
     @property
     def active_provider(self) -> Any | None:
@@ -369,6 +370,7 @@ class OwnedSchedulerRuntime:
             self._provider_stop = provider_stop
             self._provider_thread = thread
             self._active_policy = fresh
+            self._active_home = home
         try:
             thread.start()
         except BaseException:
@@ -379,6 +381,7 @@ class OwnedSchedulerRuntime:
                 self._provider_thread = None
                 self._active_policy = None
                 self._active_generation = None
+                self._active_home = None
             lease.release()
             raise
         generation_state = _publish_active_provider(home, provider)
@@ -408,14 +411,20 @@ class OwnedSchedulerRuntime:
             thread = self._provider_thread
             lease = self._lease
             generation = self._active_generation
+            active_home = self._active_home
         if provider is None or lease is None:
             return
 
         # Fence callbacks first: no new reservations may capture this generation
         # after provider shutdown begins.
+        if generation is not None and active_home is None:
+            logger.error(
+                "Active cron scheduler generation has no pinned home; retaining ownership"
+            )
+            return
         generation_state = (
-            _stop_accepting_provider(self._current_home(), generation)
-            if generation is not None
+            _stop_accepting_provider(active_home, generation)
+            if generation is not None and active_home is not None
             else None
         )
         if provider_stop is not None:
@@ -457,6 +466,7 @@ class OwnedSchedulerRuntime:
             self._lease = None
             self._active_policy = None
             self._active_generation = None
+            self._active_home = None
         lease.release()
         logger.info("%s released cron scheduler ownership", self.runtime_owner.capitalize())
 

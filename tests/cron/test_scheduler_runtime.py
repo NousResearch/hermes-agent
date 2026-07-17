@@ -356,6 +356,44 @@ def test_provider_policy_changes_restart_while_gateway_remains_eligible(
     assert not thread.is_alive()
 
 
+def test_callback_generation_uses_pinned_home_during_shutdown(tmp_path, monkeypatch):
+    old_home = tmp_path / "old-home"
+    new_home = tmp_path / "new-home"
+    old_home.mkdir()
+    new_home.mkdir()
+    home_state = {"current": old_home}
+    policy = SchedulerOwnershipPolicy("gateway", "chronos")
+    provider = _Provider()
+    monkeypatch.setattr(
+        "cron.scheduler_runtime.read_scheduler_ownership_policy_strict", lambda: policy
+    )
+    monkeypatch.setattr(
+        "cron.scheduler_provider.resolve_cron_scheduler_runtime_strict",
+        lambda _name: provider,
+    )
+    runtime = OwnedSchedulerRuntime(
+        "gateway", poll_interval=0.01, drain_timeout=0.05
+    )
+    monkeypatch.setattr(runtime, "_current_home", lambda: home_state["current"])
+    stop, thread = _run_runtime(runtime)
+    _wait_for(provider.started.is_set)
+    reservation = reserve_active_scheduler_provider(hermes_home=old_home)
+    assert reservation is not None
+    reservation.release()
+
+    home_state["current"] = new_home
+    stop.set()
+    thread.join(2)
+
+    assert not thread.is_alive()
+    assert reserve_active_scheduler_provider(hermes_home=old_home) is None
+    old_home_lease = SchedulerOwnershipLease.try_acquire(
+        hermes_home=old_home, owner="desktop", provider="builtin"
+    )
+    assert old_home_lease is not None
+    old_home_lease.release()
+
+
 def test_callback_reservation_fences_drain_and_lease_release(tmp_path, monkeypatch):
     policy = SchedulerOwnershipPolicy("gateway", "chronos")
     provider = _Provider()

@@ -3499,6 +3499,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Disable stale Telegram topic mode before applying a lobby gate."""
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
             return
+        thread_id = str(source.thread_id or "")
+        if thread_id not in self._TELEGRAM_GENERAL_TOPIC_IDS:
+            return
         if not await asyncio.to_thread(self._telegram_topic_mode_enabled, source):
             return
 

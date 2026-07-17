@@ -1513,6 +1513,22 @@ async def test_topic_mode_auto_disables_when_chat_is_forum_false(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_topic_lane_skips_desync_recovery_db_read():
+    runner = _make_runner()
+    runner._telegram_topic_mode_enabled = MagicMock(
+        side_effect=AssertionError("topic lane must skip the topic-mode DB read")
+    )
+    event = _make_event("Hello", thread_id="17585")
+    event.raw_message = SimpleNamespace(
+        chat=SimpleNamespace(id=208214988, is_forum=True)
+    )
+
+    await runner._recover_telegram_topic_mode_desync(event, event.source)
+
+    runner._telegram_topic_mode_enabled.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_new_auto_disables_topic_mode_when_chat_is_forum_false(tmp_path):
     db = SessionDB(tmp_path / "state.db")
     runner = _make_runner(session_db=db)

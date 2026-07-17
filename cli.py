@@ -3389,6 +3389,171 @@ def _estimate_tui_input_height(
     return min(max(visual_lines, 1), max(1, int(max_height or 1)))
 
 
+def _cli_cwidth(text: str) -> int:
+    """Terminal cell width for ``text``, matching classic input layout."""
+    try:
+        from prompt_toolkit.utils import get_cwidth
+
+        return get_cwidth(text or "")
+    except Exception:
+        return len(text or "")
+
+
+def _build_input_visual_rows(
+    text: str,
+    window_width: int,
+    prompt_width: int,
+) -> list[tuple[int, int, int]]:
+    """Build exclusive visual-row ranges for classic soft-wrapped input.
+
+    Each entry is ``(row_start, row_end, loglineno)`` where ``row_end`` is
+    exclusive over buffer indices. Wrapping uses display-cell widths via
+    ``get_cwidth`` so CJK / wide glyphs match prompt_toolkit layout.
+    """
+    win_w = max(1, int(window_width or 1))
+    prompt_w = max(0, int(prompt_width or 0))
+    logical_lines = (text or "").split("\n")
+    rows: list[tuple[int, int, int]] = []
+    char_idx = 0
+
+    for loglineno, line in enumerate(logical_lines):
+        first_row_cells = (win_w - prompt_w) if loglineno == 0 else win_w
+        first_row_cells = max(1, first_row_cells)
+        line_start = char_idx
+
+        if not line:
+            rows.append((line_start, line_start, loglineno))
+        else:
+            offset = 0
+            is_first_row = True
+            while offset < len(line):
+                avail = first_row_cells if is_first_row else win_w
+                is_first_row = False
+                r_start = line_start + offset
+                width = 0
+                consumed = 0
+                while offset + consumed < len(line):
+                    cw = max(1, _cli_cwidth(line[offset + consumed]))
+                    if width > 0 and width + cw > avail:
+                        break
+                    width += cw
+                    consumed += 1
+                    if width >= avail:
+                        break
+                if consumed == 0:
+                    consumed = 1
+                r_end = r_start + consumed
+                rows.append((r_start, r_end, loglineno))
+                offset += consumed
+
+        char_idx += len(line) + 1  # +1 for the '\n' separator
+
+    return rows or [(0, 0, 0)]
+
+
+def _find_input_visual_row(
+    rows: list[tuple[int, int, int]],
+    pos: int,
+    text_len: int,
+) -> int:
+    """Locate the visual row for ``pos`` using non-overlapping membership.
+
+    Ranges are half-open ``[start, end)``. The cursor may also sit on:
+    - an empty logical line (``start == end``),
+    - the end of a logical line's last visual row (``pos == end`` before ``\\n`` / EOF),
+    - EOF (``pos == text_len``) on the final row.
+    Wrap boundaries belong to the next row (``pos == next_start``).
+    """
+    if not rows:
+        return 0
+
+    pos = max(0, min(int(pos), int(text_len)))
+
+    for i, (r_start, r_end, loglineno) in enumerate(rows):
+        if r_start == r_end and pos == r_start:
+            return i
+        if r_start <= pos < r_end:
+            return i
+
+        is_last = i == len(rows) - 1
+        next_start = rows[i + 1][0] if not is_last else text_len + 1
+        next_log = rows[i + 1][2] if not is_last else loglineno + 1
+        at_line_end = pos == r_end and (is_last or next_start > r_end or next_log != loglineno)
+        if at_line_end:
+            return i
+
+    return len(rows) - 1
+
+
+def _pos_at_row_display_col(text: str, row_start: int, row_end: int, display_col: int) -> int:
+    """Map a display column within a visual row to a buffer index in ``[start, end]``."""
+    if row_start >= row_end:
+        return row_start
+
+    target = max(0, int(display_col))
+    width = 0
+    i = row_start
+    while i < row_end:
+        cw = max(1, _cli_cwidth(text[i]))
+        if width + cw > target:
+            break
+        width += cw
+        i += 1
+        if width >= target:
+            break
+    return i
+
+
+def _visual_row_move_cursor(
+    text: str,
+    pos: int,
+    direction: int,
+    window_width: int,
+    prompt_width: int,
+) -> int | None:
+    """Return the cursor index after one visual-row step, or ``None`` for history.
+
+    ``direction`` is ``-1`` (up) or ``+1`` (down). Screen-column preference is
+    preserved across the prompt-bearing first visual row.
+    """
+    rows = _build_input_visual_rows(text, window_width, prompt_width)
+    text_len = len(text or "")
+    pos = max(0, min(int(pos), text_len))
+    cur_row_idx = _find_input_visual_row(rows, pos, text_len)
+    r_start, r_end, loglineno = rows[cur_row_idx]
+    prompt_w = max(0, int(prompt_width or 0))
+    content_col = _cli_cwidth(text[r_start:pos]) if pos > r_start else 0
+    screen_col = content_col + (prompt_w if cur_row_idx == 0 else 0)
+    max_logical = rows[-1][2]
+
+    if direction < 0:
+        if cur_row_idx == 0:
+            return None
+        prev_start, prev_end, _prev_log = rows[cur_row_idx - 1]
+        dest_idx = cur_row_idx - 1
+        dest_col = max(0, screen_col - (prompt_w if dest_idx == 0 else 0))
+        return _pos_at_row_display_col(text, prev_start, prev_end, dest_col)
+
+    if loglineno == max_logical and cur_row_idx == len(rows) - 1:
+        return None
+    if cur_row_idx >= len(rows) - 1:
+        return None
+
+    next_start, next_end, _next_log = rows[cur_row_idx + 1]
+    dest_idx = cur_row_idx + 1
+    dest_col = max(0, screen_col - (prompt_w if dest_idx == 0 else 0))
+    return _pos_at_row_display_col(text, next_start, next_end, dest_col)
+
+
+def _history_forward_preserve_draft_cursor(buf, count: int = 1) -> None:
+    """Step history forward without forcing the cursor to the end of the buffer.
+
+    When prompt_toolkit restores the unsubmitted draft, its saved cursor
+    position must be kept so the user returns to where they were editing.
+    """
+    buf.history_forward(count=count)
+
+
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
     """Collect local image attachments for single-query CLI flows."""
     message = query or ""
@@ -15194,8 +15359,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             first logical line.
 
             The first visual row therefore holds window_width - prompt_width
-            buffer characters; every other visual row holds window_width."""
-            from prompt_toolkit.utils import get_cwidth
+            display cells of buffer content; every other visual row holds
+            window_width cells."""
             info = input_area.window.render_info
             if info is not None and info.window_width > 0:
                 win_w = info.window_width
@@ -15206,87 +15371,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     cols = 80
                 win_w = max(1, cols)
             try:
-                prompt_w = get_cwidth(self._get_tui_prompt_text())
+                prompt_w = _cli_cwidth(self._get_tui_prompt_text())
             except Exception:
                 prompt_w = 2
             return win_w, max(0, prompt_w)
 
         def _visual_move(buf, direction: int) -> bool:
-            """Move the cursor up (direction=-1) or down (direction=+1) by one
-            visual row within the soft-wrapped, possibly multi-line input.
-
-            Each visual row is represented as (row_start, row_end, loglineno)
-            where row_start/row_end are buffer indices (row_end exclusive of
-            the trailing newline) and loglineno is the logical line index.
-
-            History recall is triggered by loglineno:
-              UP:   return False when loglineno == 0 (on the first logical line)
-              DOWN: return False when loglineno == max_logical_lines
-
-            The prompt prefix occupies prompt_w screen columns on visual row 0
-            only, so hpos is adjusted when crossing the row-0 / row-1 boundary.
-            """
+            """Move the cursor up/down one visual row. Return False for history."""
             win_w, prompt_w = _get_window_width()
-            pos = buf.cursor_position
-            text = buf.text
-            logical_lines = text.split('\n')
-            max_logical_lines = len(logical_lines) - 1  # 0-based index of last
-
-            # Build list of visual rows: (row_start, row_end, loglineno)
-            rows = []
-            char_idx = 0
-            for loglineno, line in enumerate(logical_lines):
-                first_row_w = (win_w - prompt_w) if loglineno == 0 else win_w
-                first_row_w = max(1, first_row_w)
-                line_start = char_idx
-                line_len = len(line)
-                if line_len == 0:
-                    rows.append((line_start, line_start, loglineno))
-                else:
-                    offset = 0
-                    while offset < line_len:
-                        rw = first_row_w if offset == 0 else win_w
-                        r_start = line_start + offset
-                        r_end = min(r_start + rw, line_start + line_len)
-                        rows.append((r_start, r_end, loglineno))
-                        offset += rw
-                char_idx += line_len + 1  # +1 for the '\n'
-
-            # Find the visual row the cursor is currently on.
-            cur_row_idx = len(rows) - 1
-            for i, (r_start, r_end, _) in enumerate(rows):
-                if r_start <= pos <= r_end:
-                    cur_row_idx = i
-                    break
-
-            r_start, r_end, loglineno = rows[cur_row_idx]
-            hpos = pos - r_start  # horizontal position within current visual row
-
-            if direction == -1:  # UP
-                # History recall when on the first logical line.
-                if loglineno == 0 and cur_row_idx == 0:
-                    return False
-                if cur_row_idx == 0:
-                    # Shouldn't happen (loglineno > 0 but cur_row_idx == 0),
-                    # but guard anyway.
-                    return False
-                prev_start, prev_end, prev_loglineno = rows[cur_row_idx - 1]
-                # Crossing from visual row 1 to visual row 0: subtract prompt_w
-                # because visual row 0 has the prompt prefix.
-                target_hpos = max(0, hpos - prompt_w) if cur_row_idx == 1 else hpos
-                buf.cursor_position = prev_start + min(target_hpos, prev_end - prev_start)
-                return True
-            else:  # DOWN
-                # History recall when on the last logical line.
-                if loglineno == max_logical_lines and cur_row_idx == len(rows) - 1:
-                    return False
-                if cur_row_idx == len(rows) - 1:
-                    return False
-                next_start, next_end, next_loglineno = rows[cur_row_idx + 1]
-                # Crossing from visual row 0 to visual row 1: add prompt_w.
-                target_hpos = (hpos + prompt_w) if cur_row_idx == 0 else hpos
-                buf.cursor_position = next_start + min(target_hpos, next_end - next_start)
-                return True
+            next_pos = _visual_row_move_cursor(
+                buf.text,
+                buf.cursor_position,
+                direction,
+                win_w,
+                prompt_w,
+            )
+            if next_pos is None:
+                return False
+            buf.cursor_position = next_pos
+            return True
 
         @kb.add('up', filter=_normal_input, eager=True)
         def smart_up(event):
@@ -15306,8 +15409,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             automatically restored."""
             buf = event.app.current_buffer
             if not _visual_move(buf, +1):
-                buf.history_forward(count=event.arg)
-                buf.cursor_position = len(buf.text)
+                _history_forward_preserve_draft_cursor(buf, count=event.arg)
 
         @kb.add('right', filter=_normal_input, eager=True)
         def smart_right(event):

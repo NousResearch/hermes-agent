@@ -8061,7 +8061,14 @@ def show_config():
         if not entries:
             print(f"  {color('(no platforms registered)', Colors.DIM)}")
         for entry in sorted(entries, key=lambda e: e.label.lower()):
-            configured = entry.check_fn()
+            # Check required env vars instead of calling check_fn(), which
+            # probes SDK availability and can trigger lazy-install side
+            # effects.  This tells the user whether the platform is
+            # configured (env vars set), not whether its SDK is installed.
+            configured = (
+                all(get_env_value(var) for var in (entry.required_env or []))
+                if entry.required_env else False
+            )
             status_str = "configured" if configured else "not configured"
             source_hint = " (plugin)" if getattr(entry, 'source', None) == 'plugin' else ""
             print(f"  {entry.label:<14} {check_mark(configured)} {status_str}{source_hint}")

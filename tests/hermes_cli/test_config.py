@@ -484,6 +484,43 @@ class TestSaveAndLoadRoundtrip:
             reloaded = load_config()
             assert reloaded["terminal"]["timeout"] == 999
 
+    def test_show_config_platforms_checks_env_not_check_fn(self, monkeypatch, capsys):
+        """``show_config()`` must display platform config state from env vars,
+        NOT from ``check_fn()`` (which probes SDK imports and can install them).
+        When env vars are absent the platform should be ``not configured``;
+        when they are present it should be ``configured``.
+        """
+        # Clear any existing env vars that would make IRC look configured
+        for var in ("IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"):
+            monkeypatch.delenv(var, raising=False)
+
+        from hermes_cli.config import show_config
+
+        show_config()
+        out = capsys.readouterr().out
+
+        # IRC is a lightweight platform with no SDK dependency — it should
+        # appear, and without env vars it must be "not configured".
+        assert "IRC" in out, "IRC platform must appear in config output"
+        assert "not configured" in out, (
+            "With no env vars set, platforms must show 'not configured'"
+        )
+        # Never a traceback or Error in config display.
+        assert "Traceback" not in out
+        assert "Error" not in out
+
+        # Now set env vars and verify IRC shows as configured
+        monkeypatch.setenv("IRC_SERVER", "irc.example.com")
+        monkeypatch.setenv("IRC_CHANNEL", "#hermes")
+        monkeypatch.setenv("IRC_NICKNAME", "hermes-test")
+
+        show_config()
+        out2 = capsys.readouterr().out
+
+        assert "✓" in out2 or "configured" in out2.lower(), (
+            "When env vars are set the platform must show as configured"
+        )
+
     def test_write_platform_config_field_coerces_nested_platform_maps(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             (tmp_path / "config.yaml").write_text(

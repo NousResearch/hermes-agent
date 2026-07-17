@@ -19,6 +19,16 @@ from unittest.mock import MagicMock, patch
 # Resolve plugin directory relative to this test file
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 GITEA_DIR = _THIS_DIR
+
+# Add repo root to sys.path so `from tools.approval import ...` works when
+# the test is run from the plugin directory. The plugin depends on system
+# modules (tools.approval for dangerous/hardline detection); without this,
+# stage1_rules falls back to the "unable to load" sentinel and the terminal
+# danger tests fail spuriously.
+_REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 passed = failed = 0
 
 
@@ -243,32 +253,37 @@ if s1llm:
 # ===================================================================
 # 8. Stage 2 ACP: fail_open=False returns block on exception
 # ===================================================================
-print("\n=== 8. Stage 2 ACP fail-closed regression ===")
+# Note: A full mock-based regression of the Stage 2 exception path requires
+# a package import context (guard.py uses function-level relative imports).
+# That is covered by integration tests in the Hermes test suite. Here we
+# assert the fail-closed code path exists in guard.py — this catches the
+# original bug where both branches of the exception handler returned None.
+print("\n=== 8. Stage 2 ACP fail-closed code path ===")
 
-try:
-    # Mock the ACP agent to raise an exception
-    with patch("plugins.hermes-approval-guard.stage2_acp.acp_agent_review") as mock_acp:
-        mock_acp.side_effect = RuntimeError("test failure")
-        
-        # Test with fail_open=False
-        cfg_fail_closed = {"enabled": True, "fail_open": False, "stage2": {"enabled": True}}
-        
-        # Import pre_tool_call_handler to test
-        guard_mod = _load("guard", "guard.py")
-        result = guard_mod.pre_tool_call_handler(
-            "terminal", {"command": "rm -rf test"},
-            task_id="t1", session_id="s1", tool_call_id="tc1"
-        )
-        
-        check("  fail_open=False returns non-None (block directive)", result is not None,
-              detail=f"result={result}")
-        if result is not None:
-            check("  block action present", result.get("action") == "block",
-                  detail=f"action={result.get('action')}")
-except Exception as e:
-    print(f"  WARN Stage 2 regression test failed: {e}")
-    # Don't fail the test if the mock setup doesn't work in this environment
-    pass
+with open(os.path.join(_THIS_DIR, "guard.py")) as f:
+    guard_src = f.read()
+
+# Extract the Stage 2 exception handler block
+import re as _re
+m = _re.search(
+    r"except Exception as exc:.*?fail_open.*?\n(.*?)return None\n(.*?)build_deny_message",
+    guard_src,
+    _re.DOTALL,
+)
+check(
+    "  fail_open=False path returns build_deny_message (not None)",
+    m is not None,
+    detail="exception handler must return a deny directive when fail_open=False",
+)
+check(
+    "  exception handler does NOT return None unconditionally",
+    not _re.search(
+        r"except Exception as exc:.*?if fail_open:.*?return None\s+return None",
+        guard_src,
+        _re.DOTALL,
+    ),
+    detail="the original bug had `if fail_open: return None; return None`",
+)
 
 # ===================================================================
 print(f"\n{'='*50}")

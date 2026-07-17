@@ -1879,6 +1879,33 @@ def register(ctx):
 
     ctx.register_hook("post_tool_call", _on_post_tool_call)
 
+    # ── Monkey-patch skill_view to fall back to skill-graph ──
+    try:
+        import tools.skills_tool as _st
+        _orig_skill_view = _st.skill_view
+
+        def _patched_skill_view(
+            name: str,
+            file_path: str = None,
+            task_id: str = None,
+            preprocess: bool = True,
+        ) -> str:
+            result = _orig_skill_view(
+                name, file_path=file_path,
+                task_id=task_id, preprocess=preprocess,
+            )
+            data = json.loads(result)
+            if data.get("success") or file_path:
+                return result
+            sg = _handle_skill_load({"name": name})
+            sg_data = json.loads(sg)
+            return sg if sg_data.get("success") else result
+
+        _st.skill_view = _patched_skill_view
+        logger.info("skill-graph: patched skill_view with graph fallback")
+    except Exception:
+        logger.exception("skill-graph: failed to patch skill_view")
+
     logger.info(
         "skill-graph plugin registered: tools=skill_graph_search+skill_load+skill_graph_config, "
         "cmd=/skill-graph, hooks=on_session_start+post_tool_call+pre_tool_call"

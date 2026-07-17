@@ -1144,8 +1144,23 @@ def _generate_openai_tts(
 
     response_format = _tts_response_format_from_path(output_path)
 
+    # Honour tts.openai.timeout for self-hosted / slow servers (SDK default is
+    # otherwise used). Clamped so a broken config can't disable the timeout or
+    # pin the worker forever.
+    _timeout = None
+    try:
+        _raw_timeout = oai_config.get("timeout")
+        if _raw_timeout not in (None, ""):
+            _timeout = min(max(float(_raw_timeout), 1.0), 600.0)
+    except (TypeError, ValueError):
+        _timeout = None
+
     OpenAIClient = _import_openai_client()
-    client = OpenAIClient(api_key=api_key, base_url=base_url)
+    client = (
+        OpenAIClient(api_key=api_key, base_url=base_url, timeout=_timeout)
+        if _timeout is not None
+        else OpenAIClient(api_key=api_key, base_url=base_url)
+    )
     try:
         create_kwargs: Dict[str, Any] = {
             "model": model,

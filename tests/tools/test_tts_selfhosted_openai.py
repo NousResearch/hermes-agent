@@ -24,9 +24,10 @@ def _clean_env(monkeypatch):
 
 def _fake_client_capturing(captured):
     class _FakeClient:
-        def __init__(self, api_key=None, base_url=None):
+        def __init__(self, api_key=None, base_url=None, timeout=None):
             captured["api_key"] = api_key
             captured["base_url"] = base_url
+            captured["timeout"] = timeout
             speech = MagicMock()
             speech.create = MagicMock(
                 return_value=MagicMock(stream_to_file=lambda p: None)
@@ -37,6 +38,39 @@ def _fake_client_capturing(captured):
             pass
 
     return _FakeClient
+
+
+def test_config_timeout_passed_to_client(tmp_path):
+    """tts.openai.timeout reaches the OpenAI client (clamped 1..600) so a slow
+    self-hosted server honours the operator's configured timeout, not the SDK
+    default. Regression guard for the command→openai provider switch."""
+    captured = {}
+    from tools import tts_tool
+    from tools.tts_tool import _generate_openai_tts
+
+    with patch.object(tts_tool, "_import_openai_client",
+                      return_value=_fake_client_capturing(captured)):
+        _generate_openai_tts(
+            "hallo", str(tmp_path / "out.wav"),
+            {"openai": {"base_url": SELF, "model": "qwen3-tts",
+                        "voice": "spiner_de", "timeout": 120}},
+        )
+    assert captured["timeout"] == 120.0
+
+
+def test_no_timeout_config_omits_timeout(tmp_path):
+    """Without tts.openai.timeout the client keeps the SDK default (no crash)."""
+    captured = {}
+    from tools import tts_tool
+    from tools.tts_tool import _generate_openai_tts
+
+    with patch.object(tts_tool, "_import_openai_client",
+                      return_value=_fake_client_capturing(captured)):
+        _generate_openai_tts(
+            "hallo", str(tmp_path / "out.wav"),
+            {"openai": {"base_url": SELF, "model": "m", "voice": "v"}},
+        )
+    assert captured["timeout"] is None
 
 
 def test_config_base_url_honored_keyless(monkeypatch, tmp_path):

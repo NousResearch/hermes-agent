@@ -104,6 +104,40 @@ class TestSendMessageBlocks:
         assert "blocks" not in client.chat_postMessage.await_args.kwargs
 
 
+class TestStreamingBlocks:
+    @pytest.mark.asyncio
+    async def test_intermediate_edit_renders_blocks_when_enabled(self):
+        adapter, client = _make_adapter(
+            {"rich_blocks": True, "rich_blocks_streaming": True}
+        )
+        await adapter.edit_message("C1", "111.222", RICH_MD, finalize=False)
+        kwargs = client.chat_update.await_args.kwargs
+        assert "blocks" in kwargs and kwargs["blocks"]
+        assert kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_intermediate_frames_never_carry_feedback_buttons(self):
+        adapter, client = _make_adapter(
+            {
+                "rich_blocks": True,
+                "rich_blocks_streaming": True,
+                "feedback_buttons": True,
+            }
+        )
+        await adapter.edit_message("C1", "1.2", RICH_MD, finalize=False)
+        blocks = client.chat_update.await_args.kwargs["blocks"]
+        assert all(b["type"] != "context_actions" for b in blocks)
+        await adapter.edit_message("C1", "1.2", RICH_MD, finalize=True)
+        blocks = client.chat_update.await_args.kwargs["blocks"]
+        assert blocks[-1]["type"] == "context_actions"
+
+    @pytest.mark.asyncio
+    async def test_streaming_flag_requires_rich_blocks(self):
+        adapter, client = _make_adapter({"rich_blocks_streaming": True})
+        await adapter.edit_message("C1", "1.2", RICH_MD, finalize=False)
+        assert "blocks" not in client.chat_update.await_args.kwargs
+
+
 class TestBlocksRejectionFallback:
     @pytest.mark.asyncio
     async def test_send_retries_without_blocks_on_invalid_blocks(self):

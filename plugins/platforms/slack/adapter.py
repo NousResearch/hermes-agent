@@ -1607,12 +1607,14 @@ class SlackAdapter(BasePlatformAdapter):
                 "ts": message_id,
                 "text": formatted,
             }
-            # Only render Block Kit on the FINAL edit. Intermediate streaming
-            # edits stay plain mrkdwn — re-deriving a full block layout on every
-            # progressive flush would be wasteful and jittery. ``text`` is kept
-            # as the fallback either way.
-            if finalize:
-                blocks = self._maybe_blocks(content)
+            # Blocks on the FINAL edit always; on intermediate streaming
+            # frames only when rich_blocks_streaming is enabled (tables and
+            # headers then render live during long runs — the consumer's edit
+            # debounce keeps the render cost bounded). Feedback buttons only
+            # ever belong on the final frame. ``text`` is kept as the
+            # fallback either way.
+            if finalize or self._rich_blocks_streaming_enabled():
+                blocks = self._maybe_blocks(content, with_feedback=finalize)
                 if blocks:
                     update_kwargs["blocks"] = blocks
             client = self._get_client(
@@ -2101,6 +2103,24 @@ class SlackAdapter(BasePlatformAdapter):
             return False
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
+    def _rich_blocks_streaming_enabled(self) -> bool:
+        """Whether intermediate streaming edits also render Block Kit.
+
+        Opt-in via ``platforms.slack.extra.rich_blocks_streaming``; requires
+        ``rich_blocks``. chat.update REMOVES a message's blocks whenever
+        ``text`` is sent without them, so throttling to every Nth frame would
+        flip the message rich→plain→rich between frames. When enabled, every
+        streaming frame renders blocks — the consumer's own edit debounce is
+        the effective throttle, and the render is a pure in-process function
+        (no extra API calls).
+        """
+        if not self._rich_blocks_enabled():
+            return False
+        raw = self.config.extra.get("rich_blocks_streaming")
+        if raw is None:
+            return False
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
     def _feedback_buttons_enabled(self) -> bool:
         """Whether to include Slack AI feedback buttons on final responses."""
         raw = self.config.extra.get("feedback_buttons")
@@ -2142,7 +2162,9 @@ class SlackAdapter(BasePlatformAdapter):
             return blocks
         return [*blocks, self._feedback_block()]
 
-    def _maybe_block_segments(self, content: str) -> Optional[list]:
+    def _maybe_block_segments(
+        self, content: str, with_feedback: bool = True
+    ) -> Optional[list]:
         """Render ``content`` to a list of message-sized Block Kit segments.
 
         Each segment holds <= 50 blocks (Slack's per-message cap); content too
@@ -2160,22 +2182,23 @@ class SlackAdapter(BasePlatformAdapter):
             if not blocks:
                 return None
             segments = segment_blocks(blocks)
-            appended = self._append_feedback_block(segments[-1])
-            if appended:
-                segments[-1] = appended
+            if with_feedback:
+                appended = self._append_feedback_block(segments[-1])
+                if appended:
+                    segments[-1] = appended
             return segments
         except Exception:  # pragma: no cover - renderer already guards itself
             logger.debug("[Slack] block render failed; using plain text", exc_info=True)
             return None
 
-    def _maybe_blocks(self, content: str) -> Optional[list]:
+    def _maybe_blocks(self, content: str, with_feedback: bool = True) -> Optional[list]:
         """Single-message variant of :meth:`_maybe_block_segments`.
 
         Used by ``edit_message`` — an edit can only restyle the one message it
         targets, so content that segments into multiple messages declines
         (returns ``None``) and the edit keeps its plain-text payload.
         """
-        segments = self._maybe_block_segments(content)
+        segments = self._maybe_block_segments(content, with_feedback=with_feedback)
         if segments and len(segments) == 1:
             return segments[0]
         return None

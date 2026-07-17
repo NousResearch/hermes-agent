@@ -73,7 +73,7 @@ platforms:
       dm_policy: "open"          # open | allowlist | disabled
       allow_from:
         - "user_openid_1"
-      group_policy: "open"       # open | allowlist | disabled
+      group_policy: "open"       # open | allowlist | disabled（默认：disabled）
       group_allow_from:
         - "group_openid_1"
       stt:

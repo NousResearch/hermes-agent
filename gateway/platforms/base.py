@@ -2981,6 +2981,22 @@ class BasePlatformAdapter(ABC):
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
 
+    @property
+    def SUPPORTS_STREAM_EDITING(self) -> bool:
+        """Whether this adapter can edit an *in-flight streaming* bubble.
+
+        Split from ``SUPPORTS_MESSAGE_EDITING`` (which advertises editing of
+        arbitrary already-sent message IDs, e.g. for tool-progress bubbles).
+        Some adapters support one but not the other: QQBot can update a native
+        C2C stream session in place but cannot edit ordinary sent message IDs.
+
+        Defaults to ``SUPPORTS_MESSAGE_EDITING`` so every existing adapter
+        keeps its current streaming behaviour. Subclasses may override with a
+        plain class attribute (e.g. ``SUPPORTS_STREAM_EDITING = True``), which
+        shadows this property in the subclass namespace.
+        """
+        return getattr(self, "SUPPORTS_MESSAGE_EDITING", True)
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,

@@ -59,6 +59,18 @@ def _id_after(value: Any, boundary: Any) -> bool:
     return _id_key(value) > _id_key(boundary)
 
 
+def _strict_bool(value: Any, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    raise ValueError(f"twitter.{name} must be true or false")
+
+
 def build_conversation_context(
     posts: list[dict],
     *,
@@ -364,6 +376,13 @@ class TwitterAdapter(BasePlatformAdapter):
                 retryable=exc.status == 429 or exc.status >= 500,
                 error_kind="rate_limited" if exc.status == 429 else None,
             )
+        except httpx.RequestError as exc:
+            return SendResult(
+                success=False,
+                error=f"Twitter network request failed: {exc}",
+                retryable=True,
+                error_kind="transport",
+            )
         except (OSError, RuntimeError, ValueError) as exc:
             return SendResult(success=False, error=str(exc))
 
@@ -449,7 +468,7 @@ class TwitterAdapter(BasePlatformAdapter):
     async def _poll_mentions_once(self, *, baseline: bool = False) -> None:
         if self._client is None:
             return
-        page = await self._mention_pages()
+        page = await self._mention_pages(first_run=baseline)
         posts = [
             item for item in page.get("data") or [] if _id_key(item.get("id"))[0] >= 0
         ]
@@ -483,30 +502,22 @@ class TwitterAdapter(BasePlatformAdapter):
                     await self._process_dm(event, page.get("includes") or {})
             if candidate:
                 self._state.advance_dms(candidate)
-            self._state.dm_pagination_token = ""
-            self._state.dm_candidate_since_id = ""
             self._state.save()
             return
         for event in events:
             await self._process_dm(event, page.get("includes") or {})
             self._state.save()
-        if meta.get("complete"):
-            if candidate:
-                self._state.advance_dms(candidate)
-            self._state.dm_pagination_token = ""
-            self._state.dm_candidate_since_id = ""
-        else:
-            self._state.dm_pagination_token = str(meta.get("next_token") or "")
-            self._state.dm_candidate_since_id = candidate
+        if candidate:
+            self._state.advance_dms(candidate)
         self._state.save()
 
-    async def _mention_pages(self) -> dict:
+    async def _mention_pages(self, *, first_run: bool = False) -> dict:
         if self._client is None:
             return {}
         data: list[dict] = []
         includes: dict[str, list] = {"users": [], "media": [], "tweets": []}
         token = ""
-        for _ in range(5):
+        while True:
             page = await self._client.mentions(
                 self._account_id,
                 since_id=self._state.mention_since_id,
@@ -516,7 +527,7 @@ class TwitterAdapter(BasePlatformAdapter):
             for key in includes:
                 includes[key].extend((page.get("includes") or {}).get(key) or [])
             token = str((page.get("meta") or {}).get("next_token") or "")
-            if not token:
+            if first_run or not token:
                 break
         return {"data": data, "includes": includes}
 
@@ -526,11 +537,10 @@ class TwitterAdapter(BasePlatformAdapter):
         data: list[dict] = []
         includes: dict[str, list] = {"users": [], "media": []}
         boundary = self._state.dm_since_id
-        token = self._state.dm_pagination_token
-        candidate = self._state.dm_candidate_since_id
+        token = ""
+        candidate = ""
         complete = False
-        page_limit = 1 if first_run and not boundary and not token else 5
-        for _ in range(page_limit):
+        while True:
             page = await self._client.dm_events(pagination_token=token)
             events = [
                 item
@@ -547,7 +557,7 @@ class TwitterAdapter(BasePlatformAdapter):
             for key in includes:
                 includes[key].extend((page.get("includes") or {}).get(key) or [])
             next_token = str((page.get("meta") or {}).get("next_token") or "")
-            if complete or not next_token:
+            if first_run or complete or not next_token:
                 complete = True
                 token = ""
                 break
@@ -576,12 +586,11 @@ class TwitterAdapter(BasePlatformAdapter):
         allow_all = extra.get("allow_all_users")
         if allow_all is None:
             allow_all = os.getenv("TWITTER_ALLOW_ALL_USERS", "")
-        if allow_all is True or str(allow_all).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
+        try:
+            allow_everyone = _strict_bool(allow_all, "allow_all_users")
+        except ValueError:
+            allow_everyone = False
+        if allow_everyone:
             return True
         configured = extra.get("allowed_users")
         if configured is None:
@@ -853,10 +862,14 @@ def apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> dict:
         cfg = yaml_cfg.get("twitter") or {}
     allowed = cfg.get("allowed_users")
     if allowed is not None and not os.getenv("TWITTER_ALLOWED_USERS"):
+        if isinstance(allowed, str):
+            allowed = allowed.split(",")
         os.environ["TWITTER_ALLOWED_USERS"] = ",".join(map(str, allowed))
     allow_all = cfg.get("allow_all_users")
-    if allow_all is not None and not os.getenv("TWITTER_ALLOW_ALL_USERS"):
-        os.environ["TWITTER_ALLOW_ALL_USERS"] = str(bool(allow_all)).lower()
+    if allow_all is not None:
+        parsed_allow_all = _strict_bool(allow_all, "allow_all_users")
+        if not os.getenv("TWITTER_ALLOW_ALL_USERS"):
+            os.environ["TWITTER_ALLOW_ALL_USERS"] = str(parsed_allow_all).lower()
     home = cfg.get("home_channel")
     if home and not os.getenv("TWITTER_HOME_CHANNEL"):
         os.environ["TWITTER_HOME_CHANNEL"] = str(home)
@@ -904,20 +917,23 @@ async def standalone_send(
     tokens = load_tokens()
     if tokens is None:
         return {"error": "Twitter OAuth is not configured"}
-    settings = TwitterSettings.from_config(pconfig)
-    tokens = await refresh_if_needed(settings.client_id, settings.redirect_uri)
-    transport = (pconfig.extra or {}).get("_http_transport")
-    client = XClient(
-        token=tokens.access_token,
-        transport=(
-            transport if isinstance(transport, httpx.AsyncBaseTransport) else None
-        ),
-        max_pending=settings.max_pending,
-        max_wait_seconds=settings.max_wait_seconds,
-    )
-    adapter = TwitterAdapter(pconfig)
-    adapter._client = client
+    client: XClient | None = None
     try:
+        settings = TwitterSettings.from_config(pconfig)
+        tokens = await refresh_if_needed(settings.client_id, settings.redirect_uri)
+        transport = (pconfig.extra or {}).get("_http_transport")
+        client = XClient(
+            token=tokens.access_token,
+            transport=(
+                transport
+                if isinstance(transport, httpx.AsyncBaseTransport)
+                else None
+            ),
+            max_pending=settings.max_pending,
+            max_wait_seconds=settings.max_wait_seconds,
+        )
+        adapter = TwitterAdapter(pconfig)
+        adapter._client = client
         result = await adapter.send(
             chat_id,
             message,
@@ -927,8 +943,11 @@ async def standalone_send(
         if result.success:
             return {"success": True, "message_id": result.message_id}
         return {"error": result.error or "Twitter delivery failed"}
+    except (httpx.RequestError, OSError, RuntimeError, ValueError) as exc:
+        return {"error": f"Twitter delivery failed: {exc}"}
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
 
 
 def register(ctx) -> None:

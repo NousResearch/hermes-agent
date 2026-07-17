@@ -23,8 +23,6 @@ def state_path() -> Path:
 class TwitterState:
     mention_since_id: str = ""
     dm_since_id: str = ""
-    dm_pagination_token: str = ""
-    dm_candidate_since_id: str = ""
     _seen: OrderedDict[str, None] = field(default_factory=OrderedDict)
     _branches: OrderedDict[str, str] = field(default_factory=OrderedDict)
     max_seen: int = 2000
@@ -42,10 +40,6 @@ class TwitterState:
             state = cls(
                 mention_since_id=str(payload.get("mention_since_id") or ""),
                 dm_since_id=str(payload.get("dm_since_id") or ""),
-                dm_pagination_token=str(payload.get("dm_pagination_token") or ""),
-                dm_candidate_since_id=str(
-                    payload.get("dm_candidate_since_id") or ""
-                ),
                 max_seen=max_seen,
                 max_branches=max_branches,
             )
@@ -78,8 +72,6 @@ class TwitterState:
             "version": STATE_VERSION,
             "mention_since_id": self.mention_since_id,
             "dm_since_id": self.dm_since_id,
-            "dm_pagination_token": self.dm_pagination_token,
-            "dm_candidate_since_id": self.dm_candidate_since_id,
             "seen_ids": list(self._seen),
             "bot_post_anchors": [list(item) for item in self._branches.items()],
         }

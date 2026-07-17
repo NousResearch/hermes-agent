@@ -56,6 +56,17 @@ def test_apply_yaml_config_uses_nested_platform_block(monkeypatch):
     assert os.environ["TWITTER_ALLOWED_USERS"] == "42"
 
 
+def test_apply_yaml_config_never_converts_false_string_to_true(monkeypatch):
+    from plugins.platforms.twitter.adapter import apply_yaml_config
+
+    monkeypatch.delenv("TWITTER_ALLOW_ALL_USERS", raising=False)
+    apply_yaml_config({}, {"allow_all_users": "false"})
+    assert os.environ["TWITTER_ALLOW_ALL_USERS"] == "false"
+
+    with pytest.raises(ValueError, match="allow_all_users"):
+        apply_yaml_config({}, {"allow_all_users": "sometimes"})
+
+
 def test_adapter_send_signature_matches_base():
     from gateway.platforms.base import BasePlatformAdapter
     from plugins.platforms.twitter.adapter import TwitterAdapter
@@ -461,6 +472,33 @@ async def test_partial_image_upload_never_creates_text_only_post(
     adapter._client.create_post.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_media_transport_failure_returns_send_result(monkeypatch, tmp_path):
+    from PIL import Image
+
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.client import XClient
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    image = tmp_path / "one.png"
+    Image.new("RGB", (1, 1)).save(image)
+
+    def handler(request):
+        raise httpx.ConnectError("offline", request=request)
+
+    adapter = TwitterAdapter(PlatformConfig(extra={"client_id": "client"}))
+    adapter._client = XClient(
+        token="token", transport=httpx.MockTransport(handler)
+    )
+    result = await adapter.send(
+        "timeline", "with image", metadata={"media_files": [str(image)]}
+    )
+
+    assert not result.success
+    assert result.retryable
+    await adapter._client.close()
+
+
 def test_twitter_tools_are_gated_by_profile_oauth(monkeypatch, tmp_path):
     from plugins.platforms.twitter.oauth import save_tokens
     from plugins.platforms.twitter.tools import twitter_available
@@ -492,6 +530,27 @@ async def test_standalone_sender_uses_fresh_client(monkeypatch, tmp_path):
 
     assert result == {"success": True, "message_id": "901"}
     client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_standalone_sender_returns_refresh_transport_error(monkeypatch, tmp_path):
+    from plugins.platforms.twitter import adapter as adapter_module
+    from plugins.platforms.twitter.oauth import save_tokens
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    save_tokens({"access_token": "expired", "expires_at": 1})
+    request = httpx.Request("POST", "https://api.x.com/2/oauth2/token")
+    monkeypatch.setattr(
+        adapter_module,
+        "refresh_if_needed",
+        AsyncMock(side_effect=httpx.ConnectError("offline", request=request)),
+    )
+
+    result = await adapter_module.standalone_send(
+        PlatformConfig(extra={"client_id": "client"}), "timeline", "cron post"
+    )
+
+    assert "offline" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -629,3 +688,46 @@ async def test_dm_pagination_stops_at_saved_boundary(monkeypatch, tmp_path):
     assert [item["id"] for item in page["data"]] == ["103", "102", "101"]
     assert page["meta"]["complete"] is True
     assert adapter._client.dm_events.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_dm_backlog_fetches_through_boundary_before_dispatch(
+    monkeypatch, tmp_path
+):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(
+        PlatformConfig(extra={"client_id": "client", "allow_all_users": True})
+    )
+    adapter._account_id = "7"
+    adapter._state.dm_since_id = "100"
+    pages = []
+    for event_id in range(106, 99, -1):
+        pages.append(
+            {
+                "data": [
+                    {
+                        "id": str(event_id),
+                        "event_type": "MessageCreate",
+                        "sender_id": "42",
+                        "dm_conversation_id": "42-7",
+                        "text": str(event_id),
+                    }
+                ],
+                "meta": {"next_token": str(event_id - 1)}
+                if event_id > 100
+                else {},
+            }
+        )
+    adapter._client = Mock()
+    adapter._client.dm_events = AsyncMock(side_effect=pages)
+    adapter.handle_message = AsyncMock()
+
+    await adapter._poll_dms_once()
+
+    assert adapter._client.dm_events.await_count == 7
+    assert [
+        call.args[0].message_id for call in adapter.handle_message.await_args_list
+    ] == ["101", "102", "103", "104", "105", "106"]
+    assert adapter._state.dm_since_id == "106"

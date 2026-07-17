@@ -1403,6 +1403,43 @@ class SlackAdapter(BasePlatformAdapter):
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
 
+    @staticmethod
+    def _is_blocks_rejection(exc: Exception) -> bool:
+        """True when the API refused the ``blocks`` payload specifically."""
+        err = str(exc).lower()
+        return any(
+            code in err
+            for code in (
+                "invalid_blocks",
+                "invalid_blocks_format",
+                "invalid_arguments",
+                "unsupported_block",
+                "block_mismatch",
+            )
+        )
+
+    async def _post_with_block_fallback(self, client, kwargs: Dict[str, Any]):
+        """``chat.postMessage`` that survives a rejected ``blocks`` payload.
+
+        A workspace/API tier that refuses a block type (e.g. the newer
+        ``table`` block) must degrade that one message to its ``text``
+        fallback — not lose it. Non-block errors propagate unchanged.
+        """
+        try:
+            return await client.chat_postMessage(**kwargs)
+        except Exception as exc:
+            if "blocks" not in kwargs or not self._is_blocks_rejection(exc):
+                raise
+            logger.warning(
+                "[Slack] blocks payload rejected (%s); resending as plain text",
+                exc,
+            )
+            logger.debug(
+                "[Slack] rejected blocks payload: %r", kwargs.get("blocks")
+            )
+            retry_kwargs = {k: v for k, v in kwargs.items() if k != "blocks"}
+            return await client.chat_postMessage(**retry_kwargs)
+
     async def send(
         self,
         chat_id: str,
@@ -1477,9 +1514,12 @@ class SlackAdapter(BasePlatformAdapter):
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
-                last_result = await self._get_client(
-                    chat_id, team_id=self._metadata_team_id(metadata)
-                ).chat_postMessage(**kwargs)
+                last_result = await self._post_with_block_fallback(
+                    self._get_client(
+                        chat_id, team_id=self._metadata_team_id(metadata)
+                    ),
+                    kwargs,
+                )
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -1575,9 +1615,26 @@ class SlackAdapter(BasePlatformAdapter):
                 blocks = self._maybe_blocks(content)
                 if blocks:
                     update_kwargs["blocks"] = blocks
-            await self._get_client(
+            client = self._get_client(
                 chat_id, team_id=self._metadata_team_id(metadata)
-            ).chat_update(**update_kwargs)
+            )
+            try:
+                await client.chat_update(**update_kwargs)
+            except Exception as exc:
+                if "blocks" not in update_kwargs or not self._is_blocks_rejection(exc):
+                    raise
+                logger.warning(
+                    "[Slack] blocks payload rejected on edit (%s); keeping plain text",
+                    exc,
+                )
+                logger.debug(
+                    "[Slack] rejected blocks payload: %r",
+                    update_kwargs.get("blocks"),
+                )
+                retry_kwargs = {
+                    k: v for k, v in update_kwargs.items() if k != "blocks"
+                }
+                await client.chat_update(**retry_kwargs)
             if finalize:
                 await self.stop_typing(chat_id, metadata=metadata)
             return SendResult(success=True, message_id=message_id)

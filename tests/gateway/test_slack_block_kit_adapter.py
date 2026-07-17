@@ -104,6 +104,45 @@ class TestSendMessageBlocks:
         assert "blocks" not in client.chat_postMessage.await_args.kwargs
 
 
+class TestBlocksRejectionFallback:
+    @pytest.mark.asyncio
+    async def test_send_retries_without_blocks_on_invalid_blocks(self):
+        adapter, client = _make_adapter({"rich_blocks": True})
+        client.chat_postMessage = AsyncMock(
+            side_effect=[
+                Exception("The request to the Slack API failed. (error: invalid_blocks)"),
+                {"ts": "1.2"},
+            ]
+        )
+        res = await adapter.send("C1", RICH_MD)
+        assert res.success
+        calls = client.chat_postMessage.await_args_list
+        assert "blocks" in calls[0].kwargs
+        assert "blocks" not in calls[1].kwargs
+        assert calls[1].kwargs["text"]  # message content survives as plain text
+
+    @pytest.mark.asyncio
+    async def test_send_non_block_error_propagates(self):
+        adapter, client = _make_adapter({"rich_blocks": True})
+        client.chat_postMessage = AsyncMock(side_effect=Exception("ratelimited"))
+        res = await adapter.send("C1", RICH_MD)
+        assert not res.success
+        assert len(client.chat_postMessage.await_args_list) == 1
+
+    @pytest.mark.asyncio
+    async def test_finalize_edit_retries_without_blocks(self):
+        adapter, client = _make_adapter({"rich_blocks": True})
+        client.chat_update = AsyncMock(
+            side_effect=[Exception("invalid_blocks"), {"ok": True}]
+        )
+        res = await adapter.edit_message("C1", "111.222", RICH_MD, finalize=True)
+        assert res.success
+        calls = client.chat_update.await_args_list
+        assert "blocks" in calls[0].kwargs
+        # text-only chat.update removes the rejected blocks and renders text
+        assert "blocks" not in calls[1].kwargs
+
+
 class TestEditMessageBlocks:
     @pytest.mark.asyncio
     async def test_intermediate_edit_no_blocks(self):

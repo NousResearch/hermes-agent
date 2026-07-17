@@ -17825,6 +17825,36 @@ def _maybe_open_browser(
     threading.Thread(target=_open, daemon=True).start()
 
 
+def _print_connect_qr(host: str, port: int, public_url: str) -> None:
+    """Print a phone-scannable QR for the Web UI (``hermes dashboard --qr``).
+
+    The QR encodes the URL another device can actually reach: an explicit
+    ``--public-url`` (tunnel hostname) wins, a wildcard bind advertises the
+    LAN IP, and a loopback bind gets guidance instead of a useless QR of
+    127.0.0.1. Auth is unaffected — a public bind still requires the auth
+    gate, so the scanned page lands on the sign-in screen.
+    """
+    from hermes_cli.terminal_qr import (
+        ensure_qrcode_installed,
+        render_qr_to_terminal,
+        resolve_advertised_url,
+    )
+
+    url = resolve_advertised_url(host, port, public_url)
+    if not public_url and host in ("127.0.0.1", "localhost", "::1"):
+        print(
+            "  --qr: the server is bound to loopback, which a phone cannot "
+            "reach.\n"
+            "        Bind the LAN with `--host 0.0.0.0` (the auth gate is "
+            "required on public binds),\n"
+            "        or pass your tunnel hostname via --public-url."
+        )
+        return
+    print(f"  Scan to open on your phone → {url}", flush=True)
+    if not (ensure_qrcode_installed() and render_qr_to_terminal(url)):
+        print("  (QR unavailable — install the optional dependency: pip install qrcode)", flush=True)
+
+
 def start_server(
     host: str = "127.0.0.1",
     port: int = 9119,
@@ -17832,6 +17862,8 @@ def start_server(
     allow_public: bool = False,
     initial_profile: str = "",
     headless: bool = False,
+    show_qr: bool = False,
+    public_url: str = "",
 ):
     """Start the web UI server.
 
@@ -18036,6 +18068,8 @@ def start_server(
                 print(f"  Hermes backend listening on {host}:{actual_port}")
             else:
                 print(f"  Hermes Web UI → http://{host}:{actual_port}")
+                if show_qr:
+                    _print_connect_qr(host, actual_port, public_url)
             _maybe_open_browser(host, actual_port, open_browser, initial_profile)
 
             # Collapse the peer-hangup teardown flood (#50005). When the Desktop

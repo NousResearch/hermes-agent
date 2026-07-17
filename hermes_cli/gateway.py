@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import plistlib
 import shlex
 import shutil
 import signal
@@ -3929,68 +3930,27 @@ def generate_launchd_plist() -> str:
     )
 
     # Build ProgramArguments array, including --profile when using a named profile
-    prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
-    ]
+    prog_args = [python_path, "-m", "hermes_cli.main"]
     if profile_arg:
-        for part in profile_arg.split():
-            prog_args.append(f"<string>{part}</string>")
-    prog_args.extend(
-        [
-            "<string>gateway</string>",
-            "<string>run</string>",
-            "<string>--replace</string>",
-        ]
-    )
-    prog_args_xml = "\n        ".join(prog_args)
+        prog_args.extend(profile_arg.split())
+    prog_args.extend(["gateway", "run", "--replace"])
 
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{label}</string>
-
-    <key>ProgramArguments</key>
-    <array>
-        {prog_args_xml}
-    </array>
-    
-    <key>WorkingDirectory</key>
-    <string>{working_dir}</string>
-    
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>{sane_path}</string>
-        <key>VIRTUAL_ENV</key>
-        <string>{venv_dir}</string>
-        <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
-    </dict>
-
-    <key>LimitLoadToSessionType</key>
-    <array>
-        <string>Aqua</string>
-        <string>Background</string>
-    </array>
-    
-    <key>RunAtLoad</key>
-    <true/>
-    
-    <key>KeepAlive</key>
-    <true/>
-    
-    <key>StandardOutPath</key>
-    <string>{log_dir}/gateway.log</string>
-    
-    <key>StandardErrorPath</key>
-    <string>{log_dir}/gateway.error.log</string>
-</dict>
-</plist>
-"""
+    plist = {
+        "Label": label,
+        "ProgramArguments": prog_args,
+        "WorkingDirectory": working_dir,
+        "EnvironmentVariables": {
+            "PATH": sane_path,
+            "VIRTUAL_ENV": venv_dir,
+            "HERMES_HOME": hermes_home,
+        },
+        "LimitLoadToSessionType": ["Aqua", "Background"],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "StandardOutPath": str(log_dir / "gateway.log"),
+        "StandardErrorPath": str(log_dir / "gateway.error.log"),
+    }
+    return plistlib.dumps(plist, fmt=plistlib.FMT_XML, sort_keys=False).decode("utf-8")
 
 
 def launchd_plist_is_current() -> bool:

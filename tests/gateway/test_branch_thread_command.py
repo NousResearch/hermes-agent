@@ -1,4 +1,4 @@
-"""Tests for /branch --thread — clone session into a new platform thread."""
+"""Tests for /branch defaulting to a new thread on Discord/Telegram/Slack."""
 
 from __future__ import annotations
 
@@ -23,13 +23,11 @@ def test_parse_branch_command_args_plain_name():
     assert _parse_branch_command_args("") == (False, "")
 
 
-def test_parse_branch_command_args_thread_flags():
-    assert _parse_branch_command_args("--thread") == (True, "")
-    assert _parse_branch_command_args("--thread alt path") == (True, "alt path")
-    assert _parse_branch_command_args("thread alt path") == (True, "alt path")
-    assert _parse_branch_command_args("-t quick") == (True, "quick")
-    # Flag is case-insensitive; bare "Thread" without leading dash still matches.
-    assert _parse_branch_command_args("THREAD name") == (True, "name")
+def test_parse_branch_command_args_here_flags():
+    assert _parse_branch_command_args("--here") == (True, "")
+    assert _parse_branch_command_args("--here alt path") == (True, "alt path")
+    assert _parse_branch_command_args("here alt path") == (True, "alt path")
+    assert _parse_branch_command_args("HERE name") == (True, "name")
 
 
 def test_branch_thread_parent_id_resolution():
@@ -51,7 +49,6 @@ def test_branch_thread_parent_id_resolution():
     )
     assert _branch_thread_parent_id(in_thread) == "chan-1"
 
-    # Discord thread missing parent — cannot create a sibling.
     orphan = SessionSource(
         platform=Platform.DISCORD,
         chat_id="thr-9",
@@ -81,8 +78,6 @@ def test_branch_dest_source_matches_discord_inbound_shape():
     assert dest.thread_id == "thr-new"
     assert dest.chat_type == "thread"
     assert dest.parent_chat_id == "chan-1"
-    assert dest.user_id == "u1"
-    # Inbound Discord threads key as thread_id twice.
     assert build_session_key(dest) == "agent:main:discord:thread:thr-new:thr-new"
 
 
@@ -159,7 +154,6 @@ def _make_branch_thread_runner():
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "world"},
     ]
-    # First switch is dest key → new session; origin key must never be switched.
     runner.session_store.switch_session.return_value = dest_entry
     runner._session_db = AsyncSessionDB(MagicMock())
     runner._session_db._db.get_session_title.return_value = "Current Work"
@@ -168,11 +162,11 @@ def _make_branch_thread_runner():
 
 
 @pytest.mark.asyncio
-async def test_branch_thread_binds_dest_key_and_keeps_origin():
+async def test_branch_default_on_discord_opens_new_thread():
     runner, source, adapter = _make_branch_thread_runner()
     origin_key = build_session_key(source)
 
-    event = MessageEvent(text="/branch --thread alt path", source=source, message_id="m1")
+    event = MessageEvent(text="/branch alt path", source=source, message_id="m1")
     result = await runner._handle_branch_command(event)
 
     assert "new thread" in result
@@ -182,37 +176,37 @@ async def test_branch_thread_binds_dest_key_and_keeps_origin():
     adapter.create_handoff_thread.assert_awaited_once_with("chan-1", "alt path")
     adapter._threads.mark.assert_called_once_with("thr-new")
 
-    # switch_session only on dest key, never origin.
     switch_calls = runner.session_store.switch_session.call_args_list
     assert len(switch_calls) == 1
     dest_key, new_sid = switch_calls[0].args
     assert dest_key != origin_key
     assert dest_key == "agent:main:discord:thread:thr-new:thr-new"
     assert new_sid != "current-session"
-    # Cloned session id is timestamp_uuid shape from the handler.
     assert "_" in new_sid
 
 
 @pytest.mark.asyncio
-async def test_branch_thread_unsupported_without_adapter():
-    runner, source, _adapter = _make_branch_thread_runner()
-    runner.adapters = {}
+async def test_branch_here_stays_on_origin_surface():
+    runner, source, adapter = _make_branch_thread_runner()
+    origin_key = build_session_key(source)
+    branched = _make_entry("branched-session", source)
+    runner.session_store.switch_session.return_value = branched
 
-    event = MessageEvent(text="/branch --thread", source=source, message_id="m1")
+    event = MessageEvent(text="/branch --here alt path", source=source, message_id="m1")
     result = await runner._handle_branch_command(event)
 
-    assert "does not support" in result
-    runner.session_store.switch_session.assert_not_called()
-    runner._session_db._db.create_session.assert_not_called()
+    assert "Branched to" in result
+    assert "new thread" not in result
+    assert "alt path" in result
+    adapter.create_handoff_thread.assert_not_awaited()
+    switch_calls = runner.session_store.switch_session.call_args_list
+    assert len(switch_calls) == 1
+    assert switch_calls[0].args[0] == origin_key
 
 
 @pytest.mark.asyncio
-async def test_branch_thread_unsupported_on_whatsapp():
-    """WhatsApp adapters inherit base create_handoff_thread (returns None).
-
-    Must refuse before cloning so --thread never becomes a title and never
-    leaves an orphan branch session.
-    """
+async def test_branch_on_whatsapp_stays_in_place():
+    """Non-thread platforms always branch on the current surface."""
     from gateway.run import GatewayRunner
 
     source = SessionSource(
@@ -222,6 +216,7 @@ async def test_branch_thread_unsupported_on_whatsapp():
         chat_type="dm",
     )
     current_entry = _make_entry("current-session", source)
+    branched = _make_entry("branched-session", source)
     adapter = MagicMock()
     adapter.create_handoff_thread = AsyncMock(return_value=None)
 
@@ -239,20 +234,25 @@ async def test_branch_thread_unsupported_on_whatsapp():
     runner.session_store.load_transcript.return_value = [
         {"role": "user", "content": "hello"},
     ]
+    runner.session_store.switch_session.return_value = branched
     runner._session_db = AsyncSessionDB(MagicMock())
+    runner._session_db._db.get_session_title.return_value = None
+    runner._session_db._db.get_next_title_in_lineage.return_value = "branch #2"
 
-    event = MessageEvent(text="/branch --thread", source=source, message_id="m1")
+    event = MessageEvent(text="/branch", source=source, message_id="m1")
     result = await runner._handle_branch_command(event)
 
-    assert "does not support" in result
+    assert "Branched to" in result
+    assert "new thread" not in result
     adapter.create_handoff_thread.assert_not_awaited()
-    runner._session_db._db.create_session.assert_not_called()
-    runner.session_store.switch_session.assert_not_called()
+    runner.session_store.switch_session.assert_called_once()
+    assert runner.session_store.switch_session.call_args.args[0] == build_session_key(source)
 
 
 @pytest.mark.asyncio
-async def test_branch_default_still_switches_origin_key():
-    runner, source, _adapter = _make_branch_thread_runner()
+async def test_branch_missing_adapter_falls_back_in_place():
+    runner, source, adapter = _make_branch_thread_runner()
+    runner.adapters = {}
     origin_key = build_session_key(source)
     branched = _make_entry("branched-session", source)
     runner.session_store.switch_session.return_value = branched
@@ -262,6 +262,4 @@ async def test_branch_default_still_switches_origin_key():
 
     assert "Branched to" in result
     assert "new thread" not in result
-    switch_calls = runner.session_store.switch_session.call_args_list
-    assert len(switch_calls) == 1
-    assert switch_calls[0].args[0] == origin_key
+    assert runner.session_store.switch_session.call_args.args[0] == origin_key

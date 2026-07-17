@@ -55,24 +55,25 @@ logger = logging.getLogger("gateway.run")
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
 
-# /branch --thread flags (first token of command args).
-_BRANCH_THREAD_FLAGS = frozenset({"--thread", "thread", "-t"})
+# /branch --here flags (first token). Default on Discord/Telegram/Slack is a new thread.
+_BRANCH_HERE_FLAGS = frozenset({"--here", "here"})
 # Platforms that actually override create_handoff_thread (base always returns None).
 _BRANCH_THREAD_PLATFORMS = frozenset({Platform.DISCORD, Platform.TELEGRAM, Platform.SLACK})
 
 
 def _parse_branch_command_args(raw: str) -> tuple[bool, str]:
-    """Parse ``/branch`` args into ``(want_thread, branch_name)``.
+    """Parse ``/branch`` args into ``(stay_here, branch_name)``.
 
-    Accepts ``--thread``, ``thread``, or ``-t`` as the first token. Anything
-    after the flag is the optional branch title; without a flag the whole
-    string is the title (legacy behaviour).
+    ``--here`` / ``here`` as the first token keeps the branch on the current
+    surface. Anything after the flag is the optional title; without a flag the
+    whole string is the title. On thread-capable platforms the default (no
+    flag) is to open a new thread.
     """
     text = (raw or "").strip()
     if not text:
         return False, ""
     parts = text.split(None, 1)
-    if parts[0].lower() in _BRANCH_THREAD_FLAGS:
+    if parts[0].lower() in _BRANCH_HERE_FLAGS:
         return True, (parts[1].strip() if len(parts) > 1 else "")
     return False, text
 
@@ -136,7 +137,7 @@ def _branch_dest_source(
 
 
 def _format_branch_thread_ref(platform: Optional[Platform], thread_id: str) -> str:
-    """Human-facing thread pointer for branch --thread replies."""
+    """Human-facing thread pointer for branch replies."""
     if platform == Platform.DISCORD:
         return f"<#{thread_id}>"
     return f"`{thread_id}`"
@@ -4090,14 +4091,13 @@ class GatewaySlashCommandsMixin:
         )
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
-        """Handle /branch [name | --thread [name]] — fork session, optionally into a new thread.
+        """Handle /branch [name | --here [name]] — fork session.
 
-        Default: clone history and switch the *current* chat/thread onto the
-        branch (same surface as Claude Code's /branch).
+        On Discord / Telegram / Slack: default opens a **new** thread for the
+        branch and leaves this chat on the original session. Pass ``--here``
+        (or ``here``) to keep the branch on the current surface instead.
 
-        ``--thread`` / ``thread`` / ``-t``: clone history, create a platform
-        thread under the parent channel, bind the branch only to that new
-        thread, and leave this chat on the original session.
+        Other platforms and CLI always branch in-place (same surface).
         """
         import uuid as _uuid
 
@@ -4114,29 +4114,24 @@ class GatewaySlashCommandsMixin:
         if not history:
             return t("gateway.branch.no_conversation")
 
-        want_thread, branch_name = _parse_branch_command_args(event.get_command_args())
+        stay_here, branch_name = _parse_branch_command_args(event.get_command_args())
 
-        # Fail closed on --thread before cloning when the surface can't host it.
-        # Create the platform thread *before* cloning so a failed create never
-        # leaves an orphan branch session (WhatsApp/base adapters always expose
-        # a no-op create_handoff_thread that returns None).
+        # Prefer a new thread on capable platforms unless --here was passed.
+        # Soft-fall back to in-place when parent/adapter is missing (DMs, etc.).
+        want_thread = (not stay_here) and _platform_supports_branch_thread(source.platform)
         thread_adapter = None
         thread_parent_id: Optional[str] = None
         new_thread_id: Optional[str] = None
         if want_thread:
-            if not _platform_supports_branch_thread(source.platform):
-                return t("gateway.branch.thread_unsupported")
             thread_adapter = (
                 self.adapters.get(source.platform)
                 if getattr(self, "adapters", None) and source.platform
                 else None
             )
             create_thread = getattr(thread_adapter, "create_handoff_thread", None) if thread_adapter else None
-            if not callable(create_thread):
-                return t("gateway.branch.thread_unsupported")
             thread_parent_id = _branch_thread_parent_id(source)
-            if not thread_parent_id:
-                return t("gateway.branch.thread_no_parent")
+            if not callable(create_thread) or not thread_parent_id:
+                want_thread = False  # ponytail: fall back to --here semantics
 
         # Generate the new session ID
         from datetime import datetime as _dt
@@ -4155,13 +4150,15 @@ class GatewaySlashCommandsMixin:
 
         parent_session_id = current_entry.session_id
 
+        # Create platform thread *before* cloning so a failed create never
+        # leaves an orphan branch session.
         if want_thread:
             try:
                 new_thread_id = await thread_adapter.create_handoff_thread(  # type: ignore[union-attr]
                     thread_parent_id, branch_title,
                 )
             except Exception as exc:
-                logger.error("Branch --thread: create_handoff_thread failed: %s", exc, exc_info=True)
+                logger.error("Branch: create_handoff_thread failed: %s", exc, exc_info=True)
                 return t("gateway.branch.thread_create_failed", error=exc)
             if not new_thread_id:
                 return t(
@@ -4218,7 +4215,7 @@ class GatewaySlashCommandsMixin:
 
         msg_count = len([m for m in history if m.get("role") == "user"])
 
-        if want_thread:
+        if want_thread and new_thread_id and thread_parent_id and thread_adapter is not None:
             return await self._bind_branch_to_new_thread(
                 source=source,
                 adapter=thread_adapter,
@@ -4230,7 +4227,7 @@ class GatewaySlashCommandsMixin:
                 msg_count=msg_count,
             )
 
-        # Default: switch the current session key onto the branch.
+        # In-place: switch the current session key onto the branch.
         new_entry = await self.async_session_store.switch_session(session_key, new_session_id)
         if not new_entry:
             return t("gateway.branch.switch_failed")
@@ -4292,7 +4289,7 @@ class GatewaySlashCommandsMixin:
             try:
                 mark(str(new_thread_id))
             except Exception:
-                logger.debug("Branch --thread: thread participation mark failed", exc_info=True)
+                logger.debug("Branch: thread participation mark failed", exc_info=True)
 
         key = (
             "gateway.branch.branched_thread_one"

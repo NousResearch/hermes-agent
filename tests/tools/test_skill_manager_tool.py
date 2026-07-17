@@ -563,6 +563,52 @@ class TestSkillManageDispatcher:
         rec = usage.get("test-skill") or {}
         assert rec.get("created_by") in {None, "", False}
 
+    def test_create_discards_usage_record_left_by_previous_life(self, tmp_path):
+        """#65992: reusing the name of a dead skill must reset its usage record.
+
+        Usage records are keyed by skill name and survive any deletion that
+        did not go through skill_manage(delete) (manual rm, crashed delete).
+        If a create leaves the stale record in place, the curator's next
+        automatic-transition pass reads the expired inactivity clock and
+        relocates the brand-new skill to skills/.archive/<name>/ while the
+        create response still points at the requested category path.
+        """
+        from datetime import datetime, timedelta, timezone
+        from tools.skill_usage import load_usage, save_usage
+
+        stale = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
+        save_usage({
+            "test-skill": {
+                "created_by": "agent",
+                "use_count": 3,
+                "last_used_at": stale,
+                "created_at": stale,
+                "state": "active",
+            }
+        })
+        with _skill_dir(tmp_path):
+            raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            usage = load_usage()
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "test-skill" not in usage
+
+    def test_failed_create_keeps_existing_usage_record(self, tmp_path):
+        """A duplicate-name create fails and must NOT touch the live skill's
+        usage record — only a successful create starts a new life (#65992)."""
+        from tools.skill_usage import load_usage, save_usage
+
+        with _skill_dir(tmp_path):
+            raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            assert json.loads(raw)["success"] is True
+            save_usage({"test-skill": {"created_by": "agent", "use_count": 7, "state": "active"}})
+            raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            usage = load_usage()
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "already exists" in result["error"]
+        assert usage["test-skill"]["use_count"] == 7
+
     def test_create_from_background_review_marks_agent_created(self, tmp_path):
         """Background-review fork creates ARE marked as agent-created."""
         from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW

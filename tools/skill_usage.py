@@ -676,7 +676,13 @@ def set_pinned(skill_name: str, pinned: bool) -> None:
 
 
 def forget(skill_name: str) -> None:
-    """Drop a skill's usage entry entirely. Called when the skill is deleted."""
+    """Drop a skill's usage entry entirely.
+
+    Called when the skill is hard-deleted, and by ``skill_manage(create)``
+    when a new skill reuses the name of a dead one — the record's inactivity
+    clock belongs to the previous life and must not carry over, or the
+    curator archives the brand-new skill on its next pass (#65992).
+    """
     if not skill_name:
         return
     try:

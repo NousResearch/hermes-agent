@@ -852,6 +852,21 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         shutil.rmtree(skill_dir, ignore_errors=True)
         return {"success": False, "error": scan_error}
 
+    # A successful create starts a new life for this name: discard any usage
+    # record left behind by a previous skill that was removed without going
+    # through skill_manage(delete) (manual rm, crashed delete, external sync).
+    # Records are keyed by name and carry the curator's inactivity clock, so a
+    # stale leftover would make the next automatic-transition pass read an
+    # expired anchor and relocate the seconds-old skill to skills/.archive/
+    # while the create response still points at the requested path (#65992).
+    # The collision check above guarantees no live skill owns this record.
+    # Best-effort: telemetry failures never break the tool.
+    try:
+        from tools.skill_usage import forget
+        forget(name)
+    except Exception:
+        logger.debug("usage-record reset failed for %s", name, exc_info=True)
+
     # Extract description from frontmatter for verbose notifications
     _desc = ""
     try:

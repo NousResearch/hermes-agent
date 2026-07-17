@@ -132,6 +132,24 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # spirit (default 2) but counts a different signal: manual unblock recurrences,
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
+
+# Run/audit outcome recorded when a card is retired through the explicit
+# "close as merged" workflow (:func:`close_task_as_merged`). Deliberately
+# distinct from the ordinary ``completed`` outcome so the audit trail makes
+# clear the card was closed because its work landed in a MERGED pull request,
+# not because a worker ran it to completion. See ``VALID_BLOCK_KINDS`` for the
+# sibling "typed reason" pattern.
+MERGED_OUTCOME = "merged"
+
+# Statuses a card may be closed-as-merged FROM. Excludes the already-terminal
+# states (``done`` / ``archived``) so a double-close — or closing an archived
+# card — fails safely (returns False, no mutation) instead of silently
+# rewriting terminal history. Kept as a sorted tuple so the SQL ``IN (...)``
+# placeholder order is deterministic.
+CLOSE_MERGED_FROM_STATUSES = (
+    "blocked", "ready", "review", "running", "scheduled", "todo", "triage",
+)
+
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
@@ -3976,6 +3994,26 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+class MergeAuthorizationError(ValueError):
+    """Raised by ``close_task_as_merged`` when the caller did not explicitly
+    authorize the close.
+
+    The merged-close is a deliberately guarded terminal transition — it must
+    never happen by accident — so the caller has to pass ``authorized=True``.
+    Kept as a ``ValueError`` subclass so existing tool-error handlers treat it
+    as a recoverable user error rather than a crash.
+    """
+
+
+class MergeEvidenceError(ValueError):
+    """Raised by ``close_task_as_merged`` when the supplied merge evidence
+    (reason, pull-request reference, or commit SHA) is missing or malformed.
+
+    The task is never mutated on a rejected attempt — evidence is validated
+    before any write — so an accidental or unmerged-looking close fails safe.
+    """
+
+
 class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
@@ -4186,6 +4224,289 @@ def complete_task(
         assignee=_done_task.assignee if _done_task else None,
         run_id=run_id,
         summary=(summary if summary is not None else result),
+    )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Close as merged (explicit, audited terminal transition)
+# ---------------------------------------------------------------------------
+
+# A GitHub PR URL, capturing owner/repo/number so we can normalize away any
+# trailing ``/files``, ``#discussion_r…`` fragment, or ``?query`` string.
+_GITHUB_PR_URL_RE = re.compile(
+    r"^https://github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+)/pull/(?P<num>\d+)"
+    r"(?:[/#?].*)?$",
+    re.IGNORECASE,
+)
+# A bare PR reference: ``123`` or ``#123``.
+_PR_NUMBER_RE = re.compile(r"^#?(\d+)$")
+# A git commit SHA: 7–40 hex chars (abbreviated through full length).
+_COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$", re.IGNORECASE)
+# Refs that look like a SHA argument but are NOT an immutable commit id. These
+# would let an "unmerged" close slip through (a branch tip moves), so reject.
+_NON_SHA_REFS = {"head", "main", "master", "develop", "trunk"}
+
+
+def _normalize_pr_reference(pr: object) -> str:
+    """Validate a merge pull-request reference and return a canonical string.
+
+    Accepts a full GitHub PR URL (``https://github.com/o/r/pull/123`` — with or
+    without a trailing ``/files``/fragment/query), a ``#123`` or ``123`` PR
+    number, or a positive ``int``. Returns the canonical PR URL (for URL input)
+    or ``#<n>`` (for bare numbers).
+
+    Rejects branch names, ``/compare/`` and ``/commit/`` URLs, non-GitHub URLs,
+    zero/negative numbers, booleans, and empty input by raising
+    :class:`MergeEvidenceError`. This is what makes "accidental / unmerged
+    evidence" fail safe: only something that unambiguously names a pull request
+    is accepted.
+    """
+    if pr is None:
+        raise MergeEvidenceError(
+            "merge evidence requires a pull request URL or number"
+        )
+    # ``bool`` is an ``int`` subclass — reject it before the int branch so
+    # ``pr=True`` can't masquerade as PR #1.
+    if isinstance(pr, bool):
+        raise MergeEvidenceError(
+            "pull request reference must be a URL or number, not a boolean"
+        )
+    if isinstance(pr, int):
+        if pr <= 0:
+            raise MergeEvidenceError(
+                f"pull request number must be a positive integer, got {pr!r}"
+            )
+        return f"#{pr}"
+    text = str(pr).strip()
+    if not text:
+        raise MergeEvidenceError("pull request reference must not be empty")
+    m = _GITHUB_PR_URL_RE.match(text)
+    if m:
+        return (
+            f"https://github.com/{m.group('owner')}/{m.group('repo')}"
+            f"/pull/{int(m.group('num'))}"
+        )
+    m = _PR_NUMBER_RE.match(text)
+    if m:
+        num = int(m.group(1))
+        if num <= 0:
+            raise MergeEvidenceError(
+                f"pull request number must be a positive integer, got {text!r}"
+            )
+        return f"#{num}"
+    raise MergeEvidenceError(
+        f"{pr!r} is not a valid pull request reference — expected a GitHub PR "
+        f"URL (https://github.com/<owner>/<repo>/pull/<n>) or a PR number"
+    )
+
+
+def _normalize_commit_sha(commit: object) -> str:
+    """Validate a merge commit SHA and return it lower-cased.
+
+    Accepts a 7–40 char hex string (abbreviated through full commit id).
+    Rejects empty input, refs/branch names (``HEAD``, ``main``, anything with a
+    ``/``), and non-hex text by raising :class:`MergeEvidenceError`. Requiring
+    an immutable commit id — not a moving ref — is part of rejecting
+    "unmerged" evidence.
+    """
+    if commit is None:
+        raise MergeEvidenceError("merge evidence requires a commit SHA")
+    if isinstance(commit, bool):
+        raise MergeEvidenceError("commit SHA must be a hex string, not a boolean")
+    text = str(commit).strip().lower()
+    if not text:
+        raise MergeEvidenceError("commit SHA must not be empty")
+    if "/" in text or text in _NON_SHA_REFS:
+        raise MergeEvidenceError(
+            f"{commit!r} is not a commit SHA (looks like a branch/ref); pass the "
+            f"immutable merge commit hash"
+        )
+    if not _COMMIT_SHA_RE.match(text):
+        raise MergeEvidenceError(
+            f"commit SHA must be 7-40 hexadecimal characters, got {commit!r}"
+        )
+    return text
+
+
+def close_task_as_merged(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    pr: object,
+    commit: object,
+    authorized: bool = False,
+    authorized_by: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """Explicitly retire a card as *closed-as-merged*.
+
+    This is the dedicated, audited terminal transition for the case where a
+    card's work already landed in a merged pull request and the card should be
+    closed with a durable merge record — NOT by editing the card body, and NOT
+    by faking an ordinary ``complete_task``. It never spawns a worker or agent
+    (the card lands in ``done``, which the dispatcher never picks up), so it
+    cannot trigger recursive agent spawning.
+
+    Safety contract — every check runs BEFORE any write, and the card is left
+    untouched unless all pass:
+
+    * ``authorized`` MUST be ``True``. The caller has to opt in explicitly, so
+      a merged-close can never happen by accident. Otherwise
+      :class:`MergeAuthorizationError`.
+    * ``reason`` MUST be a non-empty human explanation. Otherwise
+      :class:`MergeEvidenceError`.
+    * ``pr`` MUST resolve to a valid GitHub PR URL or PR number, and ``commit``
+      MUST be a 7-40 char hex SHA (see :func:`_normalize_pr_reference` /
+      :func:`_normalize_commit_sha`). Malformed / unmerged-looking evidence
+      raises :class:`MergeEvidenceError`.
+    * The card MUST be in a non-terminal state (one of
+      :data:`CLOSE_MERGED_FROM_STATUSES`). A card that is already ``done`` or
+      ``archived`` (or unknown) returns ``False`` with no mutation, so a
+      double-close can't rewrite terminal history.
+
+    On success the card transitions to ``done`` with a ``merged`` run outcome,
+    a durable dedicated ``closed_merged`` audit event carrying the full merge
+    metadata (pull request, commit, reason, authorizer, prior status), and a
+    ``completed`` lifecycle event so gateway notifiers (Discord, …) deliver the
+    close automatically through the existing terminal-event path. The card's
+    ``body`` and all prior audit events are never modified.
+
+    Returns ``True`` on a successful close, ``False`` when the card is unknown
+    or already terminal. Raises on a rejected (unauthorized / invalid-evidence)
+    attempt.
+    """
+    # --- Gate: authorization + evidence, validated before any write. ---
+    if not authorized:
+        raise MergeAuthorizationError(
+            "close_task_as_merged requires explicit authorization "
+            "(authorized=True); refusing to close a card as merged by accident"
+        )
+    reason_text = reason.strip() if isinstance(reason, str) else ""
+    if not reason_text:
+        raise MergeEvidenceError(
+            "close_task_as_merged requires a non-empty reason explaining the merge"
+        )
+    pr_ref = _normalize_pr_reference(pr)
+    sha = _normalize_commit_sha(commit)
+    author = (authorized_by or "").strip() or None
+
+    now = int(time.time())
+    merge_result = f"Closed as merged: PR {pr_ref} @ {sha} — {reason_text}"
+    # Metadata block persisted on the closing run AND the audit event, so the
+    # merge provenance survives independently of the card body.
+    merge_meta: dict = {
+        "outcome": MERGED_OUTCOME,
+        "pull_request": pr_ref,
+        "commit": sha,
+        "reason": reason_text,
+        "authorized": True,
+        "authorized_by": author,
+    }
+
+    placeholders = ",".join("?" for _ in CLOSE_MERGED_FROM_STATUSES)
+    run_id: Optional[int] = None
+    with write_txn(conn):
+        # Snapshot the prior status so the audit event immutably records where
+        # the card came from (blocked, review, running, …).
+        prior = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if prior is None:
+            return False
+        prior_status = prior["status"]
+        if expected_run_id is None:
+            cur = conn.execute(
+                f"""
+                UPDATE tasks
+                   SET status       = 'done',
+                       result       = ?,
+                       completed_at = ?,
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL,
+                       block_kind   = NULL,
+                       block_recurrences = 0
+                 WHERE id = ?
+                   AND status IN ({placeholders})
+                """,
+                (merge_result, now, task_id, *CLOSE_MERGED_FROM_STATUSES),
+            )
+        else:
+            cur = conn.execute(
+                f"""
+                UPDATE tasks
+                   SET status       = 'done',
+                       result       = ?,
+                       completed_at = ?,
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL,
+                       block_kind   = NULL,
+                       block_recurrences = 0
+                 WHERE id = ?
+                   AND status IN ({placeholders})
+                   AND current_run_id = ?
+                """,
+                (
+                    merge_result, now, task_id,
+                    *CLOSE_MERGED_FROM_STATUSES, int(expected_run_id),
+                ),
+            )
+        if cur.rowcount != 1:
+            # Already terminal (done/archived), unknown status, or the
+            # expected-run CAS lost. No mutation happened.
+            return False
+        # Close any in-flight run with the merged outcome; synthesize a
+        # zero-duration run when the card was never claimed (the common
+        # operator path: closing a blocked/review card).
+        run_id = _end_run(
+            conn, task_id,
+            outcome=MERGED_OUTCOME, status="done",
+            summary=merge_result, metadata=merge_meta,
+        )
+        if run_id is None:
+            run_id = _synthesize_ended_run(
+                conn, task_id,
+                outcome=MERGED_OUTCOME,
+                summary=merge_result, metadata=merge_meta,
+            )
+        # Durable, dedicated audit record — the authoritative merge event.
+        _append_event(
+            conn, task_id, "closed_merged",
+            {**merge_meta, "prior_status": prior_status},
+            run_id=run_id,
+        )
+        # Lifecycle terminal event so existing gateway notifiers deliver the
+        # close automatically (Discord, etc.) through the shared "completed"
+        # path — the notifier keys on ``completed``; the payload flags the
+        # merged provenance and carries the human-facing summary.
+        _append_event(
+            conn, task_id, "completed",
+            {
+                "result_len": len(merge_result),
+                "summary": merge_result,
+                "closed_as_merged": True,
+                "outcome": MERGED_OUTCOME,
+                "pull_request": pr_ref,
+                "commit": sha,
+            },
+            run_id=run_id,
+        )
+    # Mirror complete_task's post-commit housekeeping (each opens its own txn).
+    _clear_failure_counter(conn, task_id)
+    recompute_ready(conn)
+    _cleanup_workspace(conn, task_id)
+    _closed_task = get_task(conn, task_id)
+    _fire_kanban_lifecycle_hook(
+        "kanban_task_completed",
+        task_id,
+        board=get_current_board(),
+        assignee=_closed_task.assignee if _closed_task else None,
+        run_id=run_id,
+        summary=merge_result,
+        outcome=MERGED_OUTCOME,
     )
     return True
 

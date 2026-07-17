@@ -2472,6 +2472,12 @@ def test_attachments_reads_transitive_ancestor_attachment(worker_env, monkeypatc
     assert d["task_id"] == grandparent
     assert d["content"] == "canonical source evidence"
 
+    listed = json.loads(kt._handle_attachments({"task_id": grandparent}))
+    assert listed["ok"] is True
+    assert [attachment["id"] for attachment in listed["attachments"]] == [
+        attachment_id
+    ]
+
 
 def test_attachments_rejects_unrelated_task_attachment(worker_env):
     from hermes_cli import kanban_db as kb
@@ -2492,6 +2498,9 @@ def test_attachments_rejects_unrelated_task_attachment(worker_env):
 
     out = kt._handle_attachments({"attachment_id": attachment_id})
     assert "current task or an ancestor" in json.loads(out)["error"]
+
+    listed = kt._handle_attachments({"task_id": unrelated})
+    assert "current task or an ancestor" in json.loads(listed)["error"]
 
 
 def test_attachments_linking_task_after_spawn_does_not_widen_access(worker_env):
@@ -2563,6 +2572,8 @@ def test_attachments_paginates_utf8_text_and_infers_markdown(worker_env):
 
 
 def test_attachments_rejects_binary_and_noncanonical_paths(worker_env, tmp_path):
+    from pathlib import Path
+
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
@@ -2585,6 +2596,28 @@ def test_attachments_rejects_binary_and_noncanonical_paths(worker_env, tmp_path)
             content_type="text/markdown",
             size=outside.stat().st_size,
         )
+        canonical_id = kb.store_attachment_bytes(
+            conn,
+            worker_env,
+            "canonical.md",
+            b"canonical evidence",
+            content_type="text/markdown",
+        )
+        canonical = kb.get_attachment(conn, canonical_id)
+        assert canonical is not None
+        traversal_id = kb.add_attachment(
+            conn,
+            worker_env,
+            filename="traversal.md",
+            stored_path=str(
+                kb.task_attachments_dir(worker_env)
+                / ".."
+                / worker_env
+                / Path(canonical.stored_path).name
+            ),
+            content_type="text/markdown",
+            size=canonical.size,
+        )
     finally:
         conn.close()
 
@@ -2593,6 +2626,9 @@ def test_attachments_rejects_binary_and_noncanonical_paths(worker_env, tmp_path)
 
     outside_result = json.loads(kt._handle_attachments({"attachment_id": outside_id}))
     assert "outside task attachment storage" in outside_result["error"]
+
+    traversal = json.loads(kt._handle_attachments({"attachment_id": traversal_id}))
+    assert "outside task attachment storage" in traversal["error"]
 
 
 def test_attachments_accepts_resolved_attachment_root_symlink(
@@ -2666,6 +2702,24 @@ def test_attachments_cross_board_denial_does_not_create_board(worker_env):
 
     assert "worker board" in json.loads(out)["error"]
     assert not forbidden_db.exists()
+
+
+def test_attachments_rejects_cross_board_with_dispatcher_db_pin(
+    worker_env, monkeypatch
+):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    pinned_db = kb.kanban_db_path()
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned_db))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+
+    out = kt._handle_attachments({
+        "board": "other",
+        "task_id": worker_env,
+    })
+
+    assert "worker board" in json.loads(out)["error"]
 
 
 def test_attachments_invalid_board_returns_tool_error(worker_env):

@@ -1092,13 +1092,17 @@ def _handle_attachments(args: dict, **kw) -> str:
         if os.environ.get("HERMES_KANBAN_TASK") and board is not None:
             from hermes_cli import kanban_db as kb
 
-            worker_board = os.environ.get("HERMES_KANBAN_BOARD")
-            worker_db = kb.kanban_db_path(worker_board).resolve()
-            requested_db = kb.kanban_db_path(board).resolve()
-            if requested_db != worker_db:
+            worker_board = (
+                kb._normalize_board_slug(os.environ.get("HERMES_KANBAN_BOARD"))
+                or kb.get_current_board()
+            )
+            requested_board = (
+                kb._normalize_board_slug(board) or kb.get_current_board()
+            )
+            if requested_board != worker_board:
                 return tool_error(
-                    f"worker board is pinned to {worker_board or 'default'}; "
-                    f"refusing to read board {board}"
+                    f"worker board is pinned to {worker_board}; "
+                    f"refusing to read board {requested_board}"
                 )
         kb, conn = _connect(board=board)
         try:
@@ -1194,8 +1198,13 @@ def _handle_attachments(args: dict, **kw) -> str:
                     "total_chars": len(content),
                 }, ensure_ascii=False)
 
+            assert tid is not None
             if kb.get_task(conn, tid) is None:
                 return tool_error(f"task {tid} not found")
+            if not _worker_can_read_attachment_task(tid):
+                return tool_error(
+                    f"task {tid} is not the current task or an ancestor"
+                )
             atts = kb.list_attachments(conn, tid)
             return json.dumps({
                 "ok": True,

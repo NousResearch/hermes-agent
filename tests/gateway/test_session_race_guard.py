@@ -289,6 +289,47 @@ def test_merge_pending_text_followup_without_id_preserves_existing_anchor():
     assert pending["session"].message_id == "100"
 
 
+def test_merge_pending_refreshes_latest_event_provenance_without_privilege_escalation():
+    pending = {}
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+    first_raw = object()
+    latest_raw = object()
+    first = MessageEvent(
+        text="internal completion",
+        source=source,
+        raw_message=first_raw,
+        message_id="100",
+        platform_update_id=10,
+        channel_prompt="old prompt",
+        channel_context="old context",
+        internal=True,
+        metadata={"old": True, "shared": "old"},
+    )
+    latest = MessageEvent(
+        text="user follow-up",
+        source=source,
+        raw_message=latest_raw,
+        message_id="101",
+        platform_update_id=11,
+        channel_prompt="new prompt",
+        channel_context="new context",
+        internal=False,
+        metadata={"new": True, "shared": "new"},
+    )
+
+    merge_pending_message_event(pending, "session", first, merge_text=True)
+    merge_pending_message_event(pending, "session", latest, merge_text=True)
+
+    merged = pending["session"]
+    assert merged.raw_message is latest_raw
+    assert merged.platform_update_id == 11
+    assert merged.timestamp == latest.timestamp
+    assert merged.channel_prompt == "new prompt"
+    assert merged.channel_context == "new context"
+    assert merged.metadata == {"old": True, "new": True, "shared": "new"}
+    assert merged.internal is False
+
+
 def test_merge_pending_message_event_merges_text_and_photo_followups():
     pending = {}
     source = SessionSource(

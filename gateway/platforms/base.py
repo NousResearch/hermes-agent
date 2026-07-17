@@ -2115,11 +2115,24 @@ def _refresh_merged_event_trigger_metadata(
     # prompt prefix.
     if event.message_id is not None:
         existing.message_id = event.message_id
+    if event.source is not None:
+        existing.source = event.source
+    existing.raw_message = event.raw_message
+    existing.platform_update_id = event.platform_update_id
     existing.reply_to_message_id = event.reply_to_message_id
     existing.reply_to_text = event.reply_to_text
     existing.reply_to_author_id = event.reply_to_author_id
     existing.reply_to_author_name = event.reply_to_author_name
     existing.reply_to_is_own_message = event.reply_to_is_own_message
+    existing.auto_skill = event.auto_skill
+    existing.channel_prompt = event.channel_prompt
+    existing.channel_context = event.channel_context
+    # A merged event may bypass authorization only when every constituent was
+    # already trusted as internal. Never let an internal notification elevate
+    # a user-originated follow-up (or vice versa).
+    existing.internal = existing.internal and event.internal
+    existing.metadata = {**(existing.metadata or {}), **(event.metadata or {})}
+    existing.timestamp = event.timestamp
 
 
 def merge_pending_message_event(

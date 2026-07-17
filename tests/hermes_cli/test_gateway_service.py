@@ -3732,3 +3732,608 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
             deadline=gateway_cli.time.monotonic() - 1,
         )
         assert ok is False
+
+
+def gen_unit(**directives: str) -> str:
+    """Build a minimal systemd unit string for tests.
+
+    Pass ``Type='simple'``, ``WorkingDirectory='/opt/hermes'``,
+    ``Environment_PATH='/usr/bin:/bin'`` (note: underscores in the
+    kwarg name become ``-`` in the directive, with ``_PATH`` mapping
+    to ``Environment="PATH=..."`` for Environment= lines).
+
+    For directives that don't fit the kwarg convention, build the
+    unit string directly — this helper is purely a convenience for
+    tests where the surrounding ``[Unit]/[Service]/[Install]`` shape
+    is not what the test is asserting on.
+
+    Example::
+
+        gen_unit(Type="simple", WorkingDirectory="/opt/hermes")
+        # → "[Unit]\\n[Service]\\nType=simple\\nWorkingDirectory=/opt/hermes\\n[Install]\\n"
+    """
+    lines = ["[Unit]", "[Service]"]
+    for key, value in directives.items():
+        if key.startswith("Environment_"):
+            env_key = key[len("Environment_"):]
+            lines.append(f'Environment="{env_key}={value}"')
+        else:
+            lines.append(f"{key}={value}")
+    lines.append("[Install]")
+    return "\n".join(lines) + "\n"
+
+
+# Minimal realistic generated unit — used by detection tests that need a
+# full reference to compare against. Tests that only assert on a few
+# directives can use ``gen_unit(...)`` instead for a tighter fixture.
+_MINIMAL_GENERATED_UNIT = gen_unit(
+    Type="simple",
+    ExecStart="/usr/bin/hermes gateway run",
+    WorkingDirectory="/opt/hermes",
+    Environment_PATH="/usr/bin:/bin",
+    Environment_VIRTUAL_ENV="/opt/hermes/venv",
+    Environment_HERMES_HOME="/home/user/.hermes",
+    Restart="always",
+    RestartSec="5",
+)
+
+
+class TestCustomDirectiveDetection:
+    """Tests for _detect_custom_directives and drop-in migration.
+
+    Detection now compares the existing unit against the *freshly generated*
+    unit rather than a static allowlist, so each test passes an explicit
+    ``generated_unit`` that represents what Hermes would emit today.
+    """
+
+    def test_detects_custom_environment_variable(self):
+        existing = (
+            '[Service]\n'
+            'Type=simple\n'
+            'Environment="PATH=/usr/bin:/bin"\n'              # matches generator
+            'Environment="VIRTUAL_ENV=/opt/hermes/venv"\n'    # matches generator
+            'Environment="HERMES_HOME=/home/user/.hermes"\n'  # matches generator
+            'Environment="MY_CUSTOM_VAR=hello"\n'             # only this is custom
+            'Restart=always\n'
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        assert custom == ['Environment="MY_CUSTOM_VAR=hello"']
+
+    def test_ignores_generated_environment_keys(self):
+        """Generated keys with unchanged values must NOT be flagged custom."""
+        existing = (
+            '[Service]\n'
+            'Environment="PATH=/usr/bin:/bin"\n'
+            'Environment="VIRTUAL_ENV=/opt/hermes/venv"\n'
+            'Environment="HERMES_HOME=/home/user/.hermes"\n'
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        assert custom == []
+
+    def test_detects_changed_generated_environment_value(self):
+        """Finding 1 fix: a value change to a generated key IS custom."""
+        existing = (
+            '[Service]\n'
+            'Environment="PATH=/custom/bin:/usr/bin"\n'
+            'Environment="VIRTUAL_ENV=/opt/hermes/venv"\n'
+            'Environment="HERMES_HOME=/home/user/.hermes"\n'
+            'Restart=always\n'
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        # Only the user's PATH= line is custom — the rest match the generator
+        assert custom == ['Environment="PATH=/custom/bin:/usr/bin"']
+
+    def test_detects_changed_working_directory(self):
+        """Finding 1 fix: WorkingDirectory value change IS custom."""
+        existing = (
+            '[Service]\n'
+            'Type=simple\n'
+            'WorkingDirectory=/srv/hermes\n'
+            'Restart=always\n'
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        assert custom == ['WorkingDirectory=/srv/hermes']
+
+    def test_detects_changed_restart_policy(self):
+        """Finding 1 fix: a different Restart= value IS custom."""
+        existing = (
+            '[Service]\n'
+            'Type=simple\n'
+            'Restart=on-failure\n'
+            'RestartSec=5\n'
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        assert custom == ['Restart=on-failure']
+
+    def test_detects_custom_service_directives(self):
+        existing = (
+            '[Service]\n'
+            'Type=simple\n'
+            'LimitNOFILE=65536\n'
+            'MemoryMax=2G\n'
+            'Restart=always\n'
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        assert "LimitNOFILE=65536" in custom
+        assert "MemoryMax=2G" in custom
+
+    def test_ignores_comments_and_blank_lines(self):
+        existing = (
+            '[Service]\n'
+            '# This is a comment\n'
+            '\n'
+            'Type=simple\n'
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        assert custom == []
+
+    def test_ignores_unit_and_install_sections(self):
+        existing = (
+            '[Unit]\n'
+            'Description=Custom thing\n'
+            '\n'
+            '[Service]\n'
+            'Type=simple\n'
+            '\n'
+            '[Install]\n'
+            'WantedBy=custom.target\n'
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        assert custom == []
+
+    def test_empty_unit_returns_empty(self):
+        assert gateway_cli._detect_custom_directives("", _MINIMAL_GENERATED_UNIT) == []
+
+    def test_multiple_custom_directives(self):
+        existing = (
+            '[Service]\n'
+            'Type=simple\n'
+            'Environment="HTTP_PROXY=http://proxy:8080"\n'
+            'Environment="NO_PROXY=localhost"\n'
+            'LimitNOFILE=4096\n'
+            'Restart=always\n'
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        assert len(custom) == 3
+        assert 'Environment="HTTP_PROXY=http://proxy:8080"' in custom
+        assert 'Environment="NO_PROXY=localhost"' in custom
+        assert "LimitNOFILE=4096" in custom
+
+    def test_detects_unquoted_environment_variable(self):
+        """Unquoted Environment=KEY=VALUE is valid systemd syntax."""
+        existing = (
+            '[Service]\n'
+            'Type=simple\n'
+            'Environment=MY_CUSTOM_VAR=hello\n'
+            'Restart=always\n'
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        assert custom == ["Environment=MY_CUSTOM_VAR=hello"]
+
+    def test_detects_environment_with_spaces_around_equals(self):
+        existing = (
+            '[Service]\n'
+            'Environment = "MY_VAR=hello"\n'
+            'Restart=always\n'
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        assert len(custom) == 1
+        assert "MY_VAR" in custom[0]
+
+    def test_detects_directive_with_space_before_equals(self):
+        existing = (
+            '[Service]\n'
+            'LimitNOFILE = 65536\n'
+            'Restart=always\n'
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        assert len(custom) == 1
+        assert "LimitNOFILE" in custom[0]
+
+    def test_removed_generated_directive_is_not_custom(self):
+        """If the user removed a generated directive, that's intentional.
+
+        Don't try to migrate it back — there's no source line to migrate,
+        and the regeneration is meant to drop generated lines we no longer
+        need (e.g. dropping `RestartSec=` if the generator stops emitting it).
+        """
+        existing = (
+            '[Service]\n'
+            'Type=simple\n'
+            # No Restart= at all — user removed it
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        # Restart= missing from existing → NOT custom
+        assert custom == []
+
+    def test_directive_ordering_is_irrelevant(self):
+        """The dict-keyed comparison is order-independent.
+
+        Existing unit has directives in a different order than the generator;
+        detection should still work.
+        """
+        existing = (
+            '[Service]\n'
+            'Restart=always\n'                # generator puts this LAST
+            'Type=simple\n'                   # generator puts this FIRST
+            'Environment="HERMES_HOME=/home/user/.hermes"\n'
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        # All three match the generator — nothing custom
+        assert custom == []
+
+    def test_whitespace_normalization_in_comparison(self):
+        """Different whitespace around = doesn't trigger a false custom flag."""
+        existing = (
+            '[Service]\n'
+            'Restart = always\n'              # has spaces
+            'Type=simple\n'
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        # After whitespace normalization the values match
+        assert custom == []
+
+    def test_quote_insensitive_environment_comparison(self):
+        """Single-quoted Environment values compare equal to double-quoted."""
+        existing = (
+            '[Service]\n'
+            "Environment='PATH=/usr/bin:/bin'\n"
+            'Restart=always\n'
+        )
+        custom = gateway_cli._detect_custom_directives(
+            existing, _MINIMAL_GENERATED_UNIT,
+        )
+        # Quote stripping normalizes the value for comparison
+        assert custom == []
+
+
+class TestDropInMigration:
+    """Tests for _migrate_custom_to_drop_in."""
+
+    def test_creates_drop_in_file(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("[Service]\nType=simple\n", encoding="utf-8")
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path
+        )
+
+        custom = ['Environment="MY_VAR=test"', "LimitNOFILE=65536"]
+        target = gateway_cli._migrate_custom_to_drop_in(custom, system=False)
+
+        assert target.exists()
+        assert target.name == "custom.conf"
+        content = target.read_text(encoding="utf-8")
+        assert "[Service]" in content
+        assert 'Environment="MY_VAR=test"' in content
+        assert "LimitNOFILE=65536" in content
+        assert "Auto-migrated" in content
+
+    def test_creates_drop_in_directory(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("[Service]\n", encoding="utf-8")
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path
+        )
+
+        drop_in_dir = tmp_path / "hermes-gateway.service.d"
+        assert not drop_in_dir.exists()
+
+        gateway_cli._migrate_custom_to_drop_in(["LimitNOFILE=65536"], system=False)
+        assert drop_in_dir.exists()
+        assert (drop_in_dir / "custom.conf").exists()
+
+    def test_overwrites_existing_custom_conf(self, tmp_path, monkeypatch):
+        """When custom.conf exists, new lines are appended, not overwritten."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("[Service]\n", encoding="utf-8")
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path
+        )
+
+        drop_in_dir = tmp_path / "hermes-gateway.service.d"
+        drop_in_dir.mkdir()
+        existing = drop_in_dir / "custom.conf"
+        existing.write_text(
+            "# Previous migration\n[Service]\nEnvironment=\"OLD_VAR=old\"\n",
+            encoding="utf-8",
+        )
+
+        target = gateway_cli._migrate_custom_to_drop_in(
+            ['Environment="OLD_VAR=old"', 'Environment="NEW_VAR=new"'],
+            system=False,
+        )
+        content = target.read_text(encoding="utf-8")
+        # Existing content preserved
+        assert "# Previous migration" in content
+        assert 'Environment="OLD_VAR=old"' in content
+        # New line appended (deduped)
+        assert 'Environment="NEW_VAR=new"' in content
+
+    def test_appends_section_header_when_missing(self, tmp_path, monkeypatch):
+        """Finding 2 fix: a custom.conf with NO [Service] header must get one.
+
+        systemd silently ignores directives outside any recognized section.
+        The migration must therefore insert a ``[Service]`` header before
+        appending — otherwise the user's migration looks successful but
+        has no runtime effect.
+        """
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("[Service]\n", encoding="utf-8")
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path
+        )
+
+        # Existing custom.conf has directives but NO [Service] header —
+        # simulates a hand-written drop-in or one created by another tool.
+        drop_in_dir = tmp_path / "hermes-gateway.service.d"
+        drop_in_dir.mkdir()
+        existing = drop_in_dir / "custom.conf"
+        existing.write_text(
+            "# Hand-written: forgot to put [Service] here\n"
+            'Environment="OLD_VAR=old"\n',
+            encoding="utf-8",
+        )
+
+        target = gateway_cli._migrate_custom_to_drop_in(
+            ['Environment="NEW_VAR=new"'],
+            system=False,
+        )
+        content = target.read_text(encoding="utf-8")
+        # Existing content preserved
+        assert "# Hand-written" in content
+        assert 'Environment="OLD_VAR=old"' in content
+        # [Service] header inserted before the new directive
+        assert "[Service]" in content
+        assert 'Environment="NEW_VAR=new"' in content
+        # Sanity: the new directive appears AFTER the [Service] header
+        service_idx = content.index("[Service]")
+        new_var_idx = content.index('Environment="NEW_VAR=new"')
+        assert service_idx < new_var_idx, (
+            "[Service] header must precede the migrated directive"
+        )
+
+
+class TestRefreshAndInstallPreserveCustomValues:
+    """Integration tests: refresh + systemd_install call sites preserve
+    user-customized *values* of generated directives (Finding 1 fix).
+
+    These exercise the full path from ``refresh_systemd_unit_if_needed`` /
+    ``systemd_install`` through to the drop-in file, verifying the call
+    sites pass ``new_unit`` to ``_detect_custom_directives``.
+    """
+
+    def _setup_unit_and_drop_in(
+        self, tmp_path, monkeypatch, existing_content: str
+    ) -> Path:
+        """Common fixture: write existing unit + mock get_systemd_unit_path."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text(existing_content, encoding="utf-8")
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path
+        )
+        return unit_path
+
+    def _silence_prompt_and_run(self, monkeypatch, migrate_callable):
+        """Mock the interactive prompt to auto-migrate and run the call."""
+        # Pretend we're non-interactive so the auto-migrate branch fires
+        # without trying to read stdin.
+        monkeypatch.setattr(gateway_cli.sys, "stdin", SimpleNamespace(isatty=lambda: False))
+        migrate_callable()
+
+    def test_refresh_preserves_user_changed_path(self, tmp_path, monkeypatch):
+        """refresh_systemd_unit_if_needed detects a customized PATH= value.
+
+        Without the rework (Finding 1), the static allowlist treats PATH
+        as generated and overwrites the user's value. With the rework, the
+        comparison against the freshly-generated unit catches the change
+        and migrates the user's line to the drop-in.
+        """
+        # Existing unit has a PATH that differs from what the generator
+        # will produce (PATH=/custom/path vs PATH=/usr/bin:/bin).
+        existing = (
+            '[Unit]\nDescription=Hermes\n\n'
+            '[Service]\n'
+            'Type=simple\n'
+            'Environment="PATH=/custom/path:/usr/bin"\n'
+            'Environment="VIRTUAL_ENV=/opt/hermes/venv"\n'
+            'Environment="HERMES_HOME=/home/user/.hermes"\n'
+            'Restart=always\n'
+            '\n[Install]\nWantedBy=default.target\n'
+        )
+        unit_path = self._setup_unit_and_drop_in(tmp_path, monkeypatch, existing)
+
+        # The generator will return a "new" unit with a different PATH
+        generated_unit = (
+            '[Unit]\nDescription=Hermes\n\n'
+            '[Service]\n'
+            'Type=simple\n'
+            'Environment="PATH=/usr/bin:/bin"\n'
+            'Environment="VIRTUAL_ENV=/opt/hermes/venv"\n'
+            'Environment="HERMES_HOME=/home/user/.hermes"\n'
+            'Restart=always\n'
+            '\n[Install]\nWantedBy=default.target\n'
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: generated_unit,
+        )
+
+        # Record daemon-reload calls; don't actually run them
+        ran = []
+        monkeypatch.setattr(
+            gateway_cli.subprocess, "run",
+            lambda cmd, check=True, **kw: ran.append(cmd)
+            or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        self._silence_prompt_and_run(
+            monkeypatch,
+            lambda: gateway_cli.refresh_systemd_unit_if_needed(system=False),
+        )
+
+        # The unit file was overwritten with the generated content
+        assert unit_path.read_text(encoding="utf-8") == generated_unit
+        # And the user's custom PATH was migrated to the drop-in
+        drop_in = tmp_path / "hermes-gateway.service.d" / "custom.conf"
+        assert drop_in.exists()
+        content = drop_in.read_text(encoding="utf-8")
+        assert "[Service]" in content
+        assert 'Environment="PATH=/custom/path:/usr/bin"' in content
+        # Daemon-reload fired after the overwrite
+        assert any("daemon-reload" in str(c) for c in ran)
+
+    def test_systemd_install_force_preserves_user_changed_working_directory(
+        self, tmp_path, monkeypatch,
+    ):
+        """systemd_install(force=True) detects a customized WorkingDirectory.
+
+        Same shape as the refresh test, but exercises the second call site
+        in ``systemd_install`` (the one that fires on ``--force`` /
+        reinstall when the unit already exists). Verifies both call sites
+        pass ``new_unit`` to ``_detect_custom_directives`` identically.
+        """
+        existing = (
+            '[Unit]\nDescription=Hermes\n\n'
+            '[Service]\n'
+            'Type=simple\n'
+            'WorkingDirectory=/srv/hermes\n'
+            'Environment="PATH=/usr/bin:/bin"\n'
+            'Environment="VIRTUAL_ENV=/opt/hermes/venv"\n'
+            'Environment="HERMES_HOME=/home/user/.hermes"\n'
+            'Restart=always\n'
+            '\n[Install]\nWantedBy=default.target\n'
+        )
+        unit_path = self._setup_unit_and_drop_in(tmp_path, monkeypatch, existing)
+
+        # The generator emits /opt/hermes — different from user's /srv/hermes
+        generated_unit = (
+            '[Unit]\nDescription=Hermes\n\n'
+            '[Service]\n'
+            'Type=simple\n'
+            'WorkingDirectory=/opt/hermes\n'
+            'Environment="PATH=/usr/bin:/bin"\n'
+            'Environment="VIRTUAL_ENV=/opt/hermes/venv"\n'
+            'Environment="HERMES_HOME=/home/user/.hermes"\n'
+            'Restart=always\n'
+            '\n[Install]\nWantedBy=default.target\n'
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: generated_unit,
+        )
+
+        ran = []
+        monkeypatch.setattr(
+            gateway_cli.subprocess, "run",
+            lambda cmd, check=True, **kw: ran.append(cmd)
+            or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        # Non-interactive stdin
+        monkeypatch.setattr(
+            gateway_cli.sys, "stdin", SimpleNamespace(isatty=lambda: False)
+        )
+
+        # Call the systemd_install --force path directly. We mock the
+        # outer wrapper enough to drive the custom-detection branch.
+        # The call site lives inside `systemd_install` after the early
+        # return for `unit_path.exists() and not force`. We exercise it
+        # by calling systemd_install with the unit pre-existing and
+        # force=True so the custom-detection block runs.
+        gateway_cli.systemd_install(system=False, force=True)
+
+        # Unit file was overwritten with the generated content
+        assert unit_path.read_text(encoding="utf-8") == generated_unit
+        # User's WorkingDirectory value was migrated to the drop-in
+        drop_in = tmp_path / "hermes-gateway.service.d" / "custom.conf"
+        assert drop_in.exists()
+        content = drop_in.read_text(encoding="utf-8")
+        assert "[Service]" in content
+        assert "WorkingDirectory=/srv/hermes" in content
+
+
+class TestHasServiceSection:
+    """Regression tests for _has_service_section.
+
+    Found by Flash (post-rework review): the original implementation
+    returned on the FIRST line starting with ``[``, so a custom.conf
+    with ``[Unit]`` before ``[Service]`` was incorrectly flagged as
+    missing the [Service] section.  The helper must scan the entire
+    file because drop-ins may legitimately contain multiple section
+    headers (Unit, Service, Install) in any order.
+    """
+
+    def test_finds_service_in_minimal_file(self):
+        assert gateway_cli._has_service_section("[Service]\nLimitNOFILE=65536\n") is True
+
+    def test_finds_service_after_unit_section(self):
+        """Regression: [Unit] appearing before [Service] must not fool the helper."""
+        content = (
+            "[Unit]\n"
+            "Before=foo.target\n"
+            "\n"
+            "[Service]\n"
+            "LimitNOFILE=65536\n"
+            "\n"
+            "[Install]\n"
+            "WantedBy=multi-user.target\n"
+        )
+        assert gateway_cli._has_service_section(content) is True
+
+    def test_returns_false_when_only_unit_section(self):
+        assert gateway_cli._has_service_section(
+            "[Unit]\nDescription=Custom\n"
+        ) is False
+
+    def test_returns_false_when_empty(self):
+        assert gateway_cli._has_service_section("") is False
+
+    def test_returns_false_when_only_install_section(self):
+        assert gateway_cli._has_service_section(
+            "[Install]\nWantedBy=foo.target\n"
+        ) is False
+
+    def test_handles_whitespace_around_section_header(self):
+        # Real-world files sometimes have leading spaces in section headers
+        # from user-edited drop-ins. The helper should still match.
+        assert gateway_cli._has_service_section(
+            "  [Service]\nLimitNOFILE=65536\n"
+        ) is True
+
+    def test_does_not_match_similar_section_name(self):
+        """[Unit] doesn't substring-match [Service]; only exact match counts."""
+        assert gateway_cli._has_service_section(
+            "[ServiceA]\nFoo=bar\n"  # not a valid section name but the helper shouldn't lie
+        ) is False

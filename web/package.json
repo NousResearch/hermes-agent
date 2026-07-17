@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "NODE_OPTIONS=--max-old-space-size=2048 tsc -b && vite build",
+    "build:light": "NODE_OPTIONS=--max-old-space-size=1024 taskset -c 0-1 tsc -b && vite build",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "fix": "npm run lint:fix",
@@ -51,9 +52,8 @@
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
     "three": "^0.180.0",
-    "typescript": "^6.0.3",
-    "typescript-eslint": "^8.56.1",
-    "vite": "^8.0.16",
-    "vitest": "^4.1.5"
+    "typescript": "~5.8.3",
+    "vite": "^8.1.0",
+    "vitest": "^3.1.3"
   }
 }

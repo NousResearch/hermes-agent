@@ -1,0 +1,144 @@
+# Brazilian Portuguese (pt-BR) catalog for Hermes static messages
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  COMANDO PERIGOSO: {description}"
+  choose_long:     "      [o]uma vez  |  [s]sessão  |  [a]sempre  |  [d]negar"
+  choose_short:    "      [o]uma vez  |  [s]sessão  |  [d]negar"
+  prompt_long:     "      Escolha [o/s/a/D]: "
+  prompt_short:    "      Escolha [o/s/D]: "
+  timeout:         "      ⏱ Tempo esgotado — comando negado"
+  allowed_once:    "      ✓ Permitido uma vez"
+  allowed_session: "      ✓ Permitido nesta sessão"
+  allowed_always:  "      ✓ Adicionado à lista de permissões permanente"
+  denied:          "      ✗ Negado"
+  cancelled:       "      ✗ Cancelado"
+  blocklist_message: "Este comando está na lista de bloqueio incondicional e não pode ser aprovado."
+
+gateway:
+  approval_expired: "⚠️ A aprovação expirou (o agente já não está aguardando). Peça ao agente para tentar novamente."
+  draining:         "⏳ Aguardando que {count} agente(s) ativo(s) terminem antes de reiniciar..."
+  goal_cleared:     "✓ Objetivo removido."
+  no_active_goal:   "Não há objetivo ativo."
+  config_read_failed: "⚠️ Não foi possível ler config.yaml: {error}"
+  config_save_failed: "⚠️ Não foi possível salvar a configuração: {error}"
+
+  model:
+    error_prefix:           "Erro: {error}"
+    switched:               "Modelo alterado para `{model}`"
+    provider_label:         "Provedor: {provider}"
+    context_label:          "Contexto: {tokens} tokens"
+    max_output_label:       "Saída máxima: {tokens} tokens"
+    cost_label:             "Custo: {cost}"
+    capabilities_label:     "Capacidades: {capabilities}"
+    prompt_caching_enabled: "Cache de prompts: ativado"
+    warning_prefix:         "Aviso: {warning}"
+    saved_global:           "Salvo em config.yaml (`--global`)"
+    session_only_hint:      "_(apenas para esta sessão — adicione `--global` para tornar permanente)_"
+    current_label:          "Atual: `{model}` em {provider}"
+    current_tag:            " (atual)"
+    more_models_suffix:     " (+{count} mais)"
+
+  session:
+    saved:         "✓ Sessão salva."
+    saved_global:  "✓ Salva globalmente."
+    cleared:       "✓ Sessão limpa."
+    deleted:       "✓ Sessão excluída."
+    untitled:      "sessão sem título"
+    active_heading: "{count} agente(s) ativo(s):"
+
+  update:
+    checking:          "✓ Atualização concluída."
+    restarting:        "Reiniciando gateway…"
+    fetched_new:       "✓ Novo código obtido."
+    installing:        "Instalando dependências…"
+    upgraded_notice:   "✓ Hermes atualizado para {version}."
+    already_latest:    "✓ Hermes já está na versão mais recente."
+
+  help:
+    header: "📋 Comandos do Hermes"
+    info_header: "ℹ️  Sobre o Hermes — {version}"
+    plugins_header: "🔌 Plugins ({count})"
+    no_plugins: "Nenhum plugin ou habilidade carregada."
+
+error:
+  header:         "⚠️  Erro"
+  server_error:   "Erro ao processar sua solicitação. O servidor pode estar sobrecarregado ou ter encontrado um problema inesperado."
+  connection:     "Erro de conexão — verifique se a API de IA está acessível."
+  timeout:        "A solicitação excedeu o tempo limite. Tente novamente ou use um modelo diferente."
+  no_api_key:     "Chave de API não configurada para este provedor."
+  invalid_model:  "Modelo inválido. Verifique a configuração."
+  tool_error:     "Ferramenta retornou um erro: {error}"
+  generic:        "Algo deu errado. Tente novamente."
+  no_response:    "Nenhuma resposta recebida. Tente novamente."
+  busy:           "O agente está ocupado. Tente novamente em alguns instantes."
+
+agent:
+  session_started:  "Nova sessão iniciada."
+  session_switch:   "Alternado para a sessão {id}."
+  sessions_list:    "Sessões ativas:"
+  current_model:    "Modelo atual: `{model}` ({provider})"
+  mode_switch:      "Modo alternado para {mode}."
+  thinking:         "O agente está pensando…"
+  thinking_done:    "pensamento concluído"
+  context_usage:    "Contexto: {used}/{total} tokens ({pct}%)"
+
+tool:
+  no_output: "A ferramenta não produziu saída."
+
+plugin:
+  loaded:   "✓ Plugin carregado: {name}"
+  unloaded: "✗ Plugin descarregado: {name}"
+  failed:   "✗ Falha ao carregar plugin {name}: {error}"
+
+prompt:
+  approval_required: "⚠️ Aprovação necessária"
+  cmd_confirm: "Confirma que deseja executar?"
+  cmd_deny: "Comando negado."
+  reasoning: "Raciocínio:"
+  context: "Contexto:"
+  system: "Sistema:"
+  user: "Usuário:"
+  assistant: "Assistente:"
+
+confirm:
+  yes: "sim"
+  no: "não"
+  always: "sempre"
+  never: "nunca"
+  once: "uma vez"
+  session: "sessão"
+
+settings:
+  saved:   "✓ Configuração salva."
+  reloaded: "✓ Configuração recarregada."
+  reset:   "✓ Configuração restaurada para os padrões."
+
+skill:
+  loaded:   "✓ Habilidade carregada: {name}"
+  reloaded: "✓ Habilidade recarregada: {name}"
+  removed:  "✗ Habilidade removida: {name}"
+  list:     "Habilidades carregadas:"
+  no_skills: "Nenhuma habilidade carregada."
+  details:  "• {name} — {description}"
+  not_found: "Habilidade não encontrada: {name}"
+
+health:
+  ok:      "✓ Saudável"
+  degraded: "⚠️ Degradado"
+  error:   "✗ Com erro"
+  uptime:  "Tempo de atividade: {uptime}"
+
+mcp:
+  started:  "✓ Servidor MCP iniciado: {name}"
+  stopped:  "✗ Servidor MCP parado: {name}"
+  error:    "✗ Erro no servidor MCP {name}: {error}"
+  timeout:  "⏱ Servidor MCP {name} excedeu o tempo limite"
+  restarting: "Reiniciando servidor MCP {name}…"
+
+kanban:
+  assigned:  "Tarefa atribuída a {agent}"
+  completed: "Tarefa concluída: {task}"
+  failed:    "Tarefa falhou: {task} — {error}"
+  queued:    "Tarefa enfileirada: {task}"
+  progress:  "Tarefa {task} — {status} ({pct}%)"

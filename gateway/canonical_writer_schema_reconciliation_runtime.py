@@ -1057,9 +1057,13 @@ def _preflight_callback(
             "canonical_truth_receipt": truth.value,
             "observed_at_unix": observed_at,
         }
-    except BaseException:
+    except BaseException as exc:
         _zeroize(credential)
         context.close_temporary_admin_database()
+        if isinstance(exc, SchemaReconciliationRuntimeError):
+            raise
+        if isinstance(exc, SchemaReconciliationError):
+            raise SchemaReconciliationRuntimeError(exc.code) from exc
         raise
 
 
@@ -1188,8 +1192,12 @@ def _apply_callback(
                 observed_at_unix=observed_at,
             ),
         }
-    except BaseException:
+    except BaseException as exc:
         context.close_temporary_admin_database()
+        if isinstance(exc, SchemaReconciliationRuntimeError):
+            raise
+        if isinstance(exc, SchemaReconciliationError):
+            raise SchemaReconciliationRuntimeError(exc.code) from exc
         raise
 
 

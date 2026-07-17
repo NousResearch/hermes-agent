@@ -764,6 +764,106 @@ def test_open_admin_config_preserves_secret_transport_failure_class(
     assert secret == bytearray(64)
 
 
+def test_preflight_preserves_safe_schema_error_after_closing_admin_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    safe_code = "schema_reconciliation_authority_foreign_session_present"
+    opened: list[_IdentitySession] = []
+
+    @contextmanager
+    def descriptor(secret: bytearray) -> Iterator[int]:
+        path = tmp_path / "callback-error-credential"
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o400)
+        os.write(fd, secret)
+        os.fchmod(fd, 0o400)
+        try:
+            yield fd
+        finally:
+            os.close(fd)
+
+    def open_session(config: WriterDBConfig) -> _IdentitySession:
+        session = _IdentitySession(username=config.user)
+        opened.append(session)
+        return session
+
+    class Database:
+        def __init__(self, **_kwargs: Any) -> None:
+            return None
+
+        @contextmanager
+        def transaction(self, *, advisory_lock_key: int):
+            assert type(advisory_lock_key) is int
+            raise reconciliation.SchemaReconciliationError(safe_code)
+            yield
+
+    writer_config = foundation._fixed_writer_config()
+    dependencies = _dependencies(
+        tmp_path,
+        writer_config=lambda: writer_config,
+        collect_hba=lambda *_args, **_kwargs: _managed_hba(writer_config),
+        open_session=open_session,
+    )
+    context = runtime._prepare_runtime(dependencies)
+    secret = bytearray(b"A" * 64)
+    monkeypatch.setattr(runtime.phase_b_runtime, "_secret_descriptor", descriptor)
+    monkeypatch.setattr(runtime, "PostgresSchemaReconciliationDatabase", Database)
+
+    with pytest.raises(runtime.SchemaReconciliationRuntimeError, match=safe_code):
+        runtime._preflight_callback(context, context.gate, {}, secret)
+
+    assert secret == bytearray(64)
+    assert len(opened) == 1
+    assert opened[0].closed is True
+    assert context.temporary_admin_database_closed_before_cleanup is True
+
+
+def test_apply_preserves_safe_schema_error_after_closing_admin_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    safe_code = "schema_reconciliation_authority_role_graph_invalid"
+    truth = _truth()
+
+    class Context:
+        gate = {"gate": "exact"}
+        database = object()
+        lease = object()
+        preflight = {"preflight": "exact"}
+
+        def __init__(self) -> None:
+            self.truth = truth
+            self.closed = False
+
+        def close_temporary_admin_database(self) -> None:
+            self.closed = True
+
+    context = Context()
+    challenge = {
+        "preflight": context.preflight,
+        "canonical_truth_receipt": truth.value,
+    }
+    monkeypatch.setattr(
+        runtime,
+        "_admission_for_apply",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            reconciliation.SchemaReconciliationError(safe_code)
+        ),
+    )
+
+    with pytest.raises(runtime.SchemaReconciliationRuntimeError, match=safe_code):
+        runtime._apply_callback(
+            context,
+            context.gate,
+            {},
+            challenge,
+            {},
+            None,
+            None,
+        )
+
+    assert context.closed is True
+
+
 def test_preflight_apply_and_reattest_reuse_one_authenticated_socket(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

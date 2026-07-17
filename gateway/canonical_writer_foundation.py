@@ -1392,8 +1392,11 @@ def _validate_secret_parent() -> None:
             if (
                 not stat.S_ISDIR(before.st_mode)
                 or not stat.S_ISDIR(opened.st_mode)
-                or _filesystem_identity(before) != _filesystem_identity(opened)
-                or _filesystem_identity(before) != _filesystem_identity(reachable)
+                or not stat.S_ISDIR(reachable.st_mode)
+                or _directory_binding_identity(before)
+                != _directory_binding_identity(opened)
+                or _directory_binding_identity(before)
+                != _directory_binding_identity(reachable)
                 or opened.st_uid != 0
                 or stat.S_IMODE(opened.st_mode) & 0o022
             ):
@@ -1478,6 +1481,18 @@ def _filesystem_identity(item: os.stat_result) -> tuple[int, ...]:
         item.st_size,
         item.st_mtime_ns,
         item.st_ctime_ns,
+    )
+
+
+def _directory_binding_identity(item: os.stat_result) -> tuple[int, ...]:
+    """Bind one directory path without treating child churn as replacement."""
+
+    return (
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_uid,
+        item.st_gid,
     )
 
 
@@ -2299,8 +2314,12 @@ def _secure_directory(
             descriptor = child
             if (
                 not stat.S_ISDIR(before.st_mode)
-                or _filesystem_identity(before) != _filesystem_identity(opened)
-                or _filesystem_identity(before) != _filesystem_identity(reachable)
+                or not stat.S_ISDIR(opened.st_mode)
+                or not stat.S_ISDIR(reachable.st_mode)
+                or _directory_binding_identity(before)
+                != _directory_binding_identity(opened)
+                or _directory_binding_identity(before)
+                != _directory_binding_identity(reachable)
                 or (
                     strict_root
                     and (

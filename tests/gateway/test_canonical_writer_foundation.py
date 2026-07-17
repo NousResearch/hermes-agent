@@ -876,6 +876,83 @@ class _InjectedCrash(RuntimeError):
     pass
 
 
+def test_secure_directory_allows_concurrent_ancestor_child_churn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    target = tmp_path / "evidence"
+    target.mkdir(mode=0o700)
+    target.chmod(0o700)
+    noise = tmp_path / "parallel-test-noise"
+    ancestor_before = tmp_path.lstat()
+    original_open = os.open
+    changed = False
+
+    def open_with_child_churn(
+        path: str | bytes,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal changed
+        if not changed and dir_fd is not None and path == tmp_path.name:
+            changed = True
+            noise.mkdir()
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(foundation.os, "open", open_with_child_churn)
+
+    foundation._secure_directory(target, strict_root=False)
+
+    assert changed is True
+    assert noise.is_dir()
+    ancestor_after = tmp_path.lstat()
+    assert foundation._filesystem_identity(ancestor_before) != (
+        foundation._filesystem_identity(ancestor_after)
+    )
+    assert foundation._directory_binding_identity(ancestor_before) == (
+        foundation._directory_binding_identity(ancestor_after)
+    )
+
+
+def test_secure_directory_rejects_ancestor_inode_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    target = tmp_path / "evidence"
+    target.mkdir(mode=0o700)
+    target.chmod(0o700)
+    displaced = tmp_path / "displaced-evidence"
+    original_open = os.open
+    replaced = False
+
+    def open_with_replacement(
+        path: str | bytes,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal replaced
+        if not replaced and dir_fd is not None and path == target.name:
+            replaced = True
+            target.rename(displaced)
+            target.mkdir(mode=0o700)
+            target.chmod(0o700)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(foundation.os, "open", open_with_replacement)
+
+    with pytest.raises(
+        foundation.CanonicalWriterFoundationError,
+        match="foundation_evidence_ancestor_untrusted",
+    ):
+        foundation._secure_directory(target, strict_root=False)
+
+    assert replaced is True
+
+
 @pytest.mark.parametrize(
     "point",
     [

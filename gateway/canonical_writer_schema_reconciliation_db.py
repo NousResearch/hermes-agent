@@ -23,6 +23,7 @@ from gateway.canonical_writer_db import (
     CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY,
     ManagedCloudSQLAdminHBAReceipt,
     PostgresProtocolError,
+    PostgresServerError,
     QueryResult,
     WriterDBConfig,
     _open_postgres_session,
@@ -41,6 +42,7 @@ from gateway.canonical_writer_schema_reconciliation import (
     SchemaReconciliationError,
     SchemaReconciliationPlan,
     _ExactApiAssignedReconciliationMembershipProjection,
+    _EXPECTED_TRAMPOLINE_DEFINITION_SHA256,
     _old_contract_value,
     _sha256_json,
     _target_policy,
@@ -108,8 +110,22 @@ WITH temporary_login AS (
 )
 SELECT CURRENT_USER = SESSION_USER
            AS current_user_is_session_user,
+       pg_catalog.current_database() = 'muncho_canary_brain'
+           AS database_is_exact,
+       pg_catalog.current_setting('server_version_num')::integer / 10000 = 18
+           AS postgresql_major_is_exact,
+       (
+           SELECT pg_catalog.pg_get_userbyid(database.datdba)
+             FROM pg_catalog.pg_database AS database
+            WHERE database.datname = pg_catalog.current_database()
+       ) = 'cloudsqlsuperuser' AS database_owner_is_exact,
        SESSION_USER ~ '^muncho_canary_admin_[0-9a-f]{16}$'
            AS session_user_is_temporary_login,
+       (
+           SELECT pg_catalog.count(*) = 1
+             FROM pg_catalog.pg_roles AS candidate
+            WHERE candidate.rolname ~ '^muncho_canary_admin_[0-9a-f]{16}$'
+       ) AS temporary_login_inventory_exact,
        temporary_login.rolcanlogin AND temporary_login.rolinherit
            AND NOT temporary_login.rolsuper
            AND NOT temporary_login.rolcreatedb
@@ -120,6 +136,34 @@ SELECT CURRENT_USER = SESSION_USER
            AND temporary_login.rolvaliduntil IS NULL
            AND temporary_login.rolconfig IS NULL
            AS temporary_login_attributes_exact,
+       EXISTS (
+           SELECT 1 FROM pg_catalog.pg_roles AS owner
+            WHERE owner.rolname = 'canonical_brain_migration_owner'
+              AND NOT owner.rolcanlogin
+              AND NOT owner.rolinherit
+              AND NOT owner.rolsuper
+              AND NOT owner.rolcreatedb
+              AND NOT owner.rolcreaterole
+              AND NOT owner.rolreplication
+              AND NOT owner.rolbypassrls
+              AND owner.rolconnlimit = -1
+              AND owner.rolvaliduntil IS NULL
+              AND owner.rolconfig IS NULL
+       ) AS migration_owner_attributes_exact,
+       EXISTS (
+           SELECT 1 FROM pg_catalog.pg_roles AS writer
+            WHERE writer.rolname = 'canonical_brain_writer'
+              AND NOT writer.rolcanlogin
+              AND writer.rolinherit
+              AND NOT writer.rolsuper
+              AND NOT writer.rolcreatedb
+              AND NOT writer.rolcreaterole
+              AND NOT writer.rolreplication
+              AND NOT writer.rolbypassrls
+              AND writer.rolconnlimit = -1
+              AND writer.rolvaliduntil IS NULL
+              AND writer.rolconfig IS NULL
+       ) AS writer_role_attributes_exact,
        NOT EXISTS (SELECT 1 FROM pg_catalog.pg_event_trigger)
            AS event_trigger_inventory_empty,
        pg_catalog.has_language_privilege(SESSION_USER, 'plpgsql', 'USAGE')
@@ -176,13 +220,72 @@ SELECT CURRENT_USER = SESSION_USER
             WHERE dependency.refclassid =
                   'pg_catalog.pg_authid'::pg_catalog.regclass
               AND dependency.refobjid = temporary_login.oid
-       ) AS temporary_login_has_zero_shared_dependencies
+       ) AS temporary_login_has_zero_shared_dependencies,
+       EXISTS (
+           SELECT 1
+             FROM pg_catalog.pg_proc AS routine
+             JOIN pg_catalog.pg_namespace AS namespace
+               ON namespace.oid = routine.pronamespace
+             JOIN pg_catalog.pg_language AS language
+               ON language.oid = routine.prolang
+             JOIN pg_catalog.pg_roles AS owner ON owner.oid = routine.proowner
+            WHERE routine.oid = pg_catalog.to_regprocedure(
+                  'canonical_brain._deterministic_uuid(text)'
+              )
+              AND namespace.nspname = 'canonical_brain'
+              AND owner.rolname = 'canonical_brain_migration_owner'
+              AND routine.prokind = 'f'
+              AND routine.prosecdef IS FALSE
+              AND routine.provolatile = 'i'
+              AND routine.proparallel = 'u'
+              AND routine.proleakproof IS FALSE
+              AND routine.proisstrict IS TRUE
+              AND routine.proretset IS FALSE
+              AND language.lanname = 'plpgsql'
+              AND pg_catalog.oidvectortypes(routine.proargtypes) = 'text'
+              AND pg_catalog.format_type(routine.prorettype, NULL) = 'uuid'
+              AND routine.proconfig = ARRAY[
+                  'search_path=pg_catalog, canonical_brain'
+              ]::text[]
+              AND pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
+                  pg_catalog.pg_get_functiondef(routine.oid), 'UTF8'
+              )), 'hex') = '__EXPECTED_TRAMPOLINE_DEFINITION_SHA256__'
+              AND (
+                   SELECT pg_catalog.count(*) = 1
+                          AND COALESCE(pg_catalog.bool_and(
+                              acl.grantee = routine.proowner
+                              AND acl.grantor = routine.proowner
+                              AND acl.privilege_type = 'EXECUTE'
+                              AND acl.is_grantable IS FALSE
+                          ), false)
+                     FROM pg_catalog.aclexplode(COALESCE(
+                         routine.proacl,
+                         pg_catalog.acldefault('f', routine.proowner)
+                     )) AS acl
+              )
+              AND pg_catalog.obj_description(routine.oid, 'pg_proc') IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_catalog.pg_seclabel AS security_label
+                   WHERE security_label.classoid =
+                         'pg_catalog.pg_proc'::pg_catalog.regclass
+                     AND security_label.objoid = routine.oid
+              )
+       ) AS deterministic_uuid_trampoline_exact
   FROM temporary_login
-""".strip()
+""".replace(
+    "__EXPECTED_TRAMPOLINE_DEFINITION_SHA256__",
+    _EXPECTED_TRAMPOLINE_DEFINITION_SHA256,
+).strip()
 _AUTHORITY_OPEN_RECEIPT_COLUMNS = (
     "current_user_is_session_user",
+    "database_is_exact",
+    "postgresql_major_is_exact",
+    "database_owner_is_exact",
     "session_user_is_temporary_login",
+    "temporary_login_inventory_exact",
     "temporary_login_attributes_exact",
+    "migration_owner_attributes_exact",
+    "writer_role_attributes_exact",
     "event_trigger_inventory_empty",
     "plpgsql_usage_present",
     "temporary_login_has_no_prepared_transaction",
@@ -194,6 +297,73 @@ _AUTHORITY_OPEN_RECEIPT_COLUMNS = (
     "writer_not_settable",
     "no_foreign_database_client_sessions",
     "temporary_login_has_zero_shared_dependencies",
+    "deterministic_uuid_trampoline_exact",
+)
+_AUTHORITY_PREFLIGHT_FAILURE_CODES = {
+    "current_user_is_session_user": (
+        "schema_reconciliation_authority_current_user_invalid"
+    ),
+    "database_is_exact": "schema_reconciliation_authority_database_invalid",
+    "postgresql_major_is_exact": (
+        "schema_reconciliation_authority_postgresql_major_invalid"
+    ),
+    "database_owner_is_exact": (
+        "schema_reconciliation_authority_database_owner_invalid"
+    ),
+    "session_user_is_temporary_login": (
+        "schema_reconciliation_authority_login_name_invalid"
+    ),
+    "temporary_login_inventory_exact": (
+        "schema_reconciliation_authority_login_inventory_invalid"
+    ),
+    "temporary_login_attributes_exact": (
+        "schema_reconciliation_authority_login_attributes_invalid"
+    ),
+    "migration_owner_attributes_exact": (
+        "schema_reconciliation_authority_owner_role_invalid"
+    ),
+    "writer_role_attributes_exact": (
+        "schema_reconciliation_authority_writer_role_invalid"
+    ),
+    "event_trigger_inventory_empty": (
+        "schema_reconciliation_authority_event_triggers_present"
+    ),
+    "plpgsql_usage_present": (
+        "schema_reconciliation_authority_plpgsql_usage_missing"
+    ),
+    "temporary_login_has_no_prepared_transaction": (
+        "schema_reconciliation_authority_prepared_transaction_present"
+    ),
+    "api_role_graph_exact": (
+        "schema_reconciliation_authority_role_graph_invalid"
+    ),
+    "migration_owner_member": (
+        "schema_reconciliation_authority_owner_membership_missing"
+    ),
+    "migration_owner_inherited": (
+        "schema_reconciliation_authority_owner_inheritance_missing"
+    ),
+    "migration_owner_not_settable": (
+        "schema_reconciliation_authority_owner_settable"
+    ),
+    "writer_member_and_inherited": (
+        "schema_reconciliation_authority_writer_inheritance_missing"
+    ),
+    "writer_not_settable": (
+        "schema_reconciliation_authority_writer_settable"
+    ),
+    "no_foreign_database_client_sessions": (
+        "schema_reconciliation_authority_foreign_session_present"
+    ),
+    "temporary_login_has_zero_shared_dependencies": (
+        "schema_reconciliation_authority_shared_dependency_present"
+    ),
+    "deterministic_uuid_trampoline_exact": (
+        "schema_reconciliation_authority_trampoline_invalid"
+    ),
+}
+_AUTHORITY_OPEN_PREFLIGHT_SERVER_MESSAGE = (
+    "canonical route-back helper authority preflight failed"
 )
 
 _AUTHORITY_CLOSE_RECEIPT_SQL = r"""
@@ -688,6 +858,32 @@ def _require_boolean_receipt(
         or result.rows != (tuple("t" for _ in columns),)
     ):
         raise PostgresProtocolError(code)
+
+
+def _require_authority_preflight_receipt(result: QueryResult) -> None:
+    """Name the first failed fixed invariant without reflecting DB text."""
+
+    if (
+        result.command_tag.upper() != "SELECT 1"
+        or result.columns != _AUTHORITY_OPEN_RECEIPT_COLUMNS
+        or len(result.rows) != 1
+        or len(result.rows[0]) != len(_AUTHORITY_OPEN_RECEIPT_COLUMNS)
+        or any(value not in {"t", "f"} for value in result.rows[0])
+        or set(_AUTHORITY_PREFLIGHT_FAILURE_CODES)
+        != set(_AUTHORITY_OPEN_RECEIPT_COLUMNS)
+    ):
+        raise PostgresProtocolError(
+            "schema_reconciliation_database_authority_preflight_invalid"
+        )
+    for column, value in zip(
+        _AUTHORITY_OPEN_RECEIPT_COLUMNS,
+        result.rows[0],
+        strict=True,
+    ):
+        if value == "f":
+            raise SchemaReconciliationError(
+                _AUTHORITY_PREFLIGHT_FAILURE_CODES[column]
+            )
 
 
 def _require_void_lock(result: QueryResult, *, expected_column: str) -> None:
@@ -1554,10 +1750,26 @@ class PostgresSchemaReconciliationDatabase:
                 "SET LOCAL statement_timeout = '2min'",
             ):
                 _require_command(session, statement, "SET")
-            authority_open = session.query(
-                self._mutation_segments.authority_open,
-                maximum_rows=0,
+            authority_preflight = session.query(
+                _AUTHORITY_OPEN_RECEIPT_SQL,
+                maximum_rows=1,
             )
+            _require_authority_preflight_receipt(authority_preflight)
+            try:
+                authority_open = session.query(
+                    self._mutation_segments.authority_open,
+                    maximum_rows=0,
+                )
+            except PostgresServerError as exc:
+                if (
+                    exc.sqlstate == "P0001"
+                    and exc.server_message
+                    == _AUTHORITY_OPEN_PREFLIGHT_SERVER_MESSAGE
+                ):
+                    raise SchemaReconciliationError(
+                        "schema_reconciliation_authority_preflight_changed"
+                    ) from None
+                raise
             if (
                 authority_open.command_tag.upper() != "DO"
                 or authority_open.columns
@@ -1570,11 +1782,7 @@ class PostgresSchemaReconciliationDatabase:
                 _AUTHORITY_OPEN_RECEIPT_SQL,
                 maximum_rows=1,
             )
-            _require_boolean_receipt(
-                authority_receipt,
-                columns=_AUTHORITY_OPEN_RECEIPT_COLUMNS,
-                code="schema_reconciliation_database_authority_open_invalid",
-            )
+            _require_authority_preflight_receipt(authority_receipt)
             scope = _PostgresSchemaReconciliationTransaction(
                 session=session,
                 plan=self._plan,

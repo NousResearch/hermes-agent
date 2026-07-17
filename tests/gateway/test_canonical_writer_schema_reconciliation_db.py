@@ -127,6 +127,9 @@ class _FakeSession:
         username: str = "muncho_canary_admin_aaaaaaaaaaaaaaaa",
         open_receipt_valid: bool = True,
         close_receipt_valid: bool = True,
+        open_preflight_failure: str | None = None,
+        open_postflight_failure: str | None = None,
+        authority_open_server_preflight_failure: bool = False,
     ) -> None:
         self.plan = plan
         self.segments = reconciliation_db._split_sealed_mutation_sql(plan)
@@ -140,6 +143,11 @@ class _FakeSession:
         self.committed_with_authority = False
         self.open_receipt_valid = open_receipt_valid
         self.close_receipt_valid = close_receipt_valid
+        self.open_preflight_failure = open_preflight_failure
+        self.open_postflight_failure = open_postflight_failure
+        self.authority_open_server_preflight_failure = (
+            authority_open_server_preflight_failure
+        )
         self.quarantine_flags = ("t", "t", "t")
         self.quarantine_receipts: object = _truth_receipt().value[
             "quarantine_anchors"
@@ -163,17 +171,40 @@ class _FakeSession:
         if sql == self.segments.authority_open:
             assert self.transaction_open
             assert self.authority_present
+            if self.authority_open_server_preflight_failure:
+                raise reconciliation_db.PostgresServerError(
+                    sqlstate="P0001",
+                    server_message=(
+                        reconciliation_db._AUTHORITY_OPEN_PREFLIGHT_SERVER_MESSAGE
+                    ),
+                )
             return QueryResult((), (), "DO")
         if sql == reconciliation_db._AUTHORITY_OPEN_RECEIPT_SQL:
-            value = (
-                "t"
-                if self.open_receipt_valid
-                and self.authority_present
-                else "f"
+            receipt_count = sum(
+                statement == reconciliation_db._AUTHORITY_OPEN_RECEIPT_SQL
+                for statement, _maximum_rows in self.queries
             )
+            values = [
+                "t" if self.authority_present else "f"
+                for _column in reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS
+            ]
+            if receipt_count == 1 and self.open_preflight_failure is not None:
+                values[
+                    reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS.index(
+                        self.open_preflight_failure
+                    )
+                ] = "f"
+            if receipt_count > 1 and self.open_postflight_failure is not None:
+                values[
+                    reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS.index(
+                        self.open_postflight_failure
+                    )
+                ] = "f"
+            if receipt_count > 1 and not self.open_receipt_valid:
+                values = ["f" for _value in values]
             return QueryResult(
                 reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS,
-                ((value,) * len(reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS),),
+                (tuple(values),),
                 "SELECT 1",
             )
         if sql == self.segments.body:
@@ -374,10 +405,14 @@ def test_transaction_proves_api_authority_and_restored_trampoline_before_commit(
         if statement.startswith("SELECT pg_catalog.pg_advisory_lock(")
     )
     begin = sql.index("BEGIN ISOLATION LEVEL SERIALIZABLE")
+    authority_open_receipts = [
+        index
+        for index, statement in enumerate(sql)
+        if statement == reconciliation_db._AUTHORITY_OPEN_RECEIPT_SQL
+    ]
+    assert len(authority_open_receipts) == 2
+    authority_preflight, authority_open_receipt = authority_open_receipts
     authority_open = sql.index(session.segments.authority_open)
-    authority_open_receipt = sql.index(
-        reconciliation_db._AUTHORITY_OPEN_RECEIPT_SQL
-    )
     table_lock = sql.index(reconciliation_db._CANONICAL_DATA_LOCK_SQL)
     xact_lock = next(
         index
@@ -404,6 +439,7 @@ def test_transaction_proves_api_authority_and_restored_trampoline_before_commit(
     assert (
         session_lock
         < begin
+        < authority_preflight
         < authority_open
         < authority_open_receipt
         < table_lock
@@ -647,14 +683,19 @@ def test_transaction_rejects_unverified_api_authority_and_rolls_back(
     )
     database, _, _, _, _ = _database(monkeypatch, session=session)
 
-    with pytest.raises(
-        reconciliation_db.PostgresProtocolError,
-        match=(
-            "schema_reconciliation_database_authority_open_invalid"
-            if receipt == "open"
-            else "schema_reconciliation_database_authority_survived"
-        ),
-    ):
+    expected_error = (
+        reconciliation.SchemaReconciliationError
+        if receipt == "open"
+        else reconciliation_db.PostgresProtocolError
+    )
+    expected_code = (
+        reconciliation_db._AUTHORITY_PREFLIGHT_FAILURE_CODES[
+            "current_user_is_session_user"
+        ]
+        if receipt == "open"
+        else "schema_reconciliation_database_authority_survived"
+    )
+    with pytest.raises(expected_error, match=expected_code):
         with database.transaction(
             advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
         ) as transaction:
@@ -666,6 +707,106 @@ def test_transaction_rejects_unverified_api_authority_and_rolls_back(
     assert session.committed_with_authority is False
     assert session.authority_present is True
     assert session.closed
+
+
+@pytest.mark.parametrize(
+    ("column", "error_code"),
+    tuple(reconciliation_db._AUTHORITY_PREFLIGHT_FAILURE_CODES.items()),
+)
+def test_transaction_names_first_failed_authority_preflight_invariant(
+    monkeypatch: pytest.MonkeyPatch,
+    column: str,
+    error_code: str,
+) -> None:
+    target, plan = _target_and_plan()
+    session = _FakeSession(plan, open_preflight_failure=column)
+    database, _, _, _, _ = _database(monkeypatch, session=session)
+
+    with pytest.raises(reconciliation.SchemaReconciliationError, match=error_code):
+        with database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ):
+            raise AssertionError("scope opened with failed authority preflight")
+
+    sql = [item[0] for item in session.queries]
+    assert session.segments.authority_open not in sql
+    assert "COMMIT" not in sql
+    assert "ROLLBACK" in sql
+    assert session.closed
+
+
+def test_transaction_names_post_open_authority_drift_and_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target, plan = _target_and_plan()
+    column = "no_foreign_database_client_sessions"
+    session = _FakeSession(plan, open_postflight_failure=column)
+    database, _, _, _, _ = _database(monkeypatch, session=session)
+
+    with pytest.raises(
+        reconciliation.SchemaReconciliationError,
+        match=reconciliation_db._AUTHORITY_PREFLIGHT_FAILURE_CODES[column],
+    ):
+        with database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ):
+            raise AssertionError("scope opened with post-open authority drift")
+
+    sql = [item[0] for item in session.queries]
+    assert session.segments.authority_open in sql
+    assert "COMMIT" not in sql
+    assert "ROLLBACK" in sql
+    assert session.closed
+
+
+def test_transaction_maps_only_fixed_authority_server_preflight_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target, plan = _target_and_plan()
+    session = _FakeSession(
+        plan,
+        authority_open_server_preflight_failure=True,
+    )
+    database, _, _, _, _ = _database(monkeypatch, session=session)
+
+    with pytest.raises(
+        reconciliation.SchemaReconciliationError,
+        match="schema_reconciliation_authority_preflight_changed",
+    ) as raised:
+        with database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ):
+            raise AssertionError("scope opened after server preflight failure")
+
+    assert raised.value.__cause__ is None
+    assert reconciliation_db._AUTHORITY_OPEN_PREFLIGHT_SERVER_MESSAGE not in str(
+        raised.value
+    )
+    sql = [item[0] for item in session.queries]
+    assert "COMMIT" not in sql
+    assert "ROLLBACK" in sql
+    assert session.closed
+
+
+def test_authority_preflight_rejects_non_boolean_receipt_without_reflection() -> None:
+    result = QueryResult(
+        reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS,
+        (
+            tuple(
+                "secret-server-value"
+                for _column in reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS
+            ),
+        ),
+        "SELECT 1",
+    )
+
+    with pytest.raises(
+        reconciliation_db.PostgresProtocolError,
+        match="schema_reconciliation_database_authority_preflight_invalid",
+    ) as raised:
+        reconciliation_db._require_authority_preflight_receipt(result)
+
+    assert "secret-server-value" not in str(raised.value)
 
 
 @pytest.mark.parametrize("tamper", ("reordered", "split"))

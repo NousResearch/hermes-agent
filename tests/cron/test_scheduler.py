@@ -2372,7 +2372,7 @@ class TestRunJobSkillBacked:
             register_env_passthrough(["NOTION_API_KEY"])
             return json.dumps({"success": True, "content": "# notion\nUse Notion."})
 
-        def _run_conversation(prompt):
+        def _run_conversation(prompt, **kwargs):
             from tools.env_passthrough import get_all_passthrough
 
             assert "NOTION_API_KEY" in get_all_passthrough()
@@ -2430,7 +2430,7 @@ class TestRunJobSkillBacked:
             register_credential_file("credentials/google_token.json")
             return json.dumps({"success": True, "content": "# google-workspace\nUse Google."})
 
-        def _run_conversation(prompt):
+        def _run_conversation(prompt, **kwargs):
             from tools.credential_files import _get_registered
 
             registered = _get_registered()
@@ -2512,7 +2512,7 @@ class TestRunJobSkillBacked:
         assert prompt_arg == "Check the feeds and summarize anything new."
         assert "blogwatcher" in runtime_context
         assert "Follow this skill." in runtime_context
-        assert prompt_arg not in runtime_context
+        assert "Check the feeds and summarize anything new." in runtime_context
 
     def test_run_job_loads_multiple_skills_in_order(self, tmp_path):
         job = {
@@ -2561,7 +2561,7 @@ class TestRunJobSkillBacked:
         assert "Instructions for blogwatcher." in runtime_context
         assert "Instructions for maps." in runtime_context
         assert prompt_arg == "Combine the results."
-        assert prompt_arg not in runtime_context
+        assert "Combine the results." in runtime_context
 
 
 class TestSilentDelivery:
@@ -2914,15 +2914,14 @@ class TestRunJobWakeGate:
             success, doc, final, err = scheduler.run_job(self._make_job())
 
         agent_cls.assert_called_once()
-        # Runtime data is model-visible via non-user ephemeral context while the
-        # persisted/current user message stays the raw scheduled instruction.
+        # Runtime data is model-visible via the API-only user message while the
+        # raw scheduled instruction is persisted through persist_user_message.
         call_kwargs = agent.run_conversation.call_args
         prompt_arg = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("user_message", "")
-        assert prompt_arg == "Do a thing"
+        assert json.dumps(script_output, ensure_ascii=False) in prompt_arg
+        assert call_kwargs.kwargs.get("persist_user_message") == "Do a thing"
         runtime_context = agent_cls.call_args.kwargs["ephemeral_system_prompt"]
-        # Runtime data is represented as a JSON string inside an explicit
-        # untrusted-data boundary, not interpolated as authoritative Markdown.
-        assert json.dumps(script_output, ensure_ascii=False) in runtime_context
+        assert "Do a thing" in runtime_context
         assert success is True
         assert err is None
 

@@ -2271,14 +2271,24 @@ class _CronJobExecution(NamedTuple):
     """Separated durable intent and ephemeral cron execution context.
 
     ``user_prompt`` is the only cron-authored user row that should enter the
-    session transcript/FTS index. ``runtime_context`` is API-call-time system
-    context (scheduler guidance, loaded skills, script stdout, and
-    ``context_from`` output). ``legacy_prompt`` preserves the historical
-    self-contained prompt in cron output artifacts and compatibility helpers.
+    session transcript/FTS index.
+
+    ``system_context`` is API-call-time trusted system context: scheduler
+    delivery controls and vetted skill wrappers. It never includes untrusted
+    runtime-collected data (script stdout or ``context_from`` output).
+
+    ``api_user_message`` is the API-facing user message. It is always the raw
+    scheduled instruction, optionally followed by untrusted runtime data. It
+    is never persisted or FTS-indexed as-is; the durable transcript stores
+    only ``user_prompt`` via the ``persist_user_message`` override.
+
+    ``legacy_prompt`` preserves the historical self-contained prompt in cron
+    output artifacts and compatibility helpers.
     """
 
     user_prompt: str
-    runtime_context: str
+    system_context: str
+    api_user_message: str
     legacy_prompt: str
 
 
@@ -2397,7 +2407,7 @@ def _build_job_execution(
     # through AIAgent.ephemeral_system_prompt rather than persisted as a giant
     # synthetic user row. Keep ``prompt`` in parallel for the historical cron
     # output document and the existing assembled-prompt safety scan.
-    runtime_prompt = ""
+    untrusted_parts: list[str] = []
     skills = job.get("skills")
     # True when runtime-collected DATA (script stdout, upstream-job output)
     # has been injected into the prompt. Data content legitimately quotes
@@ -2430,7 +2440,7 @@ def _build_job_execution(
                     payload=script_output,
                 )
                 prompt = legacy_script_context + prompt
-                runtime_prompt = runtime_script_context + runtime_prompt
+                untrusted_parts.append(runtime_script_context)
                 has_injected_data = True
             else:
                 # Script produced no output — nothing to report, skip AI call.
@@ -2453,7 +2463,7 @@ def _build_job_execution(
                 )
             )
             prompt = legacy_script_context + prompt
-            runtime_prompt = runtime_script_context + runtime_prompt
+            untrusted_parts.append(runtime_script_context)
             has_injected_data = True
 
     # Inject output from referenced cron jobs as context.
@@ -2503,7 +2513,7 @@ def _build_job_execution(
                         payload=latest_output,
                     )
                     prompt = legacy_upstream_context + prompt
-                    runtime_prompt = runtime_upstream_context + runtime_prompt
+                    untrusted_parts.append(runtime_upstream_context)
                     has_injected_data = True
                 else:
                     continue  # silent skip — empty output
@@ -2528,7 +2538,7 @@ def _build_job_execution(
     # execution wrapper to the base system prompt. The runtime-only addition
     # carries only the remaining delivery controls so the effective model input
     # does not repeat the scheduler wrapper.
-    runtime_cron_hint = (
+    system_cron_hint = (
         "[CRON DELIVERY CONTROL: The scheduler handles delivery. Do NOT use "
         "send_message or try to deliver the output yourself; put the result in "
         "your final response. If there is genuinely nothing new to report, "
@@ -2536,7 +2546,7 @@ def _build_job_execution(
         "[SILENT] with content.]\n\n"
     )
     prompt = cron_hint + prompt
-    runtime_prompt = runtime_cron_hint + runtime_prompt
+    untrusted_data = "\n\n".join(untrusted_parts) if untrusted_parts else ""
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []
@@ -2552,18 +2562,35 @@ def _build_job_execution(
             has_injected_data=has_injected_data,
             user_prompt=user_prompt,
         )
-        # The full historical assembly above remains the authoritative safety
-        # boundary: it scans the exact raw instruction together with every
-        # runtime-loaded source. Scan the separated runtime block too so any
-        # invisible-unicode sanitation is applied to what the model receives.
-        runtime_context = _scan_assembled_cron_prompt(
-            runtime_prompt,
-            job,
-            has_skills=False,
-            has_injected_data=has_injected_data,
-            user_prompt="",
-        )
-        return _CronJobExecution(user_prompt, runtime_context, legacy_prompt)
+        # Build the API-facing user message. When there is no untrusted data,
+        # the raw scheduled instruction itself is the user message (preserved
+        # from earlier behavior). When data is present, the instruction moves to
+        # trusted system context so the data feed has lower authority.
+        api_user_message = user_prompt if not untrusted_data else untrusted_data
+        # The trusted system context for non-skill jobs is just the delivery
+        # control hint; the raw intent is already in the user message when no
+        # data is present, otherwise it is injected into system context below.
+        system_context = system_cron_hint if untrusted_data else ""
+        # Scan the untrusted data (if any) with the same looser data-tier scan
+        # so invisible-unicode sanitation is applied and command-shape content
+        # from feeds does not trigger a false-positive block.
+        if api_user_message and api_user_message != user_prompt:
+            api_user_message = _scan_assembled_cron_prompt(
+                api_user_message,
+                job,
+                has_skills=False,
+                has_injected_data=True,
+                user_prompt="",
+            )
+        if system_context:
+            system_context = _scan_assembled_cron_prompt(
+                system_context + "\n\n" + user_prompt,
+                job,
+                has_skills=False,
+                has_injected_data=False,
+                user_prompt=user_prompt,
+            )
+        return _CronJobExecution(user_prompt, system_context, api_user_message, legacy_prompt)
 
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
@@ -2636,27 +2663,37 @@ def _build_job_execution(
         )
         parts.insert(0, notice)
 
-    runtime_parts = list(parts)
+    # Build the trusted system context: vetted skill wrappers, delivery controls,
+    # and the raw scheduled instruction. The untrusted runtime data feed (if any)
+    # is sent as the API-only user message below.
+    system_parts = list(parts)
+    system_parts.insert(0, system_cron_hint)
     if user_prompt:
-        runtime_parts.extend(
+        system_parts.extend(
             [
                 "",
-                "The user's raw scheduled instruction is provided separately "
-                "as the user message for this execution.",
+                "The user's raw scheduled instruction for this job is:",
+                user_prompt,
             ]
         )
-    if runtime_prompt:
-        runtime_parts.extend(["", runtime_prompt])
-
     if prompt:
         parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
     legacy_prompt = _scan_assembled_cron_prompt(
         "\n".join(parts), job, has_skills=True
     )
-    runtime_context = _scan_assembled_cron_prompt(
-        "\n".join(runtime_parts), job, has_skills=True
+    system_context = _scan_assembled_cron_prompt(
+        "\n".join(system_parts), job, has_skills=True
     )
-    return _CronJobExecution(user_prompt, runtime_context, legacy_prompt)
+    api_user_message = user_prompt if not untrusted_data else untrusted_data
+    if untrusted_data:
+        api_user_message = _scan_assembled_cron_prompt(
+            untrusted_data,
+            job,
+            has_skills=False,
+            has_injected_data=True,
+            user_prompt="",
+        )
+    return _CronJobExecution(user_prompt, system_context, api_user_message, legacy_prompt)
 
 
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> Optional[str]:
@@ -3452,11 +3489,17 @@ def run_job(
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
-            # Runtime-only scheduler/skill/script/context_from material belongs
-            # in the non-user execution context. AIAgent adds this exactly once
-            # to each effective system message and never persists or FTS-indexes
-            # it; the durable user row remains the raw cron instruction.
-            ephemeral_system_prompt=execution.runtime_context,
+            # Durable user row: the raw, scanned cron instruction. The scheduler
+            # now sends it through the user message channel while using the API-only
+            # ``persist_user_message`` override so the persisted transcript and FTS
+            # index stay exactly the cron-authored intent.
+            #
+            # Runtime-collected scaffolding (script stdout, upstream job output,
+            # skill wrappers, delivery controls) is sent to the model via an API-only
+            # user message so it has lower authority than the system prompt; it is
+            # never persisted or FTS-indexed. The split prevents untrusted data from
+            # becoming the system message and keeps the raw intent searchable.
+            ephemeral_system_prompt=execution.system_context,
             fallback_model=fallback_model,
             credential_pool=credential_pool,
             providers_allowed=pr.get("only"),
@@ -3478,8 +3521,6 @@ def run_job(
             session_id=_cron_session_id,
             session_db=_session_db,
         )
-        
-        # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
         # but a hung API call or stuck tool with no activity for the configured
         # duration is caught and killed.  Default 600s (10 min inactivity);
@@ -3541,7 +3582,8 @@ def run_job(
         _cron_future = _cron_pool.submit(
             _cron_context.run,
             agent.run_conversation,
-            execution.user_prompt,
+            execution.api_user_message,
+            persist_user_message=execution.user_prompt,
         )
         _inactivity_timeout = False
         try:

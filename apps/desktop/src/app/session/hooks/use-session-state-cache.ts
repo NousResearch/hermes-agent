@@ -33,8 +33,18 @@ interface SessionStateCacheOptions {
 }
 
 function syncRuntimeMetadataToView(state: ClientSessionState) {
-  setCurrentModel(state.model ?? '')
-  setCurrentProvider(state.provider ?? '')
+  // Only adopt model/provider when the runtime actually carries one. A
+  // session that hasn't resolved a model yet (state.model === '') must not
+  // clobber the composer's current selection, or the backend falls back to
+  // the profile default (e.g. gemma-imatrix) on send.
+  if (state.model) {
+    setCurrentModel(state.model)
+  }
+
+  if (state.provider) {
+    setCurrentProvider(state.provider)
+  }
+
   setCurrentReasoningEffort(state.reasoningEffort ?? '')
   setCurrentServiceTier(state.serviceTier ?? '')
   setCurrentFastMode(state.fast ?? false)

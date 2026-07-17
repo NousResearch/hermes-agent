@@ -231,6 +231,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onBranchSession: (sessionId: string) => void
+  onMoveSessionToProfile: (sessionId: string, targetProfile: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
   /** Create a brand-new session and open it as a tile on `dir`. */
   onNewSessionSplit: (dir: SplitDir) => void
@@ -248,6 +249,7 @@ export function ChatSidebar({
   onDeleteSession,
   onArchiveSession,
   onBranchSession,
+  onMoveSessionToProfile,
   onNewSessionInWorkspace,
   onNewSessionSplit,
   onManageCronJob,

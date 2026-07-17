@@ -3,7 +3,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
 import { revealTreePane } from '@/components/pane-shell/tree/store'
-import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
+import { deleteSession, getSessionMessages, moveSessionToProfile as moveSessionToProfileApi, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
@@ -1388,12 +1388,66 @@ export function useSessionActions({
     [copy, runtimeIdByStoredSessionIdRef, selectedStoredSessionId, sessionStateByRuntimeIdRef, startFreshSessionDraft]
   )
 
+  const moveSessionToProfile = useCallback(
+    async (storedSessionId: string, targetProfile: string) => {
+      clearNotifications()
+
+      const session = $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+      const previousPinned = $pinnedSessionIds.get()
+      const wasSelected = selectedStoredSessionId === storedSessionId
+
+      // Optimistically remove from this profile's sidebar; the session now lives
+      // under the target profile and will surface there on its next refresh.
+      setSessions(prev => prev.filter(s => !sessionMatchesStoredId(s, storedSessionId)))
+      tombstoneSessions([storedSessionId, session?.id, session?._lineage_root_id])
+      setSessionsTotal(prev => Math.max(0, prev - 1))
+      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId))
+
+      if (wasSelected) {
+        startFreshSessionDraft(true)
+      }
+
+      try {
+        await moveSessionToProfileApi(storedSessionId, targetProfile, session?.profile)
+        setSessions(prev => prev.filter(s => !sessionMatchesStoredId(s, storedSessionId)))
+        $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId))
+        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+        closeSessionTile(storedSessionId)
+
+        if (tiledRuntimeId) {
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+          sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
+          dropSessionState(tiledRuntimeId)
+        }
+
+        notify({ durationMs: 2_000, kind: 'success', message: copy.movedToProfile(targetProfile) })
+      } catch (err) {
+        if (session) {
+          setSessions(prev => [session, ...prev.filter(s => !sessionMatchesStoredId(s, storedSessionId))])
+          setSessionsTotal(prev => prev + 1)
+        }
+
+        untombstoneSessions([storedSessionId, session?.id, session?._lineage_root_id])
+        $pinnedSessionIds.set(previousPinned)
+        notifyError(err, copy.moveFailed)
+      }
+    },
+    [
+      copy,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionId,
+      sessionStateByRuntimeIdRef,
+      startFreshSessionDraft
+    ]
+  )
+
   return {
     archiveSession,
     branchCurrentSession,
     branchStoredSession,
     closeSettings,
     createBackendSessionForSend,
+    moveSessionToProfile,
     openNewSessionTile,
     openSettings,
     removeSession,

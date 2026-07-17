@@ -8694,6 +8694,97 @@ class SessionDB:
             self._remove_session_files(sessions_dir, session_id)
         return bool(deleted)
 
+    def move_session_to_profile(
+        self,
+        session_id: str,
+        target_profile_name: str,
+        target_db_path: Path,
+        sessions_dir: Optional[Path] = None,
+    ) -> bool:
+        """Relocate a session (row + messages + model usage) into another
+        profile's ``state.db``, preserving its session id.
+
+        Used by the desktop "Move session to…" action to move a session
+        across the independent profile islands (each profile owns its own
+        ``state.db``). The session id is kept stable so any external
+        reference (lineage, links) stays valid. The source row is deleted
+        only after a successful copy, so a failure leaves the source intact.
+
+        Returns True if the session was found and moved.
+        """
+        from hermes_state import SessionDB
+
+        session = self.get_session(session_id)
+        if not session:
+            return False
+
+        messages = self.get_messages(session_id, include_inactive=True)
+
+        def _copy(conn):
+            # session_model_usage rows keyed by this session.
+            cur = conn.execute(
+                "SELECT model, billing_provider, billing_base_url, billing_mode, "
+                "task, api_call_count, input_tokens, output_tokens, "
+                "cache_read_tokens, cache_write_tokens, reasoning_tokens, "
+                "estimated_cost_usd, actual_cost_usd, cost_status, cost_source, "
+                "first_seen, last_seen FROM session_model_usage WHERE session_id = ?",
+                (session_id,),
+            )
+            usage_rows = cur.fetchall()
+
+            target = SessionDB(db_path=target_db_path)
+
+            def _write(target_conn):
+                cols = ", ".join(session.keys())
+                placeholders = ", ".join("?" for _ in session)
+                target_conn.execute(
+                    f"INSERT OR REPLACE INTO sessions ({cols}) VALUES ({placeholders})",
+                    tuple(session.values()),
+                )
+                for msg in messages:
+                    # get_messages decodes JSON columns (content, tool_calls)
+                    # back into Python objects; re-encode them the same way the
+                    # normal write path does, or sqlite3 can't bind the
+                    # list/dict (Error binding parameter N: type 'list' is not
+                    # supported).
+                    encoded = dict(msg)
+                    if "content" in encoded:
+                        encoded["content"] = SessionDB._encode_content(encoded["content"])
+                    if encoded.get("tool_calls") is not None:
+                        encoded["tool_calls"] = json.dumps(encoded["tool_calls"])
+                    msg_cols = ", ".join(encoded.keys())
+                    msg_ph = ", ".join("?" for _ in encoded)
+                    target_conn.execute(
+                        f"INSERT OR REPLACE INTO messages ({msg_cols}) VALUES ({msg_ph})",
+                        tuple(encoded.values()),
+                    )
+                for row in usage_rows:
+                    target_conn.execute(
+                        "INSERT OR REPLACE INTO session_model_usage "
+                        "(session_id, model, billing_provider, billing_base_url, "
+                        "billing_mode, task, api_call_count, input_tokens, "
+                        "output_tokens, cache_read_tokens, cache_write_tokens, "
+                        "reasoning_tokens, estimated_cost_usd, actual_cost_usd, "
+                        "cost_status, cost_source, first_seen, last_seen) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (session_id, *row),
+                    )
+                # Stamp the relocated row with the target profile name so the
+                # desktop's per-profile scoping matches the new home.
+                target_conn.execute(
+                    "UPDATE sessions SET profile_name = ? WHERE id = ?",
+                    (target_profile_name, session_id),
+                )
+
+            target._execute_write(_write)
+            target.close()
+
+        self._execute_write(_copy)
+
+        # Source delete only after a successful copy above.
+        self.delete_session(session_id, sessions_dir=sessions_dir)
+        return True
+
     def delete_session_if_empty(
         self,
         session_id: str,

@@ -16,6 +16,7 @@ interface SessionTileDelegateParams {
   archiveSession: (storedSessionId: string) => Promise<unknown>
   branchStoredSession: (storedSessionId: string) => Promise<unknown>
   executeSlashCommand: ReturnType<typeof usePromptActions>['executeSlashCommand']
+  moveSessionToProfile: (storedSessionId: string, targetProfile: string) => Promise<unknown>
   removeSession: (storedSessionId: string) => Promise<unknown>
   requestGateway: GatewayRequester
   runtimeIdByStoredSessionIdRef: SessionStateCache['runtimeIdByStoredSessionIdRef']
@@ -34,6 +35,7 @@ export function useSessionTileDelegate({
   archiveSession,
   branchStoredSession,
   executeSlashCommand,
+  moveSessionToProfile,
   removeSession,
   requestGateway,
   runtimeIdByStoredSessionIdRef,
@@ -50,6 +52,9 @@ export function useSessionTileDelegate({
       },
       deleteSession: async storedSessionId => {
         await removeSession(storedSessionId)
+      },
+      moveSessionToProfile: async (storedSessionId, targetProfile) => {
+        await moveSessionToProfile(storedSessionId, targetProfile)
       },
       executeSlash: async (rawCommand, sessionId) => {
         await executeSlashCommand(rawCommand, { sessionId })
@@ -111,6 +116,7 @@ export function useSessionTileDelegate({
     archiveSession,
     branchStoredSession,
     executeSlashCommand,
+    moveSessionToProfile,
     removeSession,
     requestGateway,
     runtimeIdByStoredSessionIdRef,

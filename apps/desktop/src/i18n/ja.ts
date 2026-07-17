@@ -1708,6 +1708,8 @@ export const ja = defineLocale({
       renameDesc: 'このチャットにわかりやすいタイトルをつけてください。空欄にするとクリアされます。',
       untitledPlaceholder: '無題のセッション',
       untitledChat: id => `セッション ${id}`,
+      moveTo: '移動…',
+      noOtherProfiles: '他のプロファイルがありません',
       ageNow: 'たった今',
       ageDay: '日',
       ageHour: '時間',
@@ -2635,6 +2637,8 @@ export const ja = defineLocale({
     deleteFailed: '削除に失敗しました',
     archived: 'アーカイブしました',
     archiveFailed: 'アーカイブに失敗しました',
+    movedToProfile: name => `${name} に移動しました`,
+    moveFailed: '移動に失敗しました',
     cwdChangeFailed: '作業ディレクトリの変更に失敗しました',
     cwdStagedTitle: '作業ディレクトリがステージングされました',
     cwdStagedMessage:

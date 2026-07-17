@@ -11668,6 +11668,11 @@ class SessionRename(BaseModel):
     # Durable "keep" flag mirrored from the Desktop sidebar's pins; pinned
     # sessions are exempt from the sessions.auto_archive stale sweep.
     pinned: Optional[bool] = None
+    # Relocate a session into another profile's state.db (desktop "Move to…").
+    # Requires the request's ``profile`` field to name the *source* (owning)
+    # profile; ``move_to_profile`` names the *target* profile. The session id
+    # is preserved across the move.
+    move_to_profile: Optional[str] = None
     # Mutate a session belonging to another profile (opens its state.db). Omit
     # for the current/default profile.
     profile: Optional[str] = None
@@ -11679,19 +11684,39 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
 
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
     restores the session; ``pinned`` sets the durable keep flag (exempts the
-    session from the auto-archive sweep). Any field may be omitted. ``profile``
-    targets another profile's session.
+    session from the auto-archive sweep). ``move_to_profile`` relocates the
+    session into the named target profile's state.db (preserving its id).
+    Any field may be omitted. ``profile`` targets another profile's session.
     """
     db = _open_session_db_for_profile(body.profile)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
-        if body.title is None and body.archived is None and body.pinned is None:
+        if body.title is None and body.archived is None and body.pinned is None and body.move_to_profile is None:
             raise HTTPException(
                 status_code=400,
-                detail="Nothing to update; provide 'title', 'archived', and/or 'pinned'.",
+                detail="Nothing to update; provide 'title', 'archived', 'pinned', and/or 'move_to_profile'.",
             )
+        if body.move_to_profile is not None:
+            target_name = body.move_to_profile.strip()
+            if not target_name:
+                raise HTTPException(
+                    status_code=400, detail="move_to_profile must name a target profile"
+                )
+            _name, target_home = _cron_profile_home(target_name)
+            target_db = Path(target_home) / "state.db"
+            try:
+                moved = db.move_session_to_profile(
+                    sid, target_name, target_db
+                )
+            except Exception as e:  # noqa: BLE001 - surface as 500 with detail
+                raise HTTPException(
+                    status_code=500, detail=f"Failed to move session: {e}"
+                )
+            if not moved:
+                raise HTTPException(status_code=404, detail="Session not found")
+            return {"ok": True, "moved_to_profile": target_name}
         if body.title is not None:
             try:
                 db.set_session_title(sid, body.title or "")

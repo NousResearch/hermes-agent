@@ -139,9 +139,7 @@ function ChatHeader({
             'calc(100vw - var(--titlebar-content-inset,0px) - var(--titlebar-tools-right) - var(--titlebar-tools-width) - 1.5rem)'
         }}
       >
-        {showProfileTag && (
-          <ProfileTag className="pointer-events-auto mr-1.5" profile={activeStoredSession?.profile} />
-        )}
+        {showProfileTag && <ProfileTag className="pointer-events-auto mr-1.5" profile={activeStoredSession?.profile} />}
         <SessionActionsMenu
           align="start"
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}

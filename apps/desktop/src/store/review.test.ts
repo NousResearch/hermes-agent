@@ -353,9 +353,9 @@ describe('ship flow', () => {
     await createOrOpenPr()
 
     expect(review.createPr).not.toHaveBeenCalled()
-    expect((window.hermesDesktop as unknown as { openExternal: ReturnType<typeof vi.fn> }).openExternal).toHaveBeenCalledWith(
-      'https://example.com/pr/9'
-    )
+    expect(
+      (window.hermesDesktop as unknown as { openExternal: ReturnType<typeof vi.fn> }).openExternal
+    ).toHaveBeenCalledWith('https://example.com/pr/9')
   })
 
   it('createOrOpenPr creates a PR when none exists, then opens it', async () => {
@@ -365,15 +365,18 @@ describe('ship flow', () => {
     await createOrOpenPr()
 
     expect(review.createPr).toHaveBeenCalledWith('/repo')
-    expect((window.hermesDesktop as unknown as { openExternal: ReturnType<typeof vi.fn> }).openExternal).toHaveBeenCalledWith(
-      'https://example.com/pr/new'
-    )
+    expect(
+      (window.hermesDesktop as unknown as { openExternal: ReturnType<typeof vi.fn> }).openExternal
+    ).toHaveBeenCalledWith('https://example.com/pr/new')
   })
 })
 
 describe('refreshShipInfo', () => {
   it('populates ship info from the bridge', async () => {
-    const info: HermesReviewShipInfo = { ghReady: true, pr: { url: 'https://example.com/pr/3' } } as HermesReviewShipInfo
+    const info: HermesReviewShipInfo = {
+      ghReady: true,
+      pr: { url: 'https://example.com/pr/3' }
+    } as HermesReviewShipInfo
     stubReview({ shipInfo: vi.fn(async () => info) })
 
     await refreshShipInfo()

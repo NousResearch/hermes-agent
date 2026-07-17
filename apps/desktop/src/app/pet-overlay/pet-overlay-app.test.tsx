@@ -6,11 +6,7 @@ import { usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
 import { en } from '@/i18n/en'
 import { setPetInfo } from '@/store/pet'
 import type { PetActionCenterState } from '@/store/pet-action-center'
-import {
-  anchoredOverlayBounds,
-  overlayWindowTargetSize,
-  type PetOverlayStatePayload
-} from '@/store/pet-overlay'
+import { anchoredOverlayBounds, overlayWindowTargetSize, type PetOverlayStatePayload } from '@/store/pet-overlay'
 
 import { PetOverlayApp } from './pet-overlay-app'
 
@@ -379,11 +375,8 @@ describe('PetOverlayApp action-center integration', () => {
     render(<PetOverlayApp />)
     pushState()
     const observer = FakeResizeObserver.instances[0]!
-    // Pet at x=100, y=200 on a 1920×1040 work area:
-    // spaceBelow (540) > spaceAbove (200) → expands down (top edge stays)
-    // spaceRight (1580) > spaceLeft (100) → expands right (left edge stays)
-    const originalLeft = windowBounds.x
-    const originalTop = windowBounds.y
+    const originalCenter = windowBounds.x + windowBounds.width / 2
+    const originalBottom = windowBounds.y + windowBounds.height
 
     act(() => observer.emit(180, 200))
     expect(setBoundsMock).not.toHaveBeenCalled()
@@ -396,9 +389,8 @@ describe('PetOverlayApp action-center integration', () => {
     const expanded = setBoundsMock.mock.calls.at(-1)?.[0]
     expect(expanded.width).toBeGreaterThan(340)
     expect(expanded.height).toBeGreaterThan(500)
-    // Expanding down+right: top-left edge stays
-    expect(expanded.x).toBe(originalLeft)
-    expect(expanded.y).toBe(originalTop)
+    expect(expanded.x + expanded.width / 2).toBe(originalCenter)
+    expect(expanded.y + expanded.height).toBe(originalBottom)
 
     act(() => fireEvent.click(screen.getByRole('button', { name: ac.close })))
     await act(async () => observer.emit(180, 200))
@@ -407,12 +399,178 @@ describe('PetOverlayApp action-center integration', () => {
 
     const collapsed = setBoundsMock.mock.calls.at(-1)?.[0]
     expect(collapsed).toEqual({ height: 300, width: 240, x: 100, y: 200 })
-    // Collapsing back: still top-left anchored
-    expect(collapsed.x).toBe(originalLeft)
-    expect(collapsed.y).toBe(originalTop)
+    expect(collapsed.x + collapsed.width / 2).toBe(originalCenter)
+    expect(collapsed.y + collapsed.height).toBe(originalBottom)
+  })
+
+  it('keeps the visible pet fixed at the top edge and lays the action center out below it', async () => {
+    windowBounds = { height: 300, width: 240, x: 840, y: 0 }
+    render(<PetOverlayApp />)
+    pushState()
+
+    const body = document.querySelector<HTMLElement>('[data-pet-overlay-body]')
+    expect(body).not.toBeNull()
+    vi.spyOn(body!, 'getBoundingClientRect').mockReturnValue({
+      bottom: 70,
+      height: 70,
+      left: 88,
+      right: 152,
+      toJSON: () => ({}),
+      top: 0,
+      width: 64,
+      x: 88,
+      y: 0
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
+    const root = document.querySelector<HTMLElement>('[data-pet-overlay-interactive-root]')
+
+    expect(root?.dataset.petOverlayPlacement).toBe('below')
+    expect(root?.style.flexDirection).toBe('column-reverse')
+
+    await act(async () => FakeResizeObserver.instances[0]!.emit(340, 500))
+    act(() => vi.advanceTimersByTime(16))
+    await act(async () => {})
+
+    const expanded = setBoundsMock.mock.calls.at(-1)?.[0]
+    const petScreenRect = {
+      x: expanded.x + (expanded.width - 64) / 2,
+      y: expanded.y
+    }
+
+    expect(petScreenRect).toEqual({ x: 928, y: 0 })
+  })
+
+  it('keeps the visible pet fixed at the left edge and lays the action center out to its right', async () => {
+    windowBounds = { height: 300, width: 240, x: 0, y: 370 }
+    render(<PetOverlayApp />)
+    pushState()
+
+    const body = document.querySelector<HTMLElement>('[data-pet-overlay-body]')
+    expect(body).not.toBeNull()
+    vi.spyOn(body!, 'getBoundingClientRect').mockReturnValue({
+      bottom: 185,
+      height: 70,
+      left: 0,
+      right: 64,
+      toJSON: () => ({}),
+      top: 115,
+      width: 64,
+      x: 0,
+      y: 115
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
+    const root = document.querySelector<HTMLElement>('[data-pet-overlay-interactive-root]')
+
+    expect(root?.dataset.petOverlayPlacement).toBe('right')
+    expect(root?.style.flexDirection).toBe('row-reverse')
+
+    await act(async () => FakeResizeObserver.instances[0]!.emit(500, 340))
+    act(() => vi.advanceTimersByTime(16))
+    await act(async () => {})
+
+    const expanded = setBoundsMock.mock.calls.at(-1)?.[0]
+    const petScreenRect = {
+      x: expanded.x,
+      y: expanded.y + (expanded.height - 70) / 2
+    }
+
+    expect(petScreenRect).toEqual({ x: 0, y: 485 })
+  })
+
+  it('keeps closed layout stable and anchors opening to confirmed bounds instead of stale screen coordinates', async () => {
+    render(<PetOverlayApp />)
+    pushState()
+    const body = document.querySelector<HTMLElement>('[data-pet-overlay-body]')
+    const group = document.querySelector<HTMLElement>('[data-pet-overlay-group]')
+
+    vi.spyOn(body!, 'getBoundingClientRect').mockReturnValue({
+      bottom: 123,
+      height: 119,
+      left: 65.6,
+      right: 174.6,
+      toJSON: () => ({}),
+      top: 4,
+      width: 109,
+      x: 65.6,
+      y: 4
+    })
+    vi.spyOn(group!, 'getBoundingClientRect').mockReturnValue({
+      bottom: 123,
+      height: 123,
+      left: 65.6,
+      right: 174.6,
+      toJSON: () => ({}),
+      top: 0,
+      width: 109,
+      x: 65.6,
+      y: 0
+    })
+
+    // Electron confirms a position while the browser's screenX/Y getters remain
+    // at the stale beforeEach position (100, 200).
+    pushBounds({ height: 319, width: 240, x: 850, y: 39 })
+    const root = document.querySelector<HTMLElement>('[data-pet-overlay-interactive-root]')
+
+    expect(root?.dataset.petOverlayPlacement).toBe('above')
+
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
+    await act(async () => FakeResizeObserver.instances[0]!.emit(340, 348))
+    act(() => vi.advanceTimersByTime(16))
+    await act(async () => {})
+
+    expect(setBoundsMock.mock.calls.at(-1)?.[0].x).toBe(784)
+  })
+
+  it('aligns a large top-left corner panel inward on both axes', async () => {
+    windowBounds = { height: 319, width: 240, x: 0, y: 0 }
+    render(<PetOverlayApp />)
+    pushState()
+    const body = document.querySelector<HTMLElement>('[data-pet-overlay-body]')
+    const group = document.querySelector<HTMLElement>('[data-pet-overlay-group]')
+
+    vi.spyOn(body!, 'getBoundingClientRect').mockReturnValue({
+      bottom: 70,
+      height: 70,
+      left: 0,
+      right: 64,
+      toJSON: () => ({}),
+      top: 0,
+      width: 64,
+      x: 0,
+      y: 0
+    })
+    vi.spyOn(group!, 'getBoundingClientRect').mockReturnValue({
+      bottom: 70,
+      height: 70,
+      left: 0,
+      right: 64,
+      toJSON: () => ({}),
+      top: 0,
+      width: 64,
+      x: 0,
+      y: 0
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
+    const root = document.querySelector<HTMLElement>('[data-pet-overlay-interactive-root]')
+
+    expect(root?.dataset.petOverlayPlacement).toBe('right')
+
+    await act(async () => FakeResizeObserver.instances[0]!.emit(500, 500))
+    act(() => vi.advanceTimersByTime(16))
+    await act(async () => {})
+
+    expect(root?.dataset.petOverlayAlignment).toBe('start')
+    expect(root?.style.alignItems).toBe('flex-start')
+    expect(root?.parentElement?.style.justifyContent).toBe('flex-start')
+
+    expect(setBoundsMock.mock.calls.at(-1)?.[0]).toEqual({ height: 540, width: 532, x: 0, y: 0 })
   })
 
   it('corrects an in-flight expansion when the panel collapses before the main process confirms it', async () => {
+    windowBounds = { height: 300, width: 240, x: 840, y: 39 }
     const pending: Array<{
       bounds: typeof windowBounds
       resolve: (result: { bounds: typeof windowBounds; ok: true }) => void
@@ -428,6 +586,39 @@ describe('PetOverlayApp action-center integration', () => {
     render(<PetOverlayApp />)
     pushState()
     const observer = FakeResizeObserver.instances[0]!
+    const body = document.querySelector<HTMLElement>('[data-pet-overlay-body]')
+    const group = document.querySelector<HTMLElement>('[data-pet-overlay-group]')
+
+    vi.spyOn(body!, 'getBoundingClientRect').mockImplementation(() => {
+      const top = screen.queryByRole('button', { name: ac.close }) ? 0 : 4
+
+      return {
+        bottom: top + 70,
+        height: 70,
+        left: 88,
+        right: 152,
+        toJSON: () => ({}),
+        top,
+        width: 64,
+        x: 88,
+        y: top
+      }
+    })
+    vi.spyOn(group!, 'getBoundingClientRect').mockImplementation(() => {
+      const height = screen.queryByRole('button', { name: ac.close }) ? 70 : 74
+
+      return {
+        bottom: height,
+        height,
+        left: 88,
+        right: 152,
+        toJSON: () => ({}),
+        top: 0,
+        width: 64,
+        x: 88,
+        y: 0
+      }
+    })
 
     act(() => observer.emit(180, 200))
     act(() => vi.advanceTimersByTime(16))
@@ -439,17 +630,18 @@ describe('PetOverlayApp action-center integration', () => {
     expect(pending).toHaveLength(1)
 
     act(() => fireEvent.click(screen.getByRole('button', { name: ac.close })))
+    // The expansion response lands after close state but before the compact
+    // observer frame. It must not release the visible-pet anchor.
+    await act(async () => pending[0]?.resolve({ bounds: pending[0].bounds, ok: true }))
     act(() => observer.emit(180, 200))
     act(() => vi.advanceTimersByTime(16))
 
     // The confirmed bounds are still compact, but the pending grow may already
     // have been applied by Electron. A compensating compact request must still
-    // be sent instead of treating the collapse as a no-op.
+    // be sent instead of treating the collapse as a no-op, and its top-edge pet
+    // anchor must survive the stale expansion response.
     expect(pending).toHaveLength(2)
-    expect(pending[1]?.bounds).toEqual({ height: 300, width: 240, x: 100, y: 200 })
-
-    await act(async () => pending[0]?.resolve({ bounds: pending[0].bounds, ok: true }))
-    expect(controlMock).not.toHaveBeenCalledWith({ bounds: pending[0]?.bounds, type: 'bounds' })
+    expect(pending[1]?.bounds).toEqual({ height: 300, width: 240, x: 840, y: 39 })
 
     await act(async () => pending[1]?.resolve({ bounds: pending[1].bounds, ok: true }))
     expect(controlMock).toHaveBeenLastCalledWith({ bounds: pending[1]?.bounds, type: 'bounds' })
@@ -640,9 +832,7 @@ describe('PetOverlayApp action-center integration', () => {
     setBoundsMock.mockClear()
 
     const onScale = vi.mocked(usePetZoomGesture).mock.calls.at(-1)?.[1]
-    await act(async () =>
-      onScale?.(0.5, { clientX: 60, clientY: 80, ratio: 1.5, screenX: 160, screenY: 280 })
-    )
+    await act(async () => onScale?.(0.5, { clientX: 60, clientY: 80, ratio: 1.5, screenX: 160, screenY: 280 }))
     act(() => vi.advanceTimersByTime(16))
     await act(async () => {})
 

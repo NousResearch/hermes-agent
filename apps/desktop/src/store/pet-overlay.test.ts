@@ -6,11 +6,13 @@ import { clearClarifyRequest } from './clarify'
 import {
   $petOverlayActive,
   anchoredOverlayBounds,
-  computeExpansionDirection,
+  computeActionCenterAlignment,
+  computeActionCenterPlacement,
   initPetOverlayBridge,
   overlayWindowSize,
   overlayWindowTargetSize,
   parsePetOverlayControl,
+  petOverlayTargetOffset,
   popInPet,
   popOutPet,
   setPetOverlayActionCenterHandler
@@ -202,6 +204,13 @@ describe('pet overlay window geometry', () => {
     expect(collapsed).toEqual(compact)
   })
 
+  it('matches compact parity on both axes so centered native bounds never choose a half pixel', () => {
+    const target = overlayWindowTargetSize(192, 208, 0.33, { height: 301, width: 241 })
+
+    expect((target.width - compact.width) % 2).toBe(0)
+    expect((target.height - compact.height) % 2).toBe(0)
+  })
+
   it('keeps the pet feet bottom-center anchor exact through repeated expand/collapse cycles', () => {
     const expandedSize = overlayWindowTargetSize(192, 208, 0.33, { height: 480, width: 321 })
     const originalCenter = currentBounds.x + currentBounds.width / 2
@@ -252,103 +261,195 @@ describe('pet overlay window geometry', () => {
   })
 })
 
-describe('expansion direction (issue #2)', () => {
+describe('action-center placement (issue #2)', () => {
   const workArea = { x: 0, y: 0, width: 1920, height: 1040 }
 
-  it('expands downward when the pet is near the top edge', () => {
-    // Pet window at top of screen: y=0, height=300 → pet feet at y=300
-    // Space above: 0px. Space below: 1040 - 300 = 740px.
-    // Should expand downward.
-    const dir = computeExpansionDirection({ x: 100, y: 0, width: 240, height: 300 }, workArea)
-
-    expect(dir.vertical).toBe('down')
+  it('places the panel below when the visible pet is near the top edge', () => {
+    expect(computeActionCenterPlacement({ x: 900, y: 0, width: 64, height: 70 }, workArea)).toBe('below')
   })
 
-  it('expands upward when the pet is near the bottom edge', () => {
-    // Pet window at bottom: y=740, height=300 → pet feet at y=1040
-    // Space above: 740px. Space below: 0px.
-    // Should expand upward (current behavior).
-    const dir = computeExpansionDirection({ x: 100, y: 740, width: 240, height: 300 }, workArea)
-
-    expect(dir.vertical).toBe('up')
+  it('places the panel above when the visible pet is near the bottom edge', () => {
+    expect(computeActionCenterPlacement({ x: 900, y: 970, width: 64, height: 70 }, workArea)).toBe('above')
   })
 
-  it('expands upward when there is more space above than below', () => {
-    // Pet in the lower third: y=700, height=300 → feet at y=1000
-    // Space above: 700px. Space below: 40px.
-    const dir = computeExpansionDirection({ x: 100, y: 700, width: 240, height: 300 }, workArea)
-
-    expect(dir.vertical).toBe('up')
+  it('places the panel right when the visible pet is near the left edge', () => {
+    expect(computeActionCenterPlacement({ x: 0, y: 470, width: 64, height: 70 }, workArea)).toBe('right')
   })
 
-  it('expands downward when there is more space below than above', () => {
-    // Pet in the upper third: y=100, height=300 → feet at y=400
-    // Space above: 100px. Space below: 640px.
-    const dir = computeExpansionDirection({ x: 100, y: 100, width: 240, height: 300 }, workArea)
-
-    expect(dir.vertical).toBe('down')
+  it('places the panel left when the visible pet is near the right edge', () => {
+    expect(computeActionCenterPlacement({ x: 1856, y: 470, width: 64, height: 70 }, workArea)).toBe('left')
   })
 
-  it('expands rightward when the pet is near the left edge', () => {
-    // Pet at left: x=0, width=240 → center at x=120
-    // Space left: 0. Space right: 1920 - 240 = 1680.
-    const dir = computeExpansionDirection({ x: 0, y: 400, width: 240, height: 300 }, workArea)
-
-    expect(dir.horizontal).toBe('right')
+  it('keeps the familiar panel-above placement away from every edge', () => {
+    expect(computeActionCenterPlacement({ x: 928, y: 485, width: 64, height: 70 }, workArea)).toBe('above')
   })
 
-  it('expands leftward when the pet is near the right edge', () => {
-    // Pet at right: x=1680, width=240 → center at x=1800
-    // Space right: 0. Space left: 1680.
-    const dir = computeExpansionDirection({ x: 1680, y: 400, width: 240, height: 300 }, workArea)
-
-    expect(dir.horizontal).toBe('left')
+  it('chooses the inward side with the most room at a corner', () => {
+    expect(computeActionCenterPlacement({ x: 0, y: 0, width: 64, height: 70 }, workArea)).toBe('right')
   })
 
-  it('expands symmetrically (center) when horizontally centered', () => {
-    // Pet centered: x=840, width=240 → center at x=960 (screen center)
-    const dir = computeExpansionDirection({ x: 840, y: 400, width: 240, height: 300 }, workArea)
-
-    expect(dir.horizontal).toBe('center')
-  })
-
-  it('preserves the pet anchor when expanding downward instead of upward', () => {
-    // Pet at top: y=0, height=300. Target size: height=500 (action center opens).
-    // Expanding downward: the pet's TOP edge should stay at y=0.
-    const dir = computeExpansionDirection({ x: 100, y: 0, width: 240, height: 300 }, workArea)
-
+  it('keeps the visible pet screen rect fixed while placing the panel below', () => {
+    const petAnchor = { x: 928, y: 0, width: 64, height: 70 }
     const targetSize = { width: 340, height: 500 }
     const result = anchoredOverlayBounds({
-      currentBounds: { x: 100, y: 0, width: 240, height: 300 },
+      currentBounds: { x: 840, y: -206, width: 240, height: 300 },
       paddingBottom: 24,
       targetSize,
-      expansionDirection: dir
+      petAnchor,
+      placement: 'below'
     })
 
-    // Top edge preserved: y stays at 0
+    expect(result.x + (result.width - petAnchor.width) / 2).toBe(petAnchor.x)
     expect(result.y).toBe(0)
-    // Bottom edge grows downward
-    expect(result.y + result.height).toBe(500)
-    // Horizontal: pet is near left, so expands rightward — left edge preserved
-    expect(result.x).toBe(100)
   })
 
-  it('preserves the pet anchor when expanding rightward instead of symmetrically', () => {
-    // Pet at left: x=0, width=240. Target size: width=340 (action center opens).
-    // Expanding rightward: the pet's LEFT edge should stay at x=0.
-    const dir = computeExpansionDirection({ x: 0, y: 400, width: 240, height: 300 }, workArea)
-
+  it('keeps the visible pet screen rect fixed while placing the panel right', () => {
+    const petAnchor = { x: 0, y: 485, width: 64, height: 70 }
     const targetSize = { width: 340, height: 500 }
     const result = anchoredOverlayBounds({
-      currentBounds: { x: 0, y: 400, width: 240, height: 300 },
+      currentBounds: { x: -88, y: 279, width: 240, height: 300 },
       paddingBottom: 24,
       targetSize,
-      expansionDirection: dir
+      petAnchor,
+      placement: 'right'
     })
 
-    // Left edge preserved: x stays at 0
     expect(result.x).toBe(0)
-    // Bottom-center anchor preserved vertically (expanding up since pet is mid-screen)
-    expect(result.y + result.height).toBe(400 + 300)
+    expect(result.y + (result.height - petAnchor.height) / 2).toBe(petAnchor.y)
+  })
+
+  it('preserves the top-edge sprite through collapse with a compact bubble offset', () => {
+    const petAnchor = { x: 915.5, y: 43, width: 109, height: 119 }
+    const targetSize = { width: 240, height: 319 }
+    const petOffset = petOverlayTargetOffset({
+      alignment: 'center',
+      paddingBottom: 24,
+      petGroupRect: { x: 121.5, y: 0, width: 109, height: 123 },
+      petRect: { x: 121.5, y: 4, width: 109, height: 119 },
+      placement: 'below',
+      targetSize
+    })
+    const result = anchoredOverlayBounds({
+      currentBounds: { x: 794, y: 43, width: 352, height: 388 },
+      paddingBottom: 24,
+      petAnchor,
+      petOffset,
+      placement: 'below',
+      targetSize
+    })
+
+    expect(petOffset).toEqual({ x: 65.5, y: 4 })
+    expect(result).toEqual({ height: 319, width: 240, x: 850, y: 39 })
+  })
+
+  it('preserves a side-edge sprite with a bubble-shifted vertical center', () => {
+    const petAnchor = { x: -3, y: 258, width: 109, height: 119 }
+    const targetSize = { width: 260, height: 319 }
+    const petOffset = petOverlayTargetOffset({
+      alignment: 'center',
+      paddingBottom: 24,
+      petGroupRect: { x: 0, y: 98, width: 109, height: 123 },
+      petRect: { x: 0, y: 102, width: 109, height: 119 },
+      placement: 'right',
+      targetSize
+    })
+    const result = anchoredOverlayBounds({
+      currentBounds: { x: -3, y: 158, width: 462, height: 319 },
+      paddingBottom: 24,
+      petAnchor,
+      petOffset,
+      placement: 'right',
+      targetSize
+    })
+
+    expect(petOffset).toEqual({ x: 0, y: 102 })
+    expect(result).toEqual({ height: 319, width: 260, x: -3, y: 156 })
+  })
+
+  it('aligns a horizontal corner panel to the inward vertical edge', () => {
+    const petAnchor = { x: 0, y: 0, width: 64, height: 70 }
+    const placement = computeActionCenterPlacement(petAnchor, workArea)
+    const targetSize = { width: 372, height: 540 }
+    const petGroupRect = { x: 0, y: 0, width: 64, height: 70 }
+    const petRect = { x: 0, y: 0, width: 64, height: 70 }
+    const alignment = computeActionCenterAlignment({
+      petAnchor,
+      petGroupRect,
+      petRect,
+      placement,
+      targetSize,
+      workArea
+    })
+    const petOffset = petOverlayTargetOffset({
+      alignment,
+      paddingBottom: 24,
+      petGroupRect,
+      petRect,
+      placement,
+      targetSize
+    })
+
+    expect({ alignment, placement }).toEqual({ alignment: 'start', placement: 'right' })
+    expect(
+      anchoredOverlayBounds({
+        currentBounds: { x: -88, y: -206, width: 240, height: 300 },
+        paddingBottom: 24,
+        petAnchor,
+        petOffset,
+        placement,
+        targetSize
+      })
+    ).toEqual({ height: 540, width: 372, x: 0, y: 0 })
+  })
+
+  it('aligns the opposite corner panel to the inward bottom edge', () => {
+    const petAnchor = { x: 1856, y: 970, width: 64, height: 70 }
+    const placement = computeActionCenterPlacement(petAnchor, workArea)
+    const targetSize = { width: 372, height: 540 }
+    const petGroupRect = { x: 0, y: 0, width: 64, height: 70 }
+    const petRect = { x: 0, y: 0, width: 64, height: 70 }
+    const alignment = computeActionCenterAlignment({
+      petAnchor,
+      petGroupRect,
+      petRect,
+      placement,
+      targetSize,
+      workArea
+    })
+    const petOffset = petOverlayTargetOffset({
+      alignment,
+      paddingBottom: 24,
+      petGroupRect,
+      petRect,
+      placement,
+      targetSize
+    })
+
+    expect({ alignment, placement }).toEqual({ alignment: 'end', placement: 'left' })
+    expect(
+      anchoredOverlayBounds({
+        currentBounds: { x: 1768, y: 764, width: 240, height: 300 },
+        paddingBottom: 24,
+        petAnchor,
+        petOffset,
+        placement,
+        targetSize
+      })
+    ).toEqual({ height: 540, width: 372, x: 1548, y: 500 })
+  })
+
+  it('aligns by measured panel overflow instead of a fixed edge threshold', () => {
+    const petAnchor = { x: 0, y: 121, width: 64, height: 70 }
+
+    expect(
+      computeActionCenterAlignment({
+        petAnchor,
+        petGroupRect: { x: 0, y: 0, width: 64, height: 70 },
+        petRect: { x: 0, y: 0, width: 64, height: 70 },
+        placement: 'right',
+        targetSize: { width: 372, height: 500 },
+        workArea
+      })
+    ).toBe('start')
   })
 })

@@ -11,10 +11,15 @@ import { $petActivity, $petInfo, setPetInfo } from '@/store/pet'
 import type { PetActionCenterState } from '@/store/pet-action-center'
 import {
   anchoredOverlayBounds,
-  computeExpansionDirection,
+  computeActionCenterAlignment,
+  computeActionCenterPlacement,
   overlayWindowTargetSize,
+  type PetActionCenterAlignment,
+  type PetActionCenterPlacement,
   type PetOverlayBounds,
-  type PetOverlayMeasuredContent
+  type PetOverlayMeasuredContent,
+  type PetOverlayOffset,
+  petOverlayTargetOffset
 } from '@/store/pet-overlay'
 import { setAwaitingResponse, setBusy } from '@/store/session'
 
@@ -78,10 +83,12 @@ interface DragState {
   width: number
   height: number
   moved: boolean
+  petAnchorOffset: PetOverlayOffset | null
 }
 
 interface QueuedZoomIntent {
   anchor: PetZoomAnchor
+  petAnchor: PetOverlayBounds | null
   scale: number
 }
 
@@ -106,11 +113,24 @@ function parsedOverlayBounds(value: unknown): PetOverlayBounds | null {
   return bounds as PetOverlayBounds
 }
 
+function currentScreenWorkArea(): PetOverlayBounds {
+  const currentScreen = globalThis.screen as Screen & { availLeft?: number; availTop?: number }
+
+  return {
+    height: currentScreen.availHeight,
+    width: currentScreen.availWidth,
+    x: currentScreen.availLeft ?? 0,
+    y: currentScreen.availTop ?? 0
+  }
+}
+
 export function PetOverlayApp() {
   const { t } = useI18n()
   const info = useStore($petInfo)
   const [composerOpen, setComposerOpen] = useState(false)
   const [actionCenterOpen, setActionCenterOpen] = useState(false)
+  const [actionCenterAlignment, setActionCenterAlignment] = useState<PetActionCenterAlignment>('center')
+  const [actionCenterPlacement, setActionCenterPlacement] = useState<PetActionCenterPlacement>('above')
   const [actionCenterState, setActionCenterState] = useState<PetActionCenterState>(EMPTY_ACTION_CENTER_STATE)
   const [measuredContent, setMeasuredContent] = useState<PetOverlayMeasuredContent | null>(null)
   const [draft, setDraft] = useState('')
@@ -124,7 +144,13 @@ export function PetOverlayApp() {
   // carries an absolute screen cursor so it can be rebased after a pending
   // native resize moves the window underneath the gesture.
   const zoomIntentsRef = useRef<QueuedZoomIntent[]>([])
+  const zoomPetAnchorRef = useRef<PetOverlayBounds | null>(null)
   const petRef = useRef<HTMLDivElement | null>(null)
+  const actionCenterAlignmentRef = useRef<PetActionCenterAlignment>('center')
+  const actionCenterPlacementRef = useRef<PetActionCenterPlacement>('above')
+  const petBodyRef = useRef<HTMLDivElement | null>(null)
+  const petGroupRef = useRef<HTMLDivElement | null>(null)
+  const petAnchorRef = useRef<PetOverlayBounds | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   // Last mirrored reaction id — a bump means the main window fired a reaction.
   const lastReactionRef = useRef<number | null>(null)
@@ -151,39 +177,67 @@ export function PetOverlayApp() {
   // → items pushed → nested layer) coalesce into one setBounds call.
   const resizeRafRef = useRef<number | null>(null)
 
-  const requestOverlayBounds = useCallback((bounds: PetOverlayBounds, persist: boolean) => {
-    const api = window.hermesDesktop?.petOverlay
+  const updateActionCenterLayout = useCallback(
+    (placement: PetActionCenterPlacement, alignment: PetActionCenterAlignment) => {
+      actionCenterPlacementRef.current = placement
+      actionCenterAlignmentRef.current = alignment
+      setActionCenterPlacement(placement)
+      setActionCenterAlignment(alignment)
+    },
+    []
+  )
 
-    if (!api || !boundsActiveRef.current) {
-      return
-    }
+  const chooseActionCenterLayout = useCallback(
+    (petBounds: PetOverlayBounds) => {
+      updateActionCenterLayout(computeActionCenterPlacement(petBounds, currentScreenWorkArea()), 'center')
+    },
+    [updateActionCenterLayout]
+  )
 
-    const requestId = ++boundsRequestRef.current
-    pendingBoundsRef.current = bounds
+  const requestOverlayBounds = useCallback(
+    (bounds: PetOverlayBounds, persist: boolean, petAnchorOffset: PetOverlayOffset | null = null) => {
+      const api = window.hermesDesktop?.petOverlay
 
-    void api
-      .setBounds(bounds)
-      .then(result => {
-        if (!boundsActiveRef.current || requestId !== boundsRequestRef.current) {
-          return
-        }
+      if (!api || !boundsActiveRef.current) {
+        return
+      }
 
-        pendingBoundsRef.current = null
+      const requestId = ++boundsRequestRef.current
+      pendingBoundsRef.current = bounds
 
-        if (result.ok && result.bounds) {
-          actualBoundsRef.current = result.bounds
-
-          if (persist) {
-            api.control({ bounds: result.bounds, type: 'bounds' })
+      void api
+        .setBounds(bounds)
+        .then(result => {
+          if (!boundsActiveRef.current || requestId !== boundsRequestRef.current) {
+            return
           }
-        }
-      })
-      .catch(() => {
-        if (boundsActiveRef.current && requestId === boundsRequestRef.current) {
+
           pendingBoundsRef.current = null
-        }
-      })
-  }, [])
+
+          if (result.ok && result.bounds) {
+            actualBoundsRef.current = result.bounds
+
+            if (persist) {
+              api.control({ bounds: result.bounds, type: 'bounds' })
+            }
+
+            if (petAnchorOffset && petAnchorRef.current) {
+              petAnchorRef.current = {
+                ...petAnchorRef.current,
+                x: result.bounds.x + petAnchorOffset.x,
+                y: result.bounds.y + petAnchorOffset.y
+              }
+            }
+          }
+        })
+        .catch(() => {
+          if (boundsActiveRef.current && requestId === boundsRequestRef.current) {
+            pendingBoundsRef.current = null
+          }
+        })
+    },
+    []
+  )
 
   const setIgnore = (ignore: boolean) => {
     if (ignoreRef.current !== ignore) {
@@ -391,12 +445,13 @@ export function PetOverlayApp() {
       return
     }
 
-    const baseBounds = pendingBoundsRef.current ?? actualBoundsRef.current ?? {
-      height: window.outerHeight,
-      width: window.outerWidth,
-      x: window.screenX,
-      y: window.screenY
-    }
+    const baseBounds = pendingBoundsRef.current ??
+      actualBoundsRef.current ?? {
+        height: window.outerHeight,
+        width: window.outerWidth,
+        x: window.screenX,
+        y: window.screenY
+      }
 
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
     dragRef.current = {
@@ -404,6 +459,9 @@ export function PetOverlayApp() {
       moved: false,
       offX: e.screenX - baseBounds.x,
       offY: e.screenY - baseBounds.y,
+      petAnchorOffset: petAnchorRef.current
+        ? { x: petAnchorRef.current.x - baseBounds.x, y: petAnchorRef.current.y - baseBounds.y }
+        : null,
       startX: e.screenX,
       startY: e.screenY,
       width: baseBounds.width
@@ -435,7 +493,7 @@ export function PetOverlayApp() {
         dragBoundsRef.current = null
 
         if (bounds) {
-          requestOverlayBounds(bounds, false)
+          requestOverlayBounds(bounds, false, drag.petAnchorOffset)
         }
       })
     }
@@ -471,7 +529,7 @@ export function PetOverlayApp() {
       }
 
       dragBoundsRef.current = null
-      requestOverlayBounds(requestedBounds, true)
+      requestOverlayBounds(requestedBounds, true, drag.petAnchorOffset)
 
       return
     }
@@ -511,6 +569,26 @@ export function PetOverlayApp() {
       clearTimeout(clickTimerRef.current)
       clickTimerRef.current = undefined
       setComposerOpen(false)
+
+      const rect = petBodyRef.current?.getBoundingClientRect()
+
+      if (rect && rect.width > 0 && rect.height > 0) {
+        const baseBounds = pendingBoundsRef.current ??
+          actualBoundsRef.current ?? {
+            height: window.outerHeight,
+            width: window.outerWidth,
+            x: window.screenX,
+            y: window.screenY
+          }
+        const anchor = {
+          height: rect.height,
+          width: rect.width,
+          x: baseBounds.x + rect.left,
+          y: baseBounds.y + rect.top
+        }
+        petAnchorRef.current = anchor
+        chooseActionCenterLayout(anchor)
+      }
     }
 
     setActionCenterOpen(open)
@@ -538,7 +616,35 @@ export function PetOverlayApp() {
   // renderer to persist it (it pushes the reconciled scale back). Stash the
   // cursor anchor for the resize effect; the window itself is grown to fit there.
   const onScale = useCallback((next: number, anchor: PetZoomAnchor) => {
-    zoomIntentsRef.current.push({ anchor, scale: next })
+    const rect = petBodyRef.current?.getBoundingClientRect()
+    const baseBounds = pendingBoundsRef.current ??
+      actualBoundsRef.current ?? {
+        height: window.outerHeight,
+        width: window.outerWidth,
+        x: window.screenX,
+        y: window.screenY
+      }
+    const currentPetAnchor =
+      zoomPetAnchorRef.current ??
+      (rect && rect.width > 0 && rect.height > 0
+        ? {
+            height: rect.height,
+            width: rect.width,
+            x: baseBounds.x + rect.left,
+            y: baseBounds.y + rect.top
+          }
+        : null)
+    const petAnchor = currentPetAnchor
+      ? {
+          height: currentPetAnchor.height * anchor.ratio,
+          width: currentPetAnchor.width * anchor.ratio,
+          x: anchor.screenX - (anchor.screenX - currentPetAnchor.x) * anchor.ratio,
+          y: anchor.screenY - (anchor.screenY - currentPetAnchor.y) * anchor.ratio
+        }
+      : null
+
+    zoomPetAnchorRef.current = petAnchor
+    zoomIntentsRef.current.push({ anchor, petAnchor, scale: next })
     setPetInfo({ ...$petInfo.get(), scale: next })
     window.hermesDesktop?.petOverlay?.control({ scale: next, type: 'scale' })
   }, [])
@@ -565,18 +671,90 @@ export function PetOverlayApp() {
     resizeRafRef.current = requestAnimationFrame(() => {
       resizeRafRef.current = null
 
-      const currentBounds: PetOverlayBounds = pendingBoundsRef.current ?? actualBoundsRef.current ?? {
-        height: window.outerHeight,
-        width: window.outerWidth,
-        x: window.screenX,
-        y: window.screenY
-      }
+      const currentBounds: PetOverlayBounds = pendingBoundsRef.current ??
+        actualBoundsRef.current ?? {
+          height: window.outerHeight,
+          width: window.outerWidth,
+          x: window.screenX,
+          y: window.screenY
+        }
       const zoomIntents = zoomIntentsRef.current.splice(0)
+      const zoomIntent = zoomIntents.at(-1)
+      const targetSize = overlayWindowTargetSize(
+        info.frameW ?? DEFAULT_FRAME_W,
+        info.frameH ?? DEFAULT_FRAME_H,
+        zoomIntent?.scale ?? info.scale ?? DEFAULT_SCALE,
+        measuredContent
+      )
+      const petRect = petBodyRef.current?.getBoundingClientRect()
+      const petGroupRect = petGroupRef.current?.getBoundingClientRect()
+      const targetPetAnchor = zoomIntent?.petAnchor ?? petAnchorRef.current
+      const hasPetGeometry =
+        targetPetAnchor &&
+        petRect &&
+        petGroupRect &&
+        petRect.width > 0 &&
+        petRect.height > 0 &&
+        petGroupRect.width > 0 &&
+        petGroupRect.height > 0
       let bounds = currentBounds
+      let petOffset: PetOverlayOffset | null = null
 
-      if (zoomIntents.length > 0) {
+      if (
+        !zoomIntent &&
+        targetSize.width === currentBounds.width &&
+        targetSize.height === currentBounds.height &&
+        !targetPetAnchor
+      ) {
+        return
+      }
+
+      if (hasPetGeometry && targetPetAnchor && petRect && petGroupRect) {
+        const groupBounds = {
+          height: petGroupRect.height,
+          width: petGroupRect.width,
+          x: petGroupRect.left,
+          y: petGroupRect.top
+        }
+        const spriteBounds = {
+          height: petRect.height,
+          width: petRect.width,
+          x: petRect.left,
+          y: petRect.top
+        }
+        const alignment = computeActionCenterAlignment({
+          petAnchor: targetPetAnchor,
+          petGroupRect: groupBounds,
+          petRect: spriteBounds,
+          placement: actionCenterPlacementRef.current,
+          targetSize,
+          workArea: currentScreenWorkArea()
+        })
+
+        if (alignment !== actionCenterAlignmentRef.current) {
+          updateActionCenterLayout(actionCenterPlacementRef.current, alignment)
+        }
+
+        petOffset = petOverlayTargetOffset({
+          alignment,
+          paddingBottom: PET_PADDING_BOTTOM,
+          petGroupRect: groupBounds,
+          petRect: spriteBounds,
+          placement: actionCenterPlacementRef.current,
+          targetSize
+        })
+        petAnchorRef.current = targetPetAnchor
+        bounds = anchoredOverlayBounds({
+          currentBounds,
+          paddingBottom: PET_PADDING_BOTTOM,
+          targetSize,
+          petAnchor: targetPetAnchor,
+          petOffset,
+          placement: actionCenterPlacementRef.current
+        })
+      } else if (zoomIntents.length > 0) {
         for (const intent of zoomIntents) {
-          const targetSize = overlayWindowTargetSize(
+          const intentTargetSize = overlayWindowTargetSize(
             info.frameW ?? DEFAULT_FRAME_W,
             info.frameH ?? DEFAULT_FRAME_H,
             intent.scale,
@@ -586,7 +764,7 @@ export function PetOverlayApp() {
           bounds = anchoredOverlayBounds({
             currentBounds: bounds,
             paddingBottom: PET_PADDING_BOTTOM,
-            targetSize,
+            targetSize: intentTargetSize,
             wheelAnchor: {
               ...intent.anchor,
               clientX: intent.anchor.screenX - bounds.x,
@@ -595,41 +773,17 @@ export function PetOverlayApp() {
           })
         }
       } else {
-        const targetSize = overlayWindowTargetSize(
-          info.frameW ?? DEFAULT_FRAME_W,
-          info.frameH ?? DEFAULT_FRAME_H,
-          info.scale ?? DEFAULT_SCALE,
-          measuredContent
-        )
-
-        if (targetSize.width === currentBounds.width && targetSize.height === currentBounds.height) {
-          return
-        }
-
-        // Compute expansion direction from the pet's current screen position
-        // so the action center grows toward whichever side has more space,
-        // keeping the pet sprite at its screen position.
-        const screen = globalThis.screen as Screen & {
-          availLeft?: number
-          availTop?: number
-        }
-        const workArea: PetOverlayBounds = {
-          height: screen?.availHeight ?? globalThis.innerHeight ?? 1040,
-          width: screen?.availWidth ?? globalThis.innerWidth ?? 1920,
-          x: screen?.availLeft ?? 0,
-          y: screen?.availTop ?? 0
-        }
-        const expansionDir = computeExpansionDirection(currentBounds, workArea)
-
         bounds = anchoredOverlayBounds({
           currentBounds,
           paddingBottom: PET_PADDING_BOTTOM,
           targetSize,
-          expansionDirection: expansionDir
+          petAnchor: targetPetAnchor,
+          placement: actionCenterPlacementRef.current
         })
       }
 
-      requestOverlayBounds(bounds, true)
+      zoomPetAnchorRef.current = null
+      requestOverlayBounds(bounds, true, petOffset)
     })
 
     return () => {
@@ -638,11 +792,45 @@ export function PetOverlayApp() {
         resizeRafRef.current = null
       }
     }
-  }, [info.enabled, info.spritesheetBase64, info.scale, info.frameW, info.frameH, measuredContent, requestOverlayBounds])
+  }, [
+    actionCenterAlignment,
+    actionCenterOpen,
+    actionCenterPlacement,
+    info.enabled,
+    info.spritesheetBase64,
+    info.scale,
+    info.frameW,
+    info.frameH,
+    measuredContent,
+    requestOverlayBounds,
+    updateActionCenterLayout
+  ])
 
   if (!info.enabled || !info.spritesheetBase64) {
     return null
   }
+
+  const horizontalPlacement = actionCenterPlacement === 'left' || actionCenterPlacement === 'right'
+  const crossAxisAlignment =
+    actionCenterAlignment === 'start' ? 'flex-start' : actionCenterAlignment === 'end' ? 'flex-end' : 'center'
+  const outerAlignItems = horizontalPlacement
+    ? actionCenterPlacement === 'left'
+      ? 'flex-end'
+      : 'flex-start'
+    : crossAxisAlignment
+  const outerJustifyContent = horizontalPlacement
+    ? crossAxisAlignment
+    : actionCenterPlacement === 'below'
+      ? 'flex-start'
+      : 'flex-end'
+  const interactiveDirection =
+    actionCenterPlacement === 'below'
+      ? 'column-reverse'
+      : actionCenterPlacement === 'left'
+        ? 'row'
+        : actionCenterPlacement === 'right'
+          ? 'row-reverse'
+          : 'column'
 
   return (
     <div
@@ -654,13 +842,13 @@ export function PetOverlayApp() {
         }
       }}
       style={{
-        alignItems: 'center',
+        alignItems: outerAlignItems,
         background: 'transparent',
         display: 'flex',
         flexDirection: 'column',
         height: '100vh',
-        justifyContent: 'flex-end',
-        paddingBottom: PET_PADDING_BOTTOM,
+        justifyContent: outerJustifyContent,
+        paddingBottom: actionCenterPlacement === 'above' ? PET_PADDING_BOTTOM : 0,
         userSelect: 'none',
         width: '100vw'
       }}
@@ -695,73 +883,82 @@ export function PetOverlayApp() {
       )}
 
       <div
+        data-pet-overlay-alignment={actionCenterAlignment}
         data-pet-overlay-interactive-root=""
+        data-pet-overlay-placement={actionCenterPlacement}
         onPointerDown={onPetPointerDown}
         onPointerMove={onPetPointerMove}
         onPointerUp={onPetPointerUp}
         ref={petRef}
         style={{
-          alignItems: 'center',
+          alignItems: crossAxisAlignment,
           cursor: 'grab',
           display: 'flex',
-          flexDirection: 'column',
+          flexDirection: interactiveDirection,
+          flexShrink: actionCenterOpen ? 0 : 1,
           position: 'relative',
           touchAction: 'none'
         }}
       >
         <PetActionCenter onOpenChange={onActionCenterOpenChange} state={actionCenterState} />
-        {/* The action center already owns live status while open. Keeping the
-            separate speech bubble mounted there makes transient navigation
-            state add/remove a second row, which forces the native overlay to
-            grow, shrink, then grow again around the dialog. Suppress that
-            duplicate surface so action-center geometry changes monotonically. */}
-        {!actionCenterOpen && (
-          <div style={{ marginBottom: 4 }}>
-            <PetBubble />
-          </div>
-        )}
-        <div style={{ lineHeight: 0, position: 'relative' }}>
-          <PetSprite info={info} />
+        <div
+          data-pet-overlay-group=""
+          ref={petGroupRef}
+          style={{ alignItems: 'center', display: 'flex', flexDirection: 'column', flexShrink: 0 }}
+        >
+          {/* The action center already owns live status while open. Keeping the
+              separate speech bubble mounted there makes transient navigation
+              state add/remove a second row, which forces the native overlay to
+              grow, shrink, then grow again around the dialog. Suppress that
+              duplicate surface so action-center geometry changes monotonically. */}
+          {!actionCenterOpen && (
+            <div style={{ marginBottom: 4 }}>
+              <PetBubble />
+            </div>
+          )}
+          <div data-pet-overlay-body="" ref={petBodyRef} style={{ lineHeight: 0, position: 'relative' }}>
+            <PetSprite info={info} />
 
-          {/* Hearts on the popped-out pet — identical to in-window. */}
-          <PetHeartField
-            petH={(info.frameH ?? DEFAULT_FRAME_H) * (info.scale ?? DEFAULT_SCALE)}
-            petW={(info.frameW ?? DEFAULT_FRAME_W) * (info.scale ?? DEFAULT_SCALE)}
-          />
+            {/* Hearts on the popped-out pet — identical to in-window. */}
+            <PetHeartField
+              petH={(info.frameH ?? DEFAULT_FRAME_H) * (info.scale ?? DEFAULT_SCALE)}
+              petW={(info.frameW ?? DEFAULT_FRAME_W) * (info.scale ?? DEFAULT_SCALE)}
+            />
 
-          {/* Mail icon: only when a finish landed while you were away. Jumps to
+            {/* Mail icon: only when a finish landed while you were away. Jumps to
               the app's most recent thread. Anchored to the sprite (kept inside
               its box so the overlay's click-through hit-test still catches it);
               stopPropagation keeps a click from starting a window drag. */}
-          {unread && (
-            <button
-              aria-label={t.pet.actionCenter.openInApp}
-              onClick={openApp}
-              onPointerDown={e => e.stopPropagation()}
-              onPointerUp={e => e.stopPropagation()}
-              style={{
-                alignItems: 'center',
-                background: 'var(--ui-bg-elevated)',
-                border: '1px solid var(--ui-stroke-secondary)',
-                borderRadius: 999,
-                boxShadow: '0 4px 14px rgba(0,0,0,0.22)',
-                color: 'var(--foreground)',
-                cursor: 'pointer',
-                display: 'inline-flex',
-                height: 24,
-                justifyContent: 'center',
-                padding: 0,
-                position: 'absolute',
-                right: 0,
-                top: 0,
-                width: 24
-              }}
-              title={t.pet.actionCenter.openInApp}
-              type="button"
-            >
-              <Mail style={{ height: 13, width: 13 }} />
-            </button>
-          )}
+            {unread && (
+              <button
+                aria-label={t.pet.actionCenter.openInApp}
+                onClick={openApp}
+                onPointerDown={e => e.stopPropagation()}
+                onPointerUp={e => e.stopPropagation()}
+                style={{
+                  alignItems: 'center',
+                  background: 'var(--ui-bg-elevated)',
+                  border: '1px solid var(--ui-stroke-secondary)',
+                  borderRadius: 999,
+                  boxShadow: '0 4px 14px rgba(0,0,0,0.22)',
+                  color: 'var(--foreground)',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  height: 24,
+                  justifyContent: 'center',
+                  padding: 0,
+                  position: 'absolute',
+                  right: 0,
+                  top: 0,
+                  width: 24
+                }}
+                title={t.pet.actionCenter.openInApp}
+                type="button"
+              >
+                <Mail style={{ height: 13, width: 13 }} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

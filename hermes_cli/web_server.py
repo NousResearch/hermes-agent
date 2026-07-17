@@ -15355,11 +15355,30 @@ def _resolve_chat_argv(
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     env = os.environ.copy()
+    
+    # Set HERMES_HOME in env BEFORE applying terminal config bridge.
+    # This ensures the subprocess gets the correct terminal.cwd from the
+    # target profile's config, not the dashboard's current profile.
+    original_hermes_home = os.environ.get("HERMES_HOME")
+    if profile_dir is not None:
+        env["HERMES_HOME"] = str(profile_dir)
+        # Temporarily set os.environ HERMES_HOME so apply_terminal_config_to_env
+        # reads the profile's config.yaml (read_raw_config uses os.environ)
+        os.environ["HERMES_HOME"] = str(profile_dir)
+    
     try:
         from hermes_cli.config import apply_terminal_config_to_env
         apply_terminal_config_to_env(env=env)
     except Exception:
         _log.debug("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
+    finally:
+        # Restore original HERMES_HOME in os.environ
+        if profile_dir is not None:
+            if original_hermes_home is not None:
+                os.environ["HERMES_HOME"] = original_hermes_home
+            else:
+                os.environ.pop("HERMES_HOME", None)
+    
     env.setdefault("NODE_ENV", "production")
     # Browser-embedded chat should prefer stable wheel-based scrollback over
     # native terminal mouse tracking. When mouse tracking is enabled, wheel
@@ -15381,9 +15400,6 @@ def _resolve_chat_argv(
     # setdefault so an explicit operator value still wins.
     env.setdefault("COLORTERM", "truecolor")
     env["HERMES_TUI_DASHBOARD"] = "1"
-
-    if profile_dir is not None:
-        env["HERMES_HOME"] = str(profile_dir)
 
     if resume:
         _resume_db = _open_session_db_for_profile(

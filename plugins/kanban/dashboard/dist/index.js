@@ -525,6 +525,7 @@
 
     const [tenantFilter, setTenantFilter] = useState("");
     const [assigneeFilter, setAssigneeFilter] = useState("");
+    const [labelFilter, setLabelFilter] = useState("");
     const [includeArchived, setIncludeArchived] = useState(false);
     const [search, setSearch] = useState("");
     const [laneByProfile, setLaneByProfile] = useState(true);
@@ -568,6 +569,7 @@
     const loadBoard = useCallback(() => {
       const qs = new URLSearchParams();
       if (tenantFilter) qs.set("tenant", tenantFilter);
+      labelFilter.split(",").map(function (l) { return l.trim(); }).filter(Boolean).forEach(function (l) { qs.append("label", l); });
       if (includeArchived) qs.set("include_archived", "true");
       const url = qs.toString() ? `${API}/board?${qs}` : `${API}/board`;
       return SDK.fetchJSON(withBoard(url, board))
@@ -580,7 +582,7 @@
           setError(String(err && err.message ? err.message : err));
         })
         .finally(function () { setLoading(false); });
-    }, [tenantFilter, includeArchived, board]);
+    }, [tenantFilter, labelFilter, includeArchived, board]);
 
     // --- load list of boards for the switcher ------------------------------
     const loadBoardList = useCallback(function () {
@@ -701,8 +703,13 @@
       const filterTask = function (t) {
         if (tenantFilter && t.tenant !== tenantFilter) return false;
         if (assigneeFilter && t.assignee !== assigneeFilter) return false;
+        const labelFilters = labelFilter.split(",").map(function (l) { return l.trim().toLowerCase(); }).filter(Boolean);
+        if (labelFilters.length > 0) {
+          const taskLabels = (t.labels || []).map(function (l) { return String(l).toLowerCase(); });
+          if (!labelFilters.every(function (l) { return taskLabels.indexOf(l) !== -1; })) return false;
+        }
         if (q) {
-          const hay = `${t.id} ${t.title || ""} ${t.body || ""} ${t.result || ""} ${t.latest_summary || ""} ${t.assignee || ""} ${t.tenant || ""}`.toLowerCase();
+          const hay = `${t.id} ${t.title || ""} ${t.body || ""} ${t.result || ""} ${t.latest_summary || ""} ${t.assignee || ""} ${t.tenant || ""} ${(t.labels || []).join(" ")}`.toLowerCase();
           if (hay.indexOf(q) === -1) return false;
         }
         return true;
@@ -712,7 +719,7 @@
           return Object.assign({}, col, { tasks: col.tasks.filter(filterTask) });
         }),
       });
-    }, [boardData, tenantFilter, assigneeFilter, search]);
+    }, [boardData, tenantFilter, assigneeFilter, labelFilter, search]);
 
     // --- actions ------------------------------------------------------------
     const moveTask = useCallback(function (taskId, newStatus) {
@@ -1051,6 +1058,7 @@
           board: boardData,
           tenantFilter, setTenantFilter,
           assigneeFilter, setAssigneeFilter,
+          labelFilter, setLabelFilter,
           includeArchived, setIncludeArchived,
           laneByProfile, setLaneByProfile,
           search, setSearch,
@@ -2073,6 +2081,17 @@
           }),
         ),
       ),
+
+      h("div", { className: "flex flex-col gap-1",
+                 title: "Require one or more task labels. Use comma-separated labels; all must match." },
+        h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "labels", "Labels")),
+        h(Input, {
+          placeholder: tx(t, "labelFilterPlaceholder", "qa, frontend"),
+          value: props.labelFilter,
+          onChange: function (e) { props.setLabelFilter(e.target.value); },
+          className: "w-36 h-8",
+        }),
+      ),
       h("label", { className: "flex items-center gap-2 text-xs",
                    title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
         h(Checkbox, {
@@ -2105,10 +2124,11 @@
           props.setSearch("");
           props.setTenantFilter("");
           props.setAssigneeFilter("");
+          props.setLabelFilter("");
           props.setIncludeArchived(false);
         },
         size: "sm",
-        title: "Clear all active filters (search, tenant, assignee, archived).",
+        title: "Clear all active filters (search, tenant, assignee, labels, archived).",
       }, tx(t, "clearFilters", "Clear filters")),
     );
   }
@@ -2716,6 +2736,10 @@
               ? h(Badge, { variant: "outline", className: "hermes-kanban-tag",
                            title: `Tenant: ${t.tenant}. Free-form tag for grouping tasks (customer, project, team).` }, t.tenant)
               : null,
+            (t.labels || []).map(function (label) {
+              return h(Badge, { key: label, variant: "outline", className: "hermes-kanban-label",
+                                title: `Label: ${label}` }, label);
+            }),
             progress
               ? h("span", {
                   className: cn(
@@ -2773,6 +2797,7 @@
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
     const [skills, setSkills] = useState("");
+    const [labels, setLabels] = useState("");
     // A board with a configured workdir defaults to a persistent workspace:
     // worktree for git repositories, dir for ordinary directories. Boards
     // without one keep scratch for disposable research and ops tasks.
@@ -2806,6 +2831,11 @@
         .map(function (s) { return s.trim(); })
         .filter(function (s) { return s.length > 0; });
       if (skillList.length > 0) body.skills = skillList;
+      const labelList = labels
+        .split(",")
+        .map(function (s) { return s.trim(); })
+        .filter(function (s) { return s.length > 0; });
+      if (labelList.length > 0) body.labels = labelList;
       // Only send workspace_kind when it's non-default. Keeps the request
       // shape small and interoperable with older dispatcher versions.
       if (workspaceKind && workspaceKind !== "scratch") {
@@ -2821,7 +2851,7 @@
         if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
       }
       props.onSubmit(body);
-      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
+      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills(""); setLabels("");
       setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
       setGoalMode(false); setGoalMaxTurns("");
     };
@@ -2878,6 +2908,14 @@
         placeholder: tx(t, "skillsPlaceholder",
           "skills (optional, comma-separated): translation, github-code-review"),
         title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
+        className: "h-7 text-xs",
+      }),
+      h(Input, {
+        value: labels,
+        onChange: function (e) { setLabels(e.target.value); },
+        placeholder: tx(t, "labelsPlaceholder",
+          "labels (optional, comma-separated): qa, frontend"),
+        title: "Attach normalized kanban labels to this task. Use labels for routing, filtering, and slash-command parity.",
         className: "h-7 text-xs",
       }),
       h("div", { className: "flex gap-2 items-center" },
@@ -3387,6 +3425,7 @@
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
         t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
+        (t.labels && t.labels.length > 0) ? h(MetaRow, { label: tx(i18n, "labels", "Labels"), value: t.labels.join(", ") }) : null,
         h(MetaRow, {
           label: tx(i18n, "workspace", "Workspace"),
           value: `${t.workspace_kind}${t.workspace_path ? ": " + t.workspace_path : ""}`,

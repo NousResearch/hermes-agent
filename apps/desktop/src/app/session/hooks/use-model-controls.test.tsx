@@ -137,6 +137,22 @@ describe('useModelControls', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
 
+  it('uses a session created after the model controls callback was captured', async () => {
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'claude-sonnet-4.6' }) as never)
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+    $activeSessionId.set('session-created-after-render')
+
+    await controls.selectModel({ model: 'claude-sonnet-4.6', provider: 'anthropic' })
+
+    expect(requestGateway).toHaveBeenCalledWith('config.set', {
+      session_id: 'session-created-after-render',
+      key: 'model',
+      value: 'claude-sonnet-4.6 --provider anthropic --session'
+    })
+  })
+
   it('session-scopes MoA preset selections so they cannot persist as the global gateway default', async () => {
     $activeSessionId.set('session-1')
     const requestGateway = vi.fn(async () => ({ key: 'model', value: 'BeastMode' }) as never)

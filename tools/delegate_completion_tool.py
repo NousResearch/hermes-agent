@@ -80,14 +80,17 @@ def _normalize_prompts(prompts: Optional[List[Any]], prompt: Optional[Any]) -> L
 def _call_one(
     text: str,
     *,
-    provider: Optional[str],
-    model: Optional[str],
     timeout: Optional[float],
     system: Optional[str],
     temperature: Optional[float],
     max_tokens: Optional[int],
 ) -> str:
-    """Hit the auxiliary router once. Returns the assistant text content."""
+    """Hit the auxiliary router once. Returns the assistant text content.
+
+    Provider and model are resolved exclusively from the
+    ``auxiliary.delegate_completion`` config via ``call_llm(task=...)``;
+    this tool intentionally does not expose per-call overrides.
+    """
     from agent.auxiliary_client import call_llm
 
     messages: List[Dict[str, Any]] = []
@@ -97,30 +100,34 @@ def _call_one(
 
     # ``task="delegate_completion"`` makes ``call_llm`` read
     # ``auxiliary.delegate_completion`` config for provider/model/extra_body
-    # by name. Explicit ``provider``/``model``/``timeout`` arguments still
-    # win when supplied (matches the helper's own semantics).
+    # by name. Routing stays entirely in config — there are no per-call
+    # overrides on purpose.
     response = call_llm(
         "delegate_completion",
         messages=messages,
-        provider=provider,
-        model=model,
         timeout=timeout,
         temperature=temperature,
         max_tokens=max_tokens,
     )
     from agent.auxiliary_client import (
-        _extract_aux_response_text,
+        extract_content_or_reasoning,
     )
 
-    return _extract_aux_response_text(response) or ""
+    # ``call_llm`` returns a normalized chat-completions response with
+    # ``choices[0].message``; ``extract_content_or_reasoning`` reads that
+    # shape (and falls back to reasoning fields for models that emit
+    # content=None), so it works for every provider the auxiliary chain
+    # resolves — Responses-API wrappers, OpenRouter, native Anthropic,
+    # OpenAI-compatible backends, etc. Using
+    # ``_extract_aux_response_text`` here would silently return ``""``
+    # for any standard provider.
+    return extract_content_or_reasoning(response) or ""
 
 
 def delegate_completion(
     prompt: str = None,
     batch=None,
     *,
-    provider: str = None,
-    model: str = None,
     timeout: float = None,
     system: str = None,
     temperature: float = None,
@@ -129,13 +136,17 @@ def delegate_completion(
 ) -> str:
     """Run a single prompt (or a small batch of prompts) through the auxiliary router.
 
+    Routing (provider + model) is resolved exclusively from the
+    ``auxiliary.delegate_completion`` config block — this tool deliberately
+    does NOT expose ``provider``/``model`` overrides, consistent with the
+    standing delegation-model-routing policy. Override routing by editing
+    ``config.yaml``, never by passing it through the tool.
+
     Args:
         prompt: A single user-side prompt. Mutually exclusive with ``batch``.
         batch:  A list of prompts to run with the same routing; responses are
                 returned in the same order. Keeps the tool usable from any
                 provider that disallows nested rounds.
-        provider: Override the configured auxiliary provider for this call.
-        model:    Override the configured auxiliary model.
         timeout:  Seconds. Falls back to ``auxiliary.delegate_completion.timeout``.
         system:   Optional system message prepended to the prompt.
         temperature: Optional sampling temperature.
@@ -170,21 +181,12 @@ def delegate_completion(
         for text in prompts:
             text_out = _call_one(
                 text,
-                provider=provider,
-                model=model,
                 timeout=timeout,
                 system=system,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            outputs.append(
-                {
-                    "text": text_out,
-                    "input": text,
-                    "provider": provider,
-                    "model": model,
-                }
-            )
+            outputs.append({"text": text_out, "input": text})
         return json.dumps(
             {"success": True, "results": outputs, "count": len(outputs)},
             ensure_ascii=False,
@@ -230,20 +232,6 @@ _DELEGATE_COMPLETION_SCHEMA = {
                     "List of prompts to run through the same backend. "
                     "Responses are returned in the same order as input. "
                     "Mutually exclusive with ``prompt``."
-                ),
-            },
-            "provider": {
-                "type": "string",
-                "description": (
-                    "Override the configured auxiliary provider for this "
-                    "call (e.g. ``openrouter``, ``main``, ``nous``, "
-                    "``anthropic``, ``custom``)."
-                ),
-            },
-            "model": {
-                "type": "string",
-                "description": (
-                    "Override the configured auxiliary model for this call."
                 ),
             },
             "timeout": {

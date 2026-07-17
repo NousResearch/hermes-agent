@@ -27,16 +27,36 @@ from tools.delegate_completion_tool import (
 def _fake_response(text: str):
     """Return a duck-typed auxiliary_client response.
 
-    ``_extract_aux_response_text`` first looks for ``output_text`` on the
-    top-level response. Setting that field is the smallest surface that
-    exercises the helper's primary branch, which is the branch every
-    code path we care about (``call_llm`` with the standard Chat
-    Completions response shape) takes in production after the auxiliary
-    router normalizes the payload.
+    ``extract_content_or_reasoning`` (the helper the tool now uses) reads
+    ``response.choices[0].message.content`` — that is the normalized chat
+    completion shape ``call_llm`` returns for every provider the auxiliary
+    chain resolves (OpenAI-compatible, OpenRouter, Responses-API wrappers,
+    native Anthropic, etc.). We mirror that exact shape here so the tests
+    exercise the real production code path.
     """
-    resp = type("Aux", (), {})()
-    resp.output_text = text
-    return resp
+
+    class _Message:
+        def __init__(self, content):
+            self.content = content
+            self.reasoning = None
+            self.reasoning_content = None
+            self.reasoning_details = None
+
+    class _Choice:
+        def __init__(self, content):
+            self.message = _Message(content)
+
+    class _Resp:
+        def __init__(self, content):
+            self.choices = [_Choice(content)]
+            # The Responses-API-style top-level fields are intentionally
+            # absent so the helper is forced to take the
+            # ``choices[0].message.content`` branch — that's the only branch
+            # that returns a non-empty result for standard providers.
+            self.output_text = None
+            self.output = None
+
+    return _Resp(text)
 
 
 class TestDelegateCompletionDispatch:
@@ -114,7 +134,11 @@ class TestDelegateCompletionDispatch:
         assert result["success"] is False
         assert "required" in result["error"].lower()
 
-    def test_overrides_forwarded_to_call_llm(self, monkeypatch):
+    def test_routing_stays_in_config_not_kwargs(self, monkeypatch):
+        """Per-call ``provider``/``model`` overrides were deliberately
+        removed so routing stays in ``auxiliary.delegate_completion``
+        config; this test pins that contract.
+        """
         seen = {}
 
         def _fake_call_llm(*args, **kwargs):
@@ -126,15 +150,13 @@ class TestDelegateCompletionDispatch:
         )
         delegate_completion(
             prompt="x",
-            provider="openrouter",
-            model="xai/grok-mini",
             timeout=12.5,
             system="be terse",
             temperature=0.2,
             max_tokens=64,
         )
-        assert seen["provider"] == "openrouter"
-        assert seen["model"] == "xai/grok-mini"
+        assert "provider" not in seen, seen
+        assert "model" not in seen, seen
         assert seen["timeout"] == 12.5
         assert seen["temperature"] == 0.2
         assert seen["max_tokens"] == 64
@@ -168,6 +190,27 @@ class TestDelegateCompletionDispatch:
         assert result["success"] is True
         assert result["results"][0]["text"] == ""
 
+    def test_normalized_chat_completions_shape_returns_text(self, monkeypatch):
+        """Regression for tek's review on PR #59214.
+
+        ``call_llm`` normalizes every successful provider response to the
+        chat-completions ``choices[0].message`` shape, NOT the Responses-API
+        ``output_text`` / ``output`` shape. The older helper
+        ``_extract_aux_response_text`` returned ``""`` for that shape,
+        silently reporting success while emitting zero content for every
+        standard provider. The tool must instead use
+        ``extract_content_or_reasoning`` so the chat-completions shape is
+        read directly.
+        """
+        monkeypatch.setattr(
+            "agent.auxiliary_client.call_llm",
+            lambda *a, **kw: _fake_response("payload-from-choices"),
+        )
+        raw = delegate_completion(prompt="x")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["results"][0]["text"] == "payload-from-choices"
+
 
 class TestDelegateCompletionRegistration:
     """The tool must self-register under the ``delegation`` toolset so
@@ -186,14 +229,16 @@ class TestDelegateCompletionRegistration:
     def test_schema_declares_expected_arguments(self):
         # The schema is what the LLM sees; verify the documented arg
         # set is present so the model knows how to call the tool.
+        # Routing keys (``provider``, ``model``) are intentionally
+        # absent — they live in ``auxiliary.delegate_completion`` config.
         import tools.delegate_completion_tool as m
 
         schema = getattr(m, "_DELEGATE_COMPLETION_SCHEMA")
         props = schema["parameters"]["properties"]
         assert "prompt" in props
         assert "batch" in props
-        assert "provider" in props
-        assert "model" in props
+        assert "provider" not in props
+        assert "model" not in props
         # Both prompt shapes are the documented contract.
         assert props["prompt"]["type"] == "string"
         assert props["batch"]["type"] == "array"

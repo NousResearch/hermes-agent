@@ -443,7 +443,20 @@ Get a text-based snapshot of the current page's accessibility tree. Returns inte
 - **`full=false`** (default): Compact view showing only interactive elements
 - **`full=true`**: Complete page content
 
-Snapshots over 8000 characters are automatically summarized by an LLM.
+Snapshots larger than `browser.snapshot_threshold` are automatically summarized
+or truncated. The default remains 8000 characters. Increase it for long pages
+where more source content should reach the agent:
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  snapshot_threshold: 30000
+```
+
+You can also run `hermes config set browser.snapshot_threshold 30000`. The
+setting applies to both explicit `browser_snapshot` calls and the automatic
+snapshot returned after navigation, including the Camofox backend. Restart the
+current Hermes session after changing it so the browser config cache reloads.
 
 ### `browser_click`
 
@@ -655,7 +668,7 @@ If paid features aren't available on your plan, Hermes automatically falls back 
 ## Limitations
 
 - **Text-based interaction** — relies on accessibility tree, not pixel coordinates
-- **Snapshot size** — large pages may be truncated or LLM-summarized at 8000 characters
+- **Snapshot size** — large pages may be truncated or LLM-summarized at `browser.snapshot_threshold` (default: 8000 characters)
 - **Session timeout** — cloud sessions expire based on your provider's plan settings
 - **Cost** — cloud sessions consume provider credits; sessions are automatically cleaned up when the conversation ends or after inactivity. Use `/browser connect` for free local browsing.
 - **No file downloads** — cannot download files from the browser

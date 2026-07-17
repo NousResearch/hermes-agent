@@ -563,6 +563,13 @@ class TestWebServerEndpoints:
 
     # ── Dashboard font override ─────────────────────────────────────────
 
+    def test_get_dashboard_themes_includes_clarity_preset(self):
+        """The readable built-in theme is advertised by the dashboard API."""
+        resp = self.client.get("/api/dashboard/themes")
+        assert resp.status_code == 200
+        names = {theme["name"] for theme in resp.json()["themes"]}
+        assert "clarity" in names
+
     def test_get_dashboard_font_defaults_to_theme(self):
         """With no override persisted, the active font is the theme sentinel."""
         resp = self.client.get("/api/dashboard/font")
@@ -5008,6 +5015,9 @@ class TestNormaliseThemeDefinition:
         typo = result["typography"]
         assert "fontSans" in typo
         assert "fontMono" in typo
+        assert "Malgun Gothic" in typo["fontSans"]
+        assert "Noto Sans KR" in typo["fontSans"]
+        assert "D2Coding" in typo["fontMono"]
         assert typo["baseSize"] == "15px"
         assert typo["lineHeight"] == "1.55"
         assert typo["letterSpacing"] == "0"

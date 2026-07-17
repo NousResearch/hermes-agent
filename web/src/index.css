@@ -64,10 +64,15 @@
   /* Typography tokens — rewritten by ThemeProvider. Defaults match the
      system stack so themes that don't override look native. */
   --theme-font-sans: system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+    "Helvetica Neue", Arial, "Apple SD Gothic Neo", "Malgun Gothic",
+    "Noto Sans KR", "Noto Sans CJK KR", sans-serif;
   --theme-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo,
-    Consolas, monospace;
+    Consolas, "D2Coding", "Noto Sans Mono CJK KR", monospace;
   --theme-font-display: var(--theme-font-sans);
+  --font-mondwest: var(--theme-font-display);
+  --font-expanded: var(--theme-font-display);
+  --font-compressed: var(--theme-font-display);
+  --font-courier: var(--theme-font-mono);
   --theme-base-size: 15px;
   --theme-line-height: 1.55;
   --theme-letter-spacing: 0;
@@ -120,6 +125,11 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   --spacing: calc(0.25rem * var(--theme-spacing-mul, 1));
   --font-sans: var(--theme-font-sans);
   --font-mono: var(--theme-font-mono);
+  --font-display: var(--theme-font-display);
+  --font-mondwest: var(--theme-font-display);
+  --font-expanded: var(--theme-font-display);
+  --font-compressed: var(--theme-font-display);
+  --font-courier: var(--theme-font-mono);
 }
 
 #root {
@@ -145,6 +155,23 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
    dashboard sizes. Keep in sync. */
 small { font-size: 1.0625rem; }
 code { font-size: 0.875rem; }
+
+/* Route legacy/design-system font utilities through dashboard theme tokens.
+   Existing pages can keep their stable class names while theme typography
+   and the font picker actually control chrome, body, and CJK fallback. */
+.font-mondwest,
+.font-expanded,
+.font-compressed {
+  font-family: var(--theme-font-display);
+}
+
+.font-courier {
+  font-family: var(--theme-font-mono);
+}
+
+.text-display {
+  letter-spacing: var(--theme-letter-spacing);
+}
 
 /* Shadcn-compat tokens.
    The dashboard's page code predates the Nous DS and uses shadcn-style
@@ -244,4 +271,3 @@ code { font-size: 0.875rem; }
   background: repeating-conic-gradient(currentColor 0% 25%, #0000 0% 50%) 0 0 /
     2px 2px;
 }
-

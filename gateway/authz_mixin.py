@@ -28,6 +28,21 @@ from gateway.whatsapp_identity import (
 )
 
 
+def _auth_env(name: str, default: str = "") -> str:
+    """Read allowlist/auth env; prefer profile secret_scope under multiplex."""
+    if not name:
+        return default
+    try:
+        from agent.secret_scope import get_secret
+
+        val = get_secret(name)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    except Exception:
+        pass
+    return (os.getenv(name) or default).strip()
+
+
 class GatewayAuthorizationMixin:
     """User/chat authorization methods for ``GatewayRunner``."""
 
@@ -47,10 +62,14 @@ class GatewayAuthorizationMixin:
         if not platform:
             return None
         profile_name = (profile or "").strip() or None
-        if profile_name:
+        if profile_name and profile_name != "default":
             profile_adapters = getattr(self, "_profile_adapters", None) or {}
             if profile_name in profile_adapters:
                 return profile_adapters[profile_name].get(platform)
+            # Fail closed: a stamped secondary profile with no registry entry
+            # (e.g. its adapter failed to connect) must NOT fall back to the
+            # default profile's adapter — that sends replies out the wrong bot.
+            return None
         adapters = getattr(self, "adapters", None) or {}
         return adapters.get(platform)
 
@@ -242,6 +261,21 @@ class GatewayAuthorizationMixin:
             return any(str(item).strip() for item in sender_allow)
         return False
 
+    def _pairing_store_for(self, source: "SessionSource"):
+        """Pick the per-profile PairingStore for a source, falling back to global.
+
+        In a multiplexing gateway, each profile owns its own pairing whitelist
+        so isolation is preserved. When the source has no profile (single-
+        profile gateway, or a path that hasn't stamped profile yet) or the
+        profile isn't registered, fall back to ``self.pairing_store`` (the
+        global default) so existing behavior is preserved.
+        """
+        per_profile = getattr(self, "pairing_stores", None) or {}
+        profile = getattr(source, "profile", None)
+        if profile and profile in per_profile:
+            return per_profile[profile]
+        return getattr(self, "pairing_store", None)
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -406,7 +440,7 @@ class GatewayAuthorizationMixin:
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
-        if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in {"true", "1", "yes"}:
+        if platform_allow_all_var and _auth_env(platform_allow_all_var).lower() in {"true", "1", "yes"}:
             return True
 
         # Adapter-verified role auth: the Discord adapter already confirmed the
@@ -426,20 +460,24 @@ class GatewayAuthorizationMixin:
         # allowlist IS configured, operator approval also writes the user into
         # that allowlist (see PairingStore._approve_user), keeping a single
         # operator-visible source of truth. (#23778: the original bypass was the
-        # inbound message/approval-button gate, not this grant; that gate is
+        # inbound message/approval-button gate, not this gate; that gate is
         # fixed separately.)
+        # In multiplex gateways, route to the per-profile PairingStore so each
+        # profile's whitelist is isolated; falls back to the global store when
+        # the source has no profile or the profile isn't registered.
         platform_name = source.platform.value if source.platform else ""
-        if self.pairing_store.is_approved(platform_name, user_id):
+        pairing_store = self._pairing_store_for(source)
+        if pairing_store is not None and pairing_store.is_approved(platform_name, user_id):
             return True
 
         # Check platform-specific and global allowlists
-        platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
+        platform_allowlist = _auth_env(platform_env_map.get(source.platform, ""))
         group_user_allowlist = ""
         group_chat_allowlist = ""
         if source.chat_type in {"group", "forum"}:
-            group_user_allowlist = os.getenv(platform_group_user_env_map.get(source.platform, ""), "").strip()
-            group_chat_allowlist = os.getenv(platform_group_chat_env_map.get(source.platform, ""), "").strip()
-        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+            group_user_allowlist = _auth_env(platform_group_user_env_map.get(source.platform, ""))
+            group_chat_allowlist = _auth_env(platform_group_chat_env_map.get(source.platform, ""))
+        global_allowlist = _auth_env("GATEWAY_ALLOWED_USERS")
 
         if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
             # No env allowlist configured. Adapters that own their own
@@ -488,7 +526,7 @@ class GatewayAuthorizationMixin:
                 if effective_policy == "allowlist":
                     return True
             # No allowlists configured -- check global allow-all flag
-            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+            return _auth_env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
 
         # Telegram can optionally authorize group traffic by chat ID.
         # Keep this separate from TELEGRAM_GROUP_ALLOWED_USERS, which gates

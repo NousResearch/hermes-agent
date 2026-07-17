@@ -1,0 +1,7 @@
+name: deepinfra
+version: 1.0.0
+description: "DeepInfra image generation backend (FLUX, Qwen-Image, …) via OpenAI-compatible /v1/images/generations. Catalog discovered live from api.deepinfra.com."
+author: Georgi Atsev
+kind: backend
+requires_env:
+  - DEEPINFRA_API_KEY

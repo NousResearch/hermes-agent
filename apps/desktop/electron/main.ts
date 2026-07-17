@@ -45,12 +45,14 @@ import {
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  effectiveRemoteToken,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normAuthMode,
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
   resolveAuthMode,
+  resolveEnvRemoteAuth,
   resolveTestWsUrl,
   tokenPreview
 } from './connection-config'
@@ -5896,9 +5898,22 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 
   const envOverride = key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
 
-  const remoteToken = decryptDesktopSecret(block.token)
-  const authMode = normAuthMode(block.authMode)
+  const envToken = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_TOKEN || '').trim() : ''
+  // An env-controlled URL must never inherit the saved fallback's token. A
+  // stale token would make Settings treat an unreachable URL-only override as
+  // resolved token auth and hide the session sign-in path.
+  const remoteToken = effectiveRemoteToken(envOverride, envToken, decryptDesktopSecret(block.token))
+  let authMode = envToken ? 'token' : normAuthMode(block.authMode)
   const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
+
+  if (envOverride && !envToken && remoteUrl) {
+    const probe = await probeRemoteAuthMode(remoteUrl)
+
+    if (probe.reachable && probe.authMode !== 'unknown') {
+      authMode = probe.authMode
+    }
+  }
+
   // The env override forces a plain remote connection. Otherwise reflect the
   // saved mode, preserving 'cloud' (a Hermes Cloud connection — Q6) so the UI
   // reopens into the cloud picker; any non-remote-like value collapses to local.
@@ -6115,19 +6130,20 @@ async function resolveRemoteBackend(profile) {
     return buildRemoteConnection(override.url, override.authMode, token, 'profile')
   }
 
-  // 2. Env override (global, token-auth only).
+  // 2. Env override (global). An explicit token preserves the legacy static-
+  //    token path. URL-only overrides probe the public status endpoint so
+  //    session-gated gateways can use the same sign-in flow as Settings.
   const rawEnvUrl = process.env.HERMES_DESKTOP_REMOTE_URL
   const rawEnvToken = process.env.HERMES_DESKTOP_REMOTE_TOKEN
 
   if (rawEnvUrl) {
-    if (!rawEnvToken) {
-      throw new Error(
-        'HERMES_DESKTOP_REMOTE_URL is set but HERMES_DESKTOP_REMOTE_TOKEN is not. ' +
-          'Both must be provided to connect to a remote Hermes backend.'
-      )
-    }
+    const envToken = String(rawEnvToken || '').trim()
 
-    return buildRemoteConnection(rawEnvUrl, 'token', rawEnvToken, 'env')
+    const envAuth = envToken
+      ? resolveEnvRemoteAuth(envToken)
+      : resolveEnvRemoteAuth(null, await probeRemoteAuthMode(rawEnvUrl))
+
+    return buildRemoteConnection(rawEnvUrl, envAuth.authMode, envAuth.token, 'env')
   }
 
   // 3. Global remote (or cloud — cloud resolves to a remote backend, Q6).

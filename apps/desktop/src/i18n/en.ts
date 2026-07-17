@@ -86,7 +86,7 @@ export const en: Translations = {
         "The background gateway didn't come up. Try one of the recovery steps below. Nothing here deletes your chats or settings.",
       remoteTitle: 'Remote gateway sign-in required',
       remoteDescription:
-        'Your remote gateway session has expired. Sign in again to reconnect. Nothing here deletes your chats or settings.',
+        'Hermes Desktop is not signed in to this remote gateway, or the previous session expired. Sign in to reconnect. Nothing here deletes your chats or settings.',
       retry: 'Retry',
       repairInstall: 'Repair install',
       useLocalGateway: 'Use local gateway',
@@ -557,7 +557,7 @@ export const en: Translations = {
         `Connection used only when “${profile}” is the active profile. Set it to Local to inherit the default.`,
       envOverrideTitle: 'Environment variables are controlling this desktop session.',
       envOverrideDesc:
-        'Unset HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN to use the saved setting below.',
+        'The gateway URL and optional token come from HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN. Session-based gateways can still be signed in or out below.',
       modeTitle: 'Connection mode',
       localTitle: 'Local gateway',
       localDesc: 'Start a private Hermes backend on localhost. This is the default and works offline.',

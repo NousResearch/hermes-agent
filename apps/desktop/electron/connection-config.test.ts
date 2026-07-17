@@ -23,12 +23,14 @@ import {
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  effectiveRemoteToken,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normAuthMode,
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
   resolveAuthMode,
+  resolveEnvRemoteAuth,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   tokenPreview
@@ -257,6 +259,46 @@ test('authModeFromStatus returns token when auth_required is false/missing', () 
   assert.equal(authModeFromStatus({}), 'token')
   assert.equal(authModeFromStatus(null), 'token')
   assert.equal(authModeFromStatus(undefined), 'token')
+})
+
+// --- resolveEnvRemoteAuth ---
+
+test('resolveEnvRemoteAuth keeps an explicit env token on the legacy token path', () => {
+  assert.deepEqual(resolveEnvRemoteAuth('  static-token  '), {
+    authMode: 'token',
+    token: 'static-token'
+  })
+})
+
+test('effectiveRemoteToken never inherits a saved fallback token for an env-controlled URL', () => {
+  assert.equal(effectiveRemoteToken(true, '', 'saved-fallback-token'), '')
+  assert.equal(effectiveRemoteToken(true, '  env-token  ', 'saved-fallback-token'), 'env-token')
+  assert.equal(effectiveRemoteToken(false, '', 'saved-fallback-token'), 'saved-fallback-token')
+})
+
+test('resolveEnvRemoteAuth uses the advertised session flow when URL is set without a token', () => {
+  assert.deepEqual(resolveEnvRemoteAuth(null, { reachable: true, authMode: 'oauth' }), {
+    authMode: 'oauth',
+    token: null
+  })
+  assert.deepEqual(resolveEnvRemoteAuth('   ', { reachable: true, authMode: 'oauth' }), {
+    authMode: 'oauth',
+    token: null
+  })
+})
+
+test('resolveEnvRemoteAuth requires a token when the gateway does not advertise session auth', () => {
+  assert.throws(
+    () => resolveEnvRemoteAuth(null, { reachable: true, authMode: 'token' }),
+    /HERMES_DESKTOP_REMOTE_TOKEN.*does not advertise session authentication/i
+  )
+})
+
+test('resolveEnvRemoteAuth preserves probe failure context when auth mode cannot be determined', () => {
+  assert.throws(
+    () => resolveEnvRemoteAuth(null, { reachable: false, authMode: 'unknown', error: 'connect ECONNREFUSED' }),
+    /could not determine.*connect ECONNREFUSED/i
+  )
 })
 
 // --- resolveAuthMode ---

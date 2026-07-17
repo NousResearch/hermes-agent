@@ -13,6 +13,7 @@ import {
   $messages,
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
+  $selectedStoredSessionId,
   setActiveSessionId,
   setCurrentCwd,
   setMessages,
@@ -37,7 +38,7 @@ vi.mock('@/hermes', async importOriginal => ({
 const RUNTIME_SESSION_ID = 'rt-new-001'
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'startFreshSessionDraft'
+  'createBackendSessionForSend' | 'resumeSession' | 'startFreshSessionDraft'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -217,7 +218,7 @@ function ResumeHarness({
   runtimeIdByStoredSessionIdRef,
   sessionStateByRuntimeIdRef
 }: {
-  onReady: (resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) => void
+  onReady: (actions: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
@@ -243,8 +244,8 @@ function ResumeHarness({
   })
 
   useEffect(() => {
-    onReady(actions.resumeSession)
-  }, [actions.resumeSession, onReady])
+    onReady(actions)
+  }, [actions, onReady])
 
   return null
 }
@@ -266,10 +267,10 @@ describe('resumeSession failure recovery', () => {
       sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
     } = {}
   ): Promise<void> {
-    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
-    render(<ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} {...options} />)
-    await waitFor(() => expect(resume).not.toBeNull())
-    await resume!('stored-1', true)
+    let actions: HarnessHandle | null = null
+    render(<ResumeHarness onReady={handle => (actions = handle)} requestGateway={requestGateway} {...options} />)
+    await waitFor(() => expect(actions).not.toBeNull())
+    await actions!.resumeSession('stored-1', true)
   }
 
   it('arms $resumeFailedSessionId when resume RPC and REST fallback both fail', async () => {
@@ -334,6 +335,36 @@ describe('resumeSession failure recovery', () => {
 
     // resumeSession must resolve (swallow the fallback failure), not reject.
     await expect(runResume(requestGateway)).resolves.toBeUndefined()
+  })
+
+  it('does not let an in-flight resume revive a fresh chat draft', async () => {
+    setSessions([storedSession()])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+    let actions: HarnessHandle | null = null
+
+    render(<ResumeHarness onReady={handle => (actions = handle)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      const pendingResume = actions!.resumeSession('stored-1', true)
+
+      // resolveStoredSession yields before the gateway resume. New Chat must
+      // invalidate that stale continuation rather than let it reselect stored-1.
+      actions!.startFreshSessionDraft(true)
+      await pendingResume
+    })
+
+    expect(requestGateway).not.toHaveBeenCalledWith('session.resume', expect.anything())
+    expect($activeSessionId.get()).toBeNull()
+    expect($selectedStoredSessionId.get()).toBeNull()
+    expect($messages.get()).toEqual([])
   })
 
   it('leaves the failure latch clear when resume succeeds', async () => {
@@ -581,7 +612,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
     render(
       <ResumeHarness
-        onReady={r => (resume = r)}
+        onReady={actions => (resume = actions.resumeSession)}
         requestGateway={requestGateway}
         runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
         sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
@@ -623,7 +654,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
     render(
       <ResumeHarness
-        onReady={r => (resume = r)}
+        onReady={actions => (resume = actions.resumeSession)}
         requestGateway={requestGateway}
         runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
         sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}

@@ -217,6 +217,11 @@ export function useSessionActions({
         ? normalizeNewChatWorkspaceTarget(draftOptions.workspaceTarget)
         : undefined
 
+      // A resume may be between awaits (profile lookup / gateway swap) when the
+      // user starts a new chat. Invalidate that request before clearing the
+      // view; otherwise its stale continuation can select and paint the old
+      // session over this fresh draft.
+      resumeRequestRef.current += 1
       resetViewSync()
       busyRef.current = false
       setBusy(false)

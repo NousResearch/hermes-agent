@@ -2977,6 +2977,7 @@ class DiscordAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Edit a previously sent Discord message.
 
@@ -3056,7 +3057,15 @@ class DiscordAdapter(BasePlatformAdapter):
                     self._last_overflow_preview[_preview_key] = truncated
                 else:
                     raise
-            return SendResult(success=True, message_id=message_id)
+            result = SendResult(success=True, message_id=message_id)
+            if finalize:
+                self._record_discord_response(
+                    reply_to=(metadata or {}).get("reply_to_message_id"),
+                    result=result,
+                    content=content,
+                    final=True,
+                )
+            return result
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))

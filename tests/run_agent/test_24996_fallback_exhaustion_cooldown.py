@@ -47,6 +47,45 @@ def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
 
 
 class TestExhaustionArmsCooldown:
+    def test_nonempty_chain_exhaustion_fires_observer_once(self):
+        """Operators get one structured exhaustion event, not log parsing or spam."""
+        agent = _make_agent(
+            fallback_model=[{"provider": "kimi-coding", "model": "kimi-k2.7-code"}]
+        )
+        agent.provider = "kimi-coding"
+        agent.model = "kimi-k2.7-code"
+        agent._fallback_index = len(agent._fallback_chain)
+
+        with (
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as invoke,
+        ):
+            assert agent._try_activate_fallback(reason=FailoverReason.timeout) is False
+            # A repeated terminal call in the same fallback episode must not
+            # emit duplicate exhaustion events.
+            assert agent._try_activate_fallback(reason=FailoverReason.timeout) is False
+
+        invoke.assert_called_once_with(
+            "on_fallback_chain_exhausted",
+            provider="kimi-coding",
+            model="kimi-k2.7-code",
+            primary_provider=agent._primary_runtime["provider"],
+            primary_model=agent._primary_runtime["model"],
+            reason="timeout",
+            chain_length=1,
+            session_id=agent.session_id or "",
+            platform=agent.platform or "",
+        )
+
+    def test_empty_chain_does_not_fire_exhaustion_observer(self):
+        agent = _make_agent(fallback_model=None)
+        with (
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as invoke,
+        ):
+            assert agent._try_activate_fallback(reason=FailoverReason.timeout) is False
+        invoke.assert_not_called()
+
     def test_non_retryable_exhaustion_arms_cooldown(self):
         """Walking a non-empty chain to exhaustion on a non-rate-limit
         failure arms a short ``_rate_limited_until`` cooldown.

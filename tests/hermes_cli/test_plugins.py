@@ -627,6 +627,9 @@ class TestPluginHooks:
         assert "pre_api_request" in VALID_HOOKS
         assert "post_api_request" in VALID_HOOKS
         assert "api_request_error" in VALID_HOOKS
+        assert "on_fallback_activated" in VALID_HOOKS
+        assert "on_fallback_chain_exhausted" in VALID_HOOKS
+        assert "on_primary_restored" in VALID_HOOKS
         assert "subagent_start" in VALID_HOOKS
         assert "transform_terminal_output" in VALID_HOOKS
         assert "transform_tool_result" in VALID_HOOKS

@@ -396,9 +396,7 @@ class TestPeerLookupHelpers:
             "ai_card": "Role: Assistant",
         }
         assert assistant_peer.context.call_count == 2
-        assistant_peer.context.assert_any_call(
-            target=session.user_peer_id, search_query=None,
-        )
+        assistant_peer.context.assert_any_call(target=session.user_peer_id)
         assistant_peer.context.assert_any_call(target=session.assistant_peer_id)
 
     def test_get_ai_representation_uses_peer_api(self):

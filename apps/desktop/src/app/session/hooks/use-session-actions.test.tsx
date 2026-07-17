@@ -711,7 +711,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(sessionStateByRuntimeIdRef.current.has('rt-recycled')).toBe(false)
   })
 
-  it('honours a warm cache entry whose stored id matches (no needless refetch)', async () => {
+  it('honours a warm cache entry whose stored id matches and refreshes its persisted transcript', async () => {
     // Correctly-wired mapping: 'rt-A' <-> 'stored-A'. The fast-path should trust
     // it and never reach session.resume. session.activate refreshes the live
     // projection and, critically, rebinds its event transport after reconnect.
@@ -739,6 +739,8 @@ describe('resumeSession warm-cache mapping integrity', () => {
       return {} as never
     })
 
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-A' } as never)
+
     let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
     render(
       <ResumeHarness
@@ -752,10 +754,88 @@ describe('resumeSession warm-cache mapping integrity', () => {
     await resume!('stored-A', true)
 
     // Fast-path served the session from cache: no full resume RPC, mapping intact.
+    // The persisted transcript still refreshes in parallel because the runtime
+    // projection can differ even when its row count matches.
     const methods = requestGateway.mock.calls.map(([method]) => method)
     expect(methods).toContain('session.activate')
     expect(methods).not.toContain('session.resume')
+    expect(getSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
+  })
+
+  it('repairs an idle warm cache from a divergent equal-length persisted transcript', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [
+      {
+        id: 'cached-user',
+        role: 'user',
+        parts: [{ type: 'text', text: 'stale runtime prompt' }]
+      },
+      {
+        id: 'cached-assistant',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'stale runtime answer' }]
+      }
+    ]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const staleRuntimeMessages = [
+      { content: 'stale runtime prompt', role: 'user', timestamp: 1 },
+      { content: 'stale runtime answer', role: 'assistant', timestamp: 2 }
+    ]
+
+    const persistedMessages = [
+      { content: 'prompt saved after compression', role: 'user', timestamp: 3 },
+      { content: 'answer saved after compression', role: 'assistant', timestamp: 4 }
+    ]
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: persistedMessages,
+      session_id: 'stored-A'
+    } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          message_count: staleRuntimeMessages.length,
+          messages: staleRuntimeMessages,
+          running: false,
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, next) => (resumedState = next)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    const renderedMessages = JSON.stringify(resumedState?.messages)
+    expect(renderedMessages).toContain('prompt saved after compression')
+    expect(renderedMessages).toContain('answer saved after compression')
+    expect(renderedMessages).not.toContain('stale runtime answer')
   })
 
   it('keeps a warm runtime and optimistic turn on a transient activation timeout', async () => {

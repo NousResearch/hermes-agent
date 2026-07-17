@@ -560,6 +560,17 @@ export function useSessionActions({
           sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
           dropSessionState(cachedRuntimeId)
         } else {
+          // Paint the warm cache immediately, but also refresh the persisted
+          // transcript in parallel. A resumed runtime carries the agent's
+          // compression projection, which can have the same row count as the
+          // stored conversation while containing different rows. Trusting that
+          // projection alone made completed prompts disappear after an app
+          // restart whenever this warm path short-circuited the cold REST
+          // prefetch. Watch mirrors stay live-only by design.
+          const persistedTranscriptPromise = isWatchWindow()
+            ? null
+            : getSessionMessages(storedSessionId, sessionProfile).catch(() => null)
+
           setFreshDraftReady(false)
           clearNotifications()
           setSelectedStoredSessionId(storedSessionId)
@@ -611,11 +622,35 @@ export function useSessionActions({
             } else {
               const runtimeInfo = applyRuntimeInfo(activated.info)
 
-              const activatedMessages = activated.messages.length
+              let activatedMessages = activated.messages.length
                 ? reconcileAuthoritativeMessages(activated.messages, cachedViewState.messages)
                 : cachedViewState.messages
 
               const running = Boolean(activated.running ?? cachedViewState.busy)
+
+              // While idle, the persisted REST transcript is the display
+              // authority: session.activate returns the runtime's compressed
+              // context projection, not necessarily the complete conversation.
+              // During a live turn, keep the runtime/cache projection so an
+              // accepted but not-yet-persisted prompt or stream is never lost.
+              if (!running && persistedTranscriptPromise) {
+                const persisted = await persistedTranscriptPromise
+
+                if (!isCurrentResume()) {
+                  return
+                }
+
+                const activatedStoredSessionId = activated.session_key || activated.resumed
+
+                const persistedMatchesActivatedSession =
+                  !persisted?.session_id ||
+                  !activatedStoredSessionId ||
+                  persisted.session_id === activatedStoredSessionId
+
+                if (persisted && persistedMatchesActivatedSession) {
+                  activatedMessages = reconcileAuthoritativeMessages(persisted.messages, activatedMessages)
+                }
+              }
 
               const activatedState = updateSessionState(
                 cachedRuntimeId,

@@ -2421,6 +2421,74 @@ def test_interim_commentary_redacts_secrets_from_codex_commentary_items(monkeypa
     assert "Using credential" in observed[0]
 
 
+def test_interim_commentary_respects_show_commentary_off(monkeypatch):
+    """display.show_commentary=false keeps commentary off the interim path."""
+    agent = _build_agent(monkeypatch)
+    agent.show_commentary = False
+    observed = []
+    agent.interim_assistant_callback = (
+        lambda text, *, already_streamed=False: observed.append(text)
+    )
+
+    agent._emit_interim_assistant_message({
+        "role": "assistant",
+        "content": "",
+        "codex_message_items": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "phase": "commentary",
+                "content": [
+                    {"type": "output_text", "text": "I'll inspect the repo first."}
+                ],
+            },
+        ],
+    })
+
+    assert observed == []
+
+
+def test_run_codex_stream_show_commentary_off_falls_back_to_reasoning(monkeypatch):
+    """With show_commentary=false the live stream keeps the legacy behavior:
+    commentary deltas flow to the reasoning channel and the interim callback
+    stays silent."""
+    agent = _build_agent(monkeypatch)
+    agent.show_commentary = False
+    delivered = []
+    reasoning_streamed = []
+    agent.interim_assistant_callback = (
+        lambda text, *, already_streamed=False: delivered.append(text)
+    )
+    agent.reasoning_callback = reasoning_streamed.append
+    commentary_item = SimpleNamespace(
+        type="message",
+        phase="commentary",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="I'll inspect the repo first.")],
+    )
+
+    def _fake_create(**kwargs):
+        return _FakeCreateStream([
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="message", phase="commentary"),
+            ),
+            SimpleNamespace(type="response.output_text.delta", delta="I'll inspect the repo first."),
+            SimpleNamespace(type="response.output_item.done", item=commentary_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            ),
+        ])
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    agent._run_codex_stream(_codex_request_kwargs())
+
+    assert delivered == []
+    assert reasoning_streamed == ["I'll inspect the repo first."]
+
+
 def test_interim_commentary_deduplicates_identical_items_in_one_response(monkeypatch):
     agent = _build_agent(monkeypatch)
     observed = []

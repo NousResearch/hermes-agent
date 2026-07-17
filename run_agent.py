@@ -4766,6 +4766,10 @@ class AIAgent:
         commentary through the interim assistant callback before tool calls run.
         ``phase=analysis`` remains hidden because it is provider scratchpad.
         """
+        if not getattr(self, "show_commentary", True):
+            # display.show_commentary=false — commentary stays on the
+            # reasoning channel (pre-commentary-channel behavior).
+            return []
         items = assistant_msg.get("codex_message_items")
         if not isinstance(items, list):
             return []

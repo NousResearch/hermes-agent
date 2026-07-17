@@ -644,16 +644,22 @@ here; full developer notes live in `AGENTS.md`, user-facing docs under
 
 ### Delegation (`delegate_task`)
 
-Synchronous subagent spawn — the parent waits for the child's summary
-before continuing its own loop. Isolated context + terminal session.
+Spawn a subagent with an isolated context + terminal session.
 
 - **Single:** `delegate_task(goal, context)`.
 - **Batch:** `delegate_task(tasks=[{goal, ...}, ...])` runs children in
-  parallel, capped by `delegation.max_concurrent_children` (default 3).
-- **Roles:** `leaf` (default; cannot re-delegate) vs `orchestrator`
-  (can spawn its own workers, bounded by `delegation.max_spawn_depth`).
-- **Not durable.** If the parent is interrupted, the child is
-  cancelled. For work that must outlive the turn, use `cronjob` or
+  parallel as one joined batch, capped by
+  `delegation.max_concurrent_children` (default 3).
+- **Completion:** top-level model calls request background execution
+  automatically. An accepted dispatch on a routable session returns one handle
+  immediately; stateless sessions and capacity-rejected dispatches run inline.
+  A batch re-enters as one consolidated result after every child finishes.
+- **Roles:** a `leaf` cannot call `clarify`, `cronjob`, `delegate_task`,
+  `execute_code`, `memory`, or `send_message`; an `orchestrator` regains only
+  `delegate_task`, bounded by `delegation.max_spawn_depth`.
+- **Not durable.** A backgrounded child is still process-local — if the
+  parent process exits, the child is lost. For work that must outlive
+  the process, use `cronjob` or
   `terminal(background=True, notify_on_complete=True)`.
 
 Config: `delegation.*` in `config.yaml`.

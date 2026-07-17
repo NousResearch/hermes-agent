@@ -5841,12 +5841,12 @@ class AIAgent:
             _strip_model_hidden_task_fields,
             delegate_task as _delegate_task,
         )
-        # Delegations from the top-level MODEL always run in the background —
-        # the model does not get to choose. delegate_task returns immediately
-        # with a handle (one per task) and each subagent's result re-enters the
-        # conversation as a new message when it finishes. This applies to BOTH
-        # a single task and a fan-out batch (each task becomes its own
-        # independent background subagent). The one exception:
+        # Delegations from the top-level MODEL request background execution;
+        # the model does not get to choose. Routable sessions return one handle
+        # when capacity admits the dispatch. Stateless sessions and rejected
+        # background dispatches run inline instead. A fan-out batch is one unit:
+        # its children run in parallel and one consolidated result re-enters
+        # after all of them finish. The other synchronous case:
         #   - A delegation from an ORCHESTRATOR SUBAGENT (depth > 0) stays
         #     synchronous: the orchestrator needs its workers' results within
         #     its own turn to compose a summary, and a subagent doesn't own the

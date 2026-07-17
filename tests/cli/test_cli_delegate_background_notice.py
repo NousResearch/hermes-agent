@@ -1,9 +1,10 @@
 """The CLI spells out auto-resume when a delegate_task goes to the background.
 
-A top-level ``delegate_task`` returns a handle immediately and runs the subagent
-in the background; the result re-enters the conversation as a fresh turn when it
-finishes. ``_on_tool_complete`` prints a one-line, no-spinner reassurance at
-dispatch so the idle prompt doesn't read as "nothing happened".
+An accepted top-level CLI ``delegate_task`` returns one handle immediately and
+runs the unit in the background; its result re-enters the conversation as a
+fresh turn when it finishes. ``_on_tool_complete`` prints a one-line,
+no-spinner reassurance at dispatch so the idle prompt doesn't read as
+"nothing happened". Inline fallbacks do not print that notice.
 """
 
 import json

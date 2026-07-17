@@ -2,9 +2,12 @@
 """
 Async (background) delegation registry.
 
-Backs ``delegate_task(background=true)``: the parent agent dispatches a
-subagent that runs on a module-level daemon executor and returns a handle
-immediately, so the user and the model can keep working while the child runs.
+Backs accepted background dispatches from ``delegate_task``. The caller first
+checks that the session can route a detached completion; this registry can
+still reject a dispatch when its pool is at capacity. An accepted unit runs on
+a module-level daemon executor and returns one handle immediately. Stateless
+sessions and capacity-rejected dispatches are executed inline by
+``delegate_tool`` instead.
 
 When the child finishes, a completion event is pushed onto the SHARED
 ``process_registry.completion_queue`` with ``type="async_delegation"``. The
@@ -22,8 +25,9 @@ that rail rather than reaching into a running agent loop:
     two largest files in the repo.
 
 The completion payload carries a RICH, self-contained task-source block (the
-original goal, the context the parent supplied, toolsets, model, dispatch
-time, status, and the full result summary). When the result re-enters the
+original goal, the context the parent supplied, trusted internal tool metadata,
+model, dispatch time, status, and the full result summary). Tool metadata is
+not a model-controlled child-authority input. When the result re-enters the
 conversation the parent may be deep in unrelated context and won't remember
 why the subagent existed; the block lets it either use the result or
 re-dispatch if the world has moved on.

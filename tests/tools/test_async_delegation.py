@@ -606,6 +606,11 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     assert process_registry.completion_queue.empty()
     assert ad.active_count() == 1
 
+    # A normal new parent turn interrupts the old parent turn, but an accepted
+    # detached batch must not inherit that turn-local flag.
+    parent._interrupt_requested = True
+    time.sleep(0.2)
+
     # Release the children; the whole batch joins and emits ONE event.
     gate.set()
     evt = _drain_one()

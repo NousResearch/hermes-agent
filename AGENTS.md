@@ -982,35 +982,37 @@ Enable/disable per platform via `hermes tools` (the curses UI) or the
 
 ## Delegation (`delegate_task`)
 
-`tools/delegate_tool.py` spawns a subagent with an isolated
-context + terminal session. By default the parent waits for the
-child's summary before continuing its own loop. With `background=true`,
-Hermes returns a delegation id immediately and the result re-enters the
-conversation later through the async-delegation completion queue.
+`tools/delegate_tool.py` spawns a subagent with an isolated context and
+terminal session. Top-level model calls request background execution
+automatically. An accepted dispatch on a routable session returns one
+delegation id immediately; stateless sessions and capacity-rejected dispatches
+run inline. A batch returns one consolidated result after every child finishes.
 
 Two shapes:
 
-- **Single:** pass `goal` (+ optional `context`, `toolsets`).
+- **Single:** pass `goal` (+ optional `context`).
 - **Batch (parallel):** pass `tasks: [...]` — each gets its own subagent
-  running concurrently. Concurrency is capped by
+  running concurrently inside one joined batch. Concurrency is capped by
   `delegation.max_concurrent_children` (default 3).
 
 Roles:
 
-- `role="leaf"` (default) — focused worker. Cannot call `delegate_task`,
-  `clarify`, `memory`, `send_message`, `execute_code`.
-- `role="orchestrator"` — retains `delegate_task` so it can spawn its
+- `role="leaf"` (default) — focused worker. Cannot call `clarify`, `cronjob`,
+  `delegate_task`, `execute_code`, `memory`, or `send_message`.
+- `role="orchestrator"` — regains only `delegate_task` so it can spawn its
   own workers. Gated by `delegation.orchestrator_enabled` (default true)
-  and bounded by `delegation.max_spawn_depth` (default 2).
+  and bounded by `delegation.max_spawn_depth` (default 1).
 
 Key config knobs (under `delegation:` in `config.yaml`):
 `max_concurrent_children`, `max_spawn_depth`, `child_timeout_seconds`,
 `orchestrator_enabled`, `subagent_auto_approve`, `inherit_mcp_toolsets`,
 `max_iterations`.
 
-Durability rule: background `delegate_task` is detached from the current
-turn but still process-local. For work that must survive process restart, use
-`cronjob` or `terminal(background=True, notify_on_complete=True)` instead.
+Durability rule: an accepted background `delegate_task` is detached from the
+current turn but still process-local. A normal new message does not cancel it;
+`/stop`, session reset, or explicit close does. For work that must survive
+process restart, use `cronjob` or
+`terminal(background=True, notify_on_complete=True)` instead.
 
 ---
 

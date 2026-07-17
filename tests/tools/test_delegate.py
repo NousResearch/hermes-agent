@@ -106,6 +106,7 @@ class TestDelegateRequirements(unittest.TestCase):
         desc = overrides["description"]
         tasks_desc = overrides["parameters"]["properties"]["tasks"]["description"]
         role_desc = overrides["parameters"]["properties"]["role"]["description"]
+        background_desc = overrides["parameters"]["properties"]["background"]["description"]
 
         # Top-level description names the user's concurrency limit explicitly.
         self.assertIn(f"up to {max_children}", desc)
@@ -115,9 +116,36 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn(f"up to {max_children}", tasks_desc)
         # role parameter description names the spawn-depth limit.
         self.assertIn(f"max_spawn_depth={max_depth}", role_desc)
+        # Completion semantics must match the runtime: routable sessions can
+        # detach, stateless API sessions fall back to synchronous execution,
+        # and a batch re-enters as one consolidated result only after every
+        # child finishes.
+        self.assertIn("routable sessions", desc)
+        self.assertIn("stateless api sessions", desc.lower())
+        self.assertIn("synchronously", desc)
+        self.assertIn("one consolidated result", desc)
+        self.assertIn("all children finish", desc)
+        self.assertIn("capacity", desc)
+        self.assertIn("routable sessions", background_desc)
+        self.assertIn("stateless api sessions", background_desc.lower())
+        self.assertIn("synchronous", background_desc)
+        # Model callers cannot select child toolsets. Children inherit the
+        # parent's permitted toolsets, so no schema description should suggest
+        # a model-facing toolsets argument exists.
+        self.assertNotIn("toolsets", desc)
+        self.assertNotIn("toolsets", tasks_desc)
+        # Every runtime-blocked child tool must be named in the model-facing
+        # contract so the parent does not delegate work the child cannot do.
+        from tools.delegate_tool import DELEGATE_BLOCKED_TOOLS
+        leaf_blocked = ", ".join(sorted(DELEGATE_BLOCKED_TOOLS))
+        orchestrator_blocked = ", ".join(
+            sorted(DELEGATE_BLOCKED_TOOLS - {"delegate_task"})
+        )
+        self.assertIn(f"CANNOT call: {leaf_blocked}", desc)
+        self.assertIn(f"still CANNOT call: {orchestrator_blocked}", desc)
         # The misleading "default 3" / "default 2" wording is gone from
         # every dynamic surface (model-facing).
-        for surface in (desc, tasks_desc, role_desc):
+        for surface in (desc, tasks_desc, role_desc, background_desc):
             self.assertNotIn("default 3", surface)
             self.assertNotIn("default 2", surface)
 
@@ -200,6 +228,96 @@ class TestStripBlockedTools(unittest.TestCase):
                     f"but was not stripped",
                 )
 
+    def test_mixed_composite_is_subtracted_at_child_assembly(self):
+        """A mixed platform bundle must not re-expose blocked leaf tools.
+
+        ``hermes-cli`` contains both allowed tools and every sensitive
+        delegate tool, so it cannot be dropped wholesale. Child construction
+        must instead pass exact one-tool deny toolsets to AIAgent, where
+        model_tools applies them after resolving the composite.
+        """
+        import model_tools
+
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["hermes-cli"]
+        parent.disabled_toolsets = ["browser"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Inspect safely",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="leaf",
+            )
+
+        _, kwargs = MockAgent.call_args
+        disabled = kwargs["disabled_toolsets"]
+        self.assertIn("browser", disabled)
+        for toolset_name in (
+            "clarify",
+            "cronjob",
+            "delegation",
+            "code_execution",
+            "memory",
+        ):
+            self.assertIn(toolset_name, disabled)
+
+        definitions = model_tools.get_tool_definitions(
+            enabled_toolsets=kwargs["enabled_toolsets"],
+            disabled_toolsets=disabled,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        names = {item["function"]["name"] for item in definitions}
+        self.assertTrue(names & {"terminal", "read_file", "web_search"})
+        self.assertTrue(DELEGATE_BLOCKED_TOOLS.isdisjoint(names))
+
+    def test_orchestrator_composite_regains_only_delegate_task(self):
+        import model_tools
+
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["hermes-cli"]
+        parent.disabled_toolsets = ["delegation", "browser"]
+
+        with (
+            patch("run_agent.AIAgent") as MockAgent,
+            patch("tools.delegate_tool._get_orchestrator_enabled", return_value=True),
+            patch("tools.delegate_tool._get_max_spawn_depth", return_value=2),
+        ):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Coordinate safely",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="orchestrator",
+            )
+
+        _, kwargs = MockAgent.call_args
+        disabled = kwargs["disabled_toolsets"]
+        self.assertNotIn("delegation", disabled)
+        definitions = model_tools.get_tool_definitions(
+            enabled_toolsets=kwargs["enabled_toolsets"],
+            disabled_toolsets=disabled,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        names = {item["function"]["name"] for item in definitions}
+        self.assertIn("delegate_task", names)
+        self.assertTrue(
+            (DELEGATE_BLOCKED_TOOLS - {"delegate_task"}).isdisjoint(names)
+        )
+
 
 class TestDelegateTask(unittest.TestCase):
     def test_no_parent_agent(self):
@@ -241,6 +359,29 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "completed")
         self.assertEqual(result["results"][0]["summary"], "Done!")
         mock_run.assert_called_once()
+
+    @patch("tools.async_delegation.dispatch_async_delegation_batch")
+    @patch("gateway.session_context.async_delivery_supported", return_value=False)
+    @patch("tools.delegate_tool._run_single_child")
+    def test_stateless_background_falls_back_to_inline_results(
+        self, mock_run, _mock_supported, mock_dispatch
+    ):
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Inline result",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(goal="Review files", background=True, parent_agent=parent)
+        )
+
+        self.assertEqual(result["results"][0]["summary"], "Inline result")
+        self.assertIn("SYNCHRONOUSLY", result["note"])
+        mock_dispatch.assert_not_called()
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode(self, mock_run):
@@ -334,7 +475,7 @@ class TestDelegateTask(unittest.TestCase):
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_ignores_toplevel_goal(self, mock_run):
-        """When tasks array is provided, top-level goal/context/toolsets are ignored."""
+        """When tasks array is provided, top-level goal/context are ignored."""
         mock_run.return_value = {
             "task_index": 0, "status": "completed",
             "summary": "Done", "api_calls": 1, "duration_seconds": 1.0

@@ -2,14 +2,17 @@
 """
 Delegate Tool -- Subagent Architecture
 
-Spawns child AIAgent instances with isolated context, restricted toolsets,
-and their own terminal sessions. Supports single-task and batch (parallel)
-modes. The parent blocks until all children complete.
+Spawns child AIAgent instances with isolated context, parent-bounded tool
+access, and their own terminal sessions. Supports single-task and batch
+(parallel) modes. Top-level model calls request background dispatch on
+routable sessions; stateless sessions, capacity-rejected dispatches, and
+orchestrator children run synchronously. A batch is one unit that joins all
+children and returns one consolidated result.
 
 Each child gets:
   - A fresh conversation (no parent history)
   - Its own task_id (own terminal session, file ops cache)
-  - A restricted toolset (configurable, with blocked tools always stripped)
+  - The parent's permitted tools, with blocked child tools always stripped
   - A focused system prompt built from the delegated goal + context
 
 The parent's context only sees the delegation call and the summary result,
@@ -783,6 +786,27 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
+def _blocked_toolsets_for_role(role: str) -> List[str]:
+    """Return one-tool deny toolsets for a delegated child role.
+
+    ``_strip_blocked_tools`` can remove fully blocked toolsets, but it must keep
+    mixed platform bundles such as ``hermes-cli`` because those also contain
+    useful tools. Passing these exact deny toolsets to AIAgent lets
+    ``model_tools`` subtract blocked names *after* composite expansion, and the
+    restriction survives later registry/MCP refreshes through the agent's
+    stored ``disabled_toolsets``.
+    """
+    blocked_names = set(DELEGATE_BLOCKED_TOOLS)
+    if role == "orchestrator":
+        blocked_names.discard("delegate_task")
+    return sorted(
+        name
+        for name, defn in TOOLSETS.items()
+        if defn.get("tools")
+        and set(defn.get("tools", ())).issubset(blocked_names)
+    )
+
+
 def _emit_parent_console(parent_agent, line: str) -> None:
     """Emit a human-readable progress line to the parent's console.
 
@@ -1136,6 +1160,23 @@ def _build_child_agent(
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
+    raw_parent_disabled = getattr(parent_agent, "disabled_toolsets", None)
+    if isinstance(raw_parent_disabled, (list, tuple, set)):
+        inherited_disabled = [str(name) for name in raw_parent_disabled]
+    else:
+        inherited_disabled = []
+    if effective_role == "orchestrator":
+        # Role grants delegate_task explicitly, matching the unconditional
+        # delegation toolset re-add below.
+        inherited_disabled = [
+            name for name in inherited_disabled if name != "delegation"
+        ]
+    child_disabled_toolsets = list(
+        dict.fromkeys(
+            inherited_disabled + _blocked_toolsets_for_role(effective_role)
+        )
+    )
+
     # Orchestrators retain the 'delegation' toolset that _strip_blocked_tools
     # removed.  The re-add is unconditional on parent-toolset membership because
     # orchestrator capability is granted by role, not inherited — see the
@@ -1331,6 +1372,7 @@ def _build_child_agent(
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         fallback_model=parent_fallback,
         enabled_toolsets=child_toolsets,
+        disabled_toolsets=child_disabled_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",
@@ -2391,12 +2433,12 @@ def delegate_task(
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context and role)
+      - Batch:  provide tasks array [{goal, context, role}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
-    'leaf' (default) cannot; 'orchestrator' retains the delegation
-    toolset and can spawn its own workers, bounded by
+    'leaf' (default) cannot; 'orchestrator' regains ``delegate_task``
+    and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
 
     Returns JSON with results array, one entry per task.
@@ -2416,11 +2458,9 @@ def delegate_task(
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
 
-    # Background (async) delegation now applies to BOTH single tasks and
-    # batches. A batch simply becomes N independent async dispatches: each
-    # child runs on the daemon executor and re-enters the conversation via
-    # the completion queue on its own, carrying its own handle. There's no
-    # combined "wait for all" — fan-out is exactly N background subagents.
+    # Background (async) delegation applies to BOTH single tasks and batches.
+    # A batch is one async dispatch whose runner joins all children and emits
+    # one consolidated completion after every child finishes.
     background = is_truthy_value(background, default=False) if background is not None else False
 
     # Depth limit — configurable via delegation.max_spawn_depth,
@@ -2552,7 +2592,7 @@ def delegate_task(
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
-    def _execute_and_aggregate() -> dict:
+    def _execute_and_aggregate(*, honor_parent_interrupt: bool = True) -> dict:
         """Run all built children (1 or N), join on them, aggregate results,
         fire subagent_stop hooks + cost rollup, and return the combined result
         dict. Used by BOTH the synchronous path and the background runner. In
@@ -2599,7 +2639,10 @@ def delegate_task(
 
                 pending = set(futures.keys())
                 while pending:
-                    if getattr(parent_agent, "_interrupt_requested", False) is True:
+                    if (
+                        honor_parent_interrupt
+                        and getattr(parent_agent, "_interrupt_requested", False) is True
+                    ):
                         # Parent interrupted — collect whatever finished and
                         # abandon the rest.  Children already received the
                         # interrupt signal; we just can't wait forever.
@@ -2889,7 +2932,7 @@ def delegate_task(
                     pass
 
         def _batch_runner():
-            return _execute_and_aggregate()
+            return _execute_and_aggregate(honor_parent_interrupt=False)
 
         def _batch_interrupt():
             for _c in _child_agents:
@@ -3243,6 +3286,10 @@ def _build_top_level_description() -> str:
         orchestrator_on = _get_orchestrator_enabled()
     except Exception:
         orchestrator_on = True
+    leaf_blocked = ", ".join(sorted(DELEGATE_BLOCKED_TOOLS))
+    orchestrator_blocked = ", ".join(
+        sorted(DELEGATE_BLOCKED_TOOLS - {"delegate_task"})
+    )
 
     if max_depth >= 2 and orchestrator_on:
         nesting_clause = (
@@ -3268,20 +3315,22 @@ def _build_top_level_description() -> str:
 
     return (
         "Spawn one or more subagents to work on tasks in isolated contexts. "
-        "Each subagent gets its own conversation, terminal session, and toolset. "
+        "Each subagent gets its own conversation and terminal session, and "
+        "inherits only tools permitted for the parent. "
         "Only the final summary is returned -- intermediate tool results "
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
-        "1. Single task: provide 'goal' (+ optional context, toolsets).\n"
+        "1. Single task: provide 'goal' (+ optional context).\n"
         f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
         f"items concurrently for this user (configured via "
         f"delegation.max_concurrent_children in config.yaml). {nesting_clause}\n\n"
-        "BOTH MODES RUN IN THE BACKGROUND. delegate_task returns immediately — "
-        "you and the user keep working, and each subagent's full result "
-        "re-enters the conversation as its own new message when it finishes. A "
-        "batch is just N independent background subagents (N handles, each "
-        "completes on its own). Do NOT wait or poll; just continue with other "
-        "work after dispatching.\n\n"
+        "EXECUTION: Top-level delegations request background execution on "
+        "routable sessions and normally return immediately. Stateless API "
+        "sessions and dispatches rejected for background capacity run "
+        "synchronously inside the current turn. "
+        "A batch runs children in parallel and emits one consolidated result "
+        "after all children finish. Do not wait or poll after a background "
+        "dispatch; continue with other work.\n\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"
@@ -3312,10 +3361,10 @@ def _build_top_level_description() -> str:
         "status) and verify it yourself — fetch the URL, stat the file, read "
         "back the content — before telling the user the operation succeeded.\n"
         "- Leaf subagents (role='leaf', the default) CANNOT call: "
-        "delegate_task, clarify, memory, send_message, execute_code.\n"
+        f"{leaf_blocked}.\n"
         "- Orchestrator subagents (role='orchestrator') retain "
-        "delegate_task so they can spawn their own workers, but still "
-        "cannot use clarify, memory, send_message, or execute_code. "
+        "delegate_task so they can spawn their own workers, but still CANNOT call: "
+        f"{orchestrator_blocked}. "
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
@@ -3335,7 +3384,7 @@ def _build_tasks_param_description() -> str:
         f"Batch mode: tasks to run in parallel (up to {max_children} for this "
         f"user, set via delegation.max_concurrent_children). Each gets "
         "its own subagent with isolated context and terminal session. "
-        "When provided, top-level goal/context/toolsets are ignored."
+        "When provided, top-level goal/context are ignored."
     )
 
 
@@ -3464,12 +3513,11 @@ DELEGATE_TASK_SCHEMA = {
             "background": {
                 "type": "boolean",
                 "description": (
-                    "DEPRECATED / IGNORED. Single-task delegations always run "
-                    "in the background automatically — you do not need to (and "
-                    "cannot) opt in or out. The result re-enters the "
-                    "conversation as a new message when the subagent finishes; "
-                    "just continue working in the meantime. Setting this has no "
-                    "effect; the parameter remains only for backward "
+                    "DEPRECATED / IGNORED for model calls. Top-level delegations "
+                    "request background execution automatically on routable "
+                    "sessions when capacity permits; stateless API sessions and "
+                    "capacity-rejected dispatches fall back to synchronous execution. "
+                    "Setting this has no effect and remains only for backward "
                     "compatibility."
                 ),
             },
@@ -3486,9 +3534,9 @@ from tools.registry import registry, tool_error
 def _model_background_value(args: dict, parent_agent=None) -> bool:
     """Background flag for the MODEL-facing dispatch path (registry fallback).
 
-    Delegations from the top-level agent always run in the background — the
+    Delegations from the top-level agent request background execution — the
     model does not choose. This applies to both a single task and a fan-out
-    batch (each task becomes its own independent background subagent). The one
+    batch (the batch joins into one consolidated completion). The one
     exception is a delegation from an orchestrator subagent (depth > 0), which
     needs its workers' results within its own turn. The live path is
     ``run_agent._dispatch_delegate_task``; this lambda mirrors it for the rare

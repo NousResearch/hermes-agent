@@ -6,7 +6,7 @@ description: "Spawn isolated child agents for parallel workstreams with delegate
 
 # Subagent Delegation
 
-The `delegate_task` tool spawns child AIAgent instances with isolated context, restricted toolsets, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
+The `delegate_task` tool spawns child AIAgent instances with isolated context, parent-bounded tool access, and their own terminal sessions. Each child gets a fresh conversation and works independently. Only its final summary enters the parent's context.
 
 ## Single Task
 
@@ -14,7 +14,6 @@ The `delegate_task` tool spawns child AIAgent instances with isolated context, r
 delegate_task(
     goal="Debug why tests fail",
     context="Error: assertion in test_foo.py line 42",
-    toolsets=["terminal", "file"]
 )
 ```
 
@@ -24,9 +23,9 @@ Up to 3 concurrent subagents by default (configurable, no hard ceiling):
 
 ```python
 delegate_task(tasks=[
-    {"goal": "Research topic A", "toolsets": ["web"]},
-    {"goal": "Research topic B", "toolsets": ["web"]},
-    {"goal": "Fix the build", "toolsets": ["terminal", "file"]}
+    {"goal": "Research topic A"},
+    {"goal": "Research topic B"},
+    {"goal": "Fix the build"}
 ])
 ```
 
@@ -66,17 +65,14 @@ delegate_task(tasks=[
     {
         "goal": "Research the current state of WebAssembly in 2025",
         "context": "Focus on: browser support, non-browser runtimes, language support",
-        "toolsets": ["web"]
     },
     {
         "goal": "Research the current state of RISC-V adoption in 2025",
         "context": "Focus on: server chips, embedded systems, software ecosystem",
-        "toolsets": ["web"]
     },
     {
         "goal": "Research quantum computing progress in 2025",
         "context": "Focus on: error correction breakthroughs, practical applications, key players",
-        "toolsets": ["web"]
     }
 ])
 ```
@@ -93,7 +89,6 @@ delegate_task(
     The project uses Flask, PyJWT, and bcrypt.
     Focus on: SQL injection, JWT validation, password handling, session management.
     Fix any issues found and run the test suite (pytest tests/auth/).""",
-    toolsets=["terminal", "file"]
 )
 ```
 
@@ -113,7 +108,6 @@ delegate_task(
     - Other prints -> logger.info(...)
     Don't change print() in test files or CLI output.
     Run pytest after to verify nothing broke.""",
-    toolsets=["terminal", "file"]
 )
 ```
 
@@ -125,7 +119,8 @@ When you provide a `tasks` array, subagents run in **parallel** using a thread p
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback
 - **Result ordering:** Results are sorted by task index to match input order regardless of completion order
-- **Interrupt propagation:** Interrupting the parent (e.g., sending a new message) interrupts all active children
+- **Batch completion:** The batch emits one consolidated result only after every child finishes
+- **Interrupt propagation:** Synchronous children remain attached to the parent turn and are interrupted with it. Accepted background batches are owned by the async registry; a normal new message does not cancel them, while `/stop`, session reset, and explicit close do.
 
 Single-task delegation runs directly without thread pool overhead.
 
@@ -157,34 +152,25 @@ delegation:
 
 If omitted, subagents use the same model as the parent.
 
-## Toolset Selection Tips
+## Child Tool Authority
 
-The `toolsets` parameter controls what tools the subagent has access to. Choose based on the task:
+Model calls cannot choose a child's toolsets. Each subagent inherits the parent's permitted toolsets, after Hermes removes tools that children must never use. Automatic [Tool Search](/user-guide/features/tool-search) keeps large inherited catalogs behind a small discovery bridge when enabled.
 
-| Toolset Pattern | Use Case |
-|----------------|----------|
-| `["terminal", "file"]` | Code work, debugging, file editing, builds |
-| `["web"]` | Research, fact-checking, documentation lookup |
-| `["terminal", "file", "web"]` | Full-stack tasks (default) |
-| `["file"]` | Read-only analysis, code review without execution |
-| `["terminal"]` | System administration, process management |
-
-Certain toolsets are blocked for subagents regardless of what you specify:
-- `delegation` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
+Certain tools remain blocked for subagents:
+- `delegate_task` — blocked for leaf subagents (the default). Restored for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
 - `clarify` — subagents cannot interact with the user
 - `memory` — no writes to shared persistent memory
-- `code_execution` — children should reason step-by-step
+- `execute_code` — children should reason step-by-step
+- `send_message` — no cross-platform messages in the parent's name
+- `cronjob` — no scheduling more work in the parent's name
 
 ## Max Iterations
 
-Each subagent has an iteration limit (default: 50) that controls how many tool-calling turns it can take:
+Each subagent has an operator-controlled iteration limit (default: 50) that controls how many model turns it can take. Model calls cannot override this budget per task. Configure it in `config.yaml`:
 
-```python
-delegate_task(
-    goal="Quick file check",
-    context="Check if /etc/nginx/nginx.conf exists and print its first 10 lines",
-    max_iterations=10  # Simple task, don't need many turns
-)
+```yaml
+delegation:
+  max_iterations: 30
 ```
 
 ## Child Timeout
@@ -233,7 +219,7 @@ delegate_task(
 ```
 
 - `role="leaf"` (default): child cannot delegate further — identical to the flat-delegation behavior.
-- `role="orchestrator"`: child retains the `delegation` toolset. Gated by `delegation.max_spawn_depth` (default **1** = flat, so `role="orchestrator"` is a no-op at defaults). Raise `max_spawn_depth` to 2 to allow orchestrator children to spawn leaf grandchildren; 3+ for deeper trees. There is no upper ceiling — cost is the practical limit.
+- `role="orchestrator"`: child regains `delegate_task`. It still cannot call `clarify`, `cronjob`, `execute_code`, `memory`, or `send_message`. Orchestration is gated by `delegation.max_spawn_depth` (default **1** = flat, so `role="orchestrator"` is a no-op at defaults). Raise `max_spawn_depth` to 2 to allow orchestrator children to spawn leaf grandchildren; 3+ for deeper trees. There is no upper ceiling — cost is the practical limit.
 - `delegation.orchestrator_enabled: false`: global kill switch that forces every child to `leaf` regardless of the `role` parameter.
 
 **Cost warning:** With `max_spawn_depth: 3` and `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. Each extra level multiplies spend — raise `max_spawn_depth` intentionally.
@@ -241,13 +227,13 @@ delegate_task(
 ## Lifetime and Durability
 
 :::warning Background completion durability is not durable execution
-By default, `delegate_task` runs **inside the parent's current turn** and blocks until every child finishes. With `background=true`, the child may continue after that turn returns while the owning session and Hermes process remain alive:
+Top-level model delegation requests background execution automatically. On routable CLI, TUI, and messaging sessions, an accepted dispatch returns immediately and the result re-enters the owning conversation later. If the background pool is at capacity, Hermes runs the delegation synchronously inside that turn. Stateless API sessions also run synchronously because they cannot route a completion after the HTTP turn ends. A batch always returns one consolidated result after every child finishes.
 
-- If the parent is interrupted (user sends a new message, `/stop`, `/new`), all active children are cancelled and return `status="interrupted"`. Their in-progress work is discarded.
+- A normal new user message does not cancel an accepted background delegation. `/stop`, `/new`, explicit close, or session reset cancels its running children.
 - Explicit session close/reset interrupts that session's background children. Closing a TUI viewer of a gateway-owned session does not kill the gateway's work.
 - A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened.
 - A child that completed before restart but whose result was not delivered is restored and routed back through the owning session's normal checks.
-- Cancelled children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the parent was interrupted too, that result often never makes it into a user-visible reply.
+- Cancelled children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the owner may also have been interrupted, that result may never make it into a user-visible reply.
 
 For **durable execution** that must survive session closure or process restart, use:
 
@@ -259,8 +245,8 @@ For **durable execution** that must survive session closure or process restart, 
 
 - Each subagent gets its **own terminal session** (separate from the parent)
 - **Nested delegation is opt-in** — only `role="orchestrator"` children can delegate further, and only when `max_spawn_depth` is raised from its default of 1 (flat). Disable globally with `orchestrator_enabled: false`.
-- Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `execute_code`. Orchestrator subagents retain `delegate_task` but still cannot use the other three.
-- **Interrupt propagation** — interrupting the parent interrupts all active children (including grandchildren under orchestrators)
+- Leaf subagents **cannot** call: `clarify`, `cronjob`, `delegate_task`, `execute_code`, `memory`, or `send_message`. Orchestrator subagents retain `delegate_task` but still cannot use the other five.
+- **Interrupt propagation** — synchronous children follow the parent turn; accepted background batches are cancelled through `/stop`, session reset, or explicit close rather than by an ordinary new message
 - Only the final summary enters the parent's context, keeping token usage efficient
 - Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits)
 

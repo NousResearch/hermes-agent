@@ -6,7 +6,7 @@ description: "When and how to use subagent delegation — patterns for parallel 
 
 # Delegation & Parallel Work
 
-Hermes can spawn isolated child agents to work on tasks in parallel. Each subagent gets its own conversation, terminal session, and toolset. Only the final summary comes back — intermediate tool calls never enter your context window.
+Hermes can spawn isolated child agents to work on tasks in parallel. Each subagent gets its own conversation and terminal session, with tool authority bounded by the parent. Only the final summary comes back. Intermediate tool calls never enter your context window.
 
 For the full feature reference, see [Subagent Delegation](/user-guide/features/delegation).
 
@@ -25,7 +25,7 @@ For the full feature reference, see [Subagent Delegation](/user-guide/features/d
 - Mechanical multi-step work with logic between steps → `execute_code`
 - Tasks needing user interaction → subagents can't use `clarify`
 - Quick file edits → do them directly
-- Durable long-running work that must outlive the current turn → `cronjob` or `terminal(background=True, notify_on_complete=True)`. `delegate_task` is **synchronous**: if the parent turn is interrupted, active children are cancelled and their work is discarded.
+- Durable long-running work that must survive session or process loss → `cronjob` or `terminal(background=True, notify_on_complete=True)`. Delegate execution detaches only when the session is routable and background capacity is available, and it is not durable across process loss.
 
 ---
 
@@ -49,22 +49,19 @@ delegate_task(tasks=[
     {
         "goal": "Research WebAssembly outside the browser in 2025",
         "context": "Focus on: runtimes (Wasmtime, Wasmer), cloud/edge use cases, WASI progress",
-        "toolsets": ["web"]
     },
     {
         "goal": "Research RISC-V server chip adoption",
         "context": "Focus on: server chips shipping, cloud providers adopting, software ecosystem",
-        "toolsets": ["web"]
     },
     {
         "goal": "Research practical quantum computing applications",
         "context": "Focus on: error correction breakthroughs, real-world use cases, key companies",
-        "toolsets": ["web"]
     }
 ])
 ```
 
-All three run concurrently. Each subagent searches the web independently and returns a summary. The parent agent then synthesizes them into a coherent briefing.
+All three run concurrently. The batch returns one consolidated result after every child finishes, then the parent agent synthesizes the summaries into a coherent briefing.
 
 ---
 
@@ -88,7 +85,6 @@ delegate_task(
     Test command: pytest tests/auth/ -v
     Focus on: SQL injection, JWT validation, password hashing, session management.
     Fix issues found and verify tests pass.""",
-    toolsets=["terminal", "file"]
 )
 ```
 
@@ -131,7 +127,6 @@ delegate_task(tasks=[
         New format: return APIResponse(data=result, status=200).to_dict()
         Import: from src.responses import APIResponse
         Run tests after: pytest tests/handlers/ -v""",
-        "toolsets": ["terminal", "file"]
     },
     {
         "goal": "Update all client SDK methods to handle the new response format",
@@ -140,7 +135,6 @@ delegate_task(tasks=[
         Old parsing: result = response.json()["data"]
         New parsing: result = response.json()["data"] (same key, but add status code checking)
         Also update sdk/python/tests/test_client.py""",
-        "toolsets": ["terminal", "file"]
     },
     {
         "goal": "Update API documentation to reflect the new response format",
@@ -148,7 +142,6 @@ delegate_task(tasks=[
         Docs at: docs/api/. Format: Markdown with code examples.
         Update all response examples from old format to new format.
         Add a 'Response Format' section to docs/api/overview.md explaining the schema.""",
-        "toolsets": ["terminal", "file"]
     }
 ])
 ```
@@ -192,7 +185,6 @@ delegate_task(
     extracted web pages about AI funding, acquisitions, and IPOs in Q1 2026.
     Write a structured market report: key deals, trends, notable players,
     and outlook. Focus on deals over $100M.""",
-    toolsets=["terminal", "file"]
 )
 ```
 
@@ -200,25 +192,18 @@ This is often the most efficient pattern: `execute_code` handles the 10+ sequent
 
 ---
 
-## Toolset Selection
+## Child Tool Authority
 
-Choose toolsets based on what the subagent needs:
+Model calls cannot choose a child's toolsets. A leaf inherits the parent's permitted toolsets after Hermes blocks `clarify`, `cronjob`, `delegate_task`, `execute_code`, `memory`, and `send_message`. An orchestrator regains only `delegate_task`. When automatic [Tool Search](/user-guide/features/tool-search) is enabled, large inherited catalogs are deferred behind a small discovery bridge.
 
-| Task type | Toolsets | Why |
-|-----------|----------|-----|
-| Web research | `["web"]` | web_search + web_extract only |
-| Code work | `["terminal", "file"]` | Shell access + file operations |
-| Full-stack | `["terminal", "file", "web"]` | Everything except messaging |
-| Read-only analysis | `["file"]` | Can only read files, no shell |
-
-Restricting toolsets keeps the subagent focused and prevents accidental side effects (like a research subagent running shell commands).
+Keep the task focused through a narrow goal, exact paths, explicit constraints, and a bounded output contract. Restrict an entire session or scheduled job through its trusted toolset configuration when stronger authority reduction is required.
 
 ---
 
 ## Constraints
 
 - **Default 3 parallel tasks**: batches default to 3 concurrent subagents (configurable via `delegation.max_concurrent_children` in config.yaml, no hard ceiling, only a floor of 1)
-- **Nested delegation is opt-in**: leaf subagents (default) cannot call `delegate_task`, `clarify`, `memory`, or `execute_code`. Orchestrator subagents (`role="orchestrator"`) retain `delegate_task` for further delegation, but only when `delegation.max_spawn_depth` is raised above the default of 1 (floor 1, no ceiling); the other three remain blocked. Disable globally via `delegation.orchestrator_enabled: false`.
+- **Nested delegation is opt-in**: leaf subagents (default) cannot call `clarify`, `cronjob`, `delegate_task`, `execute_code`, `memory`, or `send_message`. Orchestrator subagents (`role="orchestrator"`) regain only `delegate_task`, and only when `delegation.max_spawn_depth` is raised above the default of 1 (floor 1, no ceiling). Disable orchestration globally via `delegation.orchestrator_enabled: false`.
 
 ### Tuning Concurrency and Depth
 
@@ -237,8 +222,8 @@ delegation:
 
 - **Separate terminals** — each subagent gets its own terminal session with separate working directory and state
 - **No conversation history** — subagents see only the `goal` and `context` the parent agent passes when calling `delegate_task`
-- **Default 50 iterations** — set `max_iterations` lower for simple tasks to save cost
-- **Not durable** — `delegate_task` is synchronous and runs inside the parent turn. If the parent is interrupted (new user message, `/stop`, `/new`), all active children are cancelled (`status="interrupted"`) and their work is discarded. For work that must outlive the current turn, use `cronjob` or `terminal(background=True, notify_on_complete=True)`.
+- **Default 50 iterations** — configure `delegation.max_iterations` globally; model calls cannot override it per task
+- **Channel-dependent completion** — routable sessions request background dispatch for top-level delegates. An accepted dispatch returns immediately; capacity-rejected dispatches and stateless API sessions run synchronously inside the current turn. A normal new message does not cancel an accepted background delegation, but `/stop`, session reset, or explicit close does. A batch emits one consolidated result after every child finishes. Running children are not durable across process loss; use `cronjob` or a tracked background process when they must survive it.
 
 ---
 

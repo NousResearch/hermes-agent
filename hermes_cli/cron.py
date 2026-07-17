@@ -7,6 +7,7 @@ pause/resume/run/remove, status, and tick.
 
 import json
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -24,6 +25,33 @@ from hermes_cli.colors import Colors, color
 from cron.lifecycle_guard import (  # noqa: F401  (re-exported for terminal_tool)
     contains_gateway_lifecycle_command as _contains_gateway_lifecycle_command,
 )
+
+
+def _surface_safe(value) -> str:
+    text = str(value) if value is not None else "none"
+    return "".join(
+        char
+        if char.isprintable() and not unicodedata.category(char).startswith("C")
+        else f"\\u{ord(char):04x}"
+        for char in text
+    )
+
+
+def _print_status_dimensions(job: dict, indent: str = "  ") -> None:
+    run_status = job.get("last_run_status") or job.get("last_status") or "unknown"
+    delivery_status = job.get("last_delivery_status") or (
+        "error" if job.get("last_delivery_error") else "unknown"
+    )
+    work_status = job.get("last_work_status") or "unknown"
+    work_source = job.get("last_work_status_source") or "none"
+    evidence_id = _surface_safe(job.get("last_evidence_id"))
+    evidence_verified = "yes" if job.get("last_evidence_verified", False) else "no"
+    executor_handle = _surface_safe(job.get("last_executor_handle"))
+    print(f"{indent}Run status: {run_status}")
+    print(f"{indent}Delivery:   {delivery_status}")
+    print(f"{indent}Work status: {work_status} (source={work_source})")
+    print(f"{indent}Evidence:   {evidence_id} (verified={evidence_verified})")
+    print(f"{indent}Executor:   {executor_handle}")
 
 
 def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[List[str]]:
@@ -98,7 +126,7 @@ def _warn_if_gateway_not_running() -> None:
 
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
-    from cron.jobs import list_jobs
+    from cron.jobs import effective_job_status, list_jobs
 
     jobs = list_jobs(include_disabled=show_all)
 
@@ -114,8 +142,9 @@ def cron_list(show_all: bool = False):
     print()
 
     for job in jobs:
-        job_id = job.get("id", "?")
-        name = job.get("name", "(unnamed)")
+        status_job = effective_job_status(job)
+        job_id = _surface_safe(job.get("id", "?"))
+        name = _surface_safe(job.get("name", "(unnamed)"))
         schedule = job.get("schedule_display", job.get("schedule", {}).get("value", "?"))
         state = job.get("state", "scheduled" if job.get("enabled", True) else "paused")
         next_run = job.get("next_run_at", "?")
@@ -165,14 +194,21 @@ def cron_list(show_all: bool = False):
             print(f"    Workdir:   {workdir}")
 
         # Execution history
-        last_status = job.get("last_status")
-        if last_status:
-            last_run = job.get("last_run_at", "?")
+        last_status = status_job.get("last_status")
+        if last_status or status_job.get("last_run_status") or status_job.get("last_run_at"):
+            last_run = status_job.get("last_run_at", "?")
             if last_status == "ok":
                 status_display = color("ok", Colors.GREEN)
+            elif last_status:
+                status_display = color(
+                    f"{last_status}: {_surface_safe(status_job.get('last_error', '?'))}",
+                    Colors.RED,
+                )
             else:
-                status_display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
+                status_display = color("unknown", Colors.YELLOW)
             print(f"    Last run:  {last_run}  {status_display}")
+
+            _print_status_dimensions(status_job, indent="    ")
 
         latest_execution = job.get("latest_execution")
         if latest_execution:
@@ -181,9 +217,9 @@ def cron_list(show_all: bool = False):
                 f"{latest_execution.get('id', '?')}"
             )
 
-        delivery_err = job.get("last_delivery_error")
+        delivery_err = status_job.get("last_delivery_error")
         if delivery_err:
-            print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {delivery_err}")
+            print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {_surface_safe(delivery_err)}")
 
         print()
 
@@ -205,13 +241,18 @@ def cron_runs(job_id: Optional[str] = None, limit: int = 20):
         print("No cron execution attempts recorded.")
         return
     for record in records:
+        execution_id = _surface_safe(record.get("id", "?"))
+        status = _surface_safe(record.get("status", "?"))
+        record_job_id = _surface_safe(record.get("job_id", "?"))
+        source = _surface_safe(record.get("source", "?"))
+        claimed_at = _surface_safe(record.get("claimed_at", "?"))
         print(
-            f"{record.get('id', '?')}  {record.get('status', '?'):<9}  "
-            f"job={record.get('job_id', '?')}  source={record.get('source', '?')}  "
-            f"{record.get('claimed_at', '?')}"
+            f"{execution_id}  {status:<9}  "
+            f"job={record_job_id}  source={source}  "
+            f"{claimed_at}"
         )
         if record.get("error"):
-            print(f"    {record['error']}")
+            print(f"    {_surface_safe(record['error'])}")
 
 
 def cron_status():
@@ -433,11 +474,12 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
         job = result.get("job", {})
         if job.get("executed"):
             outcome = "succeeded" if job.get("execution_success") else "failed"
-            print(f"  Ran now: {outcome}.")
+            print(f"  Scheduler run: {outcome}.")
+            _print_status_dimensions(job)
         elif job.get("execution_skipped"):
             print(f"  {job['execution_skipped']}")
         else:
-            print("  It will run on the next scheduler tick.")
+            print("  Scheduler run status is unknown.")
     return 0
 
 

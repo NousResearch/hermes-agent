@@ -1318,6 +1318,20 @@ class CLICommandsMixin:
                 print(f"  Prompt: {job.get('prompt_preview', '')}")
                 if job.get("last_run_at"):
                     print(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
+                    run_status = job.get("last_run_status") or job.get("last_status") or "unknown"
+                    delivery_status = job.get("last_delivery_status") or (
+                        "error" if job.get("last_delivery_error") else "unknown"
+                    )
+                    work_status = job.get("last_work_status") or "unknown"
+                    work_source = job.get("last_work_status_source") or "none"
+                    evidence_id = job.get("last_evidence_id") or "none"
+                    evidence_verified = "yes" if job.get("last_evidence_verified", False) else "no"
+                    executor_handle = job.get("last_executor_handle") or "none"
+                    print(f"  Run status: {run_status}")
+                    print(f"  Delivery:   {delivery_status}")
+                    print(f"  Work status: {work_status} (source={work_source})")
+                    print(f"  Evidence:   {evidence_id} (verified={evidence_verified})")
+                    print(f"  Executor:   {executor_handle}")
                 print()
             return
 
@@ -1416,8 +1430,18 @@ class CLICommandsMixin:
                 print(f"(^_^)b Resumed job: {result['job']['name']} ({job_id})")
                 print(f"  Next run: {result['job'].get('next_run_at')}")
             elif action == "run":
-                print(f"(^_^)b Triggered job: {result['job']['name']} ({job_id})")
-                print("  It will run on the next scheduler tick.")
+                job = result["job"]
+                print(f"(^_^)b Triggered job: {job['name']} ({job_id})")
+                if job.get("executed"):
+                    outcome = "succeeded" if job.get("execution_success") else "failed"
+                    print(f"  Scheduler run: {outcome}.")
+                    from .cron import _print_status_dimensions
+
+                    _print_status_dimensions(job)
+                elif job.get("execution_skipped"):
+                    print(f"  {job['execution_skipped']}")
+                else:
+                    print("  Scheduler run status is unknown.")
             else:
                 removed = result.get("removed_job", {})
                 print(f"(^_^)b Removed job: {removed.get('name', job_id)} ({job_id})")

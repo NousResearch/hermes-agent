@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -23,6 +24,7 @@ from cron.jobs import (
     AmbiguousJobReference,
     claim_job_for_fire,
     create_job,
+    effective_job_status,
     get_job,
     list_jobs,
     mark_job_run,
@@ -564,11 +566,36 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     return None
 
 
+def _surface_safe(value: Any) -> Any:
+    """Escape control/format code points before values reach terminal surfaces."""
+    if not isinstance(value, str):
+        return value
+    return "".join(
+        char
+        if char.isprintable() and not unicodedata.category(char).startswith("C")
+        else f"\\u{ord(char):04x}"
+        for char in value
+    )
+
+
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     prompt = str(job.get("prompt") or "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
-    job_id = str(job.get("id") or "unknown")
-    name = str(job.get("name") or prompt[:50] or (skills[0] if skills else "") or job_id or "cron job")
+    job_id = _surface_safe(str(job.get("id") or "unknown"))
+    name = _surface_safe(
+        str(job.get("name") or prompt[:50] or (skills[0] if skills else "") or job_id or "cron job")
+    )
+    status = effective_job_status(job)
+    last_run_at = status["last_run_at"]
+    last_status = _surface_safe(status["last_status"])
+    last_run_status = _surface_safe(status["last_run_status"])
+    last_delivery_status = _surface_safe(status["last_delivery_status"])
+    last_delivery_error = _surface_safe(status["last_delivery_error"])
+    last_work_status = _surface_safe(status["last_work_status"])
+    last_work_status_source = _surface_safe(status["last_work_status_source"])
+    last_evidence_id = _surface_safe(status["last_evidence_id"])
+    last_evidence_verified = status["last_evidence_verified"]
+    last_executor_handle = _surface_safe(status["last_executor_handle"])
     result = {
         "job_id": job_id,
         "name": name,
@@ -582,9 +609,16 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
         "next_run_at": job.get("next_run_at"),
-        "last_run_at": job.get("last_run_at"),
-        "last_status": job.get("last_status"),
-        "last_delivery_error": job.get("last_delivery_error"),
+        "last_run_at": last_run_at,
+        "last_status": last_status,
+        "last_run_status": last_run_status,
+        "last_delivery_status": last_delivery_status,
+        "last_delivery_error": last_delivery_error,
+        "last_work_status": last_work_status,
+        "last_work_status_source": last_work_status_source,
+        "last_evidence_id": last_evidence_id,
+        "last_evidence_verified": last_evidence_verified,
+        "last_executor_handle": last_executor_handle,
         "enabled": job.get("enabled", True),
         "state": job.get("state", "scheduled" if job.get("enabled", True) else "paused"),
         "paused_at": job.get("paused_at"),

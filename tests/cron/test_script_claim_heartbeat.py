@@ -84,10 +84,13 @@ def test_long_running_script_refreshes_owned_claim_in_profile_store(
         heartbeat_seen.set()
         return updated
 
-    def _blocking_script(_script_path: str) -> tuple[bool, str]:
+    def _blocking_script(
+        _script_path: str, *, preserve_stdout: bool = False
+    ) -> tuple[bool, str]:
         assert heartbeat_seen.wait(timeout=2), (
             "claim was not refreshed while script blocked"
         )
+        assert preserve_stdout is no_agent
         return True, script_output
 
     monkeypatch.setattr(scheduler, "heartbeat_run_claim", _observed_heartbeat)

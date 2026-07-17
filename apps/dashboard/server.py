@@ -1553,6 +1553,60 @@ def sample_spaceweather() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Flights overhead — OpenSky Network (no key, anonymous; rate-limited)
+# ---------------------------------------------------------------------------
+FLIGHTS_TTL = 60  # positions move fast; keep it short but gentle on the API
+_FLIGHTS_BOX = 0.9  # ± degrees around the point (~100 km lat)
+
+
+def _flight_track_dir(track) -> str:
+    if track is None:
+        return ""
+    dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+    return dirs[int((track % 360) / 45 + 0.5) % 8]
+
+
+def live_flights(lat: float, lon: float, name: str | None) -> dict:
+    q = urllib.parse.urlencode({
+        "lamin": f"{lat - _FLIGHTS_BOX:.4f}", "lamax": f"{lat + _FLIGHTS_BOX:.4f}",
+        "lomin": f"{lon - _FLIGHTS_BOX:.4f}", "lomax": f"{lon + _FLIGHTS_BOX:.4f}"})
+    raw = json.loads(fetch_url(f"https://opensky-network.org/api/states/all?{q}", timeout=9))
+    flights = []
+    for s in (raw.get("states") or [])[:30]:
+        try:
+            callsign = (s[1] or "").strip()
+            flights.append({
+                "icao": s[0], "callsign": callsign or "—",
+                "country": s[2] or "", "lon": s[5], "lat": s[6],
+                "altitude": s[7], "onGround": bool(s[8]),
+                "velocity": s[9], "heading": s[10], "dir": _flight_track_dir(s[10]),
+                "verticalRate": s[11],
+            })
+        except (IndexError, TypeError):
+            continue
+    airborne = [f for f in flights if not f["onGround"] and f["altitude"] is not None]
+    airborne.sort(key=lambda f: f["altitude"])
+    return {"source": "live", "location": {"name": name or f"{lat:.2f}, {lon:.2f}"},
+            "count": len(airborne), "flights": airborne[:20]}
+
+
+def sample_flights(name: str | None = None) -> dict:
+    demo = [
+        ("UAL245", "United States", 10668, 251, 78, "NE", 0),
+        ("BAW112", "United Kingdom", 11582, 244, 265, "W", 0),
+        ("DAL480", "United States", 3352, 180, 190, "S", 12.4),
+        ("AFR22", "France", 9144, 236, 95, "E", -6.1),
+        ("ACA759", "Canada", 11887, 249, 340, "NW", 0),
+    ]
+    flights = [{"icao": f"a{i:05x}", "callsign": cs, "country": co, "lon": -74 + i * 0.1,
+                "lat": 40.7 + i * 0.1, "altitude": alt, "onGround": False,
+                "velocity": vel, "heading": hd, "dir": d, "verticalRate": vr}
+               for i, (cs, co, alt, vel, hd, d, vr) in enumerate(demo)]
+    return {"source": "sample", "location": {"name": name or "New York"},
+            "count": len(flights), "flights": flights}
+
+
+# ---------------------------------------------------------------------------
 # Weather alerts — US National Weather Service (api.weather.gov, no key)
 # ---------------------------------------------------------------------------
 ALERTS_TTL = 10 * 60
@@ -2358,6 +2412,20 @@ class Api:
             lambda: sample_air(name),
         )
 
+    def flights(self, params: dict) -> dict:
+        try:
+            lat = float(params.get("lat", ["40.7128"])[0])
+            lon = float(params.get("lon", ["-74.0060"])[0])
+        except ValueError:
+            raise ApiError(400, "lat/lon must be numbers") from None
+        name = params.get("name", [None])[0]
+        return self._cached(
+            f"flights:{lat:.2f}:{lon:.2f}",
+            FLIGHTS_TTL,
+            lambda: live_flights(lat, lon, name),
+            lambda: sample_flights(name),
+        )
+
     def alerts(self, params: dict) -> dict:
         try:
             lat = float(params.get("lat", ["40.7128"])[0])
@@ -2973,6 +3041,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/air": "air",
         "/api/spaceweather": "spaceweather",
         "/api/alerts": "alerts",
+        "/api/flights": "flights",
         "/api/geocode": "geocode",
         "/api/markets": "markets",
         "/api/crypto/coin": "crypto_coin",

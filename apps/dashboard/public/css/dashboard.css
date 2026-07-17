@@ -1103,6 +1103,22 @@ a { color: inherit; }
 .aq-pollen-level.pl-high, .aq-pollen-level.pl-very { color: var(--status-critical); }
 .aq-nopollen { margin-top: 8px; }
 
+/* ---------- flights overhead ---------- */
+.fl-head { margin-bottom: 8px; }
+.fl-list { display: flex; flex-direction: column; max-height: 340px; overflow-y: auto; }
+.fl-row { display: flex; align-items: baseline; gap: 8px; padding: 6px 2px; border-bottom: 1px solid var(--hairline); }
+.fl-row:last-child { border-bottom: none; }
+.fl-call { font-family: ui-monospace, Menlo, monospace; font-weight: 700; min-width: 62px; }
+.fl-country { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fl-alt { font-variant-numeric: tabular-nums; min-width: 62px; text-align: right; }
+.fl-spd { min-width: 44px; text-align: right; }
+.fl-dir { min-width: 26px; text-align: center; font-weight: 600; color: var(--accent); }
+.fl-climb-glyph { min-width: 16px; text-align: center; font-weight: 700; }
+.fl-climb-glyph.fl-climb { color: var(--status-stable); }
+.fl-climb-glyph.fl-descend { color: var(--status-elevated, orange); }
+.fl-climb-glyph.fl-level { color: var(--muted); }
+.fl-empty { padding: 20px 6px; line-height: 1.5; }
+
 /* ---------- weather alerts ---------- */
 .wa-loc { margin-bottom: 8px; }
 .wa-list { display: flex; flex-direction: column; gap: 8px; max-height: 360px; overflow-y: auto; }

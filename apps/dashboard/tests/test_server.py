@@ -156,6 +156,32 @@ class SampleFallbackTests(unittest.TestCase):
             self.assertIsNotNone(p["value"])
         self.assertTrue(d["pollen"])
 
+    def test_flights_offline_shape(self):
+        d = self.api.flights({"lat": ["40.71"], "lon": ["-74.01"]})
+        self.assertEqual(d["source"], "sample")
+        self.assertTrue(d["flights"])
+        for f in d["flights"]:
+            self.assertTrue(f["callsign"])
+            self.assertFalse(f["onGround"])
+
+    def test_flights_normalizer_sorts_by_altitude(self):
+        import unittest.mock as mock
+        # state vector layout: icao,callsign,country,_,_,lon,lat,alt,onground,vel,track,vrate
+        raw = {"states": [
+            ["abc", "HIGH123 ", "US", 0, 0, -74.0, 40.7, 11000, False, 240, 90, 0],
+            ["def", "LOW456 ", "US", 0, 0, -74.1, 40.6, 2000, False, 150, 180, 5.0],
+            ["ghi", "GND789 ", "US", 0, 0, -74.2, 40.5, None, True, 0, 0, 0],
+        ]}
+        with mock.patch.object(server, "fetch_url", return_value=json.dumps(raw)):
+            out = server.live_flights(40.7, -74.0, "Test")
+        self.assertEqual(out["count"], 2)                    # grounded one excluded
+        self.assertEqual(out["flights"][0]["callsign"], "LOW456")  # lowest first
+        self.assertEqual(out["flights"][0]["dir"], "S")      # track 180 → S
+
+    def test_flights_rejects_bad_coords(self):
+        with self.assertRaises(server.ApiError):
+            self.api.flights({"lat": ["nope"], "lon": ["1"]})
+
     def test_alerts_offline_shape(self):
         d = self.api.alerts({"lat": ["40.71"], "lon": ["-74.01"]})
         self.assertEqual(d["source"], "sample")

@@ -122,7 +122,7 @@ const WIDGET_PAGES = {
   Markets: ["markets", "stocks"],
   Feeds: ["news", "reading", "socials", "gaming", "podcasts"],
   Sports: ["scores"],
-  Intel: ["worldclock", "quakes", "fx", "convert", "air", "space", "alerts"],
+  Intel: ["worldclock", "quakes", "fx", "convert", "air", "space", "alerts", "flights"],
   Health: ["medbot", "pubmed", "trials"],
 };
 const pageOf = (type) => Object.keys(WIDGET_PAGES).find((p) => WIDGET_PAGES[p].includes(type)) || "Main";
@@ -649,6 +649,13 @@ await gotoWidget("alerts");
 await page.waitForSelector(".widget-alerts .wa-card, .widget-alerts .wa-clear", { timeout: 5000 });
 check("weather alerts render cards", (await page.locator(".widget-alerts .wa-card").count()) >= 1);
 check("alert shows a severity label", (await page.locator(".widget-alerts .wa-sev").first().innerText()).length > 2);
+
+// ---- flights overhead (OpenSky) --------------------------------------------------
+await gotoWidget("flights");
+await page.waitForSelector(".widget-flights .fl-row", { timeout: 5000 });
+check("flights list renders aircraft", (await page.locator(".widget-flights .fl-row").count()) >= 3);
+check("flight shows a callsign", (await page.locator(".widget-flights .fl-call").first().innerText()).length > 1);
+check("flight shows an altitude", /ft/.test(await page.locator(".widget-flights .fl-alt").first().innerText()));
 
 // ---- health & medicine (PubMed, trials, SA MedBot) -------------------------------
 await gotoWidget("pubmed");

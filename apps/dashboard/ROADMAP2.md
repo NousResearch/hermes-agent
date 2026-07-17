@@ -59,8 +59,12 @@ Effort key: **S** < ½ day · **M** ~1 day · **L** multi-day.
   advisories/watches/warnings for the active weather location, most-severe
   first, colour-coded by severity, with a clear "no active alerts" state —
   shipped on the Intel page.
-- ⬜ Still remaining from the original list:
-  §5 widgets (flights, RSS-reader folders).
+- ✅ **§5 flights overhead** — OpenSky Network (no key): airborne aircraft
+  within ~100 km of the active weather location, lowest first, with altitude,
+  ground speed, heading and climb/descent state — shipped on the Intel page.
+- ⬜ Still remaining from the original list: §5 RSS-reader folders (deferred —
+  a topic-model refactor with marginal payoff vs. destabilizing the news
+  system; revisit only if the topic list gets unwieldy).
 
 ---
 

@@ -109,6 +109,8 @@ export const api = {
   spaceweather: () => getJSON("/api/spaceweather"),
   alerts: (lat, lon, name) =>
     getJSON("/api/alerts", name ? { lat, lon, name } : { lat, lon }),
+  flights: (lat, lon, name) =>
+    getJSON("/api/flights", name ? { lat, lon, name } : { lat, lon }),
   geocode: (q) => getJSON("/api/geocode", { q }),
   markets: (ids) => getJSON("/api/markets", ids?.length ? { ids: ids.join(",") } : {}),
   feeds: () => getJSON("/api/feeds"),

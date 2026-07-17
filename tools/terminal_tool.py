@@ -356,6 +356,59 @@ def _validate_workdir(workdir: str) -> str | None:
     return None
 
 
+# Matches a drive-letter path token starting at a known position, for the
+# error message shown when the Windows path lint fires.
+_WIN_PATH_TOKEN_RE = re.compile(r'[A-Za-z]:\\[^\s;|&<>()\'"`]*')
+
+
+def _find_unquoted_backslash_win_path(command: str) -> str | None:
+    """Return the first drive-letter path whose backslashes bash would eat.
+
+    On Windows the local backend runs commands through Git Bash, which
+    strips single backslashes from unquoted words — ``C:\\Users\\x``
+    reaches the command as ``C:Usersx``, so it fails with a mangled path
+    (or worse, silently operates on the wrong one). Paths inside single
+    quotes, inside double quotes, or written with doubled backslashes all
+    survive intact, so only unquoted single-backslash paths are flagged.
+
+    Scanning stops at the first here-doc operator: unquoted here-doc
+    bodies keep backslashes before ordinary characters, so paths there
+    are safe and would be false positives.
+    """
+    heredoc = command.find("<<")
+    if heredoc != -1:
+        command = command[:heredoc]
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "'":
+            end = command.find("'", i + 1)
+            if end == -1:
+                break
+            i = end + 1
+            continue
+        if ch == '"':
+            i += 1
+            while i < n:
+                if command[i] == "\\":
+                    i += 2
+                    continue
+                if command[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "\\":
+            i += 2
+            continue
+        if ch.isalpha() and command[i + 1:i + 3] == ":\\" and command[i + 3:i + 4] != "\\":
+            m = _WIN_PATH_TOKEN_RE.match(command, i)
+            if m:
+                return m.group(0)
+        i += 1
+    return None
+
+
 def _handle_sudo_failure(output: str, env_type: str) -> str:
     """
     Check for sudo failure and add helpful message for messaging contexts.
@@ -915,6 +968,17 @@ PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REP
 
 Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
 """
+
+# On a Windows host the local backend drives Git Bash, and unquoted
+# backslash paths get mangled by bash word-splitting (C:\Users\x ->
+# C:Usersx). Tell the model up front; a pre-execution lint in
+# terminal_tool() rejects such commands loudly as the backstop.
+if platform.system() == "Windows" and os.getenv("TERMINAL_ENV", "local").strip().lower() in ("", "local"):
+    TERMINAL_TOOL_DESCRIPTION += (
+        "\nWindows host: commands run in Git Bash. Write Windows paths with forward "
+        "slashes (C:/Users/x) or single-quote them ('C:\\Users\\x') — unquoted "
+        "backslash paths get mangled by bash and are rejected before execution.\n"
+    )
 
 # Global state for environment lifecycle management
 _active_environments: Dict[str, Any] = {}
@@ -1760,6 +1824,32 @@ def terminal_tool(
                     "output": "",
                     "exit_code": -1,
                     "error": guidance,
+                    "status": "error",
+                }, ensure_ascii=False)
+
+        # Windows + local backend: Git Bash strips single backslashes from
+        # unquoted words, silently mangling drive-letter paths
+        # (C:\Users\x -> C:Usersx). Fail loudly with a fix instead of
+        # executing a corrupted command. Quoted or doubled-backslash paths
+        # pass through untouched (see _find_unquoted_backslash_win_path).
+        if (
+            env_type == "local"
+            and platform.system() == "Windows"
+            and not env_var_enabled("HERMES_TERMINAL_SKIP_WIN_PATH_LINT")
+        ):
+            bad_path = _find_unquoted_backslash_win_path(command)
+            if bad_path:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": (
+                        f"Unquoted Windows path detected: {bad_path} — this shell is "
+                        "Git Bash, which strips single backslashes from unquoted text, "
+                        "so the command would run with a mangled path "
+                        "(C:\\Users\\x becomes C:Usersx). Rewrite the path with forward "
+                        "slashes (C:/Users/x) or wrap it in single quotes "
+                        "('C:\\Users\\x'), then retry."
+                    ),
                     "status": "error",
                 }, ensure_ascii=False)
 

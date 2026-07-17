@@ -61,6 +61,7 @@ function armWatchdog(runtimeId: string) {
   if (existing) {
     clearTimeout(existing)
   }
+
   sessionWatchdogTimers.set(
     runtimeId,
     setTimeout(() => {
@@ -113,6 +114,7 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     if (runtimeId === $activeSessionId.get()) {
       setActiveSessionStoredId(next.storedSessionId)
     }
+
     clearSettled(previous.storedSessionId)
   }
 
@@ -128,6 +130,7 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
   if (!storedId) {
     return
   }
+
   const wasWorking = previous?.busy ?? false
 
   if (next.busy && !wasWorking) {

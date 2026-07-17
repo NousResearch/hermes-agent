@@ -302,6 +302,7 @@ class BackgroundCompressionController:
         # Operational counters (formalized as telemetry in the config task).
         self.stats: Dict[str, int] = {}
         self.prepare_durations_ms: List[float] = []
+        self.apply_durations_ms: List[float] = []
 
     # -- introspection ------------------------------------------------------
 
@@ -518,11 +519,11 @@ class BackgroundCompressionController:
             max_age_turns=self._config.max_candidate_age_turns,
         )
         if not ok:
-            self._discard(reason)
+            self.discard(reason)
             return None
         return candidate
 
-    def _discard(self, reason: str) -> None:
+    def discard(self, reason: str) -> None:
         with self._lock:
             self._candidate = None
             self._state = CandidateState.STALE
@@ -714,16 +715,30 @@ def maybe_apply_prepared_candidate(
         return None
 
     # Real apply: shared atomic commit lives in conversation_compression so
-    # the synchronous path and the background path can never diverge.
+    # the synchronous path and the background path can never diverge. Any
+    # failure here degrades to the synchronous fallback — a background
+    # feature must never block the user's turn.
     from agent.conversation_compression import apply_prepared_candidate
 
-    return apply_prepared_candidate(
-        agent,
-        candidate,
-        messages,
-        system_message,
-        controller=controller,
-    )
+    started = time.monotonic()
+    try:
+        result = apply_prepared_candidate(
+            agent,
+            candidate,
+            messages,
+            system_message,
+            controller=controller,
+        )
+    except Exception as exc:
+        logger.warning(
+            "background compression apply failed — falling back to the "
+            "synchronous path: %s", exc,
+        )
+        controller._bump("sync_fallback_count")
+        return None
+    if result is not None:
+        controller.apply_durations_ms.append((time.monotonic() - started) * 1000.0)
+    return result
 
 
 __all__ = [

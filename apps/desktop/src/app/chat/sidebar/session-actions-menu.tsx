@@ -44,6 +44,7 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $projectTree, $projectTreeLoading, moveSessionToProject, refreshProjectTree } from '@/store/projects'
 import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
 import { $sessionTiles, openSessionTile } from '@/store/session-states'
+import { $backendContract, backendMeetsRequiredContract } from '@/store/updates'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
@@ -161,6 +162,7 @@ function useSessionActions({
   const tiles = useStore($sessionTiles)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const activeProfile = useStore($activeGatewayProfile)
+  const backendContract = useStore($backendContract)
   const profileIsActive = !profile || normalizeProfileKey(profile) === normalizeProfileKey(activeProfile)
 
   // Already showing as a tab somewhere (a tile, or loaded in main — main IS
@@ -235,15 +237,19 @@ function useSessionActions({
         onBranch?.()
       }
     }),
-    spec({
-      disabled: !sessionId || isWorking || !profileIsActive,
-      icon: 'folder-active',
-      label: r.moveToProject,
-      onSelect: () => {
-        triggerHaptic('selection')
-        setMoveOpen(true)
-      }
-    }),
+    ...(backendMeetsRequiredContract(backendContract)
+      ? [
+          spec({
+            disabled: !sessionId || isWorking || !profileIsActive,
+            icon: 'folder-active',
+            label: r.moveToProject,
+            onSelect: () => {
+              triggerHaptic('selection')
+              setMoveOpen(true)
+            }
+          })
+        ]
+      : []),
     spec({
       disabled: !sessionId,
       icon: 'cloud-download',

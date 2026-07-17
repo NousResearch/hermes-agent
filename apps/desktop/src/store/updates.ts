@@ -92,7 +92,14 @@ function isUpdateToastSnoozed(): boolean {
 // value (or none — a pre-GUI checkout) means GUI<->backend skew.
 // v2: requires the file.attach RPC (remote-gateway non-image file upload).
 // v3: requires approvals.mode config RPCs and session.info reconciliation.
-const REQUIRED_BACKEND_CONTRACT = 3
+// v4: requires cwd mutation on PATCH /api/sessions/{id} for project moves.
+export const REQUIRED_BACKEND_CONTRACT = 4
+export const $backendContract = atom<number | null>(null)
+
+export function backendMeetsRequiredContract(contract: number | null | undefined): boolean {
+  return (contract ?? 0) >= REQUIRED_BACKEND_CONTRACT
+}
+
 const SKEW_TOAST_ID = 'backend-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so
 // without a snooze the warning re-popped on every thread the user opened, even
@@ -140,7 +147,9 @@ function isInstallMethodToastSnoozed(): boolean {
  * doesn't nag on every thread switch.
  */
 export function reportBackendContract(contract: number | undefined): void {
-  if ((contract ?? 0) >= REQUIRED_BACKEND_CONTRACT) {
+  $backendContract.set(contract ?? null)
+
+  if (backendMeetsRequiredContract(contract)) {
     dismissNotification(SKEW_TOAST_ID)
     // Backend caught up — forget any prior snooze so a future regression warns
     // immediately rather than staying silent for the rest of the window.

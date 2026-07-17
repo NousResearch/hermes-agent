@@ -3352,7 +3352,8 @@ def _current_profile_name() -> str:
 # cryptically downstream. Bump whenever the desktop's backend contract changes.
 # v2: adds the file.attach RPC (remote-gateway non-image file upload).
 # v3: adds approvals.mode config RPCs and session.info reconciliation.
-DESKTOP_BACKEND_CONTRACT = 3
+# v4: adds cwd mutation to PATCH /api/sessions/{id} for project moves.
+DESKTOP_BACKEND_CONTRACT = 4
 
 
 def _session_info(agent, session: dict | None = None) -> dict:

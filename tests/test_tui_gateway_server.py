@@ -2856,6 +2856,10 @@ def test_desktop_contract_includes_approval_mode_rpc():
     assert server.DESKTOP_BACKEND_CONTRACT >= 3
 
 
+def test_desktop_contract_includes_session_workspace_rest_mutation():
+    assert server.DESKTOP_BACKEND_CONTRACT >= 4
+
+
 def test_config_set_approval_mode_rejects_unknown_value():
     resp = server.handle_request(
         {

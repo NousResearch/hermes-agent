@@ -3301,15 +3301,22 @@ class BasePlatformAdapter(ABC):
         return list(unique), re.sub(r'\n{3,}', '\n\n', cleaned).strip()
 
     async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata=None,
-                           stop_event: asyncio.Event | None = None) -> None:
+                           stop_event: asyncio.Event | None = None,
+                           completion_event: asyncio.Event | None = None) -> None:
         """Refresh the typing indicator every ``interval`` seconds until cancelled (platform typing
         state expires after ~5s). Chats in ``_typing_paused`` are skipped (approval waits — Slack's
         setStatus disables the compose box). Each ``send_typing`` is bounded by a sub-interval
-        timeout so one slow round-trip is abandoned before the next tick, not the bubble lapsing."""
+        timeout so one slow round-trip is abandoned before the next tick, not the bubble lapsing.
+        ``stop_event`` is the reusable session interrupt signal; ``completion_event`` is scoped to
+        one background turn so a delayed or cancellation-resistant refresh cannot outlive it."""
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+
+        def _typing_should_stop() -> bool:
+            return bool((stop_event is not None and stop_event.is_set())
+                        or (completion_event is not None and completion_event.is_set()))
         try:
             while True:
-                if stop_event is not None and stop_event.is_set():
+                if _typing_should_stop():
                     return
                 if chat_id not in self._typing_paused:
                     try:
@@ -3319,12 +3326,12 @@ class BasePlatformAdapter(ABC):
                         pass  # Slow network — abandon this tick, stay on schedule.
                     except Exception as typing_err:
                         logger.debug("[%s] send_typing error (non-fatal): %s", self.name, typing_err)
-                if stop_event is None:
+                if stop_event is None and completion_event is None:
                     await asyncio.sleep(interval)
                     continue
                 loop = asyncio.get_running_loop()
                 deadline = loop.time() + interval
-                while not stop_event.is_set():
+                while not _typing_should_stop():
                     remaining = deadline - loop.time()
                     if remaining <= 0:
                         break
@@ -4384,15 +4391,21 @@ class BasePlatformAdapter(ABC):
                          len(extracted.pre_extract), event.source.chat_id)
 
     def _start_typing_refresh(self, event: MessageEvent, interrupt_event: asyncio.Event,
-                              metadata: Optional[dict]) -> Optional[asyncio.Task]:
+                              metadata: Optional[dict],
+                              completion_event: Optional[asyncio.Event] = None
+                              ) -> Optional[asyncio.Task]:
         """Spawn the typing-refresh task, or None when ``typing_indicator=False``.
-        ``stop_event`` is passed only when the (possibly overridden) ``_keep_typing`` accepts it."""
+        ``stop_event``/``completion_event`` are passed only when the (possibly overridden)
+        ``_keep_typing`` accepts them; ``**kwargs`` forwarders (LINE) receive both."""
         # A scheduled heartbeat is proactive work: no typing indicator until it has something to say.
         if not getattr(self.config, "typing_indicator", True) or getattr(event, "_heartbeat_session_id", None):
             return None
         kwargs: dict[str, Any] = {"metadata": metadata}
-        if self._accepts_kwarg(self._keep_typing, "stop_event", var_kw=False, unknown=True):
+        if self._accepts_kwarg(self._keep_typing, "stop_event", var_kw=True, unknown=True):
             kwargs["stop_event"] = interrupt_event
+        if completion_event is not None and self._accepts_kwarg(
+                self._keep_typing, "completion_event", var_kw=True, unknown=False):
+            kwargs["completion_event"] = completion_event
         return asyncio.create_task(self._keep_typing(event.source.chat_id, **kwargs))
 
     async def _extract_response_content(self, response: str, event: MessageEvent, session_key: str,
@@ -4494,7 +4507,12 @@ class BasePlatformAdapter(ABC):
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
         _thread_metadata = _thread_metadata_for_event(event)
-        typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
+        # Per-turn typing lease, distinct from the reusable interrupt event: set before every
+        # stop so a refresh task that resists/delays cancellation cannot resume typing after
+        # cleanup unpauses the chat.
+        typing_completion_event = asyncio.Event()
+        typing_task = self._start_typing_refresh(
+            event, interrupt_event, _thread_metadata, typing_completion_event)
         try:
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
@@ -4576,6 +4594,7 @@ class BasePlatformAdapter(ABC):
                     self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
+                typing_completion_event.set()
                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
                 self._spawn_drain_task(pending_event, session_key, delay=delay)
                 return  # Drain task owns the session now.
@@ -4597,6 +4616,7 @@ class BasePlatformAdapter(ABC):
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
             # alive.
+            typing_completion_event.set()
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
             await self._fire_post_delivery_callback(session_key, interrupt_event)
             # Callback work or a late refresh may have recreated typing — one final bounded stop.

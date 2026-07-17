@@ -22,6 +22,7 @@ the bubble stays visible across provider stalls.
 """
 
 import asyncio
+import contextlib
 from unittest.mock import MagicMock
 
 import pytest
@@ -32,6 +33,8 @@ from gateway.platforms.base import (
     PlatformConfig,
     SendResult,
 )
+from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session import SessionSource, build_session_key
 
 
 class _StubAdapter(BasePlatformAdapter):
@@ -49,6 +52,22 @@ class _StubAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id):
         return {"id": chat_id, "type": "dm"}
+
+
+class _ForwardingStubAdapter(_StubAdapter):
+    """Match adapters such as LINE that forward optional lifecycle kwargs."""
+
+    def __init__(self):
+        super().__init__()
+        self.forwarded_typing_kwargs = []
+        self.typing_exited = asyncio.Event()
+
+    async def _keep_typing(self, chat_id, *args, **kwargs):
+        self.forwarded_typing_kwargs.append(kwargs)
+        try:
+            return await super()._keep_typing(chat_id, *args, **kwargs)
+        finally:
+            self.typing_exited.set()
 
 
 class TestKeepTypingTimeoutPerTick:
@@ -286,3 +305,340 @@ async def test_process_message_pauses_typing_before_a_stalled_final_send():
         turn.cancel()
         with pytest.raises(asyncio.CancelledError):
             await turn
+
+
+class TestTypingTurnLease:
+    """A turn's typing refresh must not outlive the turn (per-turn completion lease)."""
+
+    @pytest.mark.asyncio
+    async def test_base_refresh_swallowing_cancel_stops_after_turn(self, monkeypatch):
+        """End-to-end with the real base ``_keep_typing``: a send_typing that swallows
+        the cleanup cancel (cancellation-resistant client) must not keep refreshing
+        typing once the turn's cleanup has unpaused the chat."""
+        adapter = _StubAdapter()
+        first_tick = asyncio.Event()
+        calls = []
+
+        async def send_typing(chat_id, metadata=None):
+            calls.append(chat_id)
+            first_tick.set()
+            if len(calls) == 1:
+                try:
+                    await asyncio.sleep(0.2)
+                except asyncio.CancelledError:
+                    # Swallow the cleanup cancel and keep the task alive briefly.
+                    await asyncio.sleep(0.05)
+
+        async def handler(event):
+            await first_tick.wait()
+
+        monkeypatch.setattr(adapter, "send_typing", send_typing)
+        adapter._message_handler = handler
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="lease-chat", chat_type="dm", user_id="u1",
+        )
+        event = MessageEvent(
+            text="hello", message_type=MessageType.TEXT, source=source, message_id="m-lease",
+        )
+        session_key = build_session_key(source)
+        adapter._active_sessions[session_key] = asyncio.Event()
+        typing_tasks = []
+        real_start = adapter._start_typing_refresh
+
+        def _capture_start(*args, **kwargs):
+            task = real_start(*args, **kwargs)
+            typing_tasks.append(task)
+            return task
+
+        monkeypatch.setattr(adapter, "_start_typing_refresh", _capture_start)
+        try:
+            await asyncio.wait_for(
+                adapter._process_message_background(event, session_key), timeout=3.0)
+            calls_at_cleanup = len(calls)
+            await asyncio.sleep(2.5)  # > one refresh interval after cleanup
+            assert len(calls) == calls_at_cleanup, (
+                f"typing refreshed {len(calls) - calls_at_cleanup}x after the turn finished")
+            assert typing_tasks and typing_tasks[0].done()
+        finally:
+            for task in typing_tasks:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    @pytest.mark.asyncio
+    async def test_completed_turn_signals_cancellation_resistant_typing_loop(
+        self, monkeypatch
+    ):
+        adapter = _StubAdapter()
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+        observed_stop_events = []
+
+        async def handler(event):
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+
+        async def cancellation_resistant_keep_typing(
+            chat_id, metadata=None, stop_event=None, completion_event=None
+        ):
+            observed_stop_events.append(completion_event)
+            assert completion_event is not None
+            started.set()
+            while not completion_event.is_set():
+                try:
+                    await asyncio.sleep(0.01)
+                except asyncio.CancelledError:
+                    continue
+            stopped.set()
+
+        monkeypatch.setattr(adapter, "_keep_typing", cancellation_resistant_keep_typing)
+        adapter._message_handler = handler
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="completion-chat",
+            chat_type="dm",
+            user_id="u1",
+        )
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m-completion",
+        )
+        session_key = build_session_key(source)
+        adapter._active_sessions[session_key] = asyncio.Event()
+
+        try:
+            await asyncio.wait_for(
+                adapter._process_message_background(event, session_key),
+                timeout=2.0,
+            )
+            assert observed_stop_events[0].is_set()
+            await asyncio.wait_for(stopped.wait(), timeout=1.0)
+        finally:
+            if observed_stop_events:
+                observed_stop_events[0].set()
+                await asyncio.wait_for(stopped.wait(), timeout=1.0)
+
+    @pytest.mark.asyncio
+    async def test_forwarding_override_receives_interrupt_and_completion_events(
+        self, monkeypatch
+    ):
+        adapter = _ForwardingStubAdapter()
+        first_tick = asyncio.Event()
+        release_handler = asyncio.Event()
+        calls = []
+
+        async def send_typing(chat_id, metadata=None):
+            calls.append(chat_id)
+            first_tick.set()
+
+        async def handler(event):
+            await release_handler.wait()
+
+        monkeypatch.setattr(adapter, "send_typing", send_typing)
+        adapter._message_handler = handler
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="forwarding-chat",
+            chat_type="dm",
+            user_id="u1",
+        )
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m-forward",
+        )
+        session_key = build_session_key(source)
+        adapter._active_sessions[session_key] = asyncio.Event()
+        task = asyncio.create_task(
+            adapter._process_message_background(event, session_key)
+        )
+
+        await asyncio.wait_for(first_tick.wait(), timeout=1.0)
+        forwarded = adapter.forwarded_typing_kwargs[0]
+        assert forwarded["stop_event"] is adapter._active_sessions[session_key]
+
+        await adapter.interrupt_session_activity(session_key, source.chat_id)
+        calls_after_interrupt = len(calls)
+        await asyncio.wait_for(adapter.typing_exited.wait(), timeout=1.0)
+        assert len(calls) == calls_after_interrupt
+        assert forwarded["stop_event"].is_set()
+        assert not forwarded["completion_event"].is_set()
+
+        release_handler.set()
+        await asyncio.wait_for(task, timeout=1.0)
+        assert forwarded["completion_event"].is_set()
+
+    @pytest.mark.asyncio
+    async def test_explicit_stop_event_override_keeps_interrupt_contract(
+        self, monkeypatch
+    ):
+        adapter = _StubAdapter()
+        started = asyncio.Event()
+        exited = asyncio.Event()
+        release_handler = asyncio.Event()
+        observed_stop_events = []
+
+        async def explicit_stop_only_keep_typing(
+            chat_id, metadata=None, stop_event=None
+        ):
+            observed_stop_events.append(stop_event)
+            assert stop_event is not None
+            started.set()
+            await stop_event.wait()
+            exited.set()
+
+        async def handler(event):
+            await release_handler.wait()
+
+        monkeypatch.setattr(adapter, "_keep_typing", explicit_stop_only_keep_typing)
+        adapter._message_handler = handler
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="legacy-override-chat",
+            chat_type="dm",
+            user_id="u1",
+        )
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m-legacy",
+        )
+        session_key = build_session_key(source)
+        adapter._active_sessions[session_key] = asyncio.Event()
+        task = asyncio.create_task(
+            adapter._process_message_background(event, session_key)
+        )
+
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        assert observed_stop_events == [adapter._active_sessions[session_key]]
+        await adapter.interrupt_session_activity(session_key, source.chat_id)
+        await asyncio.wait_for(exited.wait(), timeout=1.0)
+
+        release_handler.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+    @pytest.mark.asyncio
+    async def test_opaque_legacy_override_fails_closed_and_releases_session(
+        self, monkeypatch
+    ):
+        adapter = _StubAdapter()
+        started = asyncio.Event()
+        exited = asyncio.Event()
+        release_handler = asyncio.Event()
+        observed_stop_events = []
+
+        class OpaqueLegacyKeepTyping:
+            @property
+            def __signature__(self):
+                raise ValueError("opaque callable")
+
+            async def __call__(self, chat_id, metadata=None, stop_event=None):
+                observed_stop_events.append(stop_event)
+                assert stop_event is not None
+                started.set()
+                await stop_event.wait()
+                exited.set()
+
+        async def handler(event):
+            await release_handler.wait()
+
+        monkeypatch.setattr(adapter, "_keep_typing", OpaqueLegacyKeepTyping())
+        adapter._message_handler = handler
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="opaque-override-chat",
+            chat_type="dm",
+            user_id="u1",
+        )
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m-opaque",
+        )
+        session_key = build_session_key(source)
+        adapter._active_sessions[session_key] = asyncio.Event()
+        task = asyncio.create_task(
+            adapter._process_message_background(event, session_key)
+        )
+        adapter._session_tasks[session_key] = task
+
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        assert observed_stop_events == [adapter._active_sessions[session_key]]
+        await adapter.interrupt_session_activity(session_key, source.chat_id)
+        await asyncio.wait_for(exited.wait(), timeout=1.0)
+
+        release_handler.set()
+        await asyncio.wait_for(task, timeout=1.0)
+        assert session_key not in adapter._active_sessions
+        assert session_key not in adapter._session_tasks
+
+    @pytest.mark.asyncio
+    async def test_pending_handoff_gets_fresh_typing_completion_event(
+        self, monkeypatch
+    ):
+        adapter = _ForwardingStubAdapter()
+        first_tick = asyncio.Event()
+        second_tick = asyncio.Event()
+        release_second = asyncio.Event()
+        send_count = 0
+
+        async def send_typing(chat_id, metadata=None):
+            nonlocal send_count
+            send_count += 1
+            (first_tick if send_count == 1 else second_tick).set()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="handoff-chat",
+            chat_type="dm",
+            user_id="u1",
+        )
+        first = MessageEvent(
+            text="first",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m-first",
+        )
+        second = MessageEvent(
+            text="second",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m-second",
+        )
+        session_key = build_session_key(source)
+
+        async def handler(event):
+            if event.text == "first":
+                await first_tick.wait()
+                adapter._pending_messages[session_key] = second
+                return
+            await second_tick.wait()
+            await release_second.wait()
+            return
+
+        monkeypatch.setattr(adapter, "send_typing", send_typing)
+        adapter._message_handler = handler
+        adapter._active_sessions[session_key] = asyncio.Event()
+        first_task = asyncio.create_task(
+            adapter._process_message_background(first, session_key)
+        )
+        adapter._session_tasks[session_key] = first_task
+
+        await asyncio.wait_for(first_task, timeout=1.0)
+        await asyncio.wait_for(second_tick.wait(), timeout=1.0)
+        first_events, second_events = adapter.forwarded_typing_kwargs
+        assert first_events["completion_event"].is_set()
+        assert not second_events["completion_event"].is_set()
+        assert (
+            first_events["completion_event"]
+            is not second_events["completion_event"]
+        )
+        assert first_events["stop_event"] is second_events["stop_event"]
+
+        release_second.set()
+        await asyncio.wait_for(adapter._session_tasks[session_key], timeout=1.0)
+        assert second_events["completion_event"].is_set()

@@ -16,6 +16,21 @@ function labelFor(topic) {
     || topic.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// Per-source mute/pin, stored in synced state and applied client-side.
+const mutedSources = (store) => store.state.news?.muted || [];
+const pinnedSources = (store) => store.state.news?.pinned || [];
+const isMuted = (store, src) => mutedSources(store).includes(src);
+const isPinned = (store, src) => pinnedSources(store).includes(src);
+
+function toggleSource(store, key, src) {
+  store.update((s) => {
+    if (!s.news[key]) s.news[key] = [];
+    const at = s.news[key].indexOf(src);
+    if (at >= 0) s.news[key].splice(at, 1);
+    else s.news[key].push(src);
+  }, "news");
+}
+
 export default {
   type: "news",
   title: "News",
@@ -27,9 +42,17 @@ export default {
     let query = "";        // client-side search filter (never refetches)
 
     const matches = (item) => {
+      if (isMuted(store, item.source)) return false;
       if (!query) return true;
       const hay = `${item.title} ${item.summary || ""} ${item.source}`.toLowerCase();
       return query.split(/\s+/).every((term) => hay.includes(term));
+    };
+
+    // Pinned sources float to the top; order within each band is preserved.
+    const byPinned = (items) => {
+      const pinned = items.filter((i) => isPinned(store, i.source));
+      const rest = items.filter((i) => !isPinned(store, i.source));
+      return [...pinned, ...rest];
     };
 
     const draw = async () => {
@@ -80,13 +103,23 @@ export default {
       // box calls it directly, so typing never hits the network.
       renderItems = () => {
       clear(list);
-      const items = lastItems.filter(matches);
+      const muted = mutedSources(store);
+      if (muted.length) {
+        list.append(h("div.news-muted-bar", {},
+          h("span.muted.small", {}, "Muted:"),
+          ...muted.map((src) => h("button.news-muted-chip", {
+            type: "button", title: `Unmute ${src}`, "aria-label": `Unmute ${src}`,
+            onclick: () => { toggleSource(store, "muted", src); renderItems(); },
+          }, src, " ✕"))));
+      }
+      const items = byPinned(lastItems.filter(matches));
       if (!lastItems.length) {
         list.append(h("div.muted", {}, "No stories right now."));
         return;
       }
       if (!items.length) {
-        list.append(h("div.muted", {}, `No headlines match “${query}”.`));
+        list.append(h("div.muted", {},
+          query ? `No headlines match “${query}”.` : "Every source here is muted."));
         return;
       }
       for (const item of items) {
@@ -119,6 +152,27 @@ export default {
                 title: item.title,
                 content: `${item.title}\n${item.summary || ""}\nSource: ${item.source} — ${item.url}`,
               }), { cls: "icon-btn sum-btn sum-inline", tip: "Summarize this story" }),
+              h("button.icon-btn.sum-inline.news-pin", {
+                type: "button",
+                title: isPinned(store, item.source) ? `Unpin ${item.source}` : `Pin ${item.source} to top`,
+                "aria-label": `Pin source ${item.source}`,
+                class: isPinned(store, item.source) ? "icon-btn sum-inline news-pin news-pin-on" : "icon-btn sum-inline news-pin",
+                onclick: (ev) => {
+                  ev.preventDefault(); ev.stopPropagation();
+                  toggleSource(store, "pinned", item.source);
+                  renderItems();
+                },
+              }, "📌"),
+              h("button.icon-btn.sum-inline.news-mute", {
+                type: "button",
+                title: `Mute ${item.source}`,
+                "aria-label": `Mute source ${item.source}`,
+                onclick: (ev) => {
+                  ev.preventDefault(); ev.stopPropagation();
+                  toggleSource(store, "muted", item.source);
+                  renderItems();
+                },
+              }, "🔇"),
             ),
           );
         anchor.addEventListener("click", () => {

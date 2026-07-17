@@ -654,6 +654,15 @@ a { color: inherit; }
 .news-item:last-child { border-bottom: none; }
 .news-item:hover { background: var(--surface-2); border-left-color: var(--accent); }
 
+/* ---------- news source mute/pin ---------- */
+.news-pin.news-pin-on { opacity: 1; filter: none; }
+.news-pin, .news-mute { filter: grayscale(1); }
+.news-pin:hover, .news-mute:hover { filter: none; }
+.news-item:has(.news-pin-on) { border-left-color: var(--accent); }
+.news-muted-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 2px 8px; border-bottom: 1px solid var(--hairline); margin-bottom: 6px; }
+.news-muted-chip { font-size: 11px; border: 1px solid var(--hairline); border-radius: 4px; padding: 1px 7px; background: var(--surface-2); color: var(--ink-2); cursor: pointer; }
+.news-muted-chip:hover { border-color: var(--accent); color: var(--ink); }
+
 /* ---------- news topic detail (⤢) ---------- */
 .news-detail-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
 .news-detail-head .input { flex: 1 1 200px; }

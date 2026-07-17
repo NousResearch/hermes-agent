@@ -82,7 +82,7 @@ function defaultState() {
     agent: { history: [] },
     focus: { running: false, endsAt: null, remainingMs: 25 * 60000, minutes: 25, mode: "focus", sessions: [] },
     weather: { locations: [], active: 0 }, // empty → server default city
-    news: { topic: "top" },
+    news: { topic: "top", muted: [], pinned: [] },
     reading: { items: [] },
     newsRead: {}, // url → timestamp of first open (bounded in markRead)
     markets: { ids: ["bitcoin", "ethereum", "solana", "dogecoin"], holdings: {} },

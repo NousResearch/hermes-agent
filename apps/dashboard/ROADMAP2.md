@@ -42,8 +42,11 @@ Effort key: **S** < ½ day · **M** ~1 day · **L** multi-day.
 - ✅ **§2.3 follow teams** — ☆ follow-stars on any board, a "★ Teams" tab with
   each team's recent/next fixtures + team news, and an add-to-calendar button
   that writes upcoming games into the calendar store — shipped.
-- ⬜ Still pending: §0.3 registry,
-  §3.4 podcasts, and the remaining
+- ✅ **§3.4 podcast player + source mute/pin** — the podcast widget (subscribe
+  by RSS, inline HTML5 player) shipped earlier; now the news widget gains
+  per-source 🔇 mute and 📌 pin (synced state, filtered/sorted client-side)
+  with an unmute bar — shipped.
+- ⬜ Still pending: §0.3 registry, and the remaining
   §5 widgets (air quality/pollen, weather alerts, space weather, flights,
   RSS-reader folders).
 

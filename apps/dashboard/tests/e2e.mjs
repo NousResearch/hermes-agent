@@ -199,6 +199,20 @@ await page.waitForFunction(() =>
 await page.waitForSelector(".news-item");
 check("topic switch renders items", (await page.locator(".news-item").count()) > 2);
 
+// mute a source → its items disappear, an unmute chip appears
+const firstSource = await page.locator(".widget-news .news-item .news-source").first().innerText();
+const beforeMute = await page.locator(".widget-news .news-item").count();
+await page.locator(".widget-news .news-item").first().locator(".news-mute").click();
+await page.waitForSelector(".widget-news .news-muted-bar", { timeout: 5000 });
+check("muting a source hides its items",
+  (await page.locator(".widget-news .news-item").count()) < beforeMute);
+check("muted source shown in unmute bar",
+  (await page.locator(".widget-news .news-muted-chip").innerText()).toUpperCase().includes(firstSource.toUpperCase()));
+await page.locator(".widget-news .news-muted-chip").first().click();
+await page.waitForSelector(".widget-news .news-muted-bar", { state: "detached", timeout: 5000 });
+check("unmuting restores items",
+  (await page.locator(".widget-news .news-item").count()) >= beforeMute);
+
 // gaming is a first-class news topic
 await page.locator(".widget-news .tab", { hasText: "Gaming" }).click();
 await page.waitForFunction(() =>

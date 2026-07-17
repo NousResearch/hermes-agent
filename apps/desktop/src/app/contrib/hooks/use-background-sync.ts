@@ -18,7 +18,13 @@ import type { GatewayRequester } from '../types'
 const CRON_POLL_INTERVAL_MS = 30_000
 const MESSAGING_POLL_INTERVAL_MS = 10_000
 const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
-const LIVE_SESSION_STATUS_POLL_INTERVAL_MS = 15_000
+// Match the TUI's live-session refresh cadence. Auto-compression can rotate a
+// stored session id while its turn keeps running; until the next snapshot the
+// sidebar row points at the new id while the renderer still knows the old one.
+// A 15s cadence made that healthy transition look finished long enough to be
+// alarming (and clicking the row appeared to "fix" it by touching the live
+// session). This snapshot is small and already polled at 1.5s by the TUI.
+const LIVE_SESSION_STATUS_POLL_INTERVAL_MS = 1_500
 
 interface LiveSessionStatusItem {
   id?: string

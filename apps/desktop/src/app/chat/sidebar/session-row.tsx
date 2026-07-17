@@ -22,6 +22,7 @@ import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { type SessionDotState, sessionDotState, sessionShowsRunningArc } from './session-row-state'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
@@ -102,17 +103,7 @@ export function SidebarSessionRow({
   // Resolve the dot's display state once — the four signals are mutually
   // exclusive by priority, so threading them as booleans through wrappers just
   // to collapse them at the leaf is backwards.
-  const dotState: SessionDotState = needsInput
-    ? 'needs-input'
-    : isWorking
-      ? isStalled
-        ? 'stalled'
-        : 'working'
-      : hasBackground
-        ? 'background'
-        : isUnread
-          ? 'unread'
-          : 'idle'
+  const dotState = sessionDotState({ hasBackground, isStalled, isUnread, isWorking, needsInput })
 
   return (
     <SessionContextMenu
@@ -188,7 +179,7 @@ export function SidebarSessionRow({
         style={style}
         {...rest}
       >
-        {isWorking && !isStalled && !needsInput && <span aria-hidden="true" className="arc-border" />}
+        {sessionShowsRunningArc({ isWorking, needsInput }) && <span aria-hidden="true" className="arc-border" />}
         <SidebarRowBody
           className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
           // Middle-click = open in a new tab (browser muscle memory). Swallow
@@ -275,11 +266,6 @@ export function SidebarSessionRow({
     </SessionContextMenu>
   )
 }
-
-/** The session's display state for the sidebar lead dot. The call site
- *  resolves this from the four underlying signals (needs-input, working,
- *  background, unread) so the dot component itself is a pure lookup. */
-type SessionDotState = 'background' | 'idle' | 'needs-input' | 'stalled' | 'unread' | 'working'
 
 function SessionRowLeadDot({
   branchStem,

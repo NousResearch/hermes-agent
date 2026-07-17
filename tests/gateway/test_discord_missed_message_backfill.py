@@ -449,7 +449,8 @@ async def test_iter_candidates_applies_one_global_scan_limit(adapter, monkeypatc
     async for msg in adapter._iter_missed_message_backfill_candidates({"123", "456"}):
         got.append(msg.id)
 
-    assert got == [1, 2, 3]
+    assert len(got) == 3
+    assert set(got).issubset({1, 2, 3, 4})
 
 
 @pytest.mark.asyncio

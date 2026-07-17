@@ -7067,6 +7067,50 @@ def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
     assert server._db_error == "locking protocol"
 
 
+def test_get_db_serializes_concurrent_sessiondb_init(monkeypatch):
+    fake_mod = types.ModuleType("hermes_state")
+    started = threading.Event()
+    release = threading.Event()
+    instances = []
+
+    class _FakeSessionDB:
+        def __init__(self):
+            instances.append(self)
+            started.set()
+            release.wait(timeout=2.0)
+
+    fake_mod.SessionDB = _FakeSessionDB
+    monkeypatch.setitem(sys.modules, "hermes_state", fake_mod)
+    monkeypatch.setattr(server, "_db", None)
+    monkeypatch.setattr(server, "_db_error", None)
+
+    results = []
+
+    def _load_db():
+        results.append(server._get_db())
+
+    first = threading.Thread(target=_load_db)
+    second = threading.Thread(target=_load_db)
+
+    first.start()
+    assert started.wait(timeout=2.0)
+
+    second.start()
+    time.sleep(0.05)
+
+    assert len(instances) == 1
+
+    release.set()
+    first.join(timeout=2.0)
+    second.join(timeout=2.0)
+
+    assert len(results) == 2
+    assert results[0] is instances[0]
+    assert results[1] is instances[0]
+    assert server._db is instances[0]
+    assert server._db_error is None
+
+
 def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     class _FakeWorker:
         def __init__(self, key, model, profile_home=None):

@@ -132,6 +132,7 @@ _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
 _answers: dict[str, str] = {}
 _db = None
 _db_error: str | None = None
+_db_lock = threading.Lock()
 _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
@@ -972,18 +973,20 @@ _start_idle_reaper()
 def _get_db():
     global _db, _db_error
     if _db is None:
-        from hermes_state import SessionDB
+        with _db_lock:
+            if _db is None:
+                from hermes_state import SessionDB
 
-        try:
-            _db = SessionDB()
-            _db_error = None
-        except Exception as exc:
-            _db_error = str(exc)
-            logger.warning(
-                "TUI session store unavailable — continuing without state.db features: %s",
-                exc,
-            )
-            return None
+                try:
+                    _db = SessionDB()
+                    _db_error = None
+                except Exception as exc:
+                    _db_error = str(exc)
+                    logger.warning(
+                        "TUI session store unavailable — continuing without state.db features: %s",
+                        exc,
+                    )
+                    return None
     return _db
 
 

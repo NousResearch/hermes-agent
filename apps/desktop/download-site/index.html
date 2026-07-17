@@ -4,10 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex" />
-    <title>Download IX Agency — Intelliverse X</title>
+    <title>Download IVX Agency — Intelliverse X</title>
     <meta
       name="description"
-      content="Download the IX Agency desktop app for macOS, Windows and Linux. Auto-updating build from the Intelliverse X release feed."
+      content="Download the IVX Agency desktop app for macOS, Windows and Linux. Auto-updating build from the Intelliverse X release feed."
     />
     <style>
       :root {
@@ -186,8 +186,8 @@
 
       <main id="panel-ix" role="tabpanel" aria-labelledby="tab-ix" tabindex="0">
       <header>
-        <div class="logo">IX</div>
-        <h1>Download IX Agency</h1>
+        <div class="logo">IVX</div>
+        <h1>Download IVX Agency</h1>
         <p class="sub">
           The Intelliverse X desktop app — one place for the copilot, every platform tool, the company VPN and the
           local Hermes agent. Installs auto-update from the release feed.
@@ -238,56 +238,19 @@
         <p style="margin-top: 14px">
           <a class="btn ghost" href="https://admin.intelli-verse-x.ai/admin/portal" target="_blank" rel="noreferrer">Open the admin portal →</a>
           <a class="btn ghost" id="handbook" href="https://admin.intelli-verse-x.ai/admin/team" target="_blank" rel="noreferrer">Need access? Ask your admin</a>
-          <a class="btn ghost" href="#admin-setup">Admin? How to grant access ↓</a>
-        </p>
-      </section>
-
-      <section class="steps" id="admin-setup">
-        <h2>For admins — how to give a user access (step by step)</h2>
-        <ol class="steps-list">
-          <li>
-            <b>Open team management:</b> go to
-            <a href="https://admin.intelli-verse-x.ai/admin/team" target="_blank" rel="noreferrer">admin.intelli-verse-x.ai/admin/team</a>
-            and sign in with your email OTP. You need <b>super admin</b> or <b>owner</b> privilege to see the invite form.
-          </li>
-          <li>
-            <b>Click "Invite someone"</b> and fill in:
-            <ul style="margin: 6px 0 0; padding-left: 18px">
-              <li><b>Subject</b> — the user's exact work email (or a whole domain to cover a team).</li>
-              <li><b>Apps</b> — pick the app chips they need, or "All apps".</li>
-              <li><b>Privilege</b> — <code style="display:inline;padding:1px 5px">owner</code> / <code style="display:inline;padding:1px 5px">manager</code> / <code style="display:inline;padding:1px 5px">viewer</code>.</li>
-              <li><b>Bundles</b> (advanced) — revenue, growth, support, content, analytics, engineering.</li>
-            </ul>
-            You can only grant apps, tiers and bundles at or below your own level.
-          </li>
-          <li><b>Submit.</b> The access grant is active immediately for the user's next sign-in.</li>
-          <li>
-            <b>Send the invite yourself.</b> The page shows a copyable invite note —
-            <b>nothing is emailed automatically</b>, so paste it to the user along with a link to this download page.
-          </li>
-          <li>
-            <b>Done — no credentials to hand out.</b> On the user's first sign-in the app auto-provisions
-            everything server-side: gateway token, a personal LiteLLM key, a personal VPN profile and the
-            Cognito secret.
-          </li>
-        </ol>
-        <p style="margin-top: 12px; color: var(--muted); font-size: 13px">
-          To revoke access later, delete the user's grant on the same
-          <a href="https://admin.intelli-verse-x.ai/admin/team" target="_blank" rel="noreferrer">team page</a>
-          — it takes effect at their next login.
         </p>
       </section>
 
       <div class="note">
         <b>First launch on macOS:</b> this build isn't notarized yet, so Gatekeeper will say
-        <i>“IX Agency” is damaged and can’t be opened</i>. It isn't damaged — that's the quarantine flag on
+        <i>“IVX Agency” is damaged and can’t be opened</i>. It isn't damaged — that's the quarantine flag on
         unsigned downloads. Drag the app to <b>Applications</b>, then run this once in Terminal and open it normally:
         <details class="verify" open>
           <summary>the one-time command</summary>
-          <code>xattr -cr "/Applications/IX Agency.app"</code>
+          <code>xattr -cr "/Applications/IVX Agency.app"</code>
         </details>
         On Windows you may see a SmartScreen prompt (choose <b>More info → Run anyway</b>).
-        Only ever install IX Agency from this page.
+        Only ever install IVX Agency from this page.
       </div>
 
       <footer>

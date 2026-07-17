@@ -75,7 +75,7 @@ export function ConnectTab() {
     void bridge
       .getSettings()
       .then(setSettings)
-      .catch(error => notifyError(error, 'Failed to load IX Agency settings'))
+      .catch(error => notifyError(error, 'Failed to load IVX Agency settings'))
 
     void bridge
       .hermesStatus?.()
@@ -97,7 +97,7 @@ export function ConnectTab() {
   if (!bridge) {
     return (
       <div className="mx-auto max-w-2xl px-5 py-6 text-xs text-muted-foreground">
-        The IX Agency bridge is unavailable in this build.
+        The IVX Agency bridge is unavailable in this build.
       </div>
     )
   }
@@ -136,7 +136,7 @@ export function ConnectTab() {
       savedTimer.current = setTimeout(() => setSaveState('idle'), 2000)
     } catch (error) {
       setSaveState('idle')
-      notifyError(error, 'Failed to save IX Agency settings')
+      notifyError(error, 'Failed to save IVX Agency settings')
     }
   }
 
@@ -358,7 +358,7 @@ export function ConnectTab() {
           <p className="text-[0.68rem] leading-relaxed text-muted-foreground/70">
             Powers the Copilot tab: streaming chat with the full admin-mcp tool estate. A personal key is provisioned
             automatically on sign-in (enter one here only to override it). The key is encrypted at rest (safeStorage).
-            The copilot additionally requires the IX Agency portal login (OTP) — credentials alone do not unlock it.
+            The copilot additionally requires the IVX Agency portal login (OTP) — credentials alone do not unlock it.
           </p>
         </section>
 

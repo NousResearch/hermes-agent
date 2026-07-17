@@ -98,7 +98,7 @@ export function LoginPane({ detail, onSignedIn }: { detail?: string; onSignedIn:
       <div className="w-full max-w-sm space-y-4">
         <div className="space-y-1 text-center">
           <Codicon className="text-muted-foreground/60" name="shield" size="1.5rem" />
-          <h2 className="text-sm font-semibold">Sign in to IX Agency</h2>
+          <h2 className="text-sm font-semibold">Sign in to IVX Agency</h2>
           <p className="text-xs text-muted-foreground">
             {step === 'email'
               ? 'Enter your admin email — we email you a 6-digit code. Nothing here needs the VPN.'

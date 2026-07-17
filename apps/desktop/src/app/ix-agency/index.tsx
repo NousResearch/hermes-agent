@@ -76,6 +76,25 @@ export function IxAgencyView(props: React.ComponentProps<'section'>) {
         meta: counts[id] || undefined
       }))}
     >
+      <aside
+        aria-label="Intelliverse native engine availability"
+        className="mb-3 rounded-lg border border-border bg-muted/20 p-3 text-xs text-muted-foreground"
+      >
+        <p className="font-medium text-foreground">Three native engines, one shared Memory</p>
+        <p className="mt-1">
+          Map each client workspace to one Brand or App ID so Knowledge, customer Memory,
+          credentials, and spend stay isolated. Subject identity and consent determine what may
+          continue across approved channels.
+        </p>
+        <ul className="mt-2 grid gap-1 sm:grid-cols-3">
+          <li><strong className="text-foreground">QuestX:</strong> connected per-App setup; kiosk completion approved pilots.</li>
+          <li><strong className="text-foreground">ContentX + Postiz:</strong> publishing live; Memory automation rolling out.</li>
+          <li><strong className="text-foreground">KioskX:</strong> connected deployment; kiosk Worlds approved pilots.</li>
+        </ul>
+        <p className="mt-2">
+          Discount-code and payout review workflows are roadmap, not live Desktop actions.
+        </p>
+      </aside>
       {mode === 'copilot' && <CopilotTab />}
       {mode === 'clients' && <ClientsTab query={query} />}
       {mode === 'engagements' && <EngagementsTab query={query} />}

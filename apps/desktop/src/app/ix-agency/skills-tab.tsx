@@ -613,7 +613,7 @@ export function SkillsTab({ onRunNatively, query }: { onRunNatively?: () => void
               ]}
             />
             <p className="text-[0.68rem] leading-relaxed text-muted-foreground/70">
-              Playbooks run in the IX Agency admin portal copilot — or natively in the Copilot tab (&quot;Run
+              Playbooks run in the IVX Agency admin portal copilot — or natively in the Copilot tab (&quot;Run
               natively&quot; injects the full playbook into a new conversation). Local agent skills (the SKILL.md
               folders under skills/) live in the Capabilities page.
             </p>

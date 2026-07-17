@@ -1,10 +1,10 @@
 {
   "id": "ix-agency",
-  "productName": "IX Agency",
+  "productName": "IVX Agency",
   "appId": "ai.intelli-verse-x.ix-agency",
-  "artifactPrefix": "IX-Agency",
+  "artifactPrefix": "IVX-Agency",
   "executableName": "ix-agency",
-  "description": "IX Agency — AI agency desktop by Intelliverse X.",
+  "description": "IVX Agency Desktop — growth-ops desktop for agencies and brands by Intelliverse X.",
   "author": "Intelliverse X",
   "copyright": "Copyright © 2026 Nous Research",
   "homepage": "https://admin.intelli-verse-x.ai",
@@ -17,5 +17,5 @@
   "downloadPageUrl": "https://intelliverse-x-desktop.s3.amazonaws.com/index.html",
   "s3PublishPath": "ix-agency",
   "workspace": "ix-agency",
-  "workspaceLabel": "IX Agency"
+  "workspaceLabel": "IVX Agency"
 }

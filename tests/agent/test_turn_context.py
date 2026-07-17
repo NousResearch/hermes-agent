@@ -197,6 +197,16 @@ def test_task_id_passthrough():
     assert agent._current_task_id == "fixed-task"
 
 
+def test_pre_llm_call_forwards_chat_id():
+    agent = _FakeAgent()
+    setattr(agent, "_chat_id", "client-channel-123")
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]) as invoke:
+        _build(agent)
+
+    assert invoke.call_args.kwargs["chat_id"] == "client-channel-123"
+
+
 def test_persist_user_message_becomes_original():
     agent = _FakeAgent()
     ctx = _build(agent, user_message="api-prefixed", persist_user_message="clean")

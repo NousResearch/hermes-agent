@@ -34,6 +34,8 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
 from agent.edge_working_memory import (
     absorb_assistant_scratchpad_update,
+    begin_edge_turn_injection,
+    edge_scratchpad_for_injection,
     ensure_scratchpad_initialized,
     format_edge_working_memory_injection,
 )
@@ -608,6 +610,7 @@ def run_conversation(
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
     ensure_scratchpad_initialized(agent, original_user_message)
+    begin_edge_turn_injection(agent)
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
@@ -814,7 +817,7 @@ def run_conversation(
                 if getattr(agent, "edge_mode", False):
                     _injections.append(
                         format_edge_working_memory_injection(
-                            getattr(agent, "_edge_scratchpad", "") or ""
+                            edge_scratchpad_for_injection(agent)
                         )
                     )
                 if _plugin_user_context:

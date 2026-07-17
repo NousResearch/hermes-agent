@@ -553,6 +553,33 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         middleware_trace=list(middleware_trace),
                     )
 
+        if block_result is None and getattr(agent, "edge_mode", False):
+            try:
+                from agent.edge_fault_damper import edge_precheck_tool_repeat
+
+                _edge_block_msg = edge_precheck_tool_repeat(
+                    agent, function_name, function_args,
+                )
+            except Exception:
+                _edge_block_msg = None
+            if _edge_block_msg is not None:
+                block_result = json.dumps(
+                    {"error": _edge_block_msg, "edge_fault_damper": True},
+                    ensure_ascii=False,
+                )
+                _emit_terminal_post_tool_call(
+                    agent,
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=block_result,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    status="blocked",
+                    error_type="edge_fault_damper",
+                    error_message=_edge_block_msg,
+                    middleware_trace=list(middleware_trace),
+                )
+
         # ── Checkpoint preflight (only for tools that will execute) ──
         if block_result is None:
             # Checkpoint for file-mutating tools
@@ -967,6 +994,20 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     )
                 except Exception as _ver_err:
                     logging.debug("file-mutation verifier record failed: %s", _ver_err)
+
+            if not blocked and getattr(agent, "edge_mode", False):
+                try:
+                    from agent.edge_fault_damper import edge_record_tool_result_for_damper
+
+                    _raw_fr = function_result
+                    edge_record_tool_result_for_damper(
+                        agent,
+                        function_name,
+                        function_args,
+                        _raw_fr if isinstance(_raw_fr, str) else str(_raw_fr),
+                    )
+                except Exception:
+                    pass
 
             if not blocked and agent.tool_progress_callback:
                 try:

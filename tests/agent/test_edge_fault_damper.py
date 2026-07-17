@@ -30,6 +30,7 @@ def test_precheck_blocks_repeat():
         edge_mode = True
         _edge_scratchpad = ""
         _edge_failed_signatures = set()
+        _edge_max_consecutive_tool_failures = 2
 
     a = A()
     sig = edge_tool_signature("terminal", {"command": "nope"})
@@ -37,6 +38,30 @@ def test_precheck_blocks_repeat():
     msg = edge_precheck_tool_repeat(a, "terminal", {"command": "nope"})
     assert msg is not None
     assert "fault damper" in msg.lower()
+
+
+def test_precheck_and_record_fully_off_when_cap_zero():
+    from agent.edge_fault_damper import edge_record_tool_result_for_damper
+
+    class A:
+        edge_mode = True
+        _edge_scratchpad = default_scratchpad("goal")
+        _edge_failed_signatures = set()
+        _edge_max_consecutive_tool_failures = 0
+        _edge_consecutive_tool_failures = 0
+
+    a = A()
+    sig = edge_tool_signature("terminal", {"command": "nope"})
+    a._edge_failed_signatures.add(sig.lower())
+    assert edge_precheck_tool_repeat(a, "terminal", {"command": "nope"}) is None
+
+    bad = '{"success": false, "error": "permission denied"}'
+    with patch("agent.display._detect_tool_failure", return_value=(True, "x")):
+        edge_record_tool_result_for_damper(a, "write_file", {"path": "/tmp/x"}, bad)
+    # Cap 0 must not record new signatures or mutate the scratchpad.
+    assert a._edge_failed_signatures == {sig.lower()}
+    assert "[sig:" not in a._edge_scratchpad
+    assert a._edge_consecutive_tool_failures == 0
 
 
 def test_append_auto_fault_under_blockers():
@@ -67,6 +92,7 @@ def test_record_marks_scratchpad_on_failure():
         edge_mode = True
         _edge_scratchpad = default_scratchpad("goal")
         _edge_failed_signatures = set()
+        _edge_max_consecutive_tool_failures = 3
 
     a = A()
     bad = '{"success": false, "error": "permission denied"}'
@@ -103,6 +129,7 @@ def test_success_resets_consecutive_counter():
         _edge_scratchpad = default_scratchpad("goal")
         _edge_failed_signatures = set()
         _edge_consecutive_tool_failures = 3
+        _edge_max_consecutive_tool_failures = 2
 
     a = A()
     with patch("agent.display._detect_tool_failure", return_value=(False, "")):

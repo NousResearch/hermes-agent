@@ -4,8 +4,12 @@ Gated by ``agent.edge_mode`` in config.  Keeps a dense markdown scratchpad
 in agent runtime state and integrates with context compression (focus topic +
 post-compaction deltas) without mutating the parent's cached system prompt
 (unchanged for the root agent). Subagents inherit working memory via copied
-runtime state and API-time user-message injection (preserves a stable system
-prefix for KV-cache).
+runtime state.
+
+API-time user-message injection uses a **turn-frozen snapshot** of the
+scratchpad (``begin_edge_turn_injection``) so mid-turn mutations (absorb,
+fault lines, compaction deltas) do not rewrite an already-sent user prefix
+and break prompt-cache stability across tool rounds.
 """
 
 from __future__ import annotations
@@ -171,6 +175,29 @@ def ensure_scratchpad_initialized(agent, primary_goal: str) -> None:
             return
     agent._edge_scratchpad = default_scratchpad(primary_goal)
     persist_edge_scratchpad_now(agent)
+
+
+def begin_edge_turn_injection(agent) -> None:
+    """Freeze the scratchpad text used for API user-message injection this turn.
+
+    Live ``_edge_scratchpad`` may still mutate mid-turn (assistant absorb, fault
+    damper lines, compaction deltas). The frozen copy keeps the injected user
+    prefix byte-stable across tool rounds so prompt caching stays valid.
+    """
+    if not getattr(agent, "edge_mode", False):
+        agent._edge_scratchpad_turn_injection = ""
+        return
+    agent._edge_scratchpad_turn_injection = getattr(agent, "_edge_scratchpad", "") or ""
+
+
+def edge_scratchpad_for_injection(agent) -> str:
+    """Return the turn-frozen scratchpad for API injection (cache-safe)."""
+    if not getattr(agent, "edge_mode", False):
+        return ""
+    frozen = getattr(agent, "_edge_scratchpad_turn_injection", None)
+    if isinstance(frozen, str):
+        return frozen
+    return getattr(agent, "_edge_scratchpad", "") or ""
 
 
 def _facts_needle_order(scratchpad: str) -> str:

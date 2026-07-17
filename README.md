@@ -215,12 +215,12 @@ Gateway, cron, and delegated subagents read the same `agent.*` settings so behav
 
 ### Layer 2: Working-memory scratchpad (follow-up)
 
-When edge mode is on, Hermes can maintain a dense markdown **working-memory scratchpad** per session (stored in SessionDB as `edge_working_memory`). The scratchpad is injected ephemerally into the current user turn at API-call time — it is not duplicated onto the persisted user message row.
+When edge mode is on, Hermes can maintain a dense markdown **working-memory scratchpad** per session (stored in SessionDB as `edge_working_memory`). At the start of each user turn the scratchpad is **frozen** for API injection into the current user message — mid-turn updates (absorb, fault lines, compaction deltas) persist to runtime/DB but do not rewrite the already-sent user prefix, so prompt caching stays stable across tool rounds.
 
-- **Scratchpad sync:** The model can echo an updated scratchpad block in assistant output; Hermes absorbs it into runtime state and persists it.
+- **Scratchpad sync:** The model can echo an updated scratchpad block in assistant output; Hermes absorbs it into runtime state and persists it (visible on the next user turn's injection).
 - **Compaction deltas:** After context compression, a short summary bullet is appended to the scratchpad under validated facts.
 - **Earlier flush:** `edge_context_flush_ratio` (default `0.82`) scales the compression trigger threshold so summarisation can run sooner on tight windows.
-- **Fault damper:** Optional repeat-failure blocking for identical tool+signature failures (`edge_max_consecutive_tool_failures`, `0` = off).
+- **Fault damper:** Opt-in repeat-failure blocking for identical tool+signature failures. `edge_max_consecutive_tool_failures` must be `> 0` to enable (default `0` = fully off: no recording, no blocking, no interrupt).
 
 Additional `agent:` keys (layer 2):
 

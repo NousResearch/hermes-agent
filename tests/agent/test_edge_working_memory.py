@@ -9,10 +9,13 @@ from agent.edge_scratchpad_delta import accumulate_scratchpad_delta
 from agent.edge_working_memory import (
     EdgeCompressGuardError,
     absorb_assistant_scratchpad_update,
+    begin_edge_turn_injection,
     append_compaction_delta_to_scratchpad,
     default_scratchpad,
+    edge_scratchpad_for_injection,
     effective_compression_trigger_tokens,
     extract_compression_summary_text,
+    format_edge_working_memory_injection,
     merge_focus_topic_with_scratchpad,
     maybe_edge_flush_mid_turn,
     validate_edge_compress_guard,
@@ -69,6 +72,27 @@ def test_absorb_assistant_scratchpad_update():
     )
     assert a._edge_scratchpad.startswith("### CRIT")
     assert "**Goal:** G" in a._edge_scratchpad
+
+
+def test_turn_injection_freeze_ignores_mid_turn_mutations():
+    """API injection must stay byte-stable across mid-turn scratchpad updates."""
+
+    class A:
+        edge_mode = True
+        _edge_scratchpad = default_scratchpad("original goal")
+
+    a = A()
+    begin_edge_turn_injection(a)
+    first = format_edge_working_memory_injection(edge_scratchpad_for_injection(a))
+    absorb_assistant_scratchpad_update(
+        a,
+        "### CRIT\n- **Goal:** mutated mid-turn\n",
+    )
+    assert "**Goal:** mutated mid-turn" in a._edge_scratchpad
+    second = format_edge_working_memory_injection(edge_scratchpad_for_injection(a))
+    assert first == second
+    assert "original goal" in first
+    assert "mutated mid-turn" not in second
 
 
 def test_absorb_trims_after_crlf_markdown_separator():

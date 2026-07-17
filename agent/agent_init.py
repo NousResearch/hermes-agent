@@ -1482,6 +1482,7 @@ def init_agent(
             agent.local_context_budget = 4000
 
     agent._edge_scratchpad = ""
+    agent._edge_scratchpad_turn_injection = ""
     agent._edge_failed_signatures = set()
     try:
         _flush_ratio = float(_agent_section.get("edge_context_flush_ratio", 0.82))

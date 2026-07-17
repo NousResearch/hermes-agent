@@ -764,6 +764,8 @@ class AIAgent:
 
         if hasattr(self, "_edge_scratchpad"):
             self._edge_scratchpad = ""
+        if hasattr(self, "_edge_scratchpad_turn_injection"):
+            self._edge_scratchpad_turn_injection = ""
         if hasattr(self, "_edge_failed_signatures"):
             self._edge_failed_signatures = set()
 

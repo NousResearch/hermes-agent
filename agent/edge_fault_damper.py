@@ -18,6 +18,20 @@ logger = logging.getLogger(__name__)
 _SIG_MARK = re.compile(r"\[sig:([^\]\s]+)\]")
 
 
+def edge_fault_damper_enabled(agent) -> bool:
+    """True when edge mode is on and the consecutive-failure cap is > 0.
+
+    ``edge_max_consecutive_tool_failures: 0`` (default) fully disables the
+    damper: no signature recording, no repeat blocking, and no interrupt.
+    """
+    if not getattr(agent, "edge_mode", False):
+        return False
+    try:
+        return int(getattr(agent, "_edge_max_consecutive_tool_failures", 0) or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def edge_tool_signature(tool_name: str, function_args: Optional[Dict[str, Any]]) -> str:
     """Stable signature for matching duplicate failing calls."""
     name = (tool_name or "").strip().lower()
@@ -58,7 +72,7 @@ def edge_precheck_tool_repeat(
     function_args: Optional[Dict[str, Any]],
 ) -> Optional[str]:
     """Return a synthetic error string if this call should be blocked."""
-    if not getattr(agent, "edge_mode", False):
+    if not edge_fault_damper_enabled(agent):
         return None
     sig = edge_tool_signature(tool_name, function_args)
     scratch = getattr(agent, "_edge_scratchpad", "") or ""
@@ -84,7 +98,7 @@ def edge_record_tool_result_for_damper(
     result: str,
 ) -> None:
     """After a tool runs, record failures so identical calls can be blocked."""
-    if not getattr(agent, "edge_mode", False):
+    if not edge_fault_damper_enabled(agent):
         return
     try:
         from agent.display import _detect_tool_failure
@@ -102,7 +116,7 @@ def edge_record_tool_result_for_damper(
         cur = int(getattr(agent, "_edge_consecutive_tool_failures", 0) or 0) + 1
         agent._edge_consecutive_tool_failures = cur
         cap = int(getattr(agent, "_edge_max_consecutive_tool_failures", 0) or 0)
-        if cap > 0 and cur >= cap:
+        if cur >= cap:
             agent._interrupt_requested = True
             logger.warning(
                 "edge fault: consecutive tool failures %s >= cap %s — requesting interrupt",

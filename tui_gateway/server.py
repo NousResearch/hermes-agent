@@ -4148,20 +4148,11 @@ def _cfg_max_turns(cfg: dict, default: int) -> int:
 
 
 def _cfg_edge_mode(cfg: dict) -> bool:
-    env_raw = os.environ.get("HERMES_TUI_EDGE_MODE", "").strip().lower()
-    if env_raw in ("1", "true", "yes", "on"):
-        return True
     agent_cfg = cfg.get("agent") or {}
     return bool(agent_cfg.get("edge_mode", False))
 
 
 def _cfg_local_context_budget(cfg: dict, default: int = 4000) -> int:
-    raw = os.environ.get("HERMES_TUI_LOCAL_CONTEXT_BUDGET", "").strip()
-    if raw:
-        try:
-            return int(raw)
-        except ValueError:
-            pass
     agent_cfg = cfg.get("agent") or {}
     try:
         return int(agent_cfg.get("local_context_budget", default))

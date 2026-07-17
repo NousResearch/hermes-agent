@@ -3797,16 +3797,18 @@ class DiscordAdapter(BasePlatformAdapter):
             return
         deadline = asyncio.get_event_loop().time() + self._GUILD_READY_TIMEOUT_S
         while True:
-            # discord.py: ``Guild.available`` is True once the underlying
-            # GuildMember data is ready (post-GUILD_CREATE). A guild with no
-            # ``available`` yet means the gateway is still streaming it.
+            # discord.py 2.7.1 exposes ``Guild.unavailable`` (not
+            # ``Guild.available``). ``unavailable=True`` means the gateway
+            # is still streaming GUILD_CREATE / member data for that guild,
+            # so we wait until every guild reports ``unavailable=False``
+            # (or the attribute is absent on fully-ready guilds).
             guilds = list(getattr(client, "guilds", []))
             if not guilds or all(
-                getattr(g, "available", False) for g in guilds
+                not getattr(g, "unavailable", False) for g in guilds
             ):
                 if guilds:
                     logger.info(
-                        "[%s] All %d guild(s) report available=True — "
+                        "[%s] All %d guild(s) report unavailable=False — "
                         "message dispatch fully primed",
                         self.name, len(guilds),
                     )
@@ -3815,7 +3817,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 not_ready = [
                     str(getattr(g, "id", "?"))
                     for g in guilds
-                    if not getattr(g, "available", False)
+                    if getattr(g, "unavailable", False)
                 ]
                 logger.warning(
                     "[%s] guild subscription priming incomplete after %.1fs; "

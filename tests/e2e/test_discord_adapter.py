@@ -156,23 +156,28 @@ class TestRepliedToMediaDispatch:
 
 
 class TestGuildSubscriptionPriming:
-    """on_ready must wait for every guild to report ``available=True``
+    """on_ready must wait for every guild to clear ``Guild.unavailable``
     before letting ``on_message`` through, otherwise MESSAGE_CREATE for
     new guilds is silently dropped until the next reconnect race (#58866).
+
+    Note: discord.py 2.7.1 (pinned) exposes ``Guild.unavailable`` only —
+    there is no ``Guild.available``. ``unavailable=True`` means the
+    gateway is still streaming GUILD_CREATE / member data, so the helper
+    waits until every guild reports ``unavailable=False``.
     """
 
-    async def test_wait_until_all_guilds_ready_returns_when_all_available(
+    async def test_wait_until_all_guilds_ready_returns_when_all_unavailable_false(
         self, discord_adapter,
     ):
         client = discord_adapter._client
         if client is None:
             pytest.skip("discord_adapter fixture did not wire a client")
-        # Replace the guild list with two mocks that are already available.
+        # Two fully-streamed guilds: ``unavailable=False``.
         class _G:
-            def __init__(self, gid, available):
+            def __init__(self, gid, unavailable):
                 self.id = gid
-                self.available = available
-        client.guilds = [_G("111", True), _G("222", True)]
+                self.unavailable = unavailable
+        client.guilds = [_G("111", False), _G("222", False)]
         # No sleep — returns immediately on the first poll.
         await discord_adapter._wait_until_all_guilds_ready()
 
@@ -189,9 +194,10 @@ class TestGuildSubscriptionPriming:
     async def test_wait_until_all_guilds_ready_times_out_and_warns(
         self, discord_adapter, monkeypatch,
     ):
-        """If ``Guild.available`` never flips True within the timeout we
-        still proceed (logged warning + return) instead of blocking startup
-        forever. Fixture patches the constants to keep the test fast.
+        """If ``Guild.unavailable`` never drops to False within the timeout
+        we still proceed (logged warning + return) instead of blocking
+        startup forever. Fixture patches the constants to keep the test
+        fast.
         """
         client = discord_adapter._client
         if client is None:
@@ -200,7 +206,7 @@ class TestGuildSubscriptionPriming:
         class _G:
             def __init__(self, gid):
                 self.id = gid
-                self.available = False
+                self.unavailable = True
         client.guilds = [_G("999")]
 
         monkeypatch.setattr(
@@ -211,13 +217,14 @@ class TestGuildSubscriptionPriming:
         )
         # Should NOT raise; just timeout + return.
         await discord_adapter._wait_until_all_guilds_ready()
-        assert client.guilds[0].available is False  # unchanged
+        assert client.guilds[0].unavailable is True  # unchanged
 
-    async def test_wait_until_all_guilds_ready_polled_until_available(
+    async def test_wait_until_all_guilds_ready_polled_until_unavailable_clears(
         self, discord_adapter, monkeypatch,
     ):
-        """A guild flipping available after a couple of polls must clear
-        the wait. Verifies the poll loop itself is wired correctly.
+        """A guild clearing its ``unavailable`` flag after a couple of
+        polls must release the wait. Verifies the poll loop itself is
+        wired correctly against the real discord.py 2.7.1 API.
         """
         client = discord_adapter._client
         if client is None:
@@ -226,19 +233,19 @@ class TestGuildSubscriptionPriming:
         class _G:
             def __init__(self, gid):
                 self.id = gid
-                self.available = False
+                self.unavailable = True
 
         class _FlippableGuild:
             def __init__(self):
                 self.id = "flippable"
-                self.available = False
+                self.unavailable = True
             def flip(self):
-                self.available = True
+                self.unavailable = False
 
         flippable = _FlippableGuild()
         client.guilds = [flippable]
 
-        # Flip available=True on the third poll iteration.
+        # Flip unavailable=False on the third poll iteration.
         polls = {"n": 0}
         real_sleep = discord_adapter._GUILD_READY_POLL_INTERVAL_S
         monkeypatch.setattr(discord_adapter, "_GUILD_READY_POLL_INTERVAL_S", 0.0)
@@ -256,7 +263,7 @@ class TestGuildSubscriptionPriming:
         )
 
         await discord_adapter._wait_until_all_guilds_ready()
-        assert flippable.available is True
+        assert flippable.unavailable is False
 
         # Restore real sleep constant so the test process doesn't leave
         # asyncio.sleep patched for any later test in the same session.

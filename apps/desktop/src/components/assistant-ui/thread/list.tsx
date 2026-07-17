@@ -360,8 +360,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
               </button>
             )}
             {visibleGroups.map(group => (
+              // content-visibility:auto — off-screen turns skip style recalc,
+              // layout, and paint. On a long transcript this is what keeps
+              // UNRELATED UI fast: any dialog/popover mount (Radix Presence
+              // reads getComputedStyle) forces a whole-document style recalc,
+              // measured ~650-730ms per open on a 1300-message session and
+              // ~100-200ms with this on. contain-intrinsic-size keeps a
+              // placeholder height for never-rendered turns (auto: remembered
+              // real size once rendered), so scrollbar/anchoring stay stable.
+              // Sticky human bubbles are unaffected — their turn is rendered
+              // whenever any part of it intersects the viewport.
               <div
-                className="flex min-w-0 flex-col gap-(--conversation-turn-gap) pb-(--conversation-turn-gap)"
+                className="flex min-w-0 flex-col gap-(--conversation-turn-gap) pb-(--conversation-turn-gap) [contain-intrinsic-size:auto_37.5rem] [content-visibility:auto]"
                 key={group.id}
               >
                 <MessageRenderBoundary resetKey={messageSignature}>

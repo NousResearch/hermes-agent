@@ -9,6 +9,7 @@ from hermes_cli.codex_runtime_plugin_migration import (
     MIGRATION_MARKER,
     MIGRATION_END_MARKER,
     _build_hermes_tools_mcp_entry,
+    build_runtime_mcp_enable_args,
     _format_toml_value,
     _looks_like_test_tempdir,
     _strip_existing_managed_block,
@@ -309,6 +310,37 @@ class TestStripExistingManagedBlock:
 # ---- end-to-end migrate(, expose_hermes_tools=False) ----
 
 class TestMigrate:
+    def test_shared_config_can_disable_hermes_mcp_defaults(self, tmp_path):
+        migrate(
+            {"mcp_servers": {"custom": {"command": "custom-mcp"}}},
+            codex_home=tmp_path,
+            discover_plugins=False,
+            default_permission_profile=None,
+            expose_hermes_tools=True,
+            enable_mcp_by_default=False,
+        )
+        text = (tmp_path / "config.toml").read_text()
+        assert "[mcp_servers.custom]" in text
+        assert "[mcp_servers.hermes-tools]" in text
+        assert text.count("enabled = false") == 2
+
+    def test_runtime_overrides_enable_only_valid_enabled_hermes_mcps(self):
+        args = build_runtime_mcp_enable_args(
+            {
+                "mcp_servers": {
+                    "alpha": {"command": "alpha-mcp"},
+                    "disabled": {"command": "disabled-mcp", "enabled": False},
+                    "broken": {"description": "no transport"},
+                    "quoted.name": {"command": "quoted-mcp"},
+                }
+            }
+        )
+        assert args == [
+            "-c", "mcp_servers.alpha.enabled=true",
+            "-c", "mcp_servers.hermes-tools.enabled=true",
+            "-c", 'mcp_servers."quoted.name".enabled=true',
+        ]
+
     def test_no_servers_no_plugins_no_perms_writes_placeholder(self, tmp_path):
         report = migrate({}, codex_home=tmp_path,
                          discover_plugins=False,

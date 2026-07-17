@@ -276,6 +276,35 @@ def test_utf32_be_bom_leaves_file_untouched(tmp_path, caplog):
     assert any("UTF-32" in r.message for r in caplog.records)
 
 
+def test_utf32_warning_fires_once_per_path(tmp_path, caplog, monkeypatch):
+    """Three sanitize calls on the same UTF-32 file → exactly one warning.
+
+    Matches house style for warn-once (module-level seen-set, same class as
+    ``_WARNED_KEYS``): hot-reload / multi-entry load must not spam logs.
+    """
+    import logging
+
+    import hermes_cli.env_loader as env_loader
+    from hermes_cli.env_loader import _sanitize_env_file_if_needed
+
+    # Isolate process-level seen-set so other tests' paths don't leak in.
+    monkeypatch.setattr(env_loader, "_WARNED_UTF32_PATHS", set())
+
+    env_file = tmp_path / ".env"
+    content = "HERMES_TEST_KEY=hello_utf32\nSECOND_KEY=world\n"
+    raw = codecs.BOM_UTF32_LE + content.encode("utf-32-le")
+    env_file.write_bytes(raw)
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.env_loader"):
+        _sanitize_env_file_if_needed(env_file)
+        _sanitize_env_file_if_needed(env_file)
+        _sanitize_env_file_if_needed(env_file)
+
+    utf32_warnings = [r for r in caplog.records if "UTF-32" in r.message]
+    assert len(utf32_warnings) == 1
+    assert env_file.read_bytes() == raw
+
+
 def test_leading_replacement_char_does_not_rewrite(tmp_path):
     """errors=replace FFFD-on-first-line guard: do not persist mangling.
 

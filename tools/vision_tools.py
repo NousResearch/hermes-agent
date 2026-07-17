@@ -850,10 +850,15 @@ def _should_use_native_vision_fast_path() -> bool:
         cfg = load_config()
         if decide_image_input_mode(provider, model, cfg) != "native":
             return False
-        return (
+        fast_path = (
             _supports_media_in_tool_results(provider, model)
             or _lookup_supports_vision(provider, model, cfg) is True
         )
+        # The caller (``_handle_vision_analyze`` at ``vision_analyze:
+        # native fast path``) already logs an INFO-level message when
+        # the fast path is selected.  No extra log here — it would
+        # duplicate that message per request.
+        return fast_path
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
         return False

@@ -106,7 +106,9 @@ function Harness({
   activeSessionId?: null | string
   createBackendSessionForSend?: () => Promise<null | string>
 }) {
-  const localActiveSessionIdRef = useRef<string | null>(activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId)
+  const localActiveSessionIdRef = useRef<string | null>(
+    activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId
+  )
   const activeSessionIdRef = activeSessionIdRefProp ?? localActiveSessionIdRef
 
   const selectedStoredSessionIdRef: MutableRefObject<string | null> = selectedStoredSessionIdRefProp ?? {
@@ -162,7 +164,14 @@ function Harness({
       submitText: (...args: Parameters<typeof actions.submitText>) =>
         act(async () => actions.submitText(...args)) as Promise<boolean>
     })
-  }, [actions.cancelRun, actions.restoreToMessage, actions.steerPrompt, actions.submitText, activeSessionIdRef, onReady])
+  }, [
+    actions.cancelRun,
+    actions.restoreToMessage,
+    actions.steerPrompt,
+    actions.submitText,
+    activeSessionIdRef,
+    onReady
+  ])
 
   return null
 }
@@ -553,7 +562,8 @@ describe('usePromptActions submit / queue drain semantics', () => {
   it('a fromQueue drain sends to its queued session even after the active session changes', async () => {
     $busy.set(false)
 
-    const updates: { sessionId: string; state: Record<string, unknown>; storedSessionId: null | string | undefined }[] = []
+    const updates: { sessionId: string; state: Record<string, unknown>; storedSessionId: null | string | undefined }[] =
+      []
     const requestGateway = vi.fn(async () => ({}) as never)
 
     let handle: HarnessHandle | null = null
@@ -1224,7 +1234,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[0]?.params).toEqual({ session_id: 'rt-background-stale', text: 'queued background message after wake' })
+    expect(calls[0]?.params).toEqual({
+      session_id: 'rt-background-stale',
+      text: 'queued background message after wake'
+    })
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({
       session_id: RECOVERED_SESSION_ID,

@@ -2286,6 +2286,29 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def mark_session_superseded(self, session_id: str) -> None:
+        """Force a recoverable (``agent_close``) row to a terminal, non-recoverable
+        end_reason so it can never be resurrected by
+        :meth:`find_latest_gateway_session_for_peer`.
+
+        Unlike :meth:`end_session` (first-reason-wins, no-ops when ended), this
+        *overrides* the existing reason. It is used by the gateway stale-entry
+        prune (#62012): when a stale ``sessions.json`` routing key points at an
+        ended session and the latest recoverable peer row is only ``agent_close``,
+        the prune drops the key AND supersedes that row — otherwise the next
+        inbound message re-queries the finder, reopens the ``agent_close`` row,
+        and silently resurrects the history the user meant to leave behind.
+        Genuine crash recovery is unaffected: it runs when the routing key is
+        *absent* (never processed by the prune), so the row is never superseded.
+        """
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET end_reason = 'superseded', "
+                "ended_at = COALESCE(ended_at, ?) WHERE id = ?",
+                (time.time(), session_id),
+            )
+        self._execute_write(_do)
+
     def update_session_cwd(
         self, session_id: str, cwd: str, git_branch: str = None, git_repo_root: str = None
     ) -> None:

@@ -1161,8 +1161,8 @@ def _reset_terminal_input_modes_on_exit() -> None:
     Gated on ``_tui_input_modes_active`` so one-shot non-TUI CLI runs (which
     share ``_run_cleanup`` via ``atexit``) never emit these codes. Writes to the
     controlling terminal directly: by exit, prompt_toolkit's own output is torn
-    down, so ``sys.stdout`` is the real fd; falls back to ``/dev/tty`` when
-    stdout is redirected away from the terminal.
+    down, so ``sys.stdout`` is the real fd; falls back to ``/dev/tty``
+    (``CON`` on Windows) when stdout is redirected away from the terminal.
     """
     global _tui_input_modes_active
     if not _tui_input_modes_active:
@@ -1181,7 +1181,10 @@ def _reset_terminal_input_modes_on_exit() -> None:
     except Exception:
         pass
     try:
-        # Windows doesn't have /dev/tty — use CON instead
+        # Windows doesn't have /dev/tty — use CON instead.
+        # Note: on MinGW-w64 Python under MSYS2, CON behaviour may vary due
+        # to the MSYS2 PTY layer; the except clause degrades safely in that
+        # case.
         tty_path = "CON" if sys.platform == "win32" else "/dev/tty"
         with open(tty_path, "w", encoding="ascii") as tty:
             tty.write(_TERMINAL_INPUT_MODE_RESET_SEQ)

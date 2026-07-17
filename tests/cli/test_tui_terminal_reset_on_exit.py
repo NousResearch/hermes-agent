@@ -11,7 +11,7 @@ on ``_tui_input_modes_active`` so non-TUI one-shot CLI runs (which share
 """
 
 import unittest
-from unittest.mock import mock_open, patch, MagicMock
+from unittest.mock import mock_open, patch
 
 
 def _import_cli():
@@ -108,32 +108,59 @@ class TestResetTerminalInputModes(unittest.TestCase):
         self.assertEqual(fake.written, [])
         m_open.assert_called_once_with("/dev/tty", "w", encoding="ascii")
         m_open().write.assert_called_once_with(cli_mod._TERMINAL_INPUT_MODE_RESET_SEQ)
+        m_open().flush.assert_called_once()
 
     def test_windows_fallback_to_con_device(self):
         """Windows doesn't have /dev/tty — must use CON device instead."""
         cli_mod = _import_cli()
         fake = _FakeStream(isatty=False)
         m_open = mock_open()
-        
-        # Mock sys module in cli's namespace to simulate Windows
-        original_sys = cli_mod.sys
-        mock_sys = MagicMock()
-        mock_sys.platform = "win32"
-        mock_sys.stdout = fake
-        
-        try:
-            cli_mod.sys = mock_sys
-            with (
-                patch.object(cli_mod, "_tui_input_modes_active", True),
-                patch("builtins.open", m_open),
-            ):
-                cli_mod._reset_terminal_input_modes_on_exit()
+        with (
+            patch.object(cli_mod, "_tui_input_modes_active", True),
+            patch.object(cli_mod.sys, "platform", "win32"),
+            patch.object(cli_mod.sys, "stdout", fake),
+            patch("builtins.open", m_open),
+        ):
+            cli_mod._reset_terminal_input_modes_on_exit()
 
-            self.assertEqual(fake.written, [])
-            m_open.assert_called_once_with("CON", "w", encoding="ascii")
-            m_open().write.assert_called_once_with(cli_mod._TERMINAL_INPUT_MODE_RESET_SEQ)
-        finally:
-            cli_mod.sys = original_sys
+        self.assertEqual(fake.written, [])
+        m_open.assert_called_once_with("CON", "w", encoding="ascii")
+        m_open().write.assert_called_once_with(cli_mod._TERMINAL_INPUT_MODE_RESET_SEQ)
+        m_open().flush.assert_called_once()
+
+    def test_windows_uses_stdout_when_tty_skipping_con(self):
+        """On Windows with TTY stdout, write to stdout directly — never touch
+        CON, just like POSIX does via /dev/tty when stdout is the terminal."""
+        cli_mod = _import_cli()
+        fake = _FakeStream(isatty=True)
+        m_open = mock_open()
+        with (
+            patch.object(cli_mod, "_tui_input_modes_active", True),
+            patch.object(cli_mod.sys, "platform", "win32"),
+            patch.object(cli_mod.sys, "stdout", fake),
+            patch("builtins.open", m_open),
+        ):
+            cli_mod._reset_terminal_input_modes_on_exit()
+
+        written = "".join(fake.written)
+        self.assertEqual(written, cli_mod._TERMINAL_INPUT_MODE_RESET_SEQ)
+        self.assertGreaterEqual(fake.flushed, 1)
+        m_open.assert_not_called()  # CON must never be touched
+
+    def test_windows_con_open_failure_is_silent(self):
+        """If CON can't be opened (e.g. pythonw.exe, Windows service),
+        the cleanup must not raise — degrade gracefully."""
+        cli_mod = _import_cli()
+        fake = _FakeStream(isatty=False)
+        with (
+            patch.object(cli_mod, "_tui_input_modes_active", True),
+            patch.object(cli_mod.sys, "stdout", fake),
+            patch.object(cli_mod.sys, "platform", "win32"),
+            patch("builtins.open", side_effect=OSError("no console")),
+        ):
+            cli_mod._reset_terminal_input_modes_on_exit()
+
+        self.assertEqual(fake.written, [])
 
     def test_swallows_stdout_errors(self):
         cli_mod = _import_cli()

@@ -64,7 +64,6 @@ from tools.website_policy import check_website_access
 # limit) and 402 (billing/quota) errors.
 
 _FIRECRAWL_POOL: Optional["CredentialPool"] = None  # type: ignore[name-defined]
-_FIRECRAWL_POOL_CREDENTIAL_ID: Optional[str] = None
 
 
 # Import gate — credential_pool is a heavy module; defer until first pool access.
@@ -95,21 +94,26 @@ def _select_firecrawl_pool_key() -> Optional[str]:
     entry = pool.select()
     if entry is None:
         return None
-    global _FIRECRAWL_POOL_CREDENTIAL_ID
-    _FIRECRAWL_POOL_CREDENTIAL_ID = entry.id
     return entry.runtime_api_key
 
 
-def _mark_firecrawl_key_exhausted(status_code: int) -> None:
-    """Mark the current pool credential as exhausted (rate limit or billing)."""
+def _mark_firecrawl_key_exhausted(status_code: int, api_key_hint: Optional[str] = None) -> None:
+    """Mark a pool credential as exhausted (rate limit or billing).
+
+    Uses *api_key_hint* to identify the exact credential that failed,
+    avoiding race conditions from concurrent requests overwriting a
+    module-global cursor.  When the pool is freshly loaded (another
+    process already rotated), the hint matches the correct entry even
+    when ``current()`` is None.
+    """
     pool = _load_firecrawl_pool()
-    if pool is None or _FIRECRAWL_POOL_CREDENTIAL_ID is None:
-        return
-    entry = pool.current()
-    if entry is None or entry.id != _FIRECRAWL_POOL_CREDENTIAL_ID:
+    if pool is None:
         return
     try:
-        pool.mark_exhausted_and_rotate(status_code=status_code)
+        pool.mark_exhausted_and_rotate(
+            status_code=status_code,
+            api_key_hint=api_key_hint,
+        )
     except Exception:
         logger.warning("Failed to mark Firecrawl key exhausted", exc_info=True)
 
@@ -227,11 +231,16 @@ def _has_direct_firecrawl_config() -> bool:
 
 
 def check_firecrawl_api_key() -> bool:
-    """Return True when Firecrawl backend (direct or gateway) is usable.
+    """Return True when Firecrawl backend (pool, direct, or gateway) is usable.
 
     Re-exported by :mod:`tools.web_tools` for backward compatibility with
     existing tests and the ``hermes tools`` setup flow.
     """
+    # Pool path — keys added via ``hermes auth add firecrawl``
+    pool = _load_firecrawl_pool()
+    if pool is not None and pool.has_available():
+        return True
+    # Direct / gateway path
     return _has_direct_firecrawl_config() or _is_tool_gateway_ready()
 
 
@@ -297,7 +306,10 @@ def _get_firecrawl_client() -> Any:
         api_url = (os.environ.get("FIRECRAWL_API_URL") or "").strip().rstrip("/")
         if api_url:
             kwargs["api_url"] = api_url
-        client_config = ("pool", pool_key[:8] + "...", api_url or None)
+        # Store the full key as config[3] so error handlers can extract it
+        # from the cached config tuple without a module-global variable,
+        # avoiding race conditions from concurrent requests.
+        client_config = ("pool", pool_key[:8] + "...", api_url or None, pool_key)
 
         cached = getattr(_wt, "_firecrawl_client", None)
         cached_config = getattr(_wt, "_firecrawl_client_config", None)
@@ -503,9 +515,17 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                 logger.warning(
                     "Firecrawl key exhausted (HTTP %d), rotating pool key", status_code
                 )
-                _mark_firecrawl_key_exhausted(status_code)
-                # Force a new client on next call
+                # Extract the failed key from cached client config (index 3)
+                # before clearing it, so mark_exhausted_and_rotate can attribute
+                # the failure to the exact credential via api_key_hint.
                 import tools.web_tools as _wt
+
+                _hint = None
+                _cfg = getattr(_wt, "_firecrawl_client_config", None)
+                if isinstance(_cfg, tuple) and len(_cfg) >= 4:
+                    _hint = _cfg[3]
+                _mark_firecrawl_key_exhausted(status_code, api_key_hint=_hint)
+                # Force a new client on next call
                 _wt._firecrawl_client = None
                 _wt._firecrawl_client_config = None
                 # Retry once with the next key
@@ -613,10 +633,15 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                             "Firecrawl key exhausted (HTTP %d), rotating pool key",
                             status_code,
                         )
-                        _mark_firecrawl_key_exhausted(status_code)
-                        # Force a new client on next call
+                        # Extract the failed key from cached config[3]
                         import tools.web_tools as _wt
 
+                        _hint = None
+                        _cfg = getattr(_wt, "_firecrawl_client_config", None)
+                        if isinstance(_cfg, tuple) and len(_cfg) >= 4:
+                            _hint = _cfg[3]
+                        _mark_firecrawl_key_exhausted(status_code, api_key_hint=_hint)
+                        # Force a new client on next call
                         _wt._firecrawl_client = None
                         _wt._firecrawl_client_config = None
                         # Retry once with the next key

@@ -2244,26 +2244,25 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         return changed, active_sources
 
     if provider == "firecrawl":
-        # Firecrawl web search/extract tool keys.
-        for env_var in ("FIRECRAWL_API_KEY", "FIRECRAWL_GATEWAY_URL"):
-            token = _get_env_prefer_dotenv(env_var)
-            if not token:
-                continue
-            source = f"env:{env_var}"
-            if _is_source_suppressed(provider, source):
-                continue
-            active_sources.add(source)
-            changed |= _upsert_entry(
-                entries,
-                provider,
-                source,
-                _env_payload(
-                    source=source,
-                    env_var=env_var,
-                    token=token,
-                    base_url="",
-                ),
-            )
+        # Firecrawl web search/extract tool key.
+        token = _get_env_prefer_dotenv("FIRECRAWL_API_KEY")
+        if not token:
+            return changed, active_sources
+        source = "env:FIRECRAWL_API_KEY"
+        if _is_source_suppressed(provider, source):
+            return changed, active_sources
+        active_sources.add(source)
+        changed |= _upsert_entry(
+            entries,
+            provider,
+            source,
+            _env_payload(
+                source=source,
+                env_var="FIRECRAWL_API_KEY",
+                token=token,
+                base_url="",
+            ),
+        )
         return changed, active_sources
 
     pconfig = PROVIDER_REGISTRY.get(provider)

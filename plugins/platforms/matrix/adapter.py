@@ -2680,6 +2680,43 @@ class MatrixAdapter(BasePlatformAdapter):
             await self._handle_text_message(
                 room_id, sender, event_id, event_ts, source_content, relates_to
             )
+        elif msgtype == "m.location":
+            # Forward Matrix location as a text message with coordinates.
+            geo_uri = source_content.get("geo_uri", "")
+            body = source_content.get("body", "")
+
+            # Also check MSC3488 location (newer standard)
+            msc_location = source_content.get("org.matrix.msc3488.location", {})
+            description = (
+                msc_location.get("description", "")
+                if isinstance(msc_location, dict)
+                else ""
+            )
+
+            # Parse coordinates from geo:lat,lon[;crs=...][;u=...]
+            lat = lon = None
+            if geo_uri.startswith("geo:"):
+                coords_part = geo_uri[4:].split(";")[0]
+                parts = coords_part.split(",")
+                if len(parts) >= 2:
+                    try:
+                        lat = float(parts[0].strip())
+                        lon = float(parts[1].strip())
+                    except (ValueError, TypeError):
+                        pass
+
+            if lat is not None and lon is not None:
+                text = f"📍 Location: {lat}, {lon}"
+                if description:
+                    text += f" ({description})"
+                elif body and body not in ("Location", "Posizione", ""):
+                    text += f" — {body}"
+
+                loc_content = dict(source_content)
+                loc_content["body"] = text
+                await self._handle_text_message(
+                    room_id, sender, event_id, event_ts, loc_content, relates_to
+                )
 
     async def _resolve_message_context(
         self,

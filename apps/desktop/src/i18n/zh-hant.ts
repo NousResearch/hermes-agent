@@ -1527,6 +1527,7 @@ export const zhHant = defineLocale({
       finishedUnread: '已完成 — 未讀',
       backgroundRunning: '背景任務執行中',
       handoffOrigin: platform => `從 ${platform} 轉接`,
+      ownedByProfile: profile => `設定檔：${profile}`,
       renamed: '已重新命名',
       renameFailed: '重新命名失敗',
       renameTitle: '重新命名工作階段',
@@ -2028,6 +2029,7 @@ export const zhHant = defineLocale({
       noModel: '無模型',
       switchModel: '切換模型',
       openModelPicker: '開啟模型選擇器',
+      modelPinned: '已由你固定；新對話將使用此模型而非「設定」中的預設模型',
       modelTitle: (provider, model) => `模型 · ${provider}：${model}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }

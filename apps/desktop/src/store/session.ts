@@ -363,8 +363,14 @@ export const getCurrentModelSource = (): ComposerModelSource => {
   return source === 'default' || source === 'manual' ? source : ''
 }
 
+// Reactive mirror of the persisted source so UI (the composer pill's
+// override badge) can subscribe. The getter above stays storage-backed —
+// it's read cross-window, where this atom wouldn't see writes.
+export const $currentModelSource = atom<ComposerModelSource>(getCurrentModelSource())
+
 export const setCurrentModelSource = (source: ComposerModelSource) => {
   persistString(COMPOSER_MODEL_SOURCE_KEY, source || null)
+  $currentModelSource.set(source)
 }
 
 export const setCurrentReasoningEffort = (next: Updater<string>) => {

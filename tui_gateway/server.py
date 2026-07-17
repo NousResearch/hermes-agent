@@ -10783,6 +10783,11 @@ def _(rid, params: dict) -> dict:
         agent = session.get("agent") if session else None
         if agent is not None:
             current_fast = getattr(agent, "service_tier", None) == "priority"
+        elif session is not None and session.get("create_service_tier_override") is not None:
+            # Pre-build session with a pinned tier (desktop draft pick or an
+            # earlier session-scoped toggle) — report/toggle from the pin, not
+            # the global default.
+            current_fast = session["create_service_tier_override"] == "priority"
         else:
             current_fast = _load_service_tier() == "priority"
 
@@ -10805,9 +10810,18 @@ def _(rid, params: dict) -> dict:
         if nv == "fast":
             from hermes_cli.models import resolve_fast_mode_overrides
 
-            target_model = (
-                getattr(agent, "model", None) if agent is not None else _resolve_model()
-            )
+            if agent is not None:
+                target_model = getattr(agent, "model", None)
+            else:
+                # A pre-build session may already have a picked model riding in
+                # model_override (desktop draft) — validate fast support against
+                # THAT model, not the global default it will never use.
+                session_override = (session or {}).get("model_override") or {}
+                target_model = (
+                    session_override.get("model")
+                    if isinstance(session_override, dict)
+                    else None
+                ) or _resolve_model()
             if not target_model:
                 return _err(
                     rid,
@@ -10822,7 +10836,20 @@ def _(rid, params: dict) -> dict:
                     "fast mode is not available for this model",
                 )
 
-        _write_config_key("agent.service_tier", nv)
+        if session is not None:
+            # Session-scoped, like `reasoning` below (global persistence is
+            # `--global` / Settings → Model territory). Writing config.yaml
+            # here let every desktop model-menu selection (per-model fast
+            # preset) rewrite the user's global agent.service_tier — flipping
+            # fast mode for every OTHER session, profile, CLI, and gateway
+            # build ("switch one session, switches everywhere"). Pin the
+            # create override so lazily-built sessions and rebuilds (/new,
+            # deferred resume) keep the choice; "" pins normal explicitly.
+            session["create_service_tier_override"] = (
+                "priority" if nv == "fast" else ""
+            )
+        else:
+            _write_config_key("agent.service_tier", nv)
         if agent is not None:
             agent.service_tier = "priority" if nv == "fast" else None
             current_overrides = dict(getattr(agent, "request_overrides", {}) or {})
@@ -11788,18 +11815,20 @@ def _(rid, params: dict) -> dict:
         )
         return _ok(rid, {"value": effort, "display": display})
     if key == "fast":
-        return _ok(
-            rid,
-            {
-                "value": (
-                    "fast"
-                    if (session := _sessions.get(params.get("session_id", "")))
-                    and getattr(session.get("agent"), "service_tier", None)
-                    == "priority"
-                    else ("fast" if _load_service_tier() == "priority" else "normal")
-                ),
-            },
-        )
+        # Prefer the session's live/pinned value — `config.set fast` is
+        # session-scoped, so the global key may not reflect this chat. A
+        # pre-build session keeps its pin in create_service_tier_override.
+        session = _sessions.get(params.get("session_id", ""))
+        tier = None
+        if session is not None:
+            agent = session.get("agent")
+            if agent is not None:
+                tier = getattr(agent, "service_tier", None)
+            elif session.get("create_service_tier_override") is not None:
+                tier = session["create_service_tier_override"]
+        if tier is None:
+            tier = _load_service_tier()
+        return _ok(rid, {"value": "fast" if tier == "priority" else "normal"})
     if key == "busy":
         return _ok(rid, {"value": _load_busy_input_mode()})
     if key in {"approval_mode", "approvals.mode"}:

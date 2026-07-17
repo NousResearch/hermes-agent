@@ -62,6 +62,24 @@ def _load_schedule_mod():
     return _load_module("_schedule", plugin_dir)
 
 
+def _load_plugin_mod():
+    repo_root = Path(__file__).resolve().parents[2]
+    plugin_dir = repo_root / "plugins" / "dreaming"
+    _load_module("_config", plugin_dir)
+    _load_module("_score", plugin_dir)
+    _load_module("_diary", plugin_dir)
+    _load_module("_schedule", plugin_dir)
+    spec = importlib.util.spec_from_file_location(
+        "hermes_plugins.dreaming",
+        plugin_dir / "__init__.py",
+        submodule_search_locations=[str(plugin_dir)],
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["hermes_plugins.dreaming"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
 class TestDreamingConfig:
     def test_ensure_user_config_seeds_defaults(self, _isolate_env):
         cfg_mod = _load_config_mod()
@@ -124,3 +142,86 @@ class TestDreamingSchedule:
         memory_path = _isolate_env / "MEMORY.md"
         memory = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
         assert "deployment pipeline" not in memory
+
+    def test_turn_staging_and_session_count_are_separate(self, _isolate_env):
+        sched = _load_schedule_mod()
+        transcript = [
+            {
+                "role": "user",
+                "content": "The deployment pipeline uses GitHub Actions for CI.",
+            }
+        ]
+
+        assert sched.enqueue_session(
+            transcript,
+            hermes_home=str(_isolate_env),
+            count_session=False,
+        ) == 1
+        assert sched._read_state(str(_isolate_env))["sessions_since_dream"] == 0
+
+        sched.mark_session_complete(hermes_home=str(_isolate_env))
+        assert sched._read_state(str(_isolate_env))["sessions_since_dream"] == 1
+
+    def test_dream_run_uses_guarded_active_memory_store(
+        self, _isolate_env, monkeypatch
+    ):
+        sched = _load_schedule_mod()
+        dreams = _isolate_env / "dreams"
+        dreams.mkdir(parents=True)
+        candidate = {
+            "text": "The deployment pipeline uses GitHub Actions for CI.",
+            "hash": "abc",
+            "role": "user",
+            "created_at": 1.0,
+            "frequency": 3,
+            "query_count": 2,
+            "word_count": 8,
+        }
+        (dreams / "staging.jsonl").write_text(
+            json.dumps(candidate) + "\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(sched._score, "score", lambda candidate, now: 1.0)
+        monkeypatch.setattr(
+            sched, "_rem_narrative", lambda candidates, cfg=None: "themes"
+        )
+
+        result = sched.dream_run(force=True, hermes_home=str(_isolate_env))
+
+        active_memory = _isolate_env / "memories" / "MEMORY.md"
+        assert result["promoted"] == 1
+        assert "deployment pipeline" in active_memory.read_text(encoding="utf-8")
+        assert not (_isolate_env / "MEMORY.md").exists()
+
+
+class TestDreamingPluginContracts:
+    def test_hooks_match_keyword_contract_and_stage_real_turns(self, monkeypatch):
+        plugin = _load_plugin_mod()
+        staged = []
+        completed = []
+        monkeypatch.setattr(
+            plugin._schedule,
+            "enqueue_session",
+            lambda transcript, **kwargs: staged.append((transcript, kwargs)),
+        )
+        monkeypatch.setattr(
+            plugin._schedule,
+            "mark_session_complete",
+            lambda **kwargs: completed.append(kwargs),
+        )
+
+        plugin._on_post_llm_call(
+            session_id="s1",
+            user_message="A sufficiently long user statement.",
+            assistant_response="A sufficiently long assistant statement.",
+        )
+        plugin._on_session_end(session_id="s1", completed=True)
+
+        assert staged[0][1] == {"count_session": False}
+        assert [turn["role"] for turn in staged[0][0]] == ["user", "assistant"]
+        assert completed == [{}]
+
+    def test_slash_handler_accepts_one_raw_argument_string(self, monkeypatch):
+        plugin = _load_plugin_mod()
+        monkeypatch.setattr(plugin._diary, "last_entry", lambda: "last dream")
+
+        assert plugin._handle_slash("diary") == "last dream"

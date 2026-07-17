@@ -58,6 +58,7 @@ def enqueue_session(
     transcript: list[dict[str, str]],
     *,
     hermes_home: str | None = None,
+    count_session: bool = True,
 ) -> int:
     """
     Extract candidate memories from a session transcript and append to staging.jsonl.
@@ -98,10 +99,16 @@ def enqueue_session(
         for c in candidates:
             fh.write(json.dumps(c) + "\n")
 
+    if count_session:
+        mark_session_complete(hermes_home=hermes_home)
+    return len(candidates)
+
+
+def mark_session_complete(*, hermes_home: str | None = None) -> None:
+    """Increment the completed-session counter after transcript turns are staged."""
     state = _read_state(hermes_home)
     state["sessions_since_dream"] = state.get("sessions_since_dream", 0) + 1
     _write_state(state, hermes_home)
-    return len(candidates)
 
 
 def dream_check(
@@ -127,7 +134,6 @@ def dream_check(
 def dream_run(
     *,
     hermes_home: str | None = None,
-    memory_path: Path | None = None,
     force: bool = False,
     cfg: dict | None = None,
 ) -> dict[str, Any]:
@@ -177,7 +183,7 @@ def dream_run(
         narrative = _rem_narrative([c for c, _ in scored[:30]], cfg=cfg)
 
         # --- Deep Sleep: promote to MEMORY.md ---
-        promoted: list[str] = []
+        eligible: list[str] = []
         skipped_meta: list[str] = []
         to_promote = [c for c, s in scored if s >= promote_threshold]
 
@@ -186,19 +192,15 @@ def dream_run(
             if _score.is_meta_entry(text):
                 skipped_meta.append(text)
             else:
-                promoted.append(text)
+                eligible.append(text)
 
-        if memory_path is None:
+        promoted = _promote_to_memory(eligible)
+
+        if skipped_meta:
             hermes_base = Path(
                 hermes_home or os.environ.get("HERMES_HOME", Path.home() / ".hermes")
             )
-            memory_path = hermes_base / "MEMORY.md"
-
-        if promoted:
-            _write_to_memory(promoted, memory_path)
-
-        if skipped_meta:
-            _write_to_skill(skipped_meta, memory_path.parent / "SKILL.md")
+            _write_to_skill(skipped_meta, hermes_base / "SKILL.md")
 
         # --- Write diary entry ---
         _diary.append_entry(narrative, promoted, skipped_meta, hermes_home=hermes_home)
@@ -265,18 +267,17 @@ def _ollama_narrative(texts: list[str], *, cfg: dict) -> str:
     return body.get("response", "").strip()
 
 
-def _write_to_memory(entries: list[str], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    new_lines = "\n".join(f"- {e[:200]}" for e in entries)
-    separator = "\n\n<!-- dreaming -->\n"
-    if separator in existing:
-        # append after the dreaming section marker
-        before, _, after = existing.partition(separator)
-        path.write_text(before + separator + new_lines + "\n" + after, encoding="utf-8")
-    else:
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(separator + new_lines + "\n")
+def _promote_to_memory(entries: list[str]) -> list[str]:
+    """Write through Hermes's bounded, locked, threat-scanning memory store."""
+    from tools.memory_tool import MemoryStore
+
+    store = MemoryStore()
+    promoted: list[str] = []
+    for entry in entries:
+        result = store.add("memory", entry)
+        if result.get("success"):
+            promoted.append(entry)
+    return promoted
 
 
 def _write_to_skill(entries: list[str], path: Path) -> None:

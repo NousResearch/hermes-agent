@@ -855,6 +855,60 @@ platform_toolsets:
 #       # the active profile's scripts directory and receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
 #
+#   # QQ Bot (official QQ 频道/群/C2C bot). All QQ-specific knobs live under
+#   # `extra`. Credentials can also come from QQ_APP_ID / QQ_CLIENT_SECRET env.
+#   qqbot:
+#     enabled: true
+#     extra:
+#       # ── Credentials ──
+#       app_id: "102xxxxxx"
+#       client_secret: "your-qq-bot-secret"
+#
+#       # ── Direct-message (C2C) access control ──
+#       dm_policy: pairing            # pairing (default) | open | allowlist | disabled
+#       allow_from: []                # user openids allowed when dm_policy=allowlist
+#
+#       # ── Group access control (mirrors Feishu: open | allowlist | disabled) ──
+#       group_policy: disabled        # disabled (default, safe) | open | allowlist
+#       group_allow_from:             # group openids allowed when group_policy=allowlist
+#         - AC2B08219675D5E1F4A6A9395179F350
+#       group_require_mention: true   # true (default): bot only replies when @-mentioned.
+#                                     # false also needs QQ's "receive all group messages" perm.
+#       # Per-group override of require_mention (the per-group value wins over the global one):
+#       groups:
+#         AC2B08219675D5E1F4A6A9395179F350:
+#           require_mention: false
+#       # Non-@ group messages are buffered and injected as context on the next
+#       # @-reply. <= 0 disables buffering. Default 20.
+#       group_history_limit: 20
+#
+#       # ── Group session sharing (per-platform override of the top-level
+#       #    `group_sessions_per_user`). false = ALL members of a group share ONE
+#       #    conversation session; each inbound message is then auto-prefixed with
+#       #    the sender's name ([Alice] …) so the agent can still tell members
+#       #    apart. This per-platform value drives BOTH the shared session key AND
+#       #    the sender prefix. ──
+#       group_sessions_per_user: false
+#
+#       # ── C2C streaming reply (private chats only; QQ's stream_messages
+#       #    endpoint is C2C-only, so group/guild replies never stream). QQ can
+#       #    edit an in-flight C2C stream bubble in place but cannot edit ordinary
+#       #    already-sent message IDs, so generic tool-progress bubbles are
+#       #    intentionally suppressed on QQ to avoid chat spam. ──
+#       streaming_enabled: true
+#       streaming_session_ttl_seconds: 300
+#
+#       # ── Rendering ──
+#       markdown_support: true        # send native QQ markdown when the bot is allowed to
+#
+#       # ── Voice message transcription (OpenAI-compatible STT; optional) ──
+#       stt:
+#         enabled: true
+#         provider: zai               # zai | glm | openai (picks a default base_url)
+#         # base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
+#         api_key: "your-stt-key"
+#         model: glm-asr
+#
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
 # discord:

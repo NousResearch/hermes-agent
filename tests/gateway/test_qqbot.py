@@ -2646,6 +2646,193 @@ class TestGroupSharedSession:
 
 
 # ---------------------------------------------------------------------------
+# Review follow-up (problem 1): per-platform session-sharing must drive BOTH
+# the session key AND the [user_name] sender attribution.
+#
+# Regression: sender attribution in GatewayRunner._prepare_inbound_message_text
+# read only the global GatewayConfig.group_sessions_per_user, while the session
+# key was built from the per-platform extra value. A QQ-only shared session
+# (extra.group_sessions_per_user=false, global default true) therefore merged
+# users into one session key WITHOUT the required sender prefix.
+# ---------------------------------------------------------------------------
+
+def _make_runner_with_qq_extra(**extra):
+    """Bare GatewayRunner: QQ platform carries `extra`, global config stays default."""
+    from gateway.run import GatewayRunner
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.QQBOT: PlatformConfig(enabled=True, extra=dict(extra))}
+    )
+    runner.adapters = {}
+    runner.session_store = None
+    runner._pending_native_image_paths_by_session = {}
+    return runner
+
+
+class TestEffectiveSessionSharing:
+    """GatewayRunner._effective_session_sharing resolves per-platform values."""
+
+    def _source(self):
+        from gateway.session import SessionSource
+        from gateway.config import Platform
+        return SessionSource(
+            platform=Platform.QQBOT,
+            chat_id="group_openid_1",
+            chat_type="group",
+            user_id="member_1",
+        )
+
+    def test_qq_extra_override_beats_global_default(self):
+        # Global default group_sessions_per_user=True, QQ extra says False.
+        runner = _make_runner_with_qq_extra(group_sessions_per_user=False)
+        group_spu, _thread_spu = runner._effective_session_sharing(self._source())
+        assert group_spu is False  # per-platform override wins
+
+    def test_falls_back_to_global_when_no_extra(self):
+        runner = _make_runner_with_qq_extra()  # empty extra
+        group_spu, thread_spu = runner._effective_session_sharing(self._source())
+        assert group_spu is True   # inherits global default (True)
+        assert thread_spu is False
+
+    def test_unknown_platform_uses_global(self):
+        from gateway.session import SessionSource
+        from gateway.config import Platform
+        runner = _make_runner_with_qq_extra(group_sessions_per_user=False)
+        # A source for a platform with no config entry → global defaults.
+        src = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="c",
+            chat_type="group",
+            user_id="u",
+        )
+        group_spu, thread_spu = runner._effective_session_sharing(src)
+        assert group_spu is True
+        assert thread_spu is False
+
+
+class TestGroupSharedSenderAttribution:
+    """Two-sender regression for the shared-session sender prefix."""
+
+    def _event(self, user_id, user_name, text="hello"):
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.session import SessionSource
+        from gateway.config import Platform
+
+        src = SessionSource(
+            platform=Platform.QQBOT,
+            chat_id="group_openid_1",
+            chat_type="group",
+            user_id=user_id,
+            user_name=user_name,
+        )
+        return src, MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=src,
+        )
+
+    @pytest.mark.asyncio
+    async def test_two_senders_share_key_and_get_prefixed(self):
+        # QQ-only shared session; global default stays isolated (True).
+        runner = _make_runner_with_qq_extra(group_sessions_per_user=False)
+
+        src_a, ev_a = self._event("member_1", "Alice")
+        src_b, ev_b = self._event("member_2", "Bob")
+
+        text_a = await runner._prepare_inbound_message_text(
+            event=ev_a, source=src_a, history=[]
+        )
+        text_b = await runner._prepare_inbound_message_text(
+            event=ev_b, source=src_b, history=[]
+        )
+
+        # Both messages carry their own sender prefix …
+        assert text_a == "[Alice] hello"
+        assert text_b == "[Bob] hello"
+
+        # … and both land in the SAME shared session key (user_id excluded).
+        key_a = runner._session_key_for_source(src_a)
+        key_b = runner._session_key_for_source(src_b)
+        assert key_a == key_b
+        assert "member_1" not in key_a and "member_2" not in key_a
+
+    @pytest.mark.asyncio
+    async def test_isolated_default_has_no_prefix(self):
+        # Default (isolated) sessions: each user has its own key, no prefix.
+        runner = _make_runner_with_qq_extra()  # inherits global True (isolated)
+        src_a, ev_a = self._event("member_1", "Alice")
+        text_a = await runner._prepare_inbound_message_text(
+            event=ev_a, source=src_a, history=[]
+        )
+        assert text_a == "hello"
+
+
+# ---------------------------------------------------------------------------
+# Review follow-up (problem 2): split native C2C stream editing from generic
+# already-sent message editing so the tool-progress editor does not attempt
+# (and fail) edits against ordinary QQ message IDs.
+# ---------------------------------------------------------------------------
+
+class TestStreamEditingCapabilitySplit:
+    def test_qq_message_editing_is_false(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        # QQ cannot edit arbitrary already-sent message IDs.
+        assert QQAdapter.SUPPORTS_MESSAGE_EDITING is False
+
+    def test_qq_stream_editing_is_true(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        # QQ CAN update an in-flight C2C stream bubble in place.
+        assert QQAdapter.SUPPORTS_STREAM_EDITING is True
+
+    def test_base_stream_editing_falls_back_to_message_editing(self):
+        from gateway.platforms.base import BasePlatformAdapter
+        prop = BasePlatformAdapter.__dict__["SUPPORTS_STREAM_EDITING"]
+
+        class _NonEditable:
+            SUPPORTS_MESSAGE_EDITING = False
+
+        class _Editable:
+            SUPPORTS_MESSAGE_EDITING = True
+
+        class _Silent:  # neither attribute set
+            pass
+
+        assert prop.fget(_NonEditable()) is False
+        assert prop.fget(_Editable()) is True
+        assert prop.fget(_Silent()) is True  # default True
+
+    def test_stream_consumer_resolution_for_qq(self):
+        # Mirrors gateway.run stream consumer: prefer stream flag, fall back to
+        # generic message-editing flag.
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        supports = getattr(
+            QQAdapter,
+            "SUPPORTS_STREAM_EDITING",
+            getattr(QQAdapter, "SUPPORTS_MESSAGE_EDITING", True),
+        )
+        assert supports is True  # C2C streaming stays enabled
+
+    def test_tool_progress_gate_skips_qq(self):
+        # Mirrors the gate in gateway.run.send_progress_messages: an adapter is
+        # eligible for generic tool-progress editing ONLY if it overrides
+        # edit_message AND advertises SUPPORTS_MESSAGE_EDITING. QQ overrides
+        # edit_message but is not a generic editor → progress must be skipped.
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        from gateway.platforms.base import BasePlatformAdapter
+
+        overrides_edit = (
+            QQAdapter.edit_message is not BasePlatformAdapter.edit_message
+        )
+        generic_editing = overrides_edit and getattr(
+            QQAdapter, "SUPPORTS_MESSAGE_EDITING", True
+        )
+        assert overrides_edit is True       # QQ does override edit_message
+        assert generic_editing is False     # …but not for generic message IDs
+
+
+# ---------------------------------------------------------------------------
 # Group context buffer (2.2.1) — GroupContextBuffer unit tests
 # ---------------------------------------------------------------------------
 

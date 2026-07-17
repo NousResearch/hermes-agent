@@ -87,7 +87,10 @@ platforms:
       # ── Group session sharing ──
       group_sessions_per_user: true  # true (default) = each member gets an
                                      # isolated session; set false so ALL members
-                                     # of a group share ONE conversation session
+                                     # of a group share ONE conversation session.
+                                     # In a shared session every message is
+                                     # prefixed with the sender's name ([Alice] …)
+                                     # so the agent can still tell members apart.
       group_history_limit: 20        # (mention mode) non-@ messages buffered per
                                      # group and injected as CONTEXT ONLY on the
                                      # next @-reply; <=0 disables buffering

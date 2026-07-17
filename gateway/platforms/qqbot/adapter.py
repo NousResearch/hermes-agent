@@ -171,19 +171,27 @@ def _coerce_list(value: Any) -> List[str]:
 class QQAdapter(BasePlatformAdapter):
     """QQ Bot adapter backed by the official QQ Bot WebSocket Gateway + REST API."""
 
-    # QQ Bot API does not support editing regular sent messages, but the
-    # C2C stream_messages endpoint (used for streaming replies to private
+    # QQ Bot API does not support editing regular already-sent messages, but
+    # the C2C stream_messages endpoint (used for streaming replies to private
     # chats) DOES accept in-place updates for the same ``stream_msg_id``.
     #
-    # We advertise ``SUPPORTS_MESSAGE_EDITING = True`` so the gateway
-    # stream consumer is willing to attach for C2C sessions.  The actual
-    # gating happens inside :meth:`edit_message`: if no C2C stream
-    # session is registered for the given ``message_id`` (which is the
-    # case for group / guild replies), we return
-    # ``SendResult(success=False, error="stream session not found …")``
-    # and the stream consumer falls back to a fresh ``send()`` — so
-    # non-C2C paths still get plain "send new message" semantics.
-    SUPPORTS_MESSAGE_EDITING = True
+    # These are two distinct capabilities, and the gateway consumes them at
+    # separate call sites, so we advertise them separately:
+    #
+    #   * ``SUPPORTS_MESSAGE_EDITING = False`` — we cannot edit an arbitrary
+    #     already-sent message ID.  This keeps the generic tool-progress editor
+    #     (gateway.run.send_progress_messages) from repeatedly calling
+    #     :meth:`edit_message` with ordinary QQ message IDs — those always fail
+    #     (``"stream session not found …"``) and would degrade to a fresh
+    #     ``send()`` per progress tick, spamming the chat.
+    #   * ``SUPPORTS_STREAM_EDITING = True`` — we CAN update an in-flight C2C
+    #     stream bubble in place.  The stream consumer reads this flag to decide
+    #     whether to attach & suppress the typewriter cursor.  The actual gating
+    #     still happens inside :meth:`edit_message`: only C2C stream-session
+    #     handles are accepted; group / guild replies (which have no stream
+    #     session) return failure and fall back to plain ``send()`` semantics.
+    SUPPORTS_MESSAGE_EDITING = False
+    SUPPORTS_STREAM_EDITING = True
 
     # Streaming replies to QQ AI-assistant surfaces stay in a "generating"
     # visual state until the caller sends ``input_state=10 (DONE)``.  The

@@ -3546,11 +3546,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _profile = get_active_profile_name() or "default"
                 except Exception:
                     _profile = None
+        _group_spu, _thread_spu = self._effective_session_sharing(source)
         return build_session_key(
             source,
-            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            group_sessions_per_user=_group_spu,
+            thread_sessions_per_user=_thread_spu,
             profile=_profile,
+        )
+
+    def _effective_session_sharing(self, source: SessionSource) -> tuple[bool, bool]:
+        """Resolve the per-platform effective (group, thread) session-sharing flags.
+
+        Single source of truth shared by session-key construction and sender
+        attribution. Mirrors the values ``BasePlatformAdapter`` uses to build
+        the session key (``self.config.extra.get(...)``): a per-platform
+        override (e.g. QQ ``platforms.qqbot.extra.group_sessions_per_user:
+        false``) therefore drives BOTH the shared key namespace AND the
+        ``[user_name]`` sender prefix in ``_prepare_inbound_message_text``.
+
+        Without this, attribution read only the global ``GatewayConfig`` value,
+        so a QQ-only shared session merged different users into one session
+        with no sender prefix.
+        """
+        config = getattr(self, "config", None)
+        group_default = getattr(config, "group_sessions_per_user", True)
+        thread_default = getattr(config, "thread_sessions_per_user", False)
+        platform_cfg = None
+        try:
+            platform_cfg = config.platforms.get(source.platform)
+        except Exception:
+            platform_cfg = None
+        extra = getattr(platform_cfg, "extra", None) if platform_cfg is not None else None
+        if not isinstance(extra, dict):
+            return (group_default, thread_default)
+        return (
+            extra.get("group_sessions_per_user", group_default),
+            extra.get("thread_sessions_per_user", thread_default),
         )
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
@@ -10452,8 +10483,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         history = history or []
         message_text = event.text or ""
-        _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
-        _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
+        # Resolve sharing flags via the same per-platform effective value used
+        # to build the session key (see _effective_session_sharing). Using the
+        # global GatewayConfig here would desync attribution from the key: a
+        # QQ-only shared session (extra.group_sessions_per_user=false) would
+        # merge users into one key yet skip the [user_name] sender prefix.
+        _group_sessions_per_user, _thread_sessions_per_user = self._effective_session_sharing(source)
         # Prefer the already resolved session key from the caller so this write
         # key matches the consume key at the run_conversation site. Fall back
         # to deriving it here for tests and legacy standalone callers.
@@ -16930,7 +16965,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _chat_id=source.chat_id,
                         ) -> None:
                             _adapter.pause_typing_for_chat(_chat_id)
-                    _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                    _adapter_supports_edit = getattr(
+                        _adapter,
+                        "SUPPORTS_STREAM_EDITING",
+                        getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True),
+                    )
                     _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
                     _buffer_only = False
                     if source.platform == Platform.MATRIX:
@@ -17736,10 +17775,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not adapter:
                 return
 
-            # Skip tool progress for platforms that don't support message
-            # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
-            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
+            # Skip tool progress for platforms that don't support editing an
+            # arbitrary already-sent message (e.g. iMessage/BlueBubbles, and
+            # QQBot which only edits in-flight C2C stream handles) — each
+            # progress update would otherwise become a separate message
+            # bubble, which is noisy.  Two gates:
+            #   * adapter never overrides edit_message (generic non-editable), or
+            #   * adapter advertises SUPPORTS_MESSAGE_EDITING = False (it may
+            #     override edit_message only for stream handles, like QQBot).
+            _generic_editing = (
+                type(adapter).edit_message is not BasePlatformAdapter.edit_message
+                and getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
+            )
+            if not _generic_editing:
                 while not progress_queue.empty():
                     try:
                         progress_queue.get_nowait()
@@ -18267,7 +18315,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # without edit support, the consumer sends a partial
                         # first message that can never be updated, resulting in
                         # duplicate messages (partial + final).
-                        _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                        _adapter_supports_edit = getattr(
+                            _adapter,
+                            "SUPPORTS_STREAM_EDITING",
+                            getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True),
+                        )
                         if not _adapter_supports_edit:
                             raise RuntimeError("skip streaming for non-editable platform")
                         _effective_cursor = _scfg.cursor

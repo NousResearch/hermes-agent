@@ -1,0 +1,12 @@
+[
+  {
+    "name": "primary-workspace",
+    "bot_token": "xoxb-YOUR-PRIMARY-BOT-TOKEN-HERE",
+    "app_token": "xapp-YOUR-PRIMARY-APP-TOKEN-HERE"
+  },
+  {
+    "name": "second-workspace",
+    "bot_token": "xoxb-YOUR-SECOND-BOT-TOKEN-HERE",
+    "app_token": "xapp-YOUR-SECOND-APP-TOKEN-HERE"
+  }
+]

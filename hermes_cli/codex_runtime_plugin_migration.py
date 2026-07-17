@@ -54,6 +54,23 @@ MIGRATION_END_MARKER = (
     "# end hermes-agent managed section"
 )
 
+# Codex starts stdio MCP servers as child processes and only forwards
+# explicitly allowlisted parent variables. Keep this list limited to Hermes'
+# runtime identity and Kanban scope: provider credentials and endpoint
+# overrides must never cross this boundary implicitly.
+HERMES_TOOLS_DYNAMIC_ENV_VARS = (
+    "HERMES_HOME",
+    "HERMES_PROFILE",
+    "HERMES_PROFILE_NAME",
+    "HERMES_KANBAN_TASK",
+    "HERMES_KANBAN_WORKSPACE",
+    "HERMES_KANBAN_BRANCH",
+    "HERMES_KANBAN_RUN_ID",
+    "HERMES_KANBAN_DB",
+    "HERMES_KANBAN_WORKSPACES_ROOT",
+    "HERMES_KANBAN_BOARD",
+)
+
 
 @dataclass
 class MigrationReport:
@@ -562,7 +579,9 @@ def _build_hermes_tools_mcp_entry() -> dict:
     The command runs the worktree's Python via the current sys.executable
     so a hermes installed under /opt/, /usr/local/, or a venv all work.
     HERMES_HOME and PYTHONPATH are passed through so the spawned process
-    sees the same config + module layout the user is running."""
+    sees the same config + module layout the user is running. Dynamic worker
+    and board context is allowlisted separately so every Codex launch sees
+    the values from its parent rather than values captured at migrate time."""
     import sys
 
     env: dict[str, str] = {}
@@ -596,6 +615,7 @@ def _build_hermes_tools_mcp_entry() -> dict:
     out: dict[str, Any] = {
         "command": sys.executable,
         "args": ["-m", "agent.transports.hermes_tools_mcp_server"],
+        "env_vars": list(HERMES_TOOLS_DYNAMIC_ENV_VARS),
     }
     if env:
         out["env"] = env

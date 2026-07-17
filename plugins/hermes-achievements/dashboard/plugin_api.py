@@ -531,6 +531,30 @@ def metric_label(metric: str) -> str:
     return METRIC_LABELS.get(metric, metric.replace("_", " "))
 
 
+def criteria_spec_for(definition: Dict[str, Any]) -> Dict[str, Any]:
+    """Return locale-neutral criteria data for dashboard clients.
+
+    ``criteria`` remains an English fallback for older plugin bundles, while
+    this structure lets a locale-aware client render the same requirement
+    without putting a locale into the scan snapshot cache.
+    """
+    if definition.get("secret") and definition.get("state") == "secret":
+        return {"kind": "secret_hidden"}
+    if "threshold_metric" in definition:
+        metric = definition["threshold_metric"]
+        return {
+            "kind": "tiered",
+            "metric": metric,
+            "metric_labels": {metric: metric_label(metric)},
+            "tiers": [dict(tier) for tier in definition.get("tiers", [])],
+        }
+    requirements = definition.get("requirements") or []
+    if requirements:
+        metrics = {requirement["metric"]: metric_label(requirement["metric"]) for requirement in requirements}
+        return {"kind": "requirements", "requirements": [dict(requirement) for requirement in requirements], "metric_labels": metrics}
+    return {"kind": "matching_workflow"}
+
+
 def criteria_for(definition: Dict[str, Any]) -> str:
     if definition.get("secret") and definition.get("state") == "secret":
         return "Secret: exact requirement hidden until Hermes sees the first matching signal. Keep using Hermes across debugging, tools, memory, skills, plugins, and model workflows to reveal it."
@@ -551,9 +575,11 @@ def criteria_for(definition: Dict[str, Any]) -> str:
 
 def display_achievement(item: Dict[str, Any]) -> Dict[str, Any]:
     clean = dict(item)
+    criteria_spec = criteria_spec_for(clean)
     if clean.get("state") == "secret":
-        return {**clean, "name": "???", "description": "Secret achievement: hidden until Hermes detects the first relevant behavior in your session history.", "criteria": criteria_for(clean), "icon": "secret"}
+        return {**clean, "name": "???", "description": "Secret achievement: hidden until Hermes detects the first relevant behavior in your session history.", "criteria": criteria_for(clean), "criteria_spec": criteria_spec, "icon": "secret"}
     clean["criteria"] = criteria_for(clean)
+    clean["criteria_spec"] = criteria_spec
     return clean
 
 

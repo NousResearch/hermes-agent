@@ -24,6 +24,7 @@ from hermes_cli.auth import (
     DEFAULT_CODEX_BASE_URL,
     DEFAULT_QWEN_BASE_URL,
     DEFAULT_XAI_OAUTH_BASE_URL,
+    KIMI_CODE_BASE_URL,
     PROVIDER_REGISTRY,
     _agent_key_is_usable,
     _nous_inference_env_override,
@@ -385,26 +386,15 @@ def _normalize_explicit_runtime_base_url(
     if str(runtime.get("provider") or "").strip().lower() != "kimi-coding":
         return runtime
 
-    raw_url = str(runtime.get("base_url") or "").strip().rstrip("/")
-    try:
-        parsed = urlparse(raw_url)
-        port = parsed.port
-    except (TypeError, ValueError):
-        return runtime
-    if not (
-        parsed.scheme.lower() == "https"
-        and (parsed.hostname or "").lower().rstrip(".") == "api.kimi.com"
-        and port in {None, 443}
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.query
-        and not parsed.fragment
-        and parsed.path.rstrip("/") == "/coding"
-    ):
+    raw_url = str(runtime.get("base_url") or "").strip()
+    # Exact equality is intentional.  Do not normalize trailing slashes, a
+    # trailing-dot hostname, explicit :443, credentials, query strings, or any
+    # other lookalike into the trusted Kimi Coding endpoint.
+    if raw_url != KIMI_CODE_BASE_URL:
         return runtime
 
     normalized = dict(runtime)
-    normalized["base_url"] = raw_url + "/v1"
+    normalized["base_url"] = KIMI_CODE_BASE_URL + "/v1"
     return normalized
 
 

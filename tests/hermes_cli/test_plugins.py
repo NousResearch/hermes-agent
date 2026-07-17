@@ -729,6 +729,42 @@ class TestPluginHooks:
         assert len(results) == 1
         assert results[0] == {"context": "memory from plugin"}
 
+    def test_discovered_pre_llm_hook_returns_reasoning_override(
+        self, tmp_path, monkeypatch
+    ):
+        """An enabled user plugin can supply the documented turn override."""
+        hermes_home = tmp_path / "hermes_test"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _make_plugin_dir(
+            hermes_home / "plugins",
+            "reasoning_plugin",
+            register_body=(
+                'ctx.register_hook("pre_llm_call", '
+                'lambda **kw: {"reasoning_config": '
+                '{"enabled": True, "effort": "high"}})'
+            ),
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        plugin = next(
+            item for item in mgr.list_plugins() if item["key"] == "reasoning_plugin"
+        )
+        assert plugin["enabled"] is True
+        assert plugin["hooks"] == 1
+        assert mgr.invoke_hook(
+            "pre_llm_call",
+            session_id="s1",
+            user_message="use high reasoning",
+            conversation_history=[],
+            is_first_turn=True,
+            model="test",
+            reasoning_config={"enabled": True, "effort": "low"},
+        ) == [
+            {"reasoning_config": {"enabled": True, "effort": "high"}}
+        ]
+
     def test_hook_none_returns_excluded(self, tmp_path, monkeypatch):
         """invoke_hook() excludes None returns from the result list."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

@@ -599,7 +599,7 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 |------|-----------|-------------------|---------|
 | [`pre_tool_call`](/user-guide/features/hooks#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | ignored |
 | [`post_tool_call`](/user-guide/features/hooks#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
-| [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
+| [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, reasoning_config: dict \| None, platform: str` | [context and reasoning overrides](#pre_llm_call-context-and-reasoning-overrides) |
 | [`post_llm_call`](/user-guide/features/hooks#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
 | [`on_session_start`](/user-guide/features/hooks#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
 | [`on_session_end`](/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
@@ -609,21 +609,30 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
+Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation and override reasoning options for the current turn.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
 The kanban lifecycle hooks fire **after** the board DB change commits, so a callback always sees durable state and can never hold the SQLite write lock. Because kanban workers run as separate `hermes -p <profile> chat -q` subprocesses, `kanban_task_claimed` fires in the **dispatcher** process while `kanban_task_completed` / `kanban_task_blocked` fire in the **worker** process — hook in the dispatcher to observe every transition centrally, or in the worker for per-task in-session context.
 
-### `pre_llm_call` context injection
+### `pre_llm_call` context and reasoning overrides
 
-This is the only hook whose return value matters. When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
+When a `pre_llm_call` callback returns a dict, it can inject text into the **current turn's user message** with `"context"`, override the turn's model reasoning options with `"reasoning_config"`, or do both. A plain string remains equivalent to `{"context": "..."}`. The callback receives the configured `reasoning_config` as a keyword argument so it can make its decision without mutating agent state.
 
 #### Return format
 
 ```python
 # Dict with context key
 return {"context": "Recalled memories:\n- User prefers dark mode\n- Last project: hermes-agent"}
+
+# Reasoning override for this turn only
+return {"reasoning_config": {"enabled": True, "effort": "high"}}
+
+# Context and reasoning can be returned together
+return {
+    "context": "This request requires careful analysis.",
+    "reasoning_config": {"enabled": True, "effort": "high"},
+}
 
 # Plain string (equivalent to the dict form above)
 return "Recalled memories:\n- User prefers dark mode"
@@ -632,7 +641,7 @@ return "Recalled memories:\n- User prefers dark mode"
 return None
 ```
 
-Any non-None, non-empty return with a `"context"` key (or a plain non-empty string) is collected and appended to the user message for the current turn.
+Any non-empty `"context"` value (or plain non-empty string) is collected and appended to the user message for the current turn. A dictionary-valued `"reasoning_config"` replaces the configured reasoning options for every model request in that turn, including tool-loop follow-ups and an iteration-limit summary or retry. The configured value is not mutated and becomes active again after the turn. If multiple plugins return reasoning overrides, the last valid dictionary in plugin discovery order wins.
 
 #### Oversized-context spill
 
@@ -655,6 +664,8 @@ Injected context is appended to the **user message**, not the system prompt. Thi
 - **Prompt cache preservation** — the system prompt stays identical across turns. Anthropic and OpenRouter cache the system prompt prefix, so keeping it stable saves 75%+ on input tokens in multi-turn conversations. If plugins modified the system prompt, every turn would be a cache miss.
 - **Ephemeral** — the injection happens at API call time only. The original user message in the conversation history is never mutated, and nothing is persisted to the session database.
 - **The system prompt is Hermes's territory** — it contains model-specific guidance, tool enforcement rules, personality instructions, and cached skill content. Plugins contribute context alongside the user's input, not by altering the agent's core instructions.
+
+Reasoning overrides are also ephemeral. They affect request construction only while the current `run_conversation()` call is active and are cleared on every exit path.
 
 #### Example: Memory recall plugin
 
@@ -724,7 +735,7 @@ def register(ctx):
 
 #### Multiple plugins returning context
 
-When multiple plugins return context from `pre_llm_call`, their outputs are joined with double newlines and appended to the user message together. The order follows plugin discovery order (alphabetical by plugin directory name).
+When multiple plugins return context from `pre_llm_call`, their outputs are joined with double newlines and appended to the user message together. The order follows plugin discovery order (alphabetical by plugin directory name). For reasoning overrides, the last valid dictionary in that same order wins.
 
 ### Register CLI commands
 

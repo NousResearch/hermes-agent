@@ -429,6 +429,22 @@ def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
     assert kwargs["reasoning"]["effort"] == "low"
 
 
+def test_build_api_kwargs_codex_uses_turn_reasoning_override(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.reasoning_config = {"enabled": True, "effort": "low"}
+    agent._turn_reasoning_config = {"enabled": True, "effort": "high"}
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert kwargs["reasoning"]["effort"] == "high"
+    assert agent.reasoning_config == {"enabled": True, "effort": "low"}
+
+
 def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
     """Effort levels natively supported by the Responses API pass through unchanged."""
     _patch_agent_bootstrap(monkeypatch)

@@ -521,6 +521,10 @@ def build_turn_context(
 
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""
+    agent._turn_reasoning_config = None
+    configured_reasoning = getattr(agent, "reasoning_config", None)
+    if isinstance(configured_reasoning, dict):
+        configured_reasoning = dict(configured_reasoning)
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
@@ -532,6 +536,7 @@ def build_turn_context(
             conversation_history=list(messages),
             is_first_turn=(not bool(conversation_history)),
             model=agent.model,
+            reasoning_config=configured_reasoning,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
         )
@@ -550,11 +555,16 @@ def build_turn_context(
             _spill_config_cached = None
         for r in _pre_results:
             _piece: str = ""
-            if isinstance(r, dict) and r.get("context"):
-                _piece = str(r["context"])
+            if isinstance(r, dict):
+                if isinstance(r.get("reasoning_config"), dict):
+                    agent._turn_reasoning_config = dict(r["reasoning_config"])
+                if r.get("context"):
+                    _piece = str(r["context"])
             elif isinstance(r, str) and r.strip():
                 _piece = r
             else:
+                continue
+            if not _piece:
                 continue
             if _spill_if_oversized is not None:
                 try:

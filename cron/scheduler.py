@@ -278,6 +278,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
 }
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
+from cron.executions import create_execution, finish_execution, mark_execution_running
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -3635,6 +3636,9 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     Returns True if the job was processed (even if the job itself failed —
     failure is recorded via ``mark_job_run``), False only if processing raised.
     """
+    execution_id = job.get("execution_id")
+    if not execution_id:
+        execution_id = create_execution(job["id"], source="direct")["id"]
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
@@ -3648,7 +3652,16 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 "Job '%s': one-shot dispatch limit reached — skipping",
                 job.get("name", job["id"]),
             )
+            finish_execution(
+                execution_id,
+                success=False,
+                error="Dispatch claim rejected; execution was not started.",
+            )
             return True  # not an error — already handled/removed
+
+        # The attempt is claimed durably before executor/provider dispatch and
+        # becomes running only immediately before the actual run.
+        mark_execution_running(execution_id)
 
         # Run the job under the profile's secret scope. get_secret() fails
         # closed outside a scope once profile isolation is in play (multiple
@@ -3756,12 +3769,14 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        finish_execution(execution_id, success=success, error=error)
         return True
 
     except Exception as e:
         logger.error("Error processing job %s: %s", job['id'], e)
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], False, str(e))
+        finish_execution(execution_id, success=False, error=str(e))
         return False
 
 
@@ -3916,9 +3931,13 @@ def tick(
                     logger.info("Job '%s' already running — skipping", job.get("name", job_id))
                     return None
                 _running_job_ids.add(job_id)
+            # Record the attempt before executor dispatch. Recovery classifies
+            # abandoned records as unknown; it never automatically retries them.
+            execution = create_execution(job_id, source="builtin")
+            dispatched_job = dict(job, execution_id=execution["id"])
             _ctx = contextvars.copy_context()
 
-            def _run_and_release(j=job, ctx=_ctx):
+            def _run_and_release(j=dispatched_job, ctx=_ctx):
                 try:
                     return ctx.run(_process_job, j)
                 finally:
@@ -3927,18 +3946,28 @@ def tick(
 
             try:
                 return pool.submit(_run_and_release)
-            except RuntimeError as submit_err:
+            except Exception as submit_err:
+                with _running_lock:
+                    _running_job_ids.discard(job_id)
+                finish_execution(
+                    execution["id"],
+                    success=False,
+                    error=f"Executor dispatch failed: {submit_err}",
+                )
                 # Interpreter began finalizing between the guard above and the
                 # submit — release the in-flight claim we just took and skip.
-                if _interpreter_shutting_down(submit_err):
-                    with _running_lock:
-                        _running_job_ids.discard(job_id)
+                if isinstance(submit_err, RuntimeError) and _interpreter_shutting_down(submit_err):
                     logger.warning(
                         "Job '%s' not dispatched — interpreter is shutting down",
                         job.get("name", job_id),
                     )
                     return None
-                raise
+                logger.error(
+                    "Job '%s' not dispatched: %s",
+                    job.get("name", job_id),
+                    submit_err,
+                )
+                return None
 
         # Sequential pass for env-mutating (workdir) jobs.
         # Queued to a persistent single-thread pool so they run one at a time

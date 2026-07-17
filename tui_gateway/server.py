@@ -6000,7 +6000,11 @@ def _(rid, params: dict) -> dict:
             db.reopen_session(target)
             # The child's OWN conversation only — include_ancestors would prepend
             # the parent's transcript onto the subagent's branch.
-            history = db.get_messages_as_conversation(target)
+            # repair_alternation: this resume feeds LIVE REPLAY (the loaded
+            # history becomes the resumed session record's working conversation),
+            # so heal a durable ``user;user`` violation once here instead of
+            # re-firing the pre-request repair on every subsequent turn.
+            history = db.get_messages_as_conversation(target, repair_alternation=True)
         except Exception as e:
             if lease is not None:
                 lease.release()
@@ -6065,7 +6069,11 @@ def _(rid, params: dict) -> dict:
         _enable_gateway_prompts()
         try:
             db.reopen_session(target)
-            raw_history = db.get_messages_as_conversation(target)
+            # repair_alternation on the model-fed copy only: this resume feeds
+            # LIVE REPLAY (raw_history → sanitize_replay_history → the resumed
+            # session's working conversation). display_history stays verbatim —
+            # inspection/export must show what is actually stored.
+            raw_history = db.get_messages_as_conversation(target, repair_alternation=True)
             display_history = db.get_messages_as_conversation(target, include_ancestors=True)
         except Exception as e:
             if lease is not None:
@@ -6139,7 +6147,9 @@ def _(rid, params: dict) -> dict:
     )
     try:
         db.reopen_session(target)
-        raw_history = db.get_messages_as_conversation(target)
+        # repair_alternation on the model-fed copy only (see the interactive
+        # resume above): this loads LIVE REPLAY history; display stays verbatim.
+        raw_history = db.get_messages_as_conversation(target, repair_alternation=True)
         display_history = db.get_messages_as_conversation(
             target, include_ancestors=True
         )
@@ -12711,8 +12721,12 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 5008, f"undo: {e}")
         # Reload the active-only transcript into the in-memory session
         # history so subsequent turns see the truncated view.
+        # repair_alternation: this reload feeds LIVE REPLAY — session["history"]
+        # is the working conversation for subsequent turns, and a rewind that
+        # lands on a durable user;user pair would otherwise re-fire the
+        # pre-request repair on every request from here on.
         try:
-            active = db.get_messages_as_conversation(session_key)
+            active = db.get_messages_as_conversation(session_key, repair_alternation=True)
         except Exception:
             active = []
         with session["history_lock"]:

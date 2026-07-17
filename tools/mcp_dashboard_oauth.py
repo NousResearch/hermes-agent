@@ -23,6 +23,7 @@ class DashboardOAuthFlow:
     flow_id: str
     server_name: str
     profile: str | None
+    hermes_home: str
     redirect_uri: str
     created_at: float = field(default_factory=time.time)
     status: str = "starting"
@@ -34,17 +35,19 @@ class DashboardOAuthFlow:
     _callback_error: str | None = field(default=None, init=False, repr=False)
     _authorization_ready: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _callback_ready: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     async def publish_authorization_url(self, url: str) -> None:
-        if self.status in {"approved", "error"}:
-            raise RuntimeError("OAuth flow already ended")
         state = parse_qs(urlparse(url).query).get("state", [None])[0]
         if not state:
             raise ValueError("OAuth authorization URL did not include state")
-        self.expected_state = state
-        self.authorization_url = url
-        self.status = "authorization_required"
-        self._authorization_ready.set()
+        with self._lock:
+            if self.status in {"approved", "error"}:
+                raise RuntimeError("OAuth flow already ended")
+            self.expected_state = state
+            self.authorization_url = url
+            self.status = "authorization_required"
+            self._authorization_ready.set()
 
     async def wait_for_authorization_url(self, timeout: float = 30.0) -> str:
         ready = await asyncio.to_thread(self._authorization_ready.wait, timeout)
@@ -61,21 +64,22 @@ class DashboardOAuthFlow:
         state: str | None,
         error: str | None,
     ) -> None:
-        if self._callback_ready.is_set():
-            raise ValueError("OAuth callback already received")
-        if (
-            self.expected_state is None
-            or state is None
-            or not secrets.compare_digest(self.expected_state, state)
-        ):
-            raise ValueError("OAuth callback state mismatch")
-        if error:
-            self._callback_error = error
-        elif code:
-            self._callback = (code, state)
-        else:
-            self._callback_error = "OAuth callback did not include code or error"
-        self._callback_ready.set()
+        with self._lock:
+            if self._callback_ready.is_set():
+                raise ValueError("OAuth callback already received")
+            if (
+                self.expected_state is None
+                or state is None
+                or not secrets.compare_digest(self.expected_state, state)
+            ):
+                raise ValueError("OAuth callback state mismatch")
+            if error:
+                self._callback_error = error
+            elif code:
+                self._callback = (code, state)
+            else:
+                self._callback_error = "OAuth callback did not include code or error"
+            self._callback_ready.set()
 
     async def wait_for_callback(self, timeout: float = 300.0) -> tuple[str, str | None]:
         ready = await asyncio.to_thread(self._callback_ready.wait, timeout)
@@ -88,23 +92,30 @@ class DashboardOAuthFlow:
         return self._callback
 
     def mark_approved(self) -> None:
-        self.status = "approved"
-        self.error = None
+        with self._lock:
+            if self.status == "error":
+                raise RuntimeError("OAuth flow already ended")
+            self.status = "approved"
+            self.error = None
 
     def mark_error(self, error: str) -> None:
-        self.status = "error"
-        self.error = error
-        self._authorization_ready.set()
-        self._callback_ready.set()
+        with self._lock:
+            if self.status == "approved":
+                return
+            self.status = "error"
+            self.error = error
+            self._authorization_ready.set()
+            self._callback_ready.set()
 
     def snapshot(self) -> dict:
-        return {
-            "flow_id": self.flow_id,
-            "server_name": self.server_name,
-            "status": self.status,
-            "authorization_url": self.authorization_url,
-            "error": self.error,
-        }
+        with self._lock:
+            return {
+                "flow_id": self.flow_id,
+                "server_name": self.server_name,
+                "status": self.status,
+                "authorization_url": self.authorization_url,
+                "error": self.error,
+            }
 
 
 _current_dashboard_flow: contextvars.ContextVar[DashboardOAuthFlow | None] = (

@@ -81,4 +81,34 @@ describe("completeMcpDashboardOAuth", () => {
     ).rejects.toThrow("popup was blocked");
     expect(start).not.toHaveBeenCalled();
   });
+
+  it("fails when the authorization window closes before approval", async () => {
+    const authWindow = { location: { href: "" }, opener: {}, closed: false } as unknown as Window;
+    const status = vi.fn().mockImplementation(async () => {
+      Object.defineProperty(authWindow, "closed", { value: true });
+      return {
+        flow_id: "flow-closed",
+        server_name: "reports",
+        status: "authorization_required",
+        authorization_url: "https://idp.example/authorize",
+        error: null,
+      };
+    });
+
+    await expect(
+      completeMcpDashboardOAuth({
+        serverName: "reports",
+        start: async () => ({
+          flow_id: "flow-closed",
+          server_name: "reports",
+          status: "authorization_required",
+          authorization_url: "https://idp.example/authorize",
+          error: null,
+        }),
+        status,
+        open: vi.fn().mockReturnValue(authWindow),
+        sleep: async () => {},
+      }),
+    ).rejects.toThrow("authorization window was closed");
+  });
 });

@@ -1,6 +1,7 @@
 """Hosted-dashboard bridge for MCP OAuth browser callbacks."""
 
 import asyncio
+import threading
 
 import pytest
 
@@ -12,6 +13,7 @@ def test_dashboard_flow_exposes_authorization_url_and_accepts_callback():
         flow_id="flow-1",
         server_name="reports",
         profile=None,
+        hermes_home="/tmp/hermes-test",
         redirect_uri="https://agent.example/mcp/oauth/callback/flow-1",
     )
 
@@ -35,6 +37,7 @@ def test_dashboard_flow_rejects_wrong_state_without_consuming_callback():
         flow_id="flow-state",
         server_name="reports",
         profile=None,
+        hermes_home="/tmp/hermes-test",
         redirect_uri="https://agent.example/mcp/oauth/callback/flow-state",
     )
     asyncio.run(
@@ -60,6 +63,7 @@ def test_dashboard_flow_rejects_second_callback():
         flow_id="flow-2",
         server_name="reports",
         profile=None,
+        hermes_home="/tmp/hermes-test",
         redirect_uri="https://agent.example/mcp/oauth/callback/flow-2",
     )
     asyncio.run(
@@ -72,6 +76,39 @@ def test_dashboard_flow_rejects_second_callback():
         flow.deliver_callback(code="second", state="state", error=None)
 
 
+def test_dashboard_flow_accepts_only_one_concurrent_callback():
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-race",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/mcp/oauth/callback/flow-race",
+    )
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=state"))
+
+    start = threading.Barrier(3)
+    outcomes: list[str] = []
+
+    def deliver(code: str) -> None:
+        start.wait()
+        try:
+            flow.deliver_callback(code=code, state="state", error=None)
+            outcomes.append("accepted")
+        except ValueError:
+            outcomes.append("rejected")
+
+    workers = [threading.Thread(target=deliver, args=(code,)) for code in ("one", "two")]
+    for worker in workers:
+        worker.start()
+    start.wait()
+    for worker in workers:
+        worker.join()
+
+    assert sorted(outcomes) == ["accepted", "rejected"]
+
+
 def test_dashboard_flow_cannot_resurrect_after_terminal_error():
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 
@@ -79,6 +116,7 @@ def test_dashboard_flow_cannot_resurrect_after_terminal_error():
         flow_id="flow-terminal",
         server_name="reports",
         profile=None,
+        hermes_home="/tmp/hermes-test",
         redirect_uri="https://agent.example/mcp/oauth/callback/flow-terminal",
     )
     flow.mark_error("start timed out")
@@ -105,6 +143,7 @@ def test_dashboard_context_overrides_redirect_and_handlers():
         flow_id="flow-3",
         server_name="reports",
         profile=None,
+        hermes_home="/tmp/hermes-test",
         redirect_uri="https://agent.example/mcp/oauth/callback/flow-3",
     )
     assert get_dashboard_oauth_flow() is None
@@ -127,6 +166,7 @@ def test_mcp_oauth_helpers_use_dashboard_flow_without_loopback_port():
         flow_id="flow-4",
         server_name="reports",
         profile=None,
+        hermes_home="/tmp/hermes-test",
         redirect_uri="https://agent.example/mcp/oauth/callback/flow-4",
     )
     cfg = {}
@@ -156,6 +196,7 @@ def test_manager_build_allows_dashboard_flow_without_tty(tmp_path, monkeypatch):
         flow_id="flow-5",
         server_name="reports",
         profile=None,
+        hermes_home="/tmp/hermes-test",
         redirect_uri="https://agent.example/api/mcp/oauth/callback/flow-5",
     )
     with dashboard_oauth_flow(flow):
@@ -177,11 +218,31 @@ def test_manager_evict_preserves_persisted_oauth_state(tmp_path, monkeypatch):
         '{"access_token":"a","token_type":"Bearer"}'
     )
     manager = MCPOAuthManager()
-    manager._entries["reports"] = _ProviderEntry(
+    manager._entries[manager._key("reports")] = _ProviderEntry(
         server_url="https://mcp.example/mcp", oauth_config={}
     )
 
     manager.evict("reports")
 
-    assert "reports" not in manager._entries
+    assert manager._key("reports") not in manager._entries
     assert storage._tokens_path().exists()
+
+
+def test_reconnect_mcp_server_signals_live_task(monkeypatch):
+    from tools import mcp_tool
+
+    class Event:
+        called = False
+
+        def set(self):
+            self.called = True
+
+    class Server:
+        _reconnect_event = Event()
+
+    server = Server()
+    monkeypatch.setitem(mcp_tool._servers, "reports", server)
+    monkeypatch.setattr(mcp_tool, "_mcp_loop", None)
+
+    assert mcp_tool.reconnect_mcp_server("reports") is True
+    assert server._reconnect_event.called is True

@@ -990,7 +990,7 @@ def _configure_callback_port(
     dashboard_flow = get_dashboard_oauth_flow()
     if dashboard_flow is not None:
         cfg["_resolved_port"] = 0
-        cfg["redirect_uri"] = dashboard_flow.redirect_uri
+        cfg["redirect_uri"] = cfg.get("redirect_uri") or dashboard_flow.redirect_uri
         return 0
     requested = int(cfg.get("redirect_port", 0))
     # Precedence: explicit config port → cached client-registration port →

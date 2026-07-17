@@ -79,6 +79,10 @@ Click anywhere on a section header (or its chevron) to toggle it. The Tools list
 
 On first launch Hermes installs the TUI's Node dependencies into `ui-tui/node_modules` (one-time, a few seconds). Subsequent launches are fast. If you pull a new Hermes version, the TUI bundle is rebuilt automatically when sources are newer than the dist.
 
+:::tip Working across git worktrees?
+Contributors who run `hermes --tui --dev` from many worktrees can share one `node_modules` instead of installing per checkout — see [TUI & Desktop from Worktrees](../developer-guide/worktree-ui-dev.md).
+:::
+
 ### External prebuild
 
 Distributions that ship a prebuilt bundle (Nix, system packages) can point Hermes at it:

@@ -73,17 +73,21 @@ Features:
     - Parallel tool call opt-in: per-server ``supports_parallel_tool_calls``
       flag allows concurrent execution of tools from the same server
     - Session context forwarding: per-server ``forward_session_context``
-      defaults to false. When enabled for a trusted server, complete bound
-      session context is attached only to ``tools/call`` request ``_meta``
-      under ``com.nousresearch.hermes/*``; otherwise the entire meta block is
-      omitted. Resource and prompt operations carry no session identity.
-      On PII-redaction-eligible platforms, ``privacy.redact_pii`` uses the
-      existing deterministic pseudonyms for chat/thread/user IDs and a stable
-      ``session_<hash>`` pseudonym for the session key. This is
-      pseudonymization, not anonymity; other platforms and the raw-value policy
-      are unchanged. Independently of this MCP opt-in, binding a gateway
-      session ID exposes ``HERMES_SESSION_ID`` to gateway-spawned subprocesses
-      through the existing environment bridge.
+      defaults to false. When enabled for a trusted server, the seven bound
+      gateway identity ContextVars are attached only to ``tools/call`` request
+      ``_meta`` under ``com.nousresearch.hermes/*``. An unbound value, an
+      all-empty identity, an unavailable privacy policy, or a failed privacy
+      transformation omits the entire meta block; values never fall back to
+      process environment variables. Resource, prompt, and discovery
+      operations carry no session identity.
+      With ``privacy.redact_pii`` enabled on an eligible platform, the outgoing
+      copy uses deterministic pseudonyms for chat/user IDs, the complete
+      thread and message IDs, and the session key; platform and session ID stay
+      raw. The task-local routing values remain raw. With redaction disabled or
+      on an ineligible platform, all seven values remain raw. These stable,
+      linkable values are pseudonyms, not anonymity. Independently of this MCP
+      opt-in, binding a gateway session ID exposes ``HERMES_SESSION_ID`` to
+      gateway-spawned subprocesses through the existing environment bridge.
 
 Architecture:
     A dedicated background event loop (_mcp_loop) runs in a daemon thread.

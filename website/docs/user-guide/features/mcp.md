@@ -692,23 +692,31 @@ mcp_servers:
     forward_session_context: true
 ```
 
-For a `tools/call` request with a complete bound session context, Hermes adds
-host-authored request `_meta` under the reverse-DNS prefix
-`com.nousresearch.hermes/`. The fields are `platform`, `session_id`,
-`session_key`, `chat_id`, `thread_id`, `user_id`, and `message_id`. The model
-does not author this metadata.
+For `tools/call`, Hermes can add host-authored request `_meta` under the
+reverse-DNS prefix `com.nousresearch.hermes/`. The seven fields are `platform`,
+`session_id`, `session_key`, `chat_id`, `thread_id`, `user_id`, and
+`message_id`; the model does not author them.
 
-If no complete session context is bound, Hermes omits the entire
-session-context meta block instead of sending empty values. The setting covers
-only `tools/call`; MCP resource and prompt operations carry no session
-identity.
+Every field's task-local `ContextVar` must be bound. An individual value may
+be empty, but Hermes omits the entire session-context meta block if any field
+is unbound, all seven are empty, the routed profile's privacy policy is
+unavailable, or privacy eligibility or pseudonymization fails. Process
+environment variables are never used as an MCP metadata fallback. This
+setting covers only `tools/call`; MCP resource, prompt, and discovery
+operations carry no session identity.
 
-When `privacy.redact_pii` is enabled on a platform eligible for PII redaction,
-`chat_id`, `thread_id`, and `user_id` use the same deterministic pseudonyms as
-the gateway, and `session_key` becomes a stable `session_<hash>` pseudonym so
-the original key cannot expose an embedded identifier. This is
-pseudonymization, not anonymity. On other platforms, or when redaction is off,
-the raw-value policy is unchanged.
+When the routed profile has `privacy.redact_pii: true` on an eligible
+platform, Hermes pseudonymizes `chat_id`, `user_id`, `session_key`, the
+complete `thread_id`, and `message_id` in the outgoing copy. WhatsApp Cloud is
+eligible, so its bound WAMID is pseudonymized too. `platform` and `session_id`
+stay raw, and task-local routing values are unchanged. If redaction is off or
+the platform is ineligible, all values stay raw. The deterministic, linkable
+values are pseudonyms, not anonymity.
+
+At message ingress, a non-empty event triggering ID is copied to the session
+source before binding; source-only adapter IDs remain valid. Synthetic goal
+continuations clear a previous triggering ID, while queued follow-ups rebind
+the new event's source and routed privacy policy.
 
 :::caution
 Enable this only for a server you trust with the resulting identifiers or
@@ -718,7 +726,8 @@ pseudonyms. The default is `false`.
 This MCP setting is separate from subprocess environment propagation. Once a
 gateway session ID is bound, the existing environment bridge makes
 `HERMES_SESSION_ID` visible to gateway-spawned subprocesses whether or not any
-MCP server has `forward_session_context` enabled.
+MCP server has `forward_session_context` enabled. MCP request `_meta` never
+reads that environment value.
 
 ## MCP Sampling Support
 

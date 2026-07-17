@@ -673,20 +673,22 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     _tui_owns_lifecycle = True
     if session_id:
         try:
-            db = _get_db()
-            if db is not None:
-                # Don't end gateway-originated sessions — the gateway owns
-                # their lifecycle.  The TUI is a viewer, not the owner.
-                # Ending a gateway session in state.db triggers a Groundhog
-                # Day routing loop: the gateway's #54878 self-heal detects
-                # the stale entry, recovers to the parent session, context
-                # compression splits back to the reaped child, and the cycle
-                # repeats on every inbound message.  (#60609)
-                row = db.get_session(session_id)
-                source = (row or {}).get("source", "")
-                _tui_owns_lifecycle = not _is_gateway_owned_source(source)
-                if _tui_owns_lifecycle:
-                    db.end_session(session_id, end_reason)
+            # End the row in the *session's* profile state.db (app-global
+            # remote mode), not the launch profile's shared handle.
+            with _session_db(session) as db:
+                if db is not None:
+                    # Don't end gateway-originated sessions — the gateway owns
+                    # their lifecycle.  The TUI is a viewer, not the owner.
+                    # Ending a gateway session in state.db triggers a Groundhog
+                    # Day routing loop: the gateway's #54878 self-heal detects
+                    # the stale entry, recovers to the parent session, context
+                    # compression splits back to the reaped child, and the cycle
+                    # repeats on every inbound message.  (#60609)
+                    row = db.get_session(session_id)
+                    source = (row or {}).get("source", "")
+                    _tui_owns_lifecycle = not _is_gateway_owned_source(source)
+                    if _tui_owns_lifecycle:
+                        db.end_session(session_id, end_reason)
         except Exception:
             pass
 
@@ -1060,6 +1062,63 @@ def _get_db():
             )
             return None
     return _db
+
+
+def _db_for_profile(profile: str | None = None):
+    """Return SessionDB for ``params.profile`` when it differs from launch.
+
+    App-global remote mode passes ``profile`` on session.* RPCs so history/list/
+    create operate on that profile's ``state.db``. Launch/own profile → shared
+    ``_get_db()`` handle (left open). Non-launch profile → a dedicated handle
+    the caller should ``close()`` (see :func:`_profile_db` contextmanager).
+
+    Returns (db, owns_handle). ``db`` is None when unavailable.
+    """
+    profile_home = _profile_home(profile)
+    if profile_home is None:
+        return _get_db(), False
+    try:
+        from hermes_state import SessionDB
+
+        return SessionDB(db_path=Path(profile_home) / "state.db"), True
+    except Exception as exc:
+        logger.warning(
+            "TUI profile session store unavailable for %s: %s",
+            profile,
+            exc,
+        )
+        return None, False
+
+
+@contextlib.contextmanager
+def _profile_db(params: dict | None = None):
+    """Yield the SessionDB for ``params['profile']`` (app-global remote mode).
+
+    Closes dedicated profile handles; leaves the launch-profile shared handle open.
+    Yields None when the db is unavailable.
+    """
+    profile = None
+    if isinstance(params, dict):
+        profile = (params.get("profile") or "").strip() or None
+    db, owns = _db_for_profile(profile)
+    try:
+        yield db
+    finally:
+        if owns and db is not None:
+            with contextlib.suppress(Exception):
+                db.close()
+
+
+def _response_profile_name(profile: str | None = None) -> str:
+    """Profile name to report on session.* payloads.
+
+    Prefer the RPC's requested profile when it is a real non-launch profile;
+    otherwise the process launch profile.
+    """
+    name = (profile or "").strip()
+    if name and _profile_home(name) is not None:
+        return name
+    return _current_profile_name()
 
 
 def _db_unavailable_error(rid, *, code: int):
@@ -4108,7 +4167,13 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "update_behind": None,
         "update_command": "",
         "usage": _session_usage_snapshot(session),
-        "profile_name": _current_profile_name(),
+        "profile_name": _response_profile_name(
+            Path(session["profile_home"]).name
+            if isinstance(session, dict) and session.get("profile_home")
+            else None
+        )
+        if isinstance(session, dict) and session.get("profile_home")
+        else _current_profile_name(),
     }
     try:
         from hermes_cli import __version__, __release_date__
@@ -5473,6 +5538,7 @@ def _init_session(
     cwd: str | None = None,
     session_db=None,
     source: str | None = None,
+    profile_home: str | None = None,
 ):
     now = time.time()
     with _sessions_lock:
@@ -5496,6 +5562,10 @@ def _init_session(
             "tool_progress_mode": _load_tool_progress_mode(),
             "edit_snapshots": {},
             "tool_started_at": {},
+            # Profile-scoped HERMES_HOME for app-global remote mode; None =
+            # launch profile. SessionBranch copies the parent's value so the
+            # child stays on the same state.db.
+            "profile_home": profile_home,
             # Per-session model override set by an in-session /model switch.
             # Honored on rebuild (/new, resume) so a switch in THIS session
             # never leaks into siblings via process-global env vars.
@@ -5504,21 +5574,43 @@ def _init_session(
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
         }
-    db = session_db if session_db is not None else _get_db()
-    if db is not None:
-        row = db.get_session(key)
-        if row and row.get("cwd"):
-            with _sessions_lock:
-                if sid in _sessions:
-                    _sessions[sid]["cwd"] = row["cwd"]
-        else:
+    _init_owns_db = False
+    if session_db is not None:
+        db = session_db
+    elif profile_home:
+        try:
+            from hermes_state import SessionDB
+
+            db = SessionDB(db_path=Path(profile_home) / "state.db")
+            _init_owns_db = True
+        except Exception:
+            db = _get_db()
+    else:
+        db = _get_db()
+    try:
+        if db is not None:
+            row = db.get_session(key) if hasattr(db, "get_session") else None
+            if row and row.get("cwd"):
+                with _sessions_lock:
+                    if sid in _sessions:
+                        _sessions[sid]["cwd"] = row["cwd"]
+            else:
+                try:
+                    _cwd = _sessions[sid]["cwd"]
+                    if hasattr(db, "update_session_cwd"):
+                        db.update_session_cwd(key, _cwd)
+                    # git branch/root probes run off the hot path (see _set_session_cwd).
+                    _persist_session_git_meta(_sessions[sid], _cwd)
+                except Exception:
+                    logger.debug(
+                        "failed to persist resumed session cwd", exc_info=True
+                    )
+    finally:
+        if _init_owns_db and db is not None:
             try:
-                _cwd = _sessions[sid]["cwd"]
-                db.update_session_cwd(key, _cwd)
-                # git branch/root probes run off the hot path (see _set_session_cwd).
-                _persist_session_git_meta(_sessions[sid], _cwd)
+                db.close()
             except Exception:
-                logger.debug("failed to persist resumed session cwd", exc_info=True)
+                pass
     _register_session_cwd(_sessions[sid])
     try:
         _attach_worker(
@@ -6301,7 +6393,7 @@ def _(rid, params: dict) -> dict:
                 "project": _project_info_for_cwd(_sessions[sid]["cwd"]),
                 "lazy": True,
                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-                "profile_name": _current_profile_name(),
+                "profile_name": _response_profile_name(profile),
             },
         },
     )
@@ -6309,48 +6401,53 @@ def _(rid, params: dict) -> dict:
 
 @method("session.list")
 def _(rid, params: dict) -> dict:
-    db = _get_db()
-    if db is None:
-        return _db_unavailable_error(rid, code=5006)
-    try:
-        # Resume picker should surface human conversation sessions from every
-        # user-facing surface — CLI, TUI, all gateway platforms (including new
-        # ones not enumerated here), ACP adapter clients, webhook sessions,
-        # custom `HERMES_SESSION_SOURCE` values, and older installs with
-        # different source labels. We deny-list only the noisy internal
-        # sources (``tool`` sub-agent runs) rather than allow-listing a
-        # fixed set of platform names that goes stale whenever a new
-        # platform is added or a user names their own source.
-        deny = frozenset({"tool"})
+    with _profile_db(params) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5006)
+        try:
+            # Resume picker should surface human conversation sessions from every
+            # user-facing surface — CLI, TUI, all gateway platforms (including new
+            # ones not enumerated here), ACP adapter clients, webhook sessions,
+            # custom `HERMES_SESSION_SOURCE` values, and older installs with
+            # different source labels. We deny-list only the noisy internal
+            # sources (``tool`` sub-agent runs) rather than allow-listing a
+            # fixed set of platform names that goes stale whenever a new
+            # platform is added or a user names their own source.
+            deny = frozenset({"tool"})
 
-        limit = int(params.get("limit", 200) or 200)
-        # Over-fetch modestly so per-source filtering doesn't leave us
-        # short; the compression-tip projection in ``list_sessions_rich``
-        # can also merge rows.
-        fetch_limit = max(limit * 2, 200)
-        rows = [
-            s
-            for s in db.list_sessions_rich(source=None, limit=fetch_limit, order_by_last_active=True, compact_rows=True)
-            if (s.get("source") or "").strip().lower() not in deny
-        ][:limit]
-        return _ok(
-            rid,
-            {
-                "sessions": [
-                    {
-                        "id": s["id"],
-                        "title": s.get("title") or "",
-                        "preview": s.get("preview") or "",
-                        "started_at": s.get("started_at") or 0,
-                        "message_count": s.get("message_count") or 0,
-                        "source": s.get("source") or "",
-                    }
-                    for s in rows
-                ]
-            },
-        )
-    except Exception as e:
-        return _err(rid, 5006, str(e))
+            limit = int(params.get("limit", 200) or 200)
+            # Over-fetch modestly so per-source filtering doesn't leave us
+            # short; the compression-tip projection in ``list_sessions_rich``
+            # can also merge rows.
+            fetch_limit = max(limit * 2, 200)
+            rows = [
+                s
+                for s in db.list_sessions_rich(
+                    source=None,
+                    limit=fetch_limit,
+                    order_by_last_active=True,
+                    compact_rows=True,
+                )
+                if (s.get("source") or "").strip().lower() not in deny
+            ][:limit]
+            return _ok(
+                rid,
+                {
+                    "sessions": [
+                        {
+                            "id": s["id"],
+                            "title": s.get("title") or "",
+                            "preview": s.get("preview") or "",
+                            "started_at": s.get("started_at") or 0,
+                            "message_count": s.get("message_count") or 0,
+                            "source": s.get("source") or "",
+                        }
+                        for s in rows
+                    ]
+                },
+            )
+        except Exception as e:
+            return _err(rid, 5006, str(e))
 
 
 @method("session.most_recent")
@@ -6367,34 +6464,39 @@ def _(rid, params: dict) -> dict:
     session found right now".  Errors are also folded into that
     null-result shape (and logged) so callers don't have to special-
     case JSON-RPC error envelopes for what is a normal "no answer".
+
+    Honors ``params.profile`` so app-global remote mode lists from the
+    focused profile's ``state.db`` (mirrors ``session.resume``).
     """
-    db = _get_db()
-    if db is None:
-        return _ok(rid, {"session_id": None})
-    try:
-        deny = frozenset({"tool"})
-        # Over-fetch by a generous bounded amount so heavy sub-agent
-        # users (lots of recent ``tool`` rows) don't get a false
-        # "no eligible session" answer.  ``session.list`` uses a
-        # similar over-fetch strategy.
-        rows = db.list_sessions_rich(source=None, limit=200, order_by_last_active=True, compact_rows=True)
-        for row in rows:
-            src = (row.get("source") or "").strip().lower()
-            if src in deny:
-                continue
-            return _ok(
-                rid,
-                {
-                    "session_id": row.get("id"),
-                    "title": row.get("title") or "",
-                    "started_at": row.get("started_at") or 0,
-                    "source": row.get("source") or "",
-                },
+    with _profile_db(params) as db:
+        if db is None:
+            return _ok(rid, {"session_id": None})
+        try:
+            deny = frozenset({"tool"})
+            # Over-fetch by a generous bounded amount so heavy sub-agent
+            # users (lots of recent ``tool`` rows) don't get a false
+            # "no eligible session" answer.  ``session.list`` uses a
+            # similar over-fetch strategy.
+            rows = db.list_sessions_rich(
+                source=None, limit=200, order_by_last_active=True, compact_rows=True
             )
-        return _ok(rid, {"session_id": None})
-    except Exception:
-        logger.exception("session.most_recent failed")
-        return _ok(rid, {"session_id": None})
+            for row in rows:
+                src = (row.get("source") or "").strip().lower()
+                if src in deny:
+                    continue
+                return _ok(
+                    rid,
+                    {
+                        "session_id": row.get("id"),
+                        "title": row.get("title") or "",
+                        "started_at": row.get("started_at") or 0,
+                        "source": row.get("source") or "",
+                    },
+                )
+            return _ok(rid, {"session_id": None})
+        except Exception:
+            logger.exception("session.most_recent failed")
+            return _ok(rid, {"session_id": None})
 
 
 @method("project.facts")
@@ -6439,7 +6541,13 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"verification": {"status": "unknown", "evidence": None}})
 
 
-def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "") -> dict:
+def _lazy_resume_info(
+    cwd: str,
+    *,
+    model: str = "",
+    provider: str = "",
+    profile: str | None = None,
+) -> dict:
     """session.info for a not-yet-built session (the shape session.create
     returns). tools/skills land later when the deferred build emits session.info."""
     info = {
@@ -6451,7 +6559,7 @@ def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "") -> dict:
         "skills": {},
         "lazy": True,
         "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-        "profile_name": _current_profile_name(),
+        "profile_name": _response_profile_name(profile),
     }
     if provider:
         info["provider"] = provider
@@ -6703,7 +6811,7 @@ def _(rid, params: dict) -> dict:
                 "resumed": target,
                 "message_count": len(messages),
                 "messages": messages,
-                "info": _lazy_resume_info(cwd),
+                "info": _lazy_resume_info(cwd, profile=profile),
                 "inflight": None,
                 "running": child_running,
                 "session_key": target,
@@ -6790,6 +6898,7 @@ def _(rid, params: dict) -> dict:
                     cwd,
                     model=model_override.get("model") or "",
                     provider=overrides.get("provider_override") or "",
+                    profile=profile,
                 ),
                 "inflight": None,
                 "running": False,
@@ -6990,12 +7099,12 @@ def _message_preview(history: list) -> str:
 
 def _session_live_title(session: dict, key: str) -> str:
     title = str(session.get("pending_title") or "").strip()
-    db = _get_db()
-    if db is not None:
-        try:
-            title = str(db.get_session_title(key) or title or "").strip()
-        except Exception:
-            pass
+    try:
+        with _session_db(session) as db:
+            if db is not None:
+                title = str(db.get_session_title(key) or title or "").strip()
+    except Exception:
+        pass
     return title
 
 
@@ -7247,13 +7356,13 @@ def _(rid, params: dict) -> dict:
     still being written to and removing them out from under the live
     agent corrupts message ordering and trips FK constraints when the
     next message append flushes.
+
+    Honors ``params.profile`` so app-global remote mode deletes from the
+    focused profile's ``state.db`` + sessions dir (mirrors ``session.resume``).
     """
     target = params.get("session_id", "")
     if not target:
         return _err(rid, 4006, "session_id required")
-    db = _get_db()
-    if db is None:
-        return _db_unavailable_error(rid, code=5036)
     # Block deletion of any session currently bound to a live TUI session
     # in this process.  The picker hides the active session anyway, but a
     # racing caller could still target it.  Snapshot via ``list(...)``
@@ -7269,14 +7378,22 @@ def _(rid, params: dict) -> dict:
     active = {s.get("session_key") for s in snapshot if s.get("session_key")}
     if target in active:
         return _err(rid, 4023, "cannot delete an active session")
-    sessions_dir = get_hermes_home() / "sessions"
-    try:
-        deleted = db.delete_session(target, sessions_dir=sessions_dir)
-    except Exception as e:
-        return _err(rid, 5036, f"delete failed: {e}")
-    if not deleted:
-        return _err(rid, 4007, "session not found")
-    return _ok(rid, {"deleted": target})
+    profile = (params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+    with _profile_db(params) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5036)
+        if profile_home is not None:
+            sessions_dir = Path(profile_home) / "sessions"
+        else:
+            sessions_dir = get_hermes_home() / "sessions"
+        try:
+            deleted = db.delete_session(target, sessions_dir=sessions_dir)
+        except Exception as e:
+            return _err(rid, 5036, f"delete failed: {e}")
+        if not deleted:
+            return _err(rid, 4007, "session not found")
+        return _ok(rid, {"deleted": target})
 
 
 @method("session.title")
@@ -7284,83 +7401,84 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    db = _get_db()
-    if db is None:
-        return _db_unavailable_error(rid, code=5007)
-    key = session["session_key"]
-    if "title" not in params:
-        fallback = session.get("pending_title") or ""
-        try:
-            resolved_title = db.get_session_title(key) or ""
-            if fallback:
-                if db.set_session_title(key, fallback):
-                    session["pending_title"] = None
-                    resolved_title = fallback
-                else:
-                    existing_row = db.get_session(key)
-                    existing_title = ((existing_row or {}).get("title") or "").strip()
-                    if existing_title == fallback:
+    with _session_db(session) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5007)
+        key = session["session_key"]
+        if "title" not in params:
+            fallback = session.get("pending_title") or ""
+            try:
+                resolved_title = db.get_session_title(key) or ""
+                if fallback:
+                    if db.set_session_title(key, fallback):
                         session["pending_title"] = None
                         resolved_title = fallback
-                    elif not resolved_title:
-                        resolved_title = fallback
-            elif resolved_title:
-                session["pending_title"] = None
-        except Exception:
-            resolved_title = fallback
-        _emit_session_info_for_session(params.get("session_id", ""), session)
-        return _ok(
-            rid,
-            {
-                "title": resolved_title,
-                "session_key": key,
-            },
-        )
-    title = (params.get("title", "") or "").strip()
-    if not title:
-        return _err(rid, 4021, "title required")
-    try:
-        if db.set_session_title(key, title):
-            session["pending_title"] = None
-            _emit_session_info_for_session(params.get("session_id", ""), session)
-            return _ok(rid, {"pending": False, "title": title})
-        # rowcount == 0 can mean "same value" as well as "missing row".
-        existing_row = db.get_session(key)
-        if existing_row:
-            session["pending_title"] = None
+                    else:
+                        existing_row = db.get_session(key)
+                        existing_title = ((existing_row or {}).get("title") or "").strip()
+                        if existing_title == fallback:
+                            session["pending_title"] = None
+                            resolved_title = fallback
+                        elif not resolved_title:
+                            resolved_title = fallback
+                elif resolved_title:
+                    session["pending_title"] = None
+            except Exception:
+                resolved_title = fallback
             _emit_session_info_for_session(params.get("session_id", ""), session)
             return _ok(
                 rid,
                 {
-                    "pending": False,
-                    "title": (existing_row.get("title") or title),
+                    "title": resolved_title,
+                    "session_key": key,
                 },
             )
-        # No row yet (the DB write is deferred to the first prompt so empty
-        # drafts don't litter the sidebar). An explicit /title is clear user
-        # intent, not an abandoned draft — so persist the row NOW and set the
-        # title, mirroring the messaging gateway's _handle_title_command. The
-        # old behavior only queued pending_title and relied on the post-turn
-        # apply block; if that turn never landed under this session_key the
-        # title was silently lost and the sidebar fell back to the message
-        # preview. Creating the row up front removes that race entirely. The
-        # min-messages sidebar filter keeps a titled 0-message row hidden, so
-        # a /title'd-but-never-used draft still doesn't clutter the list.
-        _ensure_session_db_row(session)
-        with _session_db(session) as scoped_db:
-            if scoped_db is not None and scoped_db.set_session_title(key, title):
+        title = (params.get("title", "") or "").strip()
+        if not title:
+            return _err(rid, 4021, "title required")
+        try:
+            if db.set_session_title(key, title):
                 session["pending_title"] = None
                 _emit_session_info_for_session(params.get("session_id", ""), session)
                 return _ok(rid, {"pending": False, "title": title})
-        # Row creation didn't take (DB unavailable, or a concurrent writer) —
-        # fall back to queuing so the post-turn apply block can still recover.
-        session["pending_title"] = title
-        _emit_session_info_for_session(params.get("session_id", ""), session)
-        return _ok(rid, {"pending": True, "title": title})
-    except ValueError as e:
-        return _err(rid, 4022, str(e))
-    except Exception as e:
-        return _err(rid, 5007, str(e))
+            # rowcount == 0 can mean "same value" as well as "missing row".
+            existing_row = db.get_session(key)
+            if existing_row:
+                session["pending_title"] = None
+                _emit_session_info_for_session(params.get("session_id", ""), session)
+                return _ok(
+                    rid,
+                    {
+                        "pending": False,
+                        "title": (existing_row.get("title") or title),
+                    },
+                )
+            # No row yet (the DB write is deferred to the first prompt so empty
+            # drafts don't litter the sidebar). An explicit /title is clear user
+            # intent, not an abandoned draft — so persist the row NOW and set the
+            # title, mirroring the messaging gateway's _handle_title_command. The
+            # old behavior only queued pending_title and relied on the post-turn
+            # apply block; if that turn never landed under this session_key the
+            # title was silently lost and the sidebar fell back to the message
+            # preview. Creating the row up front removes that race entirely. The
+            # min-messages sidebar filter keeps a titled 0-message row hidden, so
+            # a /title'd-but-never-used draft still doesn't clutter the list.
+            _ensure_session_db_row(session)
+            with _session_db(session) as scoped_db:
+                if scoped_db is not None and scoped_db.set_session_title(key, title):
+                    session["pending_title"] = None
+                    _emit_session_info_for_session(params.get("session_id", ""), session)
+                    return _ok(rid, {"pending": False, "title": title})
+            # Row creation didn't take (DB unavailable, or a concurrent writer) —
+            # fall back to queuing so the post-turn apply block can still recover.
+            session["pending_title"] = title
+            _emit_session_info_for_session(params.get("session_id", ""), session)
+            return _ok(rid, {"pending": True, "title": title})
+        except ValueError as e:
+            return _err(rid, 4022, str(e))
+        except Exception as e:
+            return _err(rid, 5007, str(e))
+
 
 
 def _main_runtime_from_agent(agent) -> dict | None:
@@ -9169,12 +9287,27 @@ def _(rid, params: dict) -> dict:
     key = session.get("session_key") or params.get("session_id") or ""
     agent = session.get("agent")
     meta = {}
-    db = _get_db()
-    if db and key:
-        try:
-            meta = db.get_session(key) or {}
-        except Exception:
-            meta = {}
+    # Prefer the live session's bound profile db, else params.profile, else launch.
+    status_params = dict(params or {})
+    if not status_params.get("profile") and session.get("profile_home"):
+        # profile_home is a path; still allow _session_db via a synthetic session
+        pass
+    with _session_db(session) as db:
+        if db is None:
+            # Fall back to ~params.profile naming for not-yet-mapped sessions.
+            with _profile_db(params) as db2:
+                db = db2
+                if db and key:
+                    try:
+                        meta = db.get_session(key) or {}
+                    except Exception:
+                        meta = {}
+                db = None  # prevent double-use
+        if db is not None and key:
+            try:
+                meta = db.get_session(key) or {}
+            except Exception:
+                meta = {}
 
     def _dt(value, fallback: datetime | None = None) -> datetime:
         if value:
@@ -9225,14 +9358,15 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     history = list(session.get("history", []))
-    db = _get_db()
-    if db is not None and session.get("session_key"):
-        try:
-            history = db.get_messages_as_conversation(
-                session["session_key"], include_ancestors=True
-            )
-        except Exception:
-            pass
+    if session.get("session_key"):
+        with _session_db(session) as db:
+            if db is not None:
+                try:
+                    history = db.get_messages_as_conversation(
+                        session["session_key"], include_ancestors=True
+                    )
+                except Exception:
+                    pass
     return _ok(
         rid,
         {
@@ -9531,58 +9665,62 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
-    db = _get_db()
-    if db is None:
-        return _db_unavailable_error(rid, code=5008)
-    old_key = session["session_key"]
-    with session["history_lock"]:
-        history = [dict(msg) for msg in session.get("history", [])]
-    if not history:
-        return _err(rid, 4008, "nothing to branch — send a message first")
-    new_key = _new_session_key()
-    new_sid = uuid.uuid4().hex[:8]
-    source = _session_source(session)
-    lease, limit_message = _claim_active_session_slot(
-        new_key, live_session_id=new_sid, surface=source
-    )
-    if limit_message is not None:
-        return _err(rid, 4090, limit_message)
-    branch_name = params.get("name", "")
-    try:
-        if branch_name:
-            title = branch_name
-        else:
-            current = db.get_session_title(old_key) or "branch"
-            title = (
-                db.get_next_title_in_lineage(current)
-                if hasattr(db, "get_next_title_in_lineage")
-                else f"{current} (branch)"
-            )
-        db.create_session(
-            new_key,
-            source=source,
-            model=_resolve_model(),
-            # Stable _branched_from marker so list_sessions_rich() keeps the
-            # branch visible in /resume and /sessions. The TUI branch leaves
-            # the parent live (no end_reason='branched'), so the legacy
-            # end_reason heuristic never matches it — the marker is the only
-            # thing that surfaces TUI branches. See issue #20856.
-            model_config={"_branched_from": old_key},
-            parent_session_id=old_key,
-            cwd=_session_cwd(session),
+    # Branch must write into the parent's profile-scoped state.db (app-global
+    # remote mode). Using the launch handle would orphan branch rows + history.
+    with _session_db(session) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5008)
+        old_key = session["session_key"]
+        with session["history_lock"]:
+            history = [dict(msg) for msg in session.get("history", [])]
+        if not history:
+            return _err(rid, 4008, "nothing to branch — send a message first")
+        new_key = _new_session_key()
+        new_sid = uuid.uuid4().hex[:8]
+        source = _session_source(session)
+        lease, limit_message = _claim_active_session_slot(
+            new_key, live_session_id=new_sid, surface=source
         )
-        for msg in history:
-            db.append_message(
-                session_id=new_key,
-                role=msg.get("role", "user"),
-                content=msg.get("content"),
-                timestamp=msg.get("timestamp"),
+        if limit_message is not None:
+            return _err(rid, 4090, limit_message)
+        branch_name = params.get("name", "")
+        try:
+            if branch_name:
+                title = branch_name
+            else:
+                current = db.get_session_title(old_key) or "branch"
+                title = (
+                    db.get_next_title_in_lineage(current)
+                    if hasattr(db, "get_next_title_in_lineage")
+                    else f"{current} (branch)"
+                )
+            db.create_session(
+                new_key,
+                source=source,
+                model=_resolve_model(),
+                # Stable _branched_from marker so list_sessions_rich() keeps the
+                # branch visible in /resume and /sessions. The TUI branch leaves
+                # the parent live (no end_reason='branched'), so the legacy
+                # end_reason heuristic never matches it — the marker is the only
+                # thing that surfaces TUI branches. See issue #20856.
+                model_config={"_branched_from": old_key},
+                parent_session_id=old_key,
+                cwd=_session_cwd(session),
             )
-        db.set_session_title(new_key, title)
-    except Exception as e:
-        if lease is not None:
-            lease.release()
-        return _err(rid, 5008, f"branch failed: {e}")
+            for msg in history:
+                db.append_message(
+                    session_id=new_key,
+                    role=msg.get("role", "user"),
+                    content=msg.get("content"),
+                    # Preserve the parent's original message timestamps —
+                    # branch copies are history, not new activity (9d73006ad).
+                    timestamp=msg.get("timestamp"),
+                )
+            db.set_session_title(new_key, title)
+        except Exception as e:
+            if lease is not None:
+                lease.release()
+            return _err(rid, 5008, f"branch failed: {e}")
     try:
         tokens = _set_session_context(new_key)
         try:
@@ -9594,13 +9732,16 @@ def _(rid, params: dict) -> dict:
             )
         finally:
             _clear_session_context(tokens)
+        parent_home = session.get("profile_home")
         _init_session(
             new_sid,
             new_key,
             agent,
             list(history),
             cols=session.get("cols", 80),
+            cwd=_session_cwd(session),
             source=source,
+            profile_home=parent_home,
         )
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = lease
@@ -10984,26 +11125,26 @@ def _run_prompt_submit(
                         file=sys.stderr,
                     )
 
-            # Apply pending_title now that the DB row exists.
+            # Apply pending_title now that the DB row exists — in the
+            # session-owned profile store (not the launch profile).
             _pending = session.get("pending_title")
             if _pending and status == "complete":
-                _pdb = _get_db()
-                if _pdb:
-                    _session_key = session.get("session_key") or sid
-                    try:
-                        if _pdb.set_session_title(_session_key, _pending):
+                _session_key = session.get("session_key") or sid
+                try:
+                    with _session_db(session) as _pdb:
+                        if _pdb and _pdb.set_session_title(_session_key, _pending):
                             session["pending_title"] = None
-                    except ValueError as exc:
-                        # Invalid/duplicate title — non-retryable, drop it.
-                        # Auto-title will take over. Fix for #19029.
-                        session["pending_title"] = None
-                        logger.info(
-                            "Dropping pending title for session %s: %s",
-                            _session_key, exc,
-                        )
-                    except Exception:
-                        # Transient DB failure — keep pending_title for retry.
-                        pass
+                except ValueError as exc:
+                    # Invalid/duplicate title — non-retryable, drop it.
+                    # Auto-title will take over. Fix for #19029.
+                    session["pending_title"] = None
+                    logger.info(
+                        "Dropping pending title for session %s: %s",
+                        _session_key, exc,
+                    )
+                except Exception:
+                    # Transient DB failure — keep pending_title for retry.
+                    pass
 
             if (
                 status == "complete"

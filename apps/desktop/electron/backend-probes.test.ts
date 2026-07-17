@@ -41,7 +41,7 @@ test('canImportHermesCli returns false when binary does not exist', () => {
   assert.equal(canImportHermesCli(ghost), false)
 })
 
-test('hermes runtime import probe checks config dependencies', () => {
+test('hermes runtime import probe checks dashboard startup dependencies', () => {
   const probe = hermesRuntimeImportProbe()
   assert.match(probe, /\bimport yaml\b/)
   // dotenv is the first third-party import on the CLI boot path
@@ -49,6 +49,8 @@ test('hermes runtime import probe checks config dependencies', () => {
   // passed the old probe and produced an unrecoverable boot loop.
   assert.match(probe, /\bimport dotenv\b/)
   assert.match(probe, /\bimport hermes_cli\.config\b/)
+  assert.match(probe, /\bimport fastapi\b/)
+  assert.match(probe, /\bimport hermes_cli\.web_server\b/)
 })
 
 test('verifyHermesCli returns false when command is falsy', () => {

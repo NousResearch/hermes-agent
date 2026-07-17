@@ -8628,7 +8628,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if active_agents:
                 self._increment_restart_failure_counts(set(active_agents.keys()))
 
-            if self._restart_requested and self._restart_command_source is None:
+            # Write the planned-restart marker on ANY graceful shutdown, not
+            # only a requested restart. The shutdown path already warns active
+            # chats and the home channel on the way down ("Gateway shutting
+            # down"); symmetry means the home-channel "Gateway online" notice
+            # should also fire when the process comes back from a plain
+            # SIGTERM (systemctl restart, launchctl kickstart -k, host reboot,
+            # deploy bounce), not only from /restart or SIGUSR1. A
+            # chat-originated /restart keeps its precise reply lifecycle via
+            # .restart_notify.json (the command_source guard below). Unclean
+            # kills (SIGKILL, crash) never reach this writer, so a crash-boot
+            # stays silent as before. Per-platform opt-out already exists
+            # (gateway_restart_notification: false).
+            if self._restart_command_source is None:
                 try:
                     atomic_json_write(
                         _planned_restart_notification_path(),

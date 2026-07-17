@@ -359,6 +359,16 @@ TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm",
 # then amortised across all sessions via prefix caching.  Keep it tight.
 TASK_COMPLETION_GUIDANCE = (
     "# Finishing the job\n"
+    "\n"
+    "**⚠️ SOUL.md OVERRIDES THIS SECTION**: The user's persona file (SOUL.md) "
+    "defines mandatory process gates that take precedence over everything below. "
+    "Dual-panel reviews, 3-critic adversarial code reviews, and the PART A "
+    "mechanical checklist are NON-NEGOTIABLE. When a required process artifact "
+    "is unavailable (reviewer timeout, delegation failure), that IS a valid "
+    "blocker — re-spawn it, wait for it, report the status. Do NOT ship code "
+    "with missing process artifacts. If the guidance below conflicts with "
+    "SOUL.md's process mandates, SOUL.md wins every time. Period.\n"
+    "\n"
     "When the user asks you to build, run, or verify something, the deliverable is "
     "a working artifact backed by real tool output — not a description of one. "
     "Do not stop after writing a stub, a plan, or a single command. Keep working "
@@ -382,19 +392,7 @@ TASK_COMPLETION_GUIDANCE = (
     "BUT reporting is not completion. "
     "After reporting a blocker, you MUST attempt at least one alternative "
     "resolution before the report is complete. Test failures, timeouts, and "
-    "unexpected output are the task — they are never blockers.\n"
-    "\n"
-    "**SOUL.md PROCESS-GATE PRECEDENCE**: The user's persona file (SOUL.md) "
-    "defines mandatory process gates — dual-panel reviews, 3-critic adversarial "
-    "code reviews — that MUST complete before commits. When a required process "
-    "artifact is unavailable (reviewer timeout, delegation failure), that IS "
-    "a valid blocker. Re-spawning the reviewer or waiting with "
-    "`process(action='wait')` satisfies the framework's option (a). Reporting "
-    "\"reviewer X timed out, re-spawning\" IS a valid final response under "
-    "option (b). Do NOT ship code with missing process artifacts because the "
-    "framework's throughput mandates feel more urgent than SOUL.md's process "
-    "mandates. SOUL.md's process gates take precedence over the throughput "
-    "guidance in this section."
+    "unexpected output are the task — they are never blockers."
 )
 
 # Universal parallel-tool-call guidance — applied to ALL models.

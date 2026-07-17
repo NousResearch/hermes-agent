@@ -178,6 +178,11 @@
   overflow-x: auto;
 }
 
+.hdk-table-wrap:focus-visible {
+  outline: 2px solid var(--hdk-primary);
+  outline-offset: 2px;
+}
+
 .hdk-table th,
 .hdk-table td {
   border-bottom: 1px solid var(--hdk-border);
@@ -187,9 +192,10 @@
 }
 
 .hdk-table th {
-  background: var(--hdk-card-muted);
-  color: var(--hdk-muted);
+  background: #f6f9fb;
+  color: var(--hdk-text);
   font-size: 11px;
+  font-weight: 800;
   text-transform: uppercase;
 }
 

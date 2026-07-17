@@ -64,6 +64,39 @@ const checks = [
   },
 ];
 
+const evidenceByCheck = {
+  "metric-primitives": [
+    "metric",
+    "Metric",
+    "kpi",
+    "KPI",
+    "summary",
+    "total",
+    "count",
+    "hdk-metric-grid",
+  ],
+  "table-primitives": [
+    "<table",
+    "table",
+    "Table",
+    "table-row",
+    "simpleTable",
+    "data-table",
+    "DataTable",
+    "hdk-table",
+  ],
+  "empty-state-primitives": [
+    "empty",
+    "Empty",
+    "loading",
+    "Loading",
+    "error",
+    "Error",
+    "unavailable",
+    "hdk-empty",
+  ],
+};
+
 function readFile(relativePath) {
   const absolutePath = path.resolve(root, relativePath);
   if (!fs.existsSync(absolutePath)) {
@@ -83,6 +116,12 @@ function lineFor(text, index) {
 
 function applies(check, kind) {
   return check.appliesTo.includes(kind);
+}
+
+function hasEvidenceForCheck(file, check) {
+  const evidence = evidenceByCheck[check.id];
+  if (!evidence) return true;
+  return evidence.some((needle) => file.text.includes(needle));
 }
 
 function runRequiredCheck(file, check) {
@@ -125,7 +164,7 @@ function auditFile(file, kind) {
     }];
   }
   return checks
-    .filter((check) => applies(check, kind))
+    .filter((check) => applies(check, kind) && hasEvidenceForCheck(file, check))
     .flatMap((check) => [
       ...runRequiredCheck(file, check),
       ...runForbiddenCheck(file, check),

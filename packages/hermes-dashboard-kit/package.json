@@ -9,8 +9,15 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./static/hermes-dashboard-kit.css": "./static/hermes-dashboard-kit.css"
   },
+  "files": [
+    "dist",
+    "static",
+    "README.md",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -20,7 +27,9 @@
     "react": "^19.2.4"
   },
   "dependencies": {
+    "@tanstack/react-table": "^8.21.3",
     "clsx": "^2.1.1",
+    "recharts": "^3.9.2",
     "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {

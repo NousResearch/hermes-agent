@@ -8,9 +8,13 @@ export function CommandBar({ title = "Command Center", description, actions, cla
 export function ActionButtonGroup({ actions }) {
     return (_jsx("div", { className: "flex flex-wrap gap-2", children: actions.map((action) => {
             const Icon = action.icon;
-            return (_jsxs("button", { className: cn("inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium transition", action.tone === "critical"
-                    ? "border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/15"
-                    : "border-border bg-background text-foreground hover:bg-muted", action.disabled && "cursor-not-allowed opacity-50"), disabled: action.disabled, onClick: action.onClick, title: action.description ?? action.label, type: "button", children: [Icon ? _jsx(Icon, { className: "h-4 w-4" }) : null, action.label] }, action.id));
+            const isHighRisk = action.riskLevel === "high" || action.requiresConfirmation || action.tone === "critical";
+            const title = action.disabledReason ?? action.description ?? action.label;
+            return (_jsxs("div", { className: "inline-flex flex-col gap-1", children: [_jsxs("button", { "aria-describedby": action.disabledReason ? `${action.id}-reason` : undefined, className: cn("inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium transition", action.tone === "critical"
+                            ? "border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/15"
+                            : action.tone === "warning" || action.riskLevel === "medium"
+                                ? "border-warning/30 bg-warning/10 text-warning hover:bg-warning/15"
+                                : "border-border bg-background text-foreground hover:bg-muted", action.disabled && "cursor-not-allowed opacity-50"), disabled: action.disabled, onClick: action.onClick, title: title, type: "button", children: [Icon ? _jsx(Icon, { className: "h-4 w-4" }) : null, action.label, action.permission ? _jsx("span", { className: "rounded-sm bg-muted px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground", children: action.permission }) : null, isHighRisk ? _jsx(ShieldAlert, { className: "h-3.5 w-3.5", "aria-label": "high risk action" }) : null] }), action.disabledReason ? (_jsx("span", { id: `${action.id}-reason`, className: "max-w-44 text-xs text-muted-foreground", children: action.disabledReason })) : null] }, action.id));
         }) }));
 }
 export function ActivityTimeline({ events, empty = "No activity yet.", }) {

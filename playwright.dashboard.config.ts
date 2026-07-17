@@ -17,6 +17,9 @@ export default defineConfig({
   },
   webServer: {
     command: "npm run dev --workspace web -- --host 127.0.0.1",
+    env: {
+      HERMES_SKIP_DEV_BACKEND_CHECK: "1",
+    },
     url: "http://127.0.0.1:5173",
     reuseExistingServer: true,
     timeout: 120_000,

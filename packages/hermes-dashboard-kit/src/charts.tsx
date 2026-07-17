@@ -1,4 +1,15 @@
 import { Fragment, type ReactNode } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { cn } from "./utils";
 import { DashboardEmptyState } from "./states";
 import { StatusPill, type DashboardTone } from "./metrics";
@@ -40,48 +51,65 @@ export function SimpleBarChart({
   valueLabel?: string;
 }) {
   if (!data.length) return <DashboardEmptyState title="No chart data" description="No series values are available." />;
-  const max = Math.max(...data.map((item) => item.value), 1);
   return (
-    <div className="space-y-3">
-      {data.map((item) => (
-        <div key={item.label} className="grid grid-cols-[minmax(5rem,10rem)_minmax(0,1fr)_4rem] items-center gap-3 text-sm">
-          <div className="truncate text-muted-foreground">{item.label}</div>
-          <div className="h-3 overflow-hidden rounded-full bg-muted">
-            <div
-              aria-label={`${item.label} ${valueLabel}: ${item.value}`}
-              className="h-full rounded-full bg-primary"
-              style={{ width: `${Math.max(2, (item.value / max) * 100)}%` }}
-            />
-          </div>
-          <div className="text-right font-mono-ui text-xs text-foreground">{item.value}</div>
-        </div>
-      ))}
+    <div className="h-56 min-w-0 rounded-md border border-border bg-background p-3" role="img" aria-label={`bar chart by ${valueLabel}`}>
+      <ResponsiveContainer height="100%" width="100%">
+        <BarChart data={data} margin={{ bottom: 0, left: -18, right: 8, top: 8 }}>
+          <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" vertical={false} />
+          <XAxis dataKey="label" fontSize={12} stroke="hsl(var(--muted-foreground))" tickLine={false} />
+          <YAxis fontSize={12} stroke="hsl(var(--muted-foreground))" tickLine={false} />
+          <Tooltip
+            contentStyle={{
+              background: "hsl(var(--card))",
+              border: "1px solid hsl(var(--border))",
+              borderRadius: "8px",
+              color: "hsl(var(--foreground))",
+            }}
+            labelStyle={{ color: "hsl(var(--foreground))" }}
+          />
+          <Bar dataKey="value" fill="hsl(var(--primary))" name={valueLabel} radius={[6, 6, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
     </div>
   );
 }
 
 export function SimpleLineChart({
   data,
-  height = 140,
+  height = 180,
 }: {
   data: { label: string; value: number }[];
   height?: number;
 }) {
   if (data.length < 2) return <DashboardEmptyState title="Not enough data" description="At least two points are required." />;
-  const width = 640;
-  const min = Math.min(...data.map((item) => item.value));
-  const max = Math.max(...data.map((item) => item.value));
-  const span = max - min || 1;
-  const points = data.map((item, index) => {
-    const x = (index / (data.length - 1)) * width;
-    const y = height - ((item.value - min) / span) * (height - 12) - 6;
-    return `${x},${y}`;
-  }).join(" ");
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-background p-3">
-      <svg aria-label="line chart" className="h-auto w-full" viewBox={`0 0 ${width} ${height}`} role="img">
-        <polyline fill="none" points={points} stroke="hsl(var(--primary))" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" />
-      </svg>
+    <div className="min-w-0 rounded-md border border-border bg-background p-3" style={{ height }} role="img" aria-label="line chart">
+      <ResponsiveContainer height="100%" width="100%">
+        <LineChart data={data} margin={{ bottom: 0, left: -18, right: 8, top: 8 }}>
+          <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" vertical={false} />
+          <XAxis dataKey="label" fontSize={12} stroke="hsl(var(--muted-foreground))" tickLine={false} />
+          <YAxis fontSize={12} stroke="hsl(var(--muted-foreground))" tickLine={false} />
+          <Tooltip
+            contentStyle={{
+              background: "hsl(var(--card))",
+              border: "1px solid hsl(var(--border))",
+              borderRadius: "8px",
+              color: "hsl(var(--foreground))",
+            }}
+            labelStyle={{ color: "hsl(var(--foreground))" }}
+          />
+          <Line
+            activeDot={{ r: 5 }}
+            dataKey="value"
+            dot={{ r: 3 }}
+            stroke="hsl(var(--primary))"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={3}
+            type="monotone"
+          />
+        </LineChart>
+      </ResponsiveContainer>
     </div>
   );
 }

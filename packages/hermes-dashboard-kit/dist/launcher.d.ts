@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { type ReactNode } from "react";
+export type DashboardHealthStatus = "current" | "online" | "offline" | "stale" | "checking" | "unknown" | "missing";
 export interface DashboardRegistryEntry {
     id: string;
     label: string;
@@ -7,22 +8,33 @@ export interface DashboardRegistryEntry {
     localUrl?: string;
     productionUrl?: string;
     healthUrl?: string;
-    status?: "current" | "online" | "offline" | "unknown" | "missing";
+    status?: DashboardHealthStatus;
     category?: string;
     owner?: string;
 }
-export declare function DashboardLauncher({ dashboards, currentId, title, empty, className, }: {
+export interface DashboardHealthState {
+    status: DashboardHealthStatus;
+    checkedAt?: string;
+    message?: string;
+}
+export declare function useDashboardHealth(dashboards: DashboardRegistryEntry[], { enabled, intervalMs, }?: {
+    enabled?: boolean;
+    intervalMs?: number;
+}): Record<string, DashboardHealthState>;
+export declare function DashboardLauncher({ dashboards, currentId, title, empty, className, pollHealth, healthPollIntervalMs, }: {
     dashboards: DashboardRegistryEntry[];
     currentId?: string;
     title?: string;
     empty?: ReactNode;
     className?: string;
+    pollHealth?: boolean;
+    healthPollIntervalMs?: number;
 }): import("react/jsx-runtime").JSX.Element;
 export declare function ProjectSwitcher({ projects, currentId, onChange, label, }: {
     projects: {
         id: string;
         label: string;
-        status?: DashboardRegistryEntry["status"];
+        status?: DashboardHealthStatus;
     }[];
     currentId?: string;
     onChange?: (id: string) => void;

@@ -54,7 +54,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@hermes/shared": "file:../shared",
-    "@icons-pack/react-simple-icons": "^13.13.0",
+    "@icons-pack/react-simple-icons": "12.9.0",
     "@nanostores/react": "^1.1.0",
     "@nous-research/ui": "^0.13.0",
     "@radix-ui/react-slot": "^1.2.4",
@@ -128,7 +128,7 @@
     "prettier": "^3.8.3",
     "rcedit": "^5.0.2",
     "typescript": "^6.0.3",
-    "vite": "^8.0.10",
+    "vite": "^8.1.5",
     "vitest": "^4.1.5",
     "wait-on": "^9.0.5"
   },

@@ -1,34 +1,44 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import { useMemo, useState } from "react";
+import { flexRender, getCoreRowModel, getSortedRowModel, useReactTable, } from "@tanstack/react-table";
 import { ChevronDown, ChevronUp, Search } from "lucide-react";
 import { cn } from "./utils";
 import { DashboardEmptyState, DashboardErrorState, DashboardLoadingState } from "./states";
 export function DataTable({ rows, columns, getRowKey, loading = false, error, emptyTitle, emptyDescription, onRowClick, className, }) {
-    const [sort, setSort] = useState(null);
-    const sortedRows = useMemo(() => {
-        if (!sort)
-            return rows;
-        const column = columns.find((col) => col.id === sort.id);
-        if (!column?.sortValue)
-            return rows;
-        return [...rows].sort((a, b) => {
-            const av = column.sortValue?.(a);
-            const bv = column.sortValue?.(b);
-            const result = String(av ?? "").localeCompare(String(bv ?? ""), undefined, { numeric: true });
-            return sort.dir === "asc" ? result : -result;
-        });
-    }, [columns, rows, sort]);
+    const [sorting, setSorting] = useState([]);
+    const sourceColumns = useMemo(() => new Map(columns.map((column) => [column.id, column])), [columns]);
+    const tableColumns = useMemo(() => columns.map((column) => ({
+        id: column.id,
+        accessorFn: column.sortValue ? (row) => column.sortValue?.(row) ?? "" : () => "",
+        cell: (info) => column.accessor ? column.accessor(info.row.original) : String(info.getValue() ?? ""),
+        enableSorting: Boolean(column.sortValue),
+        header: () => column.header,
+        sortingFn: "alphanumeric",
+    })), [columns]);
+    const table = useReactTable({
+        columns: tableColumns,
+        data: rows,
+        getCoreRowModel: getCoreRowModel(),
+        getRowId: (row, index) => getRowKey(row, index),
+        getSortedRowModel: getSortedRowModel(),
+        onSortingChange: setSorting,
+        state: { sorting },
+    });
     if (loading)
         return _jsx(DashboardLoadingState, { label: "Loading table" });
     if (error)
         return _jsx(DashboardErrorState, { message: error });
     if (!rows.length)
         return _jsx(DashboardEmptyState, { title: emptyTitle, description: emptyDescription });
-    return (_jsx("div", { className: cn("overflow-hidden rounded-lg border border-border bg-card", className), children: _jsx("div", { className: "overflow-x-auto", children: _jsxs("table", { className: "w-full min-w-[42rem] border-collapse text-sm", children: [_jsx("thead", { className: "bg-muted/60 text-left text-xs uppercase tracking-wide text-muted-foreground", children: _jsx("tr", { children: columns.map((column) => {
-                                const active = sort?.id === column.id;
-                                const Icon = active && sort?.dir === "desc" ? ChevronDown : ChevronUp;
-                                return (_jsx("th", { className: cn("border-b border-border px-3 py-2 font-medium", column.className), children: column.sortValue ? (_jsxs("button", { className: "inline-flex items-center gap-1 text-left", onClick: () => setSort((current) => current?.id === column.id && current.dir === "asc" ? { id: column.id, dir: "desc" } : { id: column.id, dir: "asc" }), type: "button", children: [column.header, _jsx(Icon, { className: cn("h-3.5 w-3.5", active ? "opacity-100" : "opacity-30"), "aria-hidden": "true" })] })) : (column.header) }, column.id));
-                            }) }) }), _jsx("tbody", { children: sortedRows.map((row, index) => (_jsx("tr", { className: cn("border-b border-border last:border-b-0", onRowClick && "cursor-pointer hover:bg-muted/50"), onClick: () => onRowClick?.(row), children: columns.map((column) => (_jsx("td", { className: cn("px-3 py-2 align-top", column.cellClassName), children: column.accessor ? column.accessor(row) : null }, column.id))) }, getRowKey(row, index)))) })] }) }) }));
+    return (_jsx("div", { className: cn("overflow-hidden rounded-lg border border-border bg-card", className), children: _jsx("div", { className: "overflow-x-auto", children: _jsxs("table", { className: "w-full min-w-[42rem] border-collapse text-sm", children: [_jsx("thead", { className: "bg-muted/60 text-left text-xs uppercase tracking-wide text-muted-foreground", children: table.getHeaderGroups().map((headerGroup) => (_jsx("tr", { children: headerGroup.headers.map((header) => {
+                                const sourceColumn = sourceColumns.get(header.column.id);
+                                const sorted = header.column.getIsSorted();
+                                const Icon = sorted === "desc" ? ChevronDown : ChevronUp;
+                                return (_jsx("th", { className: cn("border-b border-border px-3 py-2 font-medium", sourceColumn?.className), children: header.column.getCanSort() ? (_jsxs("button", { className: "inline-flex items-center gap-1 text-left", onClick: header.column.getToggleSortingHandler(), type: "button", children: [flexRender(header.column.columnDef.header, header.getContext()), _jsx(Icon, { className: cn("h-3.5 w-3.5", sorted ? "opacity-100" : "opacity-30"), "aria-hidden": "true" })] })) : (flexRender(header.column.columnDef.header, header.getContext())) }, header.id));
+                            }) }, headerGroup.id))) }), _jsx("tbody", { children: table.getRowModel().rows.map((row) => (_jsx("tr", { className: cn("border-b border-border last:border-b-0", onRowClick && "cursor-pointer hover:bg-muted/50"), onClick: () => onRowClick?.(row.original), children: row.getVisibleCells().map((cell) => {
+                                const sourceColumn = sourceColumns.get(cell.column.id);
+                                return (_jsx("td", { className: cn("px-3 py-2 align-top", sourceColumn?.cellClassName), children: flexRender(cell.column.columnDef.cell, cell.getContext()) }, cell.id));
+                            }) }, row.id))) })] }) }) }));
 }
 export function TableToolbar({ children, className, }) {
     return _jsx("div", { className: cn("flex flex-wrap items-center justify-between gap-3", className), children: children });

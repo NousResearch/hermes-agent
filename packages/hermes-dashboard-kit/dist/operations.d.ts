@@ -9,6 +9,10 @@ export interface CommandAction {
     }>;
     tone?: DashboardTone;
     disabled?: boolean;
+    disabledReason?: string;
+    permission?: "viewer" | "operator" | "admin";
+    requiresConfirmation?: boolean;
+    riskLevel?: "low" | "medium" | "high";
     onClick?: () => void;
 }
 export declare function CommandBar({ title, description, actions, className, }: {

@@ -61,6 +61,11 @@ function validateFile(file) {
       validateUrlLike(dashboard.healthUrl, `${label}.healthUrl`);
     }
 
+    if (dashboard.snapshotUrl !== undefined) {
+      requireString(dashboard, "snapshotUrl", label);
+      validateUrlLike(dashboard.snapshotUrl, `${label}.snapshotUrl`);
+    }
+
     if (dashboard.command !== undefined) {
       if (!Array.isArray(dashboard.command)) {
         throw new Error(`${label}.command must be an array when present`);

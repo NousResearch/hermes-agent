@@ -23,8 +23,8 @@ Current usage:
 
 Remaining refinement before V5 visual QA:
 
-- Add screenshot coverage for `/hermes-os`.
-- Add route-level visual regression cases for loading, empty, and error states.
+- Screenshot coverage for `/hermes-os` exists in `tests/dashboard/design-system.spec.ts`.
+- Route-level loading and error states are represented through `DashboardLoadingState` and `DashboardErrorState`.
 
 ## Khashi VC ROC Migration Map
 
@@ -61,6 +61,9 @@ Migration acceptance:
 - The dashboard launcher shows Khashi VC, Media Engine, and Hermes Agent.
 - The Khashi dashboard keeps all current operational controls.
 - Generic object rendering is replaced with purpose-built kit surfaces for command, experiments, coverage, market data, cost, persistence, and system health.
+- `npm run dashboard:v3:validate` checks Khashi's static adapter markers.
+- `npm run dashboard:static-adapter:validate` verifies the copied Khashi static adapter CSS has not drifted from the package source.
+- `tests/dashboard/v3-static-migrations.spec.ts` smoke-tests the Khashi ROC static dashboard shell in a browser.
 
 ## Media Engine Ops Migration Map
 
@@ -96,6 +99,11 @@ Migration acceptance:
 - Media Engine clearly shows autopilot status, enabled brands, due jobs, allowed jobs, capacity, storage usage, approvals, blockers, and generation history.
 - Human-facing Discord output is separated from internal operational logs.
 - Controls remain available from dashboard and Discord.
+- `data-discord-preview` marks the Discord-facing output section separately from internal operational sections.
+- `npm run dashboard:v3:validate` checks Media Engine's static adapter markers.
+- `npm run dashboard:media-engine:generated:validate` rebuilds the generated dashboard HTML and verifies V3 adapter markers in the real generated output.
+- `npm run dashboard:static-adapter:validate` verifies the copied Media Engine static adapter CSS has not drifted from the package source.
+- `tests/dashboard/v3-static-migrations.spec.ts` smoke-tests the generated Media Engine dashboard shell in a browser.
 
 ## Registry Updates
 
@@ -106,3 +114,41 @@ The Hermes Agent dashboard registry now includes:
 - `media-engine.ops`
 
 This makes the V3 migration target visible before V4 shared-package extraction.
+
+## V3 Validation Command
+
+Run this from `projects/nous-hermes-agent`:
+
+```bash
+npm run dashboard:v3:validate
+npm run dashboard:static-adapter:validate
+npm run dashboard:media-engine:generated:validate
+npm run dashboard:health:validate
+```
+
+The validator checks:
+
+- Hermes OS uses the React dashboard-kit primitives.
+- Khashi VC ROC keeps required static adapter classes and registry markers.
+- Media Engine Ops keeps required static adapter classes, autopilot controls, Discord output separation, registry metadata, and dashboard launch command.
+- The Khashi VC and Media Engine copied static adapters match the source adapter CSS.
+- The Media Engine generated dashboard output includes the expected V3 adapter surfaces.
+- Every registered dashboard declares a health URL for launcher and production readiness.
+
+Browser-level static migration coverage lives in:
+
+```bash
+tests/dashboard/v3-static-migrations.spec.ts
+```
+
+The evidence record is in:
+
+```bash
+docs/design/v3-migration-evidence.md
+```
+
+The remaining full package-native rewrite work is tracked separately in:
+
+```bash
+docs/design/package-native-dashboard-migration-backlog.md
+```

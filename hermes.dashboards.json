@@ -29,6 +29,7 @@
       "owner": "Khashi VC",
       "url": "https://roc.tlccapitalgroup.com/",
       "healthUrl": "https://roc.tlccapitalgroup.com/readyz",
+      "snapshotUrl": "https://roc.tlccapitalgroup.com/dashboard-snapshot",
       "projectPath": "/Users/hq/Workspace/projects/khashi-vc",
       "projectName": "Khashi VC",
       "command": []
@@ -39,14 +40,96 @@
       "description": "Publishing, approval, production-run, and cross-channel operations.",
       "category": "media-operations",
       "owner": "Media Engine",
-      "url": "http://localhost:4200/dashboard",
-      "healthUrl": "http://localhost:4200/health",
+      "url": "https://media.tlccapitalgroup.com/dashboard",
+      "healthUrl": "https://media.tlccapitalgroup.com/health",
+      "snapshotUrl": "https://media.tlccapitalgroup.com/dashboard-snapshot",
       "projectPath": "/Users/hq/Workspace/projects/media-engine",
       "projectName": "Media Engine",
       "command": [
         "npm",
         "run",
         "ops:dashboard:server"
+      ]
+    },
+    {
+      "id": "media-business-operations.main",
+      "label": "Media Business Operations",
+      "description": "Operations dashboard for media-business readiness, alerts, campaigns, and learning.",
+      "category": "media-operations",
+      "owner": "Media Business Operations",
+      "url": "https://media-business-operations.tlccapitalgroup.com/dashboard",
+      "healthUrl": "https://media-business-operations.tlccapitalgroup.com/health",
+      "projectPath": "/Users/hq/Workspace/projects/media-business-operations",
+      "projectName": "Media Business Operations",
+      "command": [
+        "npm",
+        "run",
+        "dashboard:server"
+      ]
+    },
+    {
+      "id": "business-mapper.workspace",
+      "label": "Business Mapper Workspace",
+      "description": "Client business mapping dashboard for discovery, graph validation, recommendations, roadmap, advisory updates, and deliverables.",
+      "category": "business-operations",
+      "owner": "Business Mapper",
+      "url": "https://business-mapper.tlccapitalgroup.com/dashboard",
+      "healthUrl": "https://business-mapper.tlccapitalgroup.com/health",
+      "projectPath": "/Users/hq/Workspace/projects/business-mapper",
+      "projectName": "Business Mapper",
+      "command": [
+        "python3",
+        "-m",
+        "business_mapper.web",
+        "--port",
+        "8765"
+      ]
+    },
+    {
+      "id": "meal-assistant.main",
+      "label": "Meal Assistant",
+      "description": "Household meal planning dashboard for meals, pantry, shopping lists, preferences, notifications, and Hermes exports.",
+      "category": "household-operations",
+      "owner": "Meal Assistant",
+      "url": "https://meal.tlccapitalgroup.com/",
+      "healthUrl": "https://meal.tlccapitalgroup.com/health",
+      "projectPath": "/Users/hq/Workspace/projects/Meal-assistant",
+      "projectName": "Meal Assistant",
+      "command": [
+        "npm",
+        "start"
+      ]
+    },
+    {
+      "id": "investing-system.roc",
+      "label": "Investing System ROC",
+      "description": "Research operations dashboard for portfolio, macro, market, production, and autonomous workflows.",
+      "category": "investment-operations",
+      "owner": "Investing System",
+      "url": "https://investing.tlccapitalgroup.com/roc",
+      "healthUrl": "https://investing.tlccapitalgroup.com/health",
+      "projectPath": "/Users/hq/Workspace/projects/investing-system",
+      "projectName": "Investing System",
+      "command": [
+        "npm",
+        "run",
+        "dashboard:server"
+      ]
+    },
+    {
+      "id": "hermes.workspace",
+      "label": "Hermes Workspace",
+      "description": "Workspace orchestration, project operations, and dashboard hub.",
+      "category": "control-plane",
+      "owner": "Hermes",
+      "url": "https://hermes.tlccapitalgroup.com/",
+      "healthUrl": "https://hermes.tlccapitalgroup.com/api/dashboard-summary",
+      "projectPath": "/Users/hq/Workspace/projects/hermes",
+      "projectName": "Hermes Workspace",
+      "command": [
+        "npm",
+        "run",
+        "workspace"
       ]
     }
   ]

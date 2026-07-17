@@ -244,6 +244,474 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_operating_runtime_summary_uses_sqlite_store(self):
+        resp = self.client.get("/api/operating-runtime/summary")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["evidence_count"] >= 1
+        assert data["audit_count"] >= 1
+        assert data["db_path"].endswith("operating_runtime.db")
+
+    def test_operating_runtime_evidence_round_trip(self):
+        payload = {
+            "id": "snapshot-test-project",
+            "kind": "snapshot",
+            "subject": "Test Project",
+            "state": "ready",
+            "owner": "Hermes",
+            "detail": "Test snapshot endpoint is reporting.",
+            "payload": {"source": "pytest"},
+        }
+        post = self.client.post("/api/operating-runtime/evidence", json=payload)
+        assert post.status_code == 200
+        assert post.json()["subject"] == "Test Project"
+
+        get = self.client.get("/api/operating-runtime/evidence", params={"kind": "snapshot"})
+        assert get.status_code == 200
+        assert any(row["id"] == "snapshot-test-project" for row in get.json()["evidence"])
+
+    def test_operating_runtime_readiness_blocks_high_risk_without_approval(self):
+        resp = self.client.post(
+            "/api/operating-runtime/readiness-check",
+            json={
+                "stage": "V30",
+                "action": "enable-autonomy-scheduler",
+                "actor": "Hermes operator",
+                "actor_role": "operator",
+                "explicit_approval": False,
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["decision"]["allowed"] is False
+        assert data["decision"]["approval"] == "explicit"
+        assert data["audit"]["allowed"] is False
+        assert data["evidence"]["state"] == "gated"
+
+    def test_operating_runtime_readiness_allows_admin_explicit_approval(self):
+        resp = self.client.post(
+            "/api/operating-runtime/readiness-check",
+            json={
+                "stage": "V30",
+                "action": "enable-autonomy-scheduler",
+                "actor": "Hermes admin",
+                "actor_role": "admin",
+                "explicit_approval": True,
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["decision"]["allowed"] is True
+        assert data["decision"]["approval"] == "explicit"
+        assert data["audit"]["allowed"] is True
+        assert data["evidence"]["state"] == "ready"
+
+    def test_operating_runtime_permission_decision_blocks_high_risk_operator(self):
+        resp = self.client.post(
+            "/api/operating-runtime/permission-decision",
+            json={
+                "action": "deploy-production-dashboard",
+                "actor": "Hermes operator",
+                "actor_role": "operator",
+                "explicit_approval": False,
+                "payload": {"project": "Khashi VC"},
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["decision"]["allowed"] is False
+        assert data["decision"]["approval"] == "explicit"
+        assert data["audit"]["payload"]["project"] == "Khashi VC"
+
+    def test_operating_runtime_workbench_persists_item(self):
+        payload = {
+            "title": "Design production runtime handoff",
+            "owner": "Hermes",
+            "approval": "explicit",
+            "status": "planned",
+            "artifacts": ["docs/design/v1-v30-runtime-consolidation.md"],
+            "report": "Created by test.",
+        }
+        post = self.client.post("/api/operating-runtime/workbench", json=payload)
+        assert post.status_code == 200
+        created = post.json()
+        assert created["title"] == payload["title"]
+        assert created["artifacts"] == payload["artifacts"]
+
+        get = self.client.get("/api/operating-runtime/workbench")
+        assert get.status_code == 200
+        assert any(row["id"] == created["id"] for row in get.json()["workbench"])
+
+    def test_operating_runtime_records_v31_to_v40_operational_gaps(self):
+        cases = [
+            (
+                "/api/operating-runtime/production-checks",
+                {"project": "Media Engine", "url": "https://media.tlccapitalgroup.com/dashboard", "health_url": "https://media.tlccapitalgroup.com/health"},
+                "registry",
+                "Media Engine production route",
+            ),
+            (
+                "/api/operating-runtime/incidents",
+                {"title": "Khashi ROC stale data", "severity": "high", "owner": "Khashi VC", "next_step": "Refresh market sync.", "rollback": "Disable scheduler admission.", "source": "dashboard"},
+                "incident",
+                "Khashi ROC stale data",
+            ),
+            (
+                "/api/operating-runtime/deployments",
+                {"project": "Media Engine", "version": "2026.07.17", "environment": "production", "status": "pending", "migration_required": True, "evidence": ["build passed"]},
+                "deployment",
+                "Media Engine production deployment",
+            ),
+            (
+                "/api/operating-runtime/costs",
+                {"project": "Khashi VC", "business_unit": "Research / Investing", "bucket": "api", "amount": 12.5, "unit": "usd", "period": "daily", "source": "manual"},
+                "finance",
+                "Khashi VC api",
+            ),
+            (
+                "/api/operating-runtime/data-sources",
+                {"name": "Kalshi market API", "owner": "Khashi VC", "cadence": "scheduled", "freshness": "fresh", "retention": "bounded", "consumers": ["Khashi ROC"]},
+                "catalog",
+                "Kalshi market API",
+            ),
+            (
+                "/api/operating-runtime/learning",
+                {"title": "Sports tags produce more liquid candidates", "source": "Khashi VC", "evidence_count": 42, "confidence": 0.61, "recommendation": "Prioritize tag-level buckets.", "status": "finding"},
+                "learning",
+                "Sports tags produce more liquid candidates",
+            ),
+            (
+                "/api/operating-runtime/evals",
+                {"provider": "local-codex", "task_family": "dashboard-coding", "correctness": 0.9, "cost_score": 1.0, "latency_score": 0.7, "verdict": "passed"},
+                "eval",
+                "local-codex on dashboard-coding",
+            ),
+            (
+                "/api/operating-runtime/autonomy-controls",
+                {"project": "Media Engine", "control": "kill-switch", "enabled": False, "limit": "manual-only", "reason": "Autopilot remains gated."},
+                "autonomy",
+                "Media Engine kill-switch",
+            ),
+        ]
+
+        for endpoint, payload, kind, subject in cases:
+            resp = self.client.post(endpoint, json=payload)
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["kind"] == kind
+            assert data["subject"] == subject
+
+            evidence = self.client.get("/api/operating-runtime/evidence", params={"kind": kind})
+            assert evidence.status_code == 200
+            assert any(row["subject"] == subject for row in evidence.json()["evidence"])
+
+    def test_operating_runtime_lists_specialized_runtime_records(self):
+        self.client.post(
+            "/api/operating-runtime/incidents",
+            json={"title": "Production auth failed", "severity": "critical", "owner": "Operations", "next_step": "Check auth middleware."},
+        )
+        self.client.post(
+            "/api/operating-runtime/deployments",
+            json={"project": "Hermes", "version": "v40", "environment": "production", "status": "current"},
+        )
+        self.client.post(
+            "/api/operating-runtime/evals",
+            json={"provider": "deepseek", "task_family": "analysis", "correctness": 0.7, "cost_score": 0.9, "latency_score": 0.8},
+        )
+
+        assert any(row["subject"] == "Production auth failed" for row in self.client.get("/api/operating-runtime/incidents").json()["incidents"])
+        assert any(row["subject"] == "Hermes production deployment" for row in self.client.get("/api/operating-runtime/deployments").json()["deployments"])
+        assert any(row["subject"] == "deepseek on analysis" for row in self.client.get("/api/operating-runtime/evals").json()["evals"])
+
+    def test_operating_runtime_records_v51_to_v60_boundary_closure(self):
+        sweep = self.client.post(
+            "/api/operating-runtime/production-sweep",
+            json={"targets": [{"project": "Khashi VC", "url": "https://roc.tlccapitalgroup.com", "health_url": "https://roc.tlccapitalgroup.com/health"}]},
+        )
+        assert sweep.status_code == 200
+        assert sweep.json()["records"][0]["subject"] == "Khashi VC production route"
+
+        promotion = self.client.post(
+            "/api/operating-runtime/promotion-execution",
+            json={"project": "Media Engine", "version": "v52", "app_dir": "/root/apps/deploy/media-engine", "url": "https://media.tlccapitalgroup.com"},
+        )
+        assert promotion.status_code == 200
+        assert promotion.json()["deployment"]["subject"] == "Media Engine production deployment"
+
+        gate = self.client.post(
+            "/api/operating-runtime/gate-coverage",
+            json={"handler": "deploy-media-engine", "risk": "deploy", "covered": False, "source": "pytest"},
+        )
+        assert gate.status_code == 200
+        assert gate.json()["state"] == "warning"
+        assert any("Missing command gate" in row["subject"] for row in self.client.get("/api/operating-runtime/incidents").json()["incidents"])
+
+        adapter = self.client.post(
+            "/api/operating-runtime/adapter-rollout",
+            json={"project": "Business Mapper", "manifest_url": "https://mapper.tlccapitalgroup.com/hermes.dashboards.json", "missing_fields": ["storage"]},
+        )
+        assert adapter.status_code == 200
+        assert adapter.json()["payload"]["missing_fields"] == ["storage"]
+
+        incidents = self.client.post(
+            "/api/operating-runtime/incident-automation",
+            json={"sources": [{"title": "Khashi snapshot stale", "state": "failed", "owner": "Khashi VC"}]},
+        )
+        assert incidents.status_code == 200
+        assert len(incidents.json()["incidents"]) == 1
+
+        secrets = self.client.post(
+            "/api/operating-runtime/secret-presence-scan",
+            json={"project": "Hermes", "required": ["PRODUCTION_HOST", "PRODUCTION_USER"], "present": ["PRODUCTION_HOST"], "scope": "actions"},
+        )
+        assert secrets.status_code == 200
+        assert secrets.json()["record"]["payload"]["missing"] == ["PRODUCTION_USER"]
+
+        costs = self.client.post(
+            "/api/operating-runtime/cost-reconciliation",
+            json={"source": "july-rate-sheet", "records": [{"project": "Hermes", "business_unit": "TLC Capital Group OS", "bucket": "hosting", "amount": 42.0, "unit": "usd"}]},
+        )
+        assert costs.status_code == 200
+        assert costs.json()["costs"][0]["subject"] == "Hermes hosting"
+
+        learning = self.client.post(
+            "/api/operating-runtime/learning-batch",
+            json={"events": [{"title": "Promotion failures need rollback links", "source": "deployments", "evidence_count": 3, "confidence": 0.8, "status": "finding"}]},
+        )
+        assert learning.status_code == 200
+        assert learning.json()["learning"][0]["subject"] == "Promotion failures need rollback links"
+
+        evals = self.client.post(
+            "/api/operating-runtime/golden-eval-batch",
+            json={"runs": [{"provider": "deepseek", "task_family": "dashboard-coding", "correctness": 0.76, "cost_score": 0.92, "latency_score": 0.81, "verdict": "passed"}]},
+        )
+        assert evals.status_code == 200
+        assert evals.json()["evals"][0]["subject"] == "deepseek on dashboard-coding"
+
+        self.client.post(
+            "/api/operating-runtime/autonomy-controls",
+            json={"project": "Hermes", "control": "kill-switch", "enabled": True, "reason": "Test breaker."},
+        )
+        breaker = self.client.post(
+            "/api/operating-runtime/breaker-check",
+            json={"project": "Hermes", "action": "execute-hetzner-promotion"},
+        )
+        assert breaker.status_code == 200
+        assert breaker.json()["allowed"] is False
+        assert breaker.json()["record"]["state"] == "blocked"
+
+    def test_operating_runtime_records_v61_to_v70_live_adapters(self):
+        adapter = self.client.post(
+            "/api/operating-runtime/adapter-run",
+            json={"adapter": "network-runner-adapter", "project": "Khashi VC", "status": "planned", "payload": {"target": "https://roc.tlccapitalgroup.com"}},
+        )
+        assert adapter.status_code == 200
+        assert adapter.json()["evidence"]["subject"] == "Khashi VC network-runner-adapter"
+
+        ssh = self.client.post(
+            "/api/operating-runtime/adapter-run",
+            json={"adapter": "hetzner-ssh-adapter", "project": "Media Engine", "status": "planned", "payload": {"app_dir": "/root/apps/deploy/media-engine"}},
+        )
+        assert ssh.status_code == 200
+        assert ssh.json()["evidence"]["kind"] == "deployment"
+
+        secret = self.client.post(
+            "/api/operating-runtime/adapter-run",
+            json={"adapter": "secret-provider-adapter", "project": "Hermes", "status": "planned"},
+        )
+        assert secret.status_code == 200
+        assert secret.json()["evidence"]["kind"] == "secrets"
+
+        billing = self.client.post(
+            "/api/operating-runtime/adapter-run",
+            json={"adapter": "billing-provider-adapter", "project": "Hermes", "status": "planned"},
+        )
+        assert billing.status_code == 200
+        assert billing.json()["evidence"]["kind"] == "finance"
+
+        subscription = self.client.post(
+            "/api/operating-runtime/incident-subscriptions",
+            json={"source": "production-sweep", "owner": "Operations", "severity": "critical", "dedupe_key": "prod-sweep"},
+        )
+        assert subscription.status_code == 200
+        assert subscription.json()["subject"] == "production-sweep incident subscription"
+
+        artifact = self.client.post(
+            "/api/operating-runtime/evidence-artifacts",
+            json={"title": "Khashi production screenshot", "artifact_type": "screenshot", "uri": "artifacts/khashi.png", "source": "production-sweep", "content_hash": "abc123"},
+        )
+        assert artifact.status_code == 200
+        assert artifact.json()["payload"]["uri"] == "artifacts/khashi.png"
+
+        release = self.client.post(
+            "/api/operating-runtime/release-trains",
+            json={"train": "dashboard-prod", "projects": ["Khashi VC", "Media Engine"], "version": "v70", "approved": False, "rollback": "Restore previous images."},
+        )
+        assert release.status_code == 200
+        assert release.json()["subject"] == "dashboard-prod release train"
+        assert release.json()["state"] == "gated"
+
+    def test_operating_runtime_live_gaps_are_guarded_and_ingestable(self):
+        self.client.post(
+            "/api/operating-runtime/autonomy-controls",
+            json={"project": "*", "control": "kill-switch", "enabled": True, "reason": "Test global breaker."},
+        )
+        sweep = self.client.post(
+            "/api/operating-runtime/production-sweep",
+            json={
+                "live": True,
+                "actor_role": "admin",
+                "explicit_approval": True,
+                "targets": [{"project": "Khashi VC", "url": "https://roc.tlccapitalgroup.com", "health_url": "https://roc.tlccapitalgroup.com/readyz"}],
+            },
+        )
+        assert sweep.status_code == 200
+        assert sweep.json()["records"][0]["state"] == "blocked"
+
+        promotion = self.client.post(
+            "/api/operating-runtime/promotion-execution",
+            json={
+                "project": "Media Engine",
+                "version": "v71",
+                "app_dir": "/root/apps/deploy/media-engine",
+                "url": "https://media.tlccapitalgroup.com/health",
+                "live": True,
+                "actor_role": "admin",
+                "explicit_approval": True,
+            },
+        )
+        assert promotion.status_code == 200
+        assert promotion.json()["deployment"]["state"] == "gated"
+        assert promotion.json()["command_plan"]
+        assert promotion.json()["breaker"]["allowed"] is False
+
+        outcomes = self.client.post(
+            "/api/operating-runtime/project-outcomes",
+            json={
+                "project": "Khashi VC",
+                "outcomes": [{"id": "khashi-health", "state": "passed", "confidence": 0.82, "evidence": "Dashboard healthy."}],
+            },
+        )
+        assert outcomes.status_code == 200
+        assert outcomes.json()["learning"][0]["subject"] == "khashi-health"
+        assert outcomes.json()["adapter"]["evidence"]["kind"] == "learning"
+
+        github_scan = self.client.post(
+            "/api/operating-runtime/github-secret-scan",
+            json={"project": "Hermes", "repo": "owner/repo", "required": ["PRODUCTION_HOST"], "live": False},
+        )
+        assert github_scan.status_code == 200
+        assert github_scan.json()["record"]["state"] == "gated"
+        assert github_scan.json()["record"]["payload"]["missing"] == []
+
+        billing = self.client.post(
+            "/api/operating-runtime/manual-billing-import",
+            json={
+                "source": "july-invoice",
+                "imported_by": "Finance",
+                "period": "2026-07",
+                "records": [{"project": "Hermes", "business_unit": "TLC Capital Group OS", "bucket": "model-api", "amount": 123.45, "unit": "usd"}],
+            },
+        )
+        assert billing.status_code == 200
+        assert billing.json()["summary"]["payload"]["imported_by"] == "Finance"
+        assert billing.json()["costs"][0]["payload"]["period"] == "2026-07"
+
+    def test_operating_runtime_records_v71_to_v80_operational_readiness(self):
+        screenshot = self.client.post(
+            "/api/operating-runtime/production-screenshots",
+            json={"project": "Khashi VC", "url": "https://roc.tlccapitalgroup.com", "viewport": "desktop", "artifact_uri": "artifacts/khashi-desktop.png", "status": "captured"},
+        )
+        assert screenshot.status_code == 200
+        assert screenshot.json()["subject"] == "Khashi VC desktop screenshot"
+
+        transport = self.client.post(
+            "/api/operating-runtime/hetzner-promotion-transport",
+            json={"project": "Media Engine", "service_key": "media", "version": "v72", "status": "planned", "receipt_uri": "artifacts/media-promote.log"},
+        )
+        assert transport.status_code == 200
+        assert transport.json()["subject"] == "Media Engine production deployment"
+
+        secrets = self.client.post(
+            "/api/operating-runtime/server-secret-posture",
+            json={"project": "Khashi VC", "required": ["AMARI_SESSION_SECRET", "KALSHI_BASE_URL"], "present": ["KALSHI_BASE_URL"], "source": "hetzner-env"},
+        )
+        assert secrets.status_code == 200
+        assert secrets.json()["payload"]["missing"] == ["AMARI_SESSION_SECRET"]
+
+        fanout = self.client.post(
+            "/api/operating-runtime/incident-fanout",
+            json={"channel": "discord", "target": "operations", "severity": "critical", "enabled": True},
+        )
+        assert fanout.status_code == 200
+        assert fanout.json()["subject"] == "discord incident fanout"
+
+        backend = self.client.post(
+            "/api/operating-runtime/artifact-backends",
+            json={"name": "hetzner-local", "mode": "local-volume", "base_uri": "/root/apps/deploy/artifacts", "retention_days": 14, "cleanup_enabled": True},
+        )
+        assert backend.status_code == 200
+        assert backend.json()["state"] == "ready"
+
+        adapter = self.client.post(
+            "/api/operating-runtime/outcome-adapter-adoption",
+            json={"project": "Business Mapper", "endpoint": "/api/hermes/outcomes", "adopted": False},
+        )
+        assert adapter.status_code == 200
+        assert adapter.json()["state"] == "warning"
+
+        breaker = self.client.post(
+            "/api/operating-runtime/breaker-rollout",
+            json={"project": "Media Engine", "path_class": "provider-generation", "wrapped": True, "test_status": "passed"},
+        )
+        assert breaker.status_code == 200
+        assert breaker.json()["state"] == "ready"
+
+        eval_run = self.client.post(
+            "/api/operating-runtime/provider-eval-execution",
+            json={"provider": "deepseek", "task_family": "dashboard-coding", "artifact_uri": "artifacts/deepseek-eval.json", "correctness": 0.8, "cost_score": 0.9, "latency_score": 0.7, "verdict": "passed"},
+        )
+        assert eval_run.status_code == 200
+        assert eval_run.json()["subject"] == "deepseek on dashboard-coding"
+
+        billing = self.client.post(
+            "/api/operating-runtime/billing-provider-integrations",
+            json={"provider": "openai", "project": "Hermes", "amount": 22.5, "period": "2026-07", "source": "provider-api", "variance": 1.2},
+        )
+        assert billing.status_code == 200
+        assert billing.json()["subject"] == "Hermes openai usage"
+
+        train = self.client.post(
+            "/api/operating-runtime/release-train-execution",
+            json={"train": "dashboard-prod", "projects": ["Khashi VC", "Media Engine"], "version": "v80", "gates_passed": False, "approved": True, "rollback": "Restore prior images."},
+        )
+        assert train.status_code == 200
+        assert train.json()["payload"]["execution_state"] == "blocked"
+
+    def test_public_dashboard_snapshot_exposes_standard_contract(self):
+        resp = self.client.get("/dashboard-snapshot")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["source"]["id"] == "nous-hermes-agent.dashboard"
+        assert data["health"]["state"] == "healthy"
+        assert "queue" in data
+        assert "deployment" in data
+
+    def test_dashboard_snapshots_aggregate_registry_and_persist_evidence(self):
+        resp = self.client.get("/api/dashboard/snapshots", params={"live": "false"})
+        assert resp.status_code == 200
+        snapshots = resp.json()["snapshots"]
+        ids = {snapshot["source"]["id"] for snapshot in snapshots}
+        assert "nous-hermes-agent.dashboard" in ids
+        assert "khashi-vc.roc" in ids
+        assert all("health" in snapshot for snapshot in snapshots)
+
+        evidence = self.client.get("/api/operating-runtime/evidence", params={"kind": "snapshot"})
+        assert evidence.status_code == 200
+        evidence_ids = {row["id"] for row in evidence.json()["evidence"]}
+        assert "snapshot-nous-hermes-agent.dashboard" in evidence_ids
+        assert "snapshot-khashi-vc.roc" in evidence_ids
+
     # ── GET /api/media (remote image display) ───────────────────────────
 
     def test_get_media_serves_image_in_root(self):

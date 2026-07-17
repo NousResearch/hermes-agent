@@ -852,6 +852,10 @@ export const api = {
   // Dashboard plugins
   getPlugins: () =>
     fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
+  getDashboardSnapshot: () =>
+    fetchJSON<DashboardSnapshotResponse>("/api/dashboard/snapshot"),
+  getDashboardSnapshots: (live = false) =>
+    fetchJSON<DashboardSnapshotsResponse>(`/api/dashboard/snapshots${live ? "?live=true" : ""}`),
   rescanPlugins: () =>
     fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 
@@ -2179,6 +2183,84 @@ export interface PluginManifestResponse {
   css?: string | null;
   has_api: boolean;
   source: string;
+}
+
+export interface DashboardSignalSourceResponse {
+  id: string;
+  label: string;
+  owner: string;
+  category: string;
+  projectName?: string;
+  projectPath?: string;
+  url?: string;
+  healthUrl?: string;
+}
+
+export interface DashboardSnapshotResponse {
+  source: DashboardSignalSourceResponse;
+  health: {
+    state: "healthy" | "degraded" | "critical" | "unknown";
+    score?: number;
+    message?: string;
+    checkedAt?: string;
+    freshness?: "fresh" | "aging" | "stale" | "unknown";
+  };
+  cost?: {
+    period: "24h" | "7d" | "30d" | "90d" | "unknown";
+    known: boolean;
+    amountUsd?: number;
+    tokenCount?: number;
+    apiCalls?: number;
+    storageBytes?: number;
+    message?: string;
+  };
+  capacity?: {
+    known: boolean;
+    used?: number;
+    limit?: number;
+    floor?: number;
+    ceiling?: number;
+    pressure?: "low" | "medium" | "high" | "unknown";
+    message?: string;
+  };
+  queue?: {
+    queued: number;
+    running: number;
+    failed: number;
+    blocked: number;
+    stale: number;
+    completed?: number;
+  };
+  actions?: Array<{
+    id: string;
+    title: string;
+    owner: string;
+    severity: "low" | "normal" | "high" | "critical";
+    sourceDashboardId: string;
+    source?: string;
+    due?: string;
+    nextStep?: string;
+  }>;
+  research?: {
+    findings?: number;
+    evidence?: number;
+    confidence?: number;
+    staleFindings?: number;
+    message?: string;
+  };
+  deployment?: {
+    environment: "local" | "staging" | "production" | "unknown";
+    status: "current" | "pending" | "failed" | "unknown";
+    version?: string;
+    commit?: string;
+    deployedAt?: string;
+    message?: string;
+  };
+  updatedAt?: string;
+}
+
+export interface DashboardSnapshotsResponse {
+  snapshots: DashboardSnapshotResponse[];
 }
 
 export interface HubAgentPluginRow {

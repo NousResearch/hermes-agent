@@ -11,11 +11,12 @@
     "typecheck": "tsc -p . --noEmit"
   },
   "dependencies": {
-    "@nous-research/ui": "0.18.2",
     "@hermes/dashboard-kit": "file:../packages/hermes-dashboard-kit",
+    "@nous-research/ui": "0.18.2",
     "@observablehq/plot": "^0.6.17",
     "@react-three/fiber": "^9.6.0",
     "@tailwindcss/vite": "^4.2.1",
+    "@tanstack/react-query": "^5.101.2",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-unicode11": "^0.9.0",
     "@xterm/addon-web-links": "^0.12.0",
@@ -49,6 +50,6 @@
     "three": "^0.180.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.56.1",
-    "vite": "^7.3.1"
+    "vite": "^7.3.6"
   }
 }

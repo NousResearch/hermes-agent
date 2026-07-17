@@ -1724,6 +1724,1103 @@ async def ask_hermes_os_conversation(payload: HermesOsConversationAskRequest):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+class OperatingRuntimeEvidenceRequest(BaseModel):
+    kind: str
+    subject: str
+    state: str
+    owner: str = "Hermes"
+    detail: str
+    payload: Optional[Dict[str, Any]] = None
+    id: Optional[str] = None
+
+
+class OperatingRuntimeReadinessRequest(BaseModel):
+    stage: str
+    action: str
+    actor: str = "Hermes operator"
+    actor_role: str = "operator"
+    explicit_approval: bool = False
+
+
+class OperatingRuntimeWorkbenchRequest(BaseModel):
+    title: str
+    owner: str = "Hermes"
+    approval: str = "explicit"
+    status: str = "planned"
+    artifacts: Optional[List[str]] = None
+    report: str = ""
+
+
+class OperatingRuntimePermissionDecisionRequest(BaseModel):
+    action: str
+    actor: str = "Hermes operator"
+    actor_role: str = "operator"
+    explicit_approval: bool = False
+    payload: Optional[Dict[str, Any]] = None
+
+
+class OperatingRuntimeProductionCheckRequest(BaseModel):
+    project: str
+    url: str
+    health_url: str = ""
+    state: str = "gated"
+    detail: str = "Production route check recorded; live check still pending."
+    payload: Optional[Dict[str, Any]] = None
+
+
+class OperatingRuntimeIncidentRequest(BaseModel):
+    title: str
+    severity: str = "warning"
+    owner: str = "Operations"
+    next_step: str
+    rollback: str = ""
+    source: str = ""
+    status: str = "open"
+
+
+class OperatingRuntimeDeploymentRequest(BaseModel):
+    project: str
+    version: str
+    environment: str = "production"
+    status: str = "pending"
+    migration_required: bool = False
+    rollback: str = ""
+    evidence: Optional[List[str]] = None
+
+
+class OperatingRuntimeCostRequest(BaseModel):
+    project: str
+    business_unit: str
+    bucket: str
+    amount: Optional[float] = None
+    unit: str = "estimated"
+    period: str = "monthly"
+    source: str = "manual"
+
+
+class OperatingRuntimeDataSourceRequest(BaseModel):
+    name: str
+    owner: str = "Hermes"
+    cadence: str = "manual"
+    freshness: str = "unknown"
+    retention: str = ""
+    consumers: Optional[List[str]] = None
+
+
+class OperatingRuntimeLearningRequest(BaseModel):
+    title: str
+    source: str
+    evidence_count: int = 1
+    confidence: float = 0.0
+    recommendation: str = ""
+    status: str = "candidate"
+
+
+class OperatingRuntimeEvalRequest(BaseModel):
+    provider: str
+    task_family: str
+    correctness: float = 0.0
+    cost_score: float = 0.0
+    latency_score: float = 0.0
+    verdict: str = "insufficient-data"
+
+
+class OperatingRuntimeAutonomyControlRequest(BaseModel):
+    project: str
+    control: str
+    enabled: bool = False
+    limit: str = ""
+    reason: str = ""
+
+
+class OperatingRuntimeProductionSweepRequest(BaseModel):
+    targets: List[Dict[str, Any]]
+    actor: str = "Hermes operator"
+    actor_role: str = "operator"
+    explicit_approval: bool = False
+    live: bool = False
+
+
+class OperatingRuntimePromotionExecutionRequest(BaseModel):
+    project: str
+    version: str
+    environment: str = "production"
+    app_dir: str = ""
+    url: str = ""
+    migration_required: bool = False
+    live: bool = False
+    execute_commands: bool = False
+    actor: str = "Hermes operator"
+    actor_role: str = "operator"
+    explicit_approval: bool = False
+
+
+class OperatingRuntimeGateCoverageRequest(BaseModel):
+    handler: str
+    risk: str = "production"
+    covered: bool = False
+    owner: str = "Operations"
+    source: str = ""
+
+
+class OperatingRuntimeAdapterRolloutRequest(BaseModel):
+    project: str
+    manifest_url: str = ""
+    snapshot_url: str = ""
+    missing_fields: Optional[List[str]] = None
+    owner: str = "Hermes"
+
+
+class OperatingRuntimeIncidentAutomationRequest(BaseModel):
+    sources: List[Dict[str, Any]]
+    owner: str = "Operations"
+    auto_remediate: bool = False
+
+
+class OperatingRuntimeSecretPresenceScanRequest(BaseModel):
+    project: str
+    required: List[str]
+    present: Optional[List[str]] = None
+    scope: str = "unknown"
+    live: bool = False
+    actor: str = "Hermes operator"
+    actor_role: str = "operator"
+    explicit_approval: bool = False
+
+
+class OperatingRuntimeCostReconciliationRequest(BaseModel):
+    records: List[Dict[str, Any]]
+    source: str = "manual-rate-sheet"
+
+
+class OperatingRuntimeManualBillingImportRequest(BaseModel):
+    records: List[Dict[str, Any]]
+    source: str = "manual-billing-import"
+    imported_by: str = "Finance"
+    period: str = ""
+
+
+class OperatingRuntimeGithubSecretScanRequest(BaseModel):
+    project: str
+    repo: str
+    required: List[str]
+    include_variables: bool = True
+    live: bool = False
+    actor: str = "Hermes operator"
+    actor_role: str = "operator"
+    explicit_approval: bool = False
+
+
+class OperatingRuntimeLearningBatchRequest(BaseModel):
+    events: List[Dict[str, Any]]
+
+
+class OperatingRuntimeProjectOutcomesRequest(BaseModel):
+    project: str
+    outcomes: Optional[List[Dict[str, Any]]] = None
+    url: str = ""
+    live: bool = False
+    actor: str = "Hermes operator"
+    actor_role: str = "operator"
+    explicit_approval: bool = False
+
+
+class OperatingRuntimeGoldenEvalBatchRequest(BaseModel):
+    runs: List[Dict[str, Any]]
+
+
+class OperatingRuntimeBreakerCheckRequest(BaseModel):
+    project: str
+    action: str
+    context: Optional[Dict[str, Any]] = None
+
+
+class OperatingRuntimeAdapterRunRequest(BaseModel):
+    adapter: str
+    project: str
+    status: str = "planned"
+    live: bool = False
+    actor: str = "Hermes operator"
+    actor_role: str = "operator"
+    explicit_approval: bool = False
+    payload: Optional[Dict[str, Any]] = None
+
+
+class OperatingRuntimeIncidentSubscriptionRequest(BaseModel):
+    source: str
+    owner: str = "Operations"
+    severity: str = "warning"
+    dedupe_key: str = ""
+    enabled: bool = True
+
+
+class OperatingRuntimeEvidenceArtifactRequest(BaseModel):
+    title: str
+    artifact_type: str
+    uri: str
+    source: str
+    retention: str = "standard"
+    content_hash: str = ""
+    evidence_id: str = ""
+
+
+class OperatingRuntimeReleaseTrainRequest(BaseModel):
+    train: str
+    projects: List[str]
+    version: str
+    approved: bool = False
+    rollback: str = ""
+
+
+class OperatingRuntimeProductionScreenshotRequest(BaseModel):
+    project: str
+    url: str
+    viewport: str = "desktop"
+    artifact_uri: str = ""
+    status: str = "planned"
+    blank_detected: bool = False
+    live: bool = False
+
+
+class OperatingRuntimeHetznerTransportRequest(BaseModel):
+    project: str
+    service_key: str
+    version: str
+    script: str = "/root/apps/deploy/scripts/promote-service.sh"
+    status: str = "planned"
+    receipt_uri: str = ""
+    rollback: str = ""
+
+
+class OperatingRuntimeServerSecretPostureRequest(BaseModel):
+    project: str
+    required: List[str]
+    present: Optional[List[str]] = None
+    source: str = "hetzner-env"
+
+
+class OperatingRuntimeIncidentFanoutRequest(BaseModel):
+    channel: str
+    target: str
+    severity: str = "high"
+    enabled: bool = True
+    cooldown_minutes: int = 30
+
+
+class OperatingRuntimeArtifactBackendRequest(BaseModel):
+    name: str
+    mode: str
+    base_uri: str = ""
+    retention_days: int = 30
+    cleanup_enabled: bool = False
+
+
+class OperatingRuntimeOutcomeAdapterAdoptionRequest(BaseModel):
+    project: str
+    endpoint: str = "/api/hermes/outcomes"
+    adopted: bool = False
+    last_checked: str = ""
+
+
+class OperatingRuntimeBreakerRolloutRequest(BaseModel):
+    project: str
+    path_class: str
+    wrapped: bool = False
+    test_status: str = "planned"
+
+
+class OperatingRuntimeProviderEvalExecutionRequest(BaseModel):
+    provider: str
+    task_family: str
+    artifact_uri: str = ""
+    correctness: float = 0.0
+    cost_score: float = 0.0
+    latency_score: float = 0.0
+    verdict: str = "insufficient-data"
+
+
+class OperatingRuntimeBillingProviderIntegrationRequest(BaseModel):
+    provider: str
+    project: str
+    amount: Optional[float] = None
+    period: str = "monthly"
+    source: str = "provider-api"
+    variance: Optional[float] = None
+
+
+class OperatingRuntimeReleaseTrainExecutionRequest(BaseModel):
+    train: str
+    projects: List[str]
+    version: str
+    gates_passed: bool = False
+    approved: bool = False
+    rollback: str = ""
+
+
+@contextmanager
+def _operating_runtime_conn():
+    from hermes_cli.operating_runtime import connect
+
+    conn = connect()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@app.get("/api/operating-runtime/summary")
+async def get_operating_runtime_summary():
+    from hermes_cli.operating_runtime import summary
+
+    with _operating_runtime_conn() as conn:
+        return summary(conn)
+
+
+@app.get("/api/operating-runtime/evidence")
+async def get_operating_runtime_evidence(kind: str = ""):
+    from hermes_cli.operating_runtime import list_evidence
+
+    with _operating_runtime_conn() as conn:
+        return {"evidence": list_evidence(conn, kind or None)}
+
+
+@app.post("/api/operating-runtime/evidence")
+async def post_operating_runtime_evidence(payload: OperatingRuntimeEvidenceRequest):
+    from hermes_cli.operating_runtime import upsert_evidence
+
+    try:
+        with _operating_runtime_conn() as conn:
+            return upsert_evidence(
+                conn,
+                kind=payload.kind,  # type: ignore[arg-type]
+                subject=payload.subject,
+                state=payload.state,  # type: ignore[arg-type]
+                owner=payload.owner,
+                detail=payload.detail,
+                payload=payload.payload or {},
+                id=payload.id,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/operating-runtime/audit")
+async def get_operating_runtime_audit(limit: int = 50):
+    from hermes_cli.operating_runtime import list_audit
+
+    with _operating_runtime_conn() as conn:
+        return {"audit": list_audit(conn, limit=limit)}
+
+
+@app.post("/api/operating-runtime/readiness-check")
+async def post_operating_runtime_readiness_check(payload: OperatingRuntimeReadinessRequest):
+    from hermes_cli.operating_runtime import run_readiness_check
+
+    with _operating_runtime_conn() as conn:
+        return run_readiness_check(
+            conn,
+            stage=payload.stage,
+            action=payload.action,
+            actor=payload.actor,
+            actor_role=payload.actor_role,
+            explicit_approval=payload.explicit_approval,
+        )
+
+
+@app.post("/api/operating-runtime/permission-decision")
+async def post_operating_runtime_permission_decision(payload: OperatingRuntimePermissionDecisionRequest):
+    from hermes_cli.operating_runtime import require_permission
+
+    with _operating_runtime_conn() as conn:
+        return require_permission(
+            conn,
+            action=payload.action,
+            actor=payload.actor,
+            actor_role=payload.actor_role,
+            explicit_approval=payload.explicit_approval,
+            payload=payload.payload or {},
+        )
+
+
+@app.get("/api/operating-runtime/workbench")
+async def get_operating_runtime_workbench():
+    from hermes_cli.operating_runtime import list_workbench
+
+    with _operating_runtime_conn() as conn:
+        return {"workbench": list_workbench(conn)}
+
+
+@app.post("/api/operating-runtime/workbench")
+async def post_operating_runtime_workbench(payload: OperatingRuntimeWorkbenchRequest):
+    from hermes_cli.operating_runtime import create_workbench_item
+
+    try:
+        with _operating_runtime_conn() as conn:
+            return create_workbench_item(
+                conn,
+                title=payload.title,
+                owner=payload.owner,
+                approval=payload.approval,  # type: ignore[arg-type]
+                status=payload.status,
+                artifacts=payload.artifacts or [],
+                report=payload.report,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/operating-runtime/production-checks")
+async def post_operating_runtime_production_check(payload: OperatingRuntimeProductionCheckRequest):
+    from hermes_cli.operating_runtime import record_production_check
+
+    with _operating_runtime_conn() as conn:
+        return record_production_check(
+            conn,
+            project=payload.project,
+            url=payload.url,
+            health_url=payload.health_url,
+            state=payload.state,  # type: ignore[arg-type]
+            detail=payload.detail,
+            payload=payload.payload or {},
+        )
+
+
+@app.get("/api/operating-runtime/incidents")
+async def get_operating_runtime_incidents():
+    from hermes_cli.operating_runtime import list_evidence
+
+    with _operating_runtime_conn() as conn:
+        return {"incidents": list_evidence(conn, "incident")}
+
+
+@app.post("/api/operating-runtime/incidents")
+async def post_operating_runtime_incident(payload: OperatingRuntimeIncidentRequest):
+    from hermes_cli.operating_runtime import record_incident
+
+    with _operating_runtime_conn() as conn:
+        return record_incident(
+            conn,
+            title=payload.title,
+            severity=payload.severity,
+            owner=payload.owner,
+            next_step=payload.next_step,
+            rollback=payload.rollback,
+            source=payload.source,
+            status=payload.status,
+        )
+
+
+@app.get("/api/operating-runtime/deployments")
+async def get_operating_runtime_deployments():
+    from hermes_cli.operating_runtime import list_evidence
+
+    with _operating_runtime_conn() as conn:
+        return {"deployments": list_evidence(conn, "deployment")}
+
+
+@app.post("/api/operating-runtime/deployments")
+async def post_operating_runtime_deployment(payload: OperatingRuntimeDeploymentRequest):
+    from hermes_cli.operating_runtime import record_deployment
+
+    with _operating_runtime_conn() as conn:
+        return record_deployment(
+            conn,
+            project=payload.project,
+            version=payload.version,
+            environment=payload.environment,
+            status=payload.status,
+            migration_required=payload.migration_required,
+            rollback=payload.rollback,
+            evidence=payload.evidence or [],
+        )
+
+
+@app.get("/api/operating-runtime/costs")
+async def get_operating_runtime_costs():
+    from hermes_cli.operating_runtime import list_evidence
+
+    with _operating_runtime_conn() as conn:
+        return {"costs": list_evidence(conn, "finance")}
+
+
+@app.post("/api/operating-runtime/costs")
+async def post_operating_runtime_cost(payload: OperatingRuntimeCostRequest):
+    from hermes_cli.operating_runtime import record_cost
+
+    with _operating_runtime_conn() as conn:
+        return record_cost(
+            conn,
+            project=payload.project,
+            business_unit=payload.business_unit,
+            bucket=payload.bucket,
+            amount=payload.amount,
+            unit=payload.unit,
+            period=payload.period,
+            source=payload.source,
+        )
+
+
+@app.get("/api/operating-runtime/data-sources")
+async def get_operating_runtime_data_sources():
+    from hermes_cli.operating_runtime import list_evidence
+
+    with _operating_runtime_conn() as conn:
+        return {"data_sources": list_evidence(conn, "catalog")}
+
+
+@app.post("/api/operating-runtime/data-sources")
+async def post_operating_runtime_data_source(payload: OperatingRuntimeDataSourceRequest):
+    from hermes_cli.operating_runtime import record_data_source
+
+    with _operating_runtime_conn() as conn:
+        return record_data_source(
+            conn,
+            name=payload.name,
+            owner=payload.owner,
+            cadence=payload.cadence,
+            freshness=payload.freshness,
+            retention=payload.retention,
+            consumers=payload.consumers or [],
+        )
+
+
+@app.get("/api/operating-runtime/learning")
+async def get_operating_runtime_learning():
+    from hermes_cli.operating_runtime import list_evidence
+
+    with _operating_runtime_conn() as conn:
+        return {"learning": list_evidence(conn, "learning")}
+
+
+@app.post("/api/operating-runtime/learning")
+async def post_operating_runtime_learning(payload: OperatingRuntimeLearningRequest):
+    from hermes_cli.operating_runtime import record_learning
+
+    with _operating_runtime_conn() as conn:
+        return record_learning(
+            conn,
+            title=payload.title,
+            source=payload.source,
+            evidence_count=payload.evidence_count,
+            confidence=payload.confidence,
+            recommendation=payload.recommendation,
+            status=payload.status,
+        )
+
+
+@app.get("/api/operating-runtime/evals")
+async def get_operating_runtime_evals():
+    from hermes_cli.operating_runtime import list_evidence
+
+    with _operating_runtime_conn() as conn:
+        return {"evals": list_evidence(conn, "eval")}
+
+
+@app.post("/api/operating-runtime/evals")
+async def post_operating_runtime_eval(payload: OperatingRuntimeEvalRequest):
+    from hermes_cli.operating_runtime import record_eval
+
+    with _operating_runtime_conn() as conn:
+        return record_eval(
+            conn,
+            provider=payload.provider,
+            task_family=payload.task_family,
+            correctness=payload.correctness,
+            cost_score=payload.cost_score,
+            latency_score=payload.latency_score,
+            verdict=payload.verdict,
+        )
+
+
+@app.get("/api/operating-runtime/autonomy-controls")
+async def get_operating_runtime_autonomy_controls():
+    from hermes_cli.operating_runtime import list_evidence
+
+    with _operating_runtime_conn() as conn:
+        return {"autonomy_controls": list_evidence(conn, "autonomy")}
+
+
+@app.post("/api/operating-runtime/autonomy-controls")
+async def post_operating_runtime_autonomy_control(payload: OperatingRuntimeAutonomyControlRequest):
+    from hermes_cli.operating_runtime import set_autonomy_control
+
+    with _operating_runtime_conn() as conn:
+        return set_autonomy_control(
+            conn,
+            project=payload.project,
+            control=payload.control,
+            enabled=payload.enabled,
+            limit=payload.limit,
+            reason=payload.reason,
+        )
+
+
+@app.post("/api/operating-runtime/production-sweep")
+async def post_operating_runtime_production_sweep(payload: OperatingRuntimeProductionSweepRequest):
+    from hermes_cli.operating_runtime import run_production_sweep
+
+    with _operating_runtime_conn() as conn:
+        return run_production_sweep(
+            conn,
+            targets=payload.targets,
+            actor=payload.actor,
+            actor_role=payload.actor_role,
+            explicit_approval=payload.explicit_approval,
+            live=payload.live,
+        )
+
+
+@app.post("/api/operating-runtime/promotion-execution")
+async def post_operating_runtime_promotion_execution(payload: OperatingRuntimePromotionExecutionRequest):
+    from hermes_cli.operating_runtime import plan_promotion_execution
+
+    with _operating_runtime_conn() as conn:
+        return plan_promotion_execution(
+            conn,
+            project=payload.project,
+            version=payload.version,
+            environment=payload.environment,
+            app_dir=payload.app_dir,
+            url=payload.url,
+            migration_required=payload.migration_required,
+            live=payload.live,
+            execute_commands=payload.execute_commands,
+            actor=payload.actor,
+            actor_role=payload.actor_role,
+            explicit_approval=payload.explicit_approval,
+        )
+
+
+@app.post("/api/operating-runtime/gate-coverage")
+async def post_operating_runtime_gate_coverage(payload: OperatingRuntimeGateCoverageRequest):
+    from hermes_cli.operating_runtime import record_gate_coverage
+
+    with _operating_runtime_conn() as conn:
+        return record_gate_coverage(
+            conn,
+            handler=payload.handler,
+            risk=payload.risk,
+            covered=payload.covered,
+            owner=payload.owner,
+            source=payload.source,
+        )
+
+
+@app.post("/api/operating-runtime/adapter-rollout")
+async def post_operating_runtime_adapter_rollout(payload: OperatingRuntimeAdapterRolloutRequest):
+    from hermes_cli.operating_runtime import record_adapter_rollout
+
+    with _operating_runtime_conn() as conn:
+        return record_adapter_rollout(
+            conn,
+            project=payload.project,
+            manifest_url=payload.manifest_url,
+            snapshot_url=payload.snapshot_url,
+            missing_fields=payload.missing_fields or [],
+            owner=payload.owner,
+        )
+
+
+@app.post("/api/operating-runtime/incident-automation")
+async def post_operating_runtime_incident_automation(payload: OperatingRuntimeIncidentAutomationRequest):
+    from hermes_cli.operating_runtime import run_incident_automation
+
+    with _operating_runtime_conn() as conn:
+        return run_incident_automation(
+            conn,
+            sources=payload.sources,
+            owner=payload.owner,
+            auto_remediate=payload.auto_remediate,
+        )
+
+
+@app.post("/api/operating-runtime/secret-presence-scan")
+async def post_operating_runtime_secret_presence_scan(payload: OperatingRuntimeSecretPresenceScanRequest):
+    from hermes_cli.operating_runtime import scan_secret_presence
+
+    with _operating_runtime_conn() as conn:
+        return scan_secret_presence(
+            conn,
+            project=payload.project,
+            required=payload.required,
+            present=payload.present or [],
+            scope=payload.scope,
+            live=payload.live,
+            actor=payload.actor,
+            actor_role=payload.actor_role,
+            explicit_approval=payload.explicit_approval,
+        )
+
+
+@app.post("/api/operating-runtime/cost-reconciliation")
+async def post_operating_runtime_cost_reconciliation(payload: OperatingRuntimeCostReconciliationRequest):
+    from hermes_cli.operating_runtime import import_cost_reconciliation
+
+    with _operating_runtime_conn() as conn:
+        return import_cost_reconciliation(conn, records=payload.records, source=payload.source)
+
+
+@app.post("/api/operating-runtime/manual-billing-import")
+async def post_operating_runtime_manual_billing_import(payload: OperatingRuntimeManualBillingImportRequest):
+    from hermes_cli.operating_runtime import import_manual_billing
+
+    with _operating_runtime_conn() as conn:
+        return import_manual_billing(
+            conn,
+            records=payload.records,
+            source=payload.source,
+            imported_by=payload.imported_by,
+            period=payload.period,
+        )
+
+
+@app.post("/api/operating-runtime/github-secret-scan")
+async def post_operating_runtime_github_secret_scan(payload: OperatingRuntimeGithubSecretScanRequest):
+    from hermes_cli.operating_runtime import scan_github_secret_presence
+
+    with _operating_runtime_conn() as conn:
+        return scan_github_secret_presence(
+            conn,
+            project=payload.project,
+            repo=payload.repo,
+            required=payload.required,
+            include_variables=payload.include_variables,
+            live=payload.live,
+            actor=payload.actor,
+            actor_role=payload.actor_role,
+            explicit_approval=payload.explicit_approval,
+        )
+
+
+@app.post("/api/operating-runtime/learning-batch")
+async def post_operating_runtime_learning_batch(payload: OperatingRuntimeLearningBatchRequest):
+    from hermes_cli.operating_runtime import ingest_learning_batch
+
+    with _operating_runtime_conn() as conn:
+        return ingest_learning_batch(conn, events=payload.events)
+
+
+@app.post("/api/operating-runtime/project-outcomes")
+async def post_operating_runtime_project_outcomes(payload: OperatingRuntimeProjectOutcomesRequest):
+    from hermes_cli.operating_runtime import ingest_project_outcomes
+
+    with _operating_runtime_conn() as conn:
+        return ingest_project_outcomes(
+            conn,
+            project=payload.project,
+            outcomes=payload.outcomes or [],
+            url=payload.url,
+            live=payload.live,
+            actor=payload.actor,
+            actor_role=payload.actor_role,
+            explicit_approval=payload.explicit_approval,
+        )
+
+
+@app.post("/api/operating-runtime/golden-eval-batch")
+async def post_operating_runtime_golden_eval_batch(payload: OperatingRuntimeGoldenEvalBatchRequest):
+    from hermes_cli.operating_runtime import run_golden_eval_batch
+
+    with _operating_runtime_conn() as conn:
+        return run_golden_eval_batch(conn, runs=payload.runs)
+
+
+@app.post("/api/operating-runtime/breaker-check")
+async def post_operating_runtime_breaker_check(payload: OperatingRuntimeBreakerCheckRequest):
+    from hermes_cli.operating_runtime import check_circuit_breakers
+
+    with _operating_runtime_conn() as conn:
+        return check_circuit_breakers(conn, project=payload.project, action=payload.action, context=payload.context or {})
+
+
+def _adapter_kind(adapter: str) -> str:
+    adapter_lc = adapter.lower()
+    if "network" in adapter_lc:
+        return "registry"
+    if "hetzner" in adapter_lc or "ssh" in adapter_lc:
+        return "deployment"
+    if "secret" in adapter_lc:
+        return "secrets"
+    if "billing" in adapter_lc:
+        return "finance"
+    if "outcome" in adapter_lc:
+        return "learning"
+    if "eval" in adapter_lc or "provider" in adapter_lc:
+        return "eval"
+    if "breaker" in adapter_lc:
+        return "autonomy"
+    return "quality"
+
+
+@app.post("/api/operating-runtime/adapter-run")
+async def post_operating_runtime_adapter_run(payload: OperatingRuntimeAdapterRunRequest):
+    from hermes_cli.operating_runtime import record_adapter_run
+
+    with _operating_runtime_conn() as conn:
+        return record_adapter_run(
+            conn,
+            adapter=payload.adapter,
+            project=payload.project,
+            kind=_adapter_kind(payload.adapter),  # type: ignore[arg-type]
+            status=payload.status,
+            live=payload.live,
+            actor=payload.actor,
+            actor_role=payload.actor_role,
+            explicit_approval=payload.explicit_approval,
+            payload=payload.payload or {},
+        )
+
+
+@app.post("/api/operating-runtime/incident-subscriptions")
+async def post_operating_runtime_incident_subscription(payload: OperatingRuntimeIncidentSubscriptionRequest):
+    from hermes_cli.operating_runtime import record_incident_subscription
+
+    with _operating_runtime_conn() as conn:
+        return record_incident_subscription(
+            conn,
+            source=payload.source,
+            owner=payload.owner,
+            severity=payload.severity,
+            dedupe_key=payload.dedupe_key,
+            enabled=payload.enabled,
+        )
+
+
+@app.post("/api/operating-runtime/evidence-artifacts")
+async def post_operating_runtime_evidence_artifact(payload: OperatingRuntimeEvidenceArtifactRequest):
+    from hermes_cli.operating_runtime import index_evidence_artifact
+
+    with _operating_runtime_conn() as conn:
+        return index_evidence_artifact(
+            conn,
+            title=payload.title,
+            artifact_type=payload.artifact_type,
+            uri=payload.uri,
+            source=payload.source,
+            retention=payload.retention,
+            content_hash=payload.content_hash,
+            evidence_id=payload.evidence_id,
+        )
+
+
+@app.post("/api/operating-runtime/release-trains")
+async def post_operating_runtime_release_train(payload: OperatingRuntimeReleaseTrainRequest):
+    from hermes_cli.operating_runtime import plan_release_train
+
+    with _operating_runtime_conn() as conn:
+        return plan_release_train(
+            conn,
+            train=payload.train,
+            projects=payload.projects,
+            version=payload.version,
+            approved=payload.approved,
+            rollback=payload.rollback,
+        )
+
+
+@app.post("/api/operating-runtime/production-screenshots")
+async def post_operating_runtime_production_screenshot(payload: OperatingRuntimeProductionScreenshotRequest):
+    from hermes_cli.operating_runtime import record_production_screenshot_run
+
+    with _operating_runtime_conn() as conn:
+        return record_production_screenshot_run(
+            conn,
+            project=payload.project,
+            url=payload.url,
+            viewport=payload.viewport,
+            artifact_uri=payload.artifact_uri,
+            status=payload.status,
+            blank_detected=payload.blank_detected,
+            live=payload.live,
+        )
+
+
+@app.post("/api/operating-runtime/hetzner-promotion-transport")
+async def post_operating_runtime_hetzner_promotion_transport(payload: OperatingRuntimeHetznerTransportRequest):
+    from hermes_cli.operating_runtime import record_hetzner_transport_run
+
+    with _operating_runtime_conn() as conn:
+        return record_hetzner_transport_run(
+            conn,
+            project=payload.project,
+            service_key=payload.service_key,
+            version=payload.version,
+            script=payload.script,
+            status=payload.status,
+            receipt_uri=payload.receipt_uri,
+            rollback=payload.rollback,
+        )
+
+
+@app.post("/api/operating-runtime/server-secret-posture")
+async def post_operating_runtime_server_secret_posture(payload: OperatingRuntimeServerSecretPostureRequest):
+    from hermes_cli.operating_runtime import record_server_secret_posture
+
+    with _operating_runtime_conn() as conn:
+        return record_server_secret_posture(
+            conn,
+            project=payload.project,
+            required=payload.required,
+            present=payload.present or [],
+            source=payload.source,
+        )
+
+
+@app.post("/api/operating-runtime/incident-fanout")
+async def post_operating_runtime_incident_fanout(payload: OperatingRuntimeIncidentFanoutRequest):
+    from hermes_cli.operating_runtime import record_incident_notification_target
+
+    with _operating_runtime_conn() as conn:
+        return record_incident_notification_target(
+            conn,
+            channel=payload.channel,
+            target=payload.target,
+            severity=payload.severity,
+            enabled=payload.enabled,
+            cooldown_minutes=payload.cooldown_minutes,
+        )
+
+
+@app.post("/api/operating-runtime/artifact-backends")
+async def post_operating_runtime_artifact_backend(payload: OperatingRuntimeArtifactBackendRequest):
+    from hermes_cli.operating_runtime import record_artifact_backend
+
+    with _operating_runtime_conn() as conn:
+        return record_artifact_backend(
+            conn,
+            name=payload.name,
+            mode=payload.mode,
+            base_uri=payload.base_uri,
+            retention_days=payload.retention_days,
+            cleanup_enabled=payload.cleanup_enabled,
+        )
+
+
+@app.post("/api/operating-runtime/outcome-adapter-adoption")
+async def post_operating_runtime_outcome_adapter_adoption(payload: OperatingRuntimeOutcomeAdapterAdoptionRequest):
+    from hermes_cli.operating_runtime import record_project_outcome_adapter_adoption
+
+    with _operating_runtime_conn() as conn:
+        return record_project_outcome_adapter_adoption(
+            conn,
+            project=payload.project,
+            endpoint=payload.endpoint,
+            adopted=payload.adopted,
+            last_checked=payload.last_checked,
+        )
+
+
+@app.post("/api/operating-runtime/breaker-rollout")
+async def post_operating_runtime_breaker_rollout(payload: OperatingRuntimeBreakerRolloutRequest):
+    from hermes_cli.operating_runtime import record_breaker_middleware_rollout
+
+    with _operating_runtime_conn() as conn:
+        return record_breaker_middleware_rollout(
+            conn,
+            project=payload.project,
+            path_class=payload.path_class,
+            wrapped=payload.wrapped,
+            test_status=payload.test_status,
+        )
+
+
+@app.post("/api/operating-runtime/provider-eval-execution")
+async def post_operating_runtime_provider_eval_execution(payload: OperatingRuntimeProviderEvalExecutionRequest):
+    from hermes_cli.operating_runtime import record_provider_eval_execution
+
+    with _operating_runtime_conn() as conn:
+        return record_provider_eval_execution(
+            conn,
+            provider=payload.provider,
+            task_family=payload.task_family,
+            artifact_uri=payload.artifact_uri,
+            correctness=payload.correctness,
+            cost_score=payload.cost_score,
+            latency_score=payload.latency_score,
+            verdict=payload.verdict,
+        )
+
+
+@app.post("/api/operating-runtime/billing-provider-integrations")
+async def post_operating_runtime_billing_provider_integration(payload: OperatingRuntimeBillingProviderIntegrationRequest):
+    from hermes_cli.operating_runtime import record_billing_provider_integration
+
+    with _operating_runtime_conn() as conn:
+        return record_billing_provider_integration(
+            conn,
+            provider=payload.provider,
+            project=payload.project,
+            amount=payload.amount,
+            period=payload.period,
+            source=payload.source,
+            variance=payload.variance,
+        )
+
+
+@app.post("/api/operating-runtime/release-train-execution")
+async def post_operating_runtime_release_train_execution(payload: OperatingRuntimeReleaseTrainExecutionRequest):
+    from hermes_cli.operating_runtime import execute_release_train_record
+
+    with _operating_runtime_conn() as conn:
+        return execute_release_train_record(
+            conn,
+            train=payload.train,
+            projects=payload.projects,
+            version=payload.version,
+            gates_passed=payload.gates_passed,
+            approved=payload.approved,
+            rollback=payload.rollback,
+        )
+
+
+def _persist_dashboard_snapshot_evidence(snapshots: List[Dict[str, Any]]) -> None:
+    from hermes_cli.operating_runtime import connect, upsert_evidence
+
+    with connect() as conn:
+        for snapshot in snapshots:
+            source = snapshot.get("source") or {}
+            health = snapshot.get("health") or {}
+            source_id = str(source.get("id") or "unknown-dashboard")
+            health_state = str(health.get("state") or "unknown")
+            state = "ready" if health_state == "healthy" else "failed" if health_state == "critical" else "warning"
+            upsert_evidence(
+                conn,
+                id=f"snapshot-{source_id}",
+                kind="snapshot",
+                subject=str(source.get("label") or source_id),
+                state=state,  # type: ignore[arg-type]
+                owner=str(source.get("owner") or "Dashboard owner"),
+                detail=str(health.get("message") or "Dashboard snapshot recorded."),
+                payload={"source": source, "health": health, "updatedAt": snapshot.get("updatedAt")},
+            )
+
+
+@app.get("/dashboard-snapshot")
+async def get_public_hermes_dashboard_snapshot():
+    from hermes_cli.dashboard_snapshots import build_hermes_dashboard_snapshot
+
+    return build_hermes_dashboard_snapshot(PROJECT_ROOT)
+
+
+@app.get("/api/dashboard/snapshot")
+async def get_hermes_dashboard_snapshot():
+    from hermes_cli.dashboard_snapshots import build_hermes_dashboard_snapshot
+
+    snapshot = build_hermes_dashboard_snapshot(PROJECT_ROOT)
+    _persist_dashboard_snapshot_evidence([snapshot])
+    return snapshot
+
+
+@app.get("/api/dashboard/snapshots")
+async def get_dashboard_snapshots(live: bool = False, timeout_ms: int = 2000):
+    from hermes_cli.dashboard_snapshots import build_registry_dashboard_snapshots
+
+    timeout = max(0.2, min(float(timeout_ms) / 1000.0, 10.0))
+    snapshots = build_registry_dashboard_snapshots(PROJECT_ROOT, live=live, timeout=timeout)
+    _persist_dashboard_snapshot_evidence(snapshots)
+    return {"snapshots": snapshots}
+
+
 _WINDOWS_11_MIN_BUILD = 22000
 
 

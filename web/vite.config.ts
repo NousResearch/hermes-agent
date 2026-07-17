@@ -4,6 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 
 const BACKEND = process.env.HERMES_DASHBOARD_URL ?? "http://127.0.0.1:9119";
+const SKIP_DEV_BACKEND_CHECK = process.env.HERMES_SKIP_DEV_BACKEND_CHECK === "1";
 
 /**
  * In production the Python `hermes dashboard` server injects a one-shot
@@ -24,6 +25,7 @@ function hermesDevToken(): Plugin {
     name: "hermes:dev-session-token",
     apply: "serve",
     async transformIndexHtml() {
+      if (SKIP_DEV_BACKEND_CHECK) return;
       try {
         const res = await fetch(BACKEND, { headers: { accept: "text/html" } });
         const html = await res.text();
@@ -89,6 +91,29 @@ export default defineConfig({
   build: {
     outDir: "../hermes_cli/web_dist",
     emptyOutDir: true,
+    chunkSizeWarningLimit: 525,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (
+            id.includes("/react/") ||
+            id.includes("/react-dom/") ||
+            id.includes("/scheduler/") ||
+            id.includes("react-router") ||
+            id.includes("@remix-run") ||
+            id.includes("use-sync-external-store")
+          ) return "vendor-react";
+          if (id.includes("@nous-research")) return "vendor-nous-ui";
+          if (id.includes("lucide-react")) return "vendor-icons";
+          if (id.includes("recharts") || id.includes("d3-")) return "vendor-charts";
+          if (id.includes("@tanstack")) return "vendor-tanstack";
+          if (id.includes("@xterm") || id.includes("xterm")) return "vendor-terminal";
+          if (id.includes("@codemirror") || id.includes("codemirror")) return "vendor-editor";
+          return undefined;
+        },
+      },
+    },
   },
   server: {
     proxy: {

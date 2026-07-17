@@ -1,5 +1,6 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import { Fragment } from "react";
+import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, } from "recharts";
 import { cn } from "./utils";
 import { DashboardEmptyState } from "./states";
 import { StatusPill } from "./metrics";
@@ -9,22 +10,22 @@ export function ChartPanel({ id, title, description, action, children, className
 export function SimpleBarChart({ data, valueLabel = "value", }) {
     if (!data.length)
         return _jsx(DashboardEmptyState, { title: "No chart data", description: "No series values are available." });
-    const max = Math.max(...data.map((item) => item.value), 1);
-    return (_jsx("div", { className: "space-y-3", children: data.map((item) => (_jsxs("div", { className: "grid grid-cols-[minmax(5rem,10rem)_minmax(0,1fr)_4rem] items-center gap-3 text-sm", children: [_jsx("div", { className: "truncate text-muted-foreground", children: item.label }), _jsx("div", { className: "h-3 overflow-hidden rounded-full bg-muted", children: _jsx("div", { "aria-label": `${item.label} ${valueLabel}: ${item.value}`, className: "h-full rounded-full bg-primary", style: { width: `${Math.max(2, (item.value / max) * 100)}%` } }) }), _jsx("div", { className: "text-right font-mono-ui text-xs text-foreground", children: item.value })] }, item.label))) }));
+    return (_jsx("div", { className: "h-56 min-w-0 rounded-md border border-border bg-background p-3", role: "img", "aria-label": `bar chart by ${valueLabel}`, children: _jsx(ResponsiveContainer, { height: "100%", width: "100%", children: _jsxs(BarChart, { data: data, margin: { bottom: 0, left: -18, right: 8, top: 8 }, children: [_jsx(CartesianGrid, { stroke: "hsl(var(--border))", strokeDasharray: "3 3", vertical: false }), _jsx(XAxis, { dataKey: "label", fontSize: 12, stroke: "hsl(var(--muted-foreground))", tickLine: false }), _jsx(YAxis, { fontSize: 12, stroke: "hsl(var(--muted-foreground))", tickLine: false }), _jsx(Tooltip, { contentStyle: {
+                            background: "hsl(var(--card))",
+                            border: "1px solid hsl(var(--border))",
+                            borderRadius: "8px",
+                            color: "hsl(var(--foreground))",
+                        }, labelStyle: { color: "hsl(var(--foreground))" } }), _jsx(Bar, { dataKey: "value", fill: "hsl(var(--primary))", name: valueLabel, radius: [6, 6, 0, 0] })] }) }) }));
 }
-export function SimpleLineChart({ data, height = 140, }) {
+export function SimpleLineChart({ data, height = 180, }) {
     if (data.length < 2)
         return _jsx(DashboardEmptyState, { title: "Not enough data", description: "At least two points are required." });
-    const width = 640;
-    const min = Math.min(...data.map((item) => item.value));
-    const max = Math.max(...data.map((item) => item.value));
-    const span = max - min || 1;
-    const points = data.map((item, index) => {
-        const x = (index / (data.length - 1)) * width;
-        const y = height - ((item.value - min) / span) * (height - 12) - 6;
-        return `${x},${y}`;
-    }).join(" ");
-    return (_jsx("div", { className: "overflow-hidden rounded-md border border-border bg-background p-3", children: _jsx("svg", { "aria-label": "line chart", className: "h-auto w-full", viewBox: `0 0 ${width} ${height}`, role: "img", children: _jsx("polyline", { fill: "none", points: points, stroke: "hsl(var(--primary))", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "3" }) }) }));
+    return (_jsx("div", { className: "min-w-0 rounded-md border border-border bg-background p-3", style: { height }, role: "img", "aria-label": "line chart", children: _jsx(ResponsiveContainer, { height: "100%", width: "100%", children: _jsxs(LineChart, { data: data, margin: { bottom: 0, left: -18, right: 8, top: 8 }, children: [_jsx(CartesianGrid, { stroke: "hsl(var(--border))", strokeDasharray: "3 3", vertical: false }), _jsx(XAxis, { dataKey: "label", fontSize: 12, stroke: "hsl(var(--muted-foreground))", tickLine: false }), _jsx(YAxis, { fontSize: 12, stroke: "hsl(var(--muted-foreground))", tickLine: false }), _jsx(Tooltip, { contentStyle: {
+                            background: "hsl(var(--card))",
+                            border: "1px solid hsl(var(--border))",
+                            borderRadius: "8px",
+                            color: "hsl(var(--foreground))",
+                        }, labelStyle: { color: "hsl(var(--foreground))" } }), _jsx(Line, { activeDot: { r: 5 }, dataKey: "value", dot: { r: 3 }, stroke: "hsl(var(--primary))", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 3, type: "monotone" })] }) }) }));
 }
 export function HeatmapGrid({ rows, columns, values, }) {
     const max = Math.max(...Object.values(values), 1);

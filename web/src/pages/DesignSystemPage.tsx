@@ -41,6 +41,7 @@ import {
   type DashboardRegistryEntry,
   type QueueItem,
 } from "@hermes/dashboard-kit";
+import { dashboardRecipes } from "./dashboard-recipes";
 
 interface ExampleRun {
   id: string;
@@ -70,7 +71,7 @@ const dashboards: DashboardRegistryEntry[] = [
     label: "Nous Hermes Agent",
     description: "Official agent dashboard for chat, profiles, models, sessions, tools, and setup.",
     url: "/",
-    healthUrl: "/api/status",
+    healthUrl: "data:application/json,{\"status\":\"ok\"}",
     status: "current",
     category: "control plane",
     owner: "Hermes",
@@ -80,7 +81,9 @@ const dashboards: DashboardRegistryEntry[] = [
     label: "Khashi VC ROC",
     description: "Research operations center for markets, scheduler capacity, experiments, cost, and findings.",
     productionUrl: "https://roc.tlccapitalgroup.com",
-    status: "online",
+    localUrl: "http://localhost:3100",
+    healthUrl: "data:application/json,{\"status\":\"ok\"}",
+    status: "unknown",
     category: "research",
     owner: "Khashi",
   },
@@ -96,7 +99,29 @@ const dashboards: DashboardRegistryEntry[] = [
 const queueItems: QueueItem[] = [
   { id: "q-1", label: "Generate morning posts", status: "running", detail: "2 brands active" },
   { id: "q-2", label: "Refresh dashboard registry", status: "queued" },
-  { id: "q-3", label: "Promote production build", status: "blocked", detail: "Awaiting approval" },
+  { id: "q-3", label: "Archive stale assets", status: "completed", detail: "3 GB cap respected" },
+  { id: "q-4", label: "Retry failed publication", status: "failed", detail: "Provider returned 502" },
+  { id: "q-5", label: "Reconcile stale run", status: "stale", detail: "Last heartbeat 42m ago" },
+  { id: "q-6", label: "Promote production build", status: "blocked", detail: "Awaiting approval" },
+];
+
+const snippets = [
+  {
+    title: "Dashboard shell",
+    code: `<DashboardShell sidebar={<DashboardSidebar items={items} />}>\n  <DashboardHeader title="Operations" />\n  <DashboardSection title="Status">\n    <MetricGrid><KpiCard label="Health" value="OK" /></MetricGrid>\n  </DashboardSection>\n</DashboardShell>`,
+  },
+  {
+    title: "Data table",
+    code: `<FilterBar><SearchInput value={query} onChange={setQuery} /></FilterBar>\n<DataTable rows={rows} columns={columns} getRowKey={(row) => row.id} />`,
+  },
+  {
+    title: "Command safety",
+    code: `<CommandBar actions={[{\n  id: "deploy",\n  label: "Deploy",\n  permission: "admin",\n  requiresConfirmation: true,\n  riskLevel: "high",\n}]} />`,
+  },
+  {
+    title: "Launcher health",
+    code: `<DashboardLauncher dashboards={registry} currentId={activeId} pollHealth healthPollIntervalMs={60000} />`,
+  },
 ];
 
 export default function DesignSystemPage() {
@@ -153,10 +178,11 @@ export default function DesignSystemPage() {
         title="Command Pattern"
         description="Operator actions should be grouped, labeled, and visually separated from read-only analytics."
         actions={[
-          { id: "start", label: "Start", icon: Play, tone: "success" },
-          { id: "pause", label: "Pause", icon: Pause, tone: "warning" },
-          { id: "stop", label: "Stop", icon: Square, tone: "critical" },
-          { id: "refresh", label: "Refresh", icon: RefreshCw },
+          { id: "start", label: "Start", icon: Play, tone: "success", permission: "operator", riskLevel: "low" },
+          { id: "pause", label: "Pause", icon: Pause, tone: "warning", permission: "operator", riskLevel: "medium" },
+          { id: "stop", label: "Stop", icon: Square, tone: "critical", permission: "admin", requiresConfirmation: true, riskLevel: "high" },
+          { id: "refresh", label: "Refresh", icon: RefreshCw, permission: "viewer" },
+          { id: "deploy", label: "Deploy", icon: ShieldCheck, disabled: true, disabledReason: "Admin approval required.", permission: "admin", riskLevel: "high" },
         ]}
       />
 
@@ -248,13 +274,74 @@ export default function DesignSystemPage() {
         </DashboardSection>
       </div>
 
-      <DashboardLauncher dashboards={dashboards} currentId="nous-hermes-agent.dashboard" />
+      <DashboardSection title="Launcher Pattern" description="Use manifest-driven launcher cards with explicit health, missing URL, and unavailable states.">
+        <DashboardLauncher dashboards={dashboards} currentId="nous-hermes-agent.dashboard" pollHealth healthPollIntervalMs={300_000} />
+      </DashboardSection>
+
+      <DashboardSection title="Empty Launcher Pattern" description="Registries must show a useful empty state when no dashboards are registered.">
+        <DashboardLauncher dashboards={[]} />
+      </DashboardSection>
 
       <DashboardSection title="State Patterns" description="Every data surface needs explicit loading, empty, and error states.">
-        <div className="grid gap-3 lg:grid-cols-3">
+        <div className="grid gap-3 lg:grid-cols-4">
           <DashboardLoadingState label="Loading example" />
           <DashboardEmptyState title="Empty example" description="No records matched the selected filters." />
           <DashboardErrorState title="Error example" message="The request failed or was aborted." />
+          <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground opacity-60">
+            Disabled example
+          </div>
+        </div>
+      </DashboardSection>
+
+      <DashboardSection title="Copyable Usage Examples" description="Use these as the approved composition starting points for agents and developers.">
+        <div className="grid gap-3 lg:grid-cols-2">
+          {snippets.map((snippet) => (
+            <article key={snippet.title} className="rounded-lg border border-border bg-card p-4">
+              <h3 className="mb-2 text-sm font-semibold text-foreground">{snippet.title}</h3>
+              <pre className="overflow-x-auto rounded-md border border-border bg-background p-3 text-xs text-muted-foreground">
+                <code>{snippet.code}</code>
+              </pre>
+            </article>
+          ))}
+        </div>
+      </DashboardSection>
+
+      <DashboardSection title="V7 Full-Page Dashboard Recipes" description="Use one approved recipe before building a new dashboard or replacing a static adapter surface.">
+        <div className="grid gap-3 xl:grid-cols-2">
+          {dashboardRecipes.map((recipe) => {
+            const Icon = recipe.icon;
+            return (
+              <article key={recipe.id} className="rounded-lg border border-border bg-card p-4">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Icon className="h-4 w-4 text-primary" />
+                      <h3 className="text-sm font-semibold text-foreground">{recipe.title}</h3>
+                    </div>
+                    <p className="mt-1 text-sm text-muted-foreground">{recipe.useFor}</p>
+                  </div>
+                  <StatusPill tone="info">{recipe.id}</StatusPill>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div>
+                    <div className="mb-1 text-xs font-semibold uppercase text-muted-foreground">Layout</div>
+                    <ul className="space-y-1 text-sm text-muted-foreground">
+                      {recipe.layout.slice(0, 4).map((item) => <li key={item}>{item}</li>)}
+                    </ul>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-xs font-semibold uppercase text-muted-foreground">Data Contract</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {recipe.dataContract.map((item) => <StatusPill key={item} tone="neutral">{item}</StatusPill>)}
+                    </div>
+                  </div>
+                </div>
+                <pre className="mt-3 overflow-x-auto rounded-md border border-border bg-background p-3 text-xs text-muted-foreground">
+                  <code>{`npm run dashboard:scaffold -- --name "${recipe.title}" --recipe ${recipe.id}`}</code>
+                </pre>
+              </article>
+            );
+          })}
         </div>
       </DashboardSection>
 

@@ -4,6 +4,8 @@ from plugins.platforms.slack.block_kit import (
     MAX_BLOCKS,
     MAX_HEADER_TEXT,
     MAX_SECTION_TEXT,
+    _display_width,
+    _render_table,
     render_blocks,
 )
 
@@ -196,6 +198,29 @@ class TestTables:
         row = "|" + "|".join("v" for _ in range(25)) + "|"
         blocks = render_blocks(f"{header}\n{sep}\n{row}")
         assert blocks[0]["type"] == "rich_text"
+
+    def test_display_width_counts_cjk_as_two_columns(self):
+        assert _display_width("LCP") == 3
+        assert _display_width("指标") == 4
+        assert _display_width("p75 值") == 6
+
+    def test_cjk_fallback_alignment_uses_display_width(self):
+        rows = [
+            "| 指标 | 判断 |",
+            "| LCP | 良好 |",
+            "| INP | Needs Improvement |",
+        ]
+        out = _render_table(rows)
+        lines = out.split("\n")
+        data_lines = [lines[0]] + lines[2:]  # lines[1] is the header underline
+        # The first column separator must sit at the same display column on
+        # every row; with len()-based padding the CJK header row drifts.
+        prefix_cols = {
+            _display_width(line[: line.index("|")]) for line in data_lines
+        }
+        assert len(prefix_cols) == 1
+        # Header underline spans the display width of the widest cell (指标 = 4).
+        assert lines[1].startswith("-" * 4)
 
     def test_escaped_pipe_not_a_column_separator(self):
         md = (

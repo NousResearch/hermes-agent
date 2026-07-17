@@ -29,6 +29,7 @@ adapter state — so it is trivially unit-testable.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 
 # Slack Block Kit hard limits (https://docs.slack.dev/reference/block-kit/blocks)
@@ -301,8 +302,23 @@ def _table_block(rows: List[str], sep_line: str) -> Optional[Block]:
     return block
 
 
+def _display_width(s: str) -> int:
+    """Monospace display width of ``s``: East Asian Wide/Fullwidth chars
+    occupy two columns in Slack's code font, everything else one."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in s)
+
+
+def _pad_display(s: str, width: int) -> str:
+    """Right-pad ``s`` with spaces to ``width`` display columns."""
+    return s + " " * max(0, width - _display_width(s))
+
+
 def _render_table(rows: List[str]) -> str:
-    """Render markdown pipe-table rows as aligned monospace text (fallback)."""
+    """Render markdown pipe-table rows as aligned monospace text (fallback).
+
+    Column widths are computed in display columns, not codepoints, so CJK
+    cell content (two columns per glyph in the monospace font) stays aligned.
+    """
     parsed: List[List[str]] = []
     for r in rows:
         cells = _split_row(r)
@@ -312,10 +328,10 @@ def _render_table(rows: List[str]) -> str:
     ncols = max(len(r) for r in parsed)
     for r in parsed:
         r.extend([""] * (ncols - len(r)))
-    widths = [max(len(r[c]) for r in parsed) for c in range(ncols)]
+    widths = [max(_display_width(r[c]) for r in parsed) for c in range(ncols)]
     out_lines = []
     for ri, r in enumerate(parsed):
-        line = " | ".join(r[c].ljust(widths[c]) for c in range(ncols))
+        line = " | ".join(_pad_display(r[c], widths[c]) for c in range(ncols))
         out_lines.append(line.rstrip())
         if ri == 0:  # header underline
             out_lines.append("-+-".join("-" * widths[c] for c in range(ncols)))

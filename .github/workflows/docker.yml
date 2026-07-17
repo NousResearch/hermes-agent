@@ -127,12 +127,13 @@ jobs:
         run: uv python install 3.11
 
       - name: Install Python dependencies (for docker tests)
-        run: |
-          # ``dev`` extra pulls in pytest, pytest-asyncio —
-          # everything tests/docker/ needs.  We deliberately avoid ``all``
-          # here because the docker tests only drive the container via
-          # subprocess and don't import hermes_agent's optional deps.
-          uv sync --locked --python 3.11 --extra dev
+        # ``dev`` extra pulls in pytest, pytest-asyncio —
+        # everything tests/docker/ needs.  We deliberately avoid ``all``
+        # here because the docker tests only drive the container via
+        # subprocess and don't import hermes_agent's optional deps.
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra dev
 
       - name: Run docker integration tests
         env:

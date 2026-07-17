@@ -41,6 +41,7 @@ jobs:
     # doesn't auto-deploy via the deploy-docs path.
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Trigger Vercel Deploy
         run: curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"
@@ -48,6 +49,7 @@ jobs:
   deploy-docs:
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
@@ -65,7 +67,9 @@ jobs:
           python-version: '3.11'
 
       - name: Install PyYAML for skill extraction
-        run: pip install pyyaml==6.0.2 httpx==0.28.1
+        uses: ./.github/actions/retry
+        with:
+          command: pip install pyyaml==6.0.2 httpx==0.28.1
 
       - name: Prepare skills index (unified multi-source catalog)
         env:
@@ -150,8 +154,10 @@ jobs:
         run: python3 website/scripts/generate-skill-docs.py
 
       - name: Install dependencies
-        run: npm ci
-        working-directory: website
+        uses: ./.github/actions/retry
+        with:
+          command: npm ci
+          working-directory: website
 
       - name: Build Docusaurus
         run: npm run build

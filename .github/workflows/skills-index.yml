@@ -20,6 +20,7 @@ jobs:
     # Only run on the upstream repository, not on forks
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -28,7 +29,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install httpx==0.28.1 pyyaml==6.0.2
+        uses: ./.github/actions/retry
+        with:
+          command: pip install httpx==0.28.1 pyyaml==6.0.2
 
       - name: Build skills index
         env:
@@ -49,6 +52,7 @@ jobs:
     needs: build-index
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Trigger Deploy Site workflow
         env:

@@ -165,6 +165,20 @@ def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
     return allowed is None or platform in allowed
 
 
+def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
+    """Return the platform a platform-less configuration UI should target.
+
+    Most configurable toolsets retain the historical desktop/CLI target. A
+    toolset restricted away from that platform must instead be configured on
+    one of its supported platforms; otherwise the shared save helper correctly
+    drops it and the UI reports a successful no-op.
+    """
+    allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
+    if not allowed or default in allowed:
+        return default
+    return sorted(allowed)[0]
+
+
 def _get_effective_configurable_toolsets():
     """Return CONFIGURABLE_TOOLSETS + any plugin-provided toolsets.
 
@@ -321,6 +335,15 @@ TOOL_CATEGORIES = {
                 "env_vars": [],
                 "tts_provider": "piper",
                 "post_setup": "piper",
+            },
+            {
+                "name": "DeepInfra TTS",
+                "badge": "paid",
+                "tag": "Chatterbox, Qwen3-TTS, … — live catalog from api.deepinfra.com",
+                "env_vars": [
+                    {"key": "DEEPINFRA_API_KEY", "prompt": "DeepInfra API key", "url": "https://deepinfra.com/dash/api_keys"},
+                ],
+                "tts_provider": "deepinfra",
             },
         ],
     },
@@ -1830,8 +1853,8 @@ def _get_platform_tools(
     # has been saved for that platform (tracked via known_plugin_toolsets).
     # Unknown plugins default to enabled; known-but-absent = disabled.
     if plugin_ts_keys:
-        known_map = config.get("known_plugin_toolsets", {})
-        known_for_platform = set(known_map.get(platform, []))
+        known_map = config.get("known_plugin_toolsets", {}) or {}
+        known_for_platform = set(known_map.get(platform, []) or [])
         for pts in plugin_ts_keys:
             if pts in toolset_names:
                 # Explicitly listed in config — enabled
@@ -1980,7 +2003,10 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     # Track which plugin toolsets are "known" for this platform so we can
     # distinguish "new plugin, default enabled" from "user disabled it".
     if plugin_keys:
-        config.setdefault("known_plugin_toolsets", {})
+        # setdefault does NOT replace a present-but-null key ("known_plugin_toolsets:"
+        # in config.yaml parses to None) — normalize before indexing into it.
+        if not isinstance(config.get("known_plugin_toolsets"), dict):
+            config["known_plugin_toolsets"] = {}
         config["known_plugin_toolsets"][platform] = sorted(plugin_keys)
 
     # Reconcile with agent.disabled_toolsets. _get_platform_tools() applies
@@ -4498,7 +4524,9 @@ def tools_disable_enable_command(args):
 
     successful = [
         t for t in targets
-        if t not in unknown_toolsets and (":" not in t or t.split(":")[0] not in failed_servers)
+        if t not in unknown_toolsets
+        and t not in restricted_targets
+        and (":" not in t or t.split(":")[0] not in failed_servers)
     ]
     if successful:
         verb = "Disabled" if action == "disable" else "Enabled"

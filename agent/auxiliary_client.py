@@ -44,6 +44,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
@@ -102,7 +103,6 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
-from agent.process_bootstrap import build_keepalive_http_client
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
@@ -156,21 +156,46 @@ def _resolve_aux_verify(base_url: Optional[str]) -> Any:
         return True
 
 
+_WARNED_KEEPALIVE_IMPORT_SKEW = False
+
+
 def _openai_http_client_kwargs(
     base_url: Optional[str],
     *,
     async_mode: bool = False,
 ) -> Dict[str, Any]:
     """Inject keepalive httpx client with env-only proxy (not macOS system proxy)."""
-    client = build_keepalive_http_client(
-        str(base_url or ""),
-        async_mode=async_mode,
-        verify=_resolve_aux_verify(base_url),
-    )
+    try:
+        from agent.process_bootstrap import build_keepalive_http_client
+        client = build_keepalive_http_client(
+            str(base_url or ""),
+            async_mode=async_mode,
+            verify=_resolve_aux_verify(base_url),
+        )
+    except (ImportError, AttributeError):
+        # Version-skewed installs (#64333): a process whose sys.path resolves
+        # an older agent/process_bootstrap.py without this helper — seen when
+        # the Desktop app's bundled runtime lags a git-installed source tree
+        # that newer callers (cron scheduler) were written against. Every cron
+        # job died on this ImportError before any agent logic ran. Degrade
+        # gracefully to the OpenAI SDK's default httpx client (respects macOS
+        # system proxy, no pool-level keepalive expiry) instead of failing the
+        # whole job, and say so once — silent version skew is how this bug
+        # went unnoticed until jobs were already dead on arrival.
+        global _WARNED_KEEPALIVE_IMPORT_SKEW
+        if not _WARNED_KEEPALIVE_IMPORT_SKEW:
+            _WARNED_KEEPALIVE_IMPORT_SKEW = True
+            logger.warning(
+                "agent.process_bootstrap.build_keepalive_http_client is "
+                "unavailable — mixed/stale install detected (#64333). Falling "
+                "back to the SDK default HTTP client. Run `hermes update` (or "
+                "reinstall the Desktop app) to resync the runtime."
+            )
+        client = None
+
     if client is None:
         return {}
     return {"http_client": client}
-
 
 def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
@@ -314,15 +339,18 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
     return bare == "trinity-large-thinking"
 
 
-# Context window enforced by ChatGPT's Codex OAuth backend for gpt-5.4/5.5.
-# The raw OpenAI API and OpenRouter expose 1.05M for the same slug, but the
-# Codex backend hard-caps at 272K (verified live: a ~330K-token request to
+# Context window enforced by ChatGPT's Codex OAuth backend for the
+# gpt-5.4 / gpt-5.5 / gpt-5.6 families. The raw OpenAI API and OpenRouter
+# expose 1.05M for the same slugs, but the Codex backend hard-caps at 272K
+# (verified live for 5.4/5.5: a ~330K-token request to
 # chatgpt.com/backend-api/codex/responses is rejected with
-# ``context_length_exceeded`` while ~250K succeeds). With a 272K ceiling the
-# default 50% compaction trigger fires at ~136K — wasteful, since the model
-# can hold far more raw context before summarization actually buys anything.
-# We raise the trigger to 85% (~231K) on this exact route so Codex gpt-5.4/
-# gpt-5.5 sessions use the window they actually have.
+# ``context_length_exceeded`` while ~250K succeeds; gpt-5.6 shares the same
+# 272K Codex cap — see _CODEX_OAUTH_CONTEXT_FALLBACK in model_metadata.py).
+# With a 272K ceiling the default 50% compaction trigger fires at ~136K —
+# wasteful, since the model can hold far more raw context before
+# summarization actually buys anything. We raise the trigger to 85% (~231K)
+# on this exact route so Codex gpt-5.4 / gpt-5.5 / gpt-5.6 sessions use the
+# window they actually have.
 _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD = 0.85
 
 # gpt-5.3-codex-spark is Codex-OAuth-only (ChatGPT Pro entitlement) with a
@@ -336,14 +364,16 @@ _CODEX_SPARK_COMPACTION_THRESHOLD = 0.70
 
 
 def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for gpt-5.4 / gpt-5.5 on the ChatGPT Codex OAuth backend.
+    """True for gpt-5.4 / gpt-5.5 / gpt-5.6 on the ChatGPT Codex OAuth backend.
 
     Matches only the Codex OAuth route (provider ``openai-codex``), not the
     direct OpenAI API, OpenRouter, or GitHub Copilot paths — those expose a
     larger context window for the same slug and must keep the user's default
-    compaction threshold. ``gpt-5.4-pro`` / ``gpt-5.5-pro`` and dated snapshots
-    are matched via prefix so the override tracks both 272K-capped families
-    without re-listing every variant.
+    compaction threshold. ``-pro`` variants and dated snapshots are matched
+    via prefix so the override tracks every 272K-capped family (5.4, 5.5,
+    5.6 sol/terra/luna incl. their ``-pro`` modes) without re-listing every
+    variant. (Name kept for backward compatibility with the
+    ``compression.codex_gpt55_autoraise`` config key.)
     """
     prov = (provider or "").strip().lower()
     if prov != "openai-codex":
@@ -356,6 +386,9 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
         or bare == "gpt-5.5"
         or bare.startswith("gpt-5.5-")
         or bare.startswith("gpt-5.5.")
+        or bare == "gpt-5.6"
+        or bare.startswith("gpt-5.6-")
+        or bare.startswith("gpt-5.6.")
     )
 
 
@@ -410,11 +443,12 @@ def _compression_threshold_for_model(
 
     Per-model/route overrides:
       - Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
-      - gpt-5.4 / gpt-5.5 on the Codex OAuth route → 0.85, because Codex caps
-        both families at 272K and the default 50% trigger would compact at
-        ~136K. Gated by ``allow_codex_gpt55_autoraise`` (historical config-key
-        name kept for backward compatibility) so the user can opt back down to
-        the global default (the caller passes the config flag through here).
+      - gpt-5.4 / gpt-5.5 / gpt-5.6 on the Codex OAuth route → 0.85, because
+        Codex caps all three families at 272K and the default 50% trigger
+        would compact at ~136K. Gated by ``allow_codex_gpt55_autoraise``
+        (historical config-key name kept for backward compatibility) so the
+        user can opt back down to the global default (the caller passes the
+        config flag through here).
       - gpt-5.3-codex-spark on the Codex OAuth route → 0.70, because the model
         has a native 128K window and the default 50% trigger would compact at
         ~64K — wasting half the usable context. Not gated by the gpt-5.5
@@ -465,6 +499,10 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "kilocode": "google/gemini-3-flash-preview",
     "ollama-cloud": "nemotron-3-nano:30b",
     "tencent-tokenhub": "hy3-preview",
+    # NB: no "deepinfra" entry — its aux model lives on the ProviderProfile
+    # (plugins/model-providers/deepinfra: default_aux_model), which
+    # _get_aux_model_for_provider() reads first. Duplicating it here would be
+    # dead data that drifts when the profile's value is bumped.
 }
 
 # Legacy alias — callers that haven't been updated to _get_aux_model_for_provider()
@@ -479,6 +517,33 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2.5",
     "zai": "glm-5v-turbo",
 }
+
+
+def _resolve_provider_vision_default(provider: str) -> Optional[str]:
+    """Return the provider's preferred default vision model id, or None.
+
+    Static entries in :data:`_PROVIDER_VISION_MODELS` win first (xiaomi /
+    zai have dedicated vision-only model names that don't live in any
+    discoverable catalog). Otherwise the provider's :class:`ProviderProfile`
+    gets a chance to supply one via its ``default_vision_model()`` hook —
+    that's where catalog-backed providers (DeepInfra) resolve a live default,
+    keeping the discovery logic inside their plugin instead of a name-check
+    branch here.
+    """
+    static = _PROVIDER_VISION_MODELS.get(provider)
+    if static:
+        return static
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+    except Exception:
+        return None
+    if profile is None:
+        return None
+    try:
+        return profile.default_vision_model()
+    except Exception:
+        return None
 
 # Providers whose endpoint does not accept image input, even though the
 # provider's broader ecosystem has vision models available elsewhere.  When
@@ -863,6 +928,7 @@ class _CodexCompletionsAdapter:
         # `function_call_output` items with a valid call_id, so every
         # Responses path normalizes tool history identically and cannot drift.
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from utils import base_url_host_matches
 
         instructions = "You are a helpful assistant."
         replay_messages: List[Dict[str, Any]] = []
@@ -874,7 +940,18 @@ class _CodexCompletionsAdapter:
             else:
                 replay_messages.append(msg)
 
-        input_items = _chat_messages_to_responses_input(replay_messages)
+        # Copilot (githubcopilot.com) binds replayed codex_message_items ids
+        # to a backend "connection" that doesn't survive credential
+        # rotation/gateway restarts — replaying one gets HTTP 401 "input
+        # item ID does not belong to this connection" (#32716). Auxiliary
+        # calls (context compression, flush_memories, MoA aggregation) go
+        # through this adapter instead of agent/transports/codex.py's
+        # build_kwargs, so they need the same guard applied independently.
+        _host_for_input = str(getattr(self._client, "base_url", "") or "")
+        _is_github_for_input = base_url_host_matches(_host_for_input, "githubcopilot.com")
+        input_items = _chat_messages_to_responses_input(
+            replay_messages, is_github_responses=_is_github_for_input,
+        )
 
         resp_kwargs: Dict[str, Any] = {
             "model": model,
@@ -1234,6 +1311,7 @@ class _AnthropicCompletionsAdapter:
         model = kwargs.get("model", self._model)
         tools = kwargs.get("tools")
         tool_choice = kwargs.get("tool_choice")
+        reasoning_config = kwargs.get("_reasoning_config")
         # ZAI's Anthropic-compatible endpoint rejects max_tokens on vision
         # models (glm-4v-flash etc.) with error code 1210.  When the caller
         # signals this by setting _skip_zai_max_tokens in kwargs, omit it.
@@ -1254,12 +1332,25 @@ class _AnthropicCompletionsAdapter:
             elif choice_type in {"auto", "required", "none"}:
                 normalized_tool_choice = choice_type
 
+        # Reasoning priority: explicit per-call reasoning_config (MoA per-slot,
+        # passed as _reasoning_config by _build_call_kwargs) wins over an
+        # extra_body.reasoning dict (auxiliary.<task>.extra_body config).
+        # build_anthropic_kwargs translates the config dict into the native
+        # ``thinking`` field and handles models where thinking is mandatory.
+        _reasoning_cfg = reasoning_config
+        if _reasoning_cfg is None:
+            _eb = kwargs.get("extra_body")
+            if isinstance(_eb, dict):
+                _rc = _eb.get("reasoning")
+                if isinstance(_rc, dict):
+                    _reasoning_cfg = _rc
+
         anthropic_kwargs = build_anthropic_kwargs(
             model=model,
             messages=messages,
             tools=tools,
             max_tokens=max_tokens,
-            reasoning_config=None,
+            reasoning_config=_reasoning_cfg,
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
         )
@@ -1270,6 +1361,31 @@ class _AnthropicCompletionsAdapter:
             from agent.anthropic_adapter import _forbids_sampling_params
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
+
+        # Pass through caller-supplied extra_body so providers behind
+        # Anthropic-compatible gateways receive their per-vendor request
+        # fields (thinking control, metadata, portal tags, ...). The dict
+        # form is the documented Anthropic SDK passthrough for non-standard
+        # request body keys; merge on top of whatever build_anthropic_kwargs
+        # already produced (e.g. fast-mode ``speed``) so call-time settings
+        # survive. Two exclusions:
+        #   - ``reasoning``: the OpenAI-shaped config dict is TRANSLATED into
+        #     the native ``thinking`` field above (build_anthropic_kwargs);
+        #     forwarding the raw field alongside would double-specify
+        #     reasoning and 400 on strict gateways.
+        #   - ``_``-prefixed keys: private Hermes plumbing (_reasoning_config
+        #     et al.), never wire fields.
+        caller_extra_body = kwargs.get("extra_body")
+        if caller_extra_body and isinstance(caller_extra_body, dict):
+            passthrough = {
+                k: v for k, v in caller_extra_body.items()
+                if k != "reasoning" and not str(k).startswith("_")
+            }
+            if passthrough:
+                existing = anthropic_kwargs.get("extra_body") or {}
+                if not isinstance(existing, dict):
+                    existing = {}
+                anthropic_kwargs["extra_body"] = {**existing, **passthrough}
 
         response = create_anthropic_message(self._client, anthropic_kwargs)
         _transport = get_transport("anthropic_messages")
@@ -3377,6 +3493,7 @@ def _retry_same_provider_sync(
     tools: Optional[list],
     effective_timeout: float,
     effective_extra_body: dict,
+    reasoning_config: Optional[dict],
 ) -> Any:
     if task == "vision":
         _, retry_client, retry_model = resolve_vision_provider_client(
@@ -3410,6 +3527,7 @@ def _retry_same_provider_sync(
         tools=tools,
         timeout=effective_timeout,
         extra_body=effective_extra_body,
+        reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url,
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
@@ -3434,6 +3552,7 @@ async def _retry_same_provider_async(
     tools: Optional[list],
     effective_timeout: float,
     effective_extra_body: dict,
+    reasoning_config: Optional[dict],
 ) -> Any:
     if task == "vision":
         _, retry_client, retry_model = resolve_vision_provider_client(
@@ -3467,6 +3586,7 @@ async def _retry_same_provider_async(
         tools=tools,
         timeout=effective_timeout,
         extra_body=effective_extra_body,
+        reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url,
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
@@ -3574,6 +3694,40 @@ def _auth_refresh_provider_for_route(
     return normalized
 
 
+def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[float]:
+    """Resolve a per-entry ``timeout`` for a configured fallback candidate.
+
+    A fallback candidate previously inherited the exact timeout the primary
+    provider was called with. When that deadline was tuned for the primary
+    (or the primary simply consumed its whole budget before failing over),
+    the fallback aborted on the same clock even when independently healthy —
+    a 163k-token compression that needs ~90s on the fallback died at the
+    primary's 30s deadline every turn (#62452).
+
+    Entries in ``auxiliary.<task>.fallback_chain`` may declare their own
+    ``timeout`` (seconds). This helper reads it by parsing the entry index
+    out of the label minted by :func:`_try_configured_fallback_chain`
+    (``fallback_chain[<i>](<provider>)`` — our own stable format). Returns
+    ``None`` when the label is not a configured-chain candidate, the entry
+    has no ``timeout``, or the value is invalid — callers then keep the
+    task-level timeout, preserving existing behavior.
+    """
+    if not task or not fb_label:
+        return None
+    m = re.match(r"fallback_chain\[(\d+)\]", fb_label)
+    if not m:
+        return None
+    try:
+        chain = _get_auxiliary_task_config(task).get("fallback_chain")
+        entry = chain[int(m.group(1))] if isinstance(chain, list) else None
+        raw = entry.get("timeout") if isinstance(entry, dict) else None
+    except Exception:
+        return None
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
+        return float(raw)
+    return None
+
+
 def _call_fallback_candidate_sync(
     fb_client: Any,
     fb_model: Optional[str],
@@ -3586,6 +3740,7 @@ def _call_fallback_candidate_sync(
     tools: Optional[list],
     effective_timeout: float,
     effective_extra_body: dict,
+    reasoning_config: Optional[dict],
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery.
 
@@ -3601,13 +3756,27 @@ def _call_fallback_candidate_sync(
     once with a rebuilt client; if the retry also auth-fails (non-refreshable
     expired token), mark the provider unhealthy and return ``None`` so the
     caller can continue to the next fallback layer. Non-auth errors raise.
+
+    ``effective_timeout`` is the task-level deadline; a configured-chain
+    candidate with its own ``timeout`` entry gets that instead, so a
+    fallback tuned differently from the primary is allowed its own budget
+    (#62452).
     """
+    fb_timeout = _fallback_entry_timeout(task, fb_label)
+    if fb_timeout is not None and fb_timeout != effective_timeout:
+        logger.info(
+            "Auxiliary %s: %s using its configured timeout %.0fs "
+            "(task-level was %.0fs)",
+            task or "call", fb_label, fb_timeout, effective_timeout,
+        )
+        effective_timeout = fb_timeout
     fb_base = str(getattr(fb_client, "base_url", "") or "")
     fb_kwargs = _build_call_kwargs(
         fb_label, fb_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout,
-        extra_body=effective_extra_body, base_url=fb_base)
+        extra_body=effective_extra_body, reasoning_config=reasoning_config,
+        base_url=fb_base)
     try:
         return _validate_llm_response(
             fb_client.chat.completions.create(**fb_kwargs), task)
@@ -3623,6 +3792,7 @@ def _call_fallback_candidate_sync(
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
+                    reasoning_config=reasoning_config,
                     base_url=str(getattr(retry_client, "base_url", "") or fb_base))
                 try:
                     return _validate_llm_response(
@@ -3655,14 +3825,24 @@ async def _call_fallback_candidate_async(
     tools: Optional[list],
     effective_timeout: float,
     effective_extra_body: dict,
+    reasoning_config: Optional[dict],
 ) -> Optional[Any]:
     """Async mirror of :func:`_call_fallback_candidate_sync`."""
+    fb_timeout = _fallback_entry_timeout(task, fb_label)
+    if fb_timeout is not None and fb_timeout != effective_timeout:
+        logger.info(
+            "Auxiliary %s: %s using its configured timeout %.0fs "
+            "(task-level was %.0fs)",
+            task or "call", fb_label, fb_timeout, effective_timeout,
+        )
+        effective_timeout = fb_timeout
     fb_base = str(getattr(fb_client, "base_url", "") or "")
     fb_kwargs = _build_call_kwargs(
         fb_label, fb_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout,
-        extra_body=effective_extra_body, base_url=fb_base)
+        extra_body=effective_extra_body, reasoning_config=reasoning_config,
+        base_url=fb_base)
     try:
         return _validate_llm_response(
             await fb_client.chat.completions.create(**fb_kwargs), task)
@@ -3679,6 +3859,7 @@ async def _call_fallback_candidate_async(
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
+                    reasoning_config=reasoning_config,
                     base_url=str(getattr(retry_client, "base_url", "") or fb_base))
                 try:
                     return _validate_llm_response(
@@ -4203,10 +4384,41 @@ def _resolve_auto(
         resolved_provider = main_provider
         explicit_base_url = runtime_base_url or None
         explicit_api_key = None
-        if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
+        if runtime_base_url and main_provider == "custom":
+            # Anonymous custom endpoint (OPENAI_BASE_URL / config.model.base_url)
+            # — pass through with explicit base_url + api_key.
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
+        elif main_provider.startswith("custom:"):
+            # Named custom provider (custom_providers / providers dict entry).
+            _has_named_entry = False
+            try:
+                from hermes_cli.runtime_provider import _get_named_custom_provider
+                _has_named_entry = _get_named_custom_provider(main_provider) is not None
+            except ImportError:
+                pass
+            if _has_named_entry:
+                # KEEP the full ``custom:<name>`` so resolve_provider_client
+                # lands in the named-custom-provider arm — that arm honours the
+                # entry's api_mode (e.g. anthropic_messages →
+                # AnthropicAuxiliaryClient, avoiding the /anthropic→/v1 rewrite
+                # that 404s against proxies like Palantir Foundry's Anthropic
+                # surface).  Do NOT collapse to plain "custom"; that path
+                # strips /anthropic and routes through OpenAI chat.completions.
+                # base_url and api_key come from the named entry itself, so
+                # leave the explicit_* overrides unset.
+                resolved_provider = main_provider
+                explicit_base_url = None
+            elif runtime_base_url:
+                # Config-less named custom provider (#34777): the entry only
+                # exists in the live runtime, so collapse to the anonymous
+                # custom arm with the runtime endpoint + key.
+                resolved_provider = "custom"
+                explicit_base_url = runtime_base_url
+                explicit_api_key = runtime_api_key or None
+            elif runtime_api_key:
+                explicit_api_key = runtime_api_key
         elif runtime_api_key:
             # Pin auxiliary to the same api_key as the active main chat session
             # so that a working key is reused instead of re-selecting from the pool
@@ -4707,8 +4919,8 @@ def resolve_provider_client(
         if custom_entry is None:
             custom_entry = _get_named_custom_provider(provider)
         if custom_entry:
-            custom_base = custom_entry.get("base_url", "").strip()
-            custom_key = custom_entry.get("api_key", "").strip()
+            custom_base = (custom_entry.get("base_url") or "").strip()
+            custom_key = (custom_entry.get("api_key") or "").strip()
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
                 custom_key = os.getenv(custom_key_env, "").strip()
@@ -5157,6 +5369,7 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
 _VISION_AUTO_PROVIDER_ORDER = (
     "openrouter",
     "nous",
+    "deepinfra",
 )
 
 
@@ -5213,6 +5426,21 @@ def _resolve_strict_vision_backend(
         return resolve_provider_client("openai-codex", model, is_vision=True)
     if provider == "anthropic":
         return _try_anthropic()
+    if provider == "deepinfra":
+        # DeepInfra exposes vision-capable models (Llama-4 Scout/Maverick,
+        # Qwen3-VL, Gemma 3, Gemini) on the same OpenAI-compatible endpoint
+        # as its chat models. The default is discovered live via the profile's
+        # default_vision_model() hook (key-gated, chat-surface + vision tag) so
+        # we don't pin a hardcoded id that may rot when DeepInfra retires a
+        # model, and this module stays provider-agnostic.
+        vision_model = model or _resolve_provider_vision_default("deepinfra")
+        if not vision_model:
+            logger.debug(
+                "Vision auto-detect: deepinfra catalog unreachable or "
+                "returned no vision-tagged models — skipping"
+            )
+            return None, None
+        return resolve_provider_client("deepinfra", vision_model, is_vision=True)
     if provider == "custom":
         return _try_custom_endpoint()
     return None, None
@@ -5298,16 +5526,29 @@ def resolve_vision_provider_client(
         #      _PROVIDER_VISION_MODELS provides per-provider vision model
         #      overrides when the provider has a dedicated multimodal model
         #      that differs from the chat model (e.g. xiaomi → mimo-v2-omni,
-        #      zai → glm-5v-turbo). Nous is the exception: it has a dedicated
-        #      strict vision backend with tier-aware defaults, so it must not
-        #      fall through to the user's text chat model here.
-        #   2. OpenRouter  (vision-capable aggregator fallback)
+        #      zai → glm-5v-turbo). DeepInfra is similar but resolves its
+        #      default vision model live from the catalog (see
+        #      :func:`_resolve_provider_vision_default`). Nous is the
+        #      exception: it has a dedicated strict vision backend with
+        #      tier-aware defaults, so it must not fall through to the
+        #      user's text chat model here.
+        #   2. OpenRouter (vision-capable aggregator fallback)
         #   3. Nous Portal (vision-capable aggregator fallback)
-        #   4. Stop
+        #   4. DeepInfra   (OpenAI-compatible; vision model discovered
+        #                   live from the catalog — tried when
+        #                   DEEPINFRA_API_KEY is set)
+        #   5. Stop
         main_provider = _read_main_provider()
         main_model = _read_main_model()
         if main_provider and main_provider not in {"auto", ""}:
-            vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
+            # A provider-specific vision default wins over the user's chat model:
+            # static overrides (xiaomi/zai) and catalog-backed discovery (the
+            # DeepInfra profile hook) both yield a *known* vision-capable model,
+            # whereas the pinned chat model is usually NOT multimodal (e.g. the
+            # DeepSeek-V4-Flash default) and _main_model_supports_vision can't be
+            # trusted to catch that. Only fall back to the chat model when no
+            # provider default is available (catalog unreachable).
+            vision_model = _resolve_provider_vision_default(main_provider) or main_model
             if main_provider == "nous":
                 sync_client, default_model = _resolve_strict_vision_backend(
                     main_provider, vision_model
@@ -6060,12 +6301,49 @@ def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
 
 
 def _get_task_extra_body(task: str) -> Dict[str, Any]:
-    """Read auxiliary.<task>.extra_body and return a shallow copy when valid."""
+    """Read auxiliary.<task>.extra_body and return a shallow copy when valid.
+
+    Also folds in ``auxiliary.<task>.reasoning_effort`` as an
+    ``extra_body.reasoning`` config dict ({"enabled": ..., "effort": ...})
+    when set. An explicit ``extra_body.reasoning`` in config wins over the
+    ``reasoning_effort`` shorthand (it is the more specific wire control).
+    Downstream, each wire already translates ``extra_body.reasoning``:
+    chat.completions passes it through, the Codex Responses adapter maps it
+    to top-level ``reasoning``/``include``, and the Anthropic auxiliary
+    client maps it to ``build_anthropic_kwargs(reasoning_config=...)``.
+
+    MoA tasks are excluded by design: reasoning depth for MoA is a per-slot
+    setting in the MoA preset (``moa.presets.<name>.reference_models[].
+    reasoning_effort`` / ``aggregator.reasoning_effort``), not an
+    auxiliary-task knob — an ensemble-wide value would override the
+    per-slot ones.
+    """
     task_config = _get_auxiliary_task_config(task)
     raw = task_config.get("extra_body")
-    if isinstance(raw, dict):
-        return dict(raw)
-    return {}
+    result = dict(raw) if isinstance(raw, dict) else {}
+    if "reasoning" not in result:
+        effort = task_config.get("reasoning_effort")
+        if effort is not None and effort != "":
+            if task in ("moa_reference", "moa_aggregator"):
+                logger.warning(
+                    "auxiliary.%s.reasoning_effort is not supported — MoA "
+                    "reasoning depth is per-slot: set reasoning_effort on the "
+                    "preset's reference_models entries / aggregator instead "
+                    "(moa.presets.<name>...). Ignoring.",
+                    task,
+                )
+                return result
+            from hermes_constants import parse_reasoning_effort
+            parsed = parse_reasoning_effort(effort)
+            if parsed is not None:
+                result["reasoning"] = parsed
+            else:
+                logger.warning(
+                    "auxiliary.%s.reasoning_effort %r is not a valid level "
+                    "(none, minimal, low, medium, high, xhigh, max, ultra) — ignoring",
+                    task, effort,
+                )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -6173,6 +6451,32 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
     return converted
 
 
+_PROFILE_REASONING_KEYS = {
+    "reasoning",
+    "reasoning_effort",
+    "thinking",
+    "thinking_config",
+    "thinkingconfig",
+    "thinking_budget",
+    "thinkingbudget",
+    "enable_thinking",
+    "think",
+    "verbosity",
+}
+
+
+def _contains_profile_reasoning_fields(value: Any) -> bool:
+    """Return whether a profile payload contains a reasoning wire control."""
+    if not isinstance(value, dict):
+        return False
+    for key, nested in value.items():
+        normalized = str(key).strip().lower()
+        if normalized in _PROFILE_REASONING_KEYS:
+            return True
+        if _contains_profile_reasoning_fields(nested):
+            return True
+    return False
+
 
 def _build_call_kwargs(
     provider: str,
@@ -6183,6 +6487,7 @@ def _build_call_kwargs(
     tools: Optional[list] = None,
     timeout: float = 30.0,
     extra_body: Optional[dict] = None,
+    reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
@@ -6266,17 +6571,98 @@ def _build_call_kwargs(
             _deduped.append(_t)
         kwargs["tools"] = _deduped
 
-    # Provider-specific extra_body
+    # Build provider-aware reasoning kwargs through the same profile hooks used
+    # by the standard chat-completions transport. Some providers require
+    # top-level controls (Kimi/custom ``reasoning_effort``), others use nested
+    # body fields (Gemini ``thinking_config``), and OpenRouter/Nous use
+    # ``extra_body.reasoning``. Profiles are the source of truth for those wire
+    # shapes. Providers without a reasoning-aware profile retain the generic
+    # ``extra_body.reasoning`` fallback used by Codex-compatible adapters.
+    effective_base = base_url or (
+        _current_custom_base_url() if provider == "custom" else ""
+    )
+    profile_body: Dict[str, Any] = {}
+    profile_reasoning_extra: Dict[str, Any] = {}
+    profile_top_level: Dict[str, Any] = {}
+    profile_handles_reasoning = False
+    try:
+        from providers import get_provider_profile
+        from providers.base import ProviderProfile
+
+        profile = get_provider_profile(str(provider or "").strip().lower())
+        if profile is not None:
+            profile_body = profile.build_extra_body(
+                model=model,
+                base_url=effective_base,
+                reasoning_config=reasoning_config,
+            ) or {}
+            profile_reasoning_extra, profile_top_level = (
+                profile.build_api_kwargs_extras(
+                    reasoning_config=reasoning_config,
+                    supports_reasoning=reasoning_config is not None,
+                    model=model,
+                    base_url=effective_base,
+                )
+            )
+            profile_reasoning_extra = profile_reasoning_extra or {}
+            profile_top_level = profile_top_level or {}
+            profile_handles_reasoning = (
+                type(profile).build_api_kwargs_extras
+                is not ProviderProfile.build_api_kwargs_extras
+                or _contains_profile_reasoning_fields(profile_body)
+                or _contains_profile_reasoning_fields(profile_reasoning_extra)
+                or _contains_profile_reasoning_fields(profile_top_level)
+            )
+    except Exception as exc:
+        logger.debug(
+            "_build_call_kwargs: provider profile projection failed for %s: %s",
+            provider,
+            exc,
+        )
+
+    kwargs.update(profile_top_level)
     merged_extra = dict(extra_body or {})
-    if provider == "nous":
-        merged_extra.setdefault("tags", []).extend(_nous_portal_tags())
+    merged_extra.update(profile_body)
+    merged_extra.update(profile_reasoning_extra)
+    if (
+        reasoning_config
+        and isinstance(reasoning_config, dict)
+        and not profile_handles_reasoning
+    ):
+        if reasoning_config.get("enabled") is False:
+            merged_extra["reasoning"] = {"enabled": False}
+        else:
+            effort = reasoning_config.get("effort") or "medium"
+            merged_extra["reasoning"] = {"enabled": True, "effort": effort}
+    if provider == "nous" and "tags" not in merged_extra:
+        merged_extra["tags"] = _nous_portal_tags()
     if merged_extra:
         kwargs["extra_body"] = merged_extra
+
+    # Native Anthropic Messages adapters do not consume ``extra_body``. Carry
+    # the normalized Hermes reasoning config through a private kwarg so the
+    # adapter can pass it into build_anthropic_kwargs(), where provider-aware
+    # thinking/output_config projection lives. Do not expose this private kwarg
+    # to ordinary OpenAI-compatible SDK clients, which would reject it.
+    if reasoning_config and isinstance(reasoning_config, dict):
+        provider_norm = str(provider or "").strip().lower()
+        effective_base = base_url or ""
+        if (
+            provider_norm == "anthropic"
+            or _endpoint_speaks_anthropic_messages(effective_base)
+            or _is_anthropic_compat_endpoint(provider_norm, effective_base)
+        ):
+            kwargs["_reasoning_config"] = dict(reasoning_config)
 
     return kwargs
 
 
-def _validate_llm_response(response: Any, task: str = None) -> Any:
+def _validate_llm_response(
+    response: Any,
+    task: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> Any:
     """Validate that an LLM response has the expected .choices[0].message shape.
 
     Fails fast with a clear error instead of letting malformed payloads
@@ -6284,11 +6670,21 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
     AttributeError (e.g. "'str' object has no attribute 'choices'").
 
     See #7264.
+
+    Also the single accounting chokepoint for auxiliary usage: every
+    successful non-streaming aux response passes through here exactly once,
+    so token usage is recorded against the ambient session context published
+    by the agent loop (``agent.aux_accounting``, issue #23270). Recording is
+    best-effort and never affects validation. *provider*/*base_url* are
+    optional accounting hints — fallback-path calls omit them and the row
+    keeps the model (read from the response itself) with an empty route.
     """
     if response is None:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
+    from agent.aux_accounting import record_aux_usage
+    record_aux_usage(response, task, provider=provider, base_url=base_url)
     # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
     # AnthropicAuxiliaryClient) — they have .choices[0].message.
     try:
@@ -6382,6 +6778,7 @@ def call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    reasoning_config: Optional[dict] = None,
     api_mode: str = None,
     stream: bool = False,
     stream_options: dict = None,
@@ -6405,6 +6802,8 @@ def call_llm(
         tools: Tool definitions (for function calling).
         timeout: Request timeout in seconds (None = read from auxiliary.{task}.timeout config).
         extra_body: Additional request body fields.
+        reasoning_config: Optional Hermes reasoning config for direct model calls
+              such as MoA reference/aggregator slots.
         stream: When True, return the raw SDK streaming iterator instead of a
             validated complete response. The caller is responsible for consuming
             chunks (and for any fallback). Used by the MoA aggregator so its
@@ -6509,6 +6908,7 @@ def call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
+        reasoning_config=reasoning_config,
         base_url=_base_info or resolved_base_url)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
@@ -6551,7 +6951,8 @@ def call_llm(
         # for the transient retry every auxiliary task shares. (PR #16587)
         try:
             return _validate_llm_response(
-                client.chat.completions.create(**kwargs), task)
+                client.chat.completions.create(**kwargs), task,
+                provider=resolved_provider, base_url=_base_info)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -6761,6 +7162,7 @@ def call_llm(
                     tools=tools,
                     effective_timeout=effective_timeout,
                     effective_extra_body=effective_extra_body,
+                    reasoning_config=reasoning_config,
                 )
 
         # ── Same-provider credential-pool recovery ─────────────────────
@@ -6803,6 +7205,7 @@ def call_llm(
                         tools=tools,
                         effective_timeout=effective_timeout,
                         effective_extra_body=effective_extra_body,
+                        reasoning_config=reasoning_config,
                     )
                 except Exception as retry2_err:
                     # The rotated key also hit a quota/auth wall.  Mark it
@@ -6924,7 +7327,8 @@ def call_llm(
                     task=task, messages=messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, effective_timeout=effective_timeout,
-                    effective_extra_body=effective_extra_body)
+                    effective_extra_body=effective_extra_body,
+                    reasoning_config=reasoning_config)
                 if fb_resp is not None:
                     return fb_resp
                 # The candidate had a stale/unrefreshable credential and was
@@ -6938,7 +7342,8 @@ def call_llm(
                         task=task, messages=messages,
                         temperature=temperature, max_tokens=max_tokens,
                         tools=tools, effective_timeout=effective_timeout,
-                        effective_extra_body=effective_extra_body)
+                        effective_extra_body=effective_extra_body,
+                        reasoning_config=reasoning_config)
                     if fb_resp is not None:
                         return fb_resp
             # All fallback layers exhausted — emit a single user-visible
@@ -7033,6 +7438,7 @@ async def async_call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    reasoning_config: Optional[dict] = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
@@ -7112,6 +7518,7 @@ async def async_call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
+        reasoning_config=reasoning_config,
         base_url=_client_base or resolved_base_url)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
@@ -7124,7 +7531,8 @@ async def async_call_llm(
         # for the rationale. (PR #16587)
         try:
             return _validate_llm_response(
-                await client.chat.completions.create(**kwargs), task)
+                await client.chat.completions.create(**kwargs), task,
+                provider=resolved_provider, base_url=_client_base)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -7308,6 +7716,7 @@ async def async_call_llm(
                     tools=tools,
                     effective_timeout=effective_timeout,
                     effective_extra_body=effective_extra_body,
+                    reasoning_config=reasoning_config,
                 )
 
         # ── Same-provider credential-pool recovery (mirrors sync) ─────
@@ -7345,6 +7754,7 @@ async def async_call_llm(
                         tools=tools,
                         effective_timeout=effective_timeout,
                         effective_extra_body=effective_extra_body,
+                        reasoning_config=reasoning_config,
                     )
                 except Exception as retry2_err:
                     if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
@@ -7433,7 +7843,8 @@ async def async_call_llm(
                     task=task, messages=messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, effective_timeout=effective_timeout,
-                    effective_extra_body=effective_extra_body)
+                    effective_extra_body=effective_extra_body,
+                    reasoning_config=reasoning_config)
                 if fb_resp is not None:
                     return fb_resp
                 # Stale/unrefreshable candidate credential — quarantined; walk
@@ -7449,7 +7860,8 @@ async def async_call_llm(
                         task=task, messages=messages,
                         temperature=temperature, max_tokens=max_tokens,
                         tools=tools, effective_timeout=effective_timeout,
-                        effective_extra_body=effective_extra_body)
+                        effective_extra_body=effective_extra_body,
+                        reasoning_config=reasoning_config)
                     if fb_resp is not None:
                         return fb_resp
             # All fallback layers exhausted — warn before re-raising. (#26882)

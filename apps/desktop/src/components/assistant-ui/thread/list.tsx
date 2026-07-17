@@ -41,6 +41,11 @@ type MessageGroup = { id: string; weight: number } & (
 // WITHOUT a virtualizer — pure rendering, never touches scrollTop, so it can't
 // fight use-stick-to-bottom (the single scroll owner).
 const RENDER_BUDGET = 300
+// On session switch, paint a small budget first (enough for the bottom turn(s)
+// the user actually sees after scroll-to-bottom), then bump to the full budget
+// in a requestAnimationFrame — defers the heavy markdown+syntax-highlight render
+// past the initial commit, so the switch feels instant.
+const FIRST_PAINT_BUDGET = 60
 
 interface ThreadMessageListProps {
   clampToComposer: boolean
@@ -187,7 +192,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Instead: quiet it, glue to the true bottom until the height holds steady,
   // then hand back locked. Live streaming afterward uses the normal resize follow.
   useLayoutEffect(() => {
-    setRenderBudget(RENDER_BUDGET)
+    // Start with a small first-paint budget (enough for the bottom turn(s) the
+    // user sees after scroll-to-bottom), then defer the full budget bump to a
+    // requestAnimationFrame so the heavy markdown render happens after the
+    // initial commit.
+    setRenderBudget(FIRST_PAINT_BUDGET)
 
     const el = scrollRef.current
 
@@ -215,8 +224,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       lastHeight = height
       node.scrollTop = height
 
-      // ~5 steady frames ≈ layout has settled; the frame cap bounds slow loads.
-      if (stableFrames >= 5 || ++frame > 90) {
+      // Most session switches are synchronous and stabilize within 2 frames;
+      // the old 90-frame ceiling was for slow async image loads. Cap at 15
+      // frames to minimize the settle-loop racing markdown paint on every switch.
+      if (stableFrames >= 2 || ++frame > 15) {
         void scrollToBottom('instant')
 
         return
@@ -227,7 +238,17 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     let rafId = requestAnimationFrame(settle)
 
-    return () => cancelAnimationFrame(rafId)
+    // After the settle loop starts, bump the render budget to the full value
+    // in a subsequent rAF so the full transcript becomes available after the
+    // first paint.
+    let budgetRafId = requestAnimationFrame(() => {
+      setRenderBudget(RENDER_BUDGET)
+    })
+
+    return () => {
+      cancelAnimationFrame(rafId)
+      cancelAnimationFrame(budgetRafId)
+    }
   }, [scrollRef, scrollToBottom, sessionKey, stopScroll])
 
   // Prepend an older page while preserving the on-screen position. The user is

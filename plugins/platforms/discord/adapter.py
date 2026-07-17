@@ -4084,8 +4084,27 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_model(interaction: discord.Interaction, name: str = ""):
             await self._run_simple_slash(interaction, f"/model {name}".strip())
 
-        @tree.command(name="reasoning", description="Show or change reasoning effort")
-        @discord.app_commands.describe(effort="Reasoning effort: none, minimal, low, medium, high, or xhigh.")
+        @tree.command(name="reasoning", description="Show/change reasoning effort, or toggle showing it")
+        @discord.app_commands.describe(effort="Pick a level, reset the override, or show/hide reasoning. Leave empty to see current.")
+        @discord.app_commands.choices(effort=[
+            # Effort levels and the reset/show/hide subcommands all arrive on the
+            # gateway's single `/reasoning <arg>` handler. Discord's native UI has
+            # no subcommand affordance for a free-text field (it just funnels the
+            # user into the `effort` box), so expose every accepted value as an
+            # explicit choice. --global persistence stays reachable by typing the
+            # command as plain text.
+            discord.app_commands.Choice(name="none — disable reasoning", value="none"),
+            discord.app_commands.Choice(name="minimal", value="minimal"),
+            discord.app_commands.Choice(name="low", value="low"),
+            discord.app_commands.Choice(name="medium", value="medium"),
+            discord.app_commands.Choice(name="high", value="high"),
+            discord.app_commands.Choice(name="xhigh", value="xhigh"),
+            discord.app_commands.Choice(name="max", value="max"),
+            discord.app_commands.Choice(name="ultra — maximum reasoning", value="ultra"),
+            discord.app_commands.Choice(name="reset — clear this session's override", value="reset"),
+            discord.app_commands.Choice(name="show — reveal reasoning in replies", value="show"),
+            discord.app_commands.Choice(name="hide — hide reasoning from replies", value="hide"),
+        ])
         async def slash_reasoning(interaction: discord.Interaction, effort: str = ""):
             await self._run_simple_slash(interaction, f"/reasoning {effort}".strip())
 
@@ -5571,6 +5590,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
+        allow_permanent: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """
         Send a button-based exec approval prompt for a dangerous command.
@@ -5606,6 +5627,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 "Do you want Hermes to run this command?\n\n"
                 "**Requested command:**\n```bash\n"
             )
+            if smart_denied:
+                prompt_prefix += "**Smart DENY:** owner override applies to this one operation only.\n\n"
             mention_content = self._approval_mention_content()
             if mention_content:
                 prompt_prefix = f"{mention_content}\n{prompt_prefix}"
@@ -5642,6 +5665,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
                 require_admin=require_admin,
                 admin_user_ids=admin_user_ids,
+                allow_permanent=allow_permanent,
+                smart_denied=smart_denied,
             )
 
             send_kwargs: Dict[str, Any] = {"content": content, "embed": embed, "view": view}
@@ -5934,6 +5959,54 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except Exception as e:
             logger.warning("[%s] send_model_picker failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_choice_picker(
+        self,
+        chat_id: str,
+        title: str,
+        choices: list,
+        session_key: str,
+        on_choice_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a flat select-menu choice picker (one selection → one value).
+
+        Generic single-level companion to ``send_model_picker`` used by
+        `/reasoning`, `/fast`, and any future finite-choice command. Each
+        choice dict: ``{"value": str, "label": str, "is_current": bool}``.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+
+            embed = discord.Embed(
+                title="⚙ " + (title.splitlines()[0] if title else "Choose an option"),
+                description="\n".join(title.splitlines()[1:]) or None,
+                color=discord.Color.blue(),
+            )
+
+            view = ChoicePickerView(
+                choices=choices,
+                on_choice_selected=on_choice_selected,
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+
+            msg = await channel.send(embed=embed, view=view)
+            view._message = msg  # store for on_timeout expiration editing
+            return SendResult(success=True, message_id=str(msg.id))
+
+        except Exception as e:
+            logger.warning("[%s] send_choice_picker failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
     def _get_parent_channel_id(self, channel: Any) -> Optional[str]:
@@ -6606,12 +6679,20 @@ class DiscordAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
+        """Session-scoped key for text message batching.
+
+        Passes ``event.source.profile`` through so routed messages batch
+        under the same namespace the agent run will use (e.g.
+        ``agent:crypto-trader`` instead of ``agent:main``). Without this,
+        the batch key would always land in ``agent:main`` even when the
+        routed profile differs.
+        """
         from gateway.session import build_session_key
         return build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=event.source.profile,
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -6817,7 +6898,7 @@ def _define_discord_view_classes() -> None:
     lazy install sets DISCORD_AVAILABLE=True but leaves the classes
     undefined, causing NameError on the first button interaction.
     """
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -6836,6 +6917,8 @@ def _define_discord_view_classes() -> None:
             allowed_role_ids: Optional[set] = None,
             require_admin: bool = False,
             admin_user_ids: Optional[set] = None,
+            allow_permanent: bool = True,
+            smart_denied: bool = False,
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
@@ -6849,6 +6932,11 @@ def _define_discord_view_classes() -> None:
                 str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()
             }
             self.resolved = False
+            if smart_denied:
+                self.remove_item(self.allow_session)
+                self.remove_item(self.allow_always)
+            elif not allow_permanent:
+                self.remove_item(self.allow_always)
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized.
@@ -7507,6 +7595,97 @@ def _define_discord_view_classes() -> None:
                     pass
 
 
+    class ChoicePickerView(discord.ui.View):
+        """Flat select-menu view for finite-choice commands (/reasoning, /fast).
+
+        One dropdown, one selection, done — the generic single-level companion
+        to ``ModelPickerView``. Auth gating mirrors ``ExecApprovalView``.
+        Times out after 2 minutes.
+        """
+
+        def __init__(
+            self,
+            choices: list,
+            on_choice_selected,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            super().__init__(timeout=120)
+            self.choices = list(choices)[:25]  # Discord select cap
+            self.on_choice_selected = on_choice_selected
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
+            self._message = None
+
+            options = []
+            for choice in self.choices:
+                label = str(choice.get("label") or choice.get("value") or "")
+                options.append(
+                    discord.SelectOption(
+                        label=_truncate_discord_component_text(
+                            label, _DISCORD_SELECT_FIELD_LIMIT
+                        ),
+                        value=str(choice.get("value") or ""),
+                        description="current" if choice.get("is_current") else None,
+                    )
+                )
+            select = discord.ui.Select(
+                placeholder="Choose an option...",
+                options=options,
+            )
+            select.callback = self._on_select
+            self.add_item(select)
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+            )
+
+        async def _on_select(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "⛔ You are not authorized to change this setting.",
+                    ephemeral=True,
+                )
+                return
+            if self.resolved:
+                await interaction.response.defer()
+                return
+            self.resolved = True
+
+            value = interaction.data.get("values", [""])[0]
+            try:
+                result_text = await self.on_choice_selected(
+                    str(interaction.channel_id), value
+                )
+            except Exception as exc:
+                logger.error("Choice picker selection failed: %s", exc)
+                result_text = f"Error applying selection: {exc}"
+
+            embed = discord.Embed(
+                description=result_text,
+                color=discord.Color.green(),
+            )
+            self.clear_items()
+            self.stop()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+        async def on_timeout(self):
+            if self.resolved:
+                return
+            msg = self._message
+            if msg is not None:
+                try:
+                    embed = discord.Embed(
+                        description="⏱ Selection expired — no change made.",
+                        color=discord.Color.greyple(),
+                    )
+                    self.clear_items()
+                    await msg.edit(embed=embed, view=self)
+                except Exception:
+                    pass
+
     class ClarifyChoiceView(discord.ui.View):
         """Interactive button view for the clarify tool's multiple-choice prompts.
 
@@ -7881,6 +8060,7 @@ async def _standalone_send(
     thread_id: Optional[str] = None,
     media_files: Optional[list] = None,
     force_document: bool = False,
+    caption: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send via Discord REST API without a live gateway adapter.
 
@@ -7981,7 +8161,7 @@ async def _standalone_send(
                             {"id": str(idx), "filename": os.path.basename(path)}
                             for idx, path in enumerate(valid_media)
                         ]
-                        starter_message = {"content": message, "attachments": attachments_meta}
+                        starter_message = {"content": (caption or message), "attachments": attachments_meta}
                         payload_json = json.dumps({"name": thread_name, "message": starter_message})
 
                         form = aiohttp.FormData()
@@ -8061,16 +8241,42 @@ async def _standalone_send(
                         _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
                     )
 
-            # Send each media file as a separate multipart upload
+            # Send each media file as a separate multipart upload. When a
+            # MEDIA:<path> caption was supplied, ride it as the message content
+            # on the attachment so it appears under the media bubble instead of
+            # as a separate message. caption_pending tracks whether the caption
+            # still needs delivering, so a missing file falls back to a plain
+            # message rather than silently dropping the text.
+            caption_pending = bool(caption)
             for media_path, _is_voice in media_files:
                 if not os.path.exists(media_path):
                     warning = f"Media file not found, skipping: {media_path}"
                     logger.warning(warning)
                     warnings.append(warning)
+                    if caption_pending:
+                        try:
+                            async with session.post(
+                                url, headers=json_headers,
+                                json={"content": caption}, **_req_kw,
+                            ) as resp:
+                                if resp.status in {200, 201}:
+                                    last_data = await _standalone_read_json_limited(
+                                        resp, _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
+                                    )
+                                    caption_pending = False
+                        except Exception:
+                            logger.warning("Discord caption-fallback send failed for missing media")
                     continue
                 try:
                     form = aiohttp.FormData()
                     filename = os.path.basename(media_path)
+                    if caption_pending:
+                        form.add_field(
+                            "payload_json",
+                            json.dumps({"content": caption}),
+                            content_type="application/json",
+                        )
+                        caption_pending = False
                     with open(media_path, "rb") as f:
                         form.add_field("files[0]", f, filename=filename)
                         async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:

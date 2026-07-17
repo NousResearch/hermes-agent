@@ -19,6 +19,7 @@ def test_refresh_fallback_model_rereads_config(tmp_path, monkeypatch):
     from gateway.run import GatewayRunner
 
     monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
         "fallback_providers:\n"
@@ -52,6 +53,7 @@ def test_refresh_fallback_model_clears_when_config_removed(tmp_path, monkeypatch
     from gateway.run import GatewayRunner
 
     monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
         "fallback_providers:\n"
@@ -80,6 +82,7 @@ def test_refresh_fallback_model_keeps_last_known_good_on_read_failure(
     from gateway.run import GatewayRunner
 
     monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
         "fallback_providers:\n"
@@ -97,6 +100,85 @@ def test_refresh_fallback_model_keeps_last_known_good_on_read_failure(
     cfg.write_text("fallback_providers:\n  - provider: [unclosed\n")
     assert bound() == good
     assert runner._fallback_model == good
+
+
+def test_refresh_fallback_model_reads_active_profile_config(tmp_path, monkeypatch):
+    from gateway import run as gateway_run
+    from gateway.run import GatewayRunner
+
+    default_home = tmp_path / "default"
+    secondary_home = tmp_path / "secondary"
+    default_home.mkdir()
+    secondary_home.mkdir()
+    (default_home / "config.yaml").write_text(
+        "fallback_providers:\n"
+        "  - provider: default-provider\n"
+        "    model: default-model\n",
+        encoding="utf-8",
+    )
+    (secondary_home / "config.yaml").write_text(
+        "fallback_providers:\n"
+        "  - provider: secondary-provider\n"
+        "    model: secondary-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+
+    runner = SimpleNamespace(
+        _fallback_model=None,
+        _fallback_models_by_home={str(default_home): None},
+    )
+    bound = GatewayRunner._refresh_fallback_model.__get__(runner)
+
+    with gateway_run._profile_runtime_scope(secondary_home):
+        assert bound() == [
+            {"provider": "secondary-provider", "model": "secondary-model"}
+        ]
+
+
+def test_refresh_fallback_model_keeps_last_known_good_per_profile(
+    tmp_path, monkeypatch
+):
+    from gateway import run as gateway_run
+    from gateway.run import GatewayRunner
+
+    default_home = tmp_path / "default"
+    secondary_home = tmp_path / "secondary"
+    default_home.mkdir()
+    secondary_home.mkdir()
+    (default_home / "config.yaml").write_text(
+        "fallback_providers:\n"
+        "  - provider: default-provider\n"
+        "    model: default-model\n",
+        encoding="utf-8",
+    )
+    secondary_config = secondary_home / "config.yaml"
+    secondary_config.write_text(
+        "fallback_providers:\n"
+        "  - provider: secondary-provider\n"
+        "    model: secondary-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+
+    runner = SimpleNamespace(
+        _fallback_model=[{"provider": "default-provider", "model": "default-model"}],
+        _fallback_models_by_home={
+            str(default_home): [
+                {"provider": "default-provider", "model": "default-model"}
+            ]
+        },
+    )
+    bound = GatewayRunner._refresh_fallback_model.__get__(runner)
+
+    with gateway_run._profile_runtime_scope(secondary_home):
+        secondary_chain = bound()
+        secondary_config.write_text("fallback_providers: [", encoding="utf-8")
+        assert bound() == secondary_chain
+
+    assert runner._fallback_model == [
+        {"provider": "default-provider", "model": "default-model"}
+    ]
 
 
 def test_apply_fallback_chain_updates_primary_agent():

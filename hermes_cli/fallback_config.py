@@ -2,11 +2,29 @@
 
 from __future__ import annotations
 
-import os
+import re
 from pathlib import Path
 from typing import Any, cast
 
 import yaml
+
+from agent.secret_scope import get_secret
+
+
+def _replace_profile_env_reference(match: re.Match[str]) -> str:
+    resolved = get_secret(match.group(1))
+    return match.group(0) if resolved is None else resolved
+
+
+def _expand_profile_env_vars(value: Any) -> Any:
+    """Expand config templates through the active profile's secret scope."""
+    if isinstance(value, str):
+        return re.sub(r"\${([^}]+)}", _replace_profile_env_reference, value)
+    if isinstance(value, dict):
+        return {key: _expand_profile_env_vars(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_expand_profile_env_vars(item) for item in value]
+    return value
 
 
 def _normalized_base_url(value: Any) -> str:
@@ -30,7 +48,7 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
         return inline
     key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
     if key_env:
-        return os.getenv(key_env, "").strip() or None
+        return (get_secret(key_env) or "").strip() or None
     return None
 
 
@@ -120,17 +138,25 @@ def load_fallback_chain_strict() -> list[dict[str, Any]]:
     can retain its cached chain.
     """
     from hermes_cli import managed_scope
-    from hermes_cli.config import _deep_merge, _expand_env_vars, get_config_path
-
-    effective = cast(
-        dict[str, Any], _expand_env_vars(_read_yaml_mapping_strict(get_config_path()))
+    from hermes_cli.config import (
+        _CONFIG_LOCK,
+        _deep_merge,
+        get_config_path,
     )
 
-    managed_dir = managed_scope.get_managed_dir()
-    if managed_dir is not None:
-        managed = _read_yaml_mapping_strict(managed_dir / "config.yaml")
-        if managed:
-            managed_expanded = cast(dict[str, Any], _expand_env_vars(managed))
-            effective = _deep_merge(effective, managed_expanded)
+    with _CONFIG_LOCK:
+        effective = cast(
+            dict[str, Any],
+            _expand_profile_env_vars(_read_yaml_mapping_strict(get_config_path())),
+        )
 
-    return get_fallback_chain(effective)
+        managed_dir = managed_scope.get_managed_dir()
+        if managed_dir is not None:
+            managed = _read_yaml_mapping_strict(managed_dir / "config.yaml")
+            if managed:
+                managed_expanded = cast(
+                    dict[str, Any], _expand_profile_env_vars(managed)
+                )
+                effective = _deep_merge(effective, managed_expanded)
+
+        return get_fallback_chain(effective)

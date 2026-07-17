@@ -67,7 +67,7 @@ from agent.conversation_compression import (
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import get_fallback_chain, load_fallback_chain_strict
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -3331,6 +3331,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._fallback_models_by_home = {
+            str(_hermes_home): self._fallback_model,
+        }
 
         # Wire process registry into session store for reset protection.
         # A background process older than the configured threshold (default 24h,
@@ -5781,23 +5784,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         cached agent's working fallback for that turn.  Only a successful read
         that genuinely lacks the key clears the chain.
         """
+        profile_home = str(get_hermes_home())
+        fallback_models_by_home = getattr(self, "_fallback_models_by_home", None)
+        if fallback_models_by_home is None:
+            fallback_models_by_home = {}
+            self._fallback_models_by_home = fallback_models_by_home
+
         try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if not cfg_path.exists():
-                self._fallback_model = None
-                return self._fallback_model
-            with open(cfg_path, encoding="utf-8") as _f:
-                cfg = _y.safe_load(_f) or {}
+            refreshed = load_fallback_chain_strict() or None
         except Exception:
             # Transient failure — keep last known-good chain.
             logger.debug(
                 "fallback_providers refresh: config.yaml read failed; "
                 "keeping last known-good chain", exc_info=True,
             )
-            return self._fallback_model
-        self._fallback_model = get_fallback_chain(cfg) or None
-        return self._fallback_model
+            return fallback_models_by_home.get(profile_home)
+
+        fallback_models_by_home[profile_home] = refreshed
+        if profile_home == str(_hermes_home):
+            self._fallback_model = refreshed
+        return refreshed
 
     @staticmethod
     def _apply_fallback_chain_to_agent(agent: Any, chain: list | None) -> None:

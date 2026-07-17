@@ -1175,6 +1175,9 @@ class ContextCompressor(ContextEngine):
         if runtime_changed:
             self._fallback_compression_streak = 0
             self._persist_fallback_compression_streak()
+            # Failure cooldowns are scoped to the model/provider that failed.
+            # A switch must give the new runtime an immediate summary attempt.
+            self._clear_compression_failure_cooldown()
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
 
@@ -1260,7 +1263,6 @@ class ContextCompressor(ContextEngine):
             return max(1, min(int(effective_window * ContextCompressor._MIN_CTX_TRIGGER_RATIO),
                               effective_window - 1))
         return floored
-
     def __init__(
         self,
         model: str,

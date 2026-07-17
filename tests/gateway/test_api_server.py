@@ -3718,6 +3718,65 @@ class TestSessionIdHeader:
             assert call_kwargs["session_id"] == "my-session-123"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_stale_session_header_resolves_compression_tip(
+        self, auth_adapter, tmp_path, stream
+    ):
+        """Both OpenAI chat paths must continue from the live compression tip."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        root_id = db.create_session("header-root", "api_server")
+        db.append_message(root_id, "user", "old root turn")
+        db.end_session(root_id, "compression")
+        tip_id = db.create_session(
+            "header-tip", "api_server", parent_session_id=root_id
+        )
+        db.append_message(tip_id, "assistant", "tip history")
+        auth_adapter._session_db = db
+        mock_result = {
+            "final_response": "continued",
+            "session_id": tip_id,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        async def fake_run(**kwargs):
+            callback = kwargs.get("stream_delta_callback")
+            if callback:
+                callback("continued")
+            return mock_result, {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            }
+
+        app = _create_app(auth_adapter)
+        with patch.object(auth_adapter, "_run_agent", side_effect=fake_run) as mock_run:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "X-Hermes-Session-Id": root_id,
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={
+                        "model": "hermes-agent",
+                        "stream": stream,
+                        "messages": [{"role": "user", "content": "Continue"}],
+                    },
+                )
+                await resp.read()
+
+        assert resp.status == 200
+        assert resp.headers.get("X-Hermes-Session-Id") == tip_id
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs["session_id"] == tip_id
+        assert [
+            message["content"] for message in call_kwargs["conversation_history"]
+        ] == ["tip history"]
+
+    @pytest.mark.asyncio
     async def test_traversal_session_id_header_rejected(self, auth_adapter):
         """Security (#5958): a path-traversal X-Hermes-Session-Id must be
         rejected with 400 so it can't reach the filesystem artifact paths
@@ -3772,27 +3831,24 @@ class TestSessionIdHeader:
             assert call_kwargs["user_message"] == "new question"
 
     @pytest.mark.asyncio
-    async def test_db_failure_falls_back_to_empty_history(self, auth_adapter):
-        """If SessionDB raises, history falls back to empty and request still succeeds."""
-        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
-        # Simulate DB failure: _session_db is None and SessionDB() constructor raises
+    async def test_db_failure_fails_closed_before_running_agent(self, auth_adapter):
+        """If session state is unavailable, reject rather than run without continuity."""
         auth_adapter._session_db = None
         app = _create_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run, \
                  patch("hermes_state.SessionDB", side_effect=Exception("DB unavailable")):
-                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
-
                 resp = await cli.post(
                     "/v1/chat/completions",
                     headers={"X-Hermes-Session-Id": "some-session", "Authorization": "Bearer sk-secret"},
                     json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
                 )
 
-            assert resp.status == 200
-            call_kwargs = mock_run.call_args.kwargs
-            assert call_kwargs["conversation_history"] == []
-            assert call_kwargs["session_id"] == "some-session"
+            assert resp.status == 503
+            data = await resp.json()
+            assert data["error"]["code"] == "session_state_unavailable"
+            assert resp.headers["Retry-After"] == "1"
+            mock_run.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

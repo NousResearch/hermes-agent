@@ -707,6 +707,292 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
     assert any(m.get("tool_calls") for m in messages)
 
 
+@pytest.mark.asyncio
+async def test_session_chat_stream_rotation_emits_only_current_turn(adapter, session_db):
+    """A rotating compaction must not copy the compacted transcript into SSE.
+
+    The pre-turn history and the post-compaction transcript intentionally have
+    different prefixes.  Returning every assistant/tool row in run.completed
+    can exceed the WebUI event budget and makes a completed turn look broken.
+    """
+    import json as _json
+
+    parent_id = session_db.create_session("rotation-parent", "api_server")
+    session_db.append_message(parent_id, "user", "older request")
+    session_db.append_message(parent_id, "assistant", "older answer " + ("x" * 10_000))
+    child_id = "rotation-child"
+
+    async def fake_run(**kwargs):
+        session_db.end_session(parent_id, "compression")
+        session_db.create_session(child_id, "api_server", parent_session_id=parent_id)
+        kwargs["stream_delta_callback"]("Current plan")
+        kwargs["stream_delta_callback"]("Current answer")
+        return {
+            "final_response": "Current answer",
+            "session_id": child_id,
+            "messages": [
+                {"role": "user", "content": "[CONTEXT COMPACTION] internal handoff"},
+                {"role": "assistant", "content": "older answer " + ("x" * 10_000)},
+                {"role": "user", "content": "continue after compaction"},
+                {
+                    "role": "assistant",
+                    "content": "Current plan",
+                    "tool_calls": [{
+                        "id": "call_current",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }],
+                },
+                {
+                    "role": "tool",
+                    "content": "current result",
+                    "tool_call_id": "call_current",
+                    "tool_name": "terminal",
+                },
+                {"role": "assistant", "content": "Current answer"},
+            ],
+        }, {"total_tokens": 7}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{parent_id}/chat/stream",
+                json={"message": "continue after compaction"},
+            )
+            assert resp.status == 200
+            body = await resp.text()
+
+    payloads = {}
+    for block in body.split("\n\n"):
+        lines = block.splitlines()
+        event_name = next((line[7:] for line in lines if line.startswith("event: ")), None)
+        data_line = next((line[6:] for line in lines if line.startswith("data: ")), None)
+        if event_name and data_line:
+            payloads[event_name] = _json.loads(data_line)
+
+    completed = payloads["run.completed"]
+    assert completed["session_id"] == child_id
+    assert [message.get("content") for message in completed["messages"]] == [
+        "Current plan",
+        "current result",
+        "Current answer",
+    ]
+    assert payloads["done"]["session_id"] == child_id
+    assert "older answer" not in _json.dumps(completed)
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_resolves_stale_compression_root(adapter, session_db):
+    root_id = session_db.create_session("stale-stream-root", "api_server")
+    session_db.append_message(root_id, "user", "root turn")
+    session_db.end_session(root_id, "compression")
+    tip_id = session_db.create_session(
+        "stale-stream-tip", "api_server", parent_session_id=root_id
+    )
+    session_db.append_message(tip_id, "assistant", "tip answer")
+    captured = {}
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+        kwargs["stream_delta_callback"]("continued")
+        return {"final_response": "continued", "session_id": tip_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{root_id}/chat/stream",
+                json={"message": "continue"},
+            )
+            assert resp.status == 200
+            await resp.text()
+
+    assert captured["session_id"] == tip_id
+    assert [message["content"] for message in captured["conversation_history"]] == [
+        "tip answer"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_chat_resolves_stale_compression_root(adapter, session_db):
+    root_id = session_db.create_session("stale-chat-root", "api_server")
+    session_db.append_message(root_id, "user", "root turn")
+    session_db.end_session(root_id, "compression")
+    tip_id = session_db.create_session(
+        "stale-chat-tip", "api_server", parent_session_id=root_id
+    )
+    session_db.append_message(tip_id, "assistant", "tip answer")
+    mock_run = AsyncMock(
+        return_value=({"final_response": "continued", "session_id": tip_id}, {"total_tokens": 1})
+    )
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{root_id}/chat",
+                json={"message": "continue"},
+            )
+            assert resp.status == 200
+
+    assert mock_run.call_args.kwargs["session_id"] == tip_id
+    assert [
+        message["content"]
+        for message in mock_run.call_args.kwargs["conversation_history"]
+    ] == ["tip answer"]
+
+
+@pytest.mark.asyncio
+async def test_session_chat_turns_serialize_on_compression_lineage(adapter, session_db):
+    """Queued stale-root turns must re-resolve after a predecessor rotates."""
+    import asyncio
+
+    root_id = session_db.create_session("locked-root", "api_server")
+    session_db.end_session(root_id, "compression")
+    first_tip = session_db.create_session(
+        "locked-tip-one", "api_server", parent_session_id=root_id
+    )
+    session_db.append_message(first_tip, "assistant", "first tip history")
+    second_tip = "locked-tip-two"
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    calls = []
+
+    async def fake_run(**kwargs):
+        calls.append(kwargs["session_id"])
+        if len(calls) == 1:
+            first_started.set()
+            await release_first.wait()
+            session_db.end_session(first_tip, "compression")
+            session_db.create_session(
+                second_tip, "api_server", parent_session_id=first_tip
+            )
+            session_db.append_message(second_tip, "assistant", "second tip history")
+            return {
+                "final_response": "first completed",
+                "session_id": second_tip,
+            }, {"total_tokens": 1}
+        return {
+            "final_response": "second completed",
+            "session_id": second_tip,
+        }, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            first_response = await cli.post(
+                f"/api/sessions/{root_id}/chat/stream",
+                json={"message": "first request"},
+            )
+            await first_started.wait()
+            second_request = asyncio.create_task(cli.post(
+                f"/api/sessions/{root_id}/chat",
+                json={"message": "second request"},
+            ))
+            await asyncio.sleep(0.05)
+            try:
+                assert calls == [first_tip], (
+                    "second turn entered before the lineage lock released"
+                )
+            finally:
+                release_first.set()
+            await first_response.text()
+            second_response = await second_request
+            assert second_response.status == 200
+
+    assert calls == [first_tip, second_tip]
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_cancellation_holds_lineage_lock_until_agent_stops(
+    adapter, session_db
+):
+    """Cancelling SSE delivery must not release the lock before executor work ends."""
+    import asyncio
+
+    root_id = session_db.create_session("cancel-root", "api_server")
+    session_db.end_session(root_id, "compression")
+    first_tip = session_db.create_session(
+        "cancel-tip-one", "api_server", parent_session_id=root_id
+    )
+    session_db.append_message(first_tip, "assistant", "first tip history")
+    second_tip = "cancel-tip-two"
+    worker_started = asyncio.Event()
+    release_worker = asyncio.Event()
+    calls = []
+    worker_tasks = []
+
+    async def fake_run(**kwargs):
+        calls.append(kwargs["session_id"])
+        if len(calls) == 1:
+            async def executor_like_worker():
+                worker_started.set()
+                await release_worker.wait()
+                session_db.end_session(first_tip, "compression")
+                session_db.create_session(
+                    second_tip, "api_server", parent_session_id=first_tip
+                )
+                session_db.append_message(second_tip, "assistant", "second tip history")
+                return {
+                    "final_response": "first completed",
+                    "session_id": second_tip,
+                }, {"total_tokens": 1}
+
+            worker = asyncio.create_task(executor_like_worker())
+            worker_tasks.append(worker)
+            return await asyncio.shield(worker)
+        return {
+            "final_response": "second completed",
+            "session_id": second_tip,
+        }, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            first_response = await cli.post(
+                f"/api/sessions/{root_id}/chat/stream",
+                json={"message": "first request"},
+            )
+            await worker_started.wait()
+            stream_task = next(task for task in adapter._background_tasks if not task.done())
+            stream_task.cancel()
+            second_request = asyncio.create_task(cli.post(
+                f"/api/sessions/{root_id}/chat",
+                json={"message": "second request"},
+            ))
+            await asyncio.sleep(0.05)
+            try:
+                assert calls == [first_tip], (
+                    "cancelled SSE task released its lineage lock while worker continued"
+                )
+            finally:
+                release_worker.set()
+            await first_response.text()
+            second_response = await second_request
+            assert second_response.status == 200
+
+    await asyncio.gather(*worker_tasks, return_exceptions=True)
+    assert calls == [first_tip, second_tip]
+
+
+def test_session_turn_lock_fails_closed_when_lineage_lookup_fails(
+    adapter, session_db
+):
+    root_id = session_db.create_session("fail-closed-root", "api_server")
+    session_db.end_session(root_id, "compression")
+    tip_id = session_db.create_session(
+        "fail-closed-tip", "api_server", parent_session_id=root_id
+    )
+
+    with patch.object(
+        session_db,
+        "get_compression_lineage",
+        side_effect=RuntimeError("state DB unavailable"),
+    ):
+        with pytest.raises(RuntimeError, match="state DB unavailable"):
+            adapter._session_turn_lock(tip_id)
+
 
 @pytest.mark.asyncio
 async def test_session_endpoints_require_auth_when_key_configured(auth_adapter):

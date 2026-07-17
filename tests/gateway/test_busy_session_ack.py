@@ -960,6 +960,55 @@ class TestPerPlatformBusyInputMode:
             agent.steer.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_priority_path_honors_per_platform_queue_override(self, monkeypatch):
+        """The PRIORITY running-agent path (_handle_message) must honor a
+        display.platforms.<platform>.busy_input_mode override, not only the
+        normal busy handler. Global is interrupt; sendblue overrides to queue,
+        so the priority path must queue (not interrupt) the follow-up."""
+        import gateway.run as _gr
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {
+                "display": {
+                    "busy_input_mode": "interrupt",
+                    "platforms": {
+                        "sendblue": {"busy_input_mode": "queue"},
+                    },
+                }
+            },
+        )
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"  # global default
+        adapter = _make_adapter(platform_val="sendblue")
+
+        event = _make_event(text="queue me", platform_val="sendblue")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        running_agent = MagicMock()
+        # A real activity summary so the stale-eviction path (if reached) and
+        # the interrupt/ack path in RED don't trip on MagicMock comparisons.
+        running_agent.get_activity_summary.return_value = {
+            "seconds_since_activity": 1,
+            "last_activity_desc": "running",
+            "api_call_count": 1,
+            "max_iterations": 10,
+        }
+        runner._running_agents[sk] = running_agent
+        runner._queue_or_replace_pending_event = MagicMock()
+
+        result = await GatewayRunner._handle_message(runner, event)
+
+        # Per-platform queue override honored on the priority path.
+        runner._queue_or_replace_pending_event.assert_called_once_with(sk, event)
+        running_agent.interrupt.assert_not_called()
+        assert result is None
+
+    @pytest.mark.asyncio
     async def test_unconfigured_platform_uses_global(self, monkeypatch):
         """telegram has no platform override — falls back to global busy_input_mode."""
         import gateway.run as _gr

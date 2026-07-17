@@ -796,20 +796,32 @@ class TestMCPLoopDrainOnStop:
             assert state["started"], "task never started on the MCP loop"
 
             stop_saw_cleanup = []
+            call_soon = loop.call_soon
             call_soon_threadsafe = loop.call_soon_threadsafe
 
-            def record_stop_order(callback, *args, **kwargs):
+            def record_stop_order(schedule, callback, *args, **kwargs):
                 if (
                     getattr(callback, "__self__", None) is loop
                     and getattr(callback, "__name__", None) == "stop"
                 ):
                     stop_saw_cleanup.append(state["cleanup_ran"])
-                return call_soon_threadsafe(callback, *args, **kwargs)
+                return schedule(callback, *args, **kwargs)
 
-            with patch.object(
-                loop,
-                "call_soon_threadsafe",
-                side_effect=record_stop_order,
+            with (
+                patch.object(
+                    loop,
+                    "call_soon",
+                    side_effect=lambda callback, *args, **kwargs: record_stop_order(
+                        call_soon, callback, *args, **kwargs
+                    ),
+                ),
+                patch.object(
+                    loop,
+                    "call_soon_threadsafe",
+                    side_effect=lambda callback, *args, **kwargs: record_stop_order(
+                        call_soon_threadsafe, callback, *args, **kwargs
+                    ),
+                ),
             ):
                 mcp_mod._stop_mcp_loop()
 
@@ -843,7 +855,8 @@ class TestMCPLoopDrainOnStop:
             await asyncio.sleep(0)
             try:
                 with caplog.at_level("WARNING", logger=mcp_mod.logger.name):
-                    await mcp_mod._drain_mcp_loop_tasks(timeout=0.01)
+                    async with asyncio.timeout(0.5):
+                        await mcp_mod._drain_mcp_loop_tasks(timeout=0.01)
                 assert not task.done(), "drain waited indefinitely for resistant task"
             finally:
                 release.set()
@@ -858,34 +871,56 @@ class TestMCPLoopDrainOnStop:
             for record in caplog.records
         )
 
-    def test_stop_warns_when_drain_wait_times_out(self, caplog):
-        """A failed final drain must be visible instead of silently no-oping."""
+    def test_outer_timeout_still_allows_loop_owned_drain_before_stop(
+        self, caplog, monkeypatch
+    ):
+        """A blocked loop must drain after it resumes, not stop ahead of the drain."""
+        import threading
         import tools.mcp_tool as mcp_mod
 
-        class TimedOutFuture:
-            def result(self, timeout):
-                assert timeout > 0
-                raise TimeoutError("simulated drain timeout")
+        parked_started = threading.Event()
+        cleanup_ran = threading.Event()
+        blocker_started = threading.Event()
+        release_blocker = threading.Event()
 
-            def cancel(self):
-                return True
+        async def parked_task():
+            parked_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_ran.set()
 
-        def report_timeout(coro, _loop, **_kwargs):
-            coro.close()
-            return TimedOutFuture()
+        def block_loop():
+            blocker_started.set()
+            release_blocker.wait(timeout=5)
 
         with mcp_mod._lock:
             mcp_mod._servers.clear()
             mcp_mod._server_connecting.clear()
         mcp_mod._ensure_mcp_loop()
+        with mcp_mod._lock:
+            loop = mcp_mod._mcp_loop
+        assert loop is not None
+
+        future = asyncio.run_coroutine_threadsafe(parked_task(), loop)
+        assert parked_started.wait(timeout=2)
+        loop.call_soon_threadsafe(block_loop)
+        assert blocker_started.wait(timeout=2)
+
+        monkeypatch.setattr(mcp_mod, "_MCP_LOOP_DRAIN_TIMEOUT", 0.01)
+        release_timer = threading.Timer(1.2, release_blocker.set)
+        release_timer.start()
         try:
             with caplog.at_level("WARNING", logger=mcp_mod.logger.name):
-                with patch(
-                    "agent.async_utils.safe_schedule_threadsafe",
-                    side_effect=report_timeout,
-                ):
-                    mcp_mod._stop_mcp_loop()
+                mcp_mod._stop_mcp_loop()
+
+            assert cleanup_ran.is_set(), "drain was overtaken by loop.stop"
+            assert future.done(), "parked task remained pending after loop resumed"
+            assert loop.is_closed()
         finally:
+            release_timer.cancel()
+            release_blocker.set()
+            future.cancel()
             with mcp_mod._lock:
                 mcp_mod._servers.clear()
                 mcp_mod._server_connecting.clear()

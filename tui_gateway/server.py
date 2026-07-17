@@ -8351,8 +8351,16 @@ def _handle_busy_submit(
             session["attached_images"] = []
     text_only = not image_paths and _is_text_only_busy_payload(text)
     plain_text = _coerce_message_text(text).strip() if text_only else ""
-    # Legacy ``steer`` busy mode queues without interruption — live non-canonical
-    # injection remains available only through the explicit ``session.steer`` API.
+    if mode == "steer" and text_only and plain_text and agent is not None and hasattr(agent, "steer"):
+        try:
+            if agent.steer(plain_text):
+                with session["history_lock"]:
+                    _record_inflight_correction(session, plain_text)
+                    _drop_queued_duplicates_of_inflight_user(session)
+                    session["last_active"] = time.time()
+                return _ok(rid, {"status": "steered"})
+        except Exception:
+            pass  # fall through to queue
     # Text-only corrections redirect the live turn in place when the runtime
     # supports it; media/attachment payloads and older agents fall through to
     # the proven interrupt + queue path below.
@@ -8404,9 +8412,7 @@ def _handle_busy_submit(
     # the pending steer buffer — silently destroying the earlier messages of
     # the burst. Steer-mode fall-throughs keep queue semantics: preserved
     # FIFO in ``queued_prompt``/``queued_prompts`` and drained on turn end.
-    # Legacy ``steer`` busy mode also queues without interrupting (legacy
-    # alias for queue semantics).
-    if mode not in ("queue", "steer") and not image_paths:
+    if mode == "interrupt" and not image_paths:
         _interrupt_busy_session(sid, session, agent)
     return _ok(rid, {"status": "queued"})
 

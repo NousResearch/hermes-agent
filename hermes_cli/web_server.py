@@ -11327,6 +11327,7 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
 
 
 _MCP_DASHBOARD_OAUTH_TTL = 15 * 60
+_MAX_PENDING_MCP_OAUTH_FLOWS = 8
 _mcp_oauth_flows: dict[str, "DashboardOAuthFlow"] = {}
 
 
@@ -11429,6 +11430,15 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
 
     _require_token(request)
     _gc_mcp_oauth_flows()
+    pending = sum(
+        flow.status in {"starting", "authorization_required"}
+        for flow in _mcp_oauth_flows.values()
+    )
+    if pending >= _MAX_PENDING_MCP_OAUTH_FLOWS:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many MCP OAuth flows are already in progress",
+        )
     with _profile_scope(profile):
         servers = _get_mcp_servers()
     if name not in servers:
@@ -11487,7 +11497,13 @@ async def mcp_oauth_callback(
     try:
         flow.deliver_callback(code=code, state=state, error=error)
     except ValueError as exc:
-        return HTMLResponse("<h1>OAuth callback rejected</h1><p>The callback was already used.</p>", status_code=409)
+        reason = str(exc)
+        status_code = 409 if "already received" in reason else 400
+        return HTMLResponse(
+            "<h1>OAuth callback rejected</h1>"
+            "<p>The callback was invalid or already used.</p>",
+            status_code=status_code,
+        )
     if error:
         return HTMLResponse("<h1>Authorization failed</h1><p>Return to Hermes for details.</p>", status_code=400)
     return HTMLResponse("<h1>Authorization received</h1><p>You can close this tab and return to Hermes.</p>")

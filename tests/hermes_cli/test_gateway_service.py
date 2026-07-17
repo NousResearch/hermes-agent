@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -498,6 +499,37 @@ class TestGeneratedSystemdUnits:
 
         assert str(local_bin) in plist
         assert str(profile_node_bin) not in plist
+
+    def test_launchd_plist_round_trips_xml_metacharacters(self, tmp_path, monkeypatch):
+        home = tmp_path / "home & <night> \"quoted\""
+        home.mkdir()
+        python_path = str(tmp_path / "python & <night> \"quoted\"")
+        venv_dir = tmp_path / "venv & <night> \"quoted\""
+        service_dir = "/opt/tools & <night> \"quoted\""
+        inherited_path = "/usr/bin:/tmp/bin & <night> \"quoted\""
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: python_path)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: venv_dir)
+        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [service_dir])
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda _cmd: None)
+        monkeypatch.setattr(gateway_cli, "_profile_arg", lambda _home: None)
+        monkeypatch.setenv("PATH", inherited_path)
+
+        plist = gateway_cli.generate_launchd_plist()
+        parsed = plistlib.loads(plist.encode("utf-8"))
+
+        assert parsed["ProgramArguments"][0] == python_path
+        assert parsed["WorkingDirectory"] == str(home.resolve())
+        assert parsed["EnvironmentVariables"] == {
+            "PATH": f"{service_dir}:{inherited_path}",
+            "VIRTUAL_ENV": str(venv_dir),
+            "HERMES_HOME": str(home.resolve()),
+        }
+        assert parsed["RunAtLoad"] is True
+        assert parsed["KeepAlive"] is True
+        assert "&amp;" in plist
+        assert "&lt;night&gt;" in plist
 
     def test_user_unit_includes_wsl_windows_interop_paths(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
@@ -3567,11 +3599,11 @@ class TestServiceWorkingDirIsStable:
 
         # Scalar <true/> must be present immediately after the KeepAlive key
         assert "<key>KeepAlive</key>" in plist
-        # The unconditional form
-        assert "<key>KeepAlive</key>\n    <true/>" in plist
+        # The unconditional form. plistlib uses tabs for nested XML values.
+        assert "<key>KeepAlive</key>\n\t<true/>" in plist
         # The old conditional dict form must NOT appear
         assert "SuccessfulExit" not in plist
-        assert "<key>KeepAlive</key>\n    <dict>" not in plist
+        assert "<key>KeepAlive</key>\n\t<dict>" not in plist
 
 
 class TestLaunchctlBootstrapEioRetry:

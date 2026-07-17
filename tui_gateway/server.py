@@ -13194,10 +13194,8 @@ def _resolve_bundle_command_key_for_dispatch(name: str) -> Optional[str]:
 
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
-    name, arg = params.get("name", "").lstrip("/"), params.get("arg", "")
-    resolved = _resolve_name(name)
-    if resolved != name:
-        name = resolved
+    raw_name, arg = params.get("name", "").lstrip("/"), params.get("arg", "")
+    name = raw_name
     session = _sessions.get(params.get("session_id", ""))
 
     qcmds = _load_cfg().get("quick_commands", {})

@@ -5109,7 +5109,7 @@ class SessionDB:
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
-                f"SELECT id, session_id, {self._CONVERSATION_ROW_COLUMNS} "
+                f"SELECT {self._CONVERSATION_ROW_COLUMNS_WITH_IDS} "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
                 # append_message stamps rows with time.time(), which is not
@@ -5140,6 +5140,7 @@ class SessionDB:
         "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
         "api_content"
     )
+    _CONVERSATION_ROW_COLUMNS_WITH_IDS = f"id, session_id, {_CONVERSATION_ROW_COLUMNS}"
 
     def _rows_to_conversation(
         self,
@@ -5279,7 +5280,7 @@ class SessionDB:
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
-                f"SELECT session_id, {self._CONVERSATION_ROW_COLUMNS} "
+                f"SELECT {self._CONVERSATION_ROW_COLUMNS_WITH_IDS} "
                 f"FROM messages WHERE session_id IN ({placeholders}) AND active = 1 "
                 # ORDER BY id (insertion order) — see get_messages_as_conversation
                 # for why timestamp ordering is unsafe.

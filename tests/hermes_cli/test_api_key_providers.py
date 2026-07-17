@@ -61,6 +61,11 @@ class TestProviderRegistry:
         assert pconfig.base_url_env_var == "XAI_BASE_URL"
         assert pconfig.inference_base_url == "https://api.x.ai/v1"
 
+    def test_nous_dual_auth_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["nous"]
+        assert pconfig.auth_type == "oauth_device_code"
+        assert pconfig.api_key_env_vars == ("NOUS_API_KEY",)
+
     def test_nvidia_env_vars(self):
         pconfig = PROVIDER_REGISTRY["nvidia"]
         assert pconfig.api_key_env_vars == ("NVIDIA_API_KEY",)
@@ -315,6 +320,10 @@ class TestResolveProvider:
     def test_auto_detects_deepinfra_key(self, monkeypatch):
         monkeypatch.setenv("DEEPINFRA_API_KEY", "test-di-key")
         assert resolve_provider("auto") == "deepinfra"
+
+    def test_auto_detects_nous_api_key(self, monkeypatch):
+        monkeypatch.setenv("NOUS_API_KEY", "test-nous-key")
+        assert resolve_provider("auto") == "nous"
 
     def test_openrouter_takes_priority_over_glm(self, monkeypatch):
         """OpenRouter API key should win over GLM in auto-detection."""

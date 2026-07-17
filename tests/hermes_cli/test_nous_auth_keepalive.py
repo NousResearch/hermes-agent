@@ -1,6 +1,26 @@
 from hermes_cli import nous_auth_keepalive as keepalive
 
 
+def test_keepalive_accepts_api_key_without_refresh(monkeypatch):
+    class _Entry:
+        auth_type = "api_key"
+        runtime_api_key = "test-nous-key"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+        def try_refresh_current(self):
+            raise AssertionError("API keys must not use OAuth refresh")
+
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+
+    assert keepalive.refresh_nous_auth_keepalive_once() is True
+
+
 def test_keepalive_refreshes_stale_pool_entry(monkeypatch):
     class _Entry:
         access_token = "pooled-access-token"

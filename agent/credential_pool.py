@@ -241,9 +241,10 @@ class PooledCredential:
 
     @property
     def runtime_api_key(self) -> str:
-        if self.provider == "nous":
+        if self.provider == "nous" and self.auth_type == AUTH_TYPE_OAUTH:
             # Nous stores the runtime inference credential in agent_key for
-            # compatibility. It must be a NAS invoke JWT.
+            # OAuth compatibility. It must be a NAS invoke JWT. Direct API-key
+            # credentials use access_token like every other API-key provider.
             for token, expires_at in (
                 (self.agent_key, self.agent_key_expires_at),
                 (self.access_token, self.expires_at),
@@ -2384,7 +2385,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         return changed, active_sources
 
     pconfig = PROVIDER_REGISTRY.get(provider)
-    if not pconfig or pconfig.auth_type != AUTH_TYPE_API_KEY:
+    if not pconfig or not pconfig.api_key_env_vars:
         return changed, active_sources
 
     env_url = ""

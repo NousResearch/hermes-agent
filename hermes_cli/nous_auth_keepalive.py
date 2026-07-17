@@ -54,7 +54,7 @@ def _refresh_selected_pool_entry(
     pool exists but no entry can be used, and None when no Nous pool exists.
     """
     try:
-        from agent.credential_pool import load_pool
+        from agent.credential_pool import AUTH_TYPE_API_KEY, load_pool
 
         pool = load_pool("nous")
     except Exception as exc:
@@ -72,6 +72,9 @@ def _refresh_selected_pool_entry(
 
     if entry is None:
         return False
+
+    if getattr(entry, "auth_type", None) == AUTH_TYPE_API_KEY:
+        return bool(getattr(entry, "runtime_api_key", None))
 
     access_expiring = _is_expiring(
         getattr(entry, "expires_at", None),

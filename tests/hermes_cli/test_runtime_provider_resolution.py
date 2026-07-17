@@ -116,6 +116,34 @@ def test_resolve_runtime_provider_nous_pool_uses_env_base_url_override(monkeypat
     assert resolved["base_url"] == "https://ai.wildebeest-newton.ts.net/v1"
 
 
+def test_resolve_runtime_provider_uses_nous_api_key_without_oauth(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "auth.json").write_text(
+        json.dumps({"version": 1, "providers": {}})
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("NOUS_API_KEY", "test-nous-key")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(
+        rp,
+        "_agent_key_is_usable",
+        lambda *args, **kwargs: pytest.fail("API keys must not use OAuth JWT checks"),
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_nous_runtime_credentials",
+        lambda **kwargs: pytest.fail("API keys must not invoke Nous OAuth resolution"),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="nous")
+
+    assert resolved["provider"] == "nous"
+    assert resolved["api_key"] == "test-nous-key"
+    assert resolved["base_url"] == "https://inference-api.nousresearch.com/v1"
+    assert resolved["source"] == "env:NOUS_API_KEY"
+
+
 def test_resolve_runtime_provider_anthropic_pool_respects_config_base_url(monkeypatch):
     class _Entry:
         access_token = "pool-token"

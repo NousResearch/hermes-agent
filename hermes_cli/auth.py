@@ -182,6 +182,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=DEFAULT_NOUS_INFERENCE_URL,
         client_id=DEFAULT_NOUS_CLIENT_ID,
         scope=DEFAULT_NOUS_SCOPE,
+        api_key_env_vars=("NOUS_API_KEY",),
     ),
     "openai-codex": ProviderConfig(
         id="openai-codex",
@@ -1611,7 +1612,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     if pconfig is None:
         from hermes_cli.providers import get_provider
         pconfig = get_provider(normalized)
-    if pconfig and pconfig.auth_type == "api_key":
+    if pconfig and pconfig.api_key_env_vars:
         for env_var in pconfig.api_key_env_vars:
             if env_var in _IMPLICIT_ENV_VARS:
                 continue
@@ -1871,9 +1872,10 @@ def resolve_provider(
     except Exception as e:
         logger.debug("Could not pre-read active auth provider: %s", e)
 
-    # Auto-detect API-key providers by checking their env vars
+    # Auto-detect providers with API-key credentials, including providers whose
+    # primary interactive auth flow is OAuth (for example Nous).
     for pid, pconfig in PROVIDER_REGISTRY.items():
-        if pconfig.auth_type != "api_key":
+        if not pconfig.api_key_env_vars:
             continue
         # GitHub tokens are commonly present for repo/tool access but should not
         # hijack inference auto-selection unless the user explicitly chooses

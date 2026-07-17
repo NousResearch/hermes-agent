@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
 from agent.credential_pool import (
+    AUTH_TYPE_OAUTH,
     CredentialPool,
     PooledCredential,
     credential_pool_matches_provider,
@@ -1709,7 +1710,11 @@ def resolve_runtime_provider(
         # non-runtime contexts like `hermes auth list`). If the key is
         # expired/missing, refresh the selected pool entry before falling back
         # to singleton auth resolution.
-        if provider == "nous" and entry is not None:
+        if (
+            provider == "nous"
+            and entry is not None
+            and getattr(entry, "auth_type", AUTH_TYPE_OAUTH) == AUTH_TYPE_OAUTH
+        ):
             min_ttl = max(60, env_int("HERMES_NOUS_MIN_KEY_TTL_SECONDS", 1800))
             nous_state = {
                 "agent_key": getattr(entry, "agent_key", None),

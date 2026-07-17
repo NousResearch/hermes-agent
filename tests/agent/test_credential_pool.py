@@ -1323,6 +1323,23 @@ def test_load_pool_missing_env_does_not_overwrite_other_process_seed(tmp_path, m
     assert persisted[0]["source"] == "env:MINIMAX_API_KEY"
 
 
+def test_load_pool_seeds_nous_api_key_alongside_oauth_support(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("NOUS_API_KEY", "test-nous-key")
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("nous")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.source == "env:NOUS_API_KEY"
+    assert entry.auth_type == "api_key"
+    assert entry.runtime_api_key == "test-nous-key"
+    assert entry.runtime_base_url == "https://inference-api.nousresearch.com/v1"
+
+
 def test_load_pool_migrates_nous_provider_state(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

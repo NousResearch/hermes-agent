@@ -18,9 +18,14 @@ def _write_auth_store(tmp_path, payload: dict) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clean_anthropic_env(monkeypatch):
-    """Strip Anthropic env vars so CI secrets don't leak into tests."""
-    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+def _clean_provider_env(monkeypatch):
+    """Strip provider env vars so CI secrets don't leak into tests."""
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "NOUS_API_KEY",
+    ):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -72,6 +77,15 @@ def test_returns_true_when_anthropic_env_var_set(tmp_path, monkeypatch):
 
     from hermes_cli.auth import is_provider_explicitly_configured
     assert is_provider_explicitly_configured("anthropic") is True
+
+
+def test_returns_true_when_nous_api_key_set(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("NOUS_API_KEY", "test-nous-key")
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("nous") is True
 
 
 def test_claude_code_oauth_token_does_not_count_as_explicit(tmp_path, monkeypatch):

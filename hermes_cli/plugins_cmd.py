@@ -10,6 +10,7 @@ rendered with Rich Markdown.  Otherwise a default confirmation is shown.
 from __future__ import annotations
 
 import functools
+import hashlib
 import importlib.metadata
 import json
 import logging
@@ -17,7 +18,8 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+import tempfile
+from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
@@ -70,6 +72,8 @@ class PluginOperationError(Exception):
 # Plugins may declare ``manifest_version: 1`` in plugin.yaml;
 # future breaking changes to the manifest schema bump this.
 _SUPPORTED_MANIFEST_VERSION = 1
+_SOURCE_METADATA_FILENAME = ".hermes-plugin-source.json"
+_SOURCE_METADATA_VERSION = 1
 
 
 def _plugins_dir() -> Path:
@@ -247,34 +251,28 @@ def _resolve_subdir_within(clone_root: Path, subdir: str) -> Path:
 
 
 def _has_plugin_marker(path: Path) -> bool:
-    """Return ``True`` if *path* has a plugin-y file at root.
+    """Return whether a directory satisfies the loader's plugin contract."""
+    has_manifest = (path / "plugin.yaml").is_file() or (
+        path / "plugin.yml"
+    ).is_file()
+    return has_manifest and (path / "__init__.py").is_file()
 
-    Checks for ``plugin.yaml``, ``plugin.yml``, or ``__init__.py`` — any of
-    which is enough for the installer / discovery system to recognise a
-    plugin directory.
-    """
-    return any(
-        (path / name).exists()
-        for name in ("plugin.yaml", "plugin.yml", "__init__.py")
-    )
+
+def _plugin_subdir_candidates(clone_root: Path) -> list[Path]:
+    """Return loadable plugins one level below a repository root."""
+    return [
+        child
+        for child in sorted(clone_root.iterdir())
+        if child.is_dir()
+        and not child.is_symlink()
+        and not child.name.startswith((".", "_"))
+        and _has_plugin_marker(child)
+    ]
 
 
 def _find_sole_plugin_subdir(clone_root: Path) -> Optional[Path]:
-    """Scan one level deep in *clone_root* for a single candidate plugin dir.
-
-    Returns the subdirectory path if **exactly one** child directory contains
-    a plugin marker (``plugin.yaml`` / ``plugin.yml`` / ``__init__.py``).
-    Returns ``None`` when there are zero or multiple candidates — the caller
-    should fall back to treating the repo root as the plugin directory.
-    """
-    candidates: list[Path] = []
-    for child in sorted(clone_root.iterdir()):
-        if not child.is_dir():
-            continue
-        if child.name.startswith((".", "_")):
-            continue
-        if _has_plugin_marker(child):
-            candidates.append(child)
+    """Return the sole loadable plugin one level below a repository root."""
+    candidates = _plugin_subdir_candidates(clone_root)
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -293,10 +291,12 @@ def _repo_name_from_url(url: str) -> str:
 
 
 def _read_manifest(plugin_dir: Path) -> dict:
-    """Read plugin.yaml and return the parsed dict, or empty dict."""
+    """Read plugin.yaml/plugin.yml and return the parsed dict, or empty dict."""
     manifest_file = plugin_dir / "plugin.yaml"
     if not manifest_file.exists():
-        return {}
+        manifest_file = plugin_dir / "plugin.yml"
+        if not manifest_file.exists():
+            return {}
     try:
         import yaml
 
@@ -305,6 +305,220 @@ def _read_manifest(plugin_dir: Path) -> dict:
     except Exception as e:
         logger.warning("Failed to read plugin.yaml in %s: %s", plugin_dir, e)
         return {}
+
+
+def _managed_path(plugin_dir: Path, relative_path: str) -> Path:
+    """Resolve a metadata path without allowing traversal or parent symlinks."""
+    posix_path = PurePosixPath(relative_path)
+    if (
+        not relative_path
+        or "\\" in relative_path
+        or posix_path.is_absolute()
+        or any(part in {"", ".", ".."} for part in posix_path.parts)
+    ):
+        raise PluginOperationError(
+            f"Invalid managed plugin path '{relative_path}'.",
+        )
+
+    candidate = plugin_dir.joinpath(*posix_path.parts)
+    root = plugin_dir.resolve()
+    parent = candidate.parent.resolve()
+    if parent != root and root not in parent.parents:
+        raise PluginOperationError(
+            f"Managed plugin path '{relative_path}' escapes the plugin directory.",
+        )
+    return candidate
+
+
+def _file_fingerprint(path: Path) -> str:
+    """Hash a regular file or symlink without following the final symlink."""
+    digest = hashlib.sha256()
+    if path.is_symlink():
+        digest.update(b"symlink\0")
+        digest.update(os.readlink(path).encode("utf-8", errors="surrogateescape"))
+        return digest.hexdigest()
+    if not path.is_file():
+        raise PluginOperationError(f"Managed plugin path '{path}' is not a file.")
+
+    digest.update(b"file\0")
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _snapshot_plugin_files(plugin_dir: Path) -> dict[str, str]:
+    """Return fingerprints for files supplied by the plugin source."""
+    files: dict[str, str] = {}
+    for path in sorted(plugin_dir.rglob("*")):
+        if not path.is_symlink() and not path.is_file():
+            continue
+        relative = path.relative_to(plugin_dir).as_posix()
+        if relative in {
+            _SOURCE_METADATA_FILENAME,
+            f"{_SOURCE_METADATA_FILENAME}.tmp",
+        }:
+            raise PluginOperationError(
+                f"Plugin source contains reserved file '{_SOURCE_METADATA_FILENAME}'.",
+            )
+        _managed_path(plugin_dir, relative)
+        files[relative] = _file_fingerprint(path)
+    return files
+
+
+def _write_source_metadata(plugin_dir: Path, metadata: dict[str, Any]) -> None:
+    """Atomically write installer-owned source metadata inside a plugin."""
+    metadata_path = plugin_dir / _SOURCE_METADATA_FILENAME
+    temporary_path = plugin_dir / f"{_SOURCE_METADATA_FILENAME}.tmp"
+    temporary_path.write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    if os.name != "nt":
+        temporary_path.chmod(0o600)
+    temporary_path.replace(metadata_path)
+
+
+def _read_source_metadata(plugin_dir: Path) -> Optional[dict[str, Any]]:
+    """Read and validate installer-owned source metadata when present."""
+    metadata_path = plugin_dir / _SOURCE_METADATA_FILENAME
+    if metadata_path.is_symlink():
+        raise PluginOperationError("Plugin source metadata must not be a symlink.")
+    if not metadata_path.exists():
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise PluginOperationError(
+            f"Plugin source metadata is unreadable: {e}",
+        ) from e
+
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("version") != _SOURCE_METADATA_VERSION
+    ):
+        raise PluginOperationError("Plugin source metadata has an unsupported format.")
+    for key in ("git_url", "subdir", "revision"):
+        if not isinstance(metadata.get(key), str) or not metadata[key]:
+            raise PluginOperationError(f"Plugin source metadata is missing '{key}'.")
+    files = metadata.get("files")
+    if not isinstance(files, dict):
+        raise PluginOperationError(
+            "Plugin source metadata is missing its file inventory."
+        )
+    for relative, fingerprint in files.items():
+        if not isinstance(relative, str) or not isinstance(fingerprint, str):
+            raise PluginOperationError(
+                "Plugin source metadata has an invalid file inventory."
+            )
+        _managed_path(plugin_dir, relative)
+    return metadata
+
+
+def _validate_manifest_version(manifest: dict, plugin_name: str) -> None:
+    mv = manifest.get("manifest_version")
+    if mv is None:
+        return
+    try:
+        mv_int = int(mv)
+    except (ValueError, TypeError):
+        raise PluginOperationError(
+            f"Plugin '{plugin_name}' has invalid manifest_version "
+            f"'{mv}' (expected an integer).",
+        ) from None
+    if mv_int > _SUPPORTED_MANIFEST_VERSION:
+        from hermes_cli.config import recommended_update_command
+
+        raise PluginOperationError(
+            f"Plugin '{plugin_name}' requires manifest_version {mv}, "
+            f"but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}. "
+            f"Run {recommended_update_command()} to update Hermes.",
+        )
+
+
+def _clone_plugin_source(
+    identifier: str,
+    temporary_root: Path,
+) -> tuple[Path, dict, str, Optional[dict[str, Any]]]:
+    """Clone and validate a plugin source into ``temporary_root``."""
+    try:
+        git_url, subdir = _resolve_git_url(identifier)
+    except ValueError as e:
+        raise PluginOperationError(str(e)) from e
+
+    clone_root = temporary_root / "plugin"
+    git_exe = _resolve_git_executable()
+    if not git_exe:
+        raise PluginOperationError("git is not installed or not in PATH.")
+
+    try:
+        result = subprocess.run(
+            [git_exe, "clone", "--depth", "1", git_url, str(clone_root)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except FileNotFoundError as e:
+        raise PluginOperationError("git is not installed or not in PATH.") from e
+    except subprocess.TimeoutExpired as e:
+        raise PluginOperationError("Git clone timed out after 60 seconds.") from e
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        raise PluginOperationError(f"Git clone failed:\n{err}")
+
+    if not clone_root.is_dir():
+        raise PluginOperationError("Git clone did not create a repository directory.")
+
+    if subdir is None and not _has_plugin_marker(clone_root):
+        candidates = _plugin_subdir_candidates(clone_root)
+        if len(candidates) == 1:
+            subdir = candidates[0].relative_to(clone_root).as_posix()
+            logger.info("Auto-detected plugin in subdirectory '%s'", subdir)
+        elif len(candidates) > 1:
+            names = ", ".join(path.name for path in candidates)
+            raise PluginOperationError(
+                "Repository contains multiple loadable plugins "
+                f"({names}); install one with an explicit subdirectory."
+            )
+
+    plugin_source = _resolve_subdir_within(clone_root, subdir) if subdir else clone_root
+    if not _has_plugin_marker(plugin_source):
+        location = f"subdirectory '{subdir}'" if subdir else "repository root"
+        raise PluginOperationError(
+            f"Plugin {location} must contain plugin.yaml/plugin.yml and __init__.py."
+        )
+    manifest = _read_manifest(plugin_source)
+    plugin_name = manifest.get("name") or (
+        subdir.rstrip("/").rsplit("/", 1)[-1]
+        if subdir
+        else _repo_name_from_url(git_url)
+    )
+    _validate_manifest_version(manifest, plugin_name)
+
+    source_metadata: Optional[dict[str, Any]] = None
+    if subdir:
+        try:
+            revision_result = subprocess.run(
+                [git_exe, "-C", str(clone_root), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            raise PluginOperationError("Could not determine plugin revision.") from e
+        if revision_result.returncode != 0:
+            err = (revision_result.stderr or revision_result.stdout or "").strip()
+            raise PluginOperationError(f"Could not determine plugin revision: {err}")
+        source_metadata = {
+            "version": _SOURCE_METADATA_VERSION,
+            "git_url": git_url,
+            "subdir": subdir,
+            "revision": revision_result.stdout.strip(),
+            "files": _snapshot_plugin_files(plugin_source),
+        }
+        _write_source_metadata(plugin_source, source_metadata)
+
+    return plugin_source, manifest, plugin_name, source_metadata
 
 
 def _copy_example_files(plugin_dir: Path, console) -> None:
@@ -484,86 +698,18 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
     Returns ``(target_dir, installed_manifest, canonical_name)``.
     Raises ``PluginOperationError`` on failure.
     """
-    import tempfile
-
-    try:
-        git_url, subdir = _resolve_git_url(identifier)
-    except ValueError as e:
-        raise PluginOperationError(str(e)) from e
-
     plugins_dir = _plugins_dir()
 
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_clone = Path(tmp) / "plugin"
-
-        git_exe = _resolve_git_executable()
-        if not git_exe:
-            raise PluginOperationError("git is not installed or not in PATH.")
-
-        try:
-            result = subprocess.run(
-                [git_exe, "clone", "--depth", "1", git_url, str(tmp_clone)],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-        except FileNotFoundError as e:
-            raise PluginOperationError(
-                "git is not installed or not in PATH.",
-            ) from e
-        except subprocess.TimeoutExpired as e:
-            raise PluginOperationError(
-                "Git clone timed out after 60 seconds.",
-            ) from e
-
-        if result.returncode != 0:
-            err = (result.stderr or result.stdout or "").strip()
-            raise PluginOperationError(f"Git clone failed:\n{err}")
-
-        # Resolve the directory within the clone that holds the plugin.
-        if subdir:
-            tmp_target = _resolve_subdir_within(tmp_clone, subdir)
-        else:
-            tmp_target = tmp_clone
-            # Auto-detect: if the repo root has no plugin markers, scan one
-            # level deep for exactly one subdirectory that looks like a
-            # plugin and install that instead.
-            if not _has_plugin_marker(tmp_clone) and tmp_clone.is_dir():
-                candidate = _find_sole_plugin_subdir(tmp_clone)
-                if candidate is not None:
-                    tmp_target = candidate
-                    subdir = str(candidate.relative_to(tmp_clone))
-                    logger.info(
-                        "Auto-detected plugin in subdirectory '%s'", subdir
-                    )
-
-        manifest = _read_manifest(tmp_target)
-        plugin_name = manifest.get("name") or (
-            subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url)
+        tmp_target, manifest, plugin_name, _source_metadata = _clone_plugin_source(
+            identifier,
+            Path(tmp),
         )
 
         try:
             target = _sanitize_plugin_name(plugin_name, plugins_dir)
         except ValueError as e:
             raise PluginOperationError(str(e)) from e
-
-        mv = manifest.get("manifest_version")
-        if mv is not None:
-            try:
-                mv_int = int(mv)
-            except (ValueError, TypeError):
-                raise PluginOperationError(
-                    f"Plugin '{plugin_name}' has invalid manifest_version "
-                    f"'{mv}' (expected an integer).",
-                ) from None
-            if mv_int > _SUPPORTED_MANIFEST_VERSION:
-                from hermes_cli.config import recommended_update_command
-
-                raise PluginOperationError(
-                    f"Plugin '{plugin_name}' requires manifest_version {mv}, "
-                    f"but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}. "
-                    f"Run {recommended_update_command()} to update Hermes.",
-                ) from None
 
         if target.exists():
             if not force:
@@ -676,8 +822,155 @@ def cmd_install(
     console.print()
 
 
+def _verify_managed_files(plugin_dir: Path, files: dict[str, str]) -> Optional[str]:
+    """Return the first locally changed managed path, if any."""
+    for relative, expected_fingerprint in files.items():
+        path = _managed_path(plugin_dir, relative)
+        if not path.exists() and not path.is_symlink():
+            return relative
+        try:
+            if _file_fingerprint(path) != expected_fingerprint:
+                return relative
+        except (OSError, PluginOperationError):
+            return relative
+    return None
+
+
+def _remove_managed_files(plugin_dir: Path, files: dict[str, str]) -> None:
+    """Remove old source-owned files while leaving user-created files intact."""
+    for relative in sorted(
+        files,
+        key=lambda value: (value.count("/"), value),
+        reverse=True,
+    ):
+        path = _managed_path(plugin_dir, relative)
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        parent = path.parent
+        while parent != plugin_dir:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+
+
+def _update_subdir_plugin(
+    target: Path,
+    metadata: dict[str, Any],
+) -> tuple[bool, str, bool]:
+    """Re-clone and transactionally replace source-owned plugin files."""
+    identifier = f"{metadata['git_url']}#{metadata['subdir']}"
+    with tempfile.TemporaryDirectory() as clone_tmp:
+        try:
+            plugin_source, _manifest, plugin_name, new_metadata = _clone_plugin_source(
+                identifier,
+                Path(clone_tmp),
+            )
+        except PluginOperationError as e:
+            return False, str(e), False
+
+        if new_metadata is None:
+            return False, "Plugin source no longer resolves to a subdirectory.", False
+        if plugin_name != target.name:
+            return (
+                False,
+                f"Plugin source now declares name '{plugin_name}', expected '{target.name}'.",
+                False,
+            )
+        if new_metadata["revision"] == metadata["revision"]:
+            return True, "Already up to date", True
+
+        changed_path = _verify_managed_files(target, metadata["files"])
+        if changed_path is not None:
+            return (
+                False,
+                f"Plugin has local changes in '{changed_path}'; refusing to overwrite them.",
+                False,
+            )
+
+        transaction_root = Path(
+            tempfile.mkdtemp(
+                dir=target.parent,
+                prefix=f".{target.name}-update-",
+            )
+        )
+        keep_recovery_backup = False
+        try:
+            replacement = transaction_root / "replacement"
+            backup = transaction_root / "backup"
+            try:
+                shutil.copytree(target, replacement, symlinks=True)
+                _remove_managed_files(replacement, metadata["files"])
+                for relative in new_metadata["files"]:
+                    destination = _managed_path(replacement, relative)
+                    if destination.exists() or destination.is_symlink():
+                        return (
+                            False,
+                            f"Updated plugin file '{relative}' conflicts with a user-owned path.",
+                            False,
+                        )
+                shutil.copytree(
+                    plugin_source,
+                    replacement,
+                    dirs_exist_ok=True,
+                    symlinks=True,
+                )
+            except (OSError, PluginOperationError) as e:
+                return False, f"Could not prepare plugin update: {e}", False
+
+            try:
+                target.rename(backup)
+            except OSError as e:
+                return False, f"Could not stage installed plugin for update: {e}", False
+            try:
+                replacement.rename(target)
+            except OSError as e:
+                try:
+                    backup.rename(target)
+                except OSError as rollback_error:
+                    keep_recovery_backup = True
+                    return (
+                        False,
+                        "Could not activate plugin update or restore the installed "
+                        f"plugin; recovery copy retained at {backup}: {rollback_error}",
+                        False,
+                    )
+                return False, f"Could not activate plugin update: {e}", False
+            shutil.rmtree(backup, ignore_errors=True)
+        finally:
+            if not keep_recovery_backup:
+                shutil.rmtree(transaction_root, ignore_errors=True)
+
+    old_revision = metadata["revision"][:12]
+    new_revision = new_metadata["revision"][:12]
+    return True, f"Updated {old_revision} -> {new_revision}", False
+
+
+def _update_plugin_dir(target: Path) -> tuple[bool, str, bool]:
+    """Update a root checkout or a provenance-tracked subdirectory plugin."""
+    # Preserve the existing root-checkout behavior even if the repository happens
+    # to contain a file with the installer metadata name.
+    if (target / ".git").exists():
+        ok, output = _git_pull_plugin_dir(target)
+        unchanged = ok and "Already up to date" in output
+        return ok, output, unchanged
+
+    try:
+        metadata = _read_source_metadata(target)
+    except PluginOperationError as e:
+        return False, str(e), False
+    if metadata is not None:
+        return _update_subdir_plugin(target, metadata)
+    return (
+        False,
+        "Plugin was not installed from git and has no source metadata; cannot update.",
+        False,
+    )
+
+
 def cmd_update(name: str) -> None:
-    """Update an installed plugin by pulling latest from its git remote."""
+    """Update an installed plugin from its recorded git source."""
     from rich.console import Console
 
     console = Console()
@@ -689,16 +982,9 @@ def cmd_update(name: str) -> None:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
-    if not (target / ".git").exists():
-        console.print(
-            f"[red]Error:[/red] Plugin '{name}' was not installed from git "
-            f"(no .git directory). Cannot update."
-        )
-        sys.exit(1)
-
     console.print(f"[dim]Updating {name}...[/dim]")
 
-    ok, output = _git_pull_plugin_dir(target)
+    ok, output, unchanged = _update_plugin_dir(target)
     if not ok:
         console.print(f"[red]Error:[/red] {output}")
         sys.exit(1)
@@ -707,7 +993,7 @@ def cmd_update(name: str) -> None:
     _copy_example_files(target, console)
 
     out = output.strip()
-    if "Already up to date" in out:
+    if unchanged:
         console.print(
             f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date."
         )
@@ -1979,7 +2265,7 @@ def _user_installed_plugin_dir(name: str) -> Optional[Path]:
 
 
 def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
-    """``git pull`` inside ``~/.hermes/plugins/<name>``."""
+    """Update a user plugin from its checkout or recorded git source."""
     target = _user_installed_plugin_dir(name)
     if target is None:
         return {
@@ -1987,20 +2273,13 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
             "error": f"Plugin '{name}' was not found under {_plugins_dir()}.",
         }
 
-    if not (target / ".git").exists():
-        return {
-            "ok": False,
-            "error": f"Plugin '{name}' is not a git checkout; cannot pull updates.",
-        }
-
-    ok, msg = _git_pull_plugin_dir(target)
+    ok, msg, unchanged = _update_plugin_dir(target)
     if not ok:
         return {"ok": False, "error": msg}
 
     from rich.console import Console
 
     _copy_example_files(target, Console())
-    unchanged = "Already up to date" in msg
     return {"ok": True, "name": name, "output": msg, "unchanged": unchanged}
 
 

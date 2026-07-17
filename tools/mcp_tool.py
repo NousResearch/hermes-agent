@@ -3900,22 +3900,6 @@ _SESSION_EXPIRED_MARKERS: tuple = (
 )
 
 
-def _exception_tree_contains_interruption(exc: BaseException) -> bool:
-    """Return whether ``exc`` or any nested exception is user cancellation."""
-    stack = [exc]
-    seen: set[int] = set()
-    while stack:
-        current = stack.pop()
-        identity = id(current)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        if isinstance(current, InterruptedError):
-            return True
-        stack.extend(getattr(current, "exceptions", ()))
-    return False
-
-
 def _is_session_expired_error(exc: BaseException) -> bool:
     """Return True if ``exc`` looks like an MCP transport session expiry.
 
@@ -3930,35 +3914,50 @@ def _is_session_expired_error(exc: BaseException) -> bool:
     ``streamablehttp_client`` + ``ClientSession`` pair, which is
     exactly what ``MCPServerTask._reconnect_event`` triggers.
     """
-    if _exception_tree_contains_interruption(exc):
-        return False
-
     # AnyIO's stream exceptions are commonly message-less. In particular,
     # ``str(ClosedResourceError()) == ""``, so marker matching alone misses the
-    # exact failure emitted by both MCP stdio and HTTP transports. Match the
-    # SDK's transport-closed exception types before inspecting text.
+    # exact failure emitted by both MCP stdio and HTTP transports.
     try:
         from anyio import BrokenResourceError, ClosedResourceError, EndOfStream
 
-        if isinstance(exc, (BrokenResourceError, ClosedResourceError, EndOfStream)):
-            return True
+        transport_error_types = (
+            BrokenResourceError,
+            ClosedResourceError,
+            EndOfStream,
+        )
     except ImportError:  # pragma: no cover - AnyIO is supplied by the MCP SDK
-        pass
+        transport_error_types = ()
 
-    # AnyIO task groups can wrap the transport exception in an
-    # ExceptionGroup whose own string omits the message-less leaf details.
-    nested = getattr(exc, "exceptions", ())
-    if nested and any(_is_session_expired_error(child) for child in nested):
-        return True
+    # ExceptionGroup trees can be arbitrarily deep or even cyclic when custom
+    # exceptions expose ``exceptions``. Traverse once, iteratively, and inspect
+    # every reachable node so user interruption always overrides transport
+    # markers or types found elsewhere in the graph.
+    stack = [exc]
+    seen: set[int] = set()
+    transport_error_found = False
+    while stack:
+        current = stack.pop()
+        identity = id(current)
+        if identity in seen:
+            continue
+        seen.add(identity)
 
-    # Exception messages vary across SDK versions + server
-    # implementations, so match on a small allow-list of stable
-    # substrings rather than exception type.  Kept narrow to avoid
-    # false positives on unrelated server errors.
-    msg = str(exc).lower()
-    if not msg:
-        return False
-    return any(marker in msg for marker in _SESSION_EXPIRED_MARKERS)
+        if isinstance(current, InterruptedError):
+            return False
+        if isinstance(current, transport_error_types):
+            transport_error_found = True
+
+        # Exception messages vary across SDK versions + server
+        # implementations, so match on a small allow-list of stable
+        # substrings rather than exception type. Kept narrow to avoid
+        # false positives on unrelated server errors.
+        msg = str(current).lower()
+        if msg and any(marker in msg for marker in _SESSION_EXPIRED_MARKERS):
+            transport_error_found = True
+
+        stack.extend(getattr(current, "exceptions", ()))
+
+    return transport_error_found
 
 
 def _handle_session_expired_and_retry(

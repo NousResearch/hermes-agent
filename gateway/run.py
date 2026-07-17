@@ -1403,6 +1403,13 @@ def _clear_planned_restart_notification() -> None:
     _planned_restart_notification_path().unlink(missing_ok=True)
 
 
+# Maximum time to wait for adapters with a degraded-send gate to become
+# ready before sending restart/startup lifecycle notifications. Set just
+# above the Telegram polling progress verifier's 60s budget so a
+# slow-but-recovering first getUpdates still beats this deadline.
+_STARTUP_LIFECYCLE_READY_TIMEOUT = 65.0
+
+
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
@@ -7860,6 +7867,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Notify the chat that initiated /restart that the gateway is back.
         planned_restart_notification_pending = _planned_restart_notification_pending()
+
+        # Wait for adapters that use a degraded-send gate (e.g. Telegram's
+        # _send_path_degraded) to become fully ready before sending
+        # lifecycle notifications. The flag is only cleared after the first
+        # successful getUpdates, which can take well over the 1.0s settle
+        # above on networks requiring fallback IPs — Telegram's own polling
+        # verifier allows 60s. Only wait when a lifecycle notification is
+        # actually pending, so normal startup is unaffected (#66589).
+        if connected_count > 0 and (
+            _restart_notification_pending() or planned_restart_notification_pending
+        ):
+            await self._wait_for_degraded_send_paths()
         # Capture, before _send_restart_notification() unlinks the marker,
         # whether this process booted from a chat-originated /restart. Used as
         # a one-shot signal by the /restart redelivery guard so a missing
@@ -16126,6 +16145,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 exit_code_path.unlink(missing_ok=True)
 
         return True
+
+    async def _wait_for_degraded_send_paths(self, timeout: Optional[float] = None) -> None:
+        """Wait until adapters that gate sends behind a degraded flag are ready.
+
+        Telegram sets ``_send_path_degraded`` while its first getUpdates is in
+        flight and clears it on the first successful poll; sends attempted in
+        that window are rejected with ``send_path_degraded`` (#66589). Waiting
+        here lets restart/startup lifecycle notifications survive networks
+        where the first poll needs fallback-IP discovery and takes many
+        seconds.
+
+        Event-driven when the adapter exposes ``_polling_progress_event`` —
+        that event is recreated every polling generation, so it is re-fetched
+        each round and waited in short slices. Adapters that expose the flag
+        without the event fall back to short polling. Only invoked from
+        ``start()`` when a lifecycle notification is actually pending, so
+        normal startup pays nothing for this.
+        """
+        if timeout is None:
+            timeout = _STARTUP_LIFECYCLE_READY_TIMEOUT
+        deadline = time.monotonic() + timeout
+        for platform, adapter in self.adapters.items():
+            if not hasattr(adapter, "_send_path_degraded"):
+                continue
+            platform_name = getattr(platform, "value", platform)
+            logged_wait = False
+            while getattr(adapter, "_send_path_degraded", False):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(
+                        "%s adapter send path still degraded after %.0fs; "
+                        "sending lifecycle notifications anyway",
+                        platform_name, timeout,
+                    )
+                    break
+                if not logged_wait:
+                    logged_wait = True
+                    logger.info(
+                        "Waiting for %s adapter send path to become ready "
+                        "before sending lifecycle notifications",
+                        platform_name,
+                    )
+                progress = getattr(adapter, "_polling_progress_event", None)
+                if isinstance(progress, asyncio.Event):
+                    try:
+                        # Short slices: the event is recreated each polling
+                        # generation, so re-check the flag and re-fetch it
+                        # often rather than sleeping on a stale event.
+                        await asyncio.wait_for(
+                            progress.wait(), timeout=min(2.0, remaining)
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                else:
+                    await asyncio.sleep(min(0.5, remaining))
 
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""

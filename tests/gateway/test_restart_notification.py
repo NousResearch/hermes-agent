@@ -1,6 +1,8 @@
 """Tests for /restart notification — the gateway notifies the requester on comeback."""
 
+import asyncio
 import json
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -688,3 +690,98 @@ async def test_restart_shutdown_notification_anchors_telegram_dm_topic():
         "direct_messages_topic_id": "20197",
         "telegram_reply_to_message_id": "462",
     }
+
+
+# ── startup lifecycle: wait for degraded send paths (#66589) ─────────────
+
+
+class _DegradedSendAdapter:
+    """Minimal stand-in for an adapter gating sends behind a degraded flag.
+
+    Mirrors the Telegram contract: ``_send_path_degraded`` clears on the
+    first successful getUpdates, and ``_polling_progress_event`` (recreated
+    every polling generation) signals that progress.
+    """
+
+    def __init__(self):
+        self._send_path_degraded = True
+        self._polling_progress_event = asyncio.Event()
+
+
+@pytest.mark.asyncio
+async def test_degraded_send_path_wait_returns_when_adapter_becomes_ready(monkeypatch):
+    """Readiness arriving after the 1s settle window is picked up promptly."""
+    monkeypatch.setattr(gateway_run, "_STARTUP_LIFECYCLE_READY_TIMEOUT", 10.0)
+
+    runner, _adapter = make_restart_runner()
+    degraded = _DegradedSendAdapter()
+    runner.adapters = {Platform.TELEGRAM: degraded}  # pyright: ignore[reportAttributeAccessIssue]
+
+    async def heal_after_settle():
+        await asyncio.sleep(1.5)  # readiness lands after the 1.0s settle
+        degraded._polling_progress_event.set()
+        degraded._send_path_degraded = False
+
+    healer = asyncio.create_task(heal_after_settle())
+    started = time.monotonic()
+    await runner._wait_for_degraded_send_paths()
+    elapsed = time.monotonic() - started
+    await healer
+
+    # Returns soon after the event fires, not at the 10s deadline.
+    assert elapsed < 5.0
+
+
+@pytest.mark.asyncio
+async def test_degraded_send_path_wait_is_bounded_when_never_ready(monkeypatch):
+    """A stuck adapter must not stall startup notifications indefinitely."""
+    monkeypatch.setattr(gateway_run, "_STARTUP_LIFECYCLE_READY_TIMEOUT", 1.0)
+
+    runner, _adapter = make_restart_runner()
+    degraded = _DegradedSendAdapter()  # never heals
+    runner.adapters = {Platform.TELEGRAM: degraded}  # pyright: ignore[reportAttributeAccessIssue]
+
+    started = time.monotonic()
+    await runner._wait_for_degraded_send_paths()
+    elapsed = time.monotonic() - started
+
+    assert 0.9 <= elapsed < 5.0
+
+
+@pytest.mark.asyncio
+async def test_degraded_send_path_wait_follows_recreated_progress_event(monkeypatch):
+    """The waiter must not sleep on a stale event from a prior polling generation."""
+    monkeypatch.setattr(gateway_run, "_STARTUP_LIFECYCLE_READY_TIMEOUT", 10.0)
+
+    runner, _adapter = make_restart_runner()
+    degraded = _DegradedSendAdapter()
+    runner.adapters = {Platform.TELEGRAM: degraded}  # pyright: ignore[reportAttributeAccessIssue]
+
+    async def regenerate_then_heal():
+        await asyncio.sleep(0.5)
+        # Telegram recreates the event on every new polling generation.
+        degraded._polling_progress_event = asyncio.Event()
+        await asyncio.sleep(0.5)
+        degraded._polling_progress_event.set()
+        degraded._send_path_degraded = False
+
+    healer = asyncio.create_task(regenerate_then_heal())
+    started = time.monotonic()
+    await runner._wait_for_degraded_send_paths()
+    elapsed = time.monotonic() - started
+    await healer
+
+    # Picks up the new event within a slice instead of hanging on the old
+    # one until the deadline.
+    assert elapsed < 5.0
+
+
+@pytest.mark.asyncio
+async def test_degraded_send_path_wait_skips_adapters_without_gate():
+    """Adapters exposing no degraded flag are ignored (no wait, no error)."""
+    runner, adapter = make_restart_runner()
+    assert not hasattr(adapter, "_send_path_degraded")
+
+    started = time.monotonic()
+    await runner._wait_for_degraded_send_paths(timeout=5.0)
+    assert time.monotonic() - started < 1.0

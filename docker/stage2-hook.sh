@@ -18,6 +18,7 @@
 set -eu
 
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
+HERMES_REAL_HOME="${HERMES_REAL_HOME:-}"
 INSTALL_DIR="/opt/hermes"
 
 # Drop to hermes via s6-setuidgid, but skip it when already non-root.
@@ -210,6 +211,26 @@ refuse_symlinked_path() {
     fi
     return 1
 }
+
+# --- Ensure HERMES_REAL_HOME exists and is hermes-owned when distinct ---
+# Custom bind-mount layouts may set HERMES_REAL_HOME to a directory other
+# than /opt/data. The s6 run scripts (main-wrapper.sh, dashboard/run,
+# hermes-exec-shim.sh) cd into $HERMES_REAL_HOME and export HOME=$HERMES_REAL_HOME
+# before s6-setuidgid drops privileges. If the directory doesn't exist or is
+# root-owned, every HOME-anchored write under it (.config, .cache, XDG_STATE_HOME,
+# library lockfiles) fails with EACCES after the drop. Create + chown it here
+# while we still have root, mirroring the HERMES_HOME bootstrap above. Only
+# act when HERMES_REAL_HOME is set AND differs from HERMES_HOME (no-op on the
+# default /opt/data layout where they coincide). (#56402)
+if [ -n "$HERMES_REAL_HOME" ] && [ "$HERMES_REAL_HOME" != "$HERMES_HOME" ]; then
+    mkdir -p "$HERMES_REAL_HOME"
+    if refuse_symlinked_path "chown" "$HERMES_REAL_HOME"; then
+        :
+    else
+        chown hermes:hermes "$HERMES_REAL_HOME" 2>/dev/null || \
+            echo "[stage2] Warning: chown $HERMES_REAL_HOME failed (rootless container?) — continuing"
+    fi
+fi
 
 chown_hermes_tree() {
     target="$1"

@@ -188,7 +188,7 @@ async function probeRemotePlatform(ssh) {
   const arch = (out[1] || '').trim()
   if (!SUPPORTED_REMOTE_OS.has(osName)) {
     const err: any = new Error(
-      `Unsupported remote platform "${osName || 'unknown'}". Hermes Desktop SSH mode supports Linux and macOS remote hosts only.`
+      `Unsupported remote platform "${osName || 'unknown'}". Hermes Desktop SSH mode supports Linux, macOS, and Windows remote hosts.`
     )
     err.kind = 'unsupported-platform'
     throw err
@@ -236,7 +236,9 @@ async function readLockfile(ssh, ownershipId) {
   const pid = parsed.pid
   const port = parsed.port
   if (!Number.isInteger(pid) || pid <= 0 || pid > 4194304) return null
-  if (!Number.isInteger(port) || port <= 0 || port > 65535) return null
+  // port 0 = spawn-in-progress record (written before readiness); valid
+  // ownership proof for cleanup, but never reusable.
+  if (!Number.isInteger(port) || port < 0 || port > 65535) return null
   if (parsed.ownershipId !== ownershipId || !/^[0-9a-f]{16}$/.test(parsed.spawnNonce || '')) return null
   if (!/^[0-9a-f]{32}$/.test(parsed.tokenFingerprint || '')) return null
   if (parsed.protocolVersion !== PROTOCOL_VERSION) return null
@@ -554,7 +556,7 @@ async function connect(deps) {
   if (lock) {
     const pidAlive = await remotePidAlive(ssh, lock.pid)
     const owned = pidAlive && await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath)
-    const reusable = pidAlive && owned && Boolean(reuseToken) &&
+    const reusable = pidAlive && owned && lock.port > 0 && Boolean(reuseToken) &&
       lock.tokenFingerprint === fingerprintToken(reuseToken) &&
       lock.hermesPath === hermesPath && lock.hermesHome === hermesHome
     if (reusable) {
@@ -637,6 +639,12 @@ async function connect(deps) {
   let localPort = 0
   let remotePort = 0
   try {
+    // Write the ownership record IMMEDIATELY (port=0): a supersede between
+    // spawn and readiness whose cleanup cannot reach the box must not leave a
+    // lockless orphan — the next connect reaps it by exact ownership via this
+    // record. Inside the try: if this write itself fails, the catch still
+    // kills the just-spawned process via the in-memory record.
+    await writeLockfile(ssh, ownershipId, ownedSpawn)
     remotePort = await scrapeReadyPort(ssh, logPath, {
       timeoutMs: readyTimeoutMs,
       isAlive: () => remotePidAlive(ssh, pid),

@@ -178,11 +178,14 @@ function buildMasterArgs(conn, connectTimeoutMs?) {
 //
 // NOTE(remote-terminal): interim until the dashboard /api/terminal WebSocket
 // lands (specs/desktop-remote-terminal.md); delete this path then.
-function buildInteractiveSshArgs(conn, remoteCwd, connectTimeoutMs?) {
+function buildInteractiveSshArgs(conn, remoteCwd, connectTimeoutMs?, remoteCommand?) {
   const args = ['-tt', ...baseSshOptions(conn.controlPath, connectTimeoutMs), ...hostArgs(conn), '--', target(conn.user, conn.host)]
+  if (remoteCommand) {
+    args.push(remoteCommand)
+    return args
+  }
   const cwd = String(remoteCwd || '').trim()
   if (cwd) {
-    // cd then exec a login shell; quote the path; tolerate a missing dir.
     const q = `'${cwd.replace(/'/g, `'\\''`)}'`
     args.push(`cd ${q} 2>/dev/null; exec "$SHELL" -l`)
   } else {
@@ -405,14 +408,22 @@ class SshConnection {
   // reachability with a one-shot `ssh true` so failures classify identically.
   async open() {
     if (await this.isAlive()) {
-      this._opened = true
-      return
+      // -O check passing is not proof the master works: a ControlPersist master
+      // can survive a failed teardown with wedged channels (observed on macOS
+      // after a mode switch — check succeeds, every exec times out). Verify with
+      // a real exec before trusting it; on failure, evict and dial fresh.
+      if (!this._mux || (await this._verifyMuxChannel())) {
+        this._opened = true
+        return
+      }
+      this._logLine('existing control master failed exec verification; evicting stale master')
+      await this._evictStaleMaster()
     }
     if (!this._mux) {
       this._logLine(`connecting (no-mux) to ${target(this.user, this.host)}:${this.port}`)
       let result
       try {
-        result = await runSsh(buildExecArgs(this, 'true', this._connectTimeoutMs), {
+        result = await runSsh(buildExecArgs(this, 'exit 0', this._connectTimeoutMs), {
           timeoutMs: this._connectTimeoutMs,
           spawnFn: this._spawnFn
         })
@@ -466,12 +477,44 @@ class SshConnection {
     if ([...this._tunnels.values()].some(tunnel => tunnel.alive === false)) return false
     const args = this._mux
       ? buildControlArgs(this, 'check', [], this._connectTimeoutMs)
-      : buildExecArgs(this, 'true', this._connectTimeoutMs)
+      : buildExecArgs(this, 'exit 0', this._connectTimeoutMs)
     try {
       const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn })
       return result.code === 0
     } catch {
       return false
+    }
+  }
+
+  // A real exec through the master (`exit 0` works under POSIX shells and
+  // cmd.exe); a wedged mux hangs to the timeout.
+  async _verifyMuxChannel() {
+    try {
+      const result: any = await runSsh(buildExecArgs(this, 'exit 0', this._connectTimeoutMs), {
+        timeoutMs: this._connectTimeoutMs,
+        spawnFn: this._spawnFn
+      })
+      return result.code === 0
+    } catch {
+      return false
+    }
+  }
+
+  // -O exit (best-effort) then drop the socket so ControlMaster=auto cannot
+  // re-attach to the corpse. (The orphaned master process is left to
+  // ControlPersist; a wedged channel can pin it, but without its socket it is
+  // inert.)
+  async _evictStaleMaster() {
+    try {
+      await runSsh(buildControlArgs(this, 'exit', [], this._connectTimeoutMs), {
+        timeoutMs: this._connectTimeoutMs,
+        spawnFn: this._spawnFn
+      })
+    } catch {}
+    try {
+      fs.unlinkSync(this.controlPath)
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') this._logLine(`could not remove stale control socket (${error.code}); a fresh master may not dial`)
     }
   }
 
@@ -609,10 +652,14 @@ class SshConnection {
       const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn })
       if (result.code !== 0) throw this._fail(result.stderr)
       this._logLine('control master closed')
-      this._opened = false
     } catch (error: any) {
-      this._logLine(`close failed (retryable): ${error.message}`)
+      // A master that refuses -O exit is the wedge that poisons re-attach;
+      // disown it. (Without its socket the orphan is inert; ControlPersist may
+      // not reap it if a wedged channel never idles.)
+      this._logLine(`close failed; removing control socket: ${error.message}`)
+      try { fs.unlinkSync(this.controlPath) } catch {}
     }
+    this._opened = false
   }
 }
 

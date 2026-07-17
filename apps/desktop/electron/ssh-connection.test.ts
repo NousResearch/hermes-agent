@@ -239,15 +239,51 @@ test('open() establishes the master when not already alive', async () => {
   assert.deepEqual(ops, ['check', 'master'], 'probes liveness first, then opens the master')
 })
 
-test('open() is a no-op when the master is already alive', async () => {
+test('open() is a no-op when the master is already alive and execs verify', async () => {
   const ops: string[] = []
   const spawnFn = scriptedSpawn(args => {
-    ops.push(args.includes('check') ? 'check' : 'master')
-    return { code: 0 } // check succeeds → already alive
+    ops.push(args.includes('check') ? 'check' : args.includes('exit 0') ? 'verify' : 'master')
+    return { code: 0 } // check succeeds → alive; verify exec succeeds → trusted
   })
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
   await conn.open()
-  assert.deepEqual(ops, ['check'], 'alive master → no second spawn to open it')
+  assert.deepEqual(ops, ['check', 'verify'], 'alive master is exec-verified, then trusted without reopening')
+})
+
+test('open() evicts a wedged master (check passes, exec hangs) and dials fresh', async () => {
+  // The macOS mode-switch wedge: ControlPersist master answers -O check but
+  // every exec through it hangs. open() must verify, evict (-O exit), and
+  // establish a fresh master instead of trusting the corpse.
+  const ops: string[] = []
+  const spawnFn = scriptedSpawn(args => {
+    if (args.includes('check')) { ops.push('check'); return { code: 0 } }
+    if (args.includes('exit 0')) { ops.push('verify'); return { hang: true } }
+    if (args.includes('-O')) { ops.push('evict'); return { code: 0 } }
+    ops.push('master'); return { code: 0 }
+  })
+  const conn = new SshConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn, controlDir: '/tmp/d', connectTimeoutMs: 50 }
+  )
+  await conn.open()
+  assert.deepEqual(ops, ['check', 'verify', 'evict', 'master'],
+    'wedged master: verified, evicted, then a fresh master is dialed')
+})
+
+test('close() removes the control socket when -O exit fails', async () => {
+  const dir = path.join(os.tmpdir(), `hermes-ssh-close-${process.pid}-${Date.now()}`)
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const spawnFn = scriptedSpawn(args => {
+    if (args.includes('check')) return { code: 255 } // not alive → open dials master
+    if (args.includes('-M')) return { code: 0 }
+    return { code: 255, stderr: 'mux: master gone' } // -O exit fails
+  })
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: dir })
+  await conn.open()
+  fs.writeFileSync(conn.controlPath, '') // simulate the lingering socket file
+  await conn.close()
+  assert.ok(!fs.existsSync(conn.controlPath), 'failed -O exit drops the socket so the next open dials fresh')
+  fs.rmSync(dir, { recursive: true, force: true })
 })
 
 test('open() creates the control-socket directory if it does not exist', async () => {
@@ -351,7 +387,7 @@ test('no-mux: open() verifies auth with a one-shot exec, no -M master', async ()
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
   await conn.open()
   assert.ok(!spawnFn.calls.some(args => args.includes('-M')), 'no master should be spawned')
-  assert.ok(spawnFn.calls.some(args => args[args.length - 1] === 'true'), 'liveness/openness via one-shot exec')
+  assert.ok(spawnFn.calls.some(args => args[args.length - 1] === 'exit 0'), 'liveness/openness via one-shot exec')
 })
 
 test('SSH probe never creates or closes a ControlMaster', async () => {
@@ -663,15 +699,17 @@ test('closing one scope addresses only that scope control master', async () => {
   assert.equal(second._opened, true)
 })
 
-test('failed ControlMaster close remains retryable', async () => {
-  const spawnFn = scriptedSpawn([{ code: 255, stderr: 'master refused exit' }, { code: 0 }])
+test('failed ControlMaster close disowns the master instead of retrying it', async () => {
+  // Old contract kept _opened=true for a retry — which left wedged ControlPersist
+  // masters trusted and reattachable (the macOS mode-switch livelock). New
+  // contract: a master that refuses -O exit is disowned — socket dropped,
+  // connection marked closed — so the next open dials fresh.
+  const spawnFn = scriptedSpawn([{ code: 255, stderr: 'master refused exit' }])
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
   conn._opened = true
   await conn.close()
-  assert.equal(conn._opened, true)
-  await conn.close()
   assert.equal(conn._opened, false)
-  assert.equal(spawnFn.calls.length, 2)
+  assert.equal(spawnFn.calls.length, 1)
 })
 
 test('stopTunnelChild waits for process exit', async () => {

@@ -66,6 +66,7 @@ import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstra
 import { SshConnection, buildInteractiveSshArgs, createSshProbeConnection, pickLocalPort, redactSecrets } from './ssh-connection'
 import * as remoteLifecycle from './remote-lifecycle'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
+import { buildWindowsInteractiveCommand, connectWindowsRemote, detectRemotePlatform, helper } from './windows-remote-lifecycle'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -811,6 +812,9 @@ function registerMediaProtocol() {
 let mainWindow = null
 let hermesProcess = null
 let connectionPromise = null
+// Consecutive indeterminate liveness-probe failures for the cached remote
+// backend; teardown fires only on proof (refused) or a full streak.
+let revalidateTimeoutStreak = 0
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
@@ -6286,7 +6290,9 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
 
   let result
   try {
-    result = await remoteLifecycle.connect({
+    const platform = await detectRemotePlatform(ssh, sshConfig.remoteHermesPath || '')
+    const lifecycle = platform.os === 'Windows' ? connectWindowsRemote : remoteLifecycle.connect
+    result = await lifecycle({
       ssh,
       profile: connectionScopeKey(profile) || '',
       remoteHermesPath: sshConfig.remoteHermesPath || '',
@@ -6333,6 +6339,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     host: sshConfig.host,
     hostLabel,
     hermesVersion: result.hermesVersion || '',
+    remotePlatform: result.platform?.os || '',
     reused: result.reused
   })
 
@@ -6551,18 +6558,45 @@ async function testDesktopConnectionConfig(input: any = {}) {
       { rememberLog: sshRememberLog }
     )
     try {
-      await ssh.open()
-      const platform = await remoteLifecycle.probeRemotePlatform(ssh)
-      const hermesPath = await remoteLifecycle.locateHermes(ssh, sshConfig.remoteHermesPath || '')
-      const hermesVersion = await remoteLifecycle.probeHermesVersion(ssh, hermesPath)
-      if (!(await remoteLifecycle.remoteSupportsSshOwnership(ssh, hermesPath))) {
-        return { reachable: false, sshError: 'update-required', error: 'Update Hermes on the remote host before connecting with Desktop SSH.' }
-      }
-      return {
-        reachable: true, sshError: null, error: null,
-        remotePlatform: `${platform.os}/${platform.arch}`,
-        remoteHermesPath: hermesPath, remoteHermesVersion: hermesVersion,
-        host: sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host
+      // One bounded retry on TIMEOUT only: a cold Windows backend's first
+      // PowerShell exec can exceed the budget (observed live), and a timeout is
+      // indeterminate — unlike auth/host-key/unreachable, which are verdicts.
+      let attempt = 0
+      for (;;) {
+        try {
+          await ssh.open()
+          const platform: any = await detectRemotePlatform(ssh, sshConfig.remoteHermesPath || '')
+          let hermesPath
+          let hermesVersion
+          let supported
+          if (platform.os === 'Windows') {
+            const runtime = platform
+            hermesPath = runtime.hermesPath
+            const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
+            hermesVersion = inspection.version
+            supported = inspection.supported
+          } else {
+            hermesPath = await remoteLifecycle.locateHermes(ssh, sshConfig.remoteHermesPath || '')
+            hermesVersion = await remoteLifecycle.probeHermesVersion(ssh, hermesPath)
+            supported = await remoteLifecycle.remoteSupportsSshOwnership(ssh, hermesPath)
+          }
+          if (!supported) {
+            return { reachable: false, sshError: 'update-required', error: 'Update Hermes on the remote host before connecting with Desktop SSH.' }
+          }
+          return {
+            reachable: true, sshError: null, error: null,
+            remotePlatform: `${platform.os}/${platform.arch}`,
+            remoteHermesPath: hermesPath, remoteHermesVersion: hermesVersion,
+            host: sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host
+          }
+        } catch (error: any) {
+          if (error?.kind === 'timeout' && attempt === 0) {
+            attempt += 1
+            sshRememberLog('[ssh] test probe timed out once; retrying')
+            continue
+          }
+          throw error
+        }
       }
     } catch (error: any) {
       return { reachable: false, sshError: error.kind || 'unknown', error: error.message }
@@ -6658,6 +6692,10 @@ function stopBackendChild(child) {
 function resetHermesConnection({ soft = false } = {}) {
   connectionPromise = null
   backendStartFailure = null
+  // A new connection generation must not inherit an old backend's timeout
+  // streak — one inherited strike would revert its first slow probe to
+  // single-timeout teardown aggression.
+  revalidateTimeoutStreak = 0
 
   stopBackendChild(hermesProcess)
 
@@ -7713,13 +7751,23 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
   const base = conn.baseUrl.replace(/\/+$/, '')
 
   try {
-    await fetchPublicJson(`${base}/api/status`, { timeoutMs: 2_500 })
-
+    await fetchPublicJson(`${base}/api/status`, { timeoutMs: 10_000 })
+    revalidateTimeoutStreak = 0
     return { ok: true, rebuilt: false }
-  } catch {
-    // Unreachable remote: drop the stale cache so the renderer's next reconnect
-    // tick rebuilds a fresh, reachable descriptor. resetHermesConnection only
-    // nulls connectionPromise for a remote (no child to SIGTERM).
+  } catch (error: any) {
+    // A timeout is indeterminate (slow VM, idle tunnel re-establishing) — not
+    // proof of death. Tear down only on proof (connection refused) or after a
+    // bounded streak of timeouts, so one slow answer can't destroy a healthy
+    // transport and cancel in-flight bootstraps.
+    const refused = /ECONNREFUSED/i.test(String(error?.code || error?.cause?.code || error?.message || ''))
+    if (!refused) {
+      revalidateTimeoutStreak += 1
+      if (revalidateTimeoutStreak < 3) {
+        rememberLog(`Remote liveness probe indeterminate (${revalidateTimeoutStreak}/3); keeping connection.`)
+        return { ok: true, rebuilt: false }
+      }
+    }
+    revalidateTimeoutStreak = 0
     rememberLog('Cached remote Hermes backend failed liveness probe; dropping stale connection.')
     if (conn.remoteKind === 'ssh') {
       const profile = primaryProfileKey()
@@ -8938,12 +8986,16 @@ ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
 
   const sshTarget = await resolveTerminalConnection(activeSshTerminalTarget, () => ensureBackend(primaryProfileKey()))
   const remote = Boolean(sshTarget)
+  const remoteState = remote ? sshConnections.get(sshTarget.scope) : null
+  const remoteCommand = remoteState?.remotePlatform === 'Windows'
+    ? buildWindowsInteractiveCommand(String(payload?.cwd || '').trim())
+    : undefined
   const ptyProcess = remote
     ? nodePty.spawn(
         process.platform === 'win32'
           ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
           : 'ssh',
-        buildInteractiveSshArgs(sshTarget.ssh, String(payload?.cwd || '').trim()),
+        buildInteractiveSshArgs(sshTarget.ssh, String(payload?.cwd || '').trim(), undefined, remoteCommand),
         { cols, cwd: app.getPath('home'), env: terminalShellEnv(), name: 'xterm-256color', rows }
       )
     : nodePty.spawn(command, args, { cols, cwd, env: terminalShellEnv(), name: 'xterm-256color', rows })

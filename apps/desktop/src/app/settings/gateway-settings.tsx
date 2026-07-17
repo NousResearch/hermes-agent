@@ -351,7 +351,12 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const namedProfiles = useMemo(() => profiles.filter(profile => profile.name !== 'default'), [profiles])
 
   useEffect(() => {
-    setSshCustomHost(Boolean(state.sshHost && !sshHostSuggestions.includes(state.sshHost)))
+    // One-directional: a saved host that isn't in the suggestions must render
+    // the free-text input (rehydration). Never force custom OFF here — that
+    // instantly snapped the just-clicked-Custom (empty-host) input back to the
+    // dropdown, making a raw-IP host impossible to type. The way back to the
+    // dropdown is the input's onBlur (empty host + suggestions).
+    if (state.sshHost && !sshHostSuggestions.includes(state.sshHost)) setSshCustomHost(true)
   }, [state.sshHost, sshHostSuggestions])
 
   useEffect(() => {
@@ -1198,7 +1203,12 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
             />
           ) : (
             <ListRow
-              action={<Input className={cn('h-8', CONTROL_TEXT)} onBlur={() => void resolveSshHost(state.sshHost)} onChange={event => setState(current => selectSshHost(current, event.target.value))} value={state.sshHost} />}
+              action={<Input autoFocus={sshCustomHost} className={cn('h-8', CONTROL_TEXT)} onBlur={() => {
+                // Empty host on blur with suggestions available = the user backed
+                // out of Custom; return to the dropdown.
+                if (!state.sshHost.trim() && sshHostSuggestions.length > 0) { setSshCustomHost(false); return }
+                void resolveSshHost(state.sshHost)
+              }} onChange={event => setState(current => selectSshHost(current, event.target.value))} value={state.sshHost} />}
               description={g.sshHostDesc}
               title={g.sshHostTitle}
             />

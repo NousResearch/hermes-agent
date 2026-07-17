@@ -5079,6 +5079,41 @@ class TestRegisterMcpServers:
                 mcp._server_connecting.discard("my_server")
             mcp._stop_mcp_loop()
 
+    def test_interrupted_discovery_allows_reregistration(self):
+        import tools.mcp_tool as mcp
+
+        servers, connecting = {}, set()
+        attempts = 0
+
+        async def fake_register(name, _cfg):
+            with mcp._lock:
+                servers[name] = _make_mock_server(name)
+            return []
+
+        def interrupt_then_run(coro_factory, timeout):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise InterruptedError("cancel discovery")
+            return asyncio.run(coro_factory())
+
+        config = {"retry_srv": {"command": "test"}}
+        with patch.object(mcp, "_servers", servers), \
+             patch.object(mcp, "_server_connecting", connecting), \
+             patch.object(mcp, "_server_connect_errors", {}), \
+             patch.object(mcp, "_MCP_AVAILABLE", True), \
+             patch.object(mcp, "_ensure_mcp_loop"), \
+             patch.object(mcp, "_run_on_mcp_loop", side_effect=interrupt_then_run), \
+             patch.object(mcp, "_discover_and_register_server", side_effect=fake_register), \
+             patch.object(mcp, "_existing_tool_names", return_value=[]):
+            with pytest.raises(InterruptedError, match="cancel discovery"):
+                mcp.register_mcp_servers(config)
+            assert connecting == set()
+            mcp.register_mcp_servers(config)
+
+        assert "retry_srv" in servers
+        assert attempts == 2
+
     def test_logs_summary_on_success(self):
         import tools.mcp_tool as mcp
 

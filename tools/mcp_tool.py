@@ -5400,6 +5400,10 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     try:
         _run_on_mcp_loop(_discover_all, timeout=120)
     finally:
+        with _lock:
+            for name in new_servers:
+                if name not in _servers:
+                    _server_connecting.discard(name)
         if _was_interrupted:
             _set_interrupt(True)
 

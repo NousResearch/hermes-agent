@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -550,6 +551,14 @@ def classify_api_error(
     # fallback gating) fires correctly instead of misclassifying as generic.
     if status_code is None and error_type == "RateLimitError":
         status_code = 429
+    # Last resort: recover the status from the message text. Routers/proxies
+    # can surface an upstream failure as an error frame inside an HTTP-200
+    # SSE stream, in which case the raised exception has no status attribute
+    # and only the message (e.g. "Client error: HTTP 400") carries the code.
+    # Without this, a deterministic 4xx classifies as unknown/retryable and
+    # burns every retry before failing with the same error.
+    if status_code is None:
+        status_code = _extract_status_code_from_message(str(error).lower())
     body = _extract_error_body(error)
     error_code = _extract_error_code(body)
 
@@ -1466,6 +1475,36 @@ def _classify_by_message(
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
+
+# Conservative message-text patterns for a last-resort HTTP status recovery.
+# Each requires an explicit status/HTTP prefix so bare numbers in ordinary
+# prose (token counts, model names, dates) can never match.
+_MESSAGE_STATUS_PATTERNS = (
+    re.compile(r"\bhttp[ /_-]?(?:status[ :]*)?(\d{3})\b"),
+    re.compile(r"\bstatus(?:[ _-]?code)?[ :=]+(\d{3})\b"),
+    re.compile(r"\berror[ _-]?code[ :=]+(\d{3})\b"),
+)
+
+
+def _extract_status_code_from_message(error_msg: str) -> Optional[int]:
+    """Last-resort HTTP status extraction from lowercased message text.
+
+    A router/proxy can deliver an upstream failure as an error frame inside an
+    HTTP-200 SSE stream (e.g. continuum-router emits
+    ``{"error": {"message": "Client error: HTTP 400"}}`` mid-stream). The
+    exception raised for that frame carries no ``.status``/``.status_code``
+    attribute, so without this fallback a deterministic 400 classified as
+    ``unknown`` (retryable) and burned every retry. Only 4xx/5xx are accepted:
+    2xx/3xx mentions ("expected HTTP 200") are not failure statuses.
+    """
+    for pattern in _MESSAGE_STATUS_PATTERNS:
+        match = pattern.search(error_msg)
+        if match:
+            code = int(match.group(1))
+            if 400 <= code < 600:
+                return code
+    return None
+
 
 def _extract_status_code(error: Exception) -> Optional[int]:
     """Walk the error and its cause chain to find an HTTP status code."""

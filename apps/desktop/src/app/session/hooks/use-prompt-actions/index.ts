@@ -514,7 +514,16 @@ export function usePromptActions({
   )
 
   const cancelRun = useCallback(async () => {
-    const sessionId = activeSessionId || activeSessionIdRef.current
+    // Read from the ref, not the closure-captured `activeSessionId`. The
+    // actions bag is a stable ref mutated in place (Object.assign on each
+    // ContribWiring render), and ChatRoutesSurface is memoized on that stable
+    // ref — so it does NOT re-render when activeSessionId changes, which means
+    // the ChatView element's onCancel prop holds a stale cancelRun closure.
+    // The closure's `activeSessionId` can be a previous session's id (or null
+    // from a new-chat draft), sending session.interrupt to the wrong session.
+    // The ref is updated via useEffect on every activeSessionId change, so it
+    // always reflects the current session — same pattern submitText uses.
+    const sessionId = activeSessionIdRef.current
 
     const releaseBusy = () => {
       setMutableRef(busyRef, false)
@@ -589,7 +598,6 @@ export function usePromptActions({
       notifyError(stopError, copy.stopFailed)
     }
   }, [
-    activeSessionId,
     activeSessionIdRef,
     busyRef,
     copy.stopFailed,

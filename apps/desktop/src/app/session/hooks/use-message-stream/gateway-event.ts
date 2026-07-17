@@ -249,6 +249,15 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               }
 
               if (busy) {
+                // Don't re-arm busy from a stale session.info if the user
+                // just clicked Stop (interrupted=true). The backend's
+                // cooperative interrupt may not have propagated yet, so
+                // running is still true in the heartbeat. The turn's
+                // finally block will emit running=false to clear busy.
+                if (state.interrupted) {
+                  return state
+                }
+
                 return {
                   ...state,
                   busy,
@@ -307,14 +316,27 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           triggerHaptic('streamStart')
         }
 
-        updateSessionState(sessionId, state => ({
-          ...state,
-          busy: true,
-          awaitingResponse: true,
-          sawAssistantPayload: false,
-          interrupted: false,
-          turnStartedAt: Date.now()
-        }))
+        updateSessionState(sessionId, state => {
+          // If the user clicked Stop (cancelRun set interrupted=true), don't
+          // let a stale message.start from a chained turn (goal follow-up,
+          // completion drain) or an in-flight LLM response re-arm busy.
+          // The interrupt is user intent — the backend's cooperative cancel
+          // may not have propagated yet, so its events are stale. The turn's
+          // finally block will emit session.info with running=false to clear
+          // busy for real once the agent loop actually exits.
+          if (state.interrupted) {
+            return state
+          }
+
+          return {
+            ...state,
+            busy: true,
+            awaitingResponse: true,
+            sawAssistantPayload: false,
+            interrupted: false,
+            turnStartedAt: Date.now()
+          }
+        })
 
         if (isActiveEvent) {
           setTurnStartedAt(Date.now())

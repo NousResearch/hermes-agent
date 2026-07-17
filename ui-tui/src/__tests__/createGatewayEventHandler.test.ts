@@ -1,3 +1,7 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
@@ -64,6 +68,39 @@ describe('createGatewayEventHandler', () => {
     resetTurnState()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
+  })
+
+  it('refreshes the exit breadcrumb when session.info reports a compression continuation key', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hermes-tui-compress-'))
+    const path = join(dir, 'active.json')
+    const previousFile = process.env.HERMES_TUI_ACTIVE_SESSION_FILE
+    process.env.HERMES_TUI_ACTIVE_SESSION_FILE = path
+    patchUiState({ sid: 'runtime-sid' })
+
+    try {
+      writeFileSync(path, JSON.stringify({ session_id: 'durable-parent' }))
+      createGatewayEventHandler(buildCtx([]))({
+        payload: {
+          model: 'test-model',
+          skills: {},
+          stored_session_id: 'durable-continuation',
+          tools: {}
+        },
+        session_id: 'runtime-sid',
+        type: 'session.info'
+      } as any)
+
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ session_id: 'durable-continuation' })
+      expect(getUiState().sid).toBe('runtime-sid')
+    } finally {
+      rmSync(dir, { force: true, recursive: true })
+
+      if (previousFile === undefined) {
+        delete process.env.HERMES_TUI_ACTIVE_SESSION_FILE
+      } else {
+        process.env.HERMES_TUI_ACTIVE_SESSION_FILE = previousFile
+      }
+    }
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {

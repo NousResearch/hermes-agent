@@ -26,6 +26,9 @@ SPDX header pointing at the original `src/**/*.js` source.
 | --- | --- | --- |
 | `agent/heartbeat.py` | `src/runtime/consciousness-loop.js` | Autonomous L2 tick loop |
 | `agent/heartbeat_policy.py` | `src/runtime/tick-policy.js` | Heartbeat prompt policy |
+| `agent/keywords.py` | `src/memory/keywords.js` | Zero-dep CN/EN n-gram extraction |
+| `agent/threads.py` | `src/memory/threads.js` | Thread model: read-time temperature, no stack |
+| `agent/thread_classifier.py` | `src/memory/thread-classifier.js` | LLM arbiter for weak-signal thread merges |
 
 (Additional entries will be appended as more BaiLongma modules are
 ported.)

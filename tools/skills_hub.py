@@ -496,6 +496,12 @@ class SkillSource(ABC):
 # Generic git repo adapter
 # ---------------------------------------------------------------------------
 
+GIT_TIMEOUT_SECONDS = 30
+if os.name == "nt":
+    GIT_CREATIONFLAGS = subprocess.CREATE_NO_WINDOW
+else:
+    GIT_CREATIONFLAGS = 0
+
 @dataclass(slots=True)
 class GitTreeEntry:
     """Single entry returned from `git ls-tree`."""
@@ -575,20 +581,14 @@ class GitSource(SkillSource):
 
         # Initial clone
         if not repo_dir.exists():
-            logger.debug("Creating bare mirror of %s" % tap["repo"])
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--bare",
-                    "--filter=blob:none",
-                    "--no-tags",
-                    tap["repo"],
-                    str(repo_dir),
-                ],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+            logger.debug("Creating bare mirror of %s", tap["repo"])
+            self._git_exec(
+                "clone",
+                "--bare",
+                "--filter=blob:none",
+                "--no-tags",
+                tap["repo"],
+                str(repo_dir),
             )
             return repo_dir
 
@@ -596,20 +596,14 @@ class GitSource(SkillSource):
         age_seconds = time.time() - repo_dir.stat().st_mtime
         max_age_seconds = 30
         if age_seconds >= max_age_seconds:
-            logger.debug("Refreshing %s" % tap["repo"])
-            subprocess.run(
-                [
-                    "git",
-                    "--git-dir",
-                    str(repo_dir),
-                    "fetch",
-                    "--quiet",
-                    "--prune",
-                    "origin",
-                ],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+            logger.debug("Refreshing %s", tap["repo"])
+            self._git_exec(
+                "--git-dir",
+                str(repo_dir),
+                "fetch",
+                "--quiet",
+                "--prune",
+                "origin",
             )
 
             # Bump the timestamp so we know when the last successful refresh
@@ -621,7 +615,23 @@ class GitSource(SkillSource):
 
         return repo_dir
 
-    def _git(
+    def _git_exec(
+        self,
+        *args: str,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run git in a bounded, non-interactive subprocess."""
+        return subprocess.run(
+            ["git", *args],
+            check=True,
+            stdin=subprocess.DEVNULL,
+            timeout=GIT_TIMEOUT_SECONDS,
+            creationflags=GIT_CREATIONFLAGS,
+            capture_output=capture_output,
+            text=True,
+        )
+
+    def _git_repo(
         self,
         repo: Path,
         *args: str,
@@ -635,18 +645,12 @@ class GitSource(SkillSource):
             subprocess.CalledProcessError
                 If git exits non-zero.
         """
-        result = subprocess.run(
-            [
-                "git",
-                "--git-dir",
-                str(repo),
-                *args,
-            ],
-            check=True,
+        return self._git_exec(
+            "--git-dir",
+            str(repo),
+            *args,
             capture_output=True,
-            text=True,
-        )
-        return result.stdout
+        ).stdout
 
     def _ls_tree(self, tap: Dict) -> List[GitTreeEntry]:
         """
@@ -659,7 +663,7 @@ class GitSource(SkillSource):
         if cached is not None:
             return cached
         repo = self._ensure_repo(tap)
-        output = self._git(
+        output = self._git_repo(
             repo,
             "ls-tree",
             "-r",
@@ -697,7 +701,7 @@ class GitSource(SkillSource):
         """
         repo = self._ensure_repo(tap)
         try:
-            return self._git(
+            return self._git_repo(
                 repo,
                 "show",
                 f"HEAD:{path}",
@@ -981,6 +985,12 @@ class GitSource(SkillSource):
         except ValueError:
             return None
 
+        try:
+            revision = self._git_repo(repo, "rev-parse", "HEAD").strip()
+        except subprocess.CalledProcessError as exc:
+            logger.warning("Unable to resolve git revision for %s: %s", repo, exc)
+            return None
+        
         tap = self._find_tap(repo_url)
         if tap is None:
             return None
@@ -998,6 +1008,11 @@ class GitSource(SkillSource):
             source="git",
             identifier=identifier,
             trust_level=trust,
+            metadata={
+                "repo_url": repo_url,
+                "revision": revision,
+                "path": skill_path,
+            },
         )
 
     def search(

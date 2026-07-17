@@ -119,11 +119,7 @@ class TestGitSource:
         import shutil
         import time
 
-        cache_dir = Path("/tmp/cache")
-        if cache_dir.exists():
-            shutil.rmtree(cache_dir)
-        mock_cache_dir.return_value = cache_dir
-
+        mock_cache_dir.return_value = Path("/tmp/cache")
         call_count = {
             "clone": 0,
             "fetch": 0,

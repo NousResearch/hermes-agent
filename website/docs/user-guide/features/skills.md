@@ -527,7 +527,7 @@ hermes skills install skills-sh/vercel-labs/json-render/json-render-react --forc
 hermes skills install well-known:https://mintlify.com/docs/.well-known/skills/mintlify
 hermes skills install https://sharethis.chat/SKILL.md              # Direct URL (+ referenced support files)
 hermes skills install https://example.com/SKILL.md --name my-skill # Override name when frontmatter has none
-hermes skills install add https://gitlab.com/skills-repo.git:skills/k8s # Add skill in git repository
+hermes skills install https://gitlab.com/skills-repo.git:skills/k8s # Add skill in git repository
 hermes skills list --source hub                   # List hub-installed skills
 hermes skills check                               # Check installed hub skills for upstream updates
 hermes skills update                              # Reinstall hub skills with upstream changes when needed

@@ -1,6 +1,6 @@
 'use client'
 
-import { type SmoothOptions, TextMessagePartProvider, useMessagePartText } from '@assistant-ui/react'
+import { TextMessagePartProvider, useMessagePartText } from '@assistant-ui/react'
 import {
   parseMarkdownIntoBlocks,
   type StreamdownTextComponents,
@@ -338,7 +338,6 @@ interface MarkdownTextSurfaceProps {
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
   defer?: boolean
-  smooth?: boolean | SmoothOptions
 }
 
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
@@ -387,7 +386,7 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
   )
 }
 
-function MarkdownTextSurface({ containerClassName, containerProps, defer, smooth }: MarkdownTextSurfaceProps) {
+function MarkdownTextSurface({ containerClassName, containerProps, defer }: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
 
@@ -527,15 +526,8 @@ function MarkdownTextSurface({ containerClassName, containerProps, defer, smooth
       parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
       plugins={plugins}
       preprocess={preprocessWithTailRepair}
-      smooth={smooth}
     />
   )
-}
-
-const SMOOTH_OPTIONS: SmoothOptions = {
-  drainMs: 500,
-  maxCharsPerFrame: 30,
-  minCommitMs: 33
 }
 
 interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
@@ -544,12 +536,15 @@ interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
 }
 
 export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {
-  // Same path as the assistant answer. A reasoning-only smoothing wrapper used
-  // to sit here but stalled its char-reveal at empty (the part stays running
-  // the whole message), blanking the Thinking widget.
+  // No `smooth` on purpose — same as the assistant answer. `TextMessagePartProvider`
+  // mints a fresh part object on every `text` change, and useSmooth resets its
+  // reveal to empty whenever the part identity changes, so a smoothed reasoning
+  // stream re-types from the first character on every delta (the flash). Token-
+  // streaming reasoners (R1/Qwen/GLM/Claude thinking) hit it hardest; GPT-5's
+  // coarse summary updates too rarely to notice. Plain append matches the answer.
   return (
     <TextMessagePartProvider isRunning={isRunning} text={text}>
-      <MarkdownTextSurface defer smooth={SMOOTH_OPTIONS} {...surfaceProps} />
+      <MarkdownTextSurface defer {...surfaceProps} />
     </TextMessagePartProvider>
   )
 }

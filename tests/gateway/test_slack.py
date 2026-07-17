@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
+import agent.secret_scope as secret_scope
 from gateway.config import Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.platforms.base import (
@@ -262,6 +263,139 @@ class TestAppMentionHandler:
             assert slash_matcher.match(
                 expected
             ), f"Slack slash regex does not match {expected}"
+
+    @pytest.mark.asyncio
+    async def test_connect_uses_profile_scoped_app_token(self):
+        """Socket Mode must use the active profile's app token in multiplex mode."""
+        config = PlatformConfig(enabled=True, token="xoxb-profile")
+        adapter = SlackAdapter(config)
+
+        def _noop_decorator(_matcher):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        mock_app = MagicMock()
+        mock_app.event = _noop_decorator
+        mock_app.command = _noop_decorator
+        mock_app.action = _noop_decorator
+        mock_app.client = AsyncMock()
+
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(
+            return_value={
+                "user_id": "U_PROFILE",
+                "user": "profilebot",
+                "team_id": "T_PROFILE",
+                "team": "ProfileTeam",
+            }
+        )
+
+        created_handlers = []
+
+        class FakeSocketModeHandler:
+            def __init__(self, app, app_token, proxy=None):
+                self.app = app
+                self.app_token = app_token
+                self.proxy = proxy
+                self.client = MagicMock(proxy=None)
+                created_handlers.append(self)
+
+            async def start_async(self):
+                return None
+
+            async def close_async(self):
+                return None
+
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({"SLACK_APP_TOKEN": "xapp-profile"})
+        try:
+            with (
+                patch.object(_slack_mod, "AsyncApp", return_value=mock_app),
+                patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client),
+                patch.object(
+                    _slack_mod, "AsyncSocketModeHandler", FakeSocketModeHandler
+                ),
+                patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-default"}),
+                patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
+                patch("asyncio.create_task", side_effect=_fake_create_task),
+            ):
+                result = await adapter.connect()
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+        assert result is True
+        assert created_handlers
+        assert created_handlers[0].app_token == "xapp-profile"
+
+    @pytest.mark.asyncio
+    async def test_connect_unscoped_multiplex_falls_back_to_env(self):
+        """Default-profile connect (multiplex active, NO scope installed) must
+        fall back to process env instead of raising UnscopedSecretError —
+        the primary startup loop and background reconnect rebuild both call
+        connect() unscoped (#59739 salvage follow-up)."""
+        config = PlatformConfig(enabled=True, token="xoxb-default")
+        adapter = SlackAdapter(config)
+
+        def _noop_decorator(_matcher):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        mock_app = MagicMock()
+        mock_app.event = _noop_decorator
+        mock_app.command = _noop_decorator
+        mock_app.action = _noop_decorator
+        mock_app.client = AsyncMock()
+
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(
+            return_value={
+                "user_id": "U_DEFAULT",
+                "user": "defaultbot",
+                "team_id": "T_DEFAULT",
+                "team": "DefaultTeam",
+            }
+        )
+
+        created_handlers = []
+
+        class FakeSocketModeHandler:
+            def __init__(self, app, app_token, proxy=None):
+                self.app = app
+                self.app_token = app_token
+                self.proxy = proxy
+                self.client = MagicMock(proxy=None)
+                created_handlers.append(self)
+
+            async def start_async(self):
+                return None
+
+            async def close_async(self):
+                return None
+
+        secret_scope.set_multiplex_active(True)
+        try:
+            with (
+                patch.object(_slack_mod, "AsyncApp", return_value=mock_app),
+                patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client),
+                patch.object(
+                    _slack_mod, "AsyncSocketModeHandler", FakeSocketModeHandler
+                ),
+                patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-default"}),
+                patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
+                patch("asyncio.create_task", side_effect=_fake_create_task),
+            ):
+                result = await adapter.connect()
+        finally:
+            secret_scope.set_multiplex_active(False)
+
+        assert result is True
+        assert created_handlers
+        assert created_handlers[0].app_token == "xapp-default"
 
 
 class TestSlackConnectCleanup:

@@ -2454,6 +2454,22 @@ def terminal_tool(
         session_key = get_current_session_key(default="") or (task_id or "")
 
         if background:
+            # Preserve the commissioning WebUI/desktop tab separately from
+            # session_key. Delegated children replace session_key with their
+            # temporary child session, but inherit HERMES_UI_SESSION_ID from
+            # the parent chat via bind_ui_session_id.
+            origin_ui_session_id = ""
+            if notify_on_complete or watch_patterns:
+                try:
+                    from gateway.session_context import get_session_env
+
+                    origin_ui_session_id = (
+                        get_session_env("HERMES_UI_SESSION_ID", "")
+                        or get_session_env("HERMES_SESSION_KEY", "")
+                    )
+                except Exception:
+                    origin_ui_session_id = ""
+
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
@@ -2471,6 +2487,7 @@ def terminal_tool(
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
+                        origin_ui_session_id=origin_ui_session_id,
                         env_vars=env.env if hasattr(env, 'env') else None,
                         use_pty=effective_pty,
                     )
@@ -2481,6 +2498,7 @@ def terminal_tool(
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
+                        origin_ui_session_id=origin_ui_session_id,
                     )
 
                 result_data = {
@@ -2679,6 +2697,7 @@ def terminal_tool(
                             "session_id": proc_session.id,
                             "check_interval": 5,
                             "session_key": session_key,
+                            "origin_ui_session_id": proc_session.origin_ui_session_id,
                             "platform": proc_session.watcher_platform,
                             "chat_id": proc_session.watcher_chat_id,
                             "user_id": proc_session.watcher_user_id,

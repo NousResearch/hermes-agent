@@ -137,6 +137,11 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
+    # Append-only so existing positional ProcessSession(...) call sites keep working.
+    origin_ui_session_id: str = ""              # Exact WebUI/desktop tab that commissioned notifications
+    # Alias for WebUI Option-3 duck-typing (spawn_session_id / owner_session_id / turn_session_id).
+    # Kept equal to origin_ui_session_id when set so older WebUI safety nets can re-route.
+    spawn_session_id: str = ""
 
 
 class ProcessRegistry:
@@ -316,6 +321,7 @@ class ProcessRegistry:
                 self.completion_queue.put({
                     "session_id": session.id,
                     "session_key": session.session_key,
+                    "origin_ui_session_id": session.origin_ui_session_id,
                     "command": session.command,
                     "type": "watch_disabled",
                     "suppressed": session._watch_suppressed,
@@ -347,6 +353,7 @@ class ProcessRegistry:
         self.completion_queue.put({
             "session_id": session.id,
             "session_key": session.session_key,
+                    "origin_ui_session_id": session.origin_ui_session_id,
             "command": session.command,
             "type": "watch_match",
             "pattern": matched_pattern,
@@ -694,6 +701,7 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        origin_ui_session_id: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -705,6 +713,7 @@ class ProcessRegistry:
                      CLI tools (Codex, Claude Code, Python REPL). Falls back to
                      subprocess.Popen if ptyprocess is not installed.
         """
+        _origin = str(origin_ui_session_id or "")
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
@@ -712,6 +721,8 @@ class ProcessRegistry:
             session_key=session_key,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
+            origin_ui_session_id=_origin,
+            spawn_session_id=_origin,
         )
 
         if use_pty:
@@ -833,6 +844,7 @@ class ProcessRegistry:
         task_id: str = "",
         session_key: str = "",
         timeout: int = 10,
+        origin_ui_session_id: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process through a non-local environment backend.
@@ -845,6 +857,7 @@ class ProcessRegistry:
         This is less capable than local spawn (no live stdout pipe, no stdin),
         but it ensures the command runs in the correct sandbox context.
         """
+        _origin = str(origin_ui_session_id or "")
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
@@ -854,6 +867,8 @@ class ProcessRegistry:
             started_at=time.time(),
             env_ref=env,
             pid_scope="sandbox",
+            origin_ui_session_id=_origin,
+            spawn_session_id=_origin,
         )
 
         # Run the command in the sandbox with output capture
@@ -1093,6 +1108,7 @@ class ProcessRegistry:
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
+                "origin_ui_session_id": session.origin_ui_session_id,
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "completion_reason": session.completion_reason,
@@ -1899,6 +1915,7 @@ class ProcessRegistry:
                             "started_at": s.started_at,
                             "task_id": s.task_id,
                             "session_key": s.session_key,
+                            "origin_ui_session_id": s.origin_ui_session_id,
                             "watcher_platform": s.watcher_platform,
                             "watcher_chat_id": s.watcher_chat_id,
                             "watcher_user_id": s.watcher_user_id,
@@ -1971,6 +1988,8 @@ class ProcessRegistry:
                 command=entry.get("command", "unknown"),
                 task_id=entry.get("task_id", ""),
                 session_key=entry.get("session_key", ""),
+                origin_ui_session_id=entry.get("origin_ui_session_id", "") or entry.get("spawn_session_id", ""),
+                spawn_session_id=entry.get("spawn_session_id", "") or entry.get("origin_ui_session_id", ""),
                 pid=pid,
                 host_start_time=recorded_start,
                 pid_scope=pid_scope,
@@ -1998,6 +2017,7 @@ class ProcessRegistry:
                     "session_id": session.id,
                     "check_interval": session.watcher_interval,
                     "session_key": session.session_key,
+                    "origin_ui_session_id": session.origin_ui_session_id,
                     "platform": session.watcher_platform,
                     "chat_id": session.watcher_chat_id,
                     "user_id": session.watcher_user_id,

@@ -36,6 +36,7 @@ needs to replace the import + call site:
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
 """
 
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
@@ -86,6 +87,24 @@ _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
 # precise return address so a stale/rotated durable session key cannot be
 # consumed by whichever desktop poller wakes first.
 _SESSION_UI_SESSION_ID: ContextVar = ContextVar("HERMES_UI_SESSION_ID", default=_UNSET)
+
+
+@contextmanager
+def bind_ui_session_id(ui_session_id: str):
+    """Temporarily bind only the WebUI/desktop return address in this context.
+
+    Unlike :func:`set_session_vars`, this helper is nestable and deliberately
+    leaves execution-isolation keys untouched. Delegated child workers use it
+    so detached process notifications return to the parent tab without making
+    the child share the parent's process ownership scope.
+    """
+    token = _SESSION_UI_SESSION_ID.set(ui_session_id or "")
+    try:
+        yield
+    finally:
+        _SESSION_UI_SESSION_ID.reset(token)
+
+
 # ID of the message that triggered the current turn. Used as a reply anchor
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).

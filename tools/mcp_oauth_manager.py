@@ -532,7 +532,13 @@ class MCPOAuthManager:
         cfg = dict(entry.oauth_config or {})
         storage = HermesTokenStorage(server_name)
 
-        if not _is_interactive() and not storage.has_cached_tokens():
+        from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
+
+        if (
+            get_dashboard_oauth_flow() is None
+            and not _is_interactive()
+            and not storage.has_cached_tokens()
+        ):
             raise OAuthNonInteractiveError(
                 "MCP OAuth for "
                 f"'{server_name}': non-interactive environment and no "
@@ -575,6 +581,11 @@ class MCPOAuthManager:
             "MCP OAuth '%s': evicted from cache and removed from disk",
             server_name,
         )
+
+    def evict(self, server_name: str) -> None:
+        """Drop only the in-process provider, preserving persisted OAuth state."""
+        with self._entries_lock:
+            self._entries.pop(server_name, None)
 
     # -- Disk watch ----------------------------------------------------------
 

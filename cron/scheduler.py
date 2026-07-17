@@ -3789,8 +3789,11 @@ def _notify_provider_jobs_changed() -> None:
     Never raises into the caller.
     """
     try:
-        from cron.scheduler_provider import resolve_cron_scheduler
-        resolve_cron_scheduler().on_jobs_changed()
+        from cron.scheduler_runtime import get_active_scheduler_provider
+
+        provider = get_active_scheduler_provider()
+        if provider is not None:
+            provider.on_jobs_changed()
     except Exception as e:
         logger.debug("on_jobs_changed notify failed: %s", e)
 

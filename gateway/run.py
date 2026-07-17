@@ -21093,31 +21093,26 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 
 
 def _start_gateway_cron_scheduler_if_owned(runner, stop_event, loop):
-    """Start cron only when the shared ownership policy selects this gateway."""
-    from cron.scheduler_provider import (
-        InProcessCronScheduler,
-        resolve_owned_cron_scheduler,
-    )
+    """Start the unified, dynamically re-evaluating Gateway supervisor."""
+    from cron.scheduler_runtime import OwnedSchedulerRuntime
 
-    provider = resolve_owned_cron_scheduler("gateway")
-    if provider is None:
-        logger.info("Gateway cron scheduler not started by ownership policy")
-        return None, None
-
-    start_kwargs = {"adapters": runner.adapters, "loop": loop}
-    if isinstance(provider, InProcessCronScheduler):
-        start_kwargs["can_dispatch"] = lambda: not (
+    runtime = OwnedSchedulerRuntime(
+        "gateway",
+        adapters=runner.adapters,
+        loop=loop,
+        can_dispatch=lambda: not (
             runner._draining or runner._external_drain_active
-        )
+        ),
+        drain_timeout=_CRON_SHUTDOWN_DRAIN_TIMEOUT,
+    )
     thread = threading.Thread(
-        target=provider.start,
+        target=runtime.run,
         args=(stop_event,),
-        kwargs=start_kwargs,
         daemon=True,
-        name="cron-scheduler",
+        name="gateway-cron-supervisor",
     )
     thread.start()
-    return provider, thread
+    return runtime, thread
 
 
 # Upper bound for cooperatively draining the cron ticker on shutdown. The cron
@@ -21615,7 +21610,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Both gateway and Desktop consult the same ownership helper so only one
     # long-running runtime dispatches this profile's cron registry.
     cron_stop = threading.Event()
-    cron_provider, cron_thread = _start_gateway_cron_scheduler_if_owned(
+    _cron_runtime, cron_thread = _start_gateway_cron_scheduler_if_owned(
         runner, cron_stop, asyncio.get_running_loop()
     )
 
@@ -21641,11 +21636,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception:
         pass
 
-    if runner.should_exit_with_failure:
-        if runner.exit_reason:
-            logger.error("Gateway exiting with failure: %s", runner.exit_reason)
-        return False
-    
     # Stop cron scheduler + housekeeping cleanly.
     #
     # These MUST be awaited cooperatively, not join()ed. A cron delivery in
@@ -21656,21 +21646,22 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # silently dropped (#58818). Awaiting keeps the loop alive so the in-flight
     # delivery finishes before we tear down.
     cron_stop.set()
-    if cron_provider is not None:
-        try:
-            cron_provider.stop()
-        except Exception as e:
-            logger.debug("Cron provider stop() error: %s", e)
     if cron_thread is not None and not await _await_thread_exit(
         cron_thread, timeout=_CRON_SHUTDOWN_DRAIN_TIMEOUT
     ):
         logger.warning(
-            "Cron ticker did not exit within %.0fs of shutdown — an in-flight "
-            "delivery may have been dropped.", _CRON_SHUTDOWN_DRAIN_TIMEOUT,
+            "Cron supervisor did not exit within %.0fs of shutdown; ownership "
+            "remains held until provider and in-flight jobs drain or process death.",
+            _CRON_SHUTDOWN_DRAIN_TIMEOUT,
         )
     await _await_thread_exit(
         housekeeping_thread, timeout=_HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT
     )
+
+    if runner.should_exit_with_failure:
+        if runner.exit_reason:
+            logger.error("Gateway exiting with failure: %s", runner.exit_reason)
+        return False
 
     # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
     _planned_stop_watcher_stop.set()

@@ -19,105 +19,28 @@ selected via the `cron.provider` config key (empty = built-in).
 """
 from __future__ import annotations
 
-import io
 import logging
 import threading
 from abc import ABC, abstractmethod
-from typing import Any, cast
+from typing import Any
 
 
 logger = logging.getLogger("cron.scheduler_provider")
-
 _CRON_SCHEDULER_RUNTIME_OWNERS = frozenset({"gateway", "desktop"})
 
 
-def _read_scheduler_owner_config_strict() -> dict[str, Any] | None:
-    """Read scheduler ownership without the normal tolerant config fallback."""
-    from hermes_cli import managed_scope
-    from hermes_cli.config import _expand_env_vars, get_config_path
-    from utils import fast_safe_load
-
-    def _read_mapping(path) -> dict[str, Any]:
-        try:
-            with open(path, encoding="utf-8") as handle:
-                raw = handle.read()
-        except FileNotFoundError:
-            return {}
-        meaningful = [
-            line.split("#", 1)[0].strip()
-            for line in raw.splitlines()
-            if line.split("#", 1)[0].strip() not in {"", "---", "..."}
-        ]
-        if not meaningful:
-            return {}
-        parsed = fast_safe_load(io.StringIO(raw))
-        if not isinstance(parsed, dict):
-            raise ValueError("config root must be a mapping")
-        return parsed
-
-    try:
-        user_config = cast(
-            dict[str, Any], _expand_env_vars(_read_mapping(get_config_path()))
-        )
-        managed_dir = managed_scope.get_managed_dir()
-        managed_config = (
-            cast(
-                dict[str, Any],
-                _expand_env_vars(_read_mapping(managed_dir / "config.yaml")),
-            )
-            if managed_dir is not None
-            else {}
-        )
-        user_cron = user_config.get("cron", {})
-        managed_cron = managed_config.get("cron", {})
-        if "cron" in user_config and not isinstance(user_cron, dict):
-            raise ValueError("cron section must be a mapping")
-        if "cron" in managed_config and not isinstance(managed_cron, dict):
-            raise ValueError("managed cron section must be a mapping")
-        effective_cron = dict(user_cron)
-        effective_cron.update(managed_cron)
-        return {"cron": effective_cron}
-    except Exception:
-        logger.error(
-            "Unable to read a valid cron.scheduler_owner; scheduler startup disabled. "
-            "Set it to auto, gateway, or desktop in config.yaml."
-        )
-        return None
-
-
 def resolve_cron_scheduler_owner(*, config: dict[str, Any] | None = None) -> str | None:
-    """Resolve the ownership policy, failing closed on malformed input."""
-    if config is None:
-        config = _read_scheduler_owner_config_strict()
-        if config is None:
-            return None
-    if not isinstance(config, dict):
-        logger.error("Invalid configuration root; scheduler startup disabled.")
-        return None
-    cron_config = config.get("cron", {})
-    if "cron" in config and not isinstance(cron_config, dict):
-        logger.error("Invalid cron configuration shape; scheduler startup disabled.")
-        return None
-    raw_owner = cron_config.get("scheduler_owner", "auto")
-    owner = raw_owner.strip().lower() if isinstance(raw_owner, str) else None
-    if owner == "auto" or owner in _CRON_SCHEDULER_RUNTIME_OWNERS:
-        return owner
-    logger.error(
-        "Invalid cron.scheduler_owner; scheduler startup disabled. "
-        "Use auto, gateway, or desktop in config.yaml."
-    )
-    return None
+    """Compatibility wrapper for the unified strict ownership policy reader."""
+    from cron.scheduler_runtime import read_scheduler_ownership_policy_strict
+
+    policy = read_scheduler_ownership_policy_strict(config)
+    return policy.mode if policy is not None else None
 
 
 def should_start_cron_scheduler(
     runtime_owner: str, *, config: dict[str, Any] | None = None
 ) -> bool:
-    """Return whether this runtime participates in the ownership policy.
-
-    Under ``auto`` the gateway is preferred and Desktop may run the built-in
-    ticker as a dynamically yielding standby. Provider-specific fail-closed
-    handling for that standby happens in ``resolve_cron_scheduler_startup``.
-    """
+    """Compatibility policy probe; it does not itself grant ownership."""
     if runtime_owner not in _CRON_SCHEDULER_RUNTIME_OWNERS:
         raise ValueError("Unknown cron scheduler runtime owner")
     owner = resolve_cron_scheduler_owner(config=config)
@@ -127,7 +50,7 @@ def should_start_cron_scheduler(
 def resolve_owned_cron_scheduler(
     runtime_owner: str, *, config: dict[str, Any] | None = None
 ) -> "CronScheduler | None":
-    """Resolve the provider only after the shared ownership gate succeeds."""
+    """Legacy one-shot resolver. Automatic runtimes use OwnedSchedulerRuntime."""
     _owner, provider = resolve_cron_scheduler_startup(runtime_owner, config=config)
     return provider
 
@@ -135,27 +58,25 @@ def resolve_owned_cron_scheduler(
 def resolve_cron_scheduler_startup(
     runtime_owner: str, *, config: dict[str, Any] | None = None
 ) -> "tuple[str | None, CronScheduler | None]":
-    """Resolve one ownership snapshot and its provider for runtime startup."""
+    """Legacy policy snapshot using strict, no-fallback runtime resolution."""
+    from cron.scheduler_runtime import (
+        read_scheduler_ownership_policy_strict,
+        scheduler_runtime_is_eligible,
+    )
+
     if runtime_owner not in _CRON_SCHEDULER_RUNTIME_OWNERS:
         raise ValueError("Unknown cron scheduler runtime owner")
-    if config is None:
-        config = _read_scheduler_owner_config_strict()
-        if config is None:
-            return None, None
-    owner = resolve_cron_scheduler_owner(config=config)
-    if owner is None or (owner != runtime_owner and owner != "auto"):
-        return owner, None
-    provider = resolve_cron_scheduler()
-    if (
-        owner == "auto"
-        and runtime_owner == "desktop"
-        and not isinstance(provider, InProcessCronScheduler)
-    ):
-        logger.info(
-            "Desktop cron standby disabled for external provider under auto ownership"
-        )
-        return owner, None
-    return owner, provider
+    policy = read_scheduler_ownership_policy_strict(config)
+    if policy is None:
+        return None, None
+    eligible = scheduler_runtime_is_eligible(
+        policy,
+        runtime=runtime_owner,  # type: ignore[arg-type]
+        same_home_gateway_running=False,
+    )
+    if not eligible:
+        return policy.mode, None
+    return policy.mode, resolve_cron_scheduler_runtime_strict(policy.configured_provider)
 
 
 class CronScheduler(ABC):
@@ -200,9 +121,12 @@ class CronScheduler(ABC):
         """
 
     def stop(self) -> None:
-        """Optional eager teardown hook. Default no-op; setting the stop_event
-        is the primary stop signal. Override for providers holding external
-        resources (queue consumers, HTTP servers)."""
+        """Synchronously stop creating dispatches and release owned resources.
+
+        The runtime also sets the provider stop event and drains ``start()`` plus
+        in-flight jobs before releasing ownership. Override for providers holding
+        external resources (queue consumers, callbacks, HTTP servers).
+        """
         return None
 
     # --- Optional hooks for external providers (added Phase 4). --------------
@@ -243,6 +167,36 @@ class CronScheduler(ABC):
         arm missing one-shots, cancel orphaned ones, re-arm changed times.
         Built-in: no-op."""
         return None
+
+
+def resolve_cron_scheduler_runtime_strict(configured_provider: str) -> "CronScheduler | None":
+    """Resolve an automatic-runtime provider without silent fallback."""
+    if configured_provider in _BUILTIN_PROVIDER_NAMES:
+        return InProcessCronScheduler()
+    try:
+        from plugins.cron_providers import load_cron_scheduler
+
+        provider = load_cron_scheduler(configured_provider)
+        if provider is None:
+            logger.error(
+                "Configured cron provider is not installed; automatic scheduler startup disabled."
+            )
+            return None
+        if not provider.is_available():
+            logger.error(
+                "Configured cron provider is unavailable; automatic scheduler startup disabled."
+            )
+            return None
+        logger.info("Using cron scheduler provider: %s", provider.name)
+        return provider
+    except Exception:
+        logger.exception(
+            "Configured cron provider failed to load; automatic scheduler startup disabled."
+        )
+        return None
+
+
+_BUILTIN_PROVIDER_NAMES = frozenset({"", "builtin", "in-process", "inprocess"})
 
 
 def resolve_cron_scheduler() -> "CronScheduler":

@@ -53,7 +53,7 @@ class _SpyProvider:
 async def test_valid_token_accepts_and_fires(adapter, monkeypatch):
     """Valid NAS-JWT + {job_id} → 202 and fire_due invoked with that id."""
     spy = _SpyProvider()
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
+    monkeypatch.setattr("cron.scheduler_runtime.get_active_scheduler_provider", lambda: spy)
     # verifier returns claims (valid token)
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
@@ -81,7 +81,7 @@ async def test_valid_token_accepts_and_fires(adapter, monkeypatch):
 async def test_invalid_token_401_and_no_fire(adapter, monkeypatch):
     """Bad/forged token → 401, fire_due NOT invoked."""
     spy = _SpyProvider()
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
+    monkeypatch.setattr("cron.scheduler_runtime.get_active_scheduler_provider", lambda: spy)
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: None),  # verification fails
@@ -102,7 +102,7 @@ async def test_invalid_token_401_and_no_fire(adapter, monkeypatch):
 async def test_missing_token_401(adapter, monkeypatch):
     """No Authorization header → verifier gets empty token → 401."""
     spy = _SpyProvider()
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
+    monkeypatch.setattr("cron.scheduler_runtime.get_active_scheduler_provider", lambda: spy)
     # Real verifier: empty token returns None.
     app = _create_app(adapter)
     async with TestClient(TestServer(app)) as cli:
@@ -115,7 +115,7 @@ async def test_missing_token_401(adapter, monkeypatch):
 async def test_valid_token_refuses_during_gateway_drain(adapter, monkeypatch):
     spy = _SpyProvider()
     runner = SimpleNamespace(_draining=False, _external_drain_active=True)
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
+    monkeypatch.setattr("cron.scheduler_runtime.get_active_scheduler_provider", lambda: spy)
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
@@ -157,7 +157,7 @@ async def test_valid_fire_reservation_blocks_drain_before_body_and_task(adapter,
         await release_body.wait()
         return await original_json(request)
 
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", BlockingProvider)
+    monkeypatch.setattr("cron.scheduler_runtime.get_active_scheduler_provider", BlockingProvider)
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
@@ -195,7 +195,7 @@ async def test_valid_fire_reservation_blocks_drain_before_body_and_task(adapter,
 async def test_missing_job_id_400(adapter, monkeypatch):
     """Valid token but no job_id → 400, no fire."""
     spy = _SpyProvider()
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
+    monkeypatch.setattr("cron.scheduler_runtime.get_active_scheduler_provider", lambda: spy)
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
@@ -211,11 +211,34 @@ async def test_missing_job_id_400(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_valid_fire_fails_closed_without_active_leased_provider(
+    adapter, monkeypatch
+):
+    monkeypatch.setattr(
+        "cron.scheduler_runtime.get_active_scheduler_provider", lambda: None
+    )
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/cron/fire",
+            headers={"Authorization": "Bearer good"},
+            json={"job_id": "abc123"},
+        )
+        payload = await response.json()
+    assert response.status == 503
+    assert payload == {"error": "scheduler ownership unavailable"}
+
+
+@pytest.mark.asyncio
 async def test_fire_does_not_require_api_server_key(adapter, monkeypatch):
     """The fire endpoint must NOT gate on API_SERVER_KEY — auth is the NAS-JWT.
     A request with NO API key header but a valid fire token still succeeds."""
     spy = _SpyProvider()
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
+    monkeypatch.setattr("cron.scheduler_runtime.get_active_scheduler_provider", lambda: spy)
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),

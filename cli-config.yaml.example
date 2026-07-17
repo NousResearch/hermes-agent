@@ -851,8 +851,9 @@ platform_toolsets:
   google_chat: [hermes-google_chat]
 
 # Exactly one long-running runtime should dispatch due jobs for a HERMES_HOME.
-# auto (default) selects the gateway; desktop is an explicit Desktop-only fallback.
-# Invalid values fail closed so competing runtimes cannot both start a ticker.
+# auto (default) prefers Gateway; Desktop runs the built-in fallback only while
+# no same-HERMES_HOME Gateway is active. Named external providers remain
+# Gateway-only and fail closed if unavailable. Invalid values fail closed.
 cron:
   scheduler_owner: "auto"  # auto | gateway | desktop
 

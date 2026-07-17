@@ -4282,8 +4282,13 @@ class APIServerAdapter(BasePlatformAdapter):
             if not job_id:
                 return web.json_response({"error": "missing job_id"}, status=400)
 
-            from cron.scheduler_provider import resolve_cron_scheduler
-            provider = resolve_cron_scheduler()
+            from cron.scheduler_runtime import get_active_scheduler_provider
+
+            provider = get_active_scheduler_provider()
+            if provider is None:
+                return web.json_response(
+                    {"error": "scheduler ownership unavailable"}, status=503
+                )
 
             loop = asyncio.get_running_loop()
             # Fire in the background (202 immediately). fire_due claims via the

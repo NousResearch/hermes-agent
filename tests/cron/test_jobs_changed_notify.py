@@ -19,6 +19,7 @@ def test_notify_helper_calls_provider_on_jobs_changed(monkeypatch):
     """cron.scheduler._notify_provider_jobs_changed resolves the provider and
     calls on_jobs_changed exactly once."""
     import cron.scheduler_provider as sp
+    import cron.scheduler_runtime as runtime
     import cron.scheduler as sched
 
     calls = []
@@ -34,7 +35,7 @@ def test_notify_helper_calls_provider_on_jobs_changed(monkeypatch):
         def on_jobs_changed(self):
             calls.append(1)
 
-    monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: Spy())
+    monkeypatch.setattr(runtime, "get_active_scheduler_provider", lambda: Spy())
     sched._notify_provider_jobs_changed()
     assert calls == [1]
 
@@ -43,6 +44,7 @@ def test_notify_helper_swallows_provider_errors(monkeypatch):
     """A provider that raises in on_jobs_changed must not propagate into the
     caller (best-effort notify)."""
     import cron.scheduler_provider as sp
+    import cron.scheduler_runtime as runtime
     import cron.scheduler as sched
 
     class Boom(sp.CronScheduler):
@@ -56,7 +58,7 @@ def test_notify_helper_swallows_provider_errors(monkeypatch):
         def on_jobs_changed(self):
             raise RuntimeError("kaboom")
 
-    monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: Boom())
+    monkeypatch.setattr(runtime, "get_active_scheduler_provider", lambda: Boom())
     sched._notify_provider_jobs_changed()  # must not raise
 
 

@@ -7805,8 +7805,8 @@ class TestDesktopCronTicker:
         monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
         monkeypatch.setattr(
             gateway_status,
-            "get_running_pid",
-            lambda *, cleanup_stale: 1234,
+            "is_gateway_runtime_lock_active",
+            lambda: True,
         )
         monkeypatch.setenv("HERMES_DESKTOP", "1")
 

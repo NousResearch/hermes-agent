@@ -140,85 +140,62 @@ _DESKTOP_CRON_SHUTDOWN_TIMEOUT = 65.0
 # ---------------------------------------------------------------------------
 
 def _start_desktop_cron_ticker(
-    stop_event: "threading.Event",
-    interval: int = 60,
-    *,
-    provider: Any = None,
-    can_dispatch: Any = None,
+    stop_event: "threading.Event", interval: int = 60
 ) -> None:
-    """Run Desktop's resolved scheduler, optionally as a yielding standby."""
-    if provider is None:
-        from cron.scheduler_provider import resolve_cron_scheduler
+    """Deprecated direct built-in ticker shim for compatibility/debug use."""
+    from cron.scheduler_provider import InProcessCronScheduler
 
-        provider = resolve_cron_scheduler()
-    _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
-    start_kwargs = {"interval": interval}
-    if can_dispatch is not None:
-        start_kwargs["can_dispatch"] = can_dispatch
-    provider.start(stop_event, **start_kwargs)
+    InProcessCronScheduler().start(stop_event, interval=interval)
 
 
 def _start_desktop_cron_scheduler_if_owned() -> tuple[
     "Any | None", "threading.Event | None", "threading.Thread | None"
 ]:
-    """Start Desktop's fallback ticker only when it owns automatic dispatch."""
+    """Start Desktop's dynamically yielding scheduler supervisor."""
     if os.getenv("HERMES_DESKTOP") != "1":
         return None, None, None
 
-    from cron.scheduler_provider import (
-        InProcessCronScheduler,
-        resolve_cron_scheduler_startup,
-    )
-
-    owner, provider = resolve_cron_scheduler_startup("desktop")
-    if provider is None:
-        _log.info("Desktop cron scheduler not started by ownership policy")
-        return None, None, None
-
-    ticker_kwargs = {"provider": provider}
-    if owner == "auto":
-        # External providers fail closed before this branch because they cannot
-        # promise equivalent per-tick dynamic yielding.
-        assert isinstance(provider, InProcessCronScheduler)
-        from gateway.status import get_running_pid
-
-        ticker_kwargs["can_dispatch"] = (
-            lambda: get_running_pid(cleanup_stale=False) is None
-        )
+    from cron.scheduler_runtime import OwnedSchedulerRuntime
+    from gateway.status import is_gateway_runtime_lock_active
 
     stop_event = threading.Event()
+    runtime = OwnedSchedulerRuntime(
+        "desktop",
+        gateway_is_running=is_gateway_runtime_lock_active,
+        drain_timeout=_DESKTOP_CRON_SHUTDOWN_TIMEOUT,
+    )
     thread = threading.Thread(
-        target=_start_desktop_cron_ticker,
+        target=runtime.run,
         args=(stop_event,),
-        kwargs=ticker_kwargs,
         daemon=True,
-        name="desktop-cron-ticker",
+        name="desktop-cron-supervisor",
     )
     thread.start()
-    return provider, stop_event, thread
+    return runtime, stop_event, thread
 
 
 async def _stop_desktop_cron_scheduler(
-    provider: Any,
+    _runtime: Any,
     stop_event: "threading.Event",
     thread: "threading.Thread",
     *,
     timeout: float = _DESKTOP_CRON_SHUTDOWN_TIMEOUT,
 ) -> bool:
-    """Stop Desktop cron and cooperatively await bounded thread teardown."""
+    """Stop Desktop cron and await supervisor plus in-flight jobs under one bound."""
     stop_event.set()
-    try:
-        provider.stop()
-    except Exception as exc:  # noqa: BLE001 — still drain the thread
-        _log.debug("Desktop cron provider stop() error: %s", exc)
-
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, thread.join, timeout)
-    stopped = not thread.is_alive()
+    deadline = loop.time() + max(0.0, timeout)
+    from cron.scheduler import get_running_job_ids
+
+    while loop.time() < deadline:
+        if not thread.is_alive() and not get_running_job_ids():
+            return True
+        await asyncio.sleep(0.1)
+    stopped = not thread.is_alive() and not get_running_job_ids()
     if not stopped:
         _log.warning(
-            "Desktop cron ticker did not exit within %.0fs of shutdown; "
-            "restart remains blocked until the owning Desktop process exits.",
+            "Desktop cron supervisor/jobs did not drain within %.0fs; scheduler "
+            "ownership remains held until drain or Desktop process death.",
             timeout,
         )
     return stopped

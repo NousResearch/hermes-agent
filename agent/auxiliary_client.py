@@ -40,10 +40,13 @@ Payment / credit exhaustion fallback:
   their OpenRouter balance but has Codex OAuth or another provider available.
 """
 
+import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import os
+import random
 import re
 import threading
 import time
@@ -6065,7 +6068,17 @@ def _get_cached_client(
                     del _client_cache[evict_key]
                 _client_cache[cache_key] = (client, default_model, bound_loop)
             else:
+                discarded_client = client
                 client, default_model, _ = _client_cache[cache_key]
+                _force_close_async_httpx(discarded_client)
+                try:
+                    close_fn = getattr(discarded_client, "close", None)
+                    if callable(close_fn):
+                        close_result = close_fn()
+                        if inspect.isawaitable(close_result) and current_loop is not None:
+                            current_loop.create_task(close_result)
+                except Exception:
+                    pass
     return client, model or default_model
 
 
@@ -7546,11 +7559,13 @@ async def async_call_llm(
                     transient_err,
                 )
                 raise
+            _backoff = random.uniform(0.75, 1.25) * _TRANSIENT_RETRY_BACKOFF_BASE
             logger.info(
                 "Auxiliary %s (async): transient transport error; retrying "
-                "once on the same provider before fallback: %s",
-                task or "call", transient_err,
+                "once on the same provider after %.1fs before fallback: %s",
+                task or "call", _backoff, transient_err,
             )
+            await asyncio.sleep(_backoff)
             return _validate_llm_response(
                 await client.chat.completions.create(**kwargs), task)
     except Exception as first_err:

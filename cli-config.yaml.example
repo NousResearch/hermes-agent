@@ -129,6 +129,8 @@ model:
 #   ollama-local:
 #     request_timeout_seconds: 300   # Longer timeout for local cold-starts
 #     stale_timeout_seconds: 900     # Explicitly re-enable stale detection on local endpoints
+#   copilot:
+#     enabled: false                 # Skip credential probe + suppress startup warnings
 #   anthropic:
 #     request_timeout_seconds: 30    # Fast-fail cloud requests
 #     models:

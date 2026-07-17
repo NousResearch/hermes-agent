@@ -86,6 +86,7 @@ import {
   refreshProjects,
   refreshProjectTree,
   refreshWorktrees,
+  removedSessionIdsForProfile,
   scanAndRecordRepos
 } from '@/store/projects'
 import { openRouteTile } from '@/store/route-tiles'
@@ -330,7 +331,13 @@ export function ChatSidebar({
   const projects = useStore($projects)
   const projectTree = useStore($projectTree)
   const projectTreeLoading = useStore($projectTreeLoading)
-  const removedSessionIds = useStore($removedSessionIds)
+  const removedSessionScopeKeys = useStore($removedSessionIds)
+
+  const removedSessionIds = useMemo(
+    () => removedSessionIdsForProfile(activeGatewayProfile, removedSessionScopeKeys),
+    [activeGatewayProfile, removedSessionScopeKeys]
+  )
+
   const reposScanning = useStore($reposScanning)
   const activeProjectId = useStore($activeProjectId)
   const projectScope = useStore($projectScope)

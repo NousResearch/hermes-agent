@@ -3689,6 +3689,22 @@ def _current_profile_name() -> str:
         return "default"
 
 
+def _canonical_profile_name(profile: str | None = None) -> str:
+    return str(profile or "").strip() or _current_profile_name()
+
+
+def _session_profile(session: dict | None) -> str:
+    if isinstance(session, dict):
+        explicit = str(session.get("profile") or "").strip()
+        if explicit:
+            return explicit
+    return _current_profile_name()
+
+
+def _session_matches_profile(session: dict | None, profile: str | None) -> bool:
+    return _session_profile(session) == _canonical_profile_name(profile)
+
+
 # Monotonic GUI<->backend contract version. The desktop app refuses to drive a
 # backend reporting less than its required value (or none at all — a pre-GUI
 # checkout), surfacing a one-click "update to align" prompt instead of failing
@@ -5128,6 +5144,7 @@ def _init_session(
     cwd: str | None = None,
     session_db=None,
     source: str | None = None,
+    profile: str | None = None,
 ):
     now = time.time()
     with _sessions_lock:
@@ -5148,6 +5165,7 @@ def _init_session(
             "slash_worker": None,
             "show_reasoning": _load_show_reasoning(),
             "source": _resolve_session_source(source),
+            "profile": _canonical_profile_name(profile),
             "tool_progress_mode": _load_tool_progress_mode(),
             "edit_snapshots": {},
             "tool_started_at": {},
@@ -5760,7 +5778,10 @@ def _(rid, params: dict) -> dict:
     # not the dashboard's launch profile. Stored on the session so _start_agent_build
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
     profile = (params.get("profile") or "").strip() or None
+    target_profile = _canonical_profile_name(profile)
     profile_home = _profile_home(profile)
+    if profile and target_profile != _current_profile_name() and profile_home is None:
+        return _err(rid, 4041, f"profile not found: {target_profile}")
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
@@ -5818,6 +5839,7 @@ def _(rid, params: dict) -> dict:
             "parent_session_id": parent_session_id,
             "pending_title": title or None,
             "profile_home": str(profile_home) if profile_home is not None else None,
+            "profile": target_profile,
             "running": False,
             "session_key": key,
             "show_reasoning": _load_show_reasoning(),
@@ -5872,7 +5894,7 @@ def _(rid, params: dict) -> dict:
                 "project": _project_info_for_cwd(_sessions[sid]["cwd"]),
                 "lazy": True,
                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-                "profile_name": _current_profile_name(),
+                "profile_name": target_profile,
             },
         },
     )
@@ -6010,7 +6032,13 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"verification": {"status": "unknown", "evidence": None}})
 
 
-def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "") -> dict:
+def _lazy_resume_info(
+    cwd: str,
+    *,
+    model: str = "",
+    provider: str = "",
+    profile: str | None = None,
+) -> dict:
     """session.info for a not-yet-built session (the shape session.create
     returns). tools/skills land later when the deferred build emits session.info."""
     info = {
@@ -6022,7 +6050,7 @@ def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "") -> dict:
         "skills": {},
         "lazy": True,
         "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-        "profile_name": _current_profile_name(),
+        "profile_name": _canonical_profile_name(profile),
     }
     if provider:
         info["provider"] = provider
@@ -6040,6 +6068,7 @@ def _deferred_session_record(
     close_on_disconnect: bool = False,
     display_history_prefix: list | None = None,
     profile_home: Path | None = None,
+    profile: str | None = None,
     lazy: bool = False,
     model_override=None,
     resume_runtime_overrides: dict | None = None,
@@ -6070,6 +6099,7 @@ def _deferred_session_record(
         "model_override": model_override,
         "pending_title": None,
         "profile_home": str(profile_home) if profile_home is not None else None,
+        "profile": _canonical_profile_name(profile),
         "resume_runtime_overrides": resume_runtime_overrides,
         "resume_session_id": session_key,
         "running": False,
@@ -6090,7 +6120,7 @@ def _claim_or_reuse_live(
     resume lock, or — if a concurrent resume already won — release ``lease`` and
     return the winner for the caller to reuse."""
     with _session_resume_lock:
-        live = _find_live_session_by_key(session_key)
+        live = _find_live_session_by_key(session_key, _session_profile(record))
         if live is not None:
             if lease is not None:
                 lease.release()
@@ -6127,7 +6157,11 @@ def _(rid, params: dict) -> dict:
     # ``profile`` (app-global remote mode): resume a session that lives in another
     # local profile's state.db. None/own profile → the launch profile (unchanged).
     profile = (params.get("profile") or "").strip() or None
+    target_profile = _canonical_profile_name(profile)
     profile_home = _profile_home(profile)
+
+    if profile and target_profile != _current_profile_name() and profile_home is None:
+        return _err(rid, 4041, f"profile not found: {target_profile}")
 
     # In a profile scope, the agent OWNS a long-lived db handle bound to that
     # profile (do NOT auto-close it here). Otherwise reuse the shared launch db.
@@ -6204,7 +6238,7 @@ def _(rid, params: dict) -> dict:
 
     # Fast path: if the session is already live, reuse it under the lock.
     with _session_resume_lock:
-        live = _find_live_session_by_key(target)
+        live = _find_live_session_by_key(target, target_profile)
         if live is not None:
             return _ok(rid, _reuse_live_payload(*live))
 
@@ -6246,6 +6280,7 @@ def _(rid, params: dict) -> dict:
             source=source,
             close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
             profile_home=profile_home,
+            profile=target_profile,
             lazy=True,
         )
         if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
@@ -6261,7 +6296,7 @@ def _(rid, params: dict) -> dict:
                 "resumed": target,
                 "message_count": len(messages),
                 "messages": messages,
-                "info": _lazy_resume_info(cwd),
+                "info": _lazy_resume_info(cwd, profile=target_profile),
                 "inflight": None,
                 "running": child_running,
                 "session_key": target,
@@ -6327,6 +6362,7 @@ def _(rid, params: dict) -> dict:
             close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
             display_history_prefix=prefix,
             profile_home=profile_home,
+            profile=target_profile,
             model_override=overrides.get("model_override"),
             resume_runtime_overrides=overrides or None,
         )
@@ -6348,6 +6384,7 @@ def _(rid, params: dict) -> dict:
                     cwd,
                     model=model_override.get("model") or "",
                     provider=overrides.get("provider_override") or "",
+                    profile=target_profile,
                 ),
                 "inflight": None,
                 "running": False,
@@ -6420,7 +6457,7 @@ def _(rid, params: dict) -> dict:
     # live session while we were building. Re-check under the lock; if it won,
     # discard our just-built agent and reuse theirs (no worker/poller wired yet).
     with _session_resume_lock:
-        live = _find_live_session_by_key(target)
+        live = _find_live_session_by_key(target, target_profile)
         if live is not None:
             try:
                 if hasattr(agent, "close"):
@@ -6455,6 +6492,7 @@ def _(rid, params: dict) -> dict:
                     cwd=profile_resume_cwd,
                     session_db=db,
                     source=source,
+                    profile=target_profile,
                 )
             finally:
                 if init_home_token is not None:
@@ -6581,6 +6619,7 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
         "message_count": len(history),
         "model": str(getattr(agent, "model", "") or _resolve_model()),
         "preview": preview,
+        "profile": _session_profile(session),
         "session_key": key,
         "started_at": float(session.get("created_at") or now),
         "status": status,
@@ -6598,11 +6637,14 @@ def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
     )
 
 
-def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
+def _find_live_session_by_key(session_key: str, profile: str | None = None) -> tuple[str, dict] | None:
     for sid, session in list(_sessions.items()):
         if session.get("_finalized"):
             continue
-        if _session_lookup_key(session, fallback=sid) == session_key:
+        if (
+            _session_lookup_key(session, fallback=sid) == session_key
+            and _session_matches_profile(session, profile)
+        ):
             return sid, session
     return None
 
@@ -6669,6 +6711,7 @@ def _(rid, params: dict) -> dict:
     without closing siblings.
     """
     current = str(params.get("current_session_id") or "")
+    requested_profile = _canonical_profile_name(params.get("profile"))
     try:
         with _sessions_lock:
             snapshot = list(_sessions.items())
@@ -6693,7 +6736,7 @@ def _(rid, params: dict) -> dict:
     rows = [
         _session_live_item(sid, session, current)
         for sid, session in snapshot
-        if not session.get("_finalized")
+        if not session.get("_finalized") and _session_matches_profile(session, requested_profile)
     ]
     return _ok(rid, {"sessions": rows})
 
@@ -9111,21 +9154,31 @@ def _(rid, params: dict) -> dict:
     active = list_active_subagents(profile)
 
     supervisor = _running_compute_host_supervisor()
+    host_paused: bool | None = None
     if supervisor is not None:
+        host_paused = False
         try:
+            host_state = supervisor.delegation_state(profile)
             known_ids = {str(item.get("subagent_id") or "") for item in active}
-            for item in supervisor.delegation_status(profile):
+            for item in host_state["active"]:
                 subagent_id = str(item.get("subagent_id") or "")
                 if subagent_id and subagent_id not in known_ids:
                     active.append(item)
                     known_ids.add(subagent_id)
+            host_paused = bool(host_state.get("paused"))
         except Exception as exc:
             logger.debug("Failed to query compute-host delegation status: %s", exc)
 
     try:
         from tools.async_delegation import list_pending_async_delivery_handoffs
 
-        for record in list_pending_async_delivery_handoffs():
+        delivery_home = _hermes_home
+        if profile is not None and _canonical_profile_name(profile) != _current_profile_name():
+            delivery_home = _profile_home(profile)
+            if delivery_home is None:
+                return _err(rid, 4041, f"profile not found: {_canonical_profile_name(profile)}")
+
+        for record in list_pending_async_delivery_handoffs(delivery_home):
             record_profile = str(record.get("profile") or "default")
             if profile is not None and record_profile != str(profile or "default"):
                 continue
@@ -9151,7 +9204,7 @@ def _(rid, params: dict) -> dict:
         rid,
         {
             "active": active,
-            "paused": is_spawn_paused(),
+            "paused": is_spawn_paused() and (host_paused is not False),
             "max_spawn_depth": _get_max_spawn_depth(),
             "max_concurrent_children": _get_max_concurrent_children(),
         },
@@ -9160,10 +9213,24 @@ def _(rid, params: dict) -> dict:
 
 @method("delegation.pause")
 def _(rid, params: dict) -> dict:
-    from tools.delegate_tool import set_spawn_paused
+    from tools.delegate_tool import is_spawn_paused, set_spawn_paused
 
     paused = bool(params.get("paused", True))
-    return _ok(rid, {"paused": set_spawn_paused(paused)})
+    previous = is_spawn_paused()
+    local_paused = set_spawn_paused(paused)
+    supervisor = _running_compute_host_supervisor()
+    if supervisor is None:
+        return _ok(rid, {"paused": local_paused})
+
+    try:
+        host_paused = supervisor.set_delegation_paused(paused)
+    except Exception as exc:
+        set_spawn_paused(previous)
+        return _err(rid, 5037, f"compute-host delegation pause failed: {exc}")
+    if host_paused != paused:
+        set_spawn_paused(previous)
+        return _err(rid, 5037, "compute-host delegation pause was not applied")
+    return _ok(rid, {"paused": local_paused and host_paused})
 
 
 @method("subagent.interrupt")
@@ -9710,7 +9777,7 @@ def _announce_async_delegation_delivery(sid: str, evt: dict) -> None:
 
 def _run_notification_prompt_submit(
     rid: str, sid: str, session: dict, text: Any, evt: dict
-) -> None:
+):
     """Start a completion follow-up, then retire its detached handoff.
 
     ``_run_prompt_submit`` emits ``message.start`` synchronously before it
@@ -9718,8 +9785,99 @@ def _run_notification_prompt_submit(
     path ordered after that start and prevents duplicate delivery announcements.
     """
     turn_kind = "async_delegation" if evt.get("type") == "async_delegation" else ""
-    _run_prompt_submit(rid, sid, session, text, turn_kind)
-    _announce_async_delegation_delivery(sid, evt)
+    run_thread = _run_prompt_submit(rid, sid, session, text, turn_kind)
+    try:
+        _announce_async_delegation_delivery(sid, evt)
+    except Exception:
+        logger.exception("Failed to announce accepted async delegation delivery")
+    return run_thread
+
+
+def _delivery_home_for_event(evt):
+    """Resolve an event's durable store without falling back across profiles."""
+    profile = str(evt.get("profile") or "").strip()
+    current_profile = _current_profile_name()
+    if not profile or profile == current_profile:
+        return _hermes_home
+    profile_home = _profile_home(profile)
+    if profile_home is None:
+        raise RuntimeError(f"Unknown async delivery profile: {profile}")
+    return profile_home
+
+
+def _retry_admitted_delivery_ack(evt, claim_id, hermes_home):
+    """Retain an accepted claim until its durable acknowledgement succeeds."""
+    from tools.async_delegation import complete_event_delivery, renew_event_delivery
+
+    delay = 0.1
+    while True:
+        try:
+            if complete_event_delivery(evt, claim_id, hermes_home):
+                return
+            if not renew_event_delivery(evt, claim_id, hermes_home):
+                logger.error(
+                    "Accepted async delivery %s lost its durable claim before acknowledgement",
+                    evt.get("delegation_id"),
+                )
+                return
+        except Exception:
+            logger.exception(
+                "Retrying durable acknowledgement for accepted async delivery %s",
+                evt.get("delegation_id"),
+            )
+        time.sleep(delay)
+        delay = min(delay * 2, 5.0)
+
+
+def _ack_admitted_delivery(evt, claim_id, hermes_home):
+    from tools.async_delegation import complete_event_delivery
+
+    try:
+        if complete_event_delivery(evt, claim_id, hermes_home):
+            return
+    except Exception:
+        logger.exception(
+            "Initial durable acknowledgement failed for accepted async delivery %s",
+            evt.get("delegation_id"),
+        )
+
+    threading.Thread(
+        target=_retry_admitted_delivery_ack,
+        args=(evt, claim_id, hermes_home),
+        daemon=True,
+        name=f"delivery-ack-{str(evt.get('delegation_id') or 'event')[:24]}",
+    ).start()
+
+
+def _admit_notification_event(rid, sid, session, evt, text, *, consumer):
+    """Claim and admit one synthetic turn without exposing a false idle state."""
+    from tools.async_delegation import claim_event_delivery, release_event_delivery
+
+    hermes_home = _delivery_home_for_event(evt)
+    claim_id = claim_event_delivery(evt, consumer, hermes_home)
+    if claim_id is None:
+        return "claimed_elsewhere"
+
+    history_lock = session.get("history_lock")
+    lock_ctx = history_lock if history_lock is not None else nullcontext()
+    with lock_ctx:
+        if session.get("running"):
+            release_event_delivery(evt, claim_id, hermes_home)
+            return "busy"
+        session["running"] = True
+
+    try:
+        acceptance = _run_notification_prompt_submit(rid, sid, session, text, evt)
+        if acceptance is None:
+            raise RuntimeError("notification turn was not accepted")
+    except Exception:
+        with lock_ctx:
+            session["running"] = False
+        release_event_delivery(evt, claim_id, hermes_home)
+        raise
+
+    _ack_admitted_delivery(evt, claim_id, hermes_home)
+    return "admitted"
 
 
 def _notification_poller_loop(
@@ -9793,39 +9951,31 @@ def _notification_poller_loop(
             _emit("status.update", sid, {"kind": "process", "text": text})
             _emitted.add(_dedup_key)
 
-        _requeued = False
-        with session["history_lock"]:
-            if session.get("running"):
-                process_registry.completion_queue.put(evt)
-                _requeued = True
-            else:
-                session["running"] = True
-        if _requeued:
-            # Back off before re-polling: the re-queued event keeps the queue
-            # non-empty, so without a sleep this loop spins at full speed
-            # (100% CPU, GIL churn) for as long as the session stays busy.
-            time.sleep(0.25)
-            continue
-
         rid = f"__notif__{int(time.time() * 1000)}"
-        from tools.async_delegation import (
-            claim_event_delivery, complete_event_delivery, release_event_delivery,
-        )
-        _claim = claim_event_delivery(evt, "tui-poller")
-        if _claim is None:
-            continue
         try:
-            _run_notification_prompt_submit(rid, sid, session, text, evt)
-            complete_event_delivery(evt, _claim)
+            admission = _admit_notification_event(
+                rid,
+                sid,
+                session,
+                evt,
+                text,
+                consumer="tui-poller",
+            )
         except Exception as exc:
-            release_event_delivery(evt, _claim)
             print(
                 f"[tui_gateway] notification poller dispatch failed: "
                 f"{type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
-            with session["history_lock"]:
-                session["running"] = False
+            continue
+
+        if admission == "busy":
+            process_registry.completion_queue.put(evt)
+            # Back off before re-polling: the re-queued event keeps the queue
+            # non-empty, so without a sleep this loop spins at full speed
+            # (100% CPU, GIL churn) for as long as the session stays busy.
+            time.sleep(0.25)
+            continue
 
     # Drain any remaining events after stop signal (process all pending
     # before exiting so nothing is lost on shutdown). Events owned by other
@@ -9868,31 +10018,29 @@ def _notification_poller_loop(
             _emit("status.update", sid, {"kind": "process", "text": text})
             _emitted.add(_dedup_key)
 
-        with session["history_lock"]:
-            if session.get("running"):
-                process_registry.completion_queue.put(evt)
-                break
-            session["running"] = True
-
         rid = f"__notif__{int(time.time() * 1000)}"
-        from tools.async_delegation import (
-            claim_event_delivery, complete_event_delivery, release_event_delivery,
-        )
-        _claim = claim_event_delivery(evt, "tui-poller")
-        if _claim is None:
-            continue
         try:
-            _run_notification_prompt_submit(rid, sid, session, text, evt)
-            complete_event_delivery(evt, _claim)
+            admission = _admit_notification_event(
+                rid,
+                sid,
+                session,
+                evt,
+                text,
+                consumer="tui-poller",
+            )
         except Exception as exc:
-            release_event_delivery(evt, _claim)
             print(
                 f"[tui_gateway] notification poller dispatch failed: "
                 f"{type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
-            with session["history_lock"]:
-                session["running"] = False
+            if evt.get("type") == "async_delegation":
+                deferred.append(evt)
+            continue
+
+        if admission == "busy":
+            process_registry.completion_queue.put(evt)
+            break
 
     # Hand any other sessions' events back to the shared queue.
     for evt in deferred:
@@ -10490,30 +10638,28 @@ def _run_prompt_submit(
                 skip_poll_observed=False,
             )
             for index, (_evt, synth) in enumerate(drained):
-                with session["history_lock"]:
-                    if session.get("running"):
-                        for pending_evt, _pending_synth in drained[index:]:
-                            process_registry.completion_queue.put(pending_evt)
-                        break
-                    session["running"] = True
-                from tools.async_delegation import (
-                    claim_event_delivery, complete_event_delivery, release_event_delivery,
-                )
-                _claim = claim_event_delivery(_evt, "tui-post-turn")
-                if _claim is None:
-                    continue
                 try:
-                    _run_notification_prompt_submit(rid, sid, session, synth, _evt)
-                    complete_event_delivery(_evt, _claim)
+                    admission = _admit_notification_event(
+                        rid,
+                        sid,
+                        session,
+                        _evt,
+                        synth,
+                        consumer="tui-post-turn",
+                    )
                 except Exception as _n_exc:
-                    release_event_delivery(_evt, _claim)
                     print(
                         f"[tui_gateway] completion notification dispatch failed: "
                         f"{type(_n_exc).__name__}: {_n_exc}",
                         file=sys.stderr,
                     )
-                    with session["history_lock"]:
-                        session["running"] = False
+                    process_registry.completion_queue.put(_evt)
+                    continue
+
+                if admission == "busy":
+                    for pending_evt, _pending_synth in drained[index:]:
+                        process_registry.completion_queue.put(pending_evt)
+                    break
         except Exception as _drain_exc:
             print(
                 f"[tui_gateway] completion queue drain failed: "
@@ -10524,6 +10670,7 @@ def _run_prompt_submit(
     run_thread = threading.Thread(target=run, daemon=True)
     session["_run_thread"] = run_thread
     run_thread.start()
+    return run_thread
 
 
 @method("clipboard.paste")

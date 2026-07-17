@@ -50,6 +50,22 @@ export function isNewSessionWindow(): boolean {
 
 let watchWindowCache: boolean | null = null
 
+let sessionWindowProfileCache: null | string | undefined
+
+export function sessionWindowProfile(): string | null {
+  if (sessionWindowProfileCache !== undefined) {
+    return sessionWindowProfileCache
+  }
+
+  try {
+    sessionWindowProfileCache = new URLSearchParams(window.location.search).get('profile')?.trim() || null
+  } catch {
+    sessionWindowProfileCache = null
+  }
+
+  return sessionWindowProfileCache
+}
+
 // A "watch" window spectates a session that is being driven elsewhere (a
 // running subagent). It resumes lazily — the gateway registers history + a
 // transport for the live mirror without building an agent, so opening it is
@@ -97,7 +113,10 @@ async function openWindow(call: () => Promise<WindowOpenResult>, failMessage: st
 // Open (or focus) a standalone OS window for a single chat session. No-ops
 // gracefully outside Electron so callers can wire it unconditionally.
 // `watch: true` opens a spectator window (lazy resume, live-mirror stream).
-export async function openSessionInNewWindow(sessionId: string, opts?: { watch?: boolean }): Promise<void> {
+export async function openSessionInNewWindow(
+  sessionId: string,
+  opts?: { profile?: null | string; watch?: boolean }
+): Promise<void> {
   if (!sessionId || !canOpenSessionWindow()) {
     return
   }

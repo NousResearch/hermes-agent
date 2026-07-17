@@ -8051,6 +8051,12 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
         created_at=11.0,
         last_active=30.0,
     )
+    server._sessions["sid-other-profile"] = _session(
+        agent=types.SimpleNamespace(model="model-other"),
+        history=[],
+        profile="other-profile",
+        session_key="key-other",
+    )
     try:
         resp = server.handle_request(
             {
@@ -8074,6 +8080,7 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
         "message_count": 1,
         "model": "model-a",
         "preview": "find docs",
+        "profile": server._current_profile_name(),
         "session_key": "key-a",
         "started_at": 10.0,
         "status": "idle",
@@ -11031,12 +11038,13 @@ def test_get_usage_clamps_post_compression_sentinel():
     assert "context_percent" not in usage
 
 
-def test_delegation_status_and_interrupt_are_profile_scoped(monkeypatch):
+def test_delegation_status_and_interrupt_are_profile_scoped(monkeypatch, tmp_path):
     from tools import async_delegation as async_registry
     from tools import delegate_tool
 
     requested_profiles = []
     monkeypatch.setattr(server, "_compute_host_supervisor", None)
+    monkeypatch.setattr(server, "_profile_home", lambda profile: tmp_path / str(profile))
     monkeypatch.setattr(
         delegate_tool,
         "list_active_subagents",
@@ -11048,7 +11056,7 @@ def test_delegation_status_and_interrupt_are_profile_scoped(monkeypatch):
     monkeypatch.setattr(
         async_registry,
         "list_pending_async_delivery_handoffs",
-        lambda: [
+        lambda _home=None: [
             {
                 "dispatched_at": 1.0,
                 "parent_session_id": "owner-alpha",
@@ -11089,7 +11097,7 @@ def test_delegation_status_and_interrupt_are_profile_scoped(monkeypatch):
     assert interrupted == [("pending-alpha", "alpha")]
 
 
-def test_delegation_status_and_interrupt_include_compute_host(monkeypatch):
+def test_delegation_status_and_interrupt_include_compute_host(monkeypatch, tmp_path):
     from tools import async_delegation as async_registry
     from tools import delegate_tool
 
@@ -11101,15 +11109,18 @@ def test_delegation_status_and_interrupt_include_compute_host(monkeypatch):
         def is_running(self):
             return True
 
-        def delegation_status(self, profile=None):
+        def delegation_state(self, profile=None):
             self.status_profiles.append(profile)
-            return [
-                {
-                    "profile": profile,
-                    "status": "running",
-                    "subagent_id": "hosted-alpha",
-                }
-            ]
+            return {
+                "active": [
+                    {
+                        "profile": profile,
+                        "status": "running",
+                        "subagent_id": "hosted-alpha",
+                    }
+                ],
+                "paused": False,
+            }
 
         def interrupt_subagent(self, subagent_id, profile=None):
             self.interrupts.append((subagent_id, profile))
@@ -11117,9 +11128,12 @@ def test_delegation_status_and_interrupt_include_compute_host(monkeypatch):
 
     host = _Host()
     monkeypatch.setattr(server, "_compute_host_supervisor", host)
+    monkeypatch.setattr(server, "_profile_home", lambda profile: tmp_path / str(profile))
     monkeypatch.setattr(delegate_tool, "list_active_subagents", lambda _profile=None: [])
     monkeypatch.setattr(delegate_tool, "interrupt_subagent", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(async_registry, "list_pending_async_delivery_handoffs", lambda: [])
+    monkeypatch.setattr(
+        async_registry, "list_pending_async_delivery_handoffs", lambda _home=None: []
+    )
 
     status = server._methods["delegation.status"]("status", {"profile": "alpha"})
     interrupted = server._methods["subagent.interrupt"](
@@ -11132,6 +11146,35 @@ def test_delegation_status_and_interrupt_include_compute_host(monkeypatch):
     assert host.status_profiles == ["alpha"]
     assert interrupted["result"]["found"] is True
     assert host.interrupts == [("hosted-alpha", "alpha")]
+
+
+def test_delegation_pause_applies_to_local_and_compute_host(monkeypatch):
+    from tools import delegate_tool
+
+    state = {"paused": False}
+    host_calls = []
+
+    class _Host:
+        def is_running(self):
+            return True
+
+        def set_delegation_paused(self, paused):
+            host_calls.append(paused)
+            return paused
+
+    monkeypatch.setattr(server, "_compute_host_supervisor", _Host())
+    monkeypatch.setattr(delegate_tool, "is_spawn_paused", lambda: state["paused"])
+    monkeypatch.setattr(
+        delegate_tool,
+        "set_spawn_paused",
+        lambda paused: state.__setitem__("paused", bool(paused)) or state["paused"],
+    )
+
+    response = server._methods["delegation.pause"]("pause", {"paused": True})
+
+    assert response["result"]["paused"] is True
+    assert state["paused"] is True
+    assert host_calls == [True]
 
 
 def test_subagent_progress_forwards_spawn_time_detached_provenance(monkeypatch):
@@ -11229,3 +11272,74 @@ def test_notification_prompt_starts_before_async_delivery_announcement(monkeypat
         ("message.start", "async_delegation"),
         ("delegation.delivery", "deleg-ordered"),
     ]
+
+
+def test_notification_admission_retries_ack_without_releasing_accepted_claim(monkeypatch):
+    from tools import async_delegation as async_registry
+
+    acked = threading.Event()
+    attempts = []
+    releases = []
+    renewals = []
+    session = {"history_lock": threading.Lock(), "running": False}
+    event = {"delegation_id": "deleg-ack", "type": "async_delegation"}
+
+    monkeypatch.setattr(
+        async_registry,
+        "claim_event_delivery",
+        lambda _event, _consumer, _home=None: "claim-1",
+    )
+
+    def _complete(_event, _claim, _home=None):
+        attempts.append(_claim)
+        if len(attempts) >= 3:
+            acked.set()
+            return True
+        return False
+
+    monkeypatch.setattr(async_registry, "complete_event_delivery", _complete)
+    monkeypatch.setattr(
+        async_registry,
+        "renew_event_delivery",
+        lambda _event, _claim, _home=None: renewals.append(_claim) or True,
+    )
+    monkeypatch.setattr(
+        async_registry,
+        "release_event_delivery",
+        lambda _event, _claim, _home=None: releases.append(_claim),
+    )
+    monkeypatch.setattr(server, "_run_notification_prompt_submit", lambda *_args: object())
+
+    admission = server._admit_notification_event(
+        "rid", "sid", session, event, "done", consumer="test"
+    )
+
+    assert admission == "admitted"
+    assert session["running"] is True
+    assert acked.wait(2)
+    assert len(attempts) >= 3
+    assert renewals == ["claim-1"]
+    assert releases == []
+
+
+def test_notification_claim_loser_never_marks_session_running(monkeypatch):
+    from tools import async_delegation as async_registry
+
+    session = {"history_lock": threading.Lock(), "running": False}
+    monkeypatch.setattr(
+        async_registry,
+        "claim_event_delivery",
+        lambda _event, _consumer, _home=None: None,
+    )
+    monkeypatch.setattr(
+        server,
+        "_run_notification_prompt_submit",
+        lambda *_args: pytest.fail("claim loser must not start a turn"),
+    )
+
+    admission = server._admit_notification_event(
+        "rid", "sid", session, {"type": "async_delegation"}, "done", consumer="test"
+    )
+
+    assert admission == "claimed_elsewhere"
+    assert session["running"] is False

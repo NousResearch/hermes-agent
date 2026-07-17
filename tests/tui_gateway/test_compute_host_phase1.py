@@ -113,6 +113,7 @@ def test_compute_host_delegation_status_and_targeted_interrupt(monkeypatch):
     host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
     profiles = []
     interrupts = []
+    paused = []
     monkeypatch.setattr(
         delegate_tool,
         "list_active_subagents",
@@ -123,6 +124,12 @@ def test_compute_host_delegation_status_and_targeted_interrupt(monkeypatch):
         delegate_tool,
         "interrupt_subagent",
         lambda subagent_id, profile=None: interrupts.append((subagent_id, profile)) or True,
+    )
+    monkeypatch.setattr(delegate_tool, "is_spawn_paused", lambda: bool(paused and paused[-1]))
+    monkeypatch.setattr(
+        delegate_tool,
+        "set_spawn_paused",
+        lambda value: paused.append(bool(value)) or bool(value),
     )
 
     try:
@@ -137,6 +144,9 @@ def test_compute_host_delegation_status_and_targeted_interrupt(monkeypatch):
                 "subagent_id": "hosted-child",
             }
         )
+        host.handle_frame(
+            {"type": "delegation.pause", "paused": True, "request_id": "pause-1"}
+        )
     finally:
         host.close()
 
@@ -150,12 +160,20 @@ def test_compute_host_delegation_status_and_targeted_interrupt(monkeypatch):
         lambda frame: frame.get("type") == "subagent.interrupt.ack"
         and frame.get("request_id") == "interrupt-1",
     )
+    pause_ack = _wait_for_frame(
+        out,
+        lambda frame: frame.get("type") == "delegation.pause.ack"
+        and frame.get("request_id") == "pause-1",
+    )
     assert status["active"] == [
         {"profile": "alpha", "status": "running", "subagent_id": "hosted-child"}
     ]
+    assert status["paused"] is False
     assert interrupted["found"] is True
+    assert pause_ack["paused"] is True
     assert profiles == ["alpha"]
     assert interrupts == [("hosted-child", "alpha")]
+    assert paused == [True]
 
 
 def test_supervisor_routes_delegation_requests_by_request_id(tmp_path, monkeypatch):
@@ -175,6 +193,15 @@ def test_supervisor_routes_delegation_requests_by_request_id(tmp_path, monkeypat
                     "type": "delegation.status.ack",
                     "request_id": frame["request_id"],
                     "active": [{"subagent_id": "hosted-child"}],
+                    "paused": True,
+                }
+            )
+        elif frame["type"] == "delegation.pause":
+            supervisor._handle_host_frame(
+                {
+                    "type": "delegation.pause.ack",
+                    "request_id": frame["request_id"],
+                    "paused": frame["paused"],
                 }
             )
         else:
@@ -188,10 +215,15 @@ def test_supervisor_routes_delegation_requests_by_request_id(tmp_path, monkeypat
 
     monkeypatch.setattr(supervisor, "_send_frame", _send)
 
-    assert supervisor.delegation_status("alpha") == [{"subagent_id": "hosted-child"}]
+    assert supervisor.delegation_state("alpha") == {
+        "active": [{"subagent_id": "hosted-child"}],
+        "paused": True,
+    }
+    assert supervisor.set_delegation_paused(True) is True
     assert supervisor.interrupt_subagent("hosted-child", "alpha") is True
-    assert [(frame["type"], frame["profile"]) for frame in sent] == [
+    assert [(frame["type"], frame.get("profile")) for frame in sent] == [
         ("delegation.status", "alpha"),
+        ("delegation.pause", None),
         ("subagent.interrupt", "alpha"),
     ]
 

@@ -7,13 +7,13 @@ import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { $desktopBoot } from '@/store/boot'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
-  $activeSessionId,
   $busy,
   $messages,
   acknowledgeSessionCompletion,
   sessionLineageIds,
-  setActiveSessionStoredId,
+  sessionScopeKey,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
@@ -60,6 +60,38 @@ interface SessionStateCacheOptions {
   setAwaitingResponse: (awaiting: boolean) => void
   setBusy: (busy: boolean) => void
   setMessages: (messages: ChatMessage[]) => void
+}
+
+function removeRuntimeBindings(
+  bindings: Map<string, string>,
+  runtimeId: string,
+  state: Pick<ClientSessionState, 'profile' | 'storedSessionId'>
+): void {
+  if (!state.storedSessionId) {
+    return
+  }
+
+  for (const id of sessionLineageIds(state.storedSessionId, state.profile)) {
+    const key = sessionScopeKey(state.profile, id)
+
+    if (bindings.get(key) === runtimeId) {
+      bindings.delete(key)
+    }
+  }
+}
+
+function bindRuntimeSession(
+  bindings: Map<string, string>,
+  runtimeId: string,
+  state: Pick<ClientSessionState, 'profile' | 'storedSessionId'>
+): void {
+  if (!state.storedSessionId) {
+    return
+  }
+
+  for (const id of sessionLineageIds(state.storedSessionId, state.profile)) {
+    bindings.set(sessionScopeKey(state.profile, id), runtimeId)
+  }
 }
 
 function transcriptWindowIsVisible(currentView: AppView, bootFailureVisible: boolean): boolean {
@@ -126,55 +158,32 @@ export function useSessionStateCache({
         // state object rather than mutating in place — updateSessionState needs
         // the PREVIOUS state to detect transitions (busy→idle, id rotation).
         const previousStoredSessionId = existing.storedSessionId
+
+        removeRuntimeBindings(runtimeIdByStoredSessionIdRef.current, sessionId, existing)
         const updated = { ...existing, storedSessionId }
-
         sessionStateByRuntimeIdRef.current.set(sessionId, updated)
+        bindRuntimeSession(runtimeIdByStoredSessionIdRef.current, sessionId, updated)
 
-        // Drop the obsolete stored→runtime reverse mapping as soon as the id
-        // rotates (e.g. auto-compression forks a continuation). Leaving the
-        // stale key lets getRuntimeIdForStoredSession resolve the old stored id
-        // to this runtime, which the compression route-follow logic relies on
-        // being absent. The rotation signal itself is emitted centrally from
-        // handleTransition (session-states.ts) off the published diff.
-        if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
-          runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
+        if (storedSessionId && existing.busy) {
+          setSessionWorking(storedSessionId, true, existing.profile)
         }
 
-        if (storedSessionId) {
-          sessionLineageIds(storedSessionId, existing.profile).forEach(id =>
-            runtimeIdByStoredSessionIdRef.current.set(id, sessionId)
-          )
-
-          if (existing.busy) {
-            setSessionWorking(storedSessionId, true, existing.profile)
-          }
-        }
-
-        if (previousStoredSessionId && previousStoredSessionId !== storedSessionId) {
+        if (previousStoredSessionId) {
           setSessionWorking(previousStoredSessionId, false, existing.profile)
-
-          // Auto-compression rotated the stored id on the active session. Signal
-          // the route-following effect in use-session-actions so the URL + selection
-          // re-anchor to the continuation id — otherwise the next send hits a stale
-          // stored→runtime mapping (getRuntimeIdForStoredSession returns null) and
-          // triggers a full thread reload via resumeStoredSession.
-          if (sessionId === $activeSessionId.get()) {
-            setActiveSessionStoredId(storedSessionId)
-          }
         }
       }
 
       return sessionStateByRuntimeIdRef.current.get(sessionId)!
     }
 
-    const created = createClientSessionState(storedSessionId ?? null)
-    sessionStateByRuntimeIdRef.current.set(sessionId, created)
+    const created = createClientSessionState(
+      storedSessionId ?? null,
+      [],
+      normalizeProfileKey($activeGatewayProfile.get())
+    )
 
-    if (storedSessionId) {
-      sessionLineageIds(storedSessionId, created.profile).forEach(id =>
-        runtimeIdByStoredSessionIdRef.current.set(id, sessionId)
-      )
-    }
+    sessionStateByRuntimeIdRef.current.set(sessionId, created)
+    bindRuntimeSession(runtimeIdByStoredSessionIdRef.current, sessionId, created)
 
     return created
   }, [])
@@ -336,7 +345,17 @@ export function useSessionStateCache({
       storedSessionId?: string | null
     ) => {
       const previous = ensureSessionState(sessionId, storedSessionId)
+      const previousIdentity = { profile: previous.profile, storedSessionId: previous.storedSessionId }
       const next = updater({ ...previous, messages: previous.messages })
+
+      if (
+        previousIdentity.storedSessionId !== next.storedSessionId ||
+        normalizeProfileKey(previousIdentity.profile) !== normalizeProfileKey(next.profile)
+      ) {
+        removeRuntimeBindings(runtimeIdByStoredSessionIdRef.current, sessionId, previousIdentity)
+      }
+
+      bindRuntimeSession(runtimeIdByStoredSessionIdRef.current, sessionId, next)
       sessionStateByRuntimeIdRef.current.set(sessionId, next)
       // Publishing to $sessionStates automatically fires transition side-effects
       // (watchdog, settle grace, unread marker, compression id rotation) inside
@@ -361,17 +380,24 @@ export function useSessionStateCache({
     [ensureSessionState, syncSessionStateToView]
   )
 
-  const getRuntimeIdForStoredSession = useCallback((storedSessionId: string): string | null => {
-    const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+  const getRuntimeIdForStoredSession = useCallback(
+    (storedSessionId: string, profile?: null | string): string | null => {
+      const normalizedProfile = normalizeProfileKey(profile ?? $activeGatewayProfile.get())
+      const runtimeId = runtimeIdByStoredSessionIdRef.current.get(sessionScopeKey(normalizedProfile, storedSessionId))
 
-    if (!runtimeId) {
-      return null
-    }
+      if (!runtimeId) {
+        return null
+      }
 
-    const runtimeState = sessionStateByRuntimeIdRef.current.get(runtimeId)
+      const runtimeState = sessionStateByRuntimeIdRef.current.get(runtimeId)
 
-    return runtimeState?.storedSessionId === storedSessionId ? runtimeId : null
-  }, [])
+      return runtimeState?.storedSessionId === storedSessionId &&
+        normalizeProfileKey(runtimeState.profile) === normalizedProfile
+        ? runtimeId
+        : null
+    },
+    []
+  )
 
   // Wire the watchdog's force-clear callback to our cache. When the watchdog
   // fires (8 min of stream silence — a hung or looping turn that never

@@ -165,6 +165,12 @@ export const sessionScopeKey = (profile: null | string | undefined, sessionId: s
 
 export const sessionIdFromScopeKey = (key: string): string => key.slice(key.indexOf(SESSION_SCOPE_SEPARATOR) + 1)
 
+export const sessionProfileFromScopeKey = (key: string): string => {
+  const separator = key.indexOf(SESSION_SCOPE_SEPARATOR)
+
+  return separator < 0 ? 'default' : normalizeSessionProfile(key.slice(0, separator))
+}
+
 let requestedSessionResumeTarget: null | { profile: string; sessionId: string } = null
 
 export function requestSessionResumeProfile(sessionId: string, profile: null | string | undefined): void {
@@ -176,6 +182,10 @@ export function consumeRequestedSessionResumeProfile(sessionId: string): string 
   requestedSessionResumeTarget = null
 
   return target?.sessionId === sessionId ? target.profile : undefined
+}
+
+export function peekRequestedSessionResumeProfile(sessionId: string): string | undefined {
+  return requestedSessionResumeTarget?.sessionId === sessionId ? requestedSessionResumeTarget.profile : undefined
 }
 
 export function clearRequestedSessionResumeProfile(): void {

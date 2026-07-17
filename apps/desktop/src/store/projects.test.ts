@@ -2,12 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped } from '@/store/layout'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import {
   $activeProjectId,
   $projectScope,
   $projectsRpcAvailable,
   $projectTree,
+  $removedSessionIds,
   $worktreeRefreshToken,
   ALL_PROJECTS,
   createProject,
@@ -17,7 +19,10 @@ import {
   pickProjectFolder,
   projectNameForCwd,
   refreshProjects,
-  refreshWorktrees
+  refreshWorktrees,
+  removedSessionIdsForProfile,
+  tombstoneSessions,
+  untombstoneSessions
 } from './projects'
 
 vi.mock('@/i18n', () => ({
@@ -257,5 +262,25 @@ describe('projects RPC capability', () => {
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'warning', message: 'sidebar.projects.staleBackend' })
     )
+  })
+})
+
+describe('profile-scoped project tree tombstones', () => {
+  beforeEach(() => {
+    $activeGatewayProfile.set('default')
+    $removedSessionIds.set(new Set())
+  })
+
+  it('does not hide an identical session id in another profile', () => {
+    tombstoneSessions(['shared'], 'alpha')
+    tombstoneSessions(['shared'], 'beta')
+
+    expect(removedSessionIdsForProfile('alpha')).toEqual(new Set(['shared']))
+    expect(removedSessionIdsForProfile('beta')).toEqual(new Set(['shared']))
+
+    untombstoneSessions(['shared'], 'alpha')
+
+    expect(removedSessionIdsForProfile('alpha')).toEqual(new Set())
+    expect(removedSessionIdsForProfile('beta')).toEqual(new Set(['shared']))
   })
 })

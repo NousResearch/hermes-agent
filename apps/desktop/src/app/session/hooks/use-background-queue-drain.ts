@@ -12,7 +12,8 @@ import {
   shouldAutoDrain
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
-import { $workingSessionIds } from '@/store/session-states'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $workingSessionIds, sessionScopeKey } from '@/store/session'
 
 import type { SubmitTextOptions } from './use-prompt-actions/utils'
 
@@ -112,7 +113,10 @@ export function useBackgroundQueueDrain({
             return true
           }
 
-          const runtimeSessionId = runtimeIdByStoredSessionIdRef.current.get(sessionKey) ?? null
+          const runtimeSessionId =
+            runtimeIdByStoredSessionIdRef.current.get(
+              sessionScopeKey(normalizeProfileKey($activeGatewayProfile.get()), sessionKey)
+            ) ?? null
 
           const accepted = await Promise.resolve(
             submitTextRef.current(liveEntry.text, {

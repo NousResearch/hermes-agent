@@ -26,7 +26,9 @@ import {
   $yoloActive,
   getSessionCompletionToken,
   type NewChatWorkspaceTarget,
+  peekRequestedSessionResumeProfile,
   sessionPinId,
+  sessionScopeKey,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setAwaitingResponse,
@@ -255,6 +257,13 @@ export function useSessionActions({
     ) {
       return
     }
+
+    // Clean up the stale stored→runtime mapping so getRuntimeIdForStoredSession
+    // can't resolve the old id to this runtime (it would fail the storedSessionId
+    // check and return null, but leaving the stale key is sloppy).
+    runtimeIdByStoredSessionIdRef.current.delete(
+      sessionScopeKey($activeGatewayProfile.get(), storedIdRotation.previousStoredSessionId)
+    )
 
     setSelectedStoredSessionId(storedIdRotation.nextStoredSessionId)
     selectedStoredSessionIdRef.current = storedIdRotation.nextStoredSessionId
@@ -504,6 +513,9 @@ export function useSessionActions({
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
       const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
 
+      const requestedProfile =
+        peekRequestedSessionResumeProfile(storedSessionId) ?? normalizeProfileKey($activeGatewayProfile.get())
+
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedSessionId
 
@@ -520,7 +532,7 @@ export function useSessionActions({
       resetViewSync()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
-      navigate(sessionRoute(storedSessionId), { replace: replaceRoute })
+      navigate(sessionRoute(storedSessionId, requestedProfile), { replace: replaceRoute })
       // Optimistically clear any prior resume-failure latch for this session:
       // we're attempting a fresh resume, so the self-heal in use-route-resume
       // must not keep treating it as stranded. It's re-armed below only if THIS
@@ -540,18 +552,20 @@ export function useSessionActions({
       // under the current route (the "open chat A, chat B loads" bug). On a
       // mismatch the mapping is cross-wired: purge both sides and report a miss
       // so the caller falls through to a full resume that rebinds a correct id.
-      const takeWarmCache = (): { runtimeId: string; state: ClientSessionState } | null => {
-        const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+      const takeWarmCache = (profile: string): { runtimeId: string; state: ClientSessionState } | null => {
+        const cacheKey = sessionScopeKey(profile, storedSessionId)
+        const runtimeId = runtimeIdByStoredSessionIdRef.current.get(cacheKey)
         const state = runtimeId ? sessionStateByRuntimeIdRef.current.get(runtimeId) : undefined
 
         if (!runtimeId || !state) {
           return null
         }
 
-        if (state.storedSessionId !== storedSessionId) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-          sessionStateByRuntimeIdRef.current.delete(runtimeId)
-          dropSessionState(runtimeId)
+        if (
+          state.storedSessionId !== storedSessionId ||
+          normalizeProfileKey(state.profile) !== normalizeProfileKey(profile)
+        ) {
+          runtimeIdByStoredSessionIdRef.current.delete(cacheKey)
 
           return null
         }
@@ -559,7 +573,7 @@ export function useSessionActions({
         return { runtimeId, state }
       }
 
-      if (!takeWarmCache()) {
+      if (!takeWarmCache(normalizeProfileKey($activeGatewayProfile.get()))) {
         setActiveSessionId(null)
         activeSessionIdRef.current = null
 
@@ -574,25 +588,33 @@ export function useSessionActions({
       // id loads as fast as a sidebar click instead of hanging on a list scan.
       const storedForProfile = await resolveStoredSession(storedSessionId)
       const sessionProfile = storedForProfile?.profile
-      const normalizedSessionProfile = normalizeProfileKey(sessionProfile)
+      const normalizedSessionProfile = normalizeProfileKey(sessionProfile ?? requestedProfile)
 
       if (resumeRequestRef.current !== requestId) {
         return
       }
 
-      await ensureGatewayProfile(sessionProfile)
+      navigate(sessionRoute(storedSessionId, normalizedSessionProfile), { replace: true })
+
+      await ensureGatewayProfile(normalizedSessionProfile)
 
       // Re-check after the profile-resolve / gateway-swap awaits above: the
       // cache may have changed, and takeWarmCache re-validates belongs-to and
       // purges a cross-wired mapping before we trust the fast-path.
-      const warmHit = takeWarmCache()
+      const warmHit = takeWarmCache(normalizedSessionProfile)
 
       if (warmHit) {
         const cachedRuntimeId = warmHit.runtimeId
         const cachedState = warmHit.state
 
         const stored =
-          $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+          $sessions
+            .get()
+            .find(
+              session =>
+                normalizeProfileKey(session.profile) === normalizedSessionProfile &&
+                sessionMatchesStoredId(session, storedSessionId)
+            ) ?? storedForProfile
 
         let cachedViewState =
           (!cachedState.model && stored?.model != null) || cachedState.profile !== normalizedSessionProfile
@@ -617,7 +639,7 @@ export function useSessionActions({
         }
 
         if (sessionShouldHaveTranscript(stored) && cachedViewState.messages.length === 0) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+          runtimeIdByStoredSessionIdRef.current.delete(sessionScopeKey(normalizedSessionProfile, storedSessionId))
           sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
           dropSessionState(cachedRuntimeId)
         } else {
@@ -749,7 +771,7 @@ export function useSessionActions({
               return
             }
 
-            runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+            runtimeIdByStoredSessionIdRef.current.delete(sessionScopeKey(normalizedSessionProfile, storedSessionId))
             sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
             dropSessionState(cachedRuntimeId)
           }
@@ -904,7 +926,7 @@ export function useSessionActions({
         activeSessionIdRef.current = resumed.session_id
         const runtimeInfo = applyRuntimeInfo(resumed.info)
 
-        patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
+        patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd, normalizedSessionProfile)
 
         resumedRunning = Boolean((resumed as { running?: boolean }).running)
 
@@ -915,7 +937,8 @@ export function useSessionActions({
             ...(runtimeInfo ?? {}),
             messages: messagesForView,
             profile: normalizedSessionProfile,
-            renderedCompletion: getSessionCompletionToken(storedSessionId) ?? state.renderedCompletion,
+            renderedCompletion:
+              getSessionCompletionToken(storedSessionId, normalizedSessionProfile) ?? state.renderedCompletion,
             busy: resumedRunning,
             awaitingResponse: resumedRunning
           }),
@@ -1022,13 +1045,20 @@ export function useSessionActions({
   // Shared fork: create a child session seeded with `branchMessages`, linked to
   // `parentStoredId` so it nests under its parent, then make it the active chat.
   const forkBranch = useCallback(
-    async (branchMessages: BranchMessage[], parentStoredId: null | string, cwd?: string): Promise<boolean> => {
+    async (
+      branchMessages: BranchMessage[],
+      parentStoredId: null | string,
+      cwd?: string,
+      profile?: null | string
+    ): Promise<boolean> => {
       creatingSessionRef.current = true
+      const targetProfile = normalizeProfileKey(profile ?? $activeGatewayProfile.get())
 
       try {
         // No title: the backend auto-names the branch from its parent's lineage.
         const branched = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
+          profile: targetProfile,
           source: 'desktop',
           ...(cwd && { cwd }),
           messages: branchMessages.map(({ content, role }) => ({ content, role })),
@@ -1041,10 +1071,21 @@ export function useSessionActions({
         // doesn't bubble to the top until a real message lands (backend persists
         // + auto-names it then). The selected row survives refreshes (sessionsToKeep).
         const rows = $sessions.get()
-        const parent = parentStoredId ? rows.find(session => sessionMatchesStoredId(session, parentStoredId)) : null
+
+        const parent = parentStoredId
+          ? rows.find(
+              session =>
+                normalizeProfileKey(session.profile) === targetProfile &&
+                sessionMatchesStoredId(session, parentStoredId)
+            )
+          : null
 
         const siblings = parentStoredId
-          ? rows.filter(session => session.parent_session_id?.trim() === parentStoredId).length
+          ? rows.filter(
+              session =>
+                normalizeProfileKey(session.profile) === targetProfile &&
+                session.parent_session_id?.trim() === parentStoredId
+            ).length
           : 0
 
         setFreshDraftReady(false)
@@ -1065,7 +1106,8 @@ export function useSessionActions({
             ...state,
             messages: branchMessages.map(({ source }) => source),
             busy: false,
-            awaitingResponse: false
+            awaitingResponse: false,
+            profile: targetProfile
           }),
           routedSessionId
         )
@@ -1074,7 +1116,7 @@ export function useSessionActions({
         navigate(sessionRoute(routedSessionId))
 
         const runtimeInfo = applyRuntimeInfo(branched.info)
-        patchSessionWorkspace(routedSessionId, runtimeInfo?.cwd)
+        patchSessionWorkspace(routedSessionId, runtimeInfo?.cwd, targetProfile)
 
         if (runtimeInfo) {
           updateSessionState(branched.session_id, state => ({ ...state, ...runtimeInfo }), routedSessionId)
@@ -1136,7 +1178,12 @@ export function useSessionActions({
 
       clearNotifications()
 
-      return forkBranch(branchMessages, selectedStoredSessionIdRef.current, $currentCwd.get().trim())
+      return forkBranch(
+        branchMessages,
+        selectedStoredSessionIdRef.current,
+        $currentCwd.get().trim(),
+        $activeGatewayProfile.get()
+      )
     },
     [activeSessionIdRef, busyRef, copy, forkBranch, selectedStoredSessionIdRef]
   )
@@ -1148,8 +1195,14 @@ export function useSessionActions({
     async (storedSessionId: string, sessionProfile?: string | null): Promise<boolean> => {
       clearNotifications()
 
-      const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
-      const profile = sessionProfile ?? stored?.profile
+      const profile = normalizeProfileKey(sessionProfile ?? $activeGatewayProfile.get())
+
+      const stored = $sessions
+        .get()
+        .find(
+          session =>
+            normalizeProfileKey(session.profile) === profile && sessionMatchesStoredId(session, storedSessionId)
+        )
 
       try {
         await ensureGatewayProfile(profile)
@@ -1162,7 +1215,7 @@ export function useSessionActions({
           return false
         }
 
-        return await forkBranch(branchMessages, stored?.id ?? storedSessionId, stored?.cwd?.trim())
+        return await forkBranch(branchMessages, stored?.id ?? storedSessionId, stored?.cwd?.trim(), profile)
       } catch (err) {
         notifyError(err, copy.branchFailed)
 
@@ -1198,7 +1251,7 @@ export function useSessionActions({
         // Evict from the project tree's optimistic layer too (the backend snapshot
         // still lists it until its next refresh), so grouped + flat views drop the
         // row in lockstep.
-        tombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id])
+        tombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id], targetProfile)
       }
 
       // Keep $sessionsTotal in sync so the sidebar's "Load N more" footer
@@ -1236,7 +1289,7 @@ export function useSessionActions({
         // and evict its mirrored runtime state so nothing submits to (or renders)
         // a deleted session.
         const tiledRuntimeId = targetsActiveProfile
-          ? runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+          ? runtimeIdByStoredSessionIdRef.current.get(sessionScopeKey(targetProfile, storedSessionId))
           : undefined
 
         if (targetsActiveProfile) {
@@ -1244,7 +1297,7 @@ export function useSessionActions({
         }
 
         if (tiledRuntimeId) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+          runtimeIdByStoredSessionIdRef.current.delete(sessionScopeKey(targetProfile, storedSessionId))
           sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
           dropSessionState(tiledRuntimeId)
         }
@@ -1255,7 +1308,7 @@ export function useSessionActions({
         }
 
         if (targetsActiveProfile) {
-          untombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id])
+          untombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id], targetProfile)
           $pinnedSessionIds.set(previousPinned)
         }
 
@@ -1317,7 +1370,7 @@ export function useSessionActions({
       setSessions(prev => prev.filter(session => !sessionMatchesActionTarget(session, storedSessionId, targetProfile)))
 
       if (targetsActiveProfile) {
-        tombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
+        tombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id], targetProfile)
       }
 
       // Archived sessions are hidden by the listSessions(min_messages=1) query
@@ -1350,7 +1403,7 @@ export function useSessionActions({
 
         // An archived session is hidden from the sidebar; its tile must go too.
         const tiledRuntimeId = targetsActiveProfile
-          ? runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+          ? runtimeIdByStoredSessionIdRef.current.get(sessionScopeKey(targetProfile, storedSessionId))
           : undefined
 
         if (targetsActiveProfile) {
@@ -1358,7 +1411,7 @@ export function useSessionActions({
         }
 
         if (tiledRuntimeId) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+          runtimeIdByStoredSessionIdRef.current.delete(sessionScopeKey(targetProfile, storedSessionId))
           sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
           dropSessionState(tiledRuntimeId)
         }
@@ -1374,7 +1427,7 @@ export function useSessionActions({
         }
 
         if (targetsActiveProfile) {
-          untombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
+          untombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id], targetProfile)
           $pinnedSessionIds.set(previousPinned)
         }
 

@@ -268,24 +268,34 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     async (
       attempts = 1,
       storedSessionId = selectedStoredSessionIdRef.current,
-      runtimeSessionId = activeSessionIdRef.current
+      runtimeSessionId = activeSessionIdRef.current,
+      profile?: null | string
     ) => {
       if (!storedSessionId || !runtimeSessionId) {
         return
       }
 
-      const storedProfile = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))?.profile
+      const runtimeProfile = sessionStateByRuntimeIdRef.current.get(runtimeSessionId)?.profile
+      const storedProfile = normalizeProfileKey(profile ?? runtimeProfile ?? $activeGatewayProfile.get())
+
+      const stored = $sessions
+        .get()
+        .find(
+          session =>
+            normalizeProfileKey(session.profile) === storedProfile && sessionMatchesStoredId(session, storedSessionId)
+        )
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
-          const latest = await getSessionMessages(storedSessionId, storedProfile)
+          const latest = await getSessionMessages(storedSessionId, stored?.profile ?? storedProfile)
           const messages = toChatMessages(latest.messages)
           updateSessionState(
             runtimeSessionId,
             state => ({
               ...state,
               messages: preserveLocalAssistantErrors(messages, state.messages),
-              renderedCompletion: getSessionCompletionToken(storedSessionId) ?? state.renderedCompletion
+              profile: storedProfile,
+              renderedCompletion: getSessionCompletionToken(storedSessionId, storedProfile) ?? state.renderedCompletion
             }),
             storedSessionId
           )
@@ -308,7 +318,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         }
       }
     },
-    [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
+    [activeSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef, updateSessionState]
   )
 
   // Refresh the open messaging transcript (inbound platform turns arrive via
@@ -623,6 +633,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     freshDraftReady,
     gatewayState,
     locationPathname: location.pathname,
+    locationSearch: location.search,
     resumeSession,
     resumeFailedSessionId,
     resumeExhaustedSessionId,
@@ -771,7 +782,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       if (
         normalizeProfileKey(targetProfile) === normalizeProfileKey($activeGatewayProfile.get()) &&
-        focusOpenSession(sessionId)
+        focusOpenSession(sessionId, targetProfile)
       ) {
         return
       }

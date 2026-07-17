@@ -39,7 +39,8 @@ interface MessageStreamOptions {
   hydrateFromStoredSession: (
     attempts?: number,
     storedSessionId?: string | null,
-    runtimeSessionId?: string | null
+    runtimeSessionId?: string | null,
+    profile?: null | string
   ) => Promise<void>
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
@@ -544,7 +545,12 @@ export function useMessageStream({
       }
 
       if (shouldHydrate) {
-        void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
+        void hydrateFromStoredSession(
+          3,
+          completedState.storedSessionId,
+          sessionId,
+          sourceProfile ?? completedState.profile
+        )
       }
 
       dispatchNativeNotification({

@@ -2,7 +2,13 @@ import { cleanup, render } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $resumeExhaustedSessionId, setResumeExhaustedSessionId } from '@/store/session'
+import {
+  $resumeExhaustedSessionId,
+  clearRequestedSessionResumeProfile,
+  consumeRequestedSessionResumeProfile,
+  sessionScopeKey,
+  setResumeExhaustedSessionId
+} from '@/store/session'
 
 import { useRouteResume } from './use-route-resume'
 
@@ -14,6 +20,7 @@ interface HarnessProps {
   freshDraftReady: boolean
   gatewayState: string
   locationPathname: string
+  locationSearch?: string
   resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
   resumeFailedSessionId?: null | string
   resumeExhaustedSessionId?: null | string
@@ -33,7 +40,44 @@ function RouteResumeHarness({ resumeFailedSessionId = null, resumeExhaustedSessi
 describe('useRouteResume', () => {
   afterEach(() => {
     cleanup()
+    clearRequestedSessionResumeProfile()
     vi.restoreAllMocks()
+  })
+
+  it('resumes the exact profile when history changes only the profile query', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-alpha' }
+    const creatingSessionRef = { current: false }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'same' }
+
+    const runtimeIdByStoredSessionIdRef = {
+      current: new Map([[sessionScopeKey('alpha', 'same'), 'runtime-alpha']])
+    }
+
+    const baseProps = {
+      activeSessionId: 'runtime-alpha',
+      activeSessionIdRef,
+      creatingSessionRef,
+      currentView: 'chat',
+      freshDraftReady: false,
+      gatewayState: 'open',
+      locationPathname: '/same',
+      resumeSession,
+      routedSessionId: 'same',
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionId: 'same',
+      selectedStoredSessionIdRef,
+      startFreshSessionDraft: vi.fn()
+    }
+
+    const { rerender } = render(<RouteResumeHarness {...baseProps} locationSearch="?profile=alpha" />)
+
+    expect(resumeSession).not.toHaveBeenCalled()
+
+    rerender(<RouteResumeHarness {...baseProps} locationSearch="?profile=beta" />)
+
+    expect(resumeSession).toHaveBeenCalledWith('same', true)
+    expect(consumeRequestedSessionResumeProfile('same')).toBe('beta')
   })
 
   it('does not re-resume the old session during a /:sid -> /new transition', () => {
@@ -41,7 +85,11 @@ describe('useRouteResume', () => {
     const startFreshSessionDraft = vi.fn()
     const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
     const creatingSessionRef = { current: false }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+
+    const runtimeIdByStoredSessionIdRef = {
+      current: new Map([[sessionScopeKey('default', 'session-1'), 'runtime-1']])
+    }
+
     const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
 
     const { rerender } = render(
@@ -93,7 +141,11 @@ describe('useRouteResume', () => {
     const startFreshSessionDraft = vi.fn()
     const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
     const creatingSessionRef = { current: false }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+
+    const runtimeIdByStoredSessionIdRef = {
+      current: new Map([[sessionScopeKey('default', 'session-1'), 'runtime-1']])
+    }
+
     const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
 
     const { rerender } = render(
@@ -197,7 +249,11 @@ describe('useRouteResume', () => {
     const startFreshSessionDraft = vi.fn()
     const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
     const creatingSessionRef = { current: false }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+
+    const runtimeIdByStoredSessionIdRef = {
+      current: new Map([[sessionScopeKey('default', 'session-1'), 'runtime-1']])
+    }
+
     const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
 
     const { rerender } = render(

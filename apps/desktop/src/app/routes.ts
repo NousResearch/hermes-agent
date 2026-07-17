@@ -142,8 +142,15 @@ export function routeSessionId(pathname: string): string | null {
   return id && !id.includes('/') ? decodeURIComponent(id) : null
 }
 
-export function sessionRoute(sessionId: string): string {
-  return `${SESSION_ROUTE_PREFIX}${encodeURIComponent(sessionId)}`
+export function sessionRoute(sessionId: string, profile?: null | string): string {
+  const route = `${SESSION_ROUTE_PREFIX}${encodeURIComponent(sessionId)}`
+  const normalizedProfile = profile?.trim()
+
+  return normalizedProfile ? `${route}?profile=${encodeURIComponent(normalizedProfile)}` : route
+}
+
+export function sessionRouteProfile(search: string): string | null {
+  return new URLSearchParams(search).get('profile')?.trim() || null
 }
 
 export function appViewForPath(pathname: string): AppView {

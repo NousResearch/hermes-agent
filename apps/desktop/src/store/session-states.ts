@@ -29,7 +29,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { readJson, writeJson } from '@/lib/storage'
 
-import { $activeGatewayProfile, normalizeProfileKey } from './profile'
+import { $activeGatewayProfile, ensureGatewayProfile, normalizeProfileKey } from './profile'
 import {
   $activeSessionId,
   $selectedStoredSessionId,
@@ -391,8 +391,19 @@ export function openSessionTile(
   storedSessionId: string,
   dir: TileDock = 'right',
   anchor?: string,
-  before?: null | string
+  before?: null | string,
+  profile?: null | string
 ) {
+  const targetProfile = normalizeProfileKey(profile ?? profileKey())
+
+  if (targetProfile !== profileKey()) {
+    void ensureGatewayProfile(targetProfile)
+      .then(() => openSessionTile(storedSessionId, dir, anchor, before, targetProfile))
+      .catch(() => undefined)
+
+    return
+  }
+
   const tiles = $sessionTiles.get()
 
   if (storedSessionId === $selectedStoredSessionId.get()) {
@@ -420,7 +431,11 @@ export function openSessionTile(
  *  already-open chat JUMPS to its tab instead of reloading it; `false` means the
  *  caller must load it into main. Covers the two dead clicks: an open tile, and
  *  the main session while focus sits on a tile (route unchanged → no reload). */
-export function focusOpenSession(storedSessionId: string): boolean {
+export function focusOpenSession(storedSessionId: string, profile?: null | string): boolean {
+  if (normalizeProfileKey(profile ?? profileKey()) !== profileKey()) {
+    return false
+  }
+
   if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
     const paneId = `${TILE_PANE_PREFIX}${storedSessionId}`
     revealTreePane(paneId) // un-dismiss + adopt + front in its group

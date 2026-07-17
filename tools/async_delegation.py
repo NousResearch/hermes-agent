@@ -43,6 +43,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
@@ -80,12 +81,12 @@ _MAX_DURABLE_PENDING = 1000
 _DB_LOCK = threading.Lock()
 
 
-def _db_path():
-    return get_hermes_home() / "state.db"
+def _db_path(hermes_home: Optional[Path] = None):
+    return (hermes_home or get_hermes_home()) / "state.db"
 
 
-def _connect() -> sqlite3.Connection:
-    path = _db_path()
+def _connect(hermes_home: Optional[Path] = None) -> sqlite3.Connection:
+    path = _db_path(hermes_home)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -314,10 +315,14 @@ def mark_completion_delivered(delegation_id: str) -> bool:
         return cur.rowcount == 1
 
 
-def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
+def claim_completion_delivery(
+    delegation_id: str,
+    claim_id: str,
+    hermes_home: Optional[Path] = None,
+) -> bool:
     """Claim one pending completion across competing consumers/processes."""
     now = time.time()
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, _connect(hermes_home) as conn:
         row = conn.execute(
             "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
             (delegation_id,),
@@ -334,7 +339,11 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         return cur.rowcount == 1
 
 
-def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
+def claim_event_delivery(
+    evt: Dict[str, Any],
+    consumer: str,
+    hermes_home: Optional[Path] = None,
+) -> Optional[str]:
     """Claim a durable delegation event; non-durable events need no token."""
     if evt.get("type") != "async_delegation":
         return ""
@@ -342,12 +351,16 @@ def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
     if not delegation_id:
         return ""
     claim_id = f"{consumer}:{__import__('os').getpid()}:{uuid.uuid4().hex}"
-    return claim_id if claim_completion_delivery(delegation_id, claim_id) else None
+    return claim_id if claim_completion_delivery(delegation_id, claim_id, hermes_home) else None
 
 
-def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
+def release_completion_delivery(
+    delegation_id: str,
+    claim_id: str,
+    hermes_home: Optional[Path] = None,
+) -> bool:
     """Release a failed delivery claim so another consumer may retry."""
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, _connect(hermes_home) as conn:
         cur = conn.execute(
             """UPDATE async_delegations SET delivery_claim=NULL,
                       delivery_claimed_at=NULL, updated_at=?
@@ -358,10 +371,31 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         return cur.rowcount == 1
 
 
-def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
+def renew_completion_delivery(
+    delegation_id: str,
+    claim_id: str,
+    hermes_home: Optional[Path] = None,
+) -> bool:
+    """Keep an accepted delivery claim live while durable acknowledgement retries."""
+    now = time.time()
+    with _DB_LOCK, _connect(hermes_home) as conn:
+        cur = conn.execute(
+            """UPDATE async_delegations SET delivery_claimed_at=?, updated_at=?
+               WHERE delegation_id=? AND delivery_state='pending'
+                 AND delivery_claim=?""",
+            (now, now, delegation_id, claim_id),
+        )
+        return cur.rowcount == 1
+
+
+def complete_completion_delivery(
+    delegation_id: str,
+    claim_id: str,
+    hermes_home: Optional[Path] = None,
+) -> bool:
     """Acknowledge acceptance for the consumer holding this claim."""
     now = time.time()
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, _connect(hermes_home) as conn:
         cur = conn.execute(
             """UPDATE async_delegations SET delivery_state='delivered',
                       delivered_at=?, updated_at=?, delivery_claim=NULL,
@@ -373,14 +407,33 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         return cur.rowcount == 1
 
 
-def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
-    if claim_id and evt.get("type") == "async_delegation":
-        complete_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
+def complete_event_delivery(
+    evt: Dict[str, Any],
+    claim_id: str,
+    hermes_home: Optional[Path] = None,
+) -> bool:
+    if not claim_id or evt.get("type") != "async_delegation":
+        return True
+    return complete_completion_delivery(str(evt.get("delegation_id") or ""), claim_id, hermes_home)
 
 
-def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
+def renew_event_delivery(
+    evt: Dict[str, Any],
+    claim_id: str,
+    hermes_home: Optional[Path] = None,
+) -> bool:
+    if not claim_id or evt.get("type") != "async_delegation":
+        return True
+    return renew_completion_delivery(str(evt.get("delegation_id") or ""), claim_id, hermes_home)
+
+
+def release_event_delivery(
+    evt: Dict[str, Any],
+    claim_id: str,
+    hermes_home: Optional[Path] = None,
+) -> None:
     if claim_id and evt.get("type") == "async_delegation":
-        release_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
+        release_completion_delivery(str(evt.get("delegation_id") or ""), claim_id, hermes_home)
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
@@ -858,9 +911,9 @@ def list_async_delegations() -> List[Dict[str, Any]]:
         ]
 
 
-def list_pending_async_delivery_handoffs() -> List[Dict[str, Any]]:
+def list_pending_async_delivery_handoffs(hermes_home: Optional[Path] = None) -> List[Dict[str, Any]]:
     """Return durable, unclaimed completions whose renderer handoff is pending."""
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, _connect(hermes_home) as conn:
         rows = conn.execute(
             """SELECT event_json FROM async_delegations
                WHERE state NOT IN ('running','finalizing')

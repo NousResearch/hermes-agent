@@ -411,7 +411,9 @@ export function useGatewayBoot({
       const revision = sessionWorkingSnapshotRevision()
 
       try {
-        const snapshot = await target.request<{ sessions?: unknown[] }>('session.active_list', {})
+        const snapshot = await target.request<{ sessions?: unknown[] }>('session.active_list', {
+          profile: normalizedProfile
+        })
 
         if (
           cancelled ||

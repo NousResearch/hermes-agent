@@ -265,14 +265,28 @@ class HostSupervisor:
         self.start()
         self._send_frame({"type": "interrupt", "sid": sid, "request_id": request_id or uuid.uuid4().hex})
 
-    def delegation_status(self, profile: str | None = None, *, timeout: float = 5.0) -> list[dict]:
+    def delegation_state(self, profile: str | None = None, *, timeout: float = 5.0) -> dict:
         response = self._request_host(
             {"type": "delegation.status", "profile": profile}, timeout=timeout
         )
         if response.get("type") != "delegation.status.ack":
             raise RuntimeError(str(response.get("message") or "compute-host delegation status failed"))
         active = response.get("active")
-        return [dict(item) for item in active if isinstance(item, dict)] if isinstance(active, list) else []
+        return {
+            "active": [dict(item) for item in active if isinstance(item, dict)] if isinstance(active, list) else [],
+            "paused": bool(response.get("paused")),
+        }
+
+    def delegation_status(self, profile: str | None = None, *, timeout: float = 5.0) -> list[dict]:
+        return self.delegation_state(profile, timeout=timeout)["active"]
+
+    def set_delegation_paused(self, paused: bool, *, timeout: float = 5.0) -> bool:
+        response = self._request_host(
+            {"type": "delegation.pause", "paused": bool(paused)}, timeout=timeout
+        )
+        if response.get("type") != "delegation.pause.ack":
+            raise RuntimeError(str(response.get("message") or "compute-host delegation pause failed"))
+        return bool(response.get("paused"))
 
     def interrupt_subagent(
         self, subagent_id: str, profile: str | None = None, *, timeout: float = 5.0
@@ -465,6 +479,8 @@ class HostSupervisor:
             "control.error",
             "delegation.status.ack",
             "delegation.status.error",
+            "delegation.pause.ack",
+            "delegation.pause.error",
             "interrupt.ack",
             "reload_mcp.ack",
             "shutdown.ack",

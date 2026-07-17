@@ -66,7 +66,7 @@ export function SessionsSettings() {
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         // Surface it again in the sidebar without waiting for a full refresh, and
         // lift any optimistic eviction so the grouped tree shows it again too.
-        untombstoneSessions([session.id, session._lineage_root_id])
+        untombstoneSessions([session.id, session._lineage_root_id], session.profile)
         setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
         triggerHaptic('selection')
         notify({ durationMs: 2_000, kind: 'success', message: s.restored })

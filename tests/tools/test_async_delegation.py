@@ -454,9 +454,44 @@ def test_durable_delivery_claim_is_exclusive_and_retryable(tmp_path, monkeypatch
     assert not ad.claim_completion_delivery("deleg_claim", "consumer-b")
     assert ad.release_completion_delivery("deleg_claim", "consumer-a")
     assert ad.claim_completion_delivery("deleg_claim", "consumer-b")
+    assert ad.renew_completion_delivery("deleg_claim", "consumer-b")
     assert ad.complete_completion_delivery("deleg_claim", "consumer-b")
     assert not ad.claim_completion_delivery("deleg_claim", "consumer-c")
     assert ad.get_durable_delegation("deleg_claim")["delivery_state"] == "delivered"
+
+
+def test_pending_handoffs_are_read_from_explicit_profile_home(tmp_path):
+    alpha_home = tmp_path / "alpha"
+    beta_home = tmp_path / "beta"
+    now = time.time()
+
+    with ad._DB_LOCK, ad._connect(alpha_home) as conn:
+        conn.execute(
+            """INSERT INTO async_delegations
+               (delegation_id, origin_session, state, dispatched_at, updated_at,
+                event_json, result_json, delivery_state, task_json)
+               VALUES (?, ?, 'completed', ?, ?, ?, ?, 'pending', ?)""",
+            (
+                "deleg_alpha",
+                "owner-alpha",
+                now,
+                now,
+                json.dumps(
+                    {
+                        "delegation_id": "deleg_alpha",
+                        "profile": "alpha",
+                        "subagent_ids": ["child-alpha"],
+                    }
+                ),
+                json.dumps({"status": "completed", "summary": "alpha"}),
+                json.dumps({"profile": "alpha", "subagent_ids": ["child-alpha"]}),
+            ),
+        )
+
+    assert [
+        row["delegation_id"] for row in ad.list_pending_async_delivery_handoffs(alpha_home)
+    ] == ["deleg_alpha"]
+    assert ad.list_pending_async_delivery_handoffs(beta_home) == []
 
 
 # ---------------------------------------------------------------------------

@@ -195,6 +195,8 @@ class ComputeHost:
             self._handle_interrupt(frame)
         elif kind == "delegation.status":
             self._handle_delegation_status(frame)
+        elif kind == "delegation.pause":
+            self._handle_delegation_pause(frame)
         elif kind == "subagent.interrupt":
             self._handle_subagent_interrupt(frame)
         elif kind == "reload_mcp":
@@ -291,7 +293,7 @@ class ComputeHost:
         request_id = frame.get("request_id")
         profile = frame.get("profile")
         try:
-            from tools.delegate_tool import list_active_subagents
+            from tools.delegate_tool import is_spawn_paused, list_active_subagents
 
             active = list_active_subagents(profile if isinstance(profile, str) else None)
             self.emit(
@@ -299,12 +301,35 @@ class ComputeHost:
                     "type": "delegation.status.ack",
                     "request_id": request_id,
                     "active": active,
+                    "paused": is_spawn_paused(),
                 }
             )
         except Exception as exc:
             self.emit(
                 {
                     "type": "delegation.status.error",
+                    "request_id": request_id,
+                    "message": str(exc),
+                }
+            )
+
+    def _handle_delegation_pause(self, frame: dict[str, Any]) -> None:
+        request_id = frame.get("request_id")
+        paused = bool(frame.get("paused", True))
+        try:
+            from tools.delegate_tool import set_spawn_paused
+
+            self.emit(
+                {
+                    "type": "delegation.pause.ack",
+                    "request_id": request_id,
+                    "paused": set_spawn_paused(paused),
+                }
+            )
+        except Exception as exc:
+            self.emit(
+                {
+                    "type": "delegation.pause.error",
                     "request_id": request_id,
                     "message": str(exc),
                 }

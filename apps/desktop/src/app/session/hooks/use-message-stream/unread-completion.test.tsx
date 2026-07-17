@@ -28,6 +28,7 @@ let hidden = false
 let currentView: AppView = 'chat'
 let handleEvent: ((event: RpcEvent) => void) | null = null
 let activeSurface: TranscriptSurfaceRegistration | null = null
+const hydrateFromStoredSession = vi.fn(async () => undefined)
 
 function storedIdForRuntime(sessionId: string): null | string {
   if (sessionId === ACTIVE_RUNTIME_ID) {
@@ -49,7 +50,7 @@ function Harness() {
   const stream = useMessageStream({
     activeSessionIdRef,
     currentView,
-    hydrateFromStoredSession: vi.fn(async () => undefined),
+    hydrateFromStoredSession,
     queryClient: queryClientRef.current,
     refreshHermesConfig: vi.fn(async () => undefined),
     refreshSessions: vi.fn(async () => undefined),
@@ -77,8 +78,8 @@ async function mountStream() {
   await waitFor(() => expect(handleEvent).not.toBeNull())
 }
 
-function complete(sessionId: string) {
-  act(() => handleEvent!({ payload: { text: 'done' }, session_id: sessionId, type: 'message.complete' }))
+function complete(sessionId: string, profile?: string) {
+  act(() => handleEvent!({ payload: { text: 'done' }, profile, session_id: sessionId, type: 'message.complete' }))
 }
 
 function commitVisibleSurface(surface: TranscriptSurfaceRegistration, storedSessionId: string) {
@@ -103,6 +104,7 @@ describe('useMessageStream unread completion tracking', () => {
     handleEvent = null
     $sessions.set([])
     clearAllSessionUnread()
+    hydrateFromStoredSession.mockClear()
     activeSurface = registerTranscriptSurface(ACTIVE_STORED_ID, true)
     vi.spyOn(globalThis.document, 'hasFocus').mockImplementation(() => focused)
     vi.spyOn(globalThis.document, 'hidden', 'get').mockImplementation(() => hidden)
@@ -132,6 +134,14 @@ describe('useMessageStream unread completion tracking', () => {
     complete(BACKGROUND_RUNTIME_ID)
 
     expect($unreadFinishedSessionIds.get()).toEqual([BACKGROUND_STORED_ID])
+  })
+
+  it('hydrates a same-id completion from its exact source profile', async () => {
+    await mountStream()
+
+    complete(BACKGROUND_RUNTIME_ID, 'beta')
+
+    expect(hydrateFromStoredSession).toHaveBeenCalledWith(3, BACKGROUND_STORED_ID, BACKGROUND_RUNTIME_ID, 'beta')
   })
 
   it('acknowledges a completion rendered in a visible session tile', async () => {

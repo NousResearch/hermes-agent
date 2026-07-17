@@ -168,6 +168,46 @@ def _pdb_section(
     )
 
 
+def _worldmonitor_free_section(*, focus: str = "japan_security") -> dict[str, Any]:
+    try:
+        plugin_loader.load_plugin_modules(
+            "worldmonitor-osint",
+            ("free_web",),
+        )
+        free_web = plugin_loader.get_module(
+            "worldmonitor-osint",
+            "free_web",
+            stems_chain=("free_web",),
+        )
+        snap = free_web.free_snapshot(focus=focus, news_limit=16, include_shell=True)
+        headlines = snap.get("news_headlines") or []
+        lines = ["## World Monitor Free（ウェブ JSON）", ""]
+        if not headlines:
+            lines.append("_ヘッドラインなし / Free tier 応答なし_")
+        else:
+            for row in headlines[:12]:
+                title = row.get("title") or row.get("headline") or "?"
+                cat = row.get("category") or ""
+                url = row.get("url") or row.get("link") or ""
+                prefix = f"[{cat}] " if cat else ""
+                lines.append(f"- {prefix}{title}" + (f" — {url}" if url else ""))
+        return {
+            "success": bool(snap.get("success")),
+            "markdown": "\n".join(lines),
+            "headline_count": len(headlines),
+            "tier": "free_web",
+            "errors": snap.get("errors") or [],
+        }
+    except Exception as exc:
+        return {"skipped": True, "reason": str(exc)[:200]}
+
+
+def _web_search_layer_plan(topic: str) -> dict[str, Any]:
+    from .computer_use_playbooks import multilayer_search_plan
+
+    return multilayer_search_plan(topic=topic)
+
+
 def build_integrated_markdown(
     *,
     slot: str,
@@ -175,6 +215,8 @@ def build_integrated_markdown(
     sitdeck: dict[str, Any],
     gov_md: str,
     mhlw: dict[str, Any],
+    wm_free: dict[str, Any] | None = None,
+    multilayer_note: str = "",
 ) -> str:
     label, clock = SLOT_LABELS.get(slot, ("定時", slot))
     generated = datetime.now(timezone.utc).astimezone()
@@ -183,7 +225,8 @@ def build_integrated_markdown(
         "",
         f"- **配信**: {label}（{clock} 想定）",
         f"- **生成**: {generated.isoformat()}",
-        "- **ソース**: SitDeck + World Monitor Free + 官公庁 RSS + 厚労省指定薬物",
+        "- **ソース**: SitDeck + World Monitor Free + 官公庁 RSS + 厚労省 + 多層Web",
+        "- **Computer Use**: WorldMonitor手動UI / SitDeck は playbook 参照可",
         "- **分類**: オープンソース統合（非機密）",
         "",
         "---",
@@ -193,16 +236,22 @@ def build_integrated_markdown(
         "---",
         "",
     ]
+    if wm_free and wm_free.get("markdown"):
+        parts.extend([wm_free["markdown"], "", "---", ""])
     if sitdeck.get("success") and sitdeck.get("digest"):
         parts.extend([sitdeck["digest"], "", "---", ""])
     elif not sitdeck.get("skipped"):
-        parts.extend(["## SitDeck", "", f"_取得失敗: {sitdeck.get('reason') or sitdeck}_", "", "---", ""])
+        parts.extend(
+            ["## SitDeck", "", f"_取得失敗: {sitdeck.get('reason') or sitdeck}_", "", "---", ""]
+        )
     if gov_md:
         parts.extend([gov_md, "", "---", ""])
     if mhlw.get("markdown"):
         parts.extend([mhlw["markdown"], ""])
+    if multilayer_note:
+        parts.extend(["", "---", "", "## 多層収集メモ", "", multilayer_note, ""])
     parts.append(
-        "\n_統合: hermes osint-agent brief — WM Pro MCP 不要 / egov-law MCP は PDB 内参照_"
+        "\n_統合: hermes osint-agent — CU playbook / web_search / Free WM / SitDeck_"
     )
     return "\n".join(parts)
 
@@ -218,6 +267,8 @@ def generate_integrated_brief(
     include_sitdeck: bool = True,
     include_mhlw: bool = True,
     include_gov_feeds: bool = True,
+    include_wm_free: bool = True,
+    include_multilayer_plan: bool = True,
     sitdeck_headless: bool = True,
     save: bool = True,
     cron_mode: bool = False,
@@ -226,9 +277,10 @@ def generate_integrated_brief(
     sitdeck: dict[str, Any] = {"skipped": True}
     gov_md, gov_raw = ("", {"skipped": True})
     mhlw: dict[str, Any] = {"skipped": True}
+    wm_free: dict[str, Any] = {"skipped": True}
 
     futures: dict[str, Any] = {}
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=5) as pool:
         futures["pdb"] = pool.submit(
             _pdb_section,
             slot=slot,
@@ -244,6 +296,8 @@ def generate_integrated_brief(
             futures["gov"] = pool.submit(_gov_feeds_markdown, hours=24)
         if include_mhlw:
             futures["mhlw"] = pool.submit(_mhlw_section, cron_mode=cron_mode)
+        if include_wm_free:
+            futures["wm_free"] = pool.submit(_worldmonitor_free_section, focus="japan_security")
 
         pdb = futures["pdb"].result()
         if "sitdeck" in futures:
@@ -252,6 +306,25 @@ def generate_integrated_brief(
             gov_md, gov_raw = futures["gov"].result()
         if "mhlw" in futures:
             mhlw = futures["mhlw"].result()
+        if "wm_free" in futures:
+            wm_free = futures["wm_free"].result()
+
+    multilayer = _web_search_layer_plan(topic) if include_multilayer_plan else {}
+    multilayer_note = ""
+    if multilayer:
+        layers = multilayer.get("layers") or []
+        multilayer_note = "\n".join(
+            f"- **{layer.get('id')}**: {layer.get('tool')} — {layer.get('why')}"
+            for layer in layers
+        )
+        queries = []
+        for layer in layers:
+            if layer.get("id") == "L5_web_search":
+                queries = layer.get("queries") or []
+        if queries:
+            multilayer_note += "\n\n**web_search queries**:\n" + "\n".join(
+                f"  - `{q}`" for q in queries
+            )
 
     markdown = build_integrated_markdown(
         slot=slot,
@@ -259,6 +332,8 @@ def generate_integrated_brief(
         sitdeck=sitdeck,
         gov_md=gov_md,
         mhlw=mhlw,
+        wm_free=wm_free if not wm_free.get("skipped") else None,
+        multilayer_note=multilayer_note,
     )
 
     payload: dict[str, Any] = {
@@ -270,9 +345,11 @@ def generate_integrated_brief(
         "wm_tier": wm_tier,
         "sections": {
             "pdb": {"success": pdb.get("success")},
+            "wm_free": wm_free,
             "sitdeck": sitdeck,
             "gov_feeds": gov_raw,
             "mhlw": {k: v for k, v in mhlw.items() if k != "raw"},
+            "multilayer_plan": multilayer,
         },
         "markdown": markdown,
         "pdb": pdb,

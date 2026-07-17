@@ -23,6 +23,7 @@ TOOLSETS = frozenset(
         "shinka_osint",
         "web",
         "search",
+        "computer_use",
     }
 )
 
@@ -44,8 +45,10 @@ def enable_osint_agent_stack(
         "toolsets": {},
         "worldmonitor_mcp": {},
         "next_steps": [
+            "hermes computer-use doctor",
             "hermes osint-agent status",
             "hermes osint-agent brief --slot morning",
+            "Ask agent: osint_agent_computer_use_plan then computer_use on WM/SitDeck",
             "hermes osint-agent cron install --deliver telegram,discord",
         ],
     }

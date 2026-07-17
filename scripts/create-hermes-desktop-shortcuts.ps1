@@ -246,6 +246,42 @@ function New-HermesPowerShellScriptShortcut {
         -IconLocation "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe,0"
 }
 
+function Resolve-PackagedHermesDesktop {
+    param([string]$RepoRoot)
+
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\apps\desktop\release\win-unpacked\Hermes.exe"),
+        (Join-Path $RepoRoot "apps\desktop\release\win-unpacked\Hermes.exe")
+    )
+    foreach ($exe in $candidates) {
+        if (Test-Path -LiteralPath $exe) {
+            return $exe
+        }
+    }
+    return $null
+}
+
+function Resolve-HermesDesktopIcon {
+    param(
+        [string]$RepoRoot,
+        [string]$HermesExe
+    )
+
+    $iconCandidates = @(
+        (Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\apps\desktop\assets\icon.ico"),
+        (Join-Path $RepoRoot "apps\desktop\assets\icon.ico")
+    )
+    foreach ($ico in $iconCandidates) {
+        if (Test-Path -LiteralPath $ico) {
+            return "$ico,0"
+        }
+    }
+    if ($HermesExe -and (Test-Path -LiteralPath $HermesExe)) {
+        return "$HermesExe,0"
+    }
+    return "$env:SystemRoot\System32\shell32.dll,0"
+}
+
 function New-HermesDesktopShortcut {
     param(
         [string]$LinkPath,
@@ -254,6 +290,22 @@ function New-HermesDesktopShortcut {
         [string]$StartScript
     )
 
+    # Prefer packaged Hermes.exe (.lnk -> exe + Hermes icon), not a PowerShell/.ps1 wrapper.
+    $hermesExe = Resolve-PackagedHermesDesktop -RepoRoot $RepoRoot
+    if ($hermesExe) {
+        $workDir = Split-Path -Parent $hermesExe
+        $icon = Resolve-HermesDesktopIcon -RepoRoot $RepoRoot -HermesExe $hermesExe
+        return New-HermesShortcut `
+            -LinkPath $LinkPath `
+            -TargetPath $hermesExe `
+            -Arguments "" `
+            -WorkingDirectory $workDir `
+            -Description "Hermes Desktop (packaged Hermes.exe; HERMES_DESKTOP_* set by Electron/main)" `
+            -IconLocation $icon `
+            -WindowStyle 1
+    }
+
+    # Fallback: source launch via start-hermes-desktop.ps1 when packaged exe is missing.
     $hermesIcon = Join-Path $RepoRoot ".venv\Scripts\hermes.exe"
     $icon = if (Test-Path -LiteralPath $hermesIcon) {
         "$hermesIcon,0"

@@ -11,6 +11,10 @@ from datetime import datetime
 from pathlib import Path
 
 REPO_ROOT = Path(os.environ.get("HERMES_REPO_ROOT") or r"C:\Users\downl\Documents\New project\hermes-agent")
+# The script is launched from .hermes\scripts; expose the repository root so
+# core.py can import Hermes modules such as hermes_constants.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 CORE_PATH = REPO_ROOT / "plugins" / "lm-twitterer" / "core.py"
 
 POST_TEXTS = [

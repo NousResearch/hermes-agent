@@ -1,4 +1,4 @@
-"""Unified OSINT agent — SitDeck + WM Free + scrapling + PDB cron."""
+"""Unified OSINT agent — SitDeck + WM Free + scrapling + Computer Use + web."""
 
 from __future__ import annotations
 
@@ -8,6 +8,18 @@ from .cli import osint_agent_command, register_cli
 _TOOLS = (
     ("osint_agent_status", core.STATUS_SCHEMA, core.handle_status, "🛰️"),
     ("osint_agent_brief", core.BRIEF_SCHEMA, core.handle_brief, "📡"),
+    (
+        "osint_agent_computer_use_plan",
+        core.CU_PLAN_SCHEMA,
+        core.handle_computer_use_plan,
+        "🖱️",
+    ),
+    (
+        "osint_agent_multilayer_collect",
+        core.MULTILAYER_SCHEMA,
+        core.handle_multilayer_collect,
+        "🕸️",
+    ),
 )
 
 
@@ -25,16 +37,16 @@ def register(ctx) -> None:
     ctx.register_command(
         "osint-agent",
         handler=core.handle_slash,
-        description="Unified OSINT brief (SitDeck + WM Free + gov RSS + MHLW).",
-        args_hint="[status|brief]",
+        description="Unified OSINT (SitDeck + WM + CU + web multilayer).",
+        args_hint="[status|brief|cu|multilayer]",
     )
     ctx.register_cli_command(
         name="osint-agent",
-        help="Unified OSINT agent briefs and cron",
+        help="Unified OSINT agent briefs, Computer Use playbooks, cron",
         setup_fn=register_cli,
         handler_fn=osint_agent_command,
         description=(
-            "Integrate SitDeck browser crawl, World Monitor Free PDB, "
-            "scrapling-feeds government RSS, and MHLW monitor."
+            "Integrate SitDeck, World Monitor Free, Computer Use playbooks, "
+            "multilayer web_search, government RSS, and MHLW monitor."
         ),
     )

@@ -270,7 +270,9 @@ def _resolve_inference_base_url(
         from agent.auxiliary_client import _runtime_main_value
 
         runtime = str(_runtime_main_value("base_url") or "").strip()
-        if runtime:
+        runtime_provider = str(_runtime_main_value("provider") or "").strip().lower()
+        requested_provider = str(provider or "").strip().lower()
+        if runtime and (not requested_provider or requested_provider == runtime_provider):
             return runtime
     except Exception:
         pass

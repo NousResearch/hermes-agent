@@ -123,8 +123,13 @@ async def test_prepare_image_routing_falls_back_to_text_for_text_only_session_ov
     monkeypatch.setattr("agent.image_routing._lookup_supports_vision", fake_supports)
 
     async def fake_enrich(user_text, image_paths):
+        from agent import auxiliary_client as aux
+
         assert user_text == "look"
         assert image_paths == ["/tmp/cashback.png"]
+        runtime = aux._normalize_main_runtime(None)
+        assert runtime["provider"] == "xiaomi"
+        assert runtime["model"] == "mimo-v2.5-pro"
         return "[vision summary]\n\nlook"
 
     monkeypatch.setattr(runner, "_enrich_message_with_vision", fake_enrich)

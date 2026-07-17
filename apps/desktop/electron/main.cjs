@@ -7587,7 +7587,7 @@ app.whenReady().then(() => {
 // reconnect; let everything else propagate normally.
 if (!process._hermesNetworkSuspendGuardInstalled) {
   process._hermesNetworkSuspendGuardInstalled = true
-  process.on('uncaughtException', error => {
+  const suspendGuardListener = error => {
     if (isNetworkSuspendError(error)) {
       rememberLog(
         `[net] suppressed uncaught network-suspend exception: ${error && (error.message || String(error))}`
@@ -7600,12 +7600,15 @@ if (!process._hermesNetworkSuspendGuardInstalled) {
       return
     }
     // Not a network-suspend case: re-throw so the regular crash reporter
-    // stack still fires. Without this we'd silently swallow unrelated bugs.
-    // Queue the original error onto next tick so we don't recurse.
+    // stack still fires. Detach this listener before re-throwing so the
+    // re-throw does NOT recurse back into us (which would loop forever
+    // for any non-suspend error that slipped past).
+    process.removeListener('uncaughtException', suspendGuardListener)
     setImmediate(() => {
       throw error
     })
-  })
+  }
+  process.on('uncaughtException', suspendGuardListener)
 }
 
 // Seed Chromium's spellchecker with the system locale (falling back to en-US).

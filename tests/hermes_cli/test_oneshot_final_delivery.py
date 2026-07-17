@@ -32,6 +32,67 @@ class RecordingStdout(io.StringIO):
         return super().flush()
 
 
+def _cleanup_real_oneshot_fixture(state: dict) -> None:
+    """Best-effort teardown for every real resource seeded by integration tests."""
+
+    def attempt(callback):
+        try:
+            callback()
+        except BaseException:
+            pass
+
+    resources = state.get("resources")
+    if resources is not None:
+        attempt(resources.close)
+
+    agent = state.get("agent")
+    if agent is not None:
+        attempt(agent.close)
+
+    task_id = state.get("task_id")
+    terminal_tool = state.get("terminal_tool")
+    if terminal_tool is not None and task_id:
+        def cleanup_terminal():
+            try:
+                terminal_tool.cleanup_vm(task_id)
+            finally:
+                terminal_tool._active_environments.pop(task_id, None)
+                terminal_tool._last_activity.pop(task_id, None)
+                terminal_tool._creation_locks.pop(task_id, None)
+
+        attempt(cleanup_terminal)
+
+    browser_tool = state.get("browser_tool")
+    if browser_tool is not None and task_id:
+        def cleanup_browser():
+            try:
+                browser_tool.cleanup_browser(task_id)
+            finally:
+                browser_tool._active_sessions.pop(task_id, None)
+                browser_tool._session_last_activity.pop(task_id, None)
+                browser_tool._last_active_session_key.pop(task_id, None)
+
+        attempt(cleanup_browser)
+
+    db = state.get("db")
+    if db is not None:
+        attempt(db.close)
+
+    process = state.get("process")
+    if process is not None:
+        def reap_process():
+            if process.poll() is not None:
+                return
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+
+        attempt(reap_process)
+
+
 def test_delivery_orders_write_flush_and_callback_and_is_idempotent():
     events: list[tuple[str, object]] = []
     delivery = oneshot._FinalDelivery(
@@ -1062,6 +1123,73 @@ def test_cleanup_terminal_chatter_stays_inside_redirected_streams(monkeypatch):
     assert stderr.getvalue() == ""
 
 
+def test_real_fixture_cleanup_survives_failures_and_force_kills_stuck_process():
+    events: list[str] = []
+
+    class StuckProcess:
+        def __init__(self):
+            self.wait_calls = 0
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            events.append("terminate")
+
+        def wait(self, timeout):
+            self.wait_calls += 1
+            events.append(("wait", timeout))
+            if self.wait_calls == 1:
+                raise subprocess.TimeoutExpired("fixture", timeout)
+            return -9
+
+        def kill(self):
+            events.append("kill")
+
+    task_id = str(uuid.uuid4())
+    terminal = types.SimpleNamespace(
+        _active_environments={task_id: object()},
+        _last_activity={task_id: 1.0},
+        _creation_locks={task_id: object()},
+        cleanup_vm=Mock(side_effect=RuntimeError("early terminal failure")),
+    )
+    browser = types.SimpleNamespace(
+        _active_sessions={task_id: object()},
+        _session_last_activity={task_id: 1.0},
+        _last_active_session_key={task_id: task_id},
+        cleanup_browser=Mock(side_effect=RuntimeError("early browser failure")),
+    )
+    resources = types.SimpleNamespace(
+        close=Mock(side_effect=RuntimeError("primary cleanup failure"))
+    )
+    agent = types.SimpleNamespace(close=Mock(side_effect=lambda: events.append("agent")))
+    db = types.SimpleNamespace(close=Mock(side_effect=lambda: events.append("db")))
+    process = StuckProcess()
+
+    _cleanup_real_oneshot_fixture(
+        {
+            "task_id": task_id,
+            "resources": resources,
+            "agent": agent,
+            "db": db,
+            "process": process,
+            "terminal_tool": terminal,
+            "browser_tool": browser,
+        }
+    )
+
+    resources.close.assert_called_once_with()
+    agent.close.assert_called_once_with()
+    db.close.assert_called_once_with()
+    assert task_id not in terminal._active_environments
+    assert task_id not in terminal._last_activity
+    assert task_id not in terminal._creation_locks
+    assert task_id not in browser._active_sessions
+    assert task_id not in browser._session_last_activity
+    assert task_id not in browser._last_active_session_key
+    assert events == ["agent", "db", "terminate", ("wait", 5), "kill", ("wait", 5)]
+
+
 def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
     tmp_path: Path,
     monkeypatch,
@@ -1075,7 +1203,10 @@ def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
     from tools.process_registry import ProcessRegistry, ProcessSession
 
     task_id = str(uuid.uuid4())
+    cleanup_state = {"task_id": task_id}
+    request.addfinalizer(lambda: _cleanup_real_oneshot_fixture(cleanup_state))
     db = SessionDB(db_path=tmp_path / "state.db")
+    cleanup_state["db"] = db
     parent = "oneshot-parent"
     db.create_session(parent, source="cli", model="test/model")
     end_calls: list[tuple[str, str]] = []
@@ -1098,6 +1229,7 @@ def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
             skip_context_files=True,
             skip_memory=True,
         )
+    cleanup_state["agent"] = agent
     compressor = MagicMock()
     compressor.compress.return_value = [
         {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
@@ -1117,10 +1249,21 @@ def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
         {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"}
         for i in range(20)
     ]
+    compression_task_ids: list[str] = []
+    monkeypatch.setattr(
+        "tools.file_tools.reset_file_dedup",
+        lambda compression_task_id: compression_task_ids.append(compression_task_id),
+    )
 
-    agent._compress_context(messages, "sys", approx_tokens=120_000)
+    agent._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+        task_id=task_id,
+    )
     child = agent.session_id
     assert child != parent
+    assert compression_task_ids == [task_id]
 
     registry = ProcessRegistry()
     monkeypatch.setattr(process_registry_module, "process_registry", registry)
@@ -1129,13 +1272,7 @@ def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-
-    def reap_fixture_process():
-        if process.poll() is None:
-            process.terminate()
-            process.wait(timeout=5)
-
-    request.addfinalizer(reap_fixture_process)
+    cleanup_state["process"] = process
     process_session = ProcessSession(
         id=f"proc_{uuid.uuid4().hex[:12]}",
         command="python sleep fixture",
@@ -1159,17 +1296,20 @@ def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
     monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: FixtureEnvironment()})
     monkeypatch.setattr(terminal_tool, "_last_activity", {task_id: time.time()})
     monkeypatch.setattr(terminal_tool, "_creation_locks", {task_id: threading.Lock()})
+    cleanup_state["terminal_tool"] = terminal_tool
 
+    browser_session_name = f"oneshot-{task_id}"
     monkeypatch.setattr(
         browser_tool,
         "_active_sessions",
-        {task_id: {"session_name": "oneshot-fixture", "bb_session_id": None}},
+        {task_id: {"session_name": browser_session_name, "bb_session_id": None}},
     )
     monkeypatch.setattr(browser_tool, "_session_last_activity", {task_id: time.time()})
     monkeypatch.setattr(browser_tool, "_last_active_session_key", {task_id: task_id})
     monkeypatch.setattr(browser_tool, "_run_browser_command", lambda *_a, **_kw: {"success": True})
     monkeypatch.setattr(browser_tool, "_maybe_stop_recording", lambda *_a, **_kw: None)
     monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    cleanup_state["browser_tool"] = browser_tool
 
     manager = types.SimpleNamespace(_hooks={})
     hook_task_ids: list[str] = []
@@ -1189,6 +1329,7 @@ def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
     resources.agent = agent
     resources.session_db = db
     resources.task_id = task_id
+    cleanup_state["resources"] = resources
     monkeypatch.setattr(resources, "_arm_watchdog_once", Mock())
     delivery = oneshot._FinalDelivery(io.StringIO(), resources.mark_final_delivered)
 
@@ -1210,7 +1351,7 @@ def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
         )
     usage_path = tmp_path / "usage.json"
     oneshot._write_usage_file(str(usage_path), result)
-    resources.close()
+    _cleanup_real_oneshot_fixture(cleanup_state)
 
     reopened = SessionDB(db_path=tmp_path / "state.db")
     parent_row = reopened.get_session(parent)

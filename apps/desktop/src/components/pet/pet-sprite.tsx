@@ -92,6 +92,8 @@ export function roamWalkRow(dir: -1 | 0 | 1, stateRows?: string[]): { row?: stri
 
 interface PetSpriteProps {
   info: PetInfo
+  /** Keep animating in a deliberately non-activating visible window, such as the pop-out pet overlay. */
+  pauseWhenUnfocused?: boolean
   /** On-screen scale multiplier applied on top of the pet's native scale. */
   zoom?: number
   /**
@@ -115,7 +117,7 @@ interface PetSpriteProps {
  * with `memo`, this component effectively never re-renders after mount until
  * the pet itself changes.
  */
-function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSpriteProps) {
+function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUnfocused = true }: PetSpriteProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const stateRef = useRef<PetState>($petState.get())
   const overrideRef = useRef<PetState | undefined>(stateOverride)
@@ -337,7 +339,7 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     })
 
     image.addEventListener('load', kickAnimation)
-    pauseController = createRendererLoopPauseController(handleVisibilityChange)
+    pauseController = createRendererLoopPauseController(handleVisibilityChange, { pauseWhenUnfocused })
     scheduleFrame()
 
     return () => {
@@ -348,7 +350,7 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
       pauseController?.dispose()
       unsubState()
     }
-  }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, drawW, drawH, rows])
+  }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, drawW, drawH, rows, pauseWhenUnfocused])
 
   return (
     <canvas

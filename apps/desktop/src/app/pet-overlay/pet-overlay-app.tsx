@@ -430,7 +430,7 @@ export function PetOverlayApp() {
           <PetBubble />
         </div>
         <div style={{ lineHeight: 0, position: 'relative' }}>
-          <PetSprite info={info} />
+          <PetSprite info={info} pauseWhenUnfocused={false} />
 
           {/* Hearts on the popped-out pet — identical to in-window. */}
           <PetHeartField

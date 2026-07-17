@@ -182,8 +182,8 @@ test('registry trims the session id before keying', () => {
 
 test('chatWindowWebPreferences disables background throttling so streaming paints while blurred', () => {
   // Regression: secondary session windows used to omit this flag, so a streamed
-  // answer stalled until the window regained focus (Chromium pauses the
-  // requestAnimationFrame-gated transcript flush for backgrounded windows).
+  // answer stalled until the window regained focus (Chromium clamps the
+  // transcript flush timer for backgrounded windows).
   const prefs = chatWindowWebPreferences('/tmp/preload.cjs')
 
   assert.equal(prefs.backgroundThrottling, false)

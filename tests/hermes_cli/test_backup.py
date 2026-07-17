@@ -1369,6 +1369,70 @@ class TestSafeCopyDb:
         conn.close()
         assert rows == [("wal-test",)]
 
+    def test_ro_open_failure_falls_back_to_rw_backup(self, tmp_path, monkeypatch):
+        """A failed read-only open must retry via a read-write backup(),
+        not degrade straight to raw copy.
+
+        Read-only clients cannot open a WAL database whose -shm file is
+        absent or needs recovery ("unable to open database file"). The
+        read-write retry still snapshots consistently — including rows
+        that only live in the -wal, which a raw file copy would lose.
+        """
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.backup import _safe_copy_db
+
+        src = tmp_path / "wal.db"
+        dst = tmp_path / "copy.db"
+
+        conn = sqlite3.connect(str(src))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE t (x INTEGER)")
+        conn.execute("INSERT INTO t VALUES (1), (2)")
+        conn.commit()
+        # Keep the connection open so the rows live in the -wal file only.
+
+        real_connect = sqlite3.connect
+
+        def fail_ro_connect(database, *args, **kwargs):
+            if isinstance(database, str) and database.startswith("file:"):
+                raise sqlite3.OperationalError("unable to open database file")
+            return real_connect(database, *args, **kwargs)
+
+        monkeypatch.setattr(backup_mod.sqlite3, "connect", fail_ro_connect)
+
+        def no_raw_copy(*args, **kwargs):
+            raise AssertionError("should not degrade to raw copy")
+
+        monkeypatch.setattr(backup_mod.shutil, "copy2", no_raw_copy)
+
+        assert _safe_copy_db(src, dst) is True
+        conn.close()
+
+        copy = real_connect(str(dst))
+        assert copy.execute("SELECT count(*) FROM t").fetchone() == (2,)
+        copy.close()
+
+    def test_raw_copy_when_backup_api_fails_entirely(self, tmp_path, monkeypatch):
+        """When both backup() attempts fail, the raw-copy fallback still runs."""
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.backup import _safe_copy_db
+
+        src = tmp_path / "test.db"
+        dst = tmp_path / "copy.db"
+
+        conn = sqlite3.connect(str(src))
+        conn.execute("CREATE TABLE t (x INTEGER)")
+        conn.commit()
+        conn.close()
+
+        def always_fail(*args, **kwargs):
+            raise sqlite3.OperationalError("unable to open database file")
+
+        monkeypatch.setattr(backup_mod.sqlite3, "connect", always_fail)
+
+        assert _safe_copy_db(src, dst) is True
+        assert dst.read_bytes() == src.read_bytes()
+
 
 # ---------------------------------------------------------------------------
 # Quick state snapshot tests

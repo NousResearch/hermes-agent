@@ -5049,6 +5049,47 @@ def test_complete_scratch_task_skips_diff_gate(kanban_home):
         assert kb.complete_task(conn, tid, result="notes written") is True
 
 
+def test_cli_complete_empty_diff_prints_actionable_error(kanban_home, tmp_path, capsys):
+    """``hermes kanban complete`` must surface the empty-diff rejection as
+    an actionable stderr message (still in-flight + both recovery paths),
+    not a raw traceback — parity with the kanban_complete tool handler."""
+    import argparse
+
+    from hermes_cli.kanban import _cmd_complete
+
+    with kb.connect() as conn:
+        tid, _ = _worktree_task(conn, tmp_path)
+
+    rc = _cmd_complete(argparse.Namespace(task_ids=[tid], result=None))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "no committed or uncommitted changes" in err
+    assert "still in-flight" in err
+    assert "no_diff_expected" in err
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+
+
+def test_cli_complete_empty_diff_continues_with_remaining_ids(kanban_home, tmp_path, capsys):
+    """A blocked worktree completion must not abort a bulk complete — the
+    remaining ids in the list still get processed."""
+    import argparse
+
+    from hermes_cli.kanban import _cmd_complete
+
+    with kb.connect() as conn:
+        blocked, _ = _worktree_task(conn, tmp_path)
+        ok_tid = kb.create_task(conn, title="scratch work")
+        kb.claim_task(conn, ok_tid)
+
+    rc = _cmd_complete(argparse.Namespace(task_ids=[blocked, ok_tid], result=None))
+    assert rc == 1
+    assert f"Completed {ok_tid}" in capsys.readouterr().out
+    with kb.connect() as conn:
+        assert kb.get_task(conn, blocked).status == "running"
+        assert kb.get_task(conn, ok_tid).status == "done"
+
+
 def test_worktree_has_changes_tristate(tmp_path):
     repo = tmp_path / "repo"
     _init_git_repo(repo)

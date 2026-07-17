@@ -150,6 +150,10 @@ def create_swarm(
             "kind": "kanban_swarm_v1",
             "goal": goal,
             "worker_count": len(worker_specs),
+            # The planning root is completed by design without producing a
+            # diff; exempt it from the worktree empty-diff completion gate
+            # so an explicit clean worktree root can't abort graph creation.
+            "no_diff_expected": True,
         },
     )
 

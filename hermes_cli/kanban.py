@@ -1993,13 +1993,32 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            if not kb.complete_task(
-                conn, tid,
-                result=args.result,
-                summary=summary,
-                metadata=metadata,
-                expected_run_id=_worker_run_id_for(tid),
-            ):
+            try:
+                ok = kb.complete_task(
+                    conn, tid,
+                    result=args.result,
+                    summary=summary,
+                    metadata=metadata,
+                    expected_run_id=_worker_run_id_for(tid),
+                )
+            except kb.EmptyDiffCompletionError as exc:
+                # Deterministic empty-diff rejection — audit event already
+                # landed, task state untouched, retry is safe. Mirror the
+                # kanban_complete tool handler's recovery message and keep
+                # going so a bulk complete still processes the other ids.
+                failed.append(tid)
+                print(
+                    f"cannot complete {tid}: worktree "
+                    f"{exc.workspace_path or '<unknown>'} has no committed or "
+                    "uncommitted changes vs its base branch. The task is "
+                    "still in-flight (no state change). Commit the work in "
+                    "the worktree and retry, or if this task legitimately "
+                    "produced no code changes, retry with "
+                    "--metadata '{\"no_diff_expected\": true}'.",
+                    file=sys.stderr,
+                )
+                continue
+            if not ok:
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
             else:

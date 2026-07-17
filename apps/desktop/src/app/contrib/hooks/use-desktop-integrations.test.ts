@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { shouldRestoreRememberedLocation } from './use-desktop-integrations'
+import { shouldPersistRememberedLocation, shouldRestoreRememberedLocation } from './use-desktop-integrations'
 
 describe('shouldRestoreRememberedLocation', () => {
   it('does not restore shared renderer history into a new-session window', () => {
@@ -13,5 +13,15 @@ describe('shouldRestoreRememberedLocation', () => {
 
   it('never replaces an explicit routed session pop-out', () => {
     expect(shouldRestoreRememberedLocation('/stored-session', false)).toBe(false)
+  })
+})
+
+describe('shouldPersistRememberedLocation', () => {
+  it('does not let a new-session window overwrite shared remembered history', () => {
+    expect(shouldPersistRememberedLocation(true)).toBe(false)
+  })
+
+  it('keeps the primary window updating remembered history', () => {
+    expect(shouldPersistRememberedLocation(false)).toBe(true)
   })
 })

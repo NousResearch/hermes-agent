@@ -29,6 +29,10 @@ export function shouldRestoreRememberedLocation(
   return locationPathname === NEW_CHAT_ROUTE && !newSessionWindow
 }
 
+export function shouldPersistRememberedLocation(newSessionWindow: boolean): boolean {
+  return !newSessionWindow
+}
+
 /**
  * All the Electron-main / OS / cross-window integrations the shell listens for:
  * update polling, the ⌘W close shortcut, deep links, native-notification
@@ -67,8 +71,13 @@ export function useDesktopIntegrations({
   // Remember the open chat (session id for notifications/resume) AND the last
   // non-overlay route (a page like /skills, or a session route) so a relaunch
   // lands where you were. Overlays (settings/command-center/…) aren't stored —
-  // you don't want to boot into a modal.
+  // you don't want to boot into a modal. Compact `new=1` windows stay isolated,
+  // so they neither restore nor overwrite the shared remembered history.
   useEffect(() => {
+    if (!shouldPersistRememberedLocation(isNewSessionWindow())) {
+      return
+    }
+
     if (routedSessionId) {
       setRememberedSessionId(routedSessionId)
     }
@@ -143,7 +152,7 @@ export function useDesktopIntegrations({
 
       const slots = Object.entries(payload.params || {})
         .map(([k, v]) => {
-          const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+          const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\"')}"` : v
 
           return `${k}=${sval}`
         })

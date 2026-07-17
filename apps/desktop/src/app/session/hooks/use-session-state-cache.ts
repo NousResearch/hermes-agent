@@ -11,7 +11,7 @@ import {
   $messages,
   noteSessionActivity,
   onSessionWatchdogClear,
-  setActiveSessionStoredId,
+  setActiveSessionStoredIdRotation,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
@@ -117,14 +117,17 @@ export function useSessionStateCache({
 
         if (previousStoredSessionId && previousStoredSessionId !== storedSessionId) {
           setSessionWorking(previousStoredSessionId, false)
+          runtimeIdByStoredSessionIdRef.current.delete(previousStoredSessionId)
 
           // Auto-compression rotated the stored id on the active session. Signal
-          // the route-following effect in use-session-actions so the URL + selection
-          // re-anchor to the continuation id — otherwise the next send hits a stale
-          // stored→runtime mapping (getRuntimeIdForStoredSession returns null) and
-          // triggers a full thread reload via resumeStoredSession.
-          if (sessionId === $activeSessionId.get()) {
-            setActiveSessionStoredId(storedSessionId)
+          // the route-following effect with enough provenance to reject the
+          // event if the user navigated elsewhere before React handles it.
+          if (storedSessionId && sessionId === $activeSessionId.get()) {
+            setActiveSessionStoredIdRotation({
+              nextStoredSessionId: storedSessionId,
+              previousStoredSessionId,
+              runtimeSessionId: sessionId
+            })
           }
         }
       }

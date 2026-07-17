@@ -5917,14 +5917,27 @@ class AIAgent:
         if not isinstance(tool_calls, list):
             return api_msg
         from agent.transports.chat_completions import _model_consumes_thought_signature
+        needs_thought_sig = _model_consumes_thought_signature(model)
         _STRIP_KEYS = {"call_id", "response_item_id"}
-        if not _model_consumes_thought_signature(model):
+        if not needs_thought_sig:
             _STRIP_KEYS = _STRIP_KEYS | {"extra_content"}
-        api_msg["tool_calls"] = [
-            {k: v for k, v in tc.items() if k not in _STRIP_KEYS}
-            if isinstance(tc, dict) else tc
-            for tc in tool_calls
-        ]
+        sanitized = []
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                sanitized.append(tc)
+                continue
+            new_tc = {k: v for k, v in tc.items() if k not in _STRIP_KEYS}
+            # Gemini 3 thinking models require a thought_signature on every
+            # functionCall part.  Tool calls created by a non-Gemini model
+            # earlier in the same session will lack extra_content — inject a
+            # minimal placeholder so Gemini does not reject the history with
+            # HTTP 400 "Function call is missing a thought_signature".
+            if needs_thought_sig and "extra_content" not in new_tc:
+                new_tc["extra_content"] = {
+                    "google": {"thought_signature": ""}
+                }
+            sanitized.append(new_tc)
+        api_msg["tool_calls"] = sanitized
         return api_msg
 
     @staticmethod

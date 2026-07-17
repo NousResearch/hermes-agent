@@ -8753,6 +8753,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # The auto-reload path (file watcher) calls _reload_mcp directly
             # without this confirmation.
             self._confirm_and_reload_mcp(cmd_original)
+        elif canonical == "mcp":
+            self._handle_mcp_command(cmd_original)
         elif canonical == "reload-skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_skills()
@@ -10736,6 +10738,108 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         with self._busy_command(self._slow_command_status(cmd_original)):
             self._reload_mcp()
+
+    def _handle_mcp_command(self, cmd_original: str) -> None:
+        """Handle /mcp list|enable|disable|load <name>."""
+        parts = cmd_original.strip().split(None, 2)
+        subcmd = parts[1].lower() if len(parts) > 1 else "list"
+        arg = parts[2] if len(parts) > 2 else ""
+
+        from tools.mcp_tool import (
+            _load_mcp_config, _servers, _lock,
+            _is_lazy_server, _is_on_demand_server,
+            _is_server_loaded_in_session, _mark_server_loaded_in_session,
+            _activate_lazy_server, _activate_on_demand_server,
+            _get_connect_strategy, _parse_boolish,
+            _remove_session_loaded_server,
+        )
+
+        if subcmd == "list":
+            servers = _load_mcp_config()
+            if not servers:
+                print("  No MCP servers configured.")
+                return
+
+            print(f"  MCP servers ({len(servers)} configured):")
+            for name, cfg in sorted(servers.items()):
+                enabled = _parse_boolish(cfg.get("enabled", True), default=True)
+                if not enabled:
+                    print(f"    {name}: disabled")
+                    continue
+
+                strategy = _get_connect_strategy(cfg)
+                transport = "http" if "url" in cfg else "stdio"
+
+                with _lock:
+                    server = _servers.get(name)
+                    connected = server is not None and server.session is not None
+                    tool_count = len(getattr(server, "_registered_tool_names", [])) if server else 0
+
+                is_lazy = _is_lazy_server(name)
+                is_ondemand = _is_on_demand_server(name)
+                loaded = _is_server_loaded_in_session(name) if is_ondemand else True
+
+                status = "connected" if connected else "lazy" if is_lazy else "on_demand" if is_ondemand else "disconnected"
+                active = "active" if (connected or (is_lazy and not is_ondemand) or loaded) else "inactive"
+                print(f"    {name}: {status} ({transport}, {tool_count} tools, {active})")
+
+        elif subcmd == "enable":
+            if not arg:
+                print("  Usage: /mcp enable <server-name>")
+                return
+            servers = _load_mcp_config()
+            if arg not in servers:
+                print(f"  Unknown MCP server '{arg}'. Use /mcp list to see available servers.")
+                return
+            strategy = _get_connect_strategy(servers[arg])
+            if strategy == "on_demand":
+                if _activate_on_demand_server(arg):
+                    print(f"  ✅ MCP server '{arg}' loaded and activated.")
+                else:
+                    print(f"  ❌ Failed to load MCP server '{arg}'.")
+            elif strategy == "lazy":
+                if _activate_lazy_server(arg):
+                    print(f"  ✅ MCP server '{arg}' activated.")
+                else:
+                    print(f"  ❌ Failed to activate MCP server '{arg}'.")
+            else:
+                print(f"  MCP server '{arg}' is already configured as 'startup' (always connected).")
+
+        elif subcmd == "disable":
+            if not arg:
+                print("  Usage: /mcp disable <server-name>")
+                return
+            # For on_demand servers, mark as not loaded in this session
+            if _is_on_demand_server(arg):
+                _remove_session_loaded_server(arg)
+                print(f"  MCP server '{arg}' disabled for this session.")
+            else:
+                print(f"  MCP server '{arg}' cannot be disabled mid-session. Use /reload-mcp to restart all servers.")
+
+        elif subcmd == "load":
+            if not arg:
+                print("  Usage: /mcp load <server-name>")
+                return
+            servers = _load_mcp_config()
+            if arg not in servers:
+                print(f"  Unknown MCP server '{arg}'. Use /mcp list to see available servers.")
+                return
+            strategy = _get_connect_strategy(servers[arg])
+            if strategy == "on_demand":
+                if _activate_on_demand_server(arg):
+                    print(f"  ✅ MCP server '{arg}' loaded and activated.")
+                else:
+                    print(f"  ❌ Failed to load MCP server '{arg}'.")
+            elif strategy == "lazy":
+                if _activate_lazy_server(arg):
+                    print(f"  ✅ MCP server '{arg}' activated.")
+                else:
+                    print(f"  ❌ Failed to activate MCP server '{arg}'.")
+            else:
+                print(f"  MCP server '{arg}' is already connected (startup strategy).")
+
+        else:
+            print(f"  Unknown subcommand '{subcmd}'. Use: list, enable <name>, disable <name>, load <name>")
 
     def _reload_mcp(self):
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.

@@ -59,8 +59,10 @@ _HERMES_CORE_TOOLS = [
     # off every CLI/messaging/cron schema (narrow waist).
     # Session history search
     "session_search",
-    # Clarifying questions
+    # Clarify — ask the user questions
     "clarify",
+    # MCP meta-tools — always available for server discovery and loading
+    "mcp_list_servers", "mcp_load_server",
     # Code execution + delegation
     "execute_code", "delegate_task",
     # Cronjob management

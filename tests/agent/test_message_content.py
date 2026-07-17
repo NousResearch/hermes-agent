@@ -23,3 +23,14 @@ def test_flatten_message_text_accepts_object_parts():
     ]
 
     assert flatten_message_text(content) == "object text\nlegacy content"
+
+
+def test_strip_think_blocks_accepts_content_part_lists():
+    from agent.agent_runtime_helpers import strip_think_blocks
+
+    content = [
+        {"type": "thinking", "thinking": "internal scratchpad"},
+        {"type": "output_text", "text": "<think>hidden</think>Visible answer"},
+    ]
+
+    assert strip_think_blocks(None, content) == "Visible answer"

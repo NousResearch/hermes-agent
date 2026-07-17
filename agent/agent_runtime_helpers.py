@@ -37,6 +37,7 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_res
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
+from agent.message_content import flatten_message_text
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -639,7 +640,7 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
 
 
 
-def strip_think_blocks(agent, content: str) -> str:
+def strip_think_blocks(agent, content: Any) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
 
     Handles four cases:
@@ -670,6 +671,10 @@ def strip_think_blocks(agent, content: str) -> str:
     after punctuation and carries a ``name="..."`` attribute) so prose
     mentions like "Use <function> in JavaScript" are preserved.
     """
+    if not content:
+        return ""
+    if not isinstance(content, str):
+        content = flatten_message_text(content)
     if not content:
         return ""
     # 1. Closed tag pairs — case-insensitive for all variants so

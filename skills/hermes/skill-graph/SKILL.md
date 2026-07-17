@@ -121,6 +121,16 @@ the graph's ability to find the right match via its scoring pipeline.
 | Video production | `skill_graph_search("video production recording editing")` |
 | Database design | `skill_graph_search("database schema data model naming")` |
 
+## Domain-Specific Routing
+
+For routing extensions specific to the installed skill ecosystem
+(scene activation, troupe entity lookup, pipeline context),
+load the file configured at `skills.config.skill-graph.extensions_file`
+in config.yaml (default: `~/.hermes/personal/skill-graph/routing-extensions.md`).
+
+This file extends the Phase 4 Routing Table and Phase 3 Pre-flight Check
+with domain-specific entries.
+
 ## Slash Commands
 
 The plugin registers ``/skill-graph`` with subcommands:

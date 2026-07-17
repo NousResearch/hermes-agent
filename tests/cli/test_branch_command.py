@@ -117,6 +117,39 @@ class TestBranchCommandCLI:
 
         assert cli_instance._resumed is True
 
+    def test_branch_thread_flag_rejected_on_cli(self, cli_instance, session_db, monkeypatch):
+        """CLI has no threads — refuse --thread instead of titling the branch '--thread'."""
+        from cli import HermesCLI
+
+        printed: list[str] = []
+        monkeypatch.setattr("cli._cprint", lambda msg, *a, **k: printed.append(str(msg)))
+
+        original = cli_instance.session_id
+        HermesCLI._handle_branch_command(cli_instance, "/branch --thread")
+
+        assert cli_instance.session_id == original
+        joined = "\n".join(printed)
+        assert "only available" in joined
+        assert session_db.get_session_title(original) == "My Coding Session"
+
+    def test_branch_rotates_hermes_session_id_env_and_context(self, cli_instance, session_db):
+        """Branching must update process-local session-id readers too."""
+        from cli import HermesCLI
+        from gateway.session_context import _UNSET, _VAR_MAP, get_session_env
+
+        old_session_id = cli_instance.session_id
+        os.environ["HERMES_SESSION_ID"] = old_session_id
+        _VAR_MAP["HERMES_SESSION_ID"].set(old_session_id)
+
+        try:
+            HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+            assert cli_instance.session_id != old_session_id
+            assert os.environ["HERMES_SESSION_ID"] == cli_instance.session_id
+            assert get_session_env("HERMES_SESSION_ID") == cli_instance.session_id
+        finally:
+            os.environ.pop("HERMES_SESSION_ID", None)
+            _VAR_MAP["HERMES_SESSION_ID"].set(_UNSET)
 
     def test_branch_fires_on_session_switch_hook(self, cli_instance, session_db):
         """The /branch command must notify memory providers of the rotation.

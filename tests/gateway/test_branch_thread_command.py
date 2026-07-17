@@ -207,6 +207,50 @@ async def test_branch_thread_unsupported_without_adapter():
 
 
 @pytest.mark.asyncio
+async def test_branch_thread_unsupported_on_whatsapp():
+    """WhatsApp adapters inherit base create_handoff_thread (returns None).
+
+    Must refuse before cloning so --thread never becomes a title and never
+    leaves an orphan branch session.
+    """
+    from gateway.run import GatewayRunner
+
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        user_id="u1",
+        chat_id="15551234567",
+        chat_type="dm",
+    )
+    current_entry = _make_entry("current-session", source)
+    adapter = MagicMock()
+    adapter.create_handoff_thread = AsyncMock(return_value=None)
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    runner.config = {}
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._busy_ack_ts = {}
+    runner._pending_approvals = {}
+    runner._update_prompt_pending = {}
+    runner._agent_cache_lock = None
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = current_entry
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "hello"},
+    ]
+    runner._session_db = AsyncSessionDB(MagicMock())
+
+    event = MessageEvent(text="/branch --thread", source=source, message_id="m1")
+    result = await runner._handle_branch_command(event)
+
+    assert "does not support" in result
+    adapter.create_handoff_thread.assert_not_awaited()
+    runner._session_db._db.create_session.assert_not_called()
+    runner.session_store.switch_session.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_branch_default_still_switches_origin_key():
     runner, source, _adapter = _make_branch_thread_runner()
     origin_key = build_session_key(source)

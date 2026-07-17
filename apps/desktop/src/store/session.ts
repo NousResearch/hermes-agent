@@ -8,6 +8,7 @@ import { persistBoolean, persistString, storedBoolean, storedString } from '@/li
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
+export type ComposerModelSource = '' | 'default' | 'manual'
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
@@ -18,6 +19,7 @@ const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 // that profile's default, while within a profile new chats keep your last pick.
 const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
 const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
+const COMPOSER_MODEL_SOURCE_KEY = 'hermes.desktop.composer.model-source'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
 
@@ -246,6 +248,13 @@ export const $sessionsLoading = atom(true)
 export const $workingSessionIds = atom<string[]>([])
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
+// Reactive signal for when the active session's stored id rotates (auto-
+// compression ends the SessionDB session and forks a continuation). The
+// route + selection must follow the rotation so the next send doesn't
+// trigger a full thread reload (getRuntimeIdForStoredSession would return
+// null for the old stored id, forcing resumeStoredSession). Set in
+// ensureSessionState when the cache entry's storedSessionId changes.
+export const $activeSessionStoredId = atom<string | null>(null)
 export const $messages = atom<ChatMessage[]>([])
 
 // Streaming-stable derivations of $messages. During a token stream the array
@@ -319,6 +328,7 @@ export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
+export const setActiveSessionStoredId = (next: Updater<string | null>) => updateAtom($activeSessionStoredId, next)
 
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
   updateAtom($selectedStoredSessionId, next)
@@ -345,6 +355,16 @@ export const setCurrentModel = (next: Updater<string>) => {
 export const setCurrentProvider = (next: Updater<string>) => {
   updateAtom($currentProvider, next)
   persistString(COMPOSER_PROVIDER_KEY, $currentProvider.get() || null)
+}
+
+export const getCurrentModelSource = (): ComposerModelSource => {
+  const source = storedString(COMPOSER_MODEL_SOURCE_KEY)
+
+  return source === 'default' || source === 'manual' ? source : ''
+}
+
+export const setCurrentModelSource = (source: ComposerModelSource) => {
+  persistString(COMPOSER_MODEL_SOURCE_KEY, source || null)
 }
 
 export const setCurrentReasoningEffort = (next: Updater<string>) => {

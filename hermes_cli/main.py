@@ -3257,6 +3257,7 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("approval", "Approval", "smart command approval"),
     ("mcp", "MCP", "MCP tool reasoning"),
     ("title_generation", "Title generation", "session titles"),
+    ("memory_query_rewrite", "Memory query rewrite", "memory retrieval queries"),
     ("tts_audio_tags", "TTS audio tags", "Gemini TTS tag insertion"),
     ("skills_hub", "Skills hub", "skills search/install"),
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
@@ -5732,7 +5733,14 @@ def cmd_gui(args: argparse.Namespace):
             print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
         else:
             print("→ Installing desktop workspace dependencies...")
-            nixos_env = _nixos_build_env()
+            # Put the Hermes-managed Node on PATH so npm's child scripts (which
+            # shell out to bare `node`, e.g. electron-winstaller's
+            # select-7z-arch.js) resolve it even when the parent PATH is
+            # stripped — the desktop updater chain (Desktop → hermes-setup →
+            # hermes update) loses shell PATH customizations. Wrapping the
+            # NixOS build env keeps its PYTHON hint while restoring managed Node
+            # ahead of a bare PATH (same idiom as the `hermes update` path).
+            nixos_env = with_hermes_node_path(_nixos_build_env())
             install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
             if install_result.returncode != 0:
                 if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
@@ -10282,9 +10290,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # covers a still-settling rebuild window the first wait didn't fully
             # catch — then surface the captured tail so the failure is
             # debuggable.
-            build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT)
+            #
+            # Start the build subprocess with the Hermes-managed Node on PATH:
+            # when `hermes update` runs inside the desktop updater chain
+            # (Desktop → hermes-setup → hermes update), the shell PATH
+            # customizations are lost, so a bare-PATH child would fail with
+            # `node: not found` before cmd_gui can self-heal.
+            from hermes_constants import with_hermes_node_path
+
+            _build_env = with_hermes_node_path()
+            build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT, env=_build_env)
             if build_result.returncode != 0:
-                build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT)
+                build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT, env=_build_env)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
                 tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
@@ -12258,6 +12275,7 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
 
     try:
         from hermes_cli.config import load_config, save_config
+        from hermes_cli.plugins_cmd import ensure_basic_auth_plugin_enabled_in_config
 
         cfg = load_config()
         dash = cfg.setdefault("dashboard", {})
@@ -12268,6 +12286,16 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
         basic["password"] = ""
         if not str(basic.get("secret", "") or "").strip():
             basic["secret"] = secret
+        # The bundled basic provider is a backend plugin that still honours
+        # plugins.disabled. Unblock it when we just wrote basic_auth so the
+        # discover_plugins(force=True) call below can register the provider
+        # (#54489). Surface the mutation so an operator who deliberately
+        # disabled it isn't surprised.
+        if ensure_basic_auth_plugin_enabled_in_config(cfg):
+            print(
+                "  ✓ Re-enabled the bundled 'basic' auth plugin "
+                "(was in plugins.disabled)"
+            )
         save_config(cfg)
     except Exception as exc:
         print(f"  ✗ Failed to write config.yaml: {exc}")

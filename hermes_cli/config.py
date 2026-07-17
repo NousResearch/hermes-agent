@@ -7602,16 +7602,19 @@ def _looks_like_structured_value(value: str) -> bool:
 
 
 def _sanitize_env_lines(lines: list) -> list:
-    """Fix corrupted .env lines before reading or writing.
+    """Fix concatenated .env entries before reading or writing.
 
-    Handles two known corruption patterns:
-    1. Concatenated KEY=VALUE pairs on a single line (missing newline between
-       entries, e.g. ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``).
-    2. Stale ``KEY=***`` placeholder entries left by incomplete setup runs.
+    Splits KEY=VALUE pairs that were written on a single line without a
+    separating newline, e.g.
+    ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``.
 
     Uses a known-keys set (OPTIONAL_ENV_VARS + _EXTRA_ENV_KEYS) so we only
     split on real Hermes env var names, avoiding false positives from values
     that happen to contain uppercase text with ``=``.
+
+    Literal values such as ``KEY=***`` are preserved.  The sanitizer cannot
+    distinguish user-authored file content from terminal-redacted output, and
+    deleting a non-empty value would also change external-secret precedence.
     """
     # Build the known keys set lazily from OPTIONAL_ENV_VARS + extras.
     # Done inside the function so OPTIONAL_ENV_VARS is guaranteed to be defined.
@@ -7686,8 +7689,8 @@ def _sanitize_env_lines(lines: list) -> list:
 def sanitize_env_file() -> int:
     """Read, sanitize, and rewrite ~/.hermes/.env in place.
 
-    Returns the number of lines that were fixed (concatenation splits +
-    placeholder removals).  Returns 0 when no changes are needed.
+    Returns the number of lines changed by concatenation repairs.  Returns 0
+    when no changes are needed.
     """
     env_path = get_env_path()
     if not env_path.exists():
@@ -7704,10 +7707,10 @@ def sanitize_env_file() -> int:
     if sanitized == original_lines:
         return 0
 
-    # Count fixes: difference in line count (from splits) + removed lines
+    # Count fixes by the change in line count from concatenation repairs.
     fixes = abs(len(sanitized) - len(original_lines))
     if fixes == 0:
-        # Lines changed content (e.g. *** removal) even if count is same
+        # Content can be normalized even when the line count is unchanged.
         fixes = sum(1 for a, b in zip(original_lines, sanitized) if a != b)
         fixes += abs(len(sanitized) - len(original_lines))
 

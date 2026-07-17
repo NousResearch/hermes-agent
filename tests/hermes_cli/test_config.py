@@ -760,6 +760,16 @@ class TestSanitizeEnvLines:
         result = _sanitize_env_lines(lines)
         assert result == lines
 
+    def test_preserves_literal_redaction_marker_values(self):
+        """Literal *** values are file content, not inferred placeholders."""
+        lines = [
+            "GITHUB_TOKEN=***\n",
+            'OPENAI_API_KEY="***"\n',
+            "CUSTOM_SECRET='***'\n",
+        ]
+
+        assert _sanitize_env_lines(lines) == lines
+
     def test_adds_missing_trailing_newline(self):
         """Lines missing trailing newline get one added."""
         lines = ["FOO_BAR=baz"]

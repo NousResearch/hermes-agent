@@ -790,25 +790,12 @@ def recover_with_credential_pool(
                         if entry.runtime_api_key == current_api_key:
                             matching_entry = entry
                             break
-                _ra().logger.info(
-                    "POOLDBG lazy-attach: provider=%s source=%r entries=%d match=%s — attaching",
-                    agent.provider, provider_source,
-                    len(loaded_pool.entries()), getattr(matching_entry, "label", None),
-                )
                 if matching_entry is not None:
                     loaded_pool._current_id = matching_entry.id
-                agent._credential_pool = loaded_pool
-                pool = loaded_pool
+                    agent._credential_pool = loaded_pool
+                    pool = loaded_pool
 
     if pool is None:
-        _ra().logger.info(
-            "POOLDBG recover: pool is None (provider_source=%r agent_provider=%r "
-            "agent_pool_attr=%s status=%s reason=%s) — NO rotation",
-            getattr(agent, "_provider_source", None),
-            getattr(agent, "provider", None),
-            getattr(agent, "_credential_pool", None) is not None,
-            status_code, classified_reason,
-        )
         return False, has_retried_429
 
     # Defensive guard: if a fallback provider is active and its provider name
@@ -943,15 +930,7 @@ def recover_with_credential_pool(
                 or "usage limit reached" in context_message
                 or "usage limit has been reached" in context_message
             )
-        _ra().logger.info(
-            "POOLDBG recover rate_limit: current=%s last_status=%s usage_limit=%s "
-            "has_retried_429=%s entries=%s",
-            getattr(current_entry, "label", None), current_last_status,
-            usage_limit_reached, has_retried_429,
-            [getattr(e, "label", "?") for e in pool.entries()] if hasattr(pool, "entries") else "?",
-        )
         if not has_retried_429 and not usage_limit_reached:
-            _ra().logger.info("POOLDBG recover rate_limit: first 429 → retry SAME (no rotate)")
             return False, True
         rotate_status = status_code if status_code is not None else 429
         next_entry = pool.mark_exhausted_and_rotate(

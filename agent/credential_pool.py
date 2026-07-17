@@ -134,21 +134,30 @@ def _usage_env_float(name: str, default: float) -> float:
         return default
 
 
-def _usage_env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
+def _usage_config_value(key: str, env_name: str, default: Any, type_fn: Any) -> Any:
     try:
-        return int(raw) if raw not in (None, "") else default
-    except (TypeError, ValueError):
-        return default
+        from hermes_cli.config import load_config
+        cfg = (load_config() or {}).get("codex_usage", {})
+        if key in cfg and cfg[key] is not None:
+            return type_fn(cfg[key])
+    except Exception:
+        pass
+    raw = os.environ.get(env_name)
+    if raw not in (None, ""):
+        try:
+            return type_fn(raw)
+        except (TypeError, ValueError):
+            pass
+    return default
 
 
-# Tunable via env (sensible defaults). Usage is re-probed proactively on every
-# 429/402, so the TTL governs background freshness rather than how fast the pool
-# reacts to exhaustion.
-USAGE_CACHE_TTL_SECONDS = _usage_env_float("HERMES_CODEX_USAGE_CACHE_TTL", 180.0)
-USAGE_FETCH_TIMEOUT_SECONDS = _usage_env_float("HERMES_CODEX_USAGE_FETCH_TIMEOUT", 5.0)
-USAGE_FETCH_BUDGET_PER_SELECT = _usage_env_int("HERMES_CODEX_USAGE_FETCH_BUDGET", 2)
-USAGE_EXHAUSTED_PCT = _usage_env_float("HERMES_CODEX_USAGE_EXHAUSTED_PCT", 98.0)
+# Tunable via config.yaml `codex_usage` block (or HERMES_CODEX_USAGE_* env vars).
+# Usage is re-probed proactively on every 429/402, so the TTL governs background
+# freshness rather than how fast the pool reacts to exhaustion.
+USAGE_CACHE_TTL_SECONDS = _usage_config_value("cache_ttl", "HERMES_CODEX_USAGE_CACHE_TTL", 180.0, float)
+USAGE_FETCH_TIMEOUT_SECONDS = _usage_config_value("fetch_timeout", "HERMES_CODEX_USAGE_FETCH_TIMEOUT", 5.0, float)
+USAGE_FETCH_BUDGET_PER_SELECT = _usage_config_value("fetch_budget", "HERMES_CODEX_USAGE_FETCH_BUDGET", 2, int)
+USAGE_EXHAUSTED_PCT = _usage_config_value("exhausted_pct", "HERMES_CODEX_USAGE_EXHAUSTED_PCT", 98.0, float)
 _usage_cache: Dict[str, Tuple[Any, float]] = {}
 _usage_cache_lock = threading.Lock()
 

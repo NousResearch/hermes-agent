@@ -1,0 +1,33 @@
+/* Hermes DESKTOP skin — the board in the desktop app's macOS design language.
+ *
+ * A DIFFERENT language from the web skin (skin-web.css): where the web skin does a
+ * near-transparent slab, an expanded display face with wide tracking, and sharp
+ * (0-radius) buttons, the desktop app is macOS-native — soft chrome bars with a hairline
+ * rule, the SF system font at normal tracking, and rounded controls. `applyDesktopTheme`
+ * handles the token-expressible parts (card radius, single-shadow elevation, host font);
+ * this sheet handles the class-level bits the tokens can't reach.
+ *
+ * Every rule is scoped under `boardstate-view` (touches only the embedded board, never
+ * the host chrome) and every var() carries a fallback, so a non-desktop host degrades
+ * cleanly to the bundle's own look. */
+
+/* Title bar: soft chrome fill with a single bottom hairline — the mac "toolbar" feel,
+   not the bundle's filled, contrasting drag handle. */
+boardstate-view .dashboard-widget__bar {
+  background: var(--ui-bg-chrome, transparent);
+  border-bottom: 1px solid var(--ui-stroke-secondary, rgba(0, 0, 0, 0.08));
+}
+
+/* Widget titles use the host system font (SF on macOS) at a normal weight and NO wide
+   tracking — macOS does not do letterspaced small caps. */
+boardstate-view .dashboard-widget__title {
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 0.8125rem;
+  letter-spacing: normal;
+}
+
+/* Rounded mac controls — the OPPOSITE of the web skin's sharp buttons. */
+boardstate-view .bs-btn {
+  border-radius: 0.375rem;
+}

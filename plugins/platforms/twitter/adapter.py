@@ -24,6 +24,7 @@ from .oauth import OAuthTokens, authorize, load_tokens, refresh_if_needed, save_
 from .state import TwitterState
 
 MAX_MESSAGE_LENGTH = 280
+MAX_PAGES_PER_POLL = 100
 logger = logging.getLogger(__name__)
 
 
@@ -517,7 +518,8 @@ class TwitterAdapter(BasePlatformAdapter):
         data: list[dict] = []
         includes: dict[str, list] = {"users": [], "media": [], "tweets": []}
         token = ""
-        while True:
+        seen_tokens: set[str] = set()
+        for _ in range(MAX_PAGES_PER_POLL):
             page = await self._client.mentions(
                 self._account_id,
                 since_id=self._state.mention_since_id,
@@ -526,9 +528,16 @@ class TwitterAdapter(BasePlatformAdapter):
             data.extend(page.get("data") or [])
             for key in includes:
                 includes[key].extend((page.get("includes") or {}).get(key) or [])
-            token = str((page.get("meta") or {}).get("next_token") or "")
-            if first_run or not token:
+            next_token = str((page.get("meta") or {}).get("next_token") or "")
+            if first_run or not next_token:
+                token = ""
                 break
+            if next_token in seen_tokens:
+                raise RuntimeError("Twitter mention pagination token cycle detected")
+            seen_tokens.add(next_token)
+            token = next_token
+        else:
+            raise RuntimeError("Twitter mention backlog exceeds the safe page limit")
         return {"data": data, "includes": includes}
 
     async def _dm_pages(self, *, first_run: bool = False) -> dict:
@@ -540,7 +549,8 @@ class TwitterAdapter(BasePlatformAdapter):
         token = ""
         candidate = ""
         complete = False
-        while True:
+        seen_tokens: set[str] = set()
+        for _ in range(MAX_PAGES_PER_POLL):
             page = await self._client.dm_events(pagination_token=token)
             events = [
                 item
@@ -561,7 +571,12 @@ class TwitterAdapter(BasePlatformAdapter):
                 complete = True
                 token = ""
                 break
+            if next_token in seen_tokens:
+                raise RuntimeError("Twitter DM pagination token cycle detected")
+            seen_tokens.add(next_token)
             token = next_token
+        else:
+            raise RuntimeError("Twitter DM backlog exceeds the safe page limit")
         return {
             "data": data,
             "includes": includes,

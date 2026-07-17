@@ -731,3 +731,51 @@ async def test_dm_backlog_fetches_through_boundary_before_dispatch(
         call.args[0].message_id for call in adapter.handle_message.await_args_list
     ] == ["101", "102", "103", "104", "105", "106"]
     assert adapter._state.dm_since_id == "106"
+
+
+@pytest.mark.asyncio
+async def test_dm_pagination_rejects_token_cycles(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(PlatformConfig(extra={"client_id": "client"}))
+    adapter._state.dm_since_id = "100"
+    adapter._client = Mock()
+    responses = iter(("one", "two"))
+
+    async def cyclic_page(*, pagination_token=""):
+        try:
+            next_token = next(responses)
+        except StopIteration:
+            next_token = "one"
+        return {
+            "data": [{"id": "101"}],
+            "meta": {"next_token": next_token},
+        }
+
+    adapter._client.dm_events = cyclic_page
+
+    with pytest.raises(RuntimeError, match="pagination token cycle"):
+        await asyncio.wait_for(adapter._dm_pages(), timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_dm_pagination_has_hard_page_limit(monkeypatch, tmp_path):
+    from plugins.platforms.twitter import adapter as adapter_module
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(adapter_module, "MAX_PAGES_PER_POLL", 2)
+    adapter = adapter_module.TwitterAdapter(
+        PlatformConfig(extra={"client_id": "client"})
+    )
+    adapter._state.dm_since_id = "100"
+    adapter._client = Mock()
+    adapter._client.dm_events = AsyncMock(
+        side_effect=[
+            {"data": [{"id": "103"}], "meta": {"next_token": "one"}},
+            {"data": [{"id": "102"}], "meta": {"next_token": "two"}},
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="page limit"):
+        await adapter._dm_pages()

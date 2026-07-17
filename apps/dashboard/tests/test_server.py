@@ -145,6 +145,15 @@ class SampleFallbackTests(unittest.TestCase):
         for item in data["items"]:
             self.assertTrue(item["title"] and item["url"] and item["published"])
 
+    def test_news_all_aggregates_topics(self):
+        data = self.api.news({"all": ["1"], "limit": ["40"]})
+        self.assertEqual(data["topic"], "all")
+        self.assertTrue(data["items"])
+        topics = {item.get("topic") for item in data["items"]}
+        self.assertGreaterEqual(len(topics), 2)      # spans multiple topics
+        urls = [i["url"] for i in data["items"]]
+        self.assertEqual(len(urls), len(set(urls)))  # deduped across topics
+
     def test_news_rejects_unknown_topic(self):
         with self.assertRaises(server.ApiError):
             self.api.news({"topic": ["nonsense"]})

@@ -101,6 +101,7 @@ async function streamJSON(path, body, onDelta) {
 
 export const api = {
   news: (topic, limit = 30) => getJSON("/api/news", { topic, limit }),
+  newsAll: (limit = 60) => getJSON("/api/news", { all: 1, limit }),
   weather: (lat, lon, name) =>
     getJSON("/api/weather", name ? { lat, lon, name } : { lat, lon }),
   geocode: (q) => getJSON("/api/geocode", { q }),

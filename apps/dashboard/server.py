@@ -1927,17 +1927,36 @@ class Api:
         return result
 
     def news(self, params: dict) -> dict:
+        limit = max(1, min(int(params.get("limit", ["30"])[0]), 60))
+        if params.get("all", ["0"])[0] not in ("0", "", "false"):
+            return self._news_all(limit)
         topic = params.get("topic", ["top"])[0].lower()
         sources = self.feeds.sources_for(topic)
         if sources is None:
             raise ApiError(400, f"unknown topic {topic!r}; valid: {self.feeds.topics()}")
-        limit = max(1, min(int(params.get("limit", ["30"])[0]), 60))
         return self._cached(
             f"news:{topic}:{limit}",
             NEWS_TTL,
             lambda: live_news(topic, limit, sources),
             lambda: sample_news(topic, limit),
         )
+
+    def _news_all(self, limit: int) -> dict:
+        # Cross-topic aggregation: merge every configured topic (bar the "top"
+        # roll-up) into one stream, tagging each item with its origin topic.
+        topics = [t for t in self.feeds.topics() if t != "top"]
+        collected: list[dict] = []
+        source = "sample"
+        for topic in topics:
+            try:
+                data = self.news({"topic": [topic], "limit": ["24"]})
+            except Exception:
+                continue
+            if data.get("source") == "live":
+                source = "live"
+            for item in data.get("items", []):
+                collected.append({**item, "topic": topic})
+        return {"topic": "all", "source": source, "items": merge_items(collected, limit)}
 
     # -- ICS calendar subscriptions ------------------------------------------
     def calendars_list(self, params: dict) -> dict:

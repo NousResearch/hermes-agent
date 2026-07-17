@@ -5,7 +5,7 @@
 //                 (news, weather, worldstate…) still renders with no signal
 // POST /api/*   → network only (agent, sync writes never come from cache)
 
-const VERSION = "hub-v23";
+const VERSION = "hub-v24";
 const SHELL = [
   "/",
   "/css/dashboard.css",

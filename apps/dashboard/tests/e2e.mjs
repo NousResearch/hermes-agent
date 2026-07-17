@@ -206,6 +206,21 @@ await page.waitForFunction(() =>
 await page.waitForSelector(".news-item");
 check("gaming news topic renders", (await page.locator(".news-item").count()) >= 2);
 
+// ---- news topic detail window (⤢) + cross-topic search ----------------------
+await page.locator(".widget-news .widget-expand").click();
+await page.waitForSelector(".news-detail-grid .news-detail-item", { timeout: 5000 });
+check("news detail groups items by source", (await page.locator(".news-detail-col").count()) >= 1);
+const detailCount = await page.locator(".news-detail-item").count();
+check("news detail lists items", detailCount >= 2);
+await page.locator(".news-all-toggle input").check();
+await page.waitForFunction(
+  () => document.querySelector(".detail-scope")?.textContent === "ALL TOPICS", null, { timeout: 5000 });
+await page.waitForSelector(".news-topic-tag", { timeout: 5000 });
+const tags = await page.locator(".news-topic-tag").allInnerTexts();
+check("cross-topic search spans ≥2 topics", new Set(tags).size >= 2);
+await page.keyboard.press("Escape");
+await page.waitForSelector(".detail-backdrop", { state: "detached" });
+
 // ---- tasks -------------------------------------------------------------------
 await gotoWidget("tasks");
 const taskInput = page.locator(".task-form .input");

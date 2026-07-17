@@ -171,4 +171,87 @@ export default {
     draw();
     ctx.every(5 * 60_000, draw);
   },
+
+  // ⤢ large topic view: more items grouped by source, plus a cross-topic
+  // search toggle that queries every configured topic server-side.
+  detail(body, ctx) {
+    const { store } = ctx;
+    let allTopics = false;
+    let query = "";
+
+    const groupBySource = (items) => {
+      const groups = new Map();
+      for (const item of items) {
+        if (!groups.has(item.source)) groups.set(item.source, []);
+        groups.get(item.source).push(item);
+      }
+      return [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+    };
+
+    const matches = (item) => {
+      if (!query) return true;
+      const hay = `${item.title} ${item.summary || ""} ${item.source} ${item.topic || ""}`.toLowerCase();
+      return query.split(/\s+/).every((term) => hay.includes(term));
+    };
+
+    let items = [];
+    const grid = h("div.news-detail-grid");
+
+    const paint = () => {
+      clear(grid);
+      const filtered = items.filter(matches);
+      if (!filtered.length) {
+        grid.append(h("div.muted", {}, query ? `No headlines match “${query}”.` : "No stories right now."));
+        return;
+      }
+      for (const [source, group] of groupBySource(filtered)) {
+        const col = h("section.news-detail-col", {},
+          h("h4.news-detail-src", {}, source, h("span.muted.small", {}, ` · ${group.length}`)));
+        for (const item of group) {
+          col.append(viewerLink(
+            h("a.news-detail-item", { href: item.url, target: "_blank", rel: "noopener noreferrer" },
+              h("div.news-title", {}, item.title),
+              allTopics && item.topic ? h("span.news-topic-tag", {}, labelFor(item.topic)) : null,
+              item.published ? h("div.news-meta", {}, timeAgo(item.published)) : null,
+            ),
+            { url: item.url, title: item.title, summary: item.summary, source: item.source, mode: "reader" },
+          ));
+        }
+        grid.append(col);
+      }
+    };
+
+    const scope = h("span.detail-scope", {}, labelFor(store.state.news.topic).toUpperCase());
+
+    const load = async () => {
+      scope.textContent = allTopics ? "ALL TOPICS" : labelFor(store.state.news.topic).toUpperCase();
+      clear(grid).append(h("div.widget-loading", {}, "Fetching headlines…"));
+      try {
+        const data = allTopics
+          ? await ctx.api.newsAll(60)
+          : await ctx.api.news(store.state.news.topic, 40);
+        items = data.items || [];
+      } catch (err) {
+        clear(grid).append(h("div.widget-error", {}, `News unavailable: ${err.message}`));
+        return;
+      }
+      paint();
+    };
+
+    const search = h("input.input", {
+      type: "search", placeholder: "Search headlines…", "aria-label": "Search headlines",
+      oninput: (ev) => { query = ev.target.value.trim().toLowerCase(); paint(); },
+    });
+    const allToggle = h("label.news-all-toggle", {},
+      h("input", {
+        type: "checkbox",
+        onchange: (ev) => { allTopics = ev.target.checked; load(); },
+      }),
+      " Search all topics");
+
+    clear(body).append(
+      h("div.news-detail-head", {}, scope, search, allToggle),
+      grid);
+    load();
+  },
 };

@@ -36,8 +36,11 @@ Effort key: **S** < ½ day · **M** ~1 day · **L** multi-day.
   price crossings (`BTC > 100000`) and RSI(14) thresholds (`ETH RSI < 30`),
   taught to the create_automation tool schema and the local command parser —
   shipped.
+- ✅ **§3.3 topic detail window** — ⤢ on the news widget opens a large view
+  grouped by source with an in-place search, plus a "Search all topics" toggle
+  backed by server-side `/api/news?all=1` cross-topic aggregation — shipped.
 - ⬜ Still pending: §0.3 registry,
-  §2.3 follow teams, §3.3 topic detail window, §3.4 podcasts, and the remaining
+  §2.3 follow teams, §3.4 podcasts, and the remaining
   §5 widgets (air quality/pollen, weather alerts, space weather, flights,
   RSS-reader folders).
 

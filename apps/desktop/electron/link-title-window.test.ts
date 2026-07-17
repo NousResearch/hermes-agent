@@ -29,6 +29,10 @@ test('linkTitleWindowOptions keeps the offscreen, hardened defaults', () => {
   const options = linkTitleWindowOptions(session)
 
   assert.equal(options.show, false)
+  assert.equal(options.x, -20000)
+  assert.equal(options.y, -20000)
+  assert.equal(options.skipTaskbar, true)
+  assert.equal(options.focusable, false)
   assert.equal(options.webPreferences.session, session)
   assert.equal(options.webPreferences.contextIsolation, true)
   assert.equal(options.webPreferences.sandbox, true)
@@ -45,6 +49,27 @@ test('createLinkTitleWindow mutes audio so historical links never autoplay sound
 
   assert.ok(window instanceof FakeBrowserWindow)
   assert.deepEqual(calls.audioMuted, [true])
+})
+
+test('createLinkTitleWindow hides and zeros opacity so Windows cannot flash a blank frame', () => {
+  // Regression for #64867: tier-2 title fetch for bot-walled URLs (GitHub)
+  // must not paint a visible blank BrowserWindow over Desktop chat.
+  const calls = { hide: 0, opacity: [] }
+  const FakeBrowserWindow = function (options) {
+    this.options = options
+    this.webContents = { setAudioMuted() {} }
+    this.hide = () => {
+      calls.hide += 1
+    }
+    this.setOpacity = value => {
+      calls.opacity.push(value)
+    }
+  }
+
+  createLinkTitleWindow(FakeBrowserWindow, { id: 'link-titles' })
+
+  assert.equal(calls.hide, 1)
+  assert.deepEqual(calls.opacity, [0])
 })
 
 test('createLinkTitleWindow still returns the window if muting throws', () => {

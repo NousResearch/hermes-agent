@@ -104,6 +104,60 @@ def _build_browser_env() -> dict:
             env[_key] = os.environ[_key]
     return env
 
+
+# Off-screen parking spot for the rare Windows --headless=new ghost HWND
+# (Chrome 129-class blank top-level window). See #64867.
+_WINDOWS_HEADLESS_WINDOW_POSITION = "--window-position=-2400,-2400"
+
+
+def _append_agent_browser_arg(browser_env: dict, flag: str) -> None:
+    """Append a Chromium launch flag to ``AGENT_BROWSER_ARGS`` if missing."""
+    existing = (browser_env.get("AGENT_BROWSER_ARGS") or "").strip()
+    parts = [
+        part.strip()
+        for part in existing.replace("\n", ",").split(",")
+        if part.strip()
+    ]
+    key = flag.split("=", 1)[0]
+    if any(part == flag or part.startswith(f"{key}=") for part in parts):
+        return
+    parts.append(flag)
+    browser_env["AGENT_BROWSER_ARGS"] = ",".join(parts)
+
+
+def _user_wants_headed_browser(browser_env: dict) -> bool:
+    """True when the operator explicitly opted into a visible browser window."""
+    return is_truthy_value(browser_env.get("AGENT_BROWSER_HEADED"))
+
+
+def _apply_local_browser_visibility_guards(
+    browser_env: dict,
+    *,
+    local_chromium: bool,
+) -> list[str]:
+    """Keep local Chromium invisible unless the user opted into headed mode.
+
+    Local mode is documented as headless Chromium via agent-browser. On
+    Windows Desktop, a blank top-level window can still appear when:
+
+    1. ``~/.agent-browser/config.json`` (or ``AGENT_BROWSER_HEADED``) enables
+       headed mode without Hermes knowing about it, or
+    2. Chrome's ``--headless=new`` paints a ghost HWND on some Windows hosts.
+
+    Force ``--headed false`` for local sessions and, on Windows, park any
+    leftover window off-screen via ``AGENT_BROWSER_ARGS``. Cloud/CDP backends
+    are left alone. Explicit ``AGENT_BROWSER_HEADED=1`` still wins (#64867).
+    """
+    if not local_chromium or _user_wants_headed_browser(browser_env):
+        return []
+
+    # Pin both the CLI flag and the env so project/user agent-browser.json
+    # ``"headed": true`` cannot override Hermes' local-mode contract.
+    browser_env["AGENT_BROWSER_HEADED"] = "false"
+    if os.name == "nt":
+        _append_agent_browser_arg(browser_env, _WINDOWS_HEADLESS_WINDOW_POSITION)
+    return ["--headed", "false"]
+
 try:
     from tools.website_policy import check_website_access
 except Exception:
@@ -1091,13 +1145,21 @@ def _run_chrome_fallback_command(
         cmd_prefix = [_npx_bin, "agent-browser"]
     else:
         cmd_prefix = [browser_cmd]
-    base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
 
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
     browser_env = _build_browser_env()
     browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
     browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
+    visibility_flags = _apply_local_browser_visibility_guards(
+        browser_env, local_chromium=True
+    )
+    base_args = (
+        cmd_prefix
+        + ["--engine", "chrome", "--session", tmp_session]
+        + visibility_flags
+        + ["--json"]
+    )
 
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
         browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
@@ -2459,6 +2521,18 @@ def _run_browser_command(
                 browser_env["AGENT_BROWSER_ARGS"] = (
                     "--no-sandbox,--disable-dev-shm-usage"
                 )
+
+        # Local headless contract (#64867): force --headed false and park any
+        # Windows ghost HWND off-screen. Must run AFTER sandbox-arg injection
+        # so we append --window-position rather than overwrite it.
+        visibility_flags = _apply_local_browser_visibility_guards(
+            browser_env,
+            local_chromium=not bool(session_info.get("cdp_url")),
+        )
+        if visibility_flags:
+            # Insert before --json so global flags stay ahead of the command.
+            json_at = cmd_parts.index("--json")
+            cmd_parts[json_at:json_at] = visibility_flags
 
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file

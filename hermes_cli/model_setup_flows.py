@@ -2018,8 +2018,8 @@ def _model_flow_kimi(config, current_model=""):
     else:
         print("No change.")
 
-def _model_flow_stepfun(config, current_model=""):
-    """StepFun Step Plan flow with region-specific endpoints."""
+def _model_flow_stepfun(config, current_model="", provider_id="stepfun-plan"):
+    """StepFun flow with region-specific endpoints (standard or step-plan)."""
     from hermes_cli.main import _infer_stepfun_region, _prompt_api_key, _prompt_provider_choice, _stepfun_base_url_for_region
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,
@@ -2035,7 +2035,7 @@ def _model_flow_stepfun(config, current_model=""):
     )
     from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
 
-    provider_id = "stepfun"
+    family = "standard" if provider_id == "stepfun" else "plan"
     pconfig = PROVIDER_REGISTRY[provider_id]
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
@@ -2064,9 +2064,9 @@ def _model_flow_stepfun(config, current_model=""):
     region_choices = [
         (
             "international",
-            f"International ({_stepfun_base_url_for_region('international')})",
+            f"International ({_stepfun_base_url_for_region('international', family)})",
         ),
-        ("china", f"China ({_stepfun_base_url_for_region('china')})"),
+        ("china", f"China ({_stepfun_base_url_for_region('china', family)})"),
     ]
     ordered_regions = []
     for region_key, label in region_choices:
@@ -2082,7 +2082,7 @@ def _model_flow_stepfun(config, current_model=""):
         return
 
     selected_region = ordered_regions[region_idx][0]
-    effective_base = _stepfun_base_url_for_region(selected_region)
+    effective_base = _stepfun_base_url_for_region(selected_region, family)
     if base_url_env:
         save_env_value(base_url_env, effective_base)
 

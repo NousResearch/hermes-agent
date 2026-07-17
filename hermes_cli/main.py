@@ -3162,8 +3162,8 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider == "stepfun":
-        _model_flow_stepfun(config, current_model)
+    elif selected_provider in ("stepfun", "stepfun-plan"):
+        _model_flow_stepfun(config, current_model, provider_id=selected_provider)
     elif selected_provider == "bedrock":
         _model_flow_bedrock(config, current_model)
     elif selected_provider == "vertex":
@@ -4123,12 +4123,20 @@ def _infer_stepfun_region(base_url: str) -> str:
     return "international"
 
 
-def _stepfun_base_url_for_region(region: str) -> str:
+def _stepfun_base_url_for_region(region: str, family: str = "plan") -> str:
     from hermes_cli.auth import (
+        STEPFUN_STD_CN_BASE_URL,
+        STEPFUN_STD_INTL_BASE_URL,
         STEPFUN_STEP_PLAN_CN_BASE_URL,
         STEPFUN_STEP_PLAN_INTL_BASE_URL,
     )
 
+    if family == "standard":
+        return (
+            STEPFUN_STD_CN_BASE_URL
+            if region == "china"
+            else STEPFUN_STD_INTL_BASE_URL
+        )
     return (
         STEPFUN_STEP_PLAN_CN_BASE_URL
         if region == "china"

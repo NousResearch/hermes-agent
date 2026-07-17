@@ -72,3 +72,24 @@ class TestStepfunIdentity:
             PROVIDER_REGISTRY["stepfun-plan"].inference_base_url
             == STEPFUN_STEP_PLAN_INTL_BASE_URL
         )
+
+
+class TestStepfunRegionToggle:
+    def test_base_url_for_region_standard(self):
+        from hermes_cli.main import _stepfun_base_url_for_region
+
+        assert _stepfun_base_url_for_region("international", "standard") == "https://api.stepfun.ai/v1"
+        assert _stepfun_base_url_for_region("china", "standard") == "https://api.stepfun.com/v1"
+
+    def test_base_url_for_region_plan(self):
+        from hermes_cli.main import _stepfun_base_url_for_region
+
+        assert _stepfun_base_url_for_region("international", "plan") == "https://api.stepfun.ai/step_plan/v1"
+        assert _stepfun_base_url_for_region("china", "plan") == "https://api.stepfun.com/step_plan/v1"
+
+    def test_provider_models_lists(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+
+        for pid in ("stepfun", "stepfun-plan"):
+            assert "step-3.7-flash" in _PROVIDER_MODELS[pid]
+            assert "step-3.5-flash" in _PROVIDER_MODELS[pid]

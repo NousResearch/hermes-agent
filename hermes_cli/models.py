@@ -336,6 +336,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "stepfun": [
+        "step-3.7-flash",
+        "step-3.5-flash",
+        "step-3.5-flash-2603",
+    ],
+    "stepfun-plan": [
+        "step-3.7-flash",
         "step-3.5-flash",
         "step-3.5-flash-2603",
     ],
@@ -2466,11 +2472,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         manifest_ids = get_curated_nous_model_ids()
         if manifest_ids:
             return manifest_ids
-    if normalized == "stepfun":
+    if normalized in ("stepfun", "stepfun-plan"):
         try:
             from hermes_cli.auth import resolve_api_key_provider_credentials
 
-            creds = resolve_api_key_provider_credentials("stepfun")
+            creds = resolve_api_key_provider_credentials(normalized)
             api_key = str(creds.get("api_key") or "").strip()
             base_url = str(creds.get("base_url") or "").strip()
             if api_key and base_url:

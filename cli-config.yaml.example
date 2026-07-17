@@ -526,6 +526,14 @@ prompt_caching:
 #     model: ""
 #     timeout: 30
 #
+#   # Automatic session title generation after the first exchange
+#   title_generation:
+#     enabled: true          # set false to disable auto-title generation
+#     provider: "auto"
+#     model: ""
+#     timeout: 30
+#     language: ""           # empty = match the user's language; or e.g. "English"
+#
 #   # Session search — summarizes matching past sessions
 #   session_search:
 #     provider: "auto"

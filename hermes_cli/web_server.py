@@ -5851,7 +5851,14 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
                 }
 
         def _apply_assignment():
-            with _profile_scope(body.profile or profile):
+            effective_profile = body.profile or profile
+            if not effective_profile:
+                try:
+                    from hermes_cli.profiles import get_active_profile_name
+                    effective_profile = get_active_profile_name()
+                except Exception:
+                    effective_profile = None
+            with _profile_scope(effective_profile):
                 return _apply_model_assignment_sync(
                     scope, provider, model, task, base_url, api_key
                 )

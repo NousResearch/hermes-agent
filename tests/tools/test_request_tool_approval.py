@@ -33,6 +33,8 @@ def _isolate_approval_state(monkeypatch):
 
 class TestRequestToolApproval:
     def test_session_cached_approval_short_circuits(self, monkeypatch):
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
         monkeypatch.setattr(approval, "is_approved", lambda sk, pk: True)
         # Should NOT prompt at all.
         monkeypatch.setattr(

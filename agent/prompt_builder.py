@@ -382,7 +382,19 @@ TASK_COMPLETION_GUIDANCE = (
     "BUT reporting is not completion. "
     "After reporting a blocker, you MUST attempt at least one alternative "
     "resolution before the report is complete. Test failures, timeouts, and "
-    "unexpected output are the task — they are never blockers."
+    "unexpected output are the task — they are never blockers.\n"
+    "\n"
+    "**SOUL.md PROCESS-GATE PRECEDENCE**: The user's persona file (SOUL.md) "
+    "defines mandatory process gates — dual-panel reviews, 3-critic adversarial "
+    "code reviews — that MUST complete before commits. When a required process "
+    "artifact is unavailable (reviewer timeout, delegation failure), that IS "
+    "a valid blocker. Re-spawning the reviewer or waiting with "
+    "`process(action='wait')` satisfies the framework's option (a). Reporting "
+    "\"reviewer X timed out, re-spawning\" IS a valid final response under "
+    "option (b). Do NOT ship code with missing process artifacts because the "
+    "framework's throughput mandates feel more urgent than SOUL.md's process "
+    "mandates. SOUL.md's process gates take precedence over the throughput "
+    "guidance in this section."
 )
 
 # Universal parallel-tool-call guidance — applied to ALL models.

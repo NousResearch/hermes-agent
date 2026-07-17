@@ -417,6 +417,22 @@ def _delegate_task_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, li
     return len(goals), goals
 
 
+def _browser_exec_step_label(args: dict, max_chars: int = 80) -> str | None:
+    """User-friendly step label from browser_exec code's leading comment."""
+    code = str(args.get("code", "") or "").strip()
+    if not code:
+        return None
+    first = code.split("\n", 1)[0].strip()
+    if not first.startswith("#"):
+        return None
+    label = first.lstrip("#").strip()
+    if not label:
+        return None
+    if len(label) > max_chars:
+        label = label[: max_chars - 1] + "…"
+    return label
+
+
 def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
     """Build a short preview of a tool call's primary argument for display.
 
@@ -437,9 +453,17 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "vision_analyze": "question",
         "skill_view": "name", "skills_list": "category",
         "cronjob": "action",
-        "execute_code": "code", "delegate_task": "goal",
+        "execute_code": "code", "browser_exec": "code", "delegate_task": "goal",
         "clarify": "question", "skill_manage": "name",
     }
+
+    # browser_exec: prefer the leading `# …` comment as a friendly step label
+    if tool_name == "browser_exec":
+        label = _browser_exec_step_label(args)
+        if label is not None:
+            return _truncate_preview(label, max_len)
+        preview = _oneline(str(args.get("code", "") or ""))
+        return _truncate_preview(preview, max_len) if preview else None
 
     # delegate_task: show goal (single) or individual task goals (batch)
     if tool_name == "delegate_task":
@@ -1431,6 +1455,15 @@ def _get_cute_tool_message(
         code = args.get("code", "")
         first_line = code.strip().split("\n")[0] if code.strip() else ""
         return _wrap(f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}")
+    if tool_name == "browser_exec":
+        label = _browser_exec_step_label(args)
+        if label is not None:
+            # Leading `# …` comment (the tool description asks for one):
+            # surface it as the user-facing step label; the code itself stays
+            # collapsed behind display.tool_preview_length.
+            return _wrap(f"┊ 🌐 browser   {label}  {dur}")
+        code = " ".join(str(args.get("code", "") or "").split())
+        return _wrap(f"┊ 🌐 browser   {_trunc(code, 35)}  {dur}")
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):

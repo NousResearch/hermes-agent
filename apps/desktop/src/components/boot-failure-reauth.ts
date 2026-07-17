@@ -1,4 +1,5 @@
 import type { DesktopAuthProvider, DesktopConnectionConfig } from '@/global'
+import { deriveRemoteAuthProviderShape } from '@/lib/desktop-remote-auth'
 
 // Pure helpers for the boot-failure overlay's remote-reauth branch. Kept out
 // of the .tsx so they can be unit-tested without a React/jsdom render (the
@@ -136,18 +137,7 @@ export function deriveProviderShape(providers: DesktopAuthProvider[] | null | un
   isPassword: boolean
   providerLabel: string
 } {
-  const list = providers ?? []
-
-  if (list.length === 0) {
-    return { isPassword: false, providerLabel: 'your identity provider' }
-  }
-
-  const isPassword = list.every(p => Boolean(p.supportsPassword))
-
-  const providerLabel =
-    list.length === 1 ? list[0].displayName || list[0].name : list.map(p => p.displayName || p.name).join(' / ')
-
-  return { isPassword, providerLabel }
+  return deriveRemoteAuthProviderShape(providers)
 }
 
 // Button copy for the remote sign-in action.

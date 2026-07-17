@@ -21,10 +21,10 @@ export interface ChatImageActionContribution {
 }
 
 const TOOL_RESULT_ACTION_KEYS = new Set([
-  'aspect_ratio', 'batch_size', 'count', 'created_at', 'createdAt', 'data', 'duration', 'height', 'id',
-  'items', 'job_id', 'jobId', 'jobs', 'medias', 'minUrl', 'model', 'outputs', 'params', 'prompt', 'rawUrl',
+  'aspect_ratio', 'batch_size', 'count', 'created_at', 'createdAt', 'data', 'duration', 'height', 'id', 'image',
+  'items', 'job_id', 'jobId', 'jobs', 'medias', 'min_url', 'minUrl', 'model', 'outputs', 'params', 'prompt', 'raw_url', 'rawUrl',
   'resolution', 'result', 'result_url', 'resultUrl', 'results', 'role', 'status', 'structuredContent', 'type', 'url',
-  'width'
+  'video', 'width'
 ])
 
 interface ToolResultSanitizeBudget {
@@ -61,17 +61,18 @@ export function toolResultForImageAction(
 
   seen.add(value)
   const result: Record<string, unknown> = {}
+  const record = value as Record<string, unknown>
 
-  for (const [key, entry] of Object.entries(value)) {
+  for (const key of TOOL_RESULT_ACTION_KEYS) {
     if (budget.remaining <= 0) {
       break
     }
 
-    if (!TOOL_RESULT_ACTION_KEYS.has(key)) {
+    if (!Object.hasOwn(record, key)) {
       continue
     }
 
-    result[key] = toolResultForImageAction(entry, depth + 1, seen, budget)
+    result[key] = toolResultForImageAction(record[key], depth + 1, seen, budget)
   }
 
   return result
@@ -89,6 +90,20 @@ function imageActionData(value: unknown): ChatImageActionContribution | null {
     : null
 }
 
+function mediaPredicateSrc(src: string): string {
+  if (/^data:image\//i.test(src)) {
+    return 'data:image/'
+  }
+
+  try {
+    const url = new URL(src)
+
+    return url.protocol === 'http:' || url.protocol === 'https:' ? `${url.origin}${url.pathname}` : ''
+  } catch {
+    return ''
+  }
+}
+
 export function ChatImageActions({
   className,
   src,
@@ -103,11 +118,16 @@ export function ChatImageActions({
     ...(toolResult === undefined ? {} : { toolResult: toolResultForImageAction(toolResult) })
   }
 
+  const predicateInput: ChatImageActionInput = {
+    src: mediaPredicateSrc(src),
+    ...(toolName ? { toolName } : {})
+  }
+
   const actions = contributions
     .map(contribution => ({ contribution, data: imageActionData(contribution.data) }))
     .filter(
       (entry): entry is { contribution: (typeof contributions)[number]; data: ChatImageActionContribution } =>
-        Boolean(entry.data && (!entry.data.when || entry.data.when(input)))
+        Boolean(entry.data && (!entry.data.when || entry.data.when(predicateInput)))
     )
 
   if (!src || actions.length === 0) {

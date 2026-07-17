@@ -372,7 +372,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     Boolean(view.rawResult.trim())
 
   const hasExpandableContent = Boolean(
-    view.imageUrl || view.inlineDiff || showDetail || hasSearchHits || toolViewMode === 'technical'
+    view.imageUrl || view.videoUrl || view.inlineDiff || showDetail || hasSearchHits || toolViewMode === 'technical'
   )
 
   // copyAction reads the uncapped view.detail; clampForDisplay below only bounds

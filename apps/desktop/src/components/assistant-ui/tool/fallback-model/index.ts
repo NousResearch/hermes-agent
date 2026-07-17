@@ -719,13 +719,29 @@ function toolPreviewTarget(toolName: string, args: Record<string, unknown>, resu
   return ''
 }
 
-function deepImageUrl(value: unknown, depth = 0, seen = new Set<unknown>()): string {
-  if (depth > 5 || value === null || value === undefined) {
+interface MediaScanBudget {
+  remaining: number
+}
+
+function deepImageUrl(
+  value: unknown,
+  depth = 0,
+  seen = new Set<unknown>(),
+  budget: MediaScanBudget = { remaining: 256 },
+  allowBareUrl = true
+): string {
+  if (depth > 5 || budget.remaining <= 0 || value === null || value === undefined) {
     return ''
   }
 
+  budget.remaining -= 1
+
   if (typeof value === 'string') {
-    if (value.toLowerCase().startsWith('data:image/')) {
+    if (value.length > 65_536) {
+      return ''
+    }
+
+    if (/^data:image\/(?:png|jpe?g|webp|gif|avif|bmp)(?:;|,)/i.test(value)) {
       return value
     }
 
@@ -733,12 +749,8 @@ function deepImageUrl(value: unknown, depth = 0, seen = new Set<unknown>()): str
       return value
     }
 
-    if (value.length > 65_536) {
-      return ''
-    }
-
     try {
-      return deepImageUrl(JSON.parse(value), depth + 1, seen)
+      return deepImageUrl(JSON.parse(value), depth + 1, seen, budget, allowBareUrl)
     } catch {
       return ''
     }
@@ -746,7 +758,7 @@ function deepImageUrl(value: unknown, depth = 0, seen = new Set<unknown>()): str
 
   if (Array.isArray(value)) {
     for (const item of value.slice(0, 20)) {
-      const found = deepImageUrl(item, depth + 1, seen)
+      const found = deepImageUrl(item, depth + 1, seen, budget, allowBareUrl)
 
       if (found) {
         return found
@@ -762,16 +774,29 @@ function deepImageUrl(value: unknown, depth = 0, seen = new Set<unknown>()): str
 
   seen.add(value)
 
-  for (const key of ['image_url', 'imageUrl', 'rawUrl', 'minUrl', 'url', 'image_path', 'path']) {
-    const found = deepImageUrl(value[key], depth + 1, seen)
+  const directImageKeys = [
+    'image_url', 'imageUrl', 'image',
+    ...(allowBareUrl ? ['rawUrl', 'raw_url', 'minUrl', 'min_url', 'url', 'image_path', 'path'] : [])
+  ]
+
+  for (const key of directImageKeys) {
+    const found = deepImageUrl(value[key], depth + 1, seen, budget, true)
 
     if (found) {
       return found
     }
   }
 
-  for (const key of ['structuredContent', 'result', 'results', 'data', 'items', 'outputs']) {
-    const found = deepImageUrl(value[key], depth + 1, seen)
+  for (const key of ['result', 'results', 'outputs']) {
+    const found = deepImageUrl(value[key], depth + 1, seen, budget, true)
+
+    if (found) {
+      return found
+    }
+  }
+
+  for (const key of ['structuredContent', 'data', 'items']) {
+    const found = deepImageUrl(value[key], depth + 1, seen, budget, false)
 
     if (found) {
       return found
@@ -782,25 +807,33 @@ function deepImageUrl(value: unknown, depth = 0, seen = new Set<unknown>()): str
 }
 
 function toolImageUrl(args: Record<string, unknown>, result: Record<string, unknown>): string {
-  return deepImageUrl(result) || deepImageUrl(args)
+  return deepImageUrl(result) || deepImageUrl(args, 0, new Set(), { remaining: 256 }, false)
 }
 
-function deepVideoUrl(value: unknown, depth = 0, seen = new Set<unknown>()): string {
-  if (depth > 5 || value === null || value === undefined) {
+function deepVideoUrl(
+  value: unknown,
+  depth = 0,
+  seen = new Set<unknown>(),
+  budget: MediaScanBudget = { remaining: 256 },
+  allowBareUrl = true
+): string {
+  if (depth > 5 || budget.remaining <= 0 || value === null || value === undefined) {
     return ''
   }
 
-  if (typeof value === 'string') {
-    if (/^https?:\/\/[^\s]+\.(?:mp4|mov|webm|mkv|avi)(?:[?#]|$)/i.test(value)) {
-      return value
-    }
+  budget.remaining -= 1
 
+  if (typeof value === 'string') {
     if (value.length > 65_536) {
       return ''
     }
 
+    if (/^https?:\/\/[^\s]+\.(?:mp4|mov|webm|mkv|avi)(?:[?#]|$)/i.test(value)) {
+      return value
+    }
+
     try {
-      return deepVideoUrl(JSON.parse(value), depth + 1, seen)
+      return deepVideoUrl(JSON.parse(value), depth + 1, seen, budget, allowBareUrl)
     } catch {
       return ''
     }
@@ -808,7 +841,7 @@ function deepVideoUrl(value: unknown, depth = 0, seen = new Set<unknown>()): str
 
   if (Array.isArray(value)) {
     for (const item of value.slice(0, 20)) {
-      const found = deepVideoUrl(item, depth + 1, seen)
+      const found = deepVideoUrl(item, depth + 1, seen, budget, allowBareUrl)
 
       if (found) {
         return found
@@ -824,16 +857,29 @@ function deepVideoUrl(value: unknown, depth = 0, seen = new Set<unknown>()): str
 
   seen.add(value)
 
-  for (const key of ['video_url', 'videoUrl', 'rawUrl', 'url']) {
-    const found = deepVideoUrl(value[key], depth + 1, seen)
+  const directVideoKeys = [
+    'video_url', 'videoUrl', 'video',
+    ...(allowBareUrl ? ['rawUrl', 'raw_url', 'minUrl', 'min_url', 'url'] : [])
+  ]
+
+  for (const key of directVideoKeys) {
+    const found = deepVideoUrl(value[key], depth + 1, seen, budget, true)
 
     if (found) {
       return found
     }
   }
 
-  for (const key of ['structuredContent', 'result', 'results', 'data', 'items', 'outputs']) {
-    const found = deepVideoUrl(value[key], depth + 1, seen)
+  for (const key of ['result', 'results', 'outputs']) {
+    const found = deepVideoUrl(value[key], depth + 1, seen, budget, true)
+
+    if (found) {
+      return found
+    }
+  }
+
+  for (const key of ['structuredContent', 'data', 'items']) {
+    const found = deepVideoUrl(value[key], depth + 1, seen, budget, false)
 
     if (found) {
       return found

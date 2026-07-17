@@ -92,6 +92,19 @@ declare global {
       openExternal: (url: string) => Promise<void>
       openPreviewInBrowser?: (url: string) => Promise<void>
       browser: {
+        audit: (guestWebContentsId: number) => Promise<{
+          url: string
+          viewportWidth: number
+          viewportHeight: number
+          documentWidth: number
+          documentHeight: number
+          horizontalOverflow: boolean
+          brokenImages: number
+          missingAlt: number
+          unlabeledControls: number
+          headingCount: number
+          h1Count: number
+        }>
         cdp: (guestWebContentsId: number, method: string, params?: Record<string, unknown>) => Promise<unknown>
         capture: (guestWebContentsId: number) => Promise<{
           captureId: string
@@ -105,6 +118,14 @@ declare global {
           title: string
           type: string
           url: string
+          viewport: {
+            innerWidth: number
+            innerHeight: number
+            outerWidth: number
+            outerHeight: number
+            devicePixelRatio: number
+            visualViewport: { width: number; height: number; scale: number } | null
+          }
           zoomFactor: number
           zoomLevel: number
         }>

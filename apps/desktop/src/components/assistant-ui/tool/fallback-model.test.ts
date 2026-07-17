@@ -62,6 +62,17 @@ describe('buildToolView image handling', () => {
     const hidden = 'https://cdn.example.com/hidden.png'
     expect(buildToolView(part({ result: { items: [...Array.from({ length: 20 }, () => ({})), { url: hidden }] } }), '').imageUrl).toBe('')
     expect(buildToolView(part({ result: { data: `${' '.repeat(65_537)}${JSON.stringify({ url: hidden })}` } }), '').imageUrl).toBe('')
+    expect(buildToolView(part({ result: { image: `data:image/png;base64,${'A'.repeat(65_536)}` } }), '').imageUrl).toBe('')
+  })
+
+  it('prefers explicit output media fields over unrelated nested URLs', () => {
+    const output = 'https://cdn.example.com/output.png'
+    const reference = 'https://cdn.example.com/reference.png'
+    const result = { structuredContent: { data: { items: [{ url: reference }], results: { raw_url: output } } } }
+
+    expect(buildToolView(part({ result }), '').imageUrl).toBe(output)
+    expect(buildToolView(part({ result: { structuredContent: { items: [{ url: reference }] } } }), '').imageUrl).toBe('')
+    expect(buildToolView(part({ result: { image: output } }), '').imageUrl).toBe(output)
   })
 })
 
@@ -88,6 +99,14 @@ describe('buildToolView video handling', () => {
     const hidden = 'https://cdn.example.com/hidden.mp4'
     const result = { items: [...Array.from({ length: 20 }, () => ({})), { url: hidden }] }
     expect(buildToolView(part({ result }), '').videoUrl).toBe('')
+  })
+
+  it('supports the standard video field without selecting nested reference URLs', () => {
+    const output = 'https://cdn.example.com/output.mp4'
+    const reference = 'https://cdn.example.com/reference.mp4'
+
+    expect(buildToolView(part({ result: { video: output } }), '').videoUrl).toBe(output)
+    expect(buildToolView(part({ result: { data: { items: [{ url: reference }] } } }), '').videoUrl).toBe('')
   })
 })
 

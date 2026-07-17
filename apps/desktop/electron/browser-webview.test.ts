@@ -5,6 +5,8 @@ import { test } from 'vitest'
 
 import {
   applyBrowserWebviewPolicy,
+  BROWSER_PAGE_AUDIT_SCRIPT,
+  BROWSER_VIEWPORT_SCRIPT,
   BROWSER_WEBVIEW_PARTITION,
   browserGuestPopupPolicy,
   createBrowserCaptureCache,
@@ -20,7 +22,6 @@ import {
 
 test('browser CDP bridge exposes page automation but blocks credential and browser-global state', () => {
   for (const method of [
-    'Runtime.evaluate',
     'Page.getLayoutMetrics',
     'DOM.getDocument',
     'DOM.querySelector',
@@ -33,6 +34,7 @@ test('browser CDP bridge exposes page automation but blocks credential and brows
   }
 
   for (const method of [
+    'Runtime.evaluate',
     'Network.getAllCookies',
     'Storage.getCookies',
     'Browser.getVersion',
@@ -47,6 +49,8 @@ test('browser CDP bridge exposes page automation but blocks credential and brows
   assert.deepEqual(normalizeBrowserCdpParams({ x: 12, y: 34 }), { x: 12, y: 34 })
   assert.throws(() => normalizeBrowserCdpParams([]), /must be an object/)
   assert.throws(() => normalizeBrowserCdpParams('x'), /must be an object/)
+  assert.doesNotMatch(BROWSER_VIEWPORT_SCRIPT, /cookie|localStorage|sessionStorage/i)
+  assert.doesNotMatch(BROWSER_PAGE_AUDIT_SCRIPT, /cookie|localStorage|sessionStorage/i)
 })
 
 test('webview source policy is partition-specific and rejects executable or remote-local sources', () => {
@@ -116,7 +120,23 @@ test('webview source policy is partition-specific and rejects executable or remo
 test('browser guests deny popups and retain partition-scoped navigation policy', () => {
   assert.equal(isBrowserGuestNavigationAllowed(BROWSER_WEBVIEW_PARTITION, 'https://example.test/next'), true)
   assert.equal(isBrowserGuestNavigationAllowed(BROWSER_WEBVIEW_PARTITION, 'file:///tmp/fixture.html'), false)
-  assert.equal(isBrowserGuestNavigationAllowed(PREVIEW_WEBVIEW_PARTITION, 'file:///tmp/fixture.html'), true)
+  assert.equal(
+    isBrowserGuestNavigationAllowed(
+      PREVIEW_WEBVIEW_PARTITION,
+      'file:///tmp/fixture.html#section',
+      'file:///tmp/fixture.html'
+    ),
+    true
+  )
+  assert.equal(
+    isBrowserGuestNavigationAllowed(
+      PREVIEW_WEBVIEW_PARTITION,
+      'file:///tmp/secret.html',
+      'file:///tmp/fixture.html'
+    ),
+    false
+  )
+  assert.equal(isBrowserGuestNavigationAllowed(PREVIEW_WEBVIEW_PARTITION, 'file:///tmp/fixture.html'), false)
   assert.equal(isBrowserGuestNavigationAllowed(BROWSER_WEBVIEW_PARTITION, 'data:image/webp;base64,AA=='), true)
   assert.equal(isBrowserGuestNavigationAllowed(BROWSER_WEBVIEW_PARTITION, 'mailto:hello@example.test'), false)
   assert.equal(isBrowserGuestNavigationAllowed(BROWSER_WEBVIEW_PARTITION, 'javascript:alert(1)'), false)

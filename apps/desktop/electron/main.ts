@@ -40,6 +40,8 @@ import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from 
 import { runBootstrap } from './bootstrap-runner'
 import {
   applyBrowserWebviewPolicy,
+  BROWSER_PAGE_AUDIT_SCRIPT,
+  BROWSER_VIEWPORT_SCRIPT,
   BROWSER_WEBVIEW_PARTITION,
   browserGuestPopupPolicy,
   createBrowserCaptureCache,
@@ -7038,20 +7040,22 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   win.webContents.on('did-attach-webview', (_event, guestWebContents) => {
     guestWebContents.setWindowOpenHandler(details => browserGuestPopupPolicy(details.url))
     let guestPartition: string | undefined
+    let initialPreviewUrl: string | undefined
 
     if (guestWebContents.session === session.fromPartition(BROWSER_WEBVIEW_PARTITION)) {
       guestPartition = BROWSER_WEBVIEW_PARTITION
     } else if (guestWebContents.session === session.fromPartition(PREVIEW_WEBVIEW_PARTITION)) {
       guestPartition = PREVIEW_WEBVIEW_PARTITION
+      initialPreviewUrl = guestWebContents.getURL()
     }
 
     guestWebContents.on('will-navigate', (event, url) => {
-      if (!isBrowserGuestNavigationAllowed(guestPartition, url)) {
+      if (!isBrowserGuestNavigationAllowed(guestPartition, url, initialPreviewUrl)) {
         event.preventDefault()
       }
     })
     guestWebContents.on('will-redirect', (event, url) => {
-      if (!isBrowserGuestNavigationAllowed(guestPartition, url)) {
+      if (!isBrowserGuestNavigationAllowed(guestPartition, url, initialPreviewUrl)) {
         event.preventDefault()
       }
     })
@@ -8302,15 +8306,23 @@ ipcMain.handle('hermes:browser:capture', async (event, guestWebContentsId) => {
 
 ipcMain.handle('hermes:browser:metrics', async (event, guestWebContentsId) => {
   const guest = ownedBrowserGuest(event.sender, guestWebContentsId)
+  const viewport = await guest.executeJavaScript(BROWSER_VIEWPORT_SCRIPT, true)
 
   return {
     guestWebContentsId: guest.id,
     title: guest.getTitle(),
     type: guest.getType(),
     url: guest.getURL(),
+    viewport,
     zoomFactor: guest.getZoomFactor(),
     zoomLevel: guest.getZoomLevel()
   }
+})
+
+ipcMain.handle('hermes:browser:audit', async (event, guestWebContentsId) => {
+  const guest = ownedBrowserGuest(event.sender, guestWebContentsId)
+
+  return guest.executeJavaScript(BROWSER_PAGE_AUDIT_SCRIPT, true)
 })
 
 ipcMain.handle('hermes:browser:cdp', async (event, guestWebContentsId, method, rawParams) => {

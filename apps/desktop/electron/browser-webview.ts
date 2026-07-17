@@ -6,6 +6,47 @@ export const BROWSER_CAPTURE_MAX_ENTRIES = 12
 export const BROWSER_CAPTURE_TTL_MS = 5 * 60 * 1000
 export const BROWSER_CAPTURE_MAX_BYTES = 32 * 1024 * 1024
 
+export const BROWSER_VIEWPORT_SCRIPT = `(() => ({
+  innerWidth,
+  innerHeight,
+  outerWidth,
+  outerHeight,
+  devicePixelRatio,
+  visualViewport: visualViewport
+    ? { width: visualViewport.width, height: visualViewport.height, scale: visualViewport.scale }
+    : null
+}))()`
+
+export const BROWSER_PAGE_AUDIT_SCRIPT = `(() => {
+  const visible = element => {
+    const style = getComputedStyle(element)
+    const rect = element.getBoundingClientRect()
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0
+  }
+  const images = [...document.images]
+  const controls = [...document.querySelectorAll('button,input,select,textarea,a[href]')].filter(visible)
+  const unlabeledControls = controls.filter(element => {
+    if (element.matches('input[type="hidden"]')) return false
+    const text = (element.getAttribute('aria-label') || element.getAttribute('title') || element.textContent || '').trim()
+    const id = element.id
+    const label = id ? document.querySelector('label[for="' + CSS.escape(id) + '"]')?.textContent?.trim() : ''
+    return !text && !label
+  }).length
+  return {
+    url: location.href,
+    viewportWidth: innerWidth,
+    viewportHeight: innerHeight,
+    documentWidth: document.documentElement.scrollWidth,
+    documentHeight: document.documentElement.scrollHeight,
+    horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1,
+    brokenImages: images.filter(image => image.complete && image.naturalWidth === 0).length,
+    missingAlt: images.filter(image => !image.hasAttribute('alt')).length,
+    unlabeledControls,
+    headingCount: document.querySelectorAll('h1,h2,h3,h4,h5,h6').length,
+    h1Count: document.querySelectorAll('h1').length
+  }
+})()`
+
 export const BROWSER_CDP_METHODS = new Set([
   'DOM.describeNode',
   'DOM.getBoxModel',
@@ -17,8 +58,7 @@ export const BROWSER_CDP_METHODS = new Set([
   'Input.dispatchMouseEvent',
   'Input.insertText',
   'Page.captureScreenshot',
-  'Page.getLayoutMetrics',
-  'Runtime.evaluate'
+  'Page.getLayoutMetrics'
 ])
 
 interface BrowserWebviewParams {
@@ -115,8 +155,28 @@ export function applyBrowserWebviewPolicy(
   return true
 }
 
-export function isBrowserGuestNavigationAllowed(partition: unknown, rawUrl: unknown): boolean {
-  return isBrowserWebviewSourceAllowed(partition, rawUrl)
+function normalizedPreviewFileTarget(rawUrl: unknown): string {
+  const url = parseUrl(rawUrl)
+
+  return url?.protocol === 'file:' && !url.hostname ? `${url.protocol}//${url.pathname}` : ''
+}
+
+export function isBrowserGuestNavigationAllowed(
+  partition: unknown,
+  rawUrl: unknown,
+  initialPreviewUrl?: unknown
+): boolean {
+  if (!isBrowserWebviewSourceAllowed(partition, rawUrl)) {
+    return false
+  }
+
+  const targetFile = normalizedPreviewFileTarget(rawUrl)
+
+  if (partition === PREVIEW_WEBVIEW_PARTITION && targetFile) {
+    return targetFile === normalizedPreviewFileTarget(initialPreviewUrl)
+  }
+
+  return true
 }
 
 export function browserGuestPopupPolicy(_rawUrl: unknown): { action: 'deny' } {

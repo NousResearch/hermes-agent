@@ -126,18 +126,27 @@ describe('ChatImageActions', () => {
   })
 
   it('honors contribution predicates for task-specific actions', () => {
+    const when = vi.fn(({ toolName }: { toolName?: string }) => toolName?.includes('generate_video') === true)
+
     mocks.contributions = [
       {
         id: 'plugin:video-only',
         data: {
           label: 'Video QC',
           onSelect: vi.fn(),
-          when: ({ toolName }: { toolName?: string }) => toolName?.includes('generate_video') === true
+          when
         }
       }
     ]
 
-    render(<ChatImageActions src="https://example.com/image.png" toolName="generate_image" />)
+    render(
+      <ChatImageActions
+        src="https://example.com/image.png?X-Amz-Signature=secret"
+        toolName="generate_image"
+        toolResult={{ prompt: 'private prompt', url: 'https://example.com/private.png?token=secret' }}
+      />
+    )
     expect(screen.queryByRole('button', { name: 'Video QC' })).toBeNull()
+    expect(when).toHaveBeenCalledWith({ src: 'https://example.com/image.png', toolName: 'generate_image' })
   })
 })

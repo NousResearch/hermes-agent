@@ -14,7 +14,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
-from typing import Optional
+from typing import List, Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
@@ -1830,12 +1830,62 @@ def _truncate_content(
     return head + marker + tail
 
 
+def _soul_md_candidates() -> List[Path]:
+    """Ordered SOUL.md dirs to try: active HERMES_HOME, then the profile root.
+
+    The active home wins so a genuinely-customized per-profile persona stays
+    authoritative. When the active home is a *profile* (``<root>/profiles/
+    <name>``) whose SOUL.md is only the auto-seeded default (see
+    :func:`_soul_is_uncustomized`), fall back to the root ``SOUL.md`` — the
+    persona the user configured at ``~/.hermes/SOUL.md`` and confirmed with
+    ``hermes doctor``. Without this a gateway whose systemd unit pins
+    ``HERMES_HOME=<root>/profiles/<name>`` silently serves the hardcoded
+    default identity even though the root SOUL.md exists (#66396):
+    ``ensure_hermes_home()`` seeds ``DEFAULT_SOUL_MD`` into the profile home,
+    which then shadows the root persona.
+
+    The fallback is scoped to profile homes only: for a Docker/custom
+    deployment ``get_default_hermes_root()`` equals ``get_hermes_home()`` so no
+    second candidate is added, and a bare ``/opt/data`` home never borrows an
+    unrelated ``~/.hermes/SOUL.md``.
+    """
+    candidates = [get_hermes_home()]
+    try:
+        from hermes_constants import get_default_hermes_root
+        root = get_default_hermes_root()
+        if root.resolve() != candidates[0].resolve():
+            candidates.append(root)
+    except Exception as e:
+        logger.debug("Could not resolve profile root for SOUL.md fallback: %s", e)
+    return candidates
+
+
+def _soul_is_uncustomized(content: str) -> bool:
+    """True when SOUL.md content carries zero user intent.
+
+    Matches the runtime default (``DEFAULT_SOUL_MD``, auto-seeded by
+    ``ensure_hermes_home()``) or a legacy comment-only scaffold. Such content
+    is safe to skip in favour of a root persona because the user demonstrably
+    never customized it — the same safety guarantee ``is_legacy_template_soul``
+    relies on.
+    """
+    try:
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
+    except Exception:
+        return False
+    return content.strip() == DEFAULT_SOUL_MD.strip() or is_legacy_template_soul(content)
+
+
 def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
-    """Load SOUL.md from HERMES_HOME and return its content, or None.
+    """Load SOUL.md and return its content, or None.
 
     Used as the agent identity (slot #1 in the system prompt).  When this
     returns content, ``build_context_files_prompt`` should be called with
     ``skip_soul=True`` so SOUL.md isn't injected twice.
+
+    Reads from the active HERMES_HOME, falling back to the profile root's
+    SOUL.md when the active home is a profile whose SOUL.md is only the
+    auto-seeded default (see :func:`_soul_md_candidates`).
     """
     try:
         from hermes_cli.config import ensure_hermes_home
@@ -1843,22 +1893,41 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
-    soul_path = get_hermes_home() / "SOUL.md"
-    if not soul_path.exists():
-        return None
-    try:
-        content = soul_path.read_text(encoding="utf-8").strip()
+    # First readable persona, even if it is only the seeded default — used as
+    # the fallback when no candidate is customized (preserves prior behavior).
+    default_hit: Optional[str] = None
+    for soul_dir in _soul_md_candidates():
+        soul_path = soul_dir / "SOUL.md"
+        if not soul_path.exists():
+            continue
+        try:
+            content = soul_path.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
+            continue
         if not content:
-            return None
-        content = _scan_context_content(content, "SOUL.md")
-        content = _truncate_content(
-            content, "SOUL.md", context_length=context_length,
-            read_path=str(soul_path),
-        )
-        return content
-    except Exception as e:
-        logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
-        return None
+            continue
+        if _soul_is_uncustomized(content):
+            # Keep looking for a customized persona (e.g. the root SOUL.md a
+            # profile-home gateway would otherwise shadow); remember this as a
+            # fallback if none is found.
+            if default_hit is None:
+                default_hit = content
+            continue
+        return _finalize_soul(content, soul_path, context_length)
+
+    if default_hit is not None:
+        return _finalize_soul(default_hit, get_hermes_home() / "SOUL.md", context_length)
+    return None
+
+
+def _finalize_soul(content: str, read_path: Path, context_length: Optional[int]) -> str:
+    """Scan + truncate SOUL.md content for injection/size before use."""
+    content = _scan_context_content(content, "SOUL.md")
+    return _truncate_content(
+        content, "SOUL.md", context_length=context_length,
+        read_path=str(read_path),
+    )
 
 
 def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:

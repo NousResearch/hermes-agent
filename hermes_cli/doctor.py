@@ -1188,10 +1188,22 @@ def run_doctor(args):
         content = soul_path.read_text(encoding="utf-8").strip()
         # Check if it's just the template comments (no real content)
         lines = [l for l in content.splitlines() if l.strip() and not l.strip().startswith(("<!--", "-->", "#"))]
-        if lines:
-            check_ok(f"{_DHH}/SOUL.md exists (persona configured)")
-        else:
+        # A SOUL.md that still holds the auto-seeded DEFAULT_SOUL_MD (or a legacy
+        # comment-only scaffold) is NOT a configured persona — reporting it as
+        # one gives false confidence that a custom identity is active when the
+        # runtime is really serving the hardcoded default (#66396). Detect it
+        # with the same helper the prompt builder uses so doctor and runtime agree.
+        try:
+            from agent.prompt_builder import _soul_is_uncustomized
+            uncustomized = _soul_is_uncustomized(content)
+        except Exception:
+            uncustomized = False
+        if not lines:
             check_info(f"{_DHH}/SOUL.md exists but is empty — edit it to customize personality")
+        elif uncustomized:
+            check_info(f"{_DHH}/SOUL.md exists but is the default persona — edit it to customize personality")
+        else:
+            check_ok(f"{_DHH}/SOUL.md exists (persona configured)")
     else:
         check_warn(f"{_DHH}/SOUL.md not found", "(create it to give Hermes a custom personality)")
         if should_fix:

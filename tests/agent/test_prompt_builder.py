@@ -18,6 +18,8 @@ from agent.prompt_builder import (
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
+    load_soul_md,
+    _soul_is_uncustomized,
     CONTEXT_FILE_MAX_CHARS,
     _dynamic_context_file_max_chars,
     _get_context_file_max_chars,
@@ -1684,6 +1686,106 @@ class TestParallelToolCallGuidance:
         # steer. The Google-only block must NOT carry its own copy, otherwise
         # Gemini/Gemma would receive the instruction twice in one prompt.
         assert "parallel tool call" not in GOOGLE_MODEL_OPERATIONAL_GUIDANCE.lower()
+
+
+# =========================================================================
+# SOUL.md loading — profile-home fallback (#66396)
+# =========================================================================
+
+
+class TestLoadSoulMdProfileFallback:
+    """A profile-home gateway must not shadow the root persona with the
+    auto-seeded default SOUL.md (#66396)."""
+
+    def _profile_layout(self, tmp_path, monkeypatch, root_soul, profile_soul):
+        """Wire a <root>/profiles/jarvis layout and point HERMES_HOME at it."""
+        import hermes_constants
+
+        root = tmp_path / "hermes_root"
+        root.mkdir()
+        monkeypatch.setattr(
+            hermes_constants, "_get_platform_default_hermes_home", lambda: root
+        )
+        if root_soul is not None:
+            (root / "SOUL.md").write_text(root_soul, encoding="utf-8")
+        profile = root / "profiles" / "jarvis"
+        profile.mkdir(parents=True)
+        if profile_soul is not None:
+            (profile / "SOUL.md").write_text(profile_soul, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        return root, profile
+
+    def test_seeded_default_profile_falls_back_to_root_persona(self, tmp_path, monkeypatch):
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+        self._profile_layout(
+            tmp_path, monkeypatch,
+            root_soul="# Putri\n\nSaya Putri, asisten pribadi.",
+            profile_soul=DEFAULT_SOUL_MD,
+        )
+        result = load_soul_md()
+        assert "Putri" in result
+        assert result != DEFAULT_SOUL_MD
+
+    def test_customized_profile_persona_wins_over_root(self, tmp_path, monkeypatch):
+        self._profile_layout(
+            tmp_path, monkeypatch,
+            root_soul="# Root persona",
+            profile_soul="# Jarvis, the profile persona",
+        )
+        result = load_soul_md()
+        assert "Jarvis" in result
+        assert "Root persona" not in result
+
+    def test_missing_profile_soul_falls_back_to_root(self, tmp_path, monkeypatch):
+        self._profile_layout(
+            tmp_path, monkeypatch,
+            root_soul="# Root persona lives here",
+            profile_soul=None,
+        )
+        # ensure_hermes_home seeds the profile with DEFAULT_SOUL_MD, which the
+        # loader then treats as uncustomized and skips.
+        result = load_soul_md()
+        assert "Root persona lives here" in result
+
+    def test_both_default_returns_default(self, tmp_path, monkeypatch):
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+        self._profile_layout(
+            tmp_path, monkeypatch,
+            root_soul=DEFAULT_SOUL_MD,
+            profile_soul=DEFAULT_SOUL_MD,
+        )
+        assert load_soul_md() == DEFAULT_SOUL_MD
+
+    def test_custom_default_home_not_overridden(self, tmp_path, monkeypatch):
+        # A non-profile custom home (HERMES_HOME == root, e.g. Docker /opt/data)
+        # must load its own SOUL.md with no second candidate.
+        import hermes_constants
+
+        home = tmp_path / "opt_data"
+        home.mkdir()
+        monkeypatch.setattr(
+            hermes_constants, "_get_platform_default_hermes_home", lambda: home
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (home / "SOUL.md").write_text("# Custom home persona", encoding="utf-8")
+        assert "Custom home persona" in load_soul_md()
+
+
+class TestSoulIsUncustomized:
+    def test_default_soul_is_uncustomized(self):
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+        assert _soul_is_uncustomized(DEFAULT_SOUL_MD) is True
+
+    def test_legacy_scaffold_is_uncustomized(self):
+        from hermes_cli.default_soul import _LEGACY_TEMPLATE_SOULS
+
+        assert _soul_is_uncustomized(_LEGACY_TEMPLATE_SOULS[0]) is True
+
+    def test_real_persona_is_customized(self):
+        assert _soul_is_uncustomized("# Putri\n\nSaya Putri.") is False
 
 
 # =========================================================================

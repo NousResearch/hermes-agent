@@ -3203,6 +3203,15 @@ def _signal_reconnect(server: Any) -> bool:
     return True
 
 
+def reconnect_mcp_server(server_name: str) -> bool:
+    """Ask a currently-live MCP server to rebuild after external re-auth."""
+    with _lock:
+        server = _servers.get(server_name)
+    if server is None:
+        return False
+    return _signal_reconnect(server)
+
+
 def _wait_for_server_session_ready(
     srv: "MCPServerTask",
     *,

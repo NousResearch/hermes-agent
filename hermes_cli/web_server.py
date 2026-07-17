@@ -11329,32 +11329,50 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
 _MCP_DASHBOARD_OAUTH_TTL = 15 * 60
 _MAX_PENDING_MCP_OAUTH_FLOWS = 8
 _mcp_oauth_flows: dict[str, "DashboardOAuthFlow"] = {}
+_mcp_oauth_flows_lock = threading.Lock()
+_mcp_oauth_transactions: dict[tuple[str, str], threading.Lock] = {}
+_mcp_oauth_transactions_lock = threading.Lock()
 
 
 def _gc_mcp_oauth_flows() -> None:
     cutoff = time.time() - _MCP_DASHBOARD_OAUTH_TTL
-    stale = [
-        flow_id
-        for flow_id, flow in _mcp_oauth_flows.items()
-        if getattr(flow, "created_at", 0) < cutoff
-    ]
-    for flow_id in stale:
-        _mcp_oauth_flows.pop(flow_id, None)
+    with _mcp_oauth_flows_lock:
+        stale = [
+            flow_id
+            for flow_id, flow in _mcp_oauth_flows.items()
+            if getattr(flow, "created_at", 0) < cutoff
+        ]
+        for flow_id in stale:
+            _mcp_oauth_flows.pop(flow_id, None)
 
 
-def _mcp_oauth_callback_url(request: Request, flow_id: str) -> str:
+def _mcp_oauth_callback_url_from_base(base_url: str, server_name: str) -> str:
+    from urllib.parse import quote
+
+    return f"{base_url.rstrip('/')}/api/mcp/oauth/callback/{quote(server_name, safe='')}"
+
+
+def _mcp_oauth_callback_url(request: Request, server_name: str) -> str:
     """Build the externally reachable callback URL for a dashboard flow."""
     from urllib.parse import urlparse, urlunparse
 
     from hermes_cli.dashboard_auth.prefix import prefix_from_request, resolve_public_url
 
-    suffix = f"/api/mcp/oauth/callback/{flow_id}"
+    from urllib.parse import quote
+
+    suffix = f"/api/mcp/oauth/callback/{quote(server_name, safe='')}"
     public_url = resolve_public_url()
     if public_url:
         return f"{public_url}{suffix}"
     base = urlparse(str(request.base_url))
     prefix = prefix_from_request(request)
     return urlunparse(base._replace(path=f"{prefix}{suffix}", params="", query="", fragment=""))
+
+
+def _mcp_oauth_transaction(flow) -> threading.Lock:
+    key = (flow.hermes_home, flow.server_name)
+    with _mcp_oauth_transactions_lock:
+        return _mcp_oauth_transactions.setdefault(key, threading.Lock())
 
 
 def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
@@ -11365,35 +11383,47 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
         _save_mcp_server,
     )
     try:
+        from agent.secret_scope import (
+            build_profile_secret_scope,
+            reset_secret_scope,
+            set_secret_scope,
+        )
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from tools.mcp_dashboard_oauth import dashboard_oauth_flow
         from tools.mcp_oauth import HermesTokenStorage, force_interactive_oauth
         from tools.mcp_oauth_manager import get_manager
 
-        with (
-            _config_profile_scope(flow.profile),
-            force_interactive_oauth(),
-            dashboard_oauth_flow(flow),
-        ):
-            storage = HermesTokenStorage(flow.server_name)
-            backup = storage.snapshot()
-            try:
-                get_manager().remove(flow.server_name)
-                tools = _probe_single_server(
-                    flow.server_name,
-                    cfg,
-                    connect_timeout=max(float(cfg.get("connect_timeout", 0) or 0), 315),
-                )
-                if not _oauth_tokens_present(flow.server_name):
-                    raise RuntimeError(
-                        "The server responded, but no OAuth token was obtained — "
-                        "this provider may require a manually-registered OAuth client."
+        home_token = set_hermes_home_override(flow.hermes_home)
+        secret_token = set_secret_scope(build_profile_secret_scope(Path(flow.hermes_home)))
+        try:
+            transaction = _mcp_oauth_transaction(flow)
+            with transaction, force_interactive_oauth(), dashboard_oauth_flow(flow):
+                storage = HermesTokenStorage(flow.server_name)
+                backup = storage.snapshot()
+                try:
+                    get_manager().remove(flow.server_name, hermes_home=flow.hermes_home)
+                    tools = _probe_single_server(
+                        flow.server_name,
+                        cfg,
+                        connect_timeout=max(float(cfg.get("connect_timeout", 0) or 0), 315),
                     )
-                _save_mcp_server(flow.server_name, cfg)
-                flow.tools = [{"name": t, "description": d} for t, d in tools]
-                flow.mark_approved()
-            except Exception:
-                storage.restore(backup)
-                raise
+                    if not _oauth_tokens_present(flow.server_name):
+                        raise RuntimeError(
+                            "The server responded, but no OAuth token was obtained — "
+                            "this provider may require a manually-registered OAuth client."
+                        )
+                    _save_mcp_server(flow.server_name, cfg)
+                    flow.tools = [{"name": t, "description": d} for t, d in tools]
+                    flow.mark_approved()
+                    from tools.mcp_tool import reconnect_mcp_server
+
+                    reconnect_mcp_server(flow.server_name)
+                except Exception:
+                    storage.restore(backup)
+                    raise
+        finally:
+            reset_secret_scope(secret_token)
+            reset_hermes_home_override(home_token)
     except Exception as exc:
         msg = str(exc)
         # Providers that gate RFC 7591 registration to pre-approved clients
@@ -11417,7 +11447,7 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
         try:
             from tools.mcp_oauth_manager import get_manager
 
-            get_manager().evict(flow.server_name)
+            get_manager().evict(flow.server_name, hermes_home=flow.hermes_home)
         except Exception:
             pass
 
@@ -11430,26 +11460,11 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
 
     _require_token(request)
     _gc_mcp_oauth_flows()
-    pending = sum(
-        flow.status in {"starting", "authorization_required"}
-        for flow in _mcp_oauth_flows.values()
-    )
-    if pending >= _MAX_PENDING_MCP_OAUTH_FLOWS:
-        raise HTTPException(
-            status_code=429,
-            detail="Too many MCP OAuth flows are already in progress",
-        )
-    if any(
-        flow.server_name == name
-        and flow.status in {"starting", "authorization_required"}
-        for flow in _mcp_oauth_flows.values()
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail=f"MCP OAuth for '{name}' is already in progress",
-        )
     with _profile_scope(profile):
         servers = _get_mcp_servers()
+        from hermes_constants import get_hermes_home
+
+        flow_home = str(get_hermes_home().expanduser().resolve(strict=False))
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
     cfg = dict(servers[name])
@@ -11459,14 +11474,38 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
         raise HTTPException(status_code=400, detail="This server uses header/API-key auth, not OAuth")
     cfg["auth"] = "oauth"
 
+    with _mcp_oauth_flows_lock:
+        pending = sum(
+            flow.status in {"starting", "authorization_required"}
+            for flow in _mcp_oauth_flows.values()
+        )
+        if pending >= _MAX_PENDING_MCP_OAUTH_FLOWS:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many MCP OAuth flows are already in progress",
+            )
+        if any(
+            flow.server_name == name
+            and flow.hermes_home == flow_home
+            and flow.status in {"starting", "authorization_required"}
+            for flow in _mcp_oauth_flows.values()
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"MCP OAuth for '{name}' is already in progress",
+            )
+
     flow_id = secrets.token_urlsafe(24)
     flow = DashboardOAuthFlow(
         flow_id=flow_id,
         server_name=name,
         profile=profile,
-        redirect_uri=_mcp_oauth_callback_url(request, flow_id),
+        hermes_home=flow_home,
+        redirect_uri=(cfg.get("oauth") or {}).get("redirect_uri")
+        or _mcp_oauth_callback_url(request, name),
     )
-    _mcp_oauth_flows[flow_id] = flow
+    with _mcp_oauth_flows_lock:
+        _mcp_oauth_flows[flow_id] = flow
     threading.Thread(
         target=_run_dashboard_mcp_oauth,
         args=(flow, cfg),
@@ -11492,15 +11531,31 @@ async def mcp_oauth_flow_status(flow_id: str, request: Request):
     return snapshot
 
 
-@app.get("/api/mcp/oauth/callback/{flow_id}")
+@app.get("/api/mcp/oauth/callback/{server_name}")
 async def mcp_oauth_callback(
-    flow_id: str,
+    server_name: str,
     code: Optional[str] = None,
     state: Optional[str] = None,
     error: Optional[str] = None,
 ):
     _gc_mcp_oauth_flows()
-    flow = _mcp_oauth_flows.get(flow_id)
+    with _mcp_oauth_flows_lock:
+        candidates = [
+            flow
+            for flow in _mcp_oauth_flows.values()
+            if flow.server_name == server_name
+            and flow.status == "authorization_required"
+        ]
+    flow = next(
+        (
+            candidate
+            for candidate in candidates
+            if candidate.expected_state is not None
+            and state is not None
+            and secrets.compare_digest(candidate.expected_state, state)
+        ),
+        None,
+    )
     if flow is None:
         return HTMLResponse("<h1>OAuth flow expired</h1><p>Return to Hermes and try again.</p>", status_code=404)
     try:

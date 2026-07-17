@@ -46,6 +46,9 @@ export async function completeMcpDashboardOAuth({
     if (current.status === "error") {
       throw new Error(current.error || "OAuth authorization failed");
     }
+    if (authWindow.closed) {
+      throw new Error("OAuth authorization window was closed before completion");
+    }
     await sleep(1000);
   }
 }

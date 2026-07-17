@@ -839,12 +839,12 @@ class TestMcpRemoveEvictsManager:
         mgr.get_or_build_provider(
             "oauth-srv", "https://example.com/mcp", None,
         )
-        assert "oauth-srv" in mgr._entries
+        assert mgr._key("oauth-srv") in mgr._entries
 
         from hermes_cli.mcp_config import cmd_mcp_remove
         cmd_mcp_remove(_make_args(name="oauth-srv"))
 
-        assert "oauth-srv" not in mgr._entries
+        assert mgr._key("oauth-srv") not in mgr._entries
 
 
 class TestMcpLogin:

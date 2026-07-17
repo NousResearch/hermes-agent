@@ -2195,25 +2195,6 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         return True
 
-    async def _message_has_own_reaction(self, message: Any, emojis: set[str]) -> bool:
-        bot_user = getattr(self._client, "user", None) if self._client else None
-        bot_id = getattr(bot_user, "id", None)
-        for reaction in getattr(message, "reactions", []) or []:
-            if str(getattr(reaction, "emoji", "")) not in emojis:
-                continue
-            if getattr(reaction, "me", False):
-                return True
-            users = getattr(reaction, "users", None)
-            if not callable(users) or bot_id is None:
-                continue
-            try:
-                async for user in users():
-                    if getattr(user, "id", None) == bot_id:
-                        return True
-            except Exception:
-                continue
-        return False
-
     def _is_down_notice_content(self, content: str) -> bool:
         """Recognize only explicit Hermes/gateway outage notices."""
         text = (content or "").lower()

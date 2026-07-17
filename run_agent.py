@@ -4821,6 +4821,14 @@ class AIAgent:
         if visible:
             return visible
         content = assistant_msg.get("content")
+        if isinstance(content, list):
+            # Compaction and multimodal providers leave content as a parts
+            # list; only the textual parts are interim-deliverable.
+            content = "".join(
+                part["text"]
+                for part in content
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            )
         return self._strip_think_blocks(content or "").strip()
 
     def _interim_text_was_delivered(self, text: str) -> bool:

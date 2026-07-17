@@ -179,6 +179,17 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_binds_arbitrary_agent_write_origin_without_filtering():
+    """Curator dry-run origins must reach the provenance ContextVar verbatim."""
+    agent = _FakeAgent()
+    agent._memory_write_origin = "curator_dry_run"
+    observed = []
+
+    _build(agent, set_current_write_origin=observed.append)
+
+    assert observed == ["curator_dry_run"]
+
+
 def test_applies_agent_side_effects():
     agent = _FakeAgent()
     _build(agent)

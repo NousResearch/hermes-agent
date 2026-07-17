@@ -95,6 +95,32 @@ def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
     )
 
 
+def _runtime_tool_scope_block(agent, function_name: str) -> Optional[str]:
+    """Return a denial when an agent-scoped runtime allowlist excludes a tool.
+
+    The policy lives on the agent object rather than in thread-local state, so
+    it is preserved across the concurrent executor's worker threads. ``None``
+    means that the agent did not opt into an extra runtime scope; an empty
+    allowlist intentionally denies every tool.
+    """
+    allowlist = getattr(agent, "_runtime_tool_allowlist", None)
+    if allowlist is None:
+        return None
+    # The policy is deliberately immutable. Accepting a list/set here would
+    # let another reference widen an autonomous agent's surface after setup.
+    if isinstance(allowlist, frozenset) and function_name in allowlist:
+        return None
+    scope_name = getattr(agent, "_runtime_tool_scope_name", None) or "restricted agent"
+    denial = f"Tool '{function_name}' is not allowed in the {scope_name} runtime scope."
+    logger.warning(
+        "Runtime tool scope denied tool=%r scope=%r session_id=%r",
+        function_name,
+        scope_name,
+        getattr(agent, "session_id", "") or "",
+    )
+    return denial
+
+
 def _resolve_concurrent_tool_timeout() -> float | None:
     raw = os.getenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "").strip()
     if not raw:
@@ -156,6 +182,11 @@ def _emit_terminal_post_tool_call(
     error_message: str | None = None,
     middleware_trace: Optional[list[dict[str, Any]]] = None,
 ) -> None:
+    """Emit a post-tool event with serialized ``result`` and plain-text errors.
+
+    ``error_message`` is human-readable metadata, not a second serialized copy
+    of ``result``. This matches cancellation and ordinary tool-failure events.
+    """
     try:
         from model_tools import _emit_post_tool_call_hook
         _emit_post_tool_call_hook(
@@ -412,31 +443,38 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         function_name = _underlying
                         function_args = _underlying_args
                     else:
-                        _ts_scope_block = json.dumps({
-                            "error": (
-                                f"'{_underlying}' is not available in this session. "
-                                "Use tool_search to find tools you can call."
-                            ),
-                        }, ensure_ascii=False)
+                        _ts_scope_block = (
+                            f"'{_underlying}' is not available in this session. "
+                            "Use tool_search to find tools you can call."
+                        )
         except Exception:
             pass
 
-        function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
-            agent,
-            function_name=function_name,
-            function_args=function_args,
-            effective_task_id=effective_task_id,
-            tool_call_id=getattr(tool_call, "id", "") or "",
-        )
+        _runtime_scope_message = _runtime_tool_scope_block(agent, function_name)
+        _scope_block_message = _runtime_scope_message or _ts_scope_block
+        if _scope_block_message is None:
+            function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+            )
+        else:
+            # Runtime scope is a security boundary: denied payloads must not
+            # reach middleware or plugin hooks before being rejected.
+            middleware_trace = []
 
         # ── Block evaluation (BEFORE checkpoint preflight) ───────────
         # We must know whether the tool will execute before touching
         # checkpoint state (dedup slot, real snapshots).
         block_result = None
         blocked_by_guardrail = False
-        if _ts_scope_block is not None:
+        if _scope_block_message is not None:
             # Out-of-scope tool_call: reject before hooks/guardrails/dispatch.
-            block_result = _ts_scope_block
+            block_result = json.dumps(
+                {"error": _scope_block_message}, ensure_ascii=False
+            )
             _emit_terminal_post_tool_call(
                 agent,
                 function_name=function_name,
@@ -446,7 +484,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 tool_call_id=getattr(tool_call, "id", "") or "",
                 status="blocked",
                 error_type="tool_scope_block",
-                error_message=_ts_scope_block,
+                error_message=_scope_block_message,
                 middleware_trace=list(middleware_trace),
             )
         else:
@@ -1098,19 +1136,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
-        function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
-            agent,
-            function_name=function_name,
-            function_args=function_args,
-            effective_task_id=effective_task_id,
-            tool_call_id=getattr(tool_call, "id", "") or "",
-        )
+        _runtime_scope_message = _runtime_tool_scope_block(agent, function_name)
+        _scope_block_message = _runtime_scope_message or _ts_scope_block
+        if _scope_block_message is None:
+            function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+            )
+        else:
+            middleware_trace = []
 
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None
         _block_error_type = "plugin_block"
-        if _ts_scope_block is not None:
-            _block_msg = _ts_scope_block
+        if _scope_block_message is not None:
+            _block_msg = _scope_block_message
             _block_error_type = "tool_scope_block"
         else:
             try:

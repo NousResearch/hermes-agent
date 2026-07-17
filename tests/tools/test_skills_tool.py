@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -375,6 +375,39 @@ class TestSkillsList:
 
 
 class TestSkillView:
+    def test_curator_dry_run_does_not_write_usage_telemetry(self, monkeypatch):
+        """Dry-run inspection must not mutate the skill usage sidecar."""
+        from tools import skills_tool
+        from tools.skill_provenance import (
+            CURATOR_DRY_RUN,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        monkeypatch.setattr(
+            skills_tool,
+            "skill_view",
+            lambda *args, **kwargs: json.dumps(
+                {"success": True, "name": "inspected-skill", "content": "body"}
+            ),
+        )
+        bump_view = Mock()
+        bump_use = Mock()
+        monkeypatch.setattr("tools.skill_usage.bump_view", bump_view)
+        monkeypatch.setattr("tools.skill_usage.bump_use", bump_use)
+
+        token = set_current_write_origin(CURATOR_DRY_RUN)
+        try:
+            result = json.loads(
+                skills_tool._skill_view_with_bump({"name": "inspected-skill"})
+            )
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["success"] is True
+        bump_view.assert_not_called()
+        bump_use.assert_not_called()
+
     def test_view_existing_skill(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "my-skill")

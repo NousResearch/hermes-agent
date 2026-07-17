@@ -43,6 +43,9 @@ _write_origin: contextvars.ContextVar[str] = contextvars.ContextVar(
 # run_agent.py's AIAgent._memory_write_origin override in
 # _spawn_background_review().
 BACKGROUND_REVIEW = "background_review"
+# Read-only curator reviews use a distinct origin so inspection can suppress
+# usage telemetry without weakening normal background-review provenance.
+CURATOR_DRY_RUN = "curator_dry_run"
 
 
 def set_current_write_origin(origin: str) -> contextvars.Token[str]:
@@ -76,3 +79,8 @@ def is_background_review() -> bool:
     """Convenience: True iff the current write origin is the background
     review fork."""
     return get_current_write_origin() == BACKGROUND_REVIEW
+
+
+def is_curator_dry_run() -> bool:
+    """Return True while a read-only curator fork is inspecting skills."""
+    return get_current_write_origin() == CURATOR_DRY_RUN

@@ -826,6 +826,11 @@ def _run_review_in_thread(
                     quiet_mode=True,
                 )
             }
+            # The plugin whitelist is thread-local and therefore cannot protect
+            # concurrent tool worker threads on its own. Mirror the same policy
+            # onto the agent so both executor paths enforce it before dispatch.
+            setattr(review_agent, "_runtime_tool_allowlist", frozenset(review_whitelist))
+            setattr(review_agent, "_runtime_tool_scope_name", "background review")
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(

@@ -3052,6 +3052,182 @@ class TestConcurrentToolExecution:
             )
             assert result == "result"
 
+    def test_runtime_allowlist_blocks_sequential_dispatch_before_middleware(self, agent):
+        """A restricted autonomous agent cannot reach a denied handler."""
+        agent._runtime_tool_allowlist = frozenset({"skill_view"})
+        agent._runtime_tool_scope_name = "curator"
+        tool_call = _mock_tool_call(
+            name="web_search", arguments='{"query":"bypass"}', call_id="c-denied"
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        with patch("hermes_cli.middleware.apply_tool_request_middleware") as middleware, \
+             patch("run_agent.handle_function_call") as handler:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        middleware.assert_not_called()
+        handler.assert_not_called()
+        assert len(messages) == 1
+        assert "not allowed in the curator runtime scope" in messages[0]["content"]
+
+    def test_runtime_allowlist_blocks_concurrent_dispatch_before_workers(self, agent):
+        """Parallel calls cannot escape an agent-scoped runtime allowlist."""
+        agent._runtime_tool_allowlist = frozenset({"skill_view"})
+        agent._runtime_tool_scope_name = "curator"
+        tool_calls = [
+            _mock_tool_call(
+                name="web_search",
+                arguments=json.dumps({"query": query}),
+                call_id=f"c-{query}",
+            )
+            for query in ("one", "two")
+        ]
+        mock_msg = _mock_assistant_msg(content="", tool_calls=tool_calls)
+        messages = []
+
+        with patch("hermes_cli.middleware.apply_tool_request_middleware") as middleware, \
+             patch("run_agent.handle_function_call") as handler:
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        middleware.assert_not_called()
+        handler.assert_not_called()
+        assert len(messages) == 2
+        assert all(
+            "not allowed in the curator runtime scope" in message["content"]
+            for message in messages
+        )
+
+    def test_runtime_scope_denial_format_matches_between_executors(self, agent):
+        agent._runtime_tool_allowlist = frozenset({"skill_view"})
+        agent._runtime_tool_scope_name = "curator"
+        sequential_messages = []
+        concurrent_messages = []
+
+        sequential_call = _mock_tool_call(
+            name="web_search", arguments='{"query":"one"}', call_id="seq"
+        )
+        with patch("agent.tool_executor._emit_terminal_post_tool_call") as emitted:
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[sequential_call]),
+                sequential_messages,
+                "task-1",
+            )
+
+            concurrent_calls = [
+                _mock_tool_call(
+                    name="web_search",
+                    arguments=json.dumps({"query": query}),
+                    call_id=f"con-{query}",
+                )
+                for query in ("one", "two")
+            ]
+            agent._execute_tool_calls_concurrent(
+                _mock_assistant_msg(content="", tool_calls=concurrent_calls),
+                concurrent_messages,
+                "task-1",
+            )
+
+        expected = sequential_messages[0]["content"]
+        assert '"error"' in expected
+        assert all(
+            message["content"] == expected
+            for message in concurrent_messages
+        )
+        assert len(emitted.call_args_list) == 3
+        for emitted_call in emitted.call_args_list:
+            payload = json.loads(emitted_call.kwargs["result"])
+            assert set(payload) == {"error"}
+            assert payload["error"] == emitted_call.kwargs["error_message"]
+            assert emitted_call.kwargs["error_type"] == "tool_scope_block"
+
+    def test_api_kwargs_use_current_filtered_tool_schema(self, agent):
+        """Post-init schema filtering must reach the actual model request."""
+        agent.tools = _make_tool_defs("skills_list", "skill_view")
+        agent.valid_tool_names = frozenset({"skills_list", "skill_view"})
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "review"}])
+
+        assert {
+            tool["function"]["name"] for tool in kwargs["tools"]
+        } == {"skills_list", "skill_view"}
+
+    def test_concurrent_executor_propagates_curator_dry_run_origin(self, agent):
+        from tools.skill_provenance import (
+            CURATOR_DRY_RUN,
+            is_curator_dry_run,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        observed = []
+        agent._invoke_tool = MagicMock(
+            side_effect=lambda *_args, **_kwargs: (
+                observed.append(is_curator_dry_run()) or "{}"
+            )
+        )
+        calls = [
+            _mock_tool_call(
+                name="web_search",
+                arguments=json.dumps({"query": query}),
+                call_id=f"dry-run-{query}",
+            )
+            for query in ("one", "two")
+        ]
+        token = set_current_write_origin(CURATOR_DRY_RUN)
+        try:
+            agent._execute_tool_calls_concurrent(
+                _mock_assistant_msg(content="", tool_calls=calls),
+                [],
+                "task-1",
+            )
+        finally:
+            reset_current_write_origin(token)
+
+        assert observed == [True, True]
+
+    def test_tool_search_scope_block_skips_middleware_in_both_executors(self, agent):
+        from tools import tool_search
+
+        def call(call_id):
+            return _mock_tool_call(
+                name=tool_search.TOOL_CALL_NAME,
+                arguments='{"name":"terminal","arguments":{}}',
+                call_id=call_id,
+            )
+
+        sequential_messages = []
+        concurrent_messages = []
+        with patch(
+            "tools.tool_search.resolve_underlying_call",
+            return_value=("terminal", {"command": "blocked"}, None),
+        ), patch(
+            "agent.tool_executor._tool_search_scoped_names",
+            return_value={"web_search"},
+        ), patch(
+            "hermes_cli.middleware.apply_tool_request_middleware"
+        ) as middleware, patch("run_agent.handle_function_call") as handler:
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[call("seq")]),
+                sequential_messages,
+                "task-1",
+            )
+            agent._execute_tool_calls_concurrent(
+                _mock_assistant_msg(
+                    content="", tool_calls=[call("con-1"), call("con-2")]
+                ),
+                concurrent_messages,
+                "task-1",
+            )
+
+        middleware.assert_not_called()
+        handler.assert_not_called()
+        assert "not available in this session" in sequential_messages[0]["content"]
+        assert all(
+            "not available in this session" in message["content"]
+            for message in concurrent_messages
+        )
+
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])

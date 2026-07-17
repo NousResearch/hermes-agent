@@ -40,6 +40,13 @@ def _write_skill(skills_dir: Path, name: str, body: str = "body") -> Path:
     return d
 
 
+def _mark_agent_created(usage, name: str) -> None:
+    data = usage.load_usage()
+    data[name] = usage._empty_record()
+    data[name]["created_by"] = "agent"
+    usage.save_usage(data)
+
+
 # ---------------------------------------------------------------------------
 # snapshot_skills
 # ---------------------------------------------------------------------------
@@ -270,23 +277,32 @@ def test_real_run_takes_pre_snapshot(backup_env, monkeypatch):
     skills = backup_env["skills"]
     _write_skill(skills, "alpha")
 
-    # Reload curator module against the freshly-env'd hermes_constants
+    # Reload usage before curator so the candidate scan uses this test's HOME.
+    import tools.skill_usage as usage
+    importlib.reload(usage)
+    _mark_agent_created(usage, "alpha")
+
+    # Reload curator module against the freshly-env'd hermes_constants.
     from agent import curator
     importlib.reload(curator)
 
     # Stub out LLM review and auto transitions — we only care about the
     # snapshot side-effect.
-    monkeypatch.setattr(
-        curator, "_run_llm_review",
-        lambda p: {"final": "", "summary": "s", "model": "", "provider": "",
-                   "tool_calls": [], "error": None},
-    )
+    review_modes = []
+
+    def _review_stub(_prompt, *, allow_mutation=True):
+        review_modes.append(allow_mutation)
+        return {"final": "", "summary": "s", "model": "", "provider": "",
+                "tool_calls": [], "error": None}
+
+    monkeypatch.setattr(curator, "_run_llm_review", _review_stub)
     monkeypatch.setattr(
         curator, "apply_automatic_transitions",
         lambda now=None: {"checked": 1, "marked_stale": 0, "archived": 0, "reactivated": 0},
     )
 
-    curator.run_curator_review(synchronous=True)
+    curator.run_curator_review(synchronous=True, consolidate=True)
+    assert review_modes == [True]
     # Pre-run snapshot should exist
     rows = cb.list_backups()
     assert any(r.get("reason") == "pre-curator-run" for r in rows), (
@@ -301,15 +317,23 @@ def test_dry_run_skips_snapshot(backup_env, monkeypatch):
     skills = backup_env["skills"]
     _write_skill(skills, "alpha")
 
+    import tools.skill_usage as usage
+    importlib.reload(usage)
+    _mark_agent_created(usage, "alpha")
+
     from agent import curator
     importlib.reload(curator)
-    monkeypatch.setattr(
-        curator, "_run_llm_review",
-        lambda p: {"final": "", "summary": "s", "model": "", "provider": "",
-                   "tool_calls": [], "error": None},
-    )
+    review_modes = []
 
-    curator.run_curator_review(synchronous=True, dry_run=True)
+    def _review_stub(_prompt, *, allow_mutation=True):
+        review_modes.append(allow_mutation)
+        return {"final": "", "summary": "s", "model": "", "provider": "",
+                "tool_calls": [], "error": None}
+
+    monkeypatch.setattr(curator, "_run_llm_review", _review_stub)
+
+    curator.run_curator_review(synchronous=True, dry_run=True, consolidate=True)
+    assert review_modes == [False]
     rows = cb.list_backups()
     assert not any(r.get("reason") == "pre-curator-run" for r in rows), (
         "dry-run must not create a pre-run snapshot"

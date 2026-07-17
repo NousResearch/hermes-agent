@@ -14,6 +14,15 @@ from pathlib import Path
 import pytest
 
 
+def _seed_stub_skill_tools(agent):
+    names = {"skills_list", "skill_view", "skill_manage"}
+    agent.tools = [
+        {"type": "function", "function": {"name": name}}
+        for name in sorted(names)
+    ]
+    agent.valid_tool_names = set(names)
+
+
 @pytest.fixture
 def curator_env(tmp_path, monkeypatch):
     """Isolated HERMES_HOME + freshly reloaded curator + skill_usage modules."""
@@ -607,9 +616,9 @@ def test_dry_run_does_not_advance_state(curator_env, monkeypatch):
 
 def test_dry_run_injects_report_only_banner(curator_env, monkeypatch):
     """The dry-run prompt must carry a banner instructing the LLM not to
-    call any mutating tool. This is defense in depth — the caller also
-    skips automatic transitions — but the LLM prompt is the only guard
-    against the model calling skill_manage directly."""
+    call any mutating tool. This is defense in depth: the caller also skips
+    automatic transitions and passes allow_mutation=False so skill_manage is
+    absent from both the model schema and runtime dispatch allowlist."""
     c = curator_env["curator"]
     u = curator_env["usage"]
     skills_dir = curator_env["home"] / "skills"
@@ -617,8 +626,9 @@ def test_dry_run_injects_report_only_banner(curator_env, monkeypatch):
     u.mark_agent_created("a")
 
     captured = {}
-    def _stub(prompt):
+    def _stub(prompt, *, allow_mutation):
         captured["prompt"] = prompt
+        captured["allow_mutation"] = allow_mutation
         return {"final": "", "summary": "s", "model": "", "provider": "",
                 "tool_calls": [], "error": None}
     monkeypatch.setattr(c, "_run_llm_review", _stub)
@@ -626,6 +636,7 @@ def test_dry_run_injects_report_only_banner(curator_env, monkeypatch):
     c.run_curator_review(synchronous=True, dry_run=True, consolidate=True)
     assert "DRY-RUN" in captured["prompt"]
     assert "DO NOT" in captured["prompt"]
+    assert captured["allow_mutation"] is False
 
 
 def test_dry_run_skips_automatic_transitions(curator_env, monkeypatch):
@@ -1275,6 +1286,7 @@ def test_review_fork_runs_under_background_review_origin(curator_env, monkeypatc
             self._skill_nudge_interval = 10
             self.platform = kwargs.get("platform")
             self._session_messages = []
+            _seed_stub_skill_tools(self)
 
         def run_conversation(self, user_message=None, **kwargs):
             # Capture the origin AT RUN TIME — i.e. after _run_llm_review has
@@ -1321,6 +1333,7 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
             self._memory_nudge_interval = 0
             self._skill_nudge_interval = 0
             self._session_messages = []
+            _seed_stub_skill_tools(self)
 
         def run_conversation(self, user_message=None, **kwargs):
             return {"final_response": "ok"}
@@ -1371,6 +1384,7 @@ def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch)
         def __init__(self, **kwargs):
             captured.update(kwargs)
             self._session_messages = []
+            _seed_stub_skill_tools(self)
 
         def run_conversation(self, **_kwargs):
             return {"final_response": "ok"}
@@ -1422,6 +1436,7 @@ def test_review_fork_merges_slot_extra_body_over_runtime(curator_env, monkeypatc
         def __init__(self, **kwargs):
             captured.update(kwargs)
             self._session_messages = []
+            _seed_stub_skill_tools(self)
 
         def run_conversation(self, **_kwargs):
             return {"final_response": "ok"}
@@ -1442,3 +1457,127 @@ def test_review_fork_merges_slot_extra_body_over_runtime(curator_env, monkeypatc
         },
         "service_tier": "priority",
     }
+
+
+@pytest.mark.parametrize(
+    ("allow_mutation", "expected_tools", "scope_name", "write_origin"),
+    [
+        (
+            True,
+            {"skills_list", "skill_view", "skill_manage"},
+            "curator",
+            "background_review",
+        ),
+        (
+            False,
+            {"skills_list", "skill_view"},
+            "curator dry-run",
+            "curator_dry_run",
+        ),
+    ],
+)
+def test_review_fork_has_closed_skill_only_tool_surface(
+    curator_env,
+    monkeypatch,
+    allow_mutation,
+    expected_tools,
+    scope_name,
+    write_origin,
+):
+    """Curator schemas and dispatch policy must exclude generic writers."""
+    # curator_env replaces _run_llm_review with an offline lambda for the
+    # orchestrator tests. Reload so this test exercises the real fork builder;
+    # HERMES_HOME remains isolated by the fixture.
+    curator = importlib.reload(curator_env["curator"])
+    captured = {}
+
+    class _StubAgent:
+        def __init__(self, **kwargs):
+            captured["kwargs"] = kwargs
+            names = {"skills_list", "skill_view", "skill_manage"}
+            self.tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in sorted(names)
+            ]
+            self.valid_tool_names = set(names)
+            self._session_messages = []
+
+        def run_conversation(self, **_kwargs):
+            captured["tools"] = {
+                tool["function"]["name"] for tool in self.tools
+            }
+            captured["valid_tool_names"] = self.valid_tool_names
+            captured["runtime_allowlist"] = self._runtime_tool_allowlist
+            captured["scope_name"] = self._runtime_tool_scope_name
+            captured["write_origin"] = self._memory_write_origin
+            captured["skip_mcp_refresh"] = getattr(
+                self, "_skip_mcp_refresh", None
+            )
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    result = curator._run_llm_review("review", allow_mutation=allow_mutation)
+
+    assert result["error"] is None
+    assert captured["kwargs"]["enabled_toolsets"] == ["skills"]
+    assert captured["tools"] == expected_tools
+    assert captured["valid_tool_names"] == expected_tools
+    assert isinstance(captured["valid_tool_names"], set)
+    assert captured["runtime_allowlist"] == frozenset(expected_tools)
+    assert captured["scope_name"] == scope_name
+    assert captured["write_origin"] == write_origin
+    for bypass in {"terminal", "write_file", "patch", "execute_code"}:
+        assert bypass not in captured["runtime_allowlist"]
+
+    # Between-turn MCP refresh must not widen the curated schema.
+    assert captured["skip_mcp_refresh"] is True, (
+        "Curator review fork must set _skip_mcp_refresh=True to prevent "
+        "between-turn MCP refresh from widening the tool schema on turn 2+"
+    )
+
+
+def test_review_fork_fails_closed_when_expected_schema_is_missing(
+    curator_env, monkeypatch
+):
+    curator = importlib.reload(curator_env["curator"])
+
+    class _IncompleteAgent:
+        def __init__(self, **_kwargs):
+            self.tools = [
+                {"type": "function", "function": {"name": "skills_list"}},
+                "malformed-tool-schema",
+            ]
+            self.valid_tool_names = {"skills_list"}
+            self._session_messages = []
+
+        def run_conversation(self, **_kwargs):
+            raise AssertionError("conversation must not run with an incomplete schema")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("run_agent.AIAgent", _IncompleteAgent)
+
+    result = curator._run_llm_review("review", allow_mutation=False)
+
+    assert "failed closed" in result["error"]
+    assert "skill_view" in result["error"]
+    assert "AttributeError" not in result["error"]
+
+
+def test_real_skills_toolset_matches_curator_schema_contract():
+    from model_tools import get_tool_definitions
+
+    tools = get_tool_definitions(
+        enabled_toolsets=["skills"],
+        disabled_toolsets=[],
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    )
+    names = {tool["function"]["name"] for tool in tools}
+
+    assert names == {"skills_list", "skill_view", "skill_manage"}

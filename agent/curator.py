@@ -77,6 +77,12 @@ DEFAULT_ARCHIVE_AFTER_DAYS = 90
 # consolidation pass is opt-in.
 DEFAULT_CONSOLIDATE = False
 
+# The autonomous curator may only inspect and mutate skills through the
+# provenance-aware skill tools. Generic file/shell/code/plugin tools would
+# bypass pin, bundled, read-before-write, consolidation and dry-run guards.
+_CURATOR_READ_TOOLS = frozenset({"skills_list", "skill_view"})
+_CURATOR_WRITE_TOOLS = frozenset({*_CURATOR_READ_TOOLS, "skill_manage"})
+
 
 # ---------------------------------------------------------------------------
 # .curator_state — persistent scheduler + status
@@ -1674,7 +1680,11 @@ def run_curator_review(
                     )
                 else:
                     prompt = f"{CURATOR_REVIEW_PROMPT}{builtins_note}\n\n{candidate_list}"
-                llm_meta = _run_llm_review(prompt)
+                llm_meta = (
+                    _run_llm_review(prompt, allow_mutation=False)
+                    if dry_run
+                    else _run_llm_review(prompt)
+                )
                 final_summary = (
                     f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
                 )
@@ -1822,7 +1832,7 @@ def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
     return b.provider, b.model
 
 
-def _run_llm_review(prompt: str) -> Dict[str, Any]:
+def _run_llm_review(prompt: str, *, allow_mutation: bool = True) -> Dict[str, Any]:
     """Spawn an AIAgent fork to run the curator review prompt.
 
     Returns a dict with:
@@ -1929,6 +1939,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             max_iterations=9999,
             quiet_mode=True,
             platform="curator",
+            enabled_toolsets=["skills"],
             skip_context_files=True,
             skip_memory=True,
         )
@@ -1942,7 +1953,54 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # trigger during the curation pass they exist to protect against.
         # turn_context.py binds this onto the write-origin ContextVar at turn
         # start (see agent/turn_context.py).
-        review_agent._memory_write_origin = "background_review"
+        from tools.skill_provenance import CURATOR_DRY_RUN
+
+        review_agent._memory_write_origin = (
+            "background_review" if allow_mutation else CURATOR_DRY_RUN
+        )
+
+        # Keep the curated schema stable across turns. A late MCP refresh could
+        # otherwise reintroduce tools filtered below (notably skill_manage in
+        # dry-run), even though the runtime allowlist would still deny them.
+        review_agent._skip_mcp_refresh = True
+
+        # Close the write surface at both schema and dispatch layers. The
+        # explicit name set is intentionally narrower than trusting future
+        # membership changes to the generic ``skills`` toolset. In dry-run,
+        # skill_manage is absent from the model schema and denied at runtime.
+        _allowed_tools = (
+            _CURATOR_WRITE_TOOLS if allow_mutation else _CURATOR_READ_TOOLS
+        )
+        _filtered_tools = [
+            tool for tool in (getattr(review_agent, "tools", []) or [])
+            if isinstance(tool, dict)
+            and (tool.get("function") or {}).get("name") in _allowed_tools
+        ]
+        _valid_tool_names = frozenset(
+            tool.get("function", {}).get("name")
+            for tool in _filtered_tools
+            if isinstance(tool, dict) and tool.get("function", {}).get("name")
+        )
+        # Exact membership is an intentional fail-closed dependency on the
+        # skills toolset contract. A missing expected tool aborts the review
+        # rather than silently weakening the curator's declared capability.
+        if _valid_tool_names != set(_allowed_tools):
+            missing = sorted(set(_allowed_tools) - _valid_tool_names)
+            schema_error = (
+                "Curator tool schema initialization failed closed: "
+                f"missing={missing}"
+            )
+            result_meta["error"] = f"error: {schema_error}"
+            result_meta["summary"] = result_meta["error"]
+            return result_meta
+        setattr(review_agent, "tools", _filtered_tools)
+        # Preserve AIAgent's normal mutable-set contract for this general
+        # bookkeeping attribute; only the dispatch policy below must be immutable.
+        setattr(review_agent, "valid_tool_names", set(_valid_tool_names))
+        setattr(review_agent, "_runtime_tool_allowlist", frozenset(_allowed_tools))
+        setattr(review_agent, "_runtime_tool_scope_name", (
+            "curator" if allow_mutation else "curator dry-run"
+        ))
 
         # Redirect the forked agent's stdout/stderr to /dev/null while it
         # runs so its tool-call chatter doesn't pollute the foreground

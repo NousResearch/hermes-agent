@@ -78,6 +78,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Dict, Any, List, Optional, Set, Tuple
 
 from tools.registry import registry, tool_error
+from tools.skill_provenance import is_curator_dry_run
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled
 from agent.skill_utils import (
@@ -1180,7 +1181,10 @@ def skill_view(
                     _record(None, found_md)
 
         if len(candidates) > 1:
-            paths = [str(smd) for _, smd in candidates]
+            # Tool payloads use portable POSIX separators on every host. This
+            # keeps categorized-path hints machine-independent and matches the
+            # convention used throughout skill manifests.
+            paths = [smd.as_posix() for _, smd in candidates]
             logging.getLogger(__name__).warning(
                 "Skill name collision for '%s': %d candidates — %s",
                 name, len(candidates), "; ".join(paths),
@@ -1473,10 +1477,14 @@ def skill_view(
             linked_files["scripts"] = script_files
 
         try:
-            rel_path = str(skill_md.relative_to(active_skills_dir))
+            rel_path = skill_md.relative_to(active_skills_dir).as_posix()
         except ValueError:
             # External skill — use path relative to the skill's own parent dir
-            rel_path = str(skill_md.relative_to(skill_md.parent.parent)) if skill_md.parent.parent else skill_md.name
+            rel_path = (
+                skill_md.relative_to(skill_md.parent.parent).as_posix()
+                if skill_md.parent.parent
+                else skill_md.name
+            )
         skill_name = frontmatter.get(
             "name", skill_md.stem if not skill_dir else skill_dir.name
         )
@@ -1733,6 +1741,10 @@ def _skill_view_with_bump(args, **kw):
         name, file_path=args.get("file_path"), task_id=kw.get("task_id")
     )
     try:
+        # A dry-run may inspect skill content, but must not change the usage
+        # sidecar (view/use counts and timestamps are writes too).
+        if is_curator_dry_run():
+            return result
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
             # Use the resolved skill name from the payload when present —

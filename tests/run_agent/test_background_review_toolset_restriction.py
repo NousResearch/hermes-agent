@@ -109,6 +109,7 @@ def test_background_review_installs_thread_local_whitelist():
     def _no_init(self, *args, **kwargs):
         # Don't crash AIAgent.__init__; let execution flow reach
         # set_thread_tool_whitelist.
+        captured["review_agent"] = self
         return None
 
     with patch.object(run_agent.AIAgent, "__init__", _no_init), \
@@ -122,6 +123,13 @@ def test_background_review_installs_thread_local_whitelist():
 
     assert "whitelist" in captured, "set_thread_tool_whitelist was not called"
     whitelist = captured["whitelist"]
+    review_agent = captured["review_agent"]
+    assert review_agent._runtime_tool_allowlist == frozenset(whitelist)
+    assert review_agent._runtime_tool_scope_name == "background review"
+    from agent.tool_executor import _runtime_tool_scope_block
+
+    assert _runtime_tool_scope_block(review_agent, "skill_view") is None
+    assert _runtime_tool_scope_block(review_agent, "terminal") is not None
     # memory + skills tools must be allowed
     assert "memory" in whitelist
     assert "skill_manage" in whitelist

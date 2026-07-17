@@ -8,13 +8,14 @@ to download, cache, and optionally inject text from non-image/audio files.
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import GatewayConfig, PlatformConfig
 from gateway.platforms.base import MessageType
 
 
@@ -58,7 +59,10 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import (  # noqa: E402
+    DiscordAdapter,
+    _discord_attachment_name_requires_path_only,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -87,10 +91,11 @@ class FakeThread:
 
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
-    """Point document cache to tmp_path so tests never write to ~/.hermes."""
+    """Keep document cache and fake CDN access isolated from the host."""
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
+    monkeypatch.setattr(discord_platform, "is_safe_url", lambda _url: True)
 
 
 @pytest.fixture
@@ -159,6 +164,42 @@ def _mock_aiohttp_download(raw_bytes: bytes):
 
 class TestIncomingDocumentHandling:
 
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            ".env",
+            ".env.production",
+            ".netrc",
+            ".git-credentials",
+            "id_ed25519",
+            "server-private-key.pem",
+            "api-key.txt",
+            "service-auth.txt",
+            "client-credentials.json",
+            "oauth-token.txt",
+            "database_password.md",
+            "shared.secret.txt",
+        ],
+    )
+    def test_credential_like_filename_requires_path_only(self, filename):
+        assert _discord_attachment_name_requires_path_only(filename) is True
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "monkey.txt",
+            "hockey.txt",
+            "keynote.txt",
+            "authentication-guide.md",
+            "tokenizer-notes.txt",
+            "secretary-agenda.txt",
+            "ordinary-notes.txt",
+            "readme.md",
+        ],
+    )
+    def test_ordinary_filename_remains_inline_eligible(self, filename):
+        assert _discord_attachment_name_requires_path_only(filename) is False
+
     @pytest.mark.asyncio
     async def test_pdf_document_cached(self, adapter):
         """A PDF attachment should be downloaded, cached, typed as DOCUMENT."""
@@ -193,6 +234,44 @@ class TestIncomingDocumentHandling:
         assert "summarize this" in event.text
         # injection prepended before caption
         assert event.text.index("[Content of") < event.text.index("summarize this")
+
+    @pytest.mark.asyncio
+    async def test_credential_attachment_body_absent_from_constructed_prompt(
+        self,
+        adapter,
+    ):
+        from gateway.run import GatewayRunner
+
+        sentinel = "SYNTHETIC_CREDENTIAL_BODY_MUST_NOT_ENTER_PROMPT"
+        with _mock_aiohttp_download(sentinel.encode()):
+            msg = make_message(
+                attachments=[
+                    make_attachment(
+                        filename="service-token.txt",
+                        content_type="text/plain",
+                    )
+                ],
+                content="inspect the saved file",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args.args[0]
+        saved_path = event.media_urls[0]
+        assert Path(saved_path).read_text(encoding="utf-8") == sentinel
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig()
+        runner.adapters = {}
+        runner._has_setup_skill = lambda: False
+        prompt = await runner._prepare_inbound_message_text(
+            event=event,
+            source=event.source,
+            history=[],
+        )
+
+        assert sentinel not in prompt
+        assert saved_path in prompt
+        assert "content was not automatically inlined" in prompt
 
     @pytest.mark.asyncio
     async def test_md_content_injected(self, adapter):
@@ -510,4 +589,3 @@ class TestAllowAnyAttachment:
         """Garbage in max_attachment_bytes config falls back to 32 MiB."""
         adapter.config.extra["max_attachment_bytes"] = "not-a-number"
         assert adapter._discord_max_attachment_bytes() == 32 * 1024 * 1024
-

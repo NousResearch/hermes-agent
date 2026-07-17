@@ -166,6 +166,21 @@ class TestBranchCommandCLI:
 
         assert cli_instance._resumed is True
 
+    def test_branch_thread_flag_rejected_on_cli(self, cli_instance, session_db, monkeypatch):
+        """CLI has no threads — refuse --thread instead of titling the branch '--thread'."""
+        from cli import HermesCLI
+
+        printed: list[str] = []
+        monkeypatch.setattr("cli._cprint", lambda msg, *a, **k: printed.append(str(msg)))
+
+        original = cli_instance.session_id
+        HermesCLI._handle_branch_command(cli_instance, "/branch --thread")
+
+        assert cli_instance.session_id == original
+        joined = "\n".join(printed)
+        assert "only available" in joined
+        assert session_db.get_session_title(original) == "My Coding Session"
+
     def test_branch_rotates_hermes_session_id_env_and_context(self, cli_instance, session_db):
         """Branching must update process-local session-id readers too."""
         from cli import HermesCLI

@@ -57,6 +57,8 @@ _RESET_CLEANUP_TIMEOUT_S = 30.0
 
 # /branch --thread flags (first token of command args).
 _BRANCH_THREAD_FLAGS = frozenset({"--thread", "thread", "-t"})
+# Platforms that actually override create_handoff_thread (base always returns None).
+_BRANCH_THREAD_PLATFORMS = frozenset({Platform.DISCORD, Platform.TELEGRAM, Platform.SLACK})
 
 
 def _parse_branch_command_args(raw: str) -> tuple[bool, str]:
@@ -138,6 +140,10 @@ def _format_branch_thread_ref(platform: Optional[Platform], thread_id: str) -> s
     if platform == Platform.DISCORD:
         return f"<#{thread_id}>"
     return f"`{thread_id}`"
+
+
+def _platform_supports_branch_thread(platform: Optional[Platform]) -> bool:
+    return platform in _BRANCH_THREAD_PLATFORMS
 
 
 def _model_switch_skew_guard() -> Optional[str]:
@@ -4111,9 +4117,15 @@ class GatewaySlashCommandsMixin:
         want_thread, branch_name = _parse_branch_command_args(event.get_command_args())
 
         # Fail closed on --thread before cloning when the surface can't host it.
+        # Create the platform thread *before* cloning so a failed create never
+        # leaves an orphan branch session (WhatsApp/base adapters always expose
+        # a no-op create_handoff_thread that returns None).
         thread_adapter = None
         thread_parent_id: Optional[str] = None
+        new_thread_id: Optional[str] = None
         if want_thread:
+            if not _platform_supports_branch_thread(source.platform):
+                return t("gateway.branch.thread_unsupported")
             thread_adapter = (
                 self.adapters.get(source.platform)
                 if getattr(self, "adapters", None) and source.platform
@@ -4142,6 +4154,20 @@ class GatewaySlashCommandsMixin:
             branch_title = await self._session_db.get_next_title_in_lineage(base)
 
         parent_session_id = current_entry.session_id
+
+        if want_thread:
+            try:
+                new_thread_id = await thread_adapter.create_handoff_thread(  # type: ignore[union-attr]
+                    thread_parent_id, branch_title,
+                )
+            except Exception as exc:
+                logger.error("Branch --thread: create_handoff_thread failed: %s", exc, exc_info=True)
+                return t("gateway.branch.thread_create_failed", error=exc)
+            if not new_thread_id:
+                return t(
+                    "gateway.branch.thread_create_failed",
+                    error="adapter returned no thread id",
+                )
 
         # Create the new session with parent link.
         # Persist a stable ``_branched_from`` marker in model_config so
@@ -4197,6 +4223,7 @@ class GatewaySlashCommandsMixin:
                 source=source,
                 adapter=thread_adapter,
                 parent_chat_id=thread_parent_id,
+                new_thread_id=str(new_thread_id),
                 branch_title=branch_title,
                 parent_session_id=parent_session_id,
                 new_session_id=new_session_id,
@@ -4221,31 +4248,16 @@ class GatewaySlashCommandsMixin:
         source: SessionSource,
         adapter: Any,
         parent_chat_id: str,
+        new_thread_id: str,
         branch_title: str,
         parent_session_id: str,
         new_session_id: str,
         msg_count: int,
     ) -> str:
-        """Create a platform thread and bind the branch session only to it.
+        """Bind an already-cloned branch session to a pre-created platform thread.
 
         Leaves the origin session key pointing at ``parent_session_id``.
         """
-        try:
-            new_thread_id = await adapter.create_handoff_thread(parent_chat_id, branch_title)
-        except Exception as exc:
-            logger.error("Branch --thread: create_handoff_thread failed: %s", exc, exc_info=True)
-            return t(
-                "gateway.branch.thread_create_failed",
-                error=exc,
-                new=new_session_id,
-            )
-        if not new_thread_id:
-            return t(
-                "gateway.branch.thread_create_failed",
-                error="adapter returned no thread id",
-                new=new_session_id,
-            )
-
         dest_source = _branch_dest_source(
             source,
             parent_chat_id=str(parent_chat_id),

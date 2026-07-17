@@ -5758,13 +5758,26 @@ class SessionDB:
                     like_cursor = self._conn.execute(like_sql, like_params)
                     matches = [dict(row) for row in like_cursor.fetchall()]
         else:
-            with self._lock:
-                try:
+            try:
+                with self._lock:
                     cursor = self._conn.execute(sql, params)
-                except sqlite3.OperationalError:
-                    # FTS5 query syntax error despite sanitization — return empty
-                    return []
-                else:
+                    matches = [dict(row) for row in cursor.fetchall()]
+            except sqlite3.OperationalError:
+                # FTS5 query syntax error despite sanitization — return empty
+                return []
+            except sqlite3.DatabaseError as exc:
+                # A corrupt FTS index raises the malformed / "fts5: corrupt
+                # structure record" class on the MATCH read, the same class the
+                # write path self-heals (#66296). OperationalError (query
+                # syntax) is a subclass caught above; this arm is the corruption
+                # parent. Rebuild the index in place once — the lock is released
+                # here, so rebuild_fts() can re-acquire it — and retry, so
+                # search self-heals for read-only sessions (cron/CLI history
+                # search) that never trigger a write to repair it first.
+                if not self._try_runtime_fts_rebuild(exc):
+                    raise
+                with self._lock:
+                    cursor = self._conn.execute(sql, params)
                     matches = [dict(row) for row in cursor.fetchall()]
 
         # Add surrounding context (1 message before + after each match).

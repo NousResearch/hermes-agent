@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DecorativeBackdropMode } from './backdrop'
 
-const KEY = 'hermes.desktop.decorative-backdrop.v1'
+const KEY = 'hermes.desktop.backdrop.v1'
 
 async function loadBackdropStore(stored?: string) {
   window.localStorage.clear()
@@ -48,6 +48,16 @@ describe('decorative backdrop preference', () => {
     const { $decorativeBackdrop } = await loadBackdropStore('loud')
 
     expect($decorativeBackdrop.get()).toBe('full')
+  })
+
+  it.each([
+    ['false', 'off'],
+    ['true', 'full']
+  ] as Array<[string, DecorativeBackdropMode]>)('migrates legacy boolean %s to %s', async (stored, mode) => {
+    const { $decorativeBackdrop } = await loadBackdropStore(stored)
+
+    expect($decorativeBackdrop.get()).toBe(mode)
+    expect(window.localStorage.getItem(KEY)).toBe(mode)
   })
 
   it('persists valid modes and ignores invalid modes', async () => {

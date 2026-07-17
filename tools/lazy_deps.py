@@ -99,6 +99,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
     # AWS Bedrock provider
     "provider.bedrock": ("boto3==1.42.89",),
+    # Google Vertex AI provider — OAuth2 token minting for the Gemini
+    # OpenAI-compatible endpoint. Only loaded when provider=vertex is selected;
+    # google-auth is NOT in [all] so plain installs don't carry it.
+    "provider.vertex": ("google-auth==2.55.1",),
     # Microsoft Foundry — Entra ID auth (managed identity, workload identity,
     # service principal, az login, VS Code, azd, PowerShell). Only loaded
     # when model.auth_mode=entra_id is selected; key-based azure-foundry
@@ -135,7 +139,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "image.fal": ("fal-client==0.13.1",),
 
     # ─── Memory providers ──────────────────────────────────────────────────
-    "memory.honcho": ("honcho-ai==2.0.1",),
+    "memory.honcho": ("honcho-ai==2.2.0",),
     "memory.hindsight": ("hindsight-client==0.6.1",),
     # supermemory + mem0 are opt-in cloud memory providers with their own
     # SDKs. On the published Docker image the agent venv is sealed
@@ -154,17 +158,29 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # back to google's `Brotli` package (1-arg API), and any .txt/.md/.doc
     # uploaded to the Discord gateway fails to decode at att.read() with
     # "Can not decode content-encoding: br" — see #12511 / #15744.
-    "platform.discord": ("discord.py[voice]==2.7.1", "brotlicffi==1.2.0.1"),
+    "platform.discord": (
+        "discord.py[voice]==2.7.1",
+        "brotlicffi==1.2.0.1",
+        # discord.py pulls aiohttp transitively (>=3.7.4,<4) as its HTTP
+        # backbone. Pin the patched floor here too so the lazy Discord path
+        # can't keep an already-installed vulnerable aiohttp satisfying that
+        # range — mirrors the messaging extra and platform.slack.
+        "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
+    ),
     "platform.slack": (
-        "slack-bolt==1.27.0",
-        "slack-sdk==3.40.1",
-        "aiohttp==3.13.4",  # CVE-2026-34513/34518/34519/34520/34525
+        "slack-bolt==1.29.0",
+        "slack-sdk==3.43.0",
+        "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
     ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.0",
         "aiosqlite==0.22.1",
         "asyncpg==0.31.0",
         "aiohttp-socks==0.11.0",
+        # mautrix (aiohttp>=3,<4) and aiohttp-socks (aiohttp>=3.10.0) only cap
+        # aiohttp transitively, so a vulnerable already-installed aiohttp still
+        # satisfies both — pin the patched floor here too, like platform.discord.
+        "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
     ),
     "platform.dingtalk": (
         "dingtalk-stream==0.24.3",
@@ -172,7 +188,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "qrcode==7.4.2",
     ),
     "platform.feishu": (
-        "lark-oapi==1.5.3",
+        "lark-oapi==1.6.8",
         "qrcode==7.4.2",
     ),
     # WeCom callback-mode adapter — parses untrusted XML POST bodies. Pulls
@@ -183,7 +199,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # (microsoft-teams-api/cards/common, dependency-injector, msal). Lazy-
     # installed on demand like every other messaging platform; also exposed
     # as the `teams` extra in pyproject for packagers / explicit installs.
-    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.13.4"),
+    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"),  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
@@ -222,6 +238,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "mcp==1.26.0",
         "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
+    # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
+    "tool.trace_upload": ("huggingface-hub==1.2.3",),
 }
 
 
@@ -437,6 +455,22 @@ def _allow_lazy_installs() -> bool:
     return True
 
 
+def _unsupported_feature_reason(feature: str) -> Optional[str]:
+    """Return why a lazy feature cannot work on this host, or ``None``.
+
+    This is a platform capability gate, not a security policy gate. It keeps
+    known-impossible installs out of both first-use lazy installation and the
+    ``hermes update`` lazy-refresh pass.
+    """
+    if sys.platform == "win32" and feature == "platform.matrix":
+        return (
+            "unsupported on Windows: Matrix E2EE depends on python-olm, "
+            "which has no Windows wheel and requires make + libolm to build "
+            "from sdist. Run Hermes under WSL to use Matrix on Windows."
+        )
+    return None
+
+
 def _spec_is_safe(spec: str) -> bool:
     """Reject pip specs that contain URLs, paths, or shell metacharacters."""
     if not spec or len(spec) > 200:
@@ -461,7 +495,7 @@ def _pkg_name_from_spec(spec: str) -> str:
 def _specifier_from_spec(spec: str) -> str:
     """Extract just the version-specifier portion of a pip spec.
 
-    ``"honcho-ai==2.0.1"`` → ``"==2.0.1"``
+    ``"honcho-ai==2.2.0"`` → ``"==2.2.0"``
     ``"mautrix[encryption]>=0.20,<1"`` → ``">=0.20,<1"``
     ``"package"`` → ``""`` (no version constraint)
     """
@@ -723,6 +757,10 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     if not missing:
         return
 
+    unsupported = _unsupported_feature_reason(feature)
+    if unsupported:
+        raise FeatureUnavailable(feature, missing, unsupported)
+
     # Validate every spec against the allowlist + safety regex. Belt and
     # braces — the keys-in-LAZY_DEPS check above already constrains this.
     for spec in missing:
@@ -853,13 +891,24 @@ def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
         if not missing:
             results[feature] = "current"
             continue
+
+        unsupported = _unsupported_feature_reason(feature)
+        if unsupported:
+            results[feature] = f"skipped: {unsupported}"
+            continue
+
         try:
             ensure(feature, prompt=prompt)
             results[feature] = "refreshed"
         except FeatureUnavailable as e:
-            # Distinguish "user opted out" from "install failed" so the
-            # update command can render the right message.
-            if "lazy installs disabled" in str(e) or "declined" in str(e):
+            # Distinguish "user opted out" or platform-incompatible features
+            # from install failures so the update command can render the
+            # right non-error message.
+            if (
+                "lazy installs disabled" in str(e)
+                or "declined" in str(e)
+                or e.reason.startswith("unsupported ")
+            ):
                 results[feature] = f"skipped: {e.reason}"
             else:
                 results[feature] = f"failed: {e.reason}"

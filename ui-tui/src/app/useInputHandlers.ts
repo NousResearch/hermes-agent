@@ -16,7 +16,13 @@ import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionW
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
-import type { InputHandlerActions, InputHandlerContext, InputHandlerResult } from './interfaces.js'
+import type {
+  GatewayRpc,
+  InputHandlerActions,
+  InputHandlerContext,
+  InputHandlerResult,
+  OverlayState
+} from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -97,6 +103,30 @@ export function applyVoiceRecordResponse(
   }
 }
 
+export function dismissSensitivePrompt(
+  overlay: Pick<OverlayState, 'secret' | 'sudo'>,
+  rpc: GatewayRpc,
+  sys: (text: string) => void
+) {
+  if (overlay.sudo) {
+    const requestId = overlay.sudo.requestId
+
+    patchOverlayState({ sudo: null })
+    sys('sudo cancelled')
+
+    return rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: requestId })
+  }
+
+  if (overlay.secret) {
+    const requestId = overlay.secret.requestId
+
+    patchOverlayState({ secret: null })
+    sys('secret entry cancelled')
+
+    return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, value: '' })
+  }
+}
+
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
@@ -149,16 +179,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
     }
 
-    if (overlay.sudo) {
-      return gateway
-        .rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: overlay.sudo.requestId })
-        .then(r => r && (patchOverlayState({ sudo: null }), actions.sys('sudo cancelled')))
-    }
-
-    if (overlay.secret) {
-      return gateway
-        .rpc<SecretRespondResponse>('secret.respond', { request_id: overlay.secret.requestId, value: '' })
-        .then(r => r && (patchOverlayState({ secret: null }), actions.sys('secret entry cancelled')))
+    if (overlay.sudo || overlay.secret) {
+      return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
     }
 
     if (overlay.modelPicker) {
@@ -187,6 +209,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.agents) {
       return patchOverlayState({ agents: false })
+    }
+
+    if (overlay.journey) {
+      return patchOverlayState({ journey: false })
     }
   }
 
@@ -369,7 +395,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
-      if (isCtrl(key, ch, 'c')) {
+      if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo))) {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.sessions) {
         patchOverlayState({ sessions: false })

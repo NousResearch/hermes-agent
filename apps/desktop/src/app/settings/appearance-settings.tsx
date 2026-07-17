@@ -11,12 +11,14 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Eye, Loader2, Palette, Trash2, Upload } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
+import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $decorativeBackdrop, type DecorativeBackdropMode, setDecorativeBackdrop } from '@/store/backdrop'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
+import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
 import { installHermesThemeFromText, installVscodeThemeFromMarketplace } from '@/themes/install'
 import type { DesktopTheme } from '@/themes/types'
@@ -61,6 +63,18 @@ function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) 
       </div>
     </div>
   )
+}
+
+// UI scale presets, as zoom percentages. 100 is the browser-default size;
+// the ids double as the percent values sent to the main process. A Cmd/Ctrl
+// +/- step landing between presets highlights nothing, and the row
+// description keeps showing the exact current percent.
+const UI_SCALE_PRESETS = ['90', '100', '110', '125', '150', '175'] as const
+
+type UiScalePreset = (typeof UI_SCALE_PRESETS)[number]
+
+function matchUiScalePreset(percent: number): UiScalePreset | null {
+  return UI_SCALE_PRESETS.find(preset => Number(preset) === percent) ?? null
 }
 
 function useDebounced<T>(value: T, delayMs: number): T {
@@ -232,6 +246,7 @@ export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const translucency = useStore($translucency)
@@ -249,7 +264,7 @@ export function AppearanceSettings() {
   // One box does double duty: filter installed themes live (below), and run a
   // name search against the VS Code Marketplace (the Cmd-K "Install theme…"
   // backend) for anything not already installed.
-  const needle = query.trim().toLowerCase()
+  const needle = normalize(query)
 
   const filteredThemes = availableThemes
     .filter(
@@ -283,10 +298,14 @@ export function AppearanceSettings() {
   ] as const satisfies readonly { id: EmbedMode; label: string }[]
 
   const backdropOptions = [
-    { id: 'off', label: 'Off' },
-    { id: 'subtle', label: 'Subtle' },
-    { id: 'full', label: 'Full' }
+    { id: 'off', label: a.backdropOff },
+    { id: 'subtle', label: a.backdropSubtle },
+    { id: 'full', label: a.backdropFull }
   ] as const satisfies readonly { id: DecorativeBackdropMode; label: string }[]
+
+  const uiScaleOptions = UI_SCALE_PRESETS.map(preset => ({ id: preset, label: `${preset}%` }))
+
+  const matchedScalePreset = matchUiScalePreset(zoomPercent)
 
   const importTheme = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -303,13 +322,13 @@ export function AppearanceSettings() {
       const first = installed[0]
 
       if (!first) {
-        throw new Error('Theme file did not contain any themes.')
+        throw new Error(a.importEmpty)
       }
 
       triggerHaptic('crisp')
       setTheme(first.name)
     } catch (error) {
-      setImportError(error instanceof Error ? error.message : 'Could not import that theme.')
+      setImportError(error instanceof Error ? error.message : a.importError)
     }
   }
 
@@ -321,9 +340,9 @@ export function AppearanceSettings() {
           {a.intro}
         </p>
         <p className="mt-2 flex items-center gap-1.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-          <span>Tip: press</span>
+          <span>{a.commandPaletteTipPrefix}</span>
           <KbdCombo combo="mod+k" size="sm" />
-          <span>to open the command palette.</span>
+          <span>{a.commandPaletteTipSuffix}</span>
         </p>
 
         <div className="mt-2">
@@ -415,10 +434,10 @@ export function AppearanceSettings() {
                         </div>
                         <div className="mt-3 px-1">
                           <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium">
-                            Import theme
+                            {a.importTheme}
                           </div>
                           <div className="mt-0.5 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                            Load a Hermes theme JSON file
+                            {a.importThemeDesc}
                           </div>
                         </div>
                       </button>
@@ -432,7 +451,9 @@ export function AppearanceSettings() {
                     type="file"
                   />
                   {importError && (
-                    <p className="mt-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-red)">{importError}</p>
+                    <p className="mt-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-red)">
+                      {importError}
+                    </p>
                   )}
                   <MarketplaceThemeResults installs={installs} onInstalled={name => setTheme(name)} query={query} />
                 </div>
@@ -461,9 +482,9 @@ export function AppearanceSettings() {
           />
 
           <div className="mt-4 border-t border-(--ui-stroke-tertiary) pt-4">
-            <SectionHeading icon={Eye} title="Accessibility" />
+            <SectionHeading icon={Eye} title={a.accessibilityTitle} />
             <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-              Adjust visual effects that can affect readability and comfort.
+              {a.accessibilityIntro}
             </p>
           </div>
 
@@ -478,8 +499,23 @@ export function AppearanceSettings() {
                 value={decorativeBackdrop}
               />
             }
-            description="Control the background artwork behind translucent chat surfaces."
-            title="Decorative backdrop"
+            description={a.decorativeBackdropDesc}
+            title={a.decorativeBackdropTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setZoomPercent(Number(id))
+                }}
+                options={uiScaleOptions}
+                value={matchedScalePreset ?? ('' as UiScalePreset)}
+              />
+            }
+            description={a.uiScaleDesc(zoomPercent)}
+            title={a.uiScaleTitle}
           />
 
           <ListRow

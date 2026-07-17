@@ -11,6 +11,7 @@ from gateway.session import SessionSource
 def _make_adapter(
     require_mention=None,
     free_response_chats=None,
+    free_response_topics=None,
     mention_patterns=None,
     exclusive_bot_mentions=None,
     ignored_threads=None,
@@ -30,6 +31,8 @@ def _make_adapter(
         extra["require_mention"] = require_mention
     if free_response_chats is not None:
         extra["free_response_chats"] = free_response_chats
+    if free_response_topics is not None:
+        extra["free_response_topics"] = free_response_topics
     if mention_patterns is not None:
         extra["mention_patterns"] = mention_patterns
     if exclusive_bot_mentions is not None:
@@ -543,6 +546,41 @@ def test_free_response_chats_bypass_mention_requirement():
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-201)) is False
 
 
+def test_free_response_topics_bypass_mention_requirement_only_for_topic():
+    adapter = _make_adapter(require_mention=True, free_response_topics=["-200:31"])
+
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=31)) is True
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=32)) is False
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-201, thread_id=31)) is False
+
+
+def test_free_response_topics_treat_missing_thread_as_general_topic():
+    adapter = _make_adapter(require_mention=True, free_response_topics=["-200:1"])
+
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=None)) is True
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=31)) is False
+
+
+def test_free_response_topic_messages_are_dispatched_not_observed():
+    """A free-response topic message must go to the dispatcher, not the observe path."""
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-200"],
+        group_allowed_chats=["-200"],
+        observe_unmentioned_group_messages=True,
+        free_response_topics=["-200:31"],
+    )
+
+    in_topic = _group_message("hello everyone", chat_id=-200, thread_id=31)
+    assert adapter._should_process_message(in_topic) is True
+    assert adapter._should_observe_unmentioned_group_message(in_topic) is False
+
+    # Same chat, different topic: not dispatched, but still observable.
+    other_topic = _group_message("side chatter", chat_id=-200, thread_id=32)
+    assert adapter._should_process_message(other_topic) is False
+    assert adapter._should_observe_unmentioned_group_message(other_topic) is True
+
+
 def test_guest_mode_allows_only_direct_mentions_outside_allowed_chats():
     adapter = _make_adapter(
         require_mention=True,
@@ -619,6 +657,62 @@ def test_allowed_topics_treat_missing_thread_as_general_topic():
 
     assert adapter._should_process_message(_group_message("hello", thread_id=None)) is True
     assert adapter._should_process_message(_group_message("hello", thread_id=8)) is False
+
+
+def _forum_message(*, chat_id, thread_id, is_topic_message, is_forum, chat_type="supergroup"):
+    """Build a message with independently-controlled topic/forum flags.
+
+    The shared ``_group_message`` fixture couples ``is_topic_message`` and
+    ``is_forum`` to ``thread_id is not None``, which cannot express a plain
+    reply-UI anchor (``message_thread_id`` set, ``is_topic_message=False``,
+    ``is_forum=False``). This helper decouples them for gating regressions.
+    """
+    return SimpleNamespace(
+        message_id=42,
+        text="hello",
+        caption=None,
+        entities=[],
+        caption_entities=[],
+        message_thread_id=thread_id,
+        is_topic_message=is_topic_message,
+        chat=SimpleNamespace(id=chat_id, type=chat_type, title="T", is_forum=is_forum),
+        from_user=SimpleNamespace(id=111, full_name="Alice", first_name="Alice"),
+        reply_to_message=None,
+        date=None,
+    )
+
+
+def test_gating_ignores_non_forum_reply_anchor_thread_id():
+    """A plain group reply's ``message_thread_id`` is a UI anchor, not a topic.
+
+    Before the shared ``_effective_message_thread_id`` normalizer, gating read
+    the raw ``message_thread_id`` — so a non-forum group reply whose anchor id
+    happened to match an ``ignored_threads`` entry was wrongly dropped, and its
+    anchor id was treated as a routable topic under ``allowed_topics``. The
+    normalizer drops reply anchors (non-forum, ``is_topic_message=False``), so
+    such a reply gates as the General topic instead.
+    """
+    # ignored_threads: reply anchor 55 must NOT be treated as thread 55.
+    adapter = _make_adapter(require_mention=False, free_response_chats=["-200"], ignored_threads=[55])
+    reply_anchor = _forum_message(
+        chat_id=-200, thread_id=55, is_topic_message=False, is_forum=False, chat_type="group"
+    )
+    assert adapter._should_process_message(reply_anchor) is True
+
+    # allowed_topics: reply anchor 55 normalizes to General ("1"), so a group
+    # that only allows topic "1" still processes the reply.
+    adapter2 = _make_adapter(require_mention=False, allowed_chats=["-200"], allowed_topics=["1"])
+    assert adapter2._should_process_message(reply_anchor) is True
+
+
+def test_gating_forum_general_topic_normalizes_to_one():
+    """Forum General-topic messages (thread_id=None) gate as topic "1"."""
+    adapter = _make_adapter(require_mention=False, allowed_chats=["-100"], allowed_topics=["1"])
+    general = _forum_message(chat_id=-100, thread_id=None, is_topic_message=False, is_forum=True)
+    assert adapter._should_process_message(general) is True
+
+    adapter2 = _make_adapter(require_mention=False, allowed_chats=["-100"], allowed_topics=["8"])
+    assert adapter2._should_process_message(general) is False
 
 
 def test_regex_mention_patterns_allow_custom_wake_words():
@@ -880,6 +974,33 @@ def test_top_level_require_mention_does_not_override_telegram_section(monkeypatc
     assert config is not None
     # The telegram-specific "false" must win over the top-level "true".
     assert __import__("os").environ.get("TELEGRAM_REQUIRE_MENTION") == "false"
+
+
+def test_config_bridges_telegram_free_response_topics(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  free_response_topics:\n"
+        '    - "-1001234567:3"\n'
+        '    - "-1001234567:9"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_FREE_RESPONSE_TOPICS", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    tg_cfg = config.platforms.get(Platform.TELEGRAM)
+    assert tg_cfg is not None
+    # free_response_topics is carried in PlatformConfig.extra (like guest_mode)
+    # AND bridged to the env var the adapter reads at runtime. The env var is
+    # not a key that appears in developer .env files, so asserting it via
+    # os.environ stays deterministic.
+    assert tg_cfg.extra.get("free_response_topics") == ["-1001234567:3", "-1001234567:9"]
+    assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_TOPICS"] == "-1001234567:3,-1001234567:9"
 
 
 def test_config_bridges_telegram_ignored_threads(monkeypatch, tmp_path):

@@ -25,7 +25,9 @@ export const zhHant = defineLocale({
     docs: '文件',
     done: '完成',
     error: '錯誤',
+    expand: '展開',
     failed: '失敗',
+    formatJson: '格式化 JSON',
     free: '免費',
     loading: '載入中…',
     notSet: '未設定',
@@ -38,6 +40,7 @@ export const zhHant = defineLocale({
     set: '設定',
     skip: '略過',
     update: '更新',
+    tryHint: term => `試試「${term}」`,
     on: '開啟',
     off: '關閉'
   },
@@ -85,9 +88,14 @@ export const zhHant = defineLocale({
       retry: '重試',
       repairInstall: '修復安裝',
       useLocalGateway: '使用本機閘道',
+      gatewaySettings: '閘道設定',
+      back: '返回',
       openLogs: '開啟記錄',
       repairHint: '修復會重新執行安裝程式，在新機器上可能需要幾分鐘。',
-      remoteSignInHint: '開啟閘道登入視窗。使用本機閘道可切換至內建後端。',
+      remoteSignInHint: signInLabel =>
+        `先登出已儲存的遠端瀏覽器工作階段，然後開啟${signInLabel}。使用本機閘道可切換至內建後端。`,
+      signOutAndSignIn: '登出並重新登入',
+      remoteFailureHint: '在「閘道設定」中檢查閘道 URL 與登入，或切換至本機閘道。',
       hideRecentLogs: '隱藏最近記錄',
       showRecentLogs: '顯示最近記錄',
       signedInTitle: '已登入',
@@ -113,6 +121,7 @@ export const zhHant = defineLocale({
     copyDetailFailed: '無法複製通知詳情',
     backendOutOfDateTitle: '後端版本過舊',
     backendOutOfDateMessage: '您的 Hermes 後端早於目前的桌面版本，可能無法正常運作。請更新以保持一致。',
+    installMethodUnsupportedTitle: '不受支援的安裝方式',
     updateHermes: '更新 Hermes',
     updateReadyTitle: '有可用更新',
     updateReadyMessage: count => `有 ${count} 項新變更可用。`,
@@ -160,8 +169,7 @@ export const zhHant = defineLocale({
   },
 
   remoteDisplayBanner: {
-    message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`,
-    dismiss: '關閉'
+    message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`
   },
 
   titlebar: {
@@ -203,6 +211,7 @@ export const zhHant = defineLocale({
       providerApiKeys: 'API 金鑰',
       gateway: '閘道',
       apiKeys: '工具與金鑰',
+      keybinds: '鍵盤快捷鍵',
       keysTools: '工具',
       keysSettings: '設定',
       mcp: 'MCP',
@@ -277,8 +286,22 @@ export const zhHant = defineLocale({
       colorModeDesc: '選擇固定模式，或讓 Hermes 跟隨系統設定。',
       toolViewTitle: '工具呼叫顯示',
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
+      uiScaleTitle: '介面縮放',
+      uiScaleDesc: (percent: number) =>
+        `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
+      backdropTitle: '聊天背景',
+      backdropDesc: '對話後方那張淡淡的雕像圖片。',
+      backdropOff: '關閉',
+      backdropSubtle: '輕微',
+      backdropFull: '完整',
+      decorativeBackdropTitle: '裝飾背景',
+      decorativeBackdropDesc: '控制半透明聊天介面後方的背景圖案。',
+      accessibilityTitle: '無障礙',
+      accessibilityIntro: '調整可能影響可讀性與舒適度的視覺效果。',
+      commandPaletteTipPrefix: '提示：按',
+      commandPaletteTipSuffix: '開啟命令面板。',
       embedsTitle: '內嵌預覽',
       embedsDesc:
         '豐富預覽會從第三方網站（YouTube、X 等）載入。詢問會在你允許前顯示佔位符；一律會自動載入；關閉則保留純連結。',
@@ -293,6 +316,10 @@ export const zhHant = defineLocale({
       themeTitle: '主題',
       themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
       themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`,
+      importTheme: '匯入主題',
+      importThemeDesc: '載入 Hermes 主題 JSON 檔案',
+      importEmpty: '主題檔案不包含任何主題。',
+      importError: '無法匯入該主題。',
       installTitle: '從 VS Code 安裝',
       installDesc: '貼上 Marketplace 擴充功能 ID（例如 dracula-theme.theme-dracula），將其配色主題轉換為桌面調色盤。',
       installPlaceholder: 'publisher.extension',
@@ -596,8 +623,6 @@ export const zhHant = defineLocale({
       enterValueFirst: '請先輸入一個值。',
       couldNotSave: '無法儲存憑證。',
       remove: '移除',
-      or: '或',
-      escToCancel: '按 esc 取消',
       getKey: '取得金鑰',
       saving: '儲存中'
     },
@@ -706,7 +731,22 @@ export const zhHant = defineLocale({
       name: '名稱',
       serverJson: '伺服器 JSON',
       remove: '移除',
-      saveServer: '儲存伺服器'
+      saveServer: '儲存伺服器',
+      capabilitySummary: (tools, prompts, resources) =>
+        `已啟用 ${[`${tools} 個工具`, ...(prompts ? [`${prompts} 個提示`] : []), ...(resources ? [`${resources} 個資源`] : [])].join('、')}`,
+      statusConnecting: '連線中…',
+      statusNeedsAuth: '需要驗證',
+      statusError: '錯誤',
+      statusOff: '關閉',
+      allServers: '所有伺服器',
+      authenticatedTitle: '已驗證',
+      authenticatedMessage: (server, count) => `${server}：${count} 個工具`,
+      waitingForBrowser: '等待瀏覽器…',
+      authenticate: '驗證',
+      unsavedConnect: '未儲存 — 儲存 mcp.json 以連線。',
+      enableTool: tool => `啟用 ${tool}`,
+      disableTool: tool => `停用 ${tool}`,
+      noOutput: '尚無輸出。'
     },
     model: {
       loading: '正在載入模型設定...',
@@ -811,6 +851,7 @@ export const zhHant = defineLocale({
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',
+    tabMcp: 'MCP',
     all: '全部',
     searchSkills: '搜尋技能...',
     searchToolsets: '搜尋工具集...',
@@ -834,7 +875,31 @@ export const zhHant = defineLocale({
     toolsetEnabled: '工具集已啟用',
     toolsetDisabled: '工具集已停用',
     appliesToNewSessions: name => `${name} 將套用至新工作階段。`,
-    failedToUpdate: name => `更新 ${name} 失敗`
+    failedToUpdate: name => `更新 ${name} 失敗`,
+    sortMostUsed: '最常用',
+    sortAlpha: 'A–Z',
+    sortMostUsedDesc: '↓ 最常用',
+    sortLeastUsedAsc: '↑ 最少用',
+    enableAll: '全部啟用',
+    disableAll: '全部停用',
+    disableUnused: '停用未使用',
+    bulkUpdated: count => `已為新工作階段更新 ${count} 項。`,
+    bulkNoChange: '沒有需要變更的內容。',
+    usageCount: count => `已使用 ${count} 次`,
+    provenance: {
+      agent: '已學習',
+      bundled: '內建',
+      hub: '技能中心'
+    },
+    emptyNoneFound: noun => `找不到${noun}`,
+    emptyNothingMatches: query => `沒有符合「${query}」的內容。`,
+    emptyNoneAvailable: noun => `尚無可用的${noun}。`,
+    changesApplyNewSessions: '變更將套用至新工作階段。',
+    skillUpdated: '技能已更新',
+    edit: '編輯',
+    archive: '封存',
+    skillArchivedTitle: '技能已封存',
+    skillArchivedMessage: '可透過 hermes curator restore 還原。'
   },
 
   starmap: {
@@ -879,7 +944,6 @@ export const zhHant = defineLocale({
     ageHours: hours => `${hours} 小時前`,
     durationSeconds: seconds => `${seconds} 秒`,
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
-    tokensK: k => `${k}k 詞元`,
     tokens: value => `${value} 詞元`
   },
 
@@ -896,7 +960,7 @@ export const zhHant = defineLocale({
     appearance: '外觀',
     settings: '設定',
     changeTheme: '變更主題',
-    changeColorMode: '變更色彩模式...',
+    changeColorMode: '變更色彩模式…',
     pets: {
       title: '寵物',
       placeholder: '搜尋寵物…',
@@ -942,7 +1006,8 @@ export const zhHant = defineLocale({
       startOver: '重新開始'
     },
     installTheme: {
-      title: '安裝主題...',
+      title: '安裝主題…',
+      pageTitle: '安裝主題',
       placeholder: '搜尋 VS Code Marketplace...',
       loading: '正在搜尋 Marketplace...',
       error: '無法連接到 Marketplace。',
@@ -1151,9 +1216,9 @@ export const zhHant = defineLocale({
     allProfiles: '全部設定檔',
     showAllProfiles: '顯示全部設定檔',
     switchToProfile: name => `切換至 ${name}`,
-    manageProfiles: '管理設定檔...',
+    manageProfiles: '管理設定檔…',
     actionsFor: name => `${name} 的動作`,
-    color: '顏色...',
+    color: '顏色…',
     colorFor: name => `${name} 的顏色`,
     setColor: color => `設定顏色 ${color}`,
     autoColor: '自動',
@@ -1166,6 +1231,8 @@ export const zhHant = defineLocale({
     env: 'env',
     defaultBadge: '預設',
     rename: '重新命名',
+    renameMenu: '重新命名…',
+    editSoul: '編輯 SOUL.md…',
     copySetup: '複製安裝指令',
     copying: '複製中…',
     modelLabel: '模型',
@@ -1322,7 +1389,10 @@ export const zhHant = defineLocale({
     customPlaceholder: '0 9 * * * 或 weekdays at 9am',
     customHint: 'Cron 表達式，或類似「每小時」「工作日上午 9 點」的短語。',
     optional: '選填',
+    promptRequired: '提示詞為必填項目。',
     promptScheduleRequired: '提示詞和排程為必填項目。',
+    scheduleRequired: '排程為必填項目。',
+    scriptOnlyEditHint: '僅腳本任務（無 AI 提示詞）。任務 ID：',
     saveChanges: '儲存變更',
     createAction: '建立排程工作'
   },
@@ -1419,13 +1489,15 @@ export const zhHant = defineLocale({
       copyPath: '複製路徑',
       removeFromSidebar: '從側邊欄移除',
       createFailed: '無法建立專案',
-      staleBackend:
-        '請更新 Hermes 後端以建立專案——目前後端比桌面應用舊（設定 → 更新 → 後端）。',
+      staleBackend: '請更新 Hermes 後端以建立專案——目前後端比桌面應用舊（設定 → 更新 → 後端）。',
       deleteConfirm: '這會從 Hermes 中移除已儲存的專案。檔案、git 儲存庫和工作樹維持不變。',
       startWork: '新增工作樹',
       newWorktreeTitle: '新增工作樹',
       newWorktreeDesc: '為這個工作樹命名分支。',
       branchPlaceholder: '例如 my-feature',
+      branchOff: () => ({ after: ' 分支', before: '從 ' }),
+      baseBranchPlaceholder: '搜尋分支…',
+      baseBranchNone: '未找到分支',
       startWorkFailed: '無法建立工作樹',
       convertBranch: '轉換分支…',
       convertBranchTitle: '轉換分支',
@@ -1465,12 +1537,15 @@ export const zhHant = defineLocale({
       sessionRunning: '工作階段執行中',
       needsInput: '需要您的輸入',
       waitingForAnswer: '等待您的回答',
+      finishedUnread: '已完成 — 未讀',
+      backgroundRunning: '背景任務執行中',
       handoffOrigin: platform => `從 ${platform} 轉接`,
       renamed: '已重新命名',
       renameFailed: '重新命名失敗',
       renameTitle: '重新命名工作階段',
       renameDesc: '為此聊天取一個好記的標題。留空則清除。',
       untitledPlaceholder: '未命名工作階段',
+      untitledChat: id => `工作階段 ${id}`,
       ageNow: '剛才',
       ageDay: '天',
       ageHour: '時',
@@ -1774,6 +1849,7 @@ export const zhHant = defineLocale({
     featuredPitch: '一個訂閱，300+ 前沿模型 — 執行 Hermes 的建議方式',
     openRouterPitch: '一個金鑰，數百個模型 — 穩定的預設選擇',
     apiKeyOptions: {
+      fireworks: { short: '直接模型 API', description: '直接存取 Fireworks AI 託管的模型。' },
       openrouter: { short: '一個金鑰，多個模型', description: '用一個金鑰存取數百個模型。適合新安裝的預設選擇。' },
       openai: { short: 'GPT 等級模型', description: '直接存取 OpenAI 模型。' },
       gemini: { short: 'Gemini 模型', description: '直接存取 Google Gemini 模型。' },
@@ -1793,7 +1869,6 @@ export const zhHant = defineLocale({
     flowSubtitles: {
       pkce: '開啟瀏覽器登入，然後回到這裡繼續',
       device_code: '在瀏覽器中開啟驗證頁面 — Hermes 會自動連線',
-      loopback: '開啟瀏覽器登入 — Hermes 會自動連線',
       external: '先在終端機登入一次，然後回來繼續聊天'
     },
     startingSignIn: provider => `正在為 ${provider} 啟動登入...`,
@@ -1871,7 +1946,9 @@ export const zhHant = defineLocale({
       low: '低',
       medium: '中',
       high: '高',
+      xhigh: '極高',
       max: '最高',
+      ultra: '超高',
       updateFailed: '模型選項更新失敗',
       fastFailed: '快速模式更新失敗'
     },
@@ -1889,6 +1966,16 @@ export const zhHant = defineLocale({
       recentActivity: '最近活動',
       viewAllLogs: '查看全部記錄 →',
       messagingPlatforms: '訊息平台'
+    },
+    approvalMode: {
+      title: '核准模式',
+      ariaLabel: mode => `核准模式：${mode}`,
+      manual: '手動',
+      manualDescription: '執行需要核准的操作前詢問',
+      smart: '智慧',
+      smartDescription: '自動評估操作，並在需要時詢問',
+      off: '關閉',
+      offDescription: '不顯示核准提示，直接執行'
     },
     statusbar: {
       unknown: '未知',
@@ -2087,6 +2174,48 @@ export const zhHant = defineLocale({
     }
   },
 
+  zones: {
+    showHeader: '顯示標題列',
+    hideHeader: '隱藏標題列',
+    minimize: '最小化',
+    restore: '還原',
+    closeOthers: '關閉其他',
+    closeToRight: '關閉右側',
+    closeAll: '全部關閉',
+    split: dir => `向${dir}分割`,
+    move: dir => `向${dir}移動`,
+    dirUp: '上',
+    dirDown: '下',
+    dirLeft: '左',
+    dirRight: '右',
+    pluginDisabled: pluginId => `外掛「${pluginId}」已停用`,
+    pluginDisabledBody: '在 設定 → 外掛 中重新啟用即可恢復面板。',
+    missingPane: paneId => `缺少面板：${paneId}`,
+    editTitle: '版面配置',
+    editHint: '選擇一個版面配置，或在區域之間拖曳面板。右鍵點擊區域可分割。',
+    reset: '重設',
+    templates: '範本',
+    custom: '自訂',
+    newGridLayout: '新增網格版面',
+    saveCurrentAs: '將目前排列儲存為範本',
+    nameLayoutPlaceholder: '為版面命名…',
+    deletePreset: name => `刪除 ${name}`,
+    zoneEditorTitle: '區域編輯器',
+    editorHintPre: '點擊分割 · ',
+    editorHintPost: ' 翻轉分割線 · 拖曳跨越多個區域可合併 · 拖曳共用邊可調整大小',
+    templateColumns: '欄',
+    templateRows: '列',
+    templateGrid: '網格',
+    templatePriority: '優先',
+    zoneTag: index => `區域 ${index}`,
+    mergeZones: count => `合併 ${count} 個區域`,
+    customZoneName: count => `自訂 ${count} 區`,
+    layoutNamePlaceholder: fallback => `版面名稱（${fallback}）`,
+    saveApply: '儲存並套用',
+    notExpressible: '此排列互相咬合（風車形）——暫時無法表示為巢狀分割',
+    zoneCount: count => `${count} 個區域`
+  },
+
   assistant: {
     thread: {
       loadingSession: '正在載入工作階段',
@@ -2142,6 +2271,7 @@ export const zhHant = defineLocale({
       other: '其他（輸入您的答案）',
       placeholder: '輸入您的答案…',
       skip: '略過',
+      skipped: '已略過',
       continueLabel: '繼續'
     },
     tool: {

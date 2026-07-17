@@ -823,15 +823,37 @@ def _item_field(item: Any, name: str, default: Any = None) -> Any:
 def _raise_stream_error(event: Any) -> None:
     """Raise a ``_StreamErrorEvent`` from a ``type=error`` SSE frame.
 
+    The Responses spec puts the failure details at the top level of the
+    frame (``{"type": "error", "code": ..., "message": ..., "param": ...}``),
+    but the official OpenAI SDK and several OpenAI-compatible proxies wrap
+    them in an HTTP-style nested envelope instead
+    (``{"type": "error", "error": {"code": ..., "message": ..., "param": ...}}``).
+    Read the top-level fields first, then fall back to the nested envelope so
+    the error classifier sees the provider's real code/message (rate-limit vs
+    context-overflow vs entitlement) rather than the generic placeholder.
+    Port of anomalyco/opencode#36130.
+
     Imported lazily so this module stays importable from places that don't
     pull in ``run_agent`` (e.g. plugin code, doc tools).
     """
     from run_agent import _StreamErrorEvent
-    message = (_event_field(event, "message", "") or "stream emitted error event").strip()
+
+    nested = _event_field(event, "error")
+
+    def _error_field(name: str) -> Any:
+        value = _event_field(event, name)
+        if value is None and nested is not None:
+            value = _item_field(nested, name)
+        return value
+
+    raw_message = _error_field("message")
+    if raw_message is not None and not isinstance(raw_message, str):
+        raw_message = str(raw_message)
+    message = (raw_message or "stream emitted error event").strip() or "stream emitted error event"
     raise _StreamErrorEvent(
         message,
-        code=_event_field(event, "code"),
-        param=_event_field(event, "param"),
+        code=_error_field("code"),
+        param=_error_field("param"),
     )
 
 

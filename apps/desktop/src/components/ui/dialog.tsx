@@ -73,8 +73,8 @@ function DialogContent({
   const widthClass = fitContent ? 'w-auto max-w-[92vw]' : 'w-full max-w-lg'
 
   const closeButton = showCloseButton ? (
-    <DialogPrimitive.Close asChild data-slot="dialog-close-button">
-      <Tip label={t.common.close}>
+    <Tip label={t.common.close}>
+      <DialogPrimitive.Close asChild data-slot="dialog-close-button">
         <Button
           aria-label={t.common.close}
           className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
@@ -84,8 +84,8 @@ function DialogContent({
           <X className="size-4" />
           <span className="sr-only">{t.common.close}</span>
         </Button>
-      </Tip>
-    </DialogPrimitive.Close>
+      </DialogPrimitive.Close>
+    </Tip>
   ) : null
 
   // With a banner, the border can't live on the scroll/clip box (it would draw a

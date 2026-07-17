@@ -4,8 +4,10 @@ import io
 import json
 import logging
 import os
+import subprocess
 import sys
 import threading
+import time
 import types
 import uuid
 from pathlib import Path
@@ -1063,13 +1065,27 @@ def test_cleanup_terminal_chatter_stays_inside_redirected_streams(monkeypatch):
 def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
     tmp_path: Path,
     monkeypatch,
+    request,
 ):
+    from agent.turn_finalizer import finalize_turn
     from hermes_state import SessionDB
     from run_agent import AIAgent
+    from tools import browser_tool, process_registry as process_registry_module
+    from tools import terminal_tool
+    from tools.process_registry import ProcessRegistry, ProcessSession
 
+    task_id = str(uuid.uuid4())
     db = SessionDB(db_path=tmp_path / "state.db")
     parent = "oneshot-parent"
     db.create_session(parent, source="cli", model="test/model")
+    end_calls: list[tuple[str, str]] = []
+    real_end_session = db.end_session
+
+    def tracked_end_session(session_id, reason):
+        end_calls.append((session_id, reason))
+        return real_end_session(session_id, reason)
+
+    monkeypatch.setattr(db, "end_session", tracked_end_session)
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         agent = AIAgent(
             api_key="test-key",
@@ -1105,24 +1121,93 @@ def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
     agent._compress_context(messages, "sys", approx_tokens=120_000)
     child = agent.session_id
     assert child != parent
-    task_id = str(uuid.uuid4())
-    events: list[str] = []
-    _, kill_all, _, _ = _install_cleanup_modules(monkeypatch, events)
+
+    registry = ProcessRegistry()
+    monkeypatch.setattr(process_registry_module, "process_registry", registry)
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    def reap_fixture_process():
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+
+    request.addfinalizer(reap_fixture_process)
+    process_session = ProcessSession(
+        id=f"proc_{uuid.uuid4().hex[:12]}",
+        command="python sleep fixture",
+        task_id=task_id,
+        pid=process.pid,
+        process=process,
+        cwd=str(tmp_path),
+        started_at=time.time(),
+        host_start_time=registry._safe_host_start_time(process.pid),
+    )
+    registry._running[process_session.id] = process_session
+
+    terminal_cleaned: list[str] = []
+
+    class FixtureEnvironment:
+        _persistent = False
+
+        def cleanup(self):
+            terminal_cleaned.append(task_id)
+
+    monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: FixtureEnvironment()})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {task_id: time.time()})
+    monkeypatch.setattr(terminal_tool, "_creation_locks", {task_id: threading.Lock()})
+
+    monkeypatch.setattr(
+        browser_tool,
+        "_active_sessions",
+        {task_id: {"session_name": "oneshot-fixture", "bb_session_id": None}},
+    )
+    monkeypatch.setattr(browser_tool, "_session_last_activity", {task_id: time.time()})
+    monkeypatch.setattr(browser_tool, "_last_active_session_key", {task_id: task_id})
+    monkeypatch.setattr(browser_tool, "_run_browser_command", lambda *_a, **_kw: {"success": True})
+    monkeypatch.setattr(browser_tool, "_maybe_stop_recording", lambda *_a, **_kw: None)
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+
+    manager = types.SimpleNamespace(_hooks={})
+    hook_task_ids: list[str] = []
+
+    def invoke_hook(name, **kwargs):
+        if name in {"post_llm_call", "on_session_end"}:
+            hook_task_ids.append(kwargs["task_id"])
+        return [callback(**kwargs) for callback in list(manager._hooks.get(name, []))]
+
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", invoke_hook)
+    monkeypatch.setattr("tools.async_delegation.interrupt_all", lambda **_kwargs: None)
+    monkeypatch.setattr("tools.mcp_tool.shutdown_mcp_servers", lambda: None)
+    monkeypatch.setattr("agent.auxiliary_client.shutdown_cached_clients", lambda: None)
+
     resources = oneshot._OneshotResources()
     resources.agent = agent
     resources.session_db = db
     resources.task_id = task_id
     monkeypatch.setattr(resources, "_arm_watchdog_once", Mock())
+    delivery = oneshot._FinalDelivery(io.StringIO(), resources.mark_final_delivered)
 
-    close_fallback = Mock(
-        side_effect=lambda: db.end_session(agent.session_id, "agent_close")
-        if agent._end_session_on_close
-        else None
-    )
-    monkeypatch.setattr(agent, "close", close_fallback)
-    resources.mark_final_delivered()
-
-    result = {"session_id": agent.session_id, "failed": False}
+    with oneshot._install_final_delivery_hook(delivery, resources):
+        result = finalize_turn(
+            agent,
+            final_response="compressed final",
+            api_call_count=1,
+            interrupted=False,
+            failed=False,
+            messages=messages,
+            conversation_history=[],
+            effective_task_id=task_id,
+            turn_id="oneshot-turn",
+            user_message="prompt",
+            original_user_message="prompt",
+            _should_review_memory=False,
+            _turn_exit_reason="text_response(finish_reason=stop)",
+        )
     usage_path = tmp_path / "usage.json"
     oneshot._write_usage_file(str(usage_path), result)
     resources.close()
@@ -1132,9 +1217,21 @@ def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
     child_row = reopened.get_session(child)
     assert parent_row["end_reason"] == "compression"
     assert child_row["end_reason"] == "oneshot_complete"
+    assert reopened.get_conversation_root(child) == parent
+    assert reopened.get_compression_lineage(child) == [parent, child]
     assert result["session_id"] == child
     assert json.loads(usage_path.read_text())["session_id"] == child
-    assert kill_all.call_args_list == [call(task_id=task_id)]
-    assert close_fallback.call_count == 1
+    assert end_calls == [
+        (parent, "compression"),
+        (child, "oneshot_complete"),
+    ]
+    assert hook_task_ids == [task_id, task_id]
+    assert resources.task_id == task_id
+    assert registry.has_active_processes(task_id) is False
+    assert process_session.id not in registry._running
+    assert process.poll() is not None
+    assert task_id not in terminal_tool._active_environments
+    assert task_id not in browser_tool._active_sessions
+    assert terminal_cleaned == [task_id]
     assert agent._end_session_on_close is False
     reopened.close()

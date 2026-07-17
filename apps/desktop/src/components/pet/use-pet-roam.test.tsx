@@ -90,6 +90,7 @@ describe('usePetRoam RAF scheduling', () => {
     ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
     vi.useFakeTimers()
     setVisibility(false)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
     installWindowStateBridge()
     vi.spyOn(Math, 'random').mockReturnValue(0)
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
@@ -138,5 +139,28 @@ describe('usePetRoam RAF scheduling', () => {
 
     expect(raf.request).not.toHaveBeenCalled()
     expect(vi.getTimerCount()).toBe(1)
+  })
+
+  it('suspends idle movement while unfocused and cleans up its wake timer on unmount', () => {
+    const raf = installRaf()
+
+    render(<RoamHarness />)
+    expect(vi.getTimerCount()).toBe(1)
+
+    act(() => window.dispatchEvent(new Event('blur')))
+    expect(vi.getTimerCount()).toBe(0)
+
+    act(() => window.dispatchEvent(new Event('focus')))
+    expect(vi.getTimerCount()).toBe(1)
+
+    cleanup()
+    expect(vi.getTimerCount()).toBe(0)
+
+    act(() => {
+      vi.advanceTimersByTime(2000)
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(raf.request).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

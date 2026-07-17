@@ -1,9 +1,11 @@
 import asyncio
 import os
+from dataclasses import replace
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
+from gateway.platforms.base import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionContext, SessionSource
 from gateway.session_context import (
@@ -103,6 +105,252 @@ def test_redact_pii_policy_lifecycle_keeps_raw_identity_unmapped():
     assert session_redact_pii_enabled() is True
     reset_session_vars()
     assert session_redact_pii_enabled() is False
+
+
+def test_gateway_binding_uses_routed_profile_privacy_policy(tmp_path, monkeypatch):
+    """The real turn binder must not reuse the default profile's policy."""
+    from gateway.session import _hash_message_id, _hash_sender_id, _hash_thread_id
+    from tools.mcp_tool import _build_session_context_meta
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "privacy:\n  redact_pii: false\n",
+        encoding="utf-8",
+    )
+    secondary_home = tmp_path / "profiles" / "secondary"
+    secondary_home.mkdir(parents=True)
+    monkeypatch.setenv("SECONDARY_REDACT_PII", "true")
+    (secondary_home / "config.yaml").write_text(
+        "privacy:\n  redact_pii: ${SECONDARY_REDACT_PII}\n",
+        encoding="utf-8",
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    runner.adapters = {}
+    phone = "+15551234567"
+
+    def _context(profile):
+        source = SessionSource(
+            platform=Platform.WHATSAPP_CLOUD,
+            chat_id=phone,
+            user_id=phone,
+            thread_id=f"{phone}:topic",
+            message_id="wamid.HBgLMTU1NTEyMzQ1NjcVAgASGBQ",
+            profile=profile,
+        )
+        return SessionContext(
+            source=source,
+            connected_platforms=[Platform.WHATSAPP_CLOUD],
+            home_channels={},
+            session_key=f"agent:{profile}:whatsapp_cloud:dm:{phone}",
+            session_id=f"session-{profile}",
+        )
+
+    default_context = _context("default")
+    tokens, policy = runner._bind_session_context_for_turn(default_context)
+    try:
+        assert policy is False
+        default_meta = _build_session_context_meta()
+        assert default_meta is not None
+        assert default_meta["com.nousresearch.hermes/user_id"] == phone
+        assert default_meta["com.nousresearch.hermes/message_id"].startswith("wamid.")
+    finally:
+        runner._clear_session_env(tokens)
+
+    secondary_context = _context("secondary")
+    tokens, policy = runner._bind_session_context_for_turn(secondary_context)
+    try:
+        assert policy is True
+        secondary_meta = _build_session_context_meta()
+        assert secondary_meta is not None
+        assert secondary_meta["com.nousresearch.hermes/user_id"] == _hash_sender_id(phone)
+        assert secondary_meta["com.nousresearch.hermes/thread_id"] == _hash_thread_id(
+            secondary_context.source.thread_id
+        )
+        assert secondary_meta["com.nousresearch.hermes/message_id"] == _hash_message_id(
+            secondary_context.source.message_id
+        )
+    finally:
+        runner._clear_session_env(tokens)
+
+
+def test_gateway_binding_honors_managed_privacy_precedence(tmp_path, monkeypatch):
+    from hermes_cli import managed_scope
+
+    user_home = tmp_path / "user"
+    managed_home = tmp_path / "managed"
+    user_home.mkdir()
+    managed_home.mkdir()
+    (user_home / "config.yaml").write_text(
+        "privacy:\n  redact_pii: false\n",
+        encoding="utf-8",
+    )
+    (managed_home / "config.yaml").write_text(
+        "privacy:\n  redact_pii: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("gateway.run._hermes_home", user_home)
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_home))
+    managed_scope.invalidate_managed_cache()
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.adapters = {}
+    context = SessionContext(
+        source=SessionSource(
+            platform=Platform.SIGNAL,
+            chat_id="+15551234567",
+            user_id="+15551234567",
+        ),
+        connected_platforms=[Platform.SIGNAL],
+        home_channels={},
+        session_key="agent:main:signal:dm:+15551234567",
+        session_id="session-managed",
+    )
+
+    tokens, policy = runner._bind_session_context_for_turn(context)
+    try:
+        assert policy is True
+        assert session_redact_pii_enabled() is True
+    finally:
+        runner._clear_session_env(tokens)
+        managed_scope.invalidate_managed_cache()
+
+
+@pytest.mark.parametrize("failure", ["malformed", "unreadable", "missing-profile"])
+def test_gateway_binding_marks_policy_unavailable_and_mcp_omits(
+    tmp_path,
+    monkeypatch,
+    caplog,
+    failure,
+):
+    from tools.mcp_tool import _build_session_context_meta
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {}
+    profile = None
+    if failure == "missing-profile":
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        profile = "does-not-exist"
+    else:
+        runner.config = GatewayConfig()
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "privacy: [malformed" if failure == "malformed" else "privacy: {}\n",
+            encoding="utf-8",
+        )
+        if failure == "unreadable":
+            monkeypatch.setattr(
+                "gateway.run._read_yaml_mapping_strict",
+                lambda _path: (_ for _ in ()).throw(PermissionError("unreadable")),
+            )
+
+    source = SessionSource(
+        platform=Platform.SIGNAL,
+        chat_id="+15551234567",
+        user_id="+15551234567",
+        profile=profile,
+    )
+    context = SessionContext(
+        source=source,
+        connected_platforms=[Platform.SIGNAL],
+        home_channels={},
+        session_key="agent:secondary:signal:dm:+15551234567",
+        session_id="session-secondary",
+    )
+
+    with caplog.at_level("WARNING"):
+        tokens, policy = runner._bind_session_context_for_turn(context)
+        try:
+            assert policy is None
+            assert session_redact_pii_enabled() is None
+            assert _build_session_context_meta() is None
+        finally:
+            runner._clear_session_env(tokens)
+
+    assert "external session metadata will be omitted" in caplog.text
+    assert "privacy policy is unavailable" in caplog.text
+
+
+def test_queued_followup_rebinds_sender_message_and_policy(tmp_path, monkeypatch):
+    """Recursive queued turns must not retain the first event's ContextVars."""
+    from tools.mcp_tool import _build_session_context_meta
+
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("privacy:\n  redact_pii: true\n", encoding="utf-8")
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.adapters = {}
+    first_source = SessionSource(
+        platform=Platform.WHATSAPP_CLOUD,
+        chat_id="15551230001",
+        user_id="15551230001",
+        message_id="wamid.FIRST",
+    )
+    first_context = SessionContext(
+        source=first_source,
+        connected_platforms=[Platform.WHATSAPP_CLOUD],
+        home_channels={},
+        session_key="agent:main:whatsapp_cloud:dm:15551230001",
+        session_id="session-queue",
+    )
+    tokens, policy = runner._bind_session_context_for_turn(first_context)
+    assert policy is True
+    assert get_session_env("HERMES_SESSION_USER_ID") == "15551230001"
+    assert get_session_env("HERMES_SESSION_MESSAGE_ID") == "wamid.FIRST"
+
+    # Policy is read per event; change it before the queued turn drains.
+    config_path.write_text("privacy:\n  redact_pii: false\n", encoding="utf-8")
+    followup_event = MessageEvent(
+        text="follow up",
+        source=SessionSource(
+            platform=Platform.WHATSAPP_CLOUD,
+            chat_id="15551230002",
+            user_id="15551230002",
+        ),
+        message_id="wamid.SECOND",
+    )
+    try:
+        followup_source, followup_policy = runner._bind_followup_event_context(
+            followup_event,
+            session_key="agent:main:whatsapp_cloud:dm:15551230002",
+            session_id="session-queue",
+        )
+        assert followup_source.message_id == "wamid.SECOND"
+        assert followup_policy is False
+        assert session_redact_pii_enabled() is False
+        assert get_session_env("HERMES_SESSION_USER_ID") == "15551230002"
+        assert get_session_env("HERMES_SESSION_MESSAGE_ID") == "wamid.SECOND"
+        meta = _build_session_context_meta()
+        assert meta is not None
+        assert meta["com.nousresearch.hermes/user_id"] == "15551230002"
+        assert meta["com.nousresearch.hermes/message_id"] == "wamid.SECOND"
+
+        # Synthetic queued continuations have no trigger ID, so their
+        # constructor must clear the reused source ID instead of inheriting
+        # WAMID 2.
+        synthetic_event = MessageEvent(
+            text="continue the goal",
+            source=replace(followup_source, message_id=None),
+            message_id=None,
+        )
+        synthetic_source, synthetic_policy = runner._bind_followup_event_context(
+            synthetic_event,
+            session_key="agent:main:whatsapp_cloud:dm:15551230002",
+            session_id="session-queue",
+        )
+        assert synthetic_source.message_id is None
+        assert synthetic_policy is False
+        assert get_session_env("HERMES_SESSION_MESSAGE_ID") == ""
+        synthetic_meta = _build_session_context_meta()
+        assert synthetic_meta is not None
+        assert synthetic_meta["com.nousresearch.hermes/message_id"] == ""
+    finally:
+        runner._clear_session_env(tokens)
 
 
 def test_session_source_uses_contextvars(monkeypatch):
@@ -450,4 +698,3 @@ async def test_gateway_executor_refuses_resurrection_after_shutdown():
             await runner._run_in_executor_with_context(lambda: "second")
     finally:
         runner._shutdown_executor()
-

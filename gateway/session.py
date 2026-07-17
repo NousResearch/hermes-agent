@@ -84,6 +84,16 @@ def _hash_chat_id(value: str) -> str:
     return _hash_id(value)
 
 
+def _hash_thread_id(value: str) -> str:
+    """Hash an entire thread ID to ``thread_<12hex>``."""
+    return f"thread_{_hash_id(value)}"
+
+
+def _hash_message_id(value: str) -> str:
+    """Hash an entire message ID to ``message_<12hex>``."""
+    return f"message_{_hash_id(value)}"
+
+
 from .config import (
     Platform,
     GatewayConfig,
@@ -332,6 +342,7 @@ class SessionContext:
 
 _PII_SAFE_PLATFORMS = frozenset({
     Platform.WHATSAPP,
+    Platform.WHATSAPP_CLOUD,
     Platform.SIGNAL,
     Platform.TELEGRAM,
     Platform.BLUEBUBBLES,

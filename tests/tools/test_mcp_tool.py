@@ -809,10 +809,63 @@ class TestToolHandler:
                 _servers.pop("crm_srv", None)
                 _session_context_forwarding_servers.discard(safe_server_name)
 
-    def test_forward_session_context_crosses_real_mcp_loop_boundary(self):
-        """Caller ContextVars reach tools/call ``_meta`` on the real MCP loop."""
-        from gateway.session_context import clear_session_vars, set_session_vars
+    def test_forward_redacted_profile_context_crosses_real_mcp_loop_boundary(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A routed profile's pseudonyms reach tools/call on the real loop."""
+        from gateway.config import GatewayConfig, Platform
+        from gateway.platforms.base import MessageEvent
+        from gateway.run import GatewayRunner
+        from gateway.session import (
+            SessionContext,
+            SessionSource,
+            _hash_chat_id,
+            _hash_id,
+            _hash_message_id,
+            _hash_sender_id,
+            _hash_thread_id,
+        )
         import tools.mcp_tool as mcp
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        secondary_home = tmp_path / "profiles" / "secondary"
+        secondary_home.mkdir(parents=True)
+        (secondary_home / "config.yaml").write_text(
+            "privacy:\n  redact_pii: true\n",
+            encoding="utf-8",
+        )
+
+        phone = "15551234567"
+        raw_thread_id = f"+{phone}:support"
+        raw_message_id = "wamid.HBgLMTU1NTEyMzQ1NjcVAgASGBQzQjA5QzA3QTQx"
+        raw_session_key = f"agent:secondary:whatsapp_cloud:dm:{phone}"
+        source = SessionSource(
+            platform=Platform.WHATSAPP_CLOUD,
+            chat_id=phone,
+            user_id=phone,
+            thread_id=raw_thread_id,
+            profile="secondary",
+        )
+        event = MessageEvent(
+            text="hello from WhatsApp Cloud",
+            source=source,
+            message_id=raw_message_id,
+        )
+        context = SessionContext(
+            source=source,
+            connected_platforms=[Platform.WHATSAPP_CLOUD],
+            home_channels={},
+            session_key=raw_session_key,
+            session_id="20260716_120000_cloud",
+        )
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner.adapters = {}
+        source = runner._source_with_trigger_message_id(event)
+        assert source.message_id == raw_message_id
+        context.source = source
 
         server_name = "context_bridge"
         safe_server_name = mcp.sanitize_mcp_name_component(server_name)
@@ -841,15 +894,8 @@ class TestToolHandler:
         loop_thread = None
         loop_thread_alive_after_stop = None
         try:
-            tokens = set_session_vars(
-                platform="discord",
-                chat_id="channel-123",
-                thread_id="thread-456",
-                user_id="user-789",
-                session_key="agent:main:discord:thread:thread-456:thread-456",
-                session_id="20260705_191621_abcd",
-                message_id="message-999",
-            )
+            tokens, policy = runner._bind_session_context_for_turn(context)
+            assert policy is True
             mcp._ensure_mcp_loop()
             loop_thread = _wait_for_real_mcp_loop(mcp)
 
@@ -863,21 +909,31 @@ class TestToolHandler:
                 "kwargs": {
                     "arguments": {"task": "boundary"},
                     "meta": {
-                        "com.nousresearch.hermes/platform": "discord",
-                        "com.nousresearch.hermes/session_id": "20260705_191621_abcd",
-                        "com.nousresearch.hermes/session_key": "agent:main:discord:thread:thread-456:thread-456",
-                        "com.nousresearch.hermes/chat_id": "channel-123",
-                        "com.nousresearch.hermes/thread_id": "thread-456",
-                        "com.nousresearch.hermes/user_id": "user-789",
-                        "com.nousresearch.hermes/message_id": "message-999",
+                        "com.nousresearch.hermes/platform": "whatsapp_cloud",
+                        "com.nousresearch.hermes/session_id": "20260716_120000_cloud",
+                        "com.nousresearch.hermes/session_key": (
+                            f"session_{_hash_id(raw_session_key)}"
+                        ),
+                        "com.nousresearch.hermes/chat_id": _hash_chat_id(phone),
+                        "com.nousresearch.hermes/thread_id": _hash_thread_id(
+                            raw_thread_id
+                        ),
+                        "com.nousresearch.hermes/user_id": _hash_sender_id(phone),
+                        "com.nousresearch.hermes/message_id": _hash_message_id(
+                            raw_message_id
+                        ),
                     },
                 },
             }
             assert observed["thread_ident"] != caller_thread_ident
+            forwarded = json.dumps(observed)
+            assert phone not in forwarded
+            assert raw_thread_id not in forwarded
+            assert raw_message_id not in forwarded
         finally:
             try:
                 if tokens is not None:
-                    clear_session_vars(tokens)
+                    runner._clear_session_env(tokens)
             finally:
                 try:
                     mcp._stop_mcp_loop()
@@ -944,7 +1000,13 @@ class TestToolHandler:
             clear_session_vars(tokens)
 
     def test_session_context_meta_redacts_eligible_platform_without_mutating_context(self):
-        from gateway.session import _hash_chat_id, _hash_id, _hash_sender_id
+        from gateway.session import (
+            _hash_chat_id,
+            _hash_id,
+            _hash_message_id,
+            _hash_sender_id,
+            _hash_thread_id,
+        )
         from gateway.session_context import (
             clear_session_vars,
             get_session_env,
@@ -953,8 +1015,9 @@ class TestToolHandler:
         from tools.mcp_tool import _build_session_context_meta
 
         raw_chat_id = "telegram:+15550101001"
-        raw_thread_id = "telegram:+15550101002"
+        raw_thread_id = "+15550101002:topic"
         raw_user_id = "+15550101003"
+        raw_message_id = "message-public-1"
         raw_session_key = (
             "agent:main:telegram:dm:"
             f"{raw_chat_id}:{raw_thread_id}:{raw_user_id}"
@@ -966,7 +1029,7 @@ class TestToolHandler:
             user_id=raw_user_id,
             session_key=raw_session_key,
             session_id="20260716_120000_abcd",
-            message_id="message-public-1",
+            message_id=raw_message_id,
             redact_pii=True,
         )
 
@@ -979,9 +1042,11 @@ class TestToolHandler:
                     f"session_{_hash_id(raw_session_key)}"
                 ),
                 "com.nousresearch.hermes/chat_id": _hash_chat_id(raw_chat_id),
-                "com.nousresearch.hermes/thread_id": _hash_chat_id(raw_thread_id),
+                "com.nousresearch.hermes/thread_id": _hash_thread_id(raw_thread_id),
                 "com.nousresearch.hermes/user_id": _hash_sender_id(raw_user_id),
-                "com.nousresearch.hermes/message_id": "message-public-1",
+                "com.nousresearch.hermes/message_id": _hash_message_id(
+                    raw_message_id
+                ),
             }
             assert _build_session_context_meta() == meta
 
@@ -991,6 +1056,7 @@ class TestToolHandler:
                 raw_thread_id,
                 raw_user_id,
                 raw_session_key,
+                raw_message_id,
                 "+15550101001",
                 "+15550101002",
                 "+15550101003",
@@ -1002,6 +1068,57 @@ class TestToolHandler:
             assert get_session_env("HERMES_SESSION_THREAD_ID") == raw_thread_id
             assert get_session_env("HERMES_SESSION_USER_ID") == raw_user_id
             assert get_session_env("HERMES_SESSION_KEY") == raw_session_key
+            assert get_session_env("HERMES_SESSION_MESSAGE_ID") == raw_message_id
+        finally:
+            clear_session_vars(tokens)
+
+    def test_whatsapp_cloud_wamid_and_phone_metadata_are_pseudonymized(self):
+        from gateway.session import (
+            _hash_chat_id,
+            _hash_id,
+            _hash_message_id,
+            _hash_sender_id,
+            _hash_thread_id,
+        )
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import _build_session_context_meta
+
+        wa_id = "15551234567"
+        raw_thread_id = f"+{wa_id}:support"
+        raw_message_id = "wamid.HBgLMTU1NTEyMzQ1NjcVAgASGBQzQjA5QzA3QTQx"
+        raw_session_key = f"agent:main:whatsapp_cloud:dm:{wa_id}"
+        tokens = set_session_vars(
+            platform="whatsapp_cloud",
+            chat_id=wa_id,
+            thread_id=raw_thread_id,
+            user_id=wa_id,
+            session_key=raw_session_key,
+            session_id="20260716_120000_cloud",
+            message_id=raw_message_id,
+            redact_pii=True,
+        )
+
+        try:
+            meta = _build_session_context_meta()
+            assert meta == {
+                "com.nousresearch.hermes/platform": "whatsapp_cloud",
+                "com.nousresearch.hermes/session_id": "20260716_120000_cloud",
+                "com.nousresearch.hermes/session_key": (
+                    f"session_{_hash_id(raw_session_key)}"
+                ),
+                "com.nousresearch.hermes/chat_id": _hash_chat_id(wa_id),
+                "com.nousresearch.hermes/thread_id": _hash_thread_id(
+                    raw_thread_id
+                ),
+                "com.nousresearch.hermes/user_id": _hash_sender_id(wa_id),
+                "com.nousresearch.hermes/message_id": _hash_message_id(
+                    raw_message_id
+                ),
+            }
+            forwarded = json.dumps(meta)
+            assert wa_id not in forwarded
+            assert raw_thread_id not in forwarded
+            assert raw_message_id not in forwarded
         finally:
             clear_session_vars(tokens)
 

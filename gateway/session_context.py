@@ -37,7 +37,7 @@ needs to replace the import + call site:
 """
 
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, Optional
 
 # Sentinel to distinguish "never set in this context" from "explicitly set to empty".
 # When a contextvar holds _UNSET, we fall back to os.environ (CLI/cron compat).
@@ -175,7 +175,7 @@ def set_session_vars(
     cwd: str = "",
     async_delivery: bool = True,
     ui_session_id: str = "",
-    redact_pii: bool = False,
+    redact_pii: Optional[bool] = False,
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -193,7 +193,9 @@ def set_session_vars(
     request/response adapters (the API server) pass ``False``.
 
     ``redact_pii`` snapshots the per-turn privacy policy used when opt-in MCP
-    servers receive session metadata. Raw routing values remain unchanged.
+    servers receive session metadata. ``None`` means the policy could not be
+    loaded; MCP forwarding treats that state as unavailable and fails closed.
+    Raw routing values remain unchanged.
     """
     # Mark the session-context machinery engaged for this process. The
     # subprocess-env bridge uses this to switch from "os.environ fallback" to
@@ -214,7 +216,9 @@ def set_session_vars(
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
-        _SESSION_REDACT_PII.set(bool(redact_pii)),
+        _SESSION_REDACT_PII.set(
+            None if redact_pii is None else bool(redact_pii)
+        ),
     ]
     try:
         from agent.runtime_cwd import set_session_cwd
@@ -356,13 +360,17 @@ def async_delivery_supported() -> bool:
     return bool(value)
 
 
-def session_redact_pii_enabled() -> bool:
-    """Whether the active turn opted into PII pseudonymization.
+def session_redact_pii_enabled() -> Optional[bool]:
+    """Return the active turn's PII pseudonymization policy.
 
-    An unbound or cleared context is disabled. Unlike session identity, this
-    policy never falls back to ``os.environ``.
+    ``None`` means a gateway turn was bound but its policy was unavailable;
+    callers handling external metadata must fail closed. An unbound or cleared
+    context remains disabled for non-gateway compatibility. Unlike session
+    identity, this policy never falls back to ``os.environ``.
     """
     value = _SESSION_REDACT_PII.get()
     if value is _UNSET:
         return False
+    if value is None:
+        return None
     return bool(value)

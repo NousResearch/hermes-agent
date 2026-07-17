@@ -4097,7 +4097,12 @@ def _build_session_context_meta() -> Optional[Dict[str, str]]:
         )
         return None
 
-    if not redact_pii:
+    if redact_pii is None:
+        logger.warning(
+            "MCP session privacy policy is unavailable; omitting session metadata"
+        )
+        return None
+    if redact_pii is False:
         return meta
 
     # Preserve the raw ContextVars for routing and pseudonymize only this
@@ -4107,7 +4112,9 @@ def _build_session_context_meta() -> Optional[Dict[str, str]]:
         from gateway.session import (
             _hash_chat_id,
             _hash_id,
+            _hash_message_id,
             _hash_sender_id,
+            _hash_thread_id,
             _is_pii_redaction_eligible,
         )
 
@@ -4120,14 +4127,17 @@ def _build_session_context_meta() -> Optional[Dict[str, str]]:
         thread_key = "com.nousresearch.hermes/thread_id"
         user_key = "com.nousresearch.hermes/user_id"
         session_key = "com.nousresearch.hermes/session_key"
+        message_key = "com.nousresearch.hermes/message_id"
         if redacted[chat_key]:
             redacted[chat_key] = _hash_chat_id(redacted[chat_key])
         if redacted[thread_key]:
-            redacted[thread_key] = _hash_chat_id(redacted[thread_key])
+            redacted[thread_key] = _hash_thread_id(redacted[thread_key])
         if redacted[user_key]:
             redacted[user_key] = _hash_sender_id(redacted[user_key])
         if redacted[session_key]:
             redacted[session_key] = f"session_{_hash_id(redacted[session_key])}"
+        if redacted[message_key]:
+            redacted[message_key] = _hash_message_id(redacted[message_key])
         return redacted
     except Exception as exc:
         logger.warning(

@@ -27,6 +27,7 @@ session a few steps later.
 """
 import asyncio
 from contextvars import copy_context
+from typing import TypedDict
 
 import pytest
 
@@ -43,7 +44,18 @@ from tools.environments.local import _make_run_env
 
 SESSION_VARS = list(_VAR_MAP.keys())
 
-MINE = dict(
+
+class _SessionVars(TypedDict):
+    session_key: str
+    platform: str
+    chat_id: str
+    thread_id: str
+    user_id: str
+    chat_name: str
+    message_id: str
+
+
+MINE: _SessionVars = dict(
     session_key="agent:main:discord:thread:MINE:MINE",
     platform="discord",
     chat_id="MINE_CHAT",
@@ -52,7 +64,7 @@ MINE = dict(
     chat_name="mine",
     message_id="MINE_MSG",
 )
-FOREIGN = dict(
+FOREIGN: _SessionVars = dict(
     session_key="agent:main:discord:thread:FOREIGN:FOREIGN",
     platform="discord",
     chat_id="FOREIGN_CHAT",

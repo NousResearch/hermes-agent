@@ -245,6 +245,29 @@ def test_event_from_wire_sets_relay_delivery_marker():
     assert event.source.delivered_via_upstream_relay is True
 
 
+def test_event_from_wire_preserves_source_only_message_id_at_ingress():
+    """A real source-only relay trigger ID is not cleared at ingress."""
+    from gateway.relay.ws_transport import _event_from_wire
+    from gateway.run import GatewayRunner
+
+    event = _event_from_wire(
+        {
+            "text": "legacy interaction",
+            "source": {
+                "platform": "discord",
+                "chat_id": "123",
+                "chat_type": "dm",
+                "user_id": "267171776755269633",
+                "message_id": "relay-source-only-1",
+            },
+        }
+    )
+
+    assert event.message_id is None
+    source = GatewayRunner._source_with_trigger_message_id(event)
+    assert source.message_id == "relay-source-only-1"
+
+
 def test_event_from_wire_stamps_routed_profile():
     """A connector-routed profile on the wire source lands on SessionSource.
 

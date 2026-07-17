@@ -121,27 +121,28 @@ def test_is_session_expired_rejects_mixed_group_with_user_interruption():
     assert _is_session_expired_error(exc) is False
 
 
-def test_exception_tree_finds_interruption_beyond_recursion_limit():
-    """Arbitrarily deep wrapper trees must not overflow Python's call stack."""
+def test_is_session_expired_finds_closed_resource_beyond_recursion_limit():
+    """The full classifier must handle arbitrarily deep transport wrappers."""
     import sys
 
-    from tools.mcp_tool import _exception_tree_contains_interruption
+    from anyio import ClosedResourceError
+    from tools.mcp_tool import _is_session_expired_error
 
     class NestedException(Exception):
         exceptions: tuple[BaseException, ...]
 
-    exc = InterruptedError("cancel")
+    exc = ClosedResourceError()
     for _ in range(sys.getrecursionlimit() + 100):
         wrapper = NestedException("wrapped")
         wrapper.exceptions = (exc,)
         exc = wrapper
 
-    assert _exception_tree_contains_interruption(exc) is True
+    assert _is_session_expired_error(exc) is True
 
 
-def test_exception_tree_handles_cyclic_exceptions_graph():
-    """Malformed exception graphs may contain cycles and must terminate safely."""
-    from tools.mcp_tool import _exception_tree_contains_interruption
+def test_is_session_expired_handles_cyclic_graph_without_transport_error():
+    """A cyclic non-transport graph must terminate and classify false."""
+    from tools.mcp_tool import _is_session_expired_error
 
     class CyclicException(Exception):
         exceptions: tuple[BaseException, ...]
@@ -151,7 +152,23 @@ def test_exception_tree_handles_cyclic_exceptions_graph():
     first.exceptions = (second,)
     second.exceptions = (first,)
 
-    assert _exception_tree_contains_interruption(first) is False
+    assert _is_session_expired_error(first) is False
+
+
+def test_is_session_expired_finds_transport_error_in_cyclic_graph():
+    """Cycle detection must not prevent scanning reachable transport errors."""
+    from anyio import ClosedResourceError
+    from tools.mcp_tool import _is_session_expired_error
+
+    class CyclicException(Exception):
+        exceptions: tuple[BaseException, ...]
+
+    first = CyclicException("first")
+    second = CyclicException("second")
+    first.exceptions = (second, ClosedResourceError())
+    second.exceptions = (first,)
+
+    assert _is_session_expired_error(first) is True
 
 
 def test_is_session_expired_rejects_empty_message():

@@ -107,6 +107,11 @@ class MattermostAdapter(BasePlatformAdapter):
         self._last_post_status: Optional[int] = None
         self._last_post_error: str = ""
 
+        # Mattermost websocket posts do not include the sender's is_bot flag.
+        # Cache /users/{id} lookups so filtering does not add one REST request
+        # per message from an already-seen sender.
+        self._user_is_bot_cache: Dict[str, bool] = {}
+
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
 
@@ -137,6 +142,63 @@ class MattermostAdapter(BasePlatformAdapter):
         except aiohttp.ClientError as exc:
             logger.error("MM API GET %s network error: %s", path, exc)
             return {}
+
+    def _message_mentions_self(self, text: str) -> bool:
+        text_lower = text.lower()
+        return any(
+            pattern and pattern.lower() in text_lower
+            for pattern in (f"@{self._bot_username}", f"@{self._bot_user_id}")
+        )
+
+    def _mattermost_allow_bots_policy(self) -> str:
+        """Return the configured bot policy: ``none``, ``mentions``, or ``all``."""
+        raw = self.config.extra.get("allow_bots") if self.config.extra else None
+        if raw is None:
+            raw = os.getenv("MATTERMOST_ALLOW_BOTS", "all")
+        value = str(raw).strip().lower()
+        if value in {"none", "mentions", "all"}:
+            return value
+        logger.warning(
+            "Mattermost: invalid allow_bots policy %r; using 'all' for compatibility",
+            raw,
+        )
+        return "all"
+
+    async def _sender_is_bot(self, user_id: str) -> bool:
+        """Resolve Mattermost's user-level ``is_bot`` flag, failing open."""
+        if not user_id:
+            return False
+        if user_id in self._user_is_bot_cache:
+            return self._user_is_bot_cache[user_id]
+        if not self._session:
+            return False
+        user = await self._api_get(f"users/{user_id}")
+        # Do not negatively cache a failed or malformed lookup: a transient API
+        # failure must not permanently disable filtering for this process.
+        if not isinstance(user, dict) or "is_bot" not in user:
+            return False
+        is_bot = bool(user["is_bot"])
+        self._user_is_bot_cache[user_id] = is_bot
+        return is_bot
+
+    async def _should_ignore_bot_sender(
+        self,
+        user_id: str,
+        message_text: str,
+    ) -> tuple[bool, bool]:
+        """Return ``(ignore_message, sender_is_bot)`` for an inbound sender."""
+        sender_is_bot = await self._sender_is_bot(user_id)
+        if not sender_is_bot:
+            return False, False
+
+        policy = self._mattermost_allow_bots_policy()
+        if policy == "none":
+            logger.debug("Mattermost: ignoring bot sender %s (allow_bots=none)", user_id)
+            return True, True
+        if policy == "mentions" and not self._message_mentions_self(message_text):
+            logger.debug("Mattermost: ignoring unmentioned bot sender %s", user_id)
+            return True, True
+        return False, True
 
     async def _api_post(
         self, path: str, payload: Dict[str, Any]
@@ -809,6 +871,12 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
+        sender_id = post.get("user_id", "")
+        ignore_bot_sender, sender_is_bot = await self._should_ignore_bot_sender(
+            sender_id, message_text
+        )
+        if ignore_bot_sender:
+            return
 
         # Mention-gating for non-DM channels.
         # Config (config.yaml `mattermost.*` with env-var fallback):
@@ -867,7 +935,6 @@ class MattermostAdapter(BasePlatformAdapter):
                     ).strip()
 
         # Resolve sender info.
-        sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
         # Thread support: if the post is in a thread, use root_id. In
@@ -944,6 +1011,7 @@ class MattermostAdapter(BasePlatformAdapter):
             user_name=sender_name,
             thread_id=thread_id,
             message_id=post_id,
+            is_bot=sender_is_bot,
         )
 
         # Per-channel ephemeral prompt
@@ -1189,8 +1257,8 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
 
     The MattermostAdapter reads its runtime configuration via
     ``os.getenv()`` for ``MATTERMOST_REQUIRE_MENTION``,
-    ``MATTERMOST_FREE_RESPONSE_CHANNELS``, and
-    ``MATTERMOST_ALLOWED_CHANNELS``.  Rather than rewrite those call sites
+    ``MATTERMOST_FREE_RESPONSE_CHANNELS``, ``MATTERMOST_ALLOWED_CHANNELS``,
+    and ``MATTERMOST_ALLOW_BOTS``. Rather than rewrite those call sites
     to read from ``PlatformConfig.extra``, this hook keeps the env-driven
     model and merely owns the YAML→env translation here, next to the
     adapter that consumes it.
@@ -1213,6 +1281,9 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
+    allow_bots = mattermost_cfg.get("allow_bots")
+    if allow_bots is not None and not os.getenv("MATTERMOST_ALLOW_BOTS"):
+        os.environ["MATTERMOST_ALLOW_BOTS"] = str(allow_bots).lower()
     return None  # all settings flow through env; nothing to merge into extras
 
 
@@ -1263,9 +1334,9 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of
         # ``config.yaml`` ``mattermost:`` keys (require_mention,
-        # free_response_channels, allowed_channels) into ``MATTERMOST_*``
-        # env vars that the adapter reads via ``os.getenv()``.  Replaces
-        # the hardcoded block that used to live in ``gateway/config.py``.
+        # free_response_channels, allowed_channels, allow_bots) into
+        # ``MATTERMOST_*`` env vars that the adapter reads via ``os.getenv()``.
+        # Replaces the hardcoded block that used to live in ``gateway/config.py``.
         # Hook contract: #24836 / #25443.
         apply_yaml_config_fn=_apply_yaml_config,
         # Auth env vars for _is_user_authorized() integration.

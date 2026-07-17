@@ -368,6 +368,7 @@ class GatewayAuthorizationMixin:
             Platform.FEISHU: "FEISHU_ALLOW_BOTS",
             Platform.TELEGRAM: "TELEGRAM_ALLOW_BOTS",
             Platform.SLACK: "SLACK_ALLOW_BOTS",
+            Platform.MATTERMOST: "MATTERMOST_ALLOW_BOTS",
         }
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)

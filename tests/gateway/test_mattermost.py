@@ -2,8 +2,10 @@
 import json
 import os
 import time
-import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, AsyncMock
+
+import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageType
@@ -688,10 +690,17 @@ class TestMattermostMentionBehavior:
         self.adapter._bot_username = "hermes-bot"
         self.adapter.handle_message = AsyncMock()
 
-    def _make_event(self, message, channel_type="O", channel_id="chan_456"):
+    def _make_event(
+        self,
+        message,
+        channel_type="O",
+        channel_id="chan_456",
+        user_id="user_123",
+        post_id="post_mention",
+    ):
         post_data = {
-            "id": "post_mention",
-            "user_id": "user_123",
+            "id": post_id,
+            "user_id": user_id,
             "channel_id": channel_id,
             "message": message,
         }
@@ -757,6 +766,138 @@ class TestMattermostMentionBehavior:
             assert "@hermes-bot" not in msg.text
             assert "2+2" in msg.text
 
+    @pytest.mark.asyncio
+    async def test_allow_bots_none_ignores_bot_in_free_response_channel(self):
+        self.adapter._user_is_bot_cache["moviepilot_bot"] = True
+        with patch.dict(
+            os.environ,
+            {
+                "MATTERMOST_ALLOW_BOTS": "none",
+                "MATTERMOST_FREE_RESPONSE_CHANNELS": "chan_456",
+            },
+        ):
+            await self.adapter._handle_ws_event(
+                self._make_event("", user_id="moviepilot_bot")
+            )
+        assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_allow_bots_none_still_accepts_human(self):
+        self.adapter._user_is_bot_cache["user_123"] = False
+        with patch.dict(
+            os.environ,
+            {
+                "MATTERMOST_ALLOW_BOTS": "none",
+                "MATTERMOST_FREE_RESPONSE_CHANNELS": "chan_456",
+            },
+        ):
+            await self.adapter._handle_ws_event(self._make_event("hello"))
+        assert self.adapter.handle_message.called
+        assert self.adapter.handle_message.call_args[0][0].source.is_bot is False
+
+    @pytest.mark.asyncio
+    async def test_allow_bots_mentions_requires_explicit_mention(self):
+        self.adapter._user_is_bot_cache["moviepilot_bot"] = True
+        with patch.dict(
+            os.environ,
+            {
+                "MATTERMOST_ALLOW_BOTS": "mentions",
+                "MATTERMOST_FREE_RESPONSE_CHANNELS": "chan_456",
+            },
+        ):
+            await self.adapter._handle_ws_event(
+                self._make_event("status", user_id="moviepilot_bot", post_id="bot_1")
+            )
+            assert not self.adapter.handle_message.called
+
+            await self.adapter._handle_ws_event(
+                self._make_event(
+                    "@hermes-bot status",
+                    user_id="moviepilot_bot",
+                    post_id="bot_2",
+                )
+            )
+            assert self.adapter.handle_message.called
+            message = self.adapter.handle_message.call_args[0][0]
+            assert message.text == "status"
+            assert message.source.is_bot is True
+
+    @pytest.mark.asyncio
+    async def test_allow_bots_all_accepts_bot_message(self):
+        self.adapter._user_is_bot_cache["moviepilot_bot"] = True
+        with patch.dict(
+            os.environ,
+            {
+                "MATTERMOST_ALLOW_BOTS": "all",
+                "MATTERMOST_FREE_RESPONSE_CHANNELS": "chan_456",
+            },
+        ):
+            await self.adapter._handle_ws_event(
+                self._make_event("status", user_id="moviepilot_bot")
+            )
+        assert self.adapter.handle_message.called
+        assert self.adapter.handle_message.call_args[0][0].source.is_bot is True
+
+
+class TestMattermostBotIdentity:
+    @pytest.mark.asyncio
+    async def test_sender_bot_flag_is_cached_after_user_api_lookup(self):
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._api_get = AsyncMock(return_value={"id": "bot_1", "is_bot": True})
+
+        assert await adapter._sender_is_bot("bot_1") is True
+        assert await adapter._sender_is_bot("bot_1") is True
+        adapter._api_get.assert_awaited_once_with("users/bot_1")
+
+    @pytest.mark.asyncio
+    async def test_failed_user_lookup_is_not_negatively_cached(self):
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._api_get = AsyncMock(return_value={})
+
+        assert await adapter._sender_is_bot("bot_1") is False
+        assert await adapter._sender_is_bot("bot_1") is False
+        assert adapter._api_get.await_count == 2
+
+
+class TestMattermostBotYamlConfig:
+    def test_yaml_allow_bots_bridges_to_runtime_env(self, monkeypatch):
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        monkeypatch.delenv("MATTERMOST_ALLOW_BOTS", raising=False)
+
+        _apply_yaml_config({}, {"allow_bots": "none"})
+
+        assert os.environ["MATTERMOST_ALLOW_BOTS"] == "none"
+
+
+class TestMattermostBotAuthorization:
+    @staticmethod
+    def _runner():
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *_args, **_kwargs: False)
+        return runner
+
+    @staticmethod
+    def _source():
+        from gateway.session import Platform, SessionSource
+
+        return SessionSource(
+            platform=Platform.MATTERMOST,
+            chat_id="chan_456",
+            chat_type="channel",
+            user_id="moviepilot_bot",
+            user_name="moviepilot",
+            is_bot=True,
+        )
+
+    def test_allow_bots_all_bypasses_human_allowlist(self, monkeypatch):
+        monkeypatch.setenv("MATTERMOST_ALLOW_BOTS", "all")
+        monkeypatch.setenv("MATTERMOST_ALLOWED_USERS", "human_user")
+        assert self._runner()._is_user_authorized(self._source()) is True
 
 # ---------------------------------------------------------------------------
 # File upload (send_image)

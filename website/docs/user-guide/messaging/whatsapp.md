@@ -227,6 +227,55 @@ Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables
 
 ---
 
+## Inbox-only sweep mode (native push + out-of-band triage)
+
+Use this **opt-in** mode when WhatsApp is an inbox to monitor rather than a
+sender-facing bot. Hermes connects for a fixed **3-second** capture window every
+configured interval, then disconnects the WhatsApp companion so the phone can
+receive native WhatsApp push notifications. The existing bridge process stays
+available locally while Hermes applies its normal text debounce and triages the
+captured receipt.
+
+```yaml
+# ~/.hermes/config.yaml
+gateway:
+  platforms:
+    whatsapp:
+      extra:
+        inbox_sweep:
+          enabled: true
+          reconnect_interval_seconds: 120
+          delivery_platform: telegram
+    telegram:
+      home_channel:
+        platform: telegram
+        chat_id: "YOUR_OPERATOR_CHAT_ID"
+        name: "Operator inbox"
+```
+
+**Contract:**
+
+- The capture window is always 3 seconds; inbound traffic does **not** extend it.
+- `reconnect_interval_seconds` anchors the next connection attempt to the prior
+  successful open; WhatsApp handshake latency is outside Hermes' control.
+- The destination must be an enabled, non-WhatsApp platform with a configured
+  `home_channel`; `whatsapp` is rejected as a delivery target.
+- Hermes performs a one-turn, tool-free triage after disconnect and forwards
+  only `high` and `urgent` items to that home channel.
+- It never replies, sends media, shows typing, sends a pairing code, approval,
+  clarification, or error message to the originating WhatsApp sender.
+- A later WhatsApp message is a new receipt in a later sweep. The bridge never
+  waits for the operator to read, decide, or reply.
+
+This mode intentionally uses a bounded, live local receipt buffer. A bridge
+process crash before Hermes drains a receipt—or a burst that exceeds the local
+buffer—can lose that in-flight receipt; the bridge emits a local warning for
+buffer overflow. A high/urgent receipt is also suppressed (never sent back to
+the WhatsApp sender) if its configured home channel becomes unavailable. It
+does not extend the connection or add persistent lease/delivery machinery.
+
+---
+
 ## Troubleshooting
 
 | Problem | Solution |

@@ -30,6 +30,7 @@ from utils import base_url_host_matches
 
 
 _PROVIDER_ENV_HINTS = (
+    "DEEPINFRA_API_KEY",
     "OPENROUTER_API_KEY",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -42,6 +43,7 @@ _PROVIDER_ENV_HINTS = (
     "KIMI_API_KEY",
     "KIMI_CN_API_KEY",
     "GMI_API_KEY",
+    "FIREWORKS_API_KEY",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY",
@@ -845,6 +847,14 @@ def run_doctor(args):
                 "lmstudio",
                 "nous",
                 "nvidia",
+                # Fireworks' native model IDs are slash-form
+                # (accounts/fireworks/models/... and .../routers/...), so a "/"
+                # is expected, not an aggregator vendor prefix.
+                "fireworks",
+                # DeepInfra is an aggregator-style gateway: its catalog
+                # is exclusively ``vendor/model`` slugs (Qwen/Qwen3.5-…,
+                # meta-llama/Llama-3-…, anthropic/claude-opus-4-7, …).
+                "deepinfra",
             }
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs
@@ -983,8 +993,8 @@ def run_doctor(args):
                             model_section[k] = raw_config.pop(k)
                         else:
                             raw_config.pop(k)
-                    from utils import atomic_yaml_write
-                    atomic_yaml_write(config_path, raw_config)
+                    from hermes_cli.config import atomic_config_write
+                    atomic_config_write(config_path, raw_config)
                     check_ok("Migrated stale root-level keys into model section")
                     fixed_count += 1
                 else:

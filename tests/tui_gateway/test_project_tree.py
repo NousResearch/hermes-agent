@@ -180,6 +180,100 @@ def test_persisted_repo_root_used_when_no_live_probe():
     assert _lane_ids(project) == ["/repo::branch::main"]
 
 
+def test_non_git_cwd_preserves_legacy_workspace_grouping():
+    # Before first-class Projects, every non-empty session cwd appeared as a
+    # workspace even when it was not a git repo. Historical sessions must keep
+    # that grouping instead of falling through to the flat Sessions list.
+    legacy = _session("/work/notes", title="Research notes")
+
+    tree = pt.build_tree([], [legacy], [], resolve=lambda _cwd: None, hydrate=True)
+
+    assert [p["id"] for p in tree["projects"]] == ["/work/notes"]
+    project = tree["projects"][0]
+    assert project["isAuto"] is True
+    assert project["label"] == "notes"
+    assert project["sessionCount"] == 1
+    assert _lane_ids(project) == ["/work/notes"]
+    assert tree["scoped_session_ids"] == [legacy["id"]]
+
+
+def test_non_git_windows_cwd_preserves_legacy_workspace_grouping():
+    cwd = r"C:\Users\alice\workspace\notes"
+    legacy = _session(cwd)
+
+    tree = pt.build_tree([], [legacy], [], resolve=lambda _cwd: None, hydrate=True)
+
+    assert [p["id"] for p in tree["projects"]] == [cwd]
+    assert tree["projects"][0]["label"] == "notes"
+    assert tree["scoped_session_ids"] == [legacy["id"]]
+
+
+def test_equivalent_windows_cwds_collapse_into_one_auto_project():
+    sessions = [
+        _session("C:/work/notes"),
+        _session(r"c:\WORK\notes"),
+        _session("C:/work/notes/"),
+    ]
+
+    tree = pt.build_tree([], sessions, [], resolve=lambda _cwd: None, hydrate=True)
+
+    assert len(tree["projects"]) == 1
+    project = tree["projects"][0]
+    assert project["id"] == "C:/work/notes"
+    assert project["sessionCount"] == 3
+    assert len(project["repos"]) == 1
+    assert len(project["repos"][0]["groups"]) == 1
+    assert len(project["repos"][0]["groups"][0]["sessions"]) == 3
+
+
+def test_windows_path_identity_preserves_explicit_project_priority():
+    explicit = _project("p_notes", "Notes", ["C:/Work/Notes"])
+    session = _session("c:\\work\\notes\\")
+
+    tree = pt.build_tree([explicit], [session], [], resolve=lambda _cwd: None, hydrate=True)
+
+    assert [p["id"] for p in tree["projects"]] == ["p_notes"]
+    assert tree["projects"][0]["sessionCount"] == 1
+    assert tree["scoped_session_ids"] == [session["id"]]
+
+
+def test_wsl_localhost_cwds_collapse_into_one_auto_project():
+    # Root-relative WSL spellings (single leading backslash) are Windows paths,
+    # so case/separator variants collapse instead of spawning duplicate autos.
+    sessions = [
+        _session(r"\wsl.localhost\Ubuntu\home\alice\proj"),
+        _session("//wsl.localhost/Ubuntu/home/alice/PROJ"),
+    ]
+
+    tree = pt.build_tree([], sessions, [], resolve=lambda _cwd: None, hydrate=True)
+
+    assert len(tree["projects"]) == 1
+    assert tree["projects"][0]["sessionCount"] == 2
+
+
+def test_wsl_localhost_path_cannot_bypass_explicit_project():
+    explicit = _project("p_proj", "Proj", [r"\wsl.localhost\Ubuntu\home\alice\proj"])
+    session = _session("//wsl.localhost/Ubuntu/home/alice/PROJ/")
+
+    tree = pt.build_tree([explicit], [session], [], resolve=lambda _cwd: None, hydrate=True)
+
+    assert [p["id"] for p in tree["projects"]] == ["p_proj"]
+    assert tree["projects"][0]["sessionCount"] == 1
+    assert tree["scoped_session_ids"] == [session["id"]]
+
+
+def test_posix_path_identity_remains_case_sensitive():
+    explicit = _project("p_notes", "Notes", ["/Work/Notes"])
+    session = _session("/work/notes")
+
+    tree = pt.build_tree([explicit], [session], [], resolve=lambda _cwd: None, hydrate=True)
+
+    assert [(p["id"], p["sessionCount"]) for p in tree["projects"]] == [
+        ("p_notes", 0),
+        ("/work/notes", 1),
+    ]
+
+
 def test_explicit_project_claims_sessions_and_beats_auto():
     project = _project("p_app", "App", ["/www/app"])
     resolve = _resolver(
@@ -335,6 +429,41 @@ def test_junk_root_is_dropped_from_the_discovered_tier():
     tree = pt.build_tree([], [], discovered, resolve=None, is_junk_root=lambda r: r == "/home/me/.hermes")
 
     assert tree["projects"] == []
+
+
+def test_non_git_cwd_can_group_inside_a_junk_repo_subtree():
+    # Repo discovery rejects the full state subtree, but a selected non-git
+    # descendant may be an intentional workspace carried over from the old UI.
+    workspace = _session("/home/test/.hermes/workspaces/notes")
+
+    tree = pt.build_tree(
+        [],
+        [workspace],
+        [],
+        resolve=lambda _cwd: None,
+        hydrate=True,
+        is_junk_root=lambda path: path.startswith("/home/test/.hermes"),
+        is_junk_cwd=lambda path: path in {"/home/test", "/home/test/.hermes"},
+    )
+
+    assert [p["id"] for p in tree["projects"]] == ["/home/test/.hermes/workspaces/notes"]
+    assert tree["scoped_session_ids"] == [workspace["id"]]
+
+
+def test_broad_default_non_git_cwd_stays_unscoped():
+    detached = _session("/home/test/.hermes")
+
+    tree = pt.build_tree(
+        [],
+        [detached],
+        [],
+        resolve=lambda _cwd: None,
+        hydrate=True,
+        is_junk_cwd=lambda path: path in {"/home/test", "/home/test/.hermes"},
+    )
+
+    assert tree["projects"] == []
+    assert detached["id"] not in tree["scoped_session_ids"]
 
 
 def test_colliding_repo_basenames_disambiguate_labels():

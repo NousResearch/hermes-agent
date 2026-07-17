@@ -13,60 +13,80 @@ import {
   useState
 } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Loader2, MessageQuestion } from '@/lib/icons'
+import { CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
+import { clearClarifyRequest, sessionClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 
 import { selectMessageRunning } from './tool/fallback-model'
+import { parseMaybeObject } from './tool/fallback-model/format'
 
 interface ClarifyArgs {
   question?: string
   choices?: string[] | null
 }
 
-function readClarifyArgs(args: unknown): ClarifyArgs {
-  if (!args || typeof args !== 'object') {
-    return {}
-  }
+interface ClarifyResult {
+  question?: string
+  answer?: string
+  error?: string
+}
 
-  const row = args as Record<string, unknown>
+function stringField(row: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = row[key]
+
+    if (typeof value === 'string') {
+      return value
+    }
+  }
+}
+
+function readClarifyArgs(args: unknown): ClarifyArgs {
+  const row = parseMaybeObject(args)
   const choices = Array.isArray(row.choices) ? row.choices.filter((c): c is string => typeof c === 'string') : null
 
   return {
-    question: typeof row.question === 'string' ? row.question : undefined,
+    question: stringField(row, 'question'),
     choices: choices && choices.length > 0 ? choices : null
   }
 }
 
-// Each option (and "Other") is keyed A, B, C… so it can be picked by pressing
-// that letter — the badge doubles as the shortcut hint.
+/** Parse clarify tool JSON (`question` + `user_response`). */
+export function readClarifyResult(result: unknown): ClarifyResult {
+  const row = parseMaybeObject(result)
+
+  if (Object.keys(row).length === 0) {
+    return typeof result === 'string' && result.trim() ? { answer: result.trim() } : {}
+  }
+
+  return {
+    question: stringField(row, 'question'),
+    answer: stringField(row, 'user_response', 'answer'),
+    error: stringField(row, 'error')
+  }
+}
+
 const letterFor = (index: number): string => String.fromCharCode(65 + index)
 
-// Choice and "Other" rows share a layout; only color differs. Mirrors a tool
-// row's compact rhythm so the panel reads as part of the transcript.
 const OPTION_ROW_CLASS =
   'flex w-full items-start gap-2 rounded-[0.25rem] px-1.5 py-1 text-left disabled:cursor-not-allowed disabled:opacity-50'
 
-// Content-sizing freeform field (CSS `field-sizing` — same primitive as the
-// commit bar and search field): starts at one line, grows with what's typed,
-// and never reflows the panel when focused. Bare so the "Other" row matches the
-// choice rows above it.
-const FREEFORM_INPUT_CLASS =
-  'field-sizing-content max-h-40 min-h-0 w-full resize-none bg-transparent p-0 leading-(--conversation-line-height) text-(--ui-text-primary) outline-none placeholder:text-(--ui-text-tertiary) disabled:opacity-50'
+// field-sizing on top of Textarea's shared chrome; kill min-h-16 for one-liners.
+const CLARIFY_TEXTAREA_CLASS = 'field-sizing-content max-h-40 min-h-0 resize-none'
 
-// Quiet inline panel that matches the surrounding tool rows: a single hairline
-// border in the shared stroke token, a soft surface fill, and a faint primary
-// accent that signals "this one needs you" without the loud animated ring.
 const CLARIFY_SHELL_CLASS =
   'my-1.5 rounded-md border border-primary/20 bg-(--ui-chat-surface-background) text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)'
+
+const CLARIFY_ICON_CLASS = 'mt-px size-4 shrink-0 text-(--ui-text-tertiary)'
 
 function ClarifyShell({ children, className, ...props }: ComponentProps<'div'>) {
   return (
@@ -76,10 +96,20 @@ function ClarifyShell({ children, className, ...props }: ComponentProps<'div'>) 
   )
 }
 
-// Selection lives on the letter badge alone — a solid primary fill — not the
-// whole row, which stays a quiet hover target. `preview` is the focused-but-empty
-// "Other" state: the badge outlines in primary to show it's armed, then fills
-// once a value is actually typed.
+function ClarifyLine({
+  children,
+  className,
+  icon: Icon,
+  ...props
+}: ComponentProps<'div'> & { icon: typeof MessageQuestion }) {
+  return (
+    <div className={cn('flex items-start gap-2', className)} {...props}>
+      <div className="min-w-0 flex-1">{children}</div>
+      <Icon aria-hidden className={CLARIFY_ICON_CLASS} />
+    </div>
+  )
+}
+
 function KeyBadge({ char, preview, selected }: { char: string; preview?: boolean; selected: boolean }) {
   return (
     <Kbd
@@ -96,25 +126,70 @@ function KeyBadge({ char, preview, selected }: { char: string; preview?: boolean
 }
 
 export const ClarifyTool = (props: ToolCallMessagePartProps) => {
+  // Answered → settled Q&A (ToolFallback collapsed the answer away).
+  if (props.result !== undefined) {
+    return <ClarifyToolSettled {...props} />
+  }
+
+  return <ClarifyToolLive {...props} />
+}
+
+function ClarifyToolLive(props: ToolCallMessagePartProps) {
   const messageRunning = useAuiState(selectMessageRunning)
 
-  // Only the live, still-blocked turn shows the interactive panel. Once the
-  // message stops running — answered, the turn ended, or the user hit Stop —
-  // fall back to the standard tool block so the Q/A settles like every other
-  // row instead of stranding a dead prompt the gateway no longer waits on.
-  const isPending = messageRunning && props.result === undefined
-
-  if (!isPending) {
+  // Stopped mid-prompt with no result — don't leave a dead interactive panel.
+  if (!messageRunning) {
     return <ToolFallback {...props} />
   }
 
   return <ClarifyToolPending {...props} />
 }
 
+function ClarifyToolSettled({ args, result }: ToolCallMessagePartProps) {
+  const { t } = useI18n()
+  const copy = t.assistant.clarify
+  const fromArgs = useMemo(() => readClarifyArgs(args), [args])
+  const fromResult = useMemo(() => readClarifyResult(result), [result])
+
+  const question = fromResult.question || fromArgs.question || ''
+  const answer = fromResult.answer
+  const error = fromResult.error
+  const skipped = !error && answer !== undefined && !answer.trim()
+  const answerText = error || (skipped ? copy.skipped : (answer ?? '').trim())
+
+  return (
+    <ClarifyShell className="grid gap-1.5 px-2.5 py-2" data-clarify-settled="">
+      {question ? (
+        <ClarifyLine icon={MessageQuestion}>
+          <span className="whitespace-pre-wrap font-medium leading-(--conversation-line-height)">{question}</span>
+        </ClarifyLine>
+      ) : null}
+      {answerText ? (
+        <ClarifyLine icon={CircleLetterA}>
+          <p
+            className={cn(
+              'whitespace-pre-wrap leading-(--conversation-line-height)',
+              error ? 'text-destructive' : 'text-(--ui-text-secondary)',
+              skipped && 'italic text-(--ui-text-tertiary)'
+            )}
+            data-clarify-answer=""
+          >
+            {answerText}
+          </p>
+        </ClarifyLine>
+      ) : null}
+    </ClarifyShell>
+  )
+}
+
 function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
-  const request = useStore($clarifyRequest)
+  // The tool row is in whichever session's transcript rendered it — read THAT
+  // session's clarify (primary or tile), not the globally-active one.
+  const sessionId = useStore(useSessionView().$runtimeId)
+  const $request = useMemo(() => sessionClarifyRequest(sessionId), [sessionId])
+  const request = useStore($request)
   const gateway = useStore($gateway)
   const fromArgs = useMemo(() => readClarifyArgs(args), [args])
 
@@ -175,8 +250,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         })
         triggerHaptic('submit')
         clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
-        // The matching tool.complete will land shortly after, swapping this
-        // panel for the ToolFallback view above.
+        // tool.complete lands next → ClarifyToolSettled.
       } catch (error) {
         notifyError(error, copy.sendFailed)
         setSubmitting(false)
@@ -280,7 +354,11 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   if (loading) {
     return (
-      <ClarifyShell aria-label={copy.loadingQuestion} className="grid min-h-12 place-items-center px-2.5 py-3" role="status">
+      <ClarifyShell
+        aria-label={copy.loadingQuestion}
+        className="grid min-h-12 place-items-center px-2.5 py-3"
+        role="status"
+      >
         <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
       </ClarifyShell>
     )
@@ -323,17 +401,13 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                 <span className="flex-1 wrap-anywhere">{choice}</span>
               </button>
             ))}
-            {/* "Other" is an inline content-sizing field, not a separate view. */}
-            <label className={cn(OPTION_ROW_CLASS, 'focus-within:bg-(--chrome-action-hover)')}>
+            <label className={cn(OPTION_ROW_CLASS, 'items-center')}>
               <KeyBadge char={letterFor(choices.length)} preview={otherFocused} selected={Boolean(trimmedDraft)} />
-              <textarea
-                className={FREEFORM_INPUT_CLASS}
+              <Textarea
+                className={CLARIFY_TEXTAREA_CLASS}
                 disabled={submitting}
                 onBlur={() => setOtherFocused(false)}
                 onChange={event => onDraftChange(event.target.value)}
-                // Focusing "Other" is a switch to typing your own answer, so it
-                // deselects any picked choice — a chosen option and an active
-                // Other field can never both look selected.
                 onFocus={() => {
                   setSelectedChoice(null)
                   setOtherFocused(true)
@@ -342,19 +416,21 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                 placeholder={copy.other}
                 ref={textareaRef}
                 rows={1}
+                size="sm"
                 value={draft}
               />
             </label>
           </div>
         ) : (
           <Textarea
-            className={FREEFORM_INPUT_CLASS}
+            className={CLARIFY_TEXTAREA_CLASS}
             disabled={submitting}
             onChange={event => onDraftChange(event.target.value)}
             onKeyDown={handleTextareaKey}
             placeholder={copy.placeholder}
             ref={textareaRef}
             rows={1}
+            size="sm"
             value={draft}
           />
         )}

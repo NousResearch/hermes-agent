@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -119,8 +120,18 @@ def test_run_stdio_uses_resolved_command_and_prepended_path(tmp_path):
             server = MCPServerTask("srv")
             await server.start({"command": "npx", "args": ["-y", "pkg"], "env": {"PATH": "/usr/bin"}})
 
+            # The real (resolved) command no longer reaches StdioServerParameters
+            # directly -- it's now wrapped in the parent-death watchdog
+            # supervisor (tools/mcp_stdio_watchdog.py) so an ungraceful exit of
+            # this process can't orphan it. Assert the resolved npx path and
+            # its args still flow through correctly as the watchdog's target
+            # command, preserving this test's original path-resolution intent.
             call_kwargs = mock_params.call_args.kwargs
-            assert call_kwargs["command"] == str(npx_path)
+            assert call_kwargs["command"] == sys.executable
+            assert call_kwargs["args"][0].endswith("mcp_stdio_watchdog.py")
+            assert "--" in call_kwargs["args"]
+            sep = call_kwargs["args"].index("--")
+            assert call_kwargs["args"][sep + 1:] == [str(npx_path), "-y", "pkg"]
             assert call_kwargs["env"]["PATH"].split(os.pathsep)[0] == str(node_bin)
 
             await server.shutdown()

@@ -57,7 +57,15 @@ class CLIAgentSetupMixin:
                     if not _fb_provider or not _fb_model:
                         continue
                     try:
-                        runtime = resolve_runtime_provider(requested=_fb_provider)
+                        from hermes_cli.fallback_config import resolve_entry_api_key
+
+                        _fb_kwargs = {"requested": _fb_provider}
+                        if _fb.get("base_url"):
+                            _fb_kwargs["explicit_base_url"] = _fb["base_url"]
+                        _fb_api_key = resolve_entry_api_key(_fb)
+                        if _fb_api_key:
+                            _fb_kwargs["explicit_api_key"] = _fb_api_key
+                        runtime = resolve_runtime_provider(**_fb_kwargs)
                         logger.warning(
                             "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
                             _primary_exc, _fb_provider, _fb_model,
@@ -286,7 +294,9 @@ class CLIAgentSetupMixin:
                 resolved_meta = self._session_db.get_session(self.session_id)
                 if resolved_meta:
                     session_meta = resolved_meta
-            restored = self._session_db.get_messages_as_conversation(self.session_id)
+            restored = self._session_db.get_messages_as_conversation(
+                self.session_id, repair_alternation=True
+            )
             if restored:
                 restored = [m for m in restored if m.get("role") != "session_meta"]
                 self.conversation_history = restored
@@ -390,6 +400,7 @@ class CLIAgentSetupMixin:
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
                 notice_callback=self._on_notice,
                 notice_clear_callback=self._on_notice_clear,
+                reaction_callback=self._on_reaction,
             )
             # Store reference for atexit memory provider shutdown.
             # NOTE: this MUST write to the ``cli`` module's global, not a
@@ -483,7 +494,9 @@ class CLIAgentSetupMixin:
             if resolved_meta:
                 session_meta = resolved_meta
 
-        restored = self._session_db.get_messages_as_conversation(self.session_id)
+        restored = self._session_db.get_messages_as_conversation(
+            self.session_id, repair_alternation=True
+        )
         if restored:
             restored = [m for m in restored if m.get("role") != "session_meta"]
             self.conversation_history = restored

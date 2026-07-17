@@ -44,6 +44,7 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "set_value",
                     "wait",
                     "list_apps",
+                    "list_windows",
                     "focus_app",
                 ],
                 "description": (
@@ -79,6 +80,21 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "capture is per-window; a single image cannot span "
                     "multiple monitors, so on a multi-screen setup capture "
                     "one window or display at a time."
+                ),
+            },
+            "pid": {
+                "type": "integer",
+                "description": (
+                    "Optional exact process target for action='capture'. Pair "
+                    "with window_id when discovery cannot resolve an X11 app."
+                ),
+            },
+            "window_id": {
+                "type": "integer",
+                "description": (
+                    "Optional exact native window target for action='capture'. "
+                    "Pair with pid when an external cua-driver list_windows "
+                    "lookup has already identified the window."
                 ),
             },
             "max_elements": {
@@ -118,9 +134,9 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "minItems": 2,
                 "maxItems": 2,
                 "description": (
-                    "Pixel coordinates [x, y] in logical screen space (as "
-                    "returned by capture width/height). Only use this if "
-                    "no element index is available."
+                    "Pixel coordinates [x, y] relative to the captured window "
+                    "screenshot (top-left origin). Only use this if no element "
+                    "index is available."
                 ),
             },
             "button": {

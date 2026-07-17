@@ -29,6 +29,7 @@ SPDX header pointing at the original `src/**/*.js` source.
 | `agent/keywords.py` | `src/memory/keywords.js` | Zero-dep CN/EN n-gram extraction |
 | `agent/threads.py` | `src/memory/threads.js` | Thread model: read-time temperature, no stack |
 | `agent/thread_classifier.py` | `src/memory/thread-classifier.js` | LLM arbiter for weak-signal thread merges |
+| `agent/memory_consolidator.py` | `src/memory/consolidator.js` + `src/memory/consolidation-loop.js` | Round-robin memory consolidation (merge / downgrade / skip); dependency-injected store + LLM |
 
 (Additional entries will be appended as more BaiLongma modules are
 ported.)

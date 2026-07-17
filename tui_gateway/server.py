@@ -137,7 +137,7 @@ _cfg_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
 _prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
-_cfg_mtime: float | None = None
+_cfg_mtime: tuple[int, int] | None = None
 _cfg_path = None
 _session_resume_lock = threading.Lock()
 try:
@@ -2149,9 +2149,13 @@ def _load_cfg() -> dict:
         override = get_hermes_home_override()
         home = override if isinstance(override, str) and override else _hermes_home
         p = Path(home) / "config.yaml"
-        mtime = p.stat().st_mtime if p.exists() else None
+        if p.exists():
+            st = p.stat()
+            signature = (st.st_mtime_ns, st.st_size)
+        else:
+            signature = None
         with _cfg_lock:
-            if _cfg_cache is not None and _cfg_mtime == mtime and _cfg_path == p:
+            if _cfg_cache is not None and _cfg_mtime == signature and _cfg_path == p:
                 return _apply_managed(copy.deepcopy(_cfg_cache))
         if p.exists():
             with open(p, encoding="utf-8") as f:
@@ -2164,7 +2168,7 @@ def _load_cfg() -> dict:
             # the user's file. The managed overlay is applied on every return
             # path instead (read-side only).
             _cfg_cache = copy.deepcopy(data)
-            _cfg_mtime = mtime
+            _cfg_mtime = signature
             _cfg_path = p
         return _apply_managed(data)
     except Exception:
@@ -2199,7 +2203,8 @@ def _save_cfg(cfg: dict):
         _cfg_cache = copy.deepcopy(cfg)
         _cfg_path = path
         try:
-            _cfg_mtime = path.stat().st_mtime
+            st = path.stat()
+            _cfg_mtime = (st.st_mtime_ns, st.st_size)
         except Exception:
             _cfg_mtime = None
 

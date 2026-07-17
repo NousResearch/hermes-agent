@@ -110,25 +110,36 @@ class TestDownloadErrorPaths:
 class TestCaptionToAudioFallback:
     """Tests the served-captions vs download+transcribe fallback path."""
 
-    def test_uses_served_captions_when_available(self, tmp_path):
-        # Simulate fetch_served_captions returning text
-        with mock.patch(
-            "fetch_transcript.fetch_served_captions",
-            return_value=({"title": "Test"}, "This is served caption text"),
-        ):
-            # We don't want to actually run full main, just check logic path
-            # Patch download_audio so we can assert it was NOT called
+    def test_uses_served_captions_when_available(self):
+        """If fetch_served_captions returns text, download_audio is never called."""
+        with mock.patch("fetch_transcript.fetch_served_captions", return_value=({"title": "Test"}, "This is served caption text")) as mock_served:
             with mock.patch("fetch_transcript.download_audio") as mock_dl:
-                # Call the internal logic indirectly via a small test harness
-                # For simplicity we test that served path short-circuits
-                cap_text = "This is served caption text"
-                assert cap_text  # would be used instead of downloading
+                with mock.patch("sys.argv", ["fetch_transcript.py", "https://example.com/vid"]):
+                    with mock.patch("builtins.print") as mock_print:
+                        try:
+                            fetch_transcript.main()
+                        except SystemExit:
+                            pass
+                mock_dl.assert_not_called()
+                mock_served.assert_called_once()
+                # Should have printed JSON containing the served text
+                printed = "".join(str(call) for call in mock_print.call_args_list)
+                assert "served caption text" in printed or "served-captions" in printed
 
     def test_falls_back_to_download_when_no_captions(self):
-        with mock.patch(
-            "fetch_transcript.fetch_served_captions", return_value=(None, None)
-        ):
+        """If fetch_served_captions returns no text, download_audio + transcribe path is used."""
+        with mock.patch("fetch_transcript.fetch_served_captions", return_value=(None, None)) as mock_served:
             with mock.patch("fetch_transcript.download_audio") as mock_dl:
                 mock_dl.return_value = ({"title": "Vid"}, "/tmp/audio.mp3", "")
-                # In real run it would proceed to transcribe
-                assert mock_dl.called or True  # structure exists for fallback
+                with mock.patch("fetch_transcript.transcribe") as mock_trans:
+                    mock_trans.return_value = {"success": True, "transcript": "transcribed content", "provider": "local"}
+                    with mock.patch("sys.argv", ["fetch_transcript.py", "https://example.com/vid"]):
+                        with mock.patch("builtins.print") as mock_print:
+                            try:
+                                fetch_transcript.main()
+                            except SystemExit:
+                                pass
+                    mock_dl.assert_called_once()
+                    mock_trans.assert_called_once()
+                    printed = "".join(str(call) for call in mock_print.call_args_list)
+                    assert "transcribed content" in printed or "local" in printed

@@ -2,9 +2,13 @@
 name: streaming-content
 description: "Transcribe clips and VODs from Twitch, Kick, Rumble, and X."
 version: 0.1.0
-author: punchtaylor
+author: "PunchTaylor (@punchtaylor)"
 license: MIT
 platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    contributor: "PunchTaylor (@punchtaylor)"
+    tags: ["media", "transcript", "streaming", "twitch", "kick", "rumble", "x"]
 ---
 
 # Streaming Content

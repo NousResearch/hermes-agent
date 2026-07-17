@@ -250,4 +250,4 @@ Any setting not present falls back to the built-in default shown below.
 | `references/repo-path-conventions.md` | Repo path convention — all remote clones under `projects/github*` |
 | `scripts/genie.py` | Main cleanup script |
 | `scripts/genie_rebuild_fts.py` | FTS rebuild after restoring no-FTS backup |
-| `references/genie-snapshot-retention-bug.md` | CONFIRMED bug: backup_retention deletes the most-recent rollback snapshot; post-clean verification recipe; Plaid-source vs Styx DB distinction |
+| `references/genie-snapshot-retention-bug.md` | Root-cause + fix for the 2026-07-12 snapshot-deletion bug: `backup_retention_plan()` now excludes `state-snapshot` candidates; post-clean verification recipe |

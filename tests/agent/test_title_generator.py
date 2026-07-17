@@ -215,7 +215,7 @@ class TestGenerateTitle:
         config = {"auxiliary": {"title_generation": {"enabled": False}}}
 
         with (
-            patch("agent.title_generator.load_config_readonly", return_value=config),
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
             patch("agent.title_generator.call_llm") as mock_call_llm,
         ):
             assert generate_title("question", "answer") is None
@@ -369,7 +369,7 @@ class TestMaybeAutoTitle:
         config = {"auxiliary": {"title_generation": {"enabled": False}}}
 
         with (
-            patch("agent.title_generator.load_config_readonly", return_value=config),
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
             patch("agent.title_generator.auto_title_session") as mock_auto,
         ):
             maybe_auto_title(db, "sess-1", "hello", "hi there", history)

@@ -9,8 +9,6 @@ import threading
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
-from hermes_cli.config import load_config_readonly
-from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +51,12 @@ def _title_language() -> str:
 def _auto_title_enabled() -> bool:
     """Return whether automatic session title generation is enabled."""
     try:
+        # Lazy imports, matching _title_language(): title_generator is imported
+        # from agent code paths where a module-level hermes_cli import risks
+        # circularity, and the read-only loader avoids config-migration writes.
+        from hermes_cli.config import load_config_readonly
+        from utils import is_truthy_value
+
         config = load_config_readonly()
         title_config = (config.get("auxiliary") or {}).get("title_generation") or {}
         return is_truthy_value(title_config.get("enabled"), default=True)
@@ -263,16 +267,18 @@ def maybe_auto_title(
     if not session_db or not session_id or not user_message or not assistant_response:
         return
 
-    if not _auto_title_enabled():
-        logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
-        return
-
     # Count user messages in history to detect first exchange.
     # conversation_history includes the exchange that just happened,
     # so for a first exchange we expect exactly 1 user message
     # (or 2 counting system). Be generous: generate on first 2 exchanges.
     user_msg_count = sum(1 for m in (conversation_history or []) if m.get("role") == "user")
     if user_msg_count > 2:
+        return
+
+    # Config read comes after the cheap first-exchange guard so the file
+    # isn't touched on every subsequent turn of a long session.
+    if not _auto_title_enabled():
+        logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return
 
     thread = threading.Thread(

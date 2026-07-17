@@ -6481,12 +6481,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint(f"\033[1;31m  ✗ {'.'.join(parts[:-1])} is not a section (cannot set sub-keys)\033[0m")
             return
 
-        # Keys that can safely live-apply without restart
-        _LIVE_PREFIXES = ("display.", "compression.", "timezone")
+        # Keys that can safely live-apply without restart. ``compression.*``
+        # is NOT in this set: the active ContextCompressor is constructed
+        # from these values during agent init (agent/agent_init.py:1606)
+        # with constructor-time threshold_percent / protect_first_n /
+        # protect_last_n / target_ratio parameters and runtime state
+        # (``threshold_tokens``). Live-applying changes to all of them
+        # safely is non-trivial and risks token-tracking drift mid-session,
+        # so compression.* is treated as restart-required and the user is
+        # told to restart.
+        _LIVE_PREFIXES = ("display.", "timezone")
         # Everything else needs a restart (conservative)
         _RESTART_PREFIXES = ("terminal.", "model.", "agent.", "mcp_servers.",
                              "browser.", "memory.", "delegation.", "approvals.",
-                             "auxiliary.")
+                             "auxiliary.", "compression.")
 
         needs_restart = any(key_path.startswith(p) for p in _RESTART_PREFIXES)
         can_live = any(key_path.startswith(p) for p in _LIVE_PREFIXES)

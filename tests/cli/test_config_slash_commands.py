@@ -319,3 +319,50 @@ class TestConfigGetCredentialRedaction:
         combined = " ".join(printed)
         # 0.5 is the default and is not a credential
         assert "0.5" in combined
+
+
+class TestCompressionRestartRequired:
+    """Regression tests for maintainer review finding 2: ``compression.*``
+    is documented as live-apply but ``_propagate_config_live()`` has no
+    compression branch, so a ``/config set compression.threshold 0.75``
+    silently does not affect the active agent's ContextCompressor.
+
+    Marked restart-required so the user is told to restart. The active
+    compressor is constructed from these values at agent init with
+    constructor-time parameters (``threshold_percent``, ``protect_first_n``,
+    ``protect_last_n``, ``target_ratio``) and runtime state
+    (``threshold_tokens``) that are not safe to live-mutate.
+    """
+
+    def test_compression_threshold_shows_restart_hint(self):
+        cli_obj = _make_cli()
+        printed = []
+        with patch("cli._cprint", side_effect=lambda t: printed.append(t)), \
+             patch("cli.save_config_value", return_value=True):
+            cli_obj.process_command("/config set compression.threshold 0.75")
+        combined = " ".join(printed)
+        assert "requires restart" in combined, (
+            "compression.* must surface the restart hint because the "
+            "active ContextCompressor cannot live-apply the change"
+        )
+
+    def test_compression_enabled_shows_restart_hint(self):
+        cli_obj = _make_cli()
+        printed = []
+        with patch("cli._cprint", side_effect=lambda t: printed.append(t)), \
+             patch("cli.save_config_value", return_value=True):
+            cli_obj.process_command("/config set compression.enabled false")
+        combined = " ".join(printed)
+        assert "requires restart" in combined
+
+    def test_compression_set_does_not_call_propagate_live(self):
+        # Regression guard: compression.* must NOT trigger the live-apply
+        # path even if ``_propagate_config_live`` happens to learn how to
+        # handle it in the future — keep restart-required authoritative
+        # unless a real live-apply implementation lands.
+        cli_obj = _make_cli()
+        with patch("cli._cprint"), \
+             patch("cli.save_config_value", return_value=True), \
+             patch.object(HermesCLI, "_propagate_config_live") as mock_propagate:
+            cli_obj.process_command("/config set compression.threshold 0.75")
+        mock_propagate.assert_not_called()

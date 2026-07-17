@@ -4,6 +4,8 @@ import subprocess
 import sys
 import textwrap
 
+import pytest
+
 
 def test_bot_defaults_serialize_guild_and_user_command_scopes():
     """A real Bot/tree applies Hermes scope defaults to registered commands."""
@@ -40,5 +42,8 @@ def test_bot_defaults_serialize_guild_and_user_command_scopes():
         capture_output=True,
         text=True,
     )
+
+    if result.returncode != 0 and "No module named 'discord'" in result.stderr:
+        pytest.skip("discord.py optional dependency is not installed")
 
     assert result.returncode == 0, result.stdout + result.stderr

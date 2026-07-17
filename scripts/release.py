@@ -90,6 +90,7 @@ AUTHOR_MAP = {
     "drexux0@gmail.com": "Drexuxux",  # PR #36042 salvage (gateway: /footer reachable mid-run via safe-toggle set)
     "iganapolsky@gmail.com": "IgorGanapolsky",  # PR #62125 salvage (compaction anti-thrash threshold verification)
     "275853971+aeyeopsdev@users.noreply.github.com": "aeyeopsdev",  # PRs #36035/#36068 salvage (google-chat: http inbound without pubsub; clarify cards)
+    "matthijs@vandenbos.org": "mvdbos",  # PR #66124 salvage of #59069 (desktop: refresh custom-provider models on user switch)
     "tturney1@gmail.com": "TheTom",  # PR #62696 salvage (gateway: expand @ context references under runtime/session model resolution)
     "1822947159@qq.com": "ljy-2000",  # PR #62204 adopted in #62290
     "xwolf.live@gmail.com": "vizi0uz",  # PR #59795 adopted in #62290

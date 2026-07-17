@@ -24,6 +24,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+import gateway.platforms.api_server as api_server
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
@@ -94,6 +95,24 @@ class TestResponseStore:
         store = ResponseStore(max_size=10)
         assert store.get("resp_missing") is None
 
+    def test_memory_store_is_not_durable(self):
+        store = ResponseStore(max_size=10, db_path=":memory:")
+        assert store.is_durable is False
+
+    def test_failed_file_open_falls_back_without_durable_attestation(self, tmp_path):
+        durable_path = str(tmp_path / "unavailable" / "responses.db")
+        real_connect = api_server.sqlite3.connect
+
+        def connect(path, *args, **kwargs):
+            if path == durable_path:
+                raise OSError("durable path unavailable")
+            return real_connect(path, *args, **kwargs)
+
+        with patch.object(api_server.sqlite3, "connect", side_effect=connect):
+            store = ResponseStore(max_size=10, db_path=durable_path)
+
+        assert store.is_durable is False
+
     def test_lru_eviction(self):
         store = ResponseStore(max_size=3)
         store.put("resp_1", {"output": "one"})
@@ -157,6 +176,25 @@ class TestResponseStore:
         assert store.get_conversation("chat-a") is None
         # resp_2 mapping should still be intact
         assert store.get_conversation("chat-b") == "resp_2"
+
+    def test_conversation_compare_and_set_is_shared_across_connections(self, tmp_path):
+        db_path = tmp_path / "responses.db"
+        first = ResponseStore(max_size=10, db_path=str(db_path))
+        second = ResponseStore(max_size=10, db_path=str(db_path))
+        try:
+            assert first.get_conversation("shared") is None
+            assert second.get_conversation("shared") is None
+            assert first.put_conversation_if_current(
+                "shared", None, "resp_winner", {"response": {"id": "resp_winner"}}
+            )
+            assert not second.put_conversation_if_current(
+                "shared", None, "resp_loser", {"response": {"id": "resp_loser"}}
+            )
+            assert second.get_conversation("shared") == "resp_winner"
+            assert second.get("resp_loser") is None
+        finally:
+            first.close()
+            second.close()
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are platform-specific")
     def test_file_store_created_owner_only_under_permissive_umask(self, tmp_path):
@@ -690,6 +728,16 @@ def auth_adapter():
 
 
 class TestAgentExecution:
+    def test_strict_none_bypasses_configured_toolset_resolution(self):
+        with patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            return_value={"default", "web"},
+        ) as get_platform_tools:
+            resolved = api_server._resolve_agent_toolsets({}, "none")
+
+        assert resolved == []
+        get_platform_tools.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_run_agent_uses_session_id_as_task_id(self, adapter):
         mock_agent = MagicMock()
@@ -717,6 +765,137 @@ class TestAgentExecution:
             conversation_history=[],
             task_id="session-123",
         )
+
+    @pytest.mark.asyncio
+    async def test_run_agent_rejects_surviving_tools_in_strict_none_mode(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.tools = [
+            {
+                "type": "function",
+                "function": {"name": "terminal", "parameters": {}},
+            }
+        ]
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            with pytest.raises(
+                RuntimeError,
+                match="tool_choice 'none' resolved a non-empty tool surface",
+            ):
+                await adapter._run_agent(
+                    user_message="hello",
+                    conversation_history=[],
+                    tool_choice="none",
+                )
+
+        mock_agent.run_conversation.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_agent_rejects_opaque_tools_in_strict_none_mode(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.tools = [{"type": "future_custom_tool", "opaque": True}]
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            with pytest.raises(
+                RuntimeError,
+                match="tool_choice 'none' resolved a non-empty tool surface",
+            ):
+                await adapter._run_agent(
+                    user_message="hello",
+                    conversation_history=[],
+                    tool_choice="none",
+                )
+
+        mock_agent.run_conversation.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_agent_receipts_empty_tools_in_strict_none_mode(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.tools = []
+        mock_agent.run_conversation.return_value = {
+            "final_response": "ok",
+            "messages": [],
+            "completed": True,
+            "failed": False,
+            "partial": False,
+            "interrupted": False,
+        }
+        mock_agent.session_prompt_tokens = 1
+        mock_agent.session_completion_tokens = 2
+        mock_agent.session_total_tokens = 3
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            result, _usage = await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                tool_choice="none",
+            )
+
+        assert result["_hermes_capabilities"] == {
+            "tool_choice": "none",
+            "resolved_tools": [],
+        }
+
+    @pytest.mark.asyncio
+    async def test_run_agent_does_not_receipt_incomplete_strict_none_turn(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.tools = []
+        mock_agent.run_conversation.return_value = {
+            "final_response": "provider failed",
+            "completed": False,
+            "failed": True,
+            "partial": True,
+            "interrupted": False,
+        }
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            result, _usage = await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                tool_choice="none",
+            )
+
+        assert "_hermes_capabilities" not in result
+
+    @pytest.mark.parametrize(
+        "invalid_result",
+        [
+            {
+                "messages": [],
+                "completed": True,
+                "failed": False,
+                "partial": False,
+                "interrupted": False,
+            },
+            {
+                "final_response": "   ",
+                "messages": [],
+                "completed": True,
+                "failed": False,
+                "partial": False,
+                "interrupted": False,
+            },
+            {
+                "final_response": "answer",
+                "messages": "not-a-list",
+                "completed": True,
+                "failed": False,
+                "partial": False,
+                "interrupted": False,
+            },
+            {
+                "final_response": "answer",
+                "messages": [{"role": "assistant", "tool_calls": [{}]}],
+                "completed": True,
+                "failed": False,
+                "partial": False,
+                "interrupted": False,
+            },
+        ],
+    )
+    def test_strict_none_completion_rejects_malformed_result_shapes(
+        self, invalid_result
+    ):
+        assert api_server._is_complete_agent_result(invalid_result) is False
 
 
 # ---------------------------------------------------------------------------
@@ -968,7 +1147,10 @@ class TestModelsEndpoint:
 
 class TestCapabilitiesEndpoint:
     @pytest.mark.asyncio
-    async def test_capabilities_advertises_plugin_safe_contract(self, adapter):
+    async def test_capabilities_advertises_plugin_safe_contract(self, adapter, tmp_path):
+        adapter._response_store = ResponseStore(
+            db_path=str(tmp_path / "durable-responses.db")
+        )
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get("/v1/capabilities")
@@ -986,10 +1168,22 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["strict_tool_choice_none"] is True
+            assert data["features"]["durable_conversation_cas"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+
+    @pytest.mark.asyncio
+    async def test_capabilities_discloses_memory_store_is_not_durable(self, adapter):
+        adapter._response_store = ResponseStore(db_path=":memory:")
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["features"]["durable_conversation_cas"] is False
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):
@@ -1893,6 +2087,166 @@ class TestResponsesEndpoint:
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
 
     @pytest.mark.asyncio
+    async def test_tool_choice_none_is_strict_and_receipted(self, adapter):
+        mock_result = {
+            "final_response": "Advisory only.",
+            "messages": [],
+            "api_calls": 1,
+            "completed": True,
+            "failed": False,
+            "partial": False,
+            "interrupted": False,
+            "_hermes_capabilities": {
+                "tool_choice": "none",
+                "resolved_tools": [],
+            },
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Explain the supplied focus.",
+                        "tool_choice": "none",
+                        "store": True,
+                    },
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["tool_choice"] == "none"
+            data = await resp.json()
+            assert data["capabilities"] == {
+                "tool_choice": "none",
+                "resolved_tools": [],
+            }
+            stored = adapter._response_store.get(data["id"])
+            assert stored["response"]["capabilities"] == data["capabilities"]
+
+    @pytest.mark.asyncio
+    async def test_tool_choice_none_refuses_failed_partial_turn(self, adapter):
+        conversation = f"failed-strict-{uuid.uuid4().hex}"
+        failed_result = {
+            "final_response": "provider failure text",
+            "messages": [],
+            "api_calls": 1,
+            "completed": False,
+            "failed": True,
+            "partial": True,
+            "interrupted": False,
+            "_hermes_capabilities": {
+                "tool_choice": "none",
+                "resolved_tools": [],
+            },
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    failed_result,
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "input": "Explain the supplied focus.",
+                        "tool_choice": "none",
+                        "conversation": conversation,
+                        "store": True,
+                    },
+                )
+                payload = await resp.json()
+
+        assert resp.status == 502
+        assert payload["error"]["code"] == "strict_none_run_incomplete"
+        assert adapter._response_store.get_conversation(conversation) is None
+
+    @pytest.mark.asyncio
+    async def test_tool_choice_none_refuses_missing_final_response(self, adapter):
+        conversation = f"malformed-strict-{uuid.uuid4().hex}"
+        malformed_result = {
+            "messages": [],
+            "completed": True,
+            "failed": False,
+            "partial": False,
+            "interrupted": False,
+            "_hermes_capabilities": {
+                "tool_choice": "none",
+                "resolved_tools": [],
+            },
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    malformed_result,
+                    {"input_tokens": 1, "output_tokens": 0, "total_tokens": 1},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "input": "Explain the supplied focus.",
+                        "tool_choice": "none",
+                        "conversation": conversation,
+                        "store": True,
+                    },
+                )
+                payload = await resp.json()
+
+        assert resp.status == 502
+        assert payload["error"]["code"] == "strict_none_run_incomplete"
+        assert adapter._response_store.get_conversation(conversation) is None
+
+    @pytest.mark.asyncio
+    async def test_idempotency_fingerprint_includes_tool_choice(self, adapter):
+        key = f"tool-choice-{uuid.uuid4().hex}"
+        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        strict_result = {
+            "final_response": "strict",
+            "messages": [],
+            "completed": True,
+            "failed": False,
+            "partial": False,
+            "interrupted": False,
+            "_hermes_capabilities": {
+                "tool_choice": "none",
+                "resolved_tools": [],
+            },
+        }
+        default_result = {"final_response": "default", "messages": []}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.side_effect = [
+                    (strict_result, usage),
+                    (default_result, usage),
+                ]
+                first = await cli.post(
+                    "/v1/responses",
+                    headers={"Idempotency-Key": key},
+                    json={"input": "same", "tool_choice": "none"},
+                )
+                second = await cli.post(
+                    "/v1/responses",
+                    headers={"Idempotency-Key": key},
+                    json={"input": "same"},
+                )
+
+                assert first.status == 200
+                assert second.status == 200
+                assert mock_run.call_count == 2
+                assert "capabilities" not in await second.json()
+
+    @pytest.mark.asyncio
     async def test_successful_response_with_array_input(self, adapter):
         """Array input with role/content objects."""
         mock_result = {"final_response": "Done", "messages": [], "api_calls": 1}
@@ -2320,6 +2674,25 @@ class TestResponsesEndpoint:
 
 
 class TestResponsesStreaming:
+    @pytest.mark.asyncio
+    async def test_streaming_strict_none_fails_closed_before_agent_run(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Do not expose tools.",
+                        "stream": True,
+                        "tool_choice": "none",
+                    },
+                )
+                assert resp.status == 400
+                data = await resp.json()
+                assert data["error"]["code"] == "unsupported_tool_choice"
+                mock_run.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_stream_true_returns_responses_sse(self, adapter):
         app = _create_app(adapter)
@@ -3518,6 +3891,23 @@ class TestCORS:
 
 class TestConversationParameter:
     @pytest.mark.asyncio
+    async def test_named_stored_conversation_refuses_memory_fallback(self, adapter):
+        adapter._response_store = ResponseStore(db_path=":memory:")
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post("/v1/responses", json={
+                    "input": "hi",
+                    "conversation": "my-chat",
+                    "store": True,
+                })
+                payload = await resp.json()
+
+        assert resp.status == 503
+        assert payload["error"]["code"] == "durable_conversation_store_required"
+        mock_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_conversation_creates_new(self, adapter):
         """First request with a conversation name works (new conversation)."""
         app = _create_app(adapter)
@@ -3574,6 +3964,47 @@ class TestConversationParameter:
                           second_call_kwargs[1].get("conversation_history", []) if len(second_call_kwargs) > 1 else [])
                 # History should be non-empty (contains messages from first response)
                 assert len(history) > 0
+
+    @pytest.mark.asyncio
+    async def test_concurrent_same_conversation_has_one_atomic_winner(self, adapter):
+        """Concurrent turns from one head must not silently fork the conversation."""
+        app = _create_app(adapter)
+        both_started = asyncio.Event()
+        release = asyncio.Event()
+        histories = []
+
+        async def run_agent(**kwargs):
+            histories.append(list(kwargs["conversation_history"]))
+            if len(histories) == 2:
+                both_started.set()
+            await release.wait()
+            return (
+                {"final_response": "Concurrent response", "messages": [], "api_calls": 1},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=run_agent):
+                first = asyncio.create_task(cli.post(
+                    "/v1/responses",
+                    json={"input": "first", "conversation": "one-head"},
+                ))
+                second = asyncio.create_task(cli.post(
+                    "/v1/responses",
+                    json={"input": "second", "conversation": "one-head"},
+                ))
+                await asyncio.wait_for(both_started.wait(), timeout=1)
+                release.set()
+                responses = await asyncio.gather(first, second)
+                statuses = sorted(response.status for response in responses)
+                payloads = [await response.json() for response in responses]
+
+        assert statuses == [200, 409]
+        winner = next(payload for payload in payloads if payload.get("status") == "completed")
+        loser = next(payload for payload in payloads if "error" in payload)
+        assert loser["error"]["code"] == "conversation_conflict"
+        assert adapter._response_store.get_conversation("one-head") == winner["id"]
+        assert histories == [[], []]
 
     @pytest.mark.asyncio
     async def test_conversation_and_previous_response_id_conflict(self, adapter):

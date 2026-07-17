@@ -1337,6 +1337,40 @@ def test_logging_terminal_handler_suppression_overlaps_and_restores_once_in_reve
             added_file_handler.close()
 
 
+def test_logging_stale_add_handler_wrapper_race_delegates_once_without_mutation():
+    logger = logging.getLogger("hermes.tests.oneshot.task4.add-handler-race")
+    context = oneshot._suppress_terminal_log_handlers()
+    context.__enter__()
+    captured = threading.Event()
+    release = threading.Event()
+    errors = []
+    handler = logging.StreamHandler(io.StringIO())
+    handler.setLevel(logging.ERROR)
+
+    def add_from_stale_bound_wrapper():
+        stale_add_handler = logger.addHandler
+        captured.set()
+        release.wait()
+        try:
+            stale_add_handler(handler)
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=add_from_stale_bound_wrapper)
+    worker.start()
+    assert captured.wait(timeout=2)
+    context.__exit__(None, None, None)
+    release.set()
+    worker.join(timeout=2)
+    try:
+        assert not worker.is_alive()
+        assert errors == []
+        assert handler.level == logging.ERROR
+        assert sum(existing is handler for existing in logger.handlers) == 1
+    finally:
+        logger.removeHandler(handler)
+
+
 def _run_watchdog_subprocess(
     mode: str,
     usage_path: Path | None = None,
@@ -1495,6 +1529,50 @@ def test_watchdog_during_atomic_usage_preserves_exact_previous_bytes(tmp_path):
     assert completed.stderr == ""
     assert completed.elapsed < 3
     assert usage_path.read_bytes() == original
+
+
+def test_usage_write_cleans_only_safe_stale_owned_temp_siblings(
+    monkeypatch,
+    tmp_path,
+):
+    usage_path = tmp_path / "usage.json"
+    stale = tmp_path / (".usage.json.tmp-424242-" + "a" * 32)
+    stale.write_text("stale private usage", encoding="utf-8")
+    os.utime(stale, (0, 0))
+    target = tmp_path / "must-survive"
+    target.write_text("target", encoding="utf-8")
+    symlink = tmp_path / (".usage.json.tmp-424243-" + "b" * 32)
+    symlink.symlink_to(target)
+    arbitrary = tmp_path / ".usage.json.tmp-not-owned"
+    arbitrary.write_text("arbitrary", encoding="utf-8")
+    monkeypatch.setattr(oneshot, "_usage_temp_pid_is_running", lambda _pid: False)
+
+    oneshot._write_usage_file(str(usage_path), {"completed": True})
+
+    assert usage_path.exists()
+    assert not stale.exists()
+    assert symlink.is_symlink()
+    assert target.read_text(encoding="utf-8") == "target"
+    assert arbitrary.read_text(encoding="utf-8") == "arbitrary"
+
+
+def test_atomic_usage_replace_error_removes_current_temp_and_preserves_target(
+    monkeypatch,
+    tmp_path,
+):
+    usage_path = tmp_path / "usage.json"
+    original = b'{"earlier":true}\n'
+    usage_path.write_bytes(original)
+    monkeypatch.setattr(
+        oneshot.os,
+        "replace",
+        Mock(side_effect=OSError("replace failed")),
+    )
+
+    oneshot._write_usage_file(str(usage_path), {"completed": True})
+
+    assert usage_path.read_bytes() == original
+    assert list(tmp_path.glob(".usage.json.tmp-*")) == []
 
 
 def test_normal_cleanup_releases_non_daemon_mcp_like_thread():

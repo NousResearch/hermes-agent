@@ -1045,7 +1045,16 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     # Bound total shutdown time: if cleanup (or the interpreter's
     # thread-join teardown after it) wedges, force-exit instead of
     # leaving a zombie CLI holding the terminal for minutes.
-    _arm_exit_watchdog()
+    try:
+        _arm_exit_watchdog()
+    except BaseException as exc:
+        # Cleanup remains best-effort even if the watchdog thread itself
+        # cannot start. Keep this payload-free: shutdown exceptions may carry
+        # user or tool data.
+        logger.warning(
+            "CLI exit watchdog failed exception_type=%s",
+            type(exc).__name__,
+        )
 
     # Reset terminal input modes first, before the slower resource teardown
     # below (MCP / browser / memory shutdown can take seconds). On Ctrl+C the

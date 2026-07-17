@@ -10,6 +10,7 @@ on ``_tui_input_modes_active`` so non-TUI one-shot CLI runs (which share
 ``_run_cleanup`` via ``atexit``) don't emit codes for modes they never set.
 """
 
+import os
 import unittest
 from unittest.mock import mock_open, patch
 
@@ -206,6 +207,78 @@ class TestRunCleanupWiring(unittest.TestCase):
         cli_mod = _import_cli()
         mock_reset = self._run_cleanup_isolated(cli_mod, terminals_raise=True)
         mock_reset.assert_called_once()
+
+    def test_watchdog_start_failure_keeps_all_later_cli_cleanup_owners(self):
+        cli_mod = _import_cli()
+        events = []
+
+        class StartFailureThread:
+            def __init__(self, **_kwargs):
+                pass
+
+            def start(self):
+                raise RuntimeError("private watchdog detail")
+
+        original_done = cli_mod._cleanup_done
+        cli_mod._cleanup_done = False
+        try:
+            with (
+                patch(
+                    "hermes_cli.exit_watchdog.threading.Thread",
+                    StartFailureThread,
+                ),
+                patch.dict(os.environ, {"PYTEST_CURRENT_TEST": ""}),
+                patch.object(
+                    cli_mod,
+                    "_reset_terminal_input_modes_on_exit",
+                    side_effect=lambda: events.append("terminal_reset"),
+                ),
+                patch.object(
+                    cli_mod,
+                    "_cleanup_all_terminals",
+                    side_effect=lambda: events.append("terminals"),
+                ),
+                patch(
+                    "tools.async_delegation.interrupt_all",
+                    side_effect=lambda **_kwargs: events.append("delegations"),
+                ),
+                patch.object(
+                    cli_mod,
+                    "_cleanup_all_browsers",
+                    side_effect=lambda: events.append("browsers"),
+                ),
+                patch(
+                    "tools.mcp_tool.shutdown_mcp_servers",
+                    side_effect=lambda: events.append("mcp"),
+                ),
+                patch(
+                    "agent.auxiliary_client.shutdown_cached_clients",
+                    side_effect=lambda: events.append("auxiliary"),
+                ),
+                patch.object(cli_mod, "_active_agent_ref", None),
+                patch.object(cli_mod.logger, "warning") as warning,
+            ):
+                result = cli_mod._run_cleanup(notify_session_finalize=False)
+
+            self.assertIsNone(result)
+            self.assertEqual(
+                events,
+                [
+                    "terminal_reset",
+                    "terminals",
+                    "delegations",
+                    "browsers",
+                    "mcp",
+                    "auxiliary",
+                ],
+            )
+            warning.assert_called_once_with(
+                "CLI exit watchdog failed exception_type=%s",
+                "RuntimeError",
+            )
+            self.assertNotIn("private watchdog detail", repr(warning.call_args_list))
+        finally:
+            cli_mod._cleanup_done = original_done
 
 
 if __name__ == "__main__":

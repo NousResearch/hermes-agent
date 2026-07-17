@@ -279,3 +279,27 @@ def test_file_mutation_resets_guardrail_failure_counts():
     # Terminal command should now be allowed again
     assert controller.before_call("terminal", cmd_args).action == "allow"
 
+
+def test_file_mutation_resets_guardrail_no_progress_counts():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+        )
+    )
+    args = {"path": "/tmp/same.txt"}
+    result = "same file contents"
+
+    controller.after_call("read_file", args, result, failed=False)
+    controller.after_call("read_file", args, result, failed=False)
+    assert controller.before_call("read_file", args).action == "block"
+
+    # Successful file mutation
+    patch_args = {"path": "/tmp/same.txt", "content": "fix", "mode": "replace"}
+    controller.after_call("patch", patch_args, '{"success":true}', failed=False)
+
+    # read_file should now be allowed again
+    assert controller.before_call("read_file", args).action == "allow"
+
+

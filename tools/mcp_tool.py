@@ -3900,6 +3900,16 @@ _SESSION_EXPIRED_MARKERS: tuple = (
 )
 
 
+def _exception_tree_contains_interruption(exc: BaseException) -> bool:
+    """Return whether ``exc`` or any nested exception is user cancellation."""
+    if isinstance(exc, InterruptedError):
+        return True
+    return any(
+        _exception_tree_contains_interruption(child)
+        for child in getattr(exc, "exceptions", ())
+    )
+
+
 def _is_session_expired_error(exc: BaseException) -> bool:
     """Return True if ``exc`` looks like an MCP transport session expiry.
 
@@ -3914,8 +3924,27 @@ def _is_session_expired_error(exc: BaseException) -> bool:
     ``streamablehttp_client`` + ``ClientSession`` pair, which is
     exactly what ``MCPServerTask._reconnect_event`` triggers.
     """
-    if isinstance(exc, InterruptedError):
+    if _exception_tree_contains_interruption(exc):
         return False
+
+    # AnyIO's stream exceptions are commonly message-less. In particular,
+    # ``str(ClosedResourceError()) == ""``, so marker matching alone misses the
+    # exact failure emitted by both MCP stdio and HTTP transports. Match the
+    # SDK's transport-closed exception types before inspecting text.
+    try:
+        from anyio import BrokenResourceError, ClosedResourceError, EndOfStream
+
+        if isinstance(exc, (BrokenResourceError, ClosedResourceError, EndOfStream)):
+            return True
+    except ImportError:  # pragma: no cover - AnyIO is supplied by the MCP SDK
+        pass
+
+    # AnyIO task groups can wrap the transport exception in an
+    # ExceptionGroup whose own string omits the message-less leaf details.
+    nested = getattr(exc, "exceptions", ())
+    if nested and any(_is_session_expired_error(child) for child in nested):
+        return True
+
     # Exception messages vary across SDK versions + server
     # implementations, so match on a small allow-list of stable
     # substrings rather than exception type.  Kept narrow to avoid
@@ -3993,10 +4022,10 @@ def _handle_session_expired_and_retry(
         try:
             parsed = json.loads(result)
             if "error" not in parsed:
-                _server_error_counts[server_name] = 0
+                _reset_server_error(server_name)
                 return result
         except (json.JSONDecodeError, TypeError):
-            _server_error_counts[server_name] = 0
+            _reset_server_error(server_name)
             return result
     except Exception as retry_exc:
         logger.warning(

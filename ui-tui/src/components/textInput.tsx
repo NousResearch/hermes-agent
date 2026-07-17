@@ -260,6 +260,17 @@ export function visualRowNav(s: string, p: number, dir: -1 | 1, cols: number): n
   return snapPos(s, offsetFromPosition(s, targetRow, curCol, w))
 }
 
+/**
+ * Whether a successful visual-row Up/Down move should stop the event from
+ * reaching useInputHandlers (history cycling). Plain arrows: yes.
+ * Shift+Up/Down: no — those chords scroll the transcript.
+ */
+export function shouldStopVisualRowNavPropagation(
+  key: Pick<Key, 'downArrow' | 'shift' | 'upArrow'>
+): boolean {
+  return (key.upArrow || key.downArrow) && !key.shift
+}
+
 export { offsetFromPosition }
 
 const ASCII_PRINTABLE_RE = /^[\x20-\x7e]+$/
@@ -1072,13 +1083,18 @@ export function TextInput({
       }
 
       if (k.upArrow || k.downArrow) {
+        // Shift+Up/Down scrolls the transcript in useInputHandlers — leave those alone.
+        if (k.shift) {
+          return
+        }
+
         flushKeyBurst()
 
         const next = visualRowNav(vRef.current, curRef.current, k.upArrow ? -1 : 1, columns)
 
-        if (next !== null) {
+        if (next !== null && shouldStopVisualRowNavPropagation(k)) {
           event.stopImmediatePropagation?.()
-          moveCursor(next, k.shift)
+          moveCursor(next)
 
           return
         }

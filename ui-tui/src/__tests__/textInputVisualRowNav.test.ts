@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { visualRowNav } from '../components/textInput.js'
+import { shouldStopVisualRowNavPropagation, visualRowNav } from '../components/textInput.js'
 
 describe('visualRowNav', () => {
   // ── Hard-newline cases (parity with lineNav) ──────────────────────────
@@ -118,5 +118,28 @@ describe('visualRowNav', () => {
     // (end) stays on that row under wrap-ansi-aligned cursorLayout.
     expect(visualRowNav('abcde', 5, 1, 5)).toBeNull()
     expect(visualRowNav('abcde', 5, -1, 5)).toBeNull()
+  })
+})
+
+describe('shouldStopVisualRowNavPropagation — plain arrows vs Shift+Arrow scroll', () => {
+  const plainUp = { downArrow: false, shift: false, upArrow: true }
+  const plainDown = { downArrow: true, shift: false, upArrow: false }
+  const shiftUp = { downArrow: false, shift: true, upArrow: true }
+  const shiftDown = { downArrow: true, shift: true, upArrow: false }
+
+  it('stops propagation for unmodified Up/Down so history does not also fire', () => {
+    expect(shouldStopVisualRowNavPropagation(plainUp)).toBe(true)
+    expect(shouldStopVisualRowNavPropagation(plainDown)).toBe(true)
+  })
+
+  it('does NOT stop propagation for Shift+Up/Down (transcript scroll)', () => {
+    expect(shouldStopVisualRowNavPropagation(shiftUp)).toBe(false)
+    expect(shouldStopVisualRowNavPropagation(shiftDown)).toBe(false)
+  })
+
+  it('does NOT stop propagation for non-arrow keys', () => {
+    expect(shouldStopVisualRowNavPropagation({ downArrow: false, shift: false, upArrow: false })).toBe(
+      false
+    )
   })
 })

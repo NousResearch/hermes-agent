@@ -512,6 +512,55 @@ def board_exists(board: Optional[str] = None) -> bool:
     return (d / "board.json").exists() or (d / "kanban.db").exists()
 
 
+class BoardPinConflictError(RuntimeError):
+    """A pinned worker was asked to resolve a path for a different board.
+
+    The dispatcher pins ``HERMES_KANBAN_DB``/``HERMES_KANBAN_BOARD`` onto
+    every worker subprocess's env as board-containment (defense in depth —
+    see :func:`kanban_db_path`). Before this guard existed, an explicit
+    ``board=`` argument (e.g. from ``vao_engine.workflow_dsl --board Y``
+    running inside a worker pinned to board X) was silently ignored: the env
+    pin always won, so the caller's chosen board was dropped with no error
+    and the write landed on the worker's own board instead (control-plane
+    integrity violation — 2026-07-18 W7 three-entry E2E, board X = a
+    dispatcher-spawned relay worker's own board, board Y = the intended
+    submission target). This fails closed instead: a pinned worker asked to
+    target a board other than its own is rejected before any path is
+    resolved or any write happens.
+    """
+
+    def __init__(self, pinned_board: str, requested_board: str) -> None:
+        self.pinned_board = pinned_board
+        self.requested_board = requested_board
+        super().__init__(
+            f"Worker is pinned to board {pinned_board!r} and cannot submit "
+            f"to board {requested_board!r}. Submit cross-board workflows "
+            f"from a trusted non-worker entry process."
+        )
+
+
+def _reject_pinned_board_conflict(board: Optional[str]) -> None:
+    """Fail closed if a pinned worker's board differs from an explicit ``board``.
+
+    No-op when the caller passed no explicit board (pinned workers keep
+    resolving to their own pinned board as before), when no worker pin is
+    active (``HERMES_KANBAN_BOARD`` unset — a trusted non-worker process may
+    freely target any board), or when the explicit board normalizes to the
+    same slug as the pin (same-board resubmission stays allowed).
+    """
+    if board is None:
+        return
+    pinned_raw = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+    if not pinned_raw:
+        return
+    requested_slug = _normalize_board_slug(board)
+    pinned_slug = _normalize_board_slug(pinned_raw)
+    if requested_slug is None or pinned_slug is None:
+        return
+    if requested_slug != pinned_slug:
+        raise BoardPinConflictError(pinned_slug, requested_slug)
+
+
 def kanban_db_path(board: Optional[str] = None) -> Path:
     """Return the path to the ``kanban.db`` for ``board``.
 
@@ -520,7 +569,12 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     1. ``HERMES_KANBAN_DB`` env var — pins the path directly. Honoured for
        back-compat and for the dispatcher→worker handoff (defense in
        depth: dispatcher injects this into worker env so workers are
-       immune to any path-resolution disagreement).
+       immune to any path-resolution disagreement). If the worker is
+       pinned (``HERMES_KANBAN_BOARD`` set) and ``board`` is explicitly
+       given and differs from the pin, this raises
+       :class:`BoardPinConflictError` instead of silently honouring
+       either side (P0-C, 2026-07-18) — no path is resolved and nothing
+       is written.
     2. When ``board`` arg is None, the active board from
        :func:`get_current_board` is used.
     3. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
@@ -528,6 +582,7 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     """
     override = os.environ.get("HERMES_KANBAN_DB", "").strip()
     if override:
+        _reject_pinned_board_conflict(board)
         return Path(override).expanduser()
     slug = _normalize_board_slug(board)
     if slug is None:

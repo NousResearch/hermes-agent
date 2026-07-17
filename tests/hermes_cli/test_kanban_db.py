@@ -4315,6 +4315,93 @@ def test_concurrent_connects_do_not_race_past_reinit_guard(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# P0-C (2026-07-18): pinned-worker board conflict must fail closed
+# ---------------------------------------------------------------------------
+# W7 three-entry E2E discovered that a dispatcher-spawned worker pinned to
+# board X, asked to resolve an explicit board=Y (e.g. via
+# vao_engine.workflow_dsl --board Y), silently kept using X with no error —
+# HERMES_KANBAN_DB unconditionally won over the explicit argument. This
+# section verifies kanban_db_path()/connect() now reject that combination
+# before any path is resolved or anything is written, while every other
+# combination (no explicit board, same board, or no pin at all) is unchanged.
+
+class TestBoardPinConflictGuard:
+    def _pin_worker(self, tmp_path, monkeypatch, board="pinned-board"):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        pinned_db = tmp_path / board / "kanban.db"
+        pinned_db.parent.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned_db))
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", board)
+        return pinned_db
+
+    def test_pinned_no_explicit_board_uses_pin(self, tmp_path, monkeypatch):
+        """1. pinned + board未指定 → 従来どおりpinned boardを使用。"""
+        pinned_db = self._pin_worker(tmp_path, monkeypatch)
+        assert kb.kanban_db_path() == pinned_db
+        assert kb.kanban_db_path(board=None) == pinned_db
+
+    def test_pinned_same_board_explicit_succeeds(self, tmp_path, monkeypatch):
+        """2. pinned + pinned boardと同じboardを明示 → 許可。"""
+        pinned_db = self._pin_worker(tmp_path, monkeypatch)
+        assert kb.kanban_db_path(board="pinned-board") == pinned_db
+        # normalized (case/whitespace) match also allowed
+        assert kb.kanban_db_path(board=" Pinned-Board ") == pinned_db
+
+    def test_pinned_different_board_fails_closed(self, tmp_path, monkeypatch):
+        """3. pinned + 異なるboardを明示 → 書き込み前にfail-closed、
+        non-zero (例外)、双方のboardともtask作成/write ゼロ。"""
+        pinned_db = self._pin_worker(tmp_path, monkeypatch)
+        pinned_bytes_before = pinned_db.read_bytes() if pinned_db.exists() else None
+        other_board_dir = kb.board_dir("other-board")
+
+        with pytest.raises(kb.BoardPinConflictError) as exc_info:
+            kb.kanban_db_path(board="other-board")
+
+        message = str(exc_info.value)
+        assert "pinned-board" in message
+        assert "other-board" in message
+        assert exc_info.value.pinned_board == "pinned-board"
+        assert exc_info.value.requested_board == "other-board"
+        # Fail-closed before any resolution/write: neither board touched.
+        assert not other_board_dir.exists()
+        if pinned_bytes_before is None:
+            assert not pinned_db.exists()
+        else:
+            assert pinned_db.read_bytes() == pinned_bytes_before
+
+    def test_pinned_different_board_fails_closed_via_connect(
+        self, tmp_path, monkeypatch
+    ):
+        """Same as above but through connect(board=...), the actual call
+        site vao_engine.workflow_dsl.compile_workflow() uses."""
+        pinned_db = self._pin_worker(tmp_path, monkeypatch)
+        other_board_dir = kb.board_dir("other-board")
+
+        with pytest.raises(kb.BoardPinConflictError):
+            kb.connect(board="other-board")
+
+        assert not other_board_dir.exists()
+        assert not pinned_db.exists()
+
+    def test_unpinned_explicit_board_uses_requested_board(
+        self, tmp_path, monkeypatch
+    ):
+        """4. 非pinned trusted process + board明示 → 従来どおり指定board
+        を使用(HERMES_KANBAN_BOARD未設定 = pinされていない)。"""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+
+        assert kb.kanban_db_path(board="any-board") == kb.board_dir("any-board") / "kanban.db"
+
+
+# ---------------------------------------------------------------------------
 # First-use tip for scratch workspaces
 # ---------------------------------------------------------------------------
 

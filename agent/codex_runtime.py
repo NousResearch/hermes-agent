@@ -1143,9 +1143,6 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         agent._codex_stream_last_event_ts = time.time()
         agent._touch_activity("receiving stream response")
 
-    def _interrupt_check() -> bool:
-        return bool(agent._interrupt_requested)
-
     for attempt in range(max_stream_retries + 1):
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")
@@ -1164,6 +1161,27 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 )
                 continue
             raise
+
+        # Claim the delta sink for THIS attempt (#65991) — parity with the
+        # chat_completions/anthropic/bedrock paths. If a prior attempt's
+        # stream is somehow still alive, this claim supersedes it so its
+        # late deltas are fenced out of the turn; conversely, a newer
+        # attempt supersedes us and the interrupt_check below stops our
+        # consumption immediately.
+        _writer_token = agent._claim_stream_writer()
+
+        def _interrupt_or_superseded(_tok=_writer_token) -> bool:
+            if agent._interrupt_requested:
+                return True
+            if not agent._stream_writer_is_current(_tok):
+                logger.warning(
+                    "Codex streaming attempt superseded by a newer stream; "
+                    "stopping consumption to preserve the single-writer "
+                    "invariant (model=%s).",
+                    api_kwargs.get("model", "unknown"),
+                )
+                return True
+            return False
 
         try:
             # Compatibility: some mocks/providers return a concrete response
@@ -1187,7 +1205,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     ),
                     on_first_delta=on_first_delta,
                     on_event=_on_event,
-                    interrupt_check=_interrupt_check,
+                    interrupt_check=_interrupt_or_superseded,
                 )
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:

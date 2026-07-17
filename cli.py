@@ -1068,6 +1068,24 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     # leaving a zombie CLI holding the terminal for minutes.
     _arm_exit_watchdog()
 
+    # Persist the session boundary before any best-effort teardown that can
+    # block on a subprocess, network client, or browser.  If the watchdog
+    # later force-exits a wedged cleanup, state.db must not retain a zombie
+    # session.  SessionDB keeps the first end reason, so normal close paths
+    # remain idempotent and retain their more specific reason.
+    try:
+        if _active_agent_ref and getattr(_active_agent_ref, "session_id", None):
+            session_db = getattr(_active_agent_ref, "_session_db", None)
+            if session_db is not None:
+                session_db.end_session(_active_agent_ref.session_id, "shutdown")
+    except Exception:
+        logger.debug(
+            "CLI cleanup end_session failed for session %s",
+            getattr(_active_agent_ref, "session_id", "<unknown>")
+            if _active_agent_ref else "<no-agent>",
+            exc_info=True,
+        )
+
     # Reset terminal input modes first, before the slower resource teardown
     # below (MCP / browser / memory shutdown can take seconds). On Ctrl+C the
     # user's terminal becomes usable immediately, and a later step raising

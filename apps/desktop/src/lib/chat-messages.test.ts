@@ -836,6 +836,99 @@ describe('mergeFinalAssistantText', () => {
 
       expect(textParts(merged)).toEqual(['Only narration.'])
     })
+
+    // Regression: the in-place upgrade must be limited to text in the TERMINAL
+    // segment (after the last tool/non-stream part). When the final text was not
+    // streamed as a trailing part and happens to match an EARLIER pre-tool
+    // narration, the backward scan must NOT reach across the tool boundary and
+    // overwrite that earlier part — it must append, so the final response keeps
+    // its position after the tool.
+    it('appends (not replaces pre-tool) when unstreamed final text matches earlier narration across a tool boundary', () => {
+      // text("Checking the config.") → tool → complete("Checking the config.")
+      // The final text is NOT streamed (no trailing text part after the tool).
+      let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Checking the config.')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1' }, 'running')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1', result: { output: 'ok' } }, 'complete')
+
+      const merged = mergeFinalAssistantText(parts, 'Checking the config.', true)
+
+      // The final segment must land AFTER the tool, not overwrite the pre-tool
+      // narration in place.
+      expect(merged.map(p => p.type)).toEqual(['text', 'tool-call', 'text'])
+      expect(textParts(merged)).toEqual(['Checking the config.', 'Checking the config.'])
+    })
+
+    it('replaces in place only when the matching text is already in the terminal (post-tool) segment', () => {
+      // Guard the other side: a streamed trailing text part that matches the
+      // final IS in the terminal segment and MUST be upgraded in place (no dup).
+      let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Diagnosing.')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1' }, 'running')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1', result: { output: 'ok' } }, 'complete')
+      parts = appendAssistantTextPart(parts, 'Root cause found.')
+
+      const merged = mergeFinalAssistantText(parts, 'Root cause found.', true)
+
+      expect(merged.map(p => p.type)).toEqual(['text', 'tool-call', 'text'])
+      expect(textParts(merged)).toEqual(['Diagnosing.', 'Root cause found.'])
+    })
+
+    it('preserves every narration segment across multiple tools in a deep turn', () => {
+      // text → tool → text → tool → text, final restates only the last segment.
+      let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Step one.')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1' }, 'running')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1', result: { output: 'x' } }, 'complete')
+      parts = appendAssistantTextPart(parts, 'Step two.')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-2' }, 'running')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-2', result: { output: 'x' } }, 'complete')
+      parts = appendAssistantTextPart(parts, 'Final conclusion.')
+
+      const merged = mergeFinalAssistantText(parts, 'Final conclusion.', true)
+
+      expect(textParts(merged)).toEqual(['Step one.', 'Step two.', 'Final conclusion.'])
+    })
+
+    it('appends after the LAST tool when unstreamed final matches a non-terminal middle segment across two boundaries', () => {
+      // text → tool → text → tool, unstreamed final == the MIDDLE narration.
+      // Must append after the last tool, not replace the middle part in place.
+      let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Analyzing.')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1' }, 'running')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1', result: { output: 'x' } }, 'complete')
+      parts = appendAssistantTextPart(parts, 'Digging deeper.')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-2' }, 'running')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-2', result: { output: 'x' } }, 'complete')
+
+      const merged = mergeFinalAssistantText(parts, 'Digging deeper.', true)
+
+      expect(merged.map(p => p.type)).toEqual(['text', 'tool-call', 'text', 'tool-call', 'text'])
+      expect(textParts(merged)).toEqual(['Analyzing.', 'Digging deeper.', 'Digging deeper.'])
+    })
+
+    it('treats reasoning as transparent in the terminal segment (upgrades the trailing text in place)', () => {
+      // …tool → reasoning → text, streamed final matches the trailing text.
+      let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Intro.')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1' }, 'running')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1', result: { output: 'x' } }, 'complete')
+      parts = appendReasoningPart(parts, 'weighing options')
+      parts = appendAssistantTextPart(parts, 'Answer.')
+
+      const merged = mergeFinalAssistantText(parts, 'Answer.', true)
+
+      expect(merged.map(p => p.type)).toEqual(['text', 'tool-call', 'reasoning', 'text'])
+      expect(textParts(merged)).toEqual(['Intro.', 'Answer.'])
+    })
+
+    it('upgrades the terminal text in place when the final EXTENDS a truncated streamed segment', () => {
+      // Streaming cut off; message.complete carries the full text.
+      let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Intro.')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1' }, 'running')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1', result: { output: 'x' } }, 'complete')
+      parts = appendAssistantTextPart(parts, 'The fix is')
+
+      const merged = mergeFinalAssistantText(parts, 'The fix is to add a retry.', true)
+
+      expect(merged.map(p => p.type)).toEqual(['text', 'tool-call', 'text'])
+      expect(textParts(merged)).toEqual(['Intro.', 'The fix is to add a retry.'])
+    })
   })
 
   describe('keepInterim = false (lean / legacy collapse)', () => {

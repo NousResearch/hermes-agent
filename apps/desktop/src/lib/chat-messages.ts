@@ -338,22 +338,38 @@ export function mergeFinalAssistantText(
 
   const rendered = assistantTextPart(visibleFinalText)
 
-  // Find the last streamed text part. The final text is the agent's last
-  // segment, so it either equals (or is a prefix/extension of) that trailing
-  // streamed part — upgrade it in place — or it's genuinely new text to append.
-  let lastTextIndex = -1
+  // Upgrade in place ONLY within the TERMINAL segment — the run of text/reasoning
+  // parts after the last tool (or other non-stream) part. The final text is the
+  // agent's last streamed segment, so if it was streamed it is the trailing text
+  // part in that terminal segment: upgrade it (rendered + echo-stripped), no dup.
+  //
+  // The scan MUST stop at the first tool/non-stream boundary. Otherwise, when the
+  // final text was NOT streamed as a trailing part and happens to match an earlier
+  // pre-tool narration, a boundary-crossing scan would overwrite that earlier part
+  // in place — dropping the terminal segment and misplacing the final response
+  // before the tool. When no terminal-segment text matches, append (final text is
+  // genuinely new and belongs after the tool).
+  let terminalTextIndex = -1
 
   for (let i = kept.length - 1; i >= 0; i--) {
-    if (kept[i].type === 'text') {
-      lastTextIndex = i
+    const part = kept[i]
 
+    if (part.type === 'text') {
+      terminalTextIndex = i
+
+      break
+    }
+
+    // Reasoning is transparent within a streamed segment; anything else
+    // (tool-call, image, …) closes the terminal segment.
+    if (part.type !== 'reasoning') {
       break
     }
   }
 
-  if (lastTextIndex >= 0 && restatesReference((kept[lastTextIndex] as { text: string }).text)) {
+  if (terminalTextIndex >= 0 && restatesReference((kept[terminalTextIndex] as { text: string }).text)) {
     const next = [...kept]
-    next[lastTextIndex] = rendered
+    next[terminalTextIndex] = rendered
 
     return next
   }

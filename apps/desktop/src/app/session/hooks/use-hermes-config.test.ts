@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getHermesConfig } from '@/hermes'
 import { persistString } from '@/lib/storage'
-import { $currentCwd, setCurrentCwd } from '@/store/session'
+import { $currentCwd, $keepInterimAssistantMessages, setCurrentCwd, setKeepInterimAssistantMessages } from '@/store/session'
 
 import { useHermesConfig } from './use-hermes-config'
 
@@ -140,5 +140,58 @@ describe('useHermesConfig refreshHermesConfig', () => {
     })
 
     expect(refreshProjectBranch).toHaveBeenCalledWith('/workspace/attached-project')
+  })
+})
+
+describe('useHermesConfig display.interim_assistant_messages', () => {
+  const renderRefresh = async () => {
+    const { result } = renderHook(() =>
+      useHermesConfig({
+        activeSessionIdRef: { current: null },
+        refreshProjectBranch: vi.fn().mockResolvedValue(undefined)
+      })
+    )
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+  }
+
+  it('defaults to keeping interim narration when the key is omitted', async () => {
+    // Start from the opposite value to prove the refresh sets it.
+    setKeepInterimAssistantMessages(false)
+    mockConfig({})
+
+    await renderRefresh()
+
+    expect($keepInterimAssistantMessages.get()).toBe(true)
+  })
+
+  it('keeps interim narration on explicit true', async () => {
+    setKeepInterimAssistantMessages(false)
+    mockConfig({ display: { interim_assistant_messages: true } })
+
+    await renderRefresh()
+
+    expect($keepInterimAssistantMessages.get()).toBe(true)
+  })
+
+  it('collapses interim narration on explicit false', async () => {
+    setKeepInterimAssistantMessages(true)
+    mockConfig({ display: { interim_assistant_messages: false } })
+
+    await renderRefresh()
+
+    expect($keepInterimAssistantMessages.get()).toBe(false)
+  })
+
+  it('treats a non-false display block (key present on sibling) as the default true', async () => {
+    // Only an explicit `false` opts out — any other display shape stays on.
+    setKeepInterimAssistantMessages(false)
+    mockConfig({ display: { personality: 'default' } })
+
+    await renderRefresh()
+
+    expect($keepInterimAssistantMessages.get()).toBe(true)
   })
 })

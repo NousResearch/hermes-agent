@@ -541,10 +541,10 @@ export function bindTreeSideVisibility(
   side: TreeSide,
   $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
   setOpen: (open: boolean) => void
-) {
+): () => void {
   sideOpeners[side] = setOpen
   setTreeSideCollapsed(side, !$open.get())
-  $open.listen(open => setTreeSideCollapsed(side, !open))
+  return $open.listen(open => setTreeSideCollapsed(side, !open))
 }
 
 /** The chrome toggle owning `paneId`'s root-row column — SEMANTIC, matching

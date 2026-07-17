@@ -504,11 +504,33 @@ $panesFlipped.listen(flipped => {
   }
 })
 
-// POSITIONAL side toggles (titlebar buttons, ⌘B / ⌘J): $sidebarOpen ≙ the
-// LEFT side of the main zone, $fileBrowserOpen ≙ the RIGHT — everything on
-// that side hides together, whatever panes have been rearranged there.
-bindTreeSideVisibility('left', $sidebarOpen, setSidebarOpen)
-bindTreeSideVisibility('right', $fileBrowserOpen, setFileBrowserOpen)
+// ── Flip-aware side visibility bindings ──────────────────────────────
+// When panes are flipped (⌘\ / Swap Sidebar Sides), the sessions sidebar
+// moves to the RIGHT side and the file browser moves to the LEFT.
+// $sidebarOpen always tracks the sessions pane, so its tree-side binding
+// must swap with the flip state — likewise for $fileBrowserOpen.
+let _unsubSidebar: (() => void) | null = null
+let _unsubFileBrowser: (() => void) | null = null
+
+function _rebindSideVisibility() {
+  _unsubSidebar?.()
+  _unsubFileBrowser?.()
+  const flipped = $panesFlipped.get()
+  _unsubSidebar = bindTreeSideVisibility(
+    flipped ? 'right' : 'left',
+    $sidebarOpen,
+    setSidebarOpen,
+  )
+  _unsubFileBrowser = bindTreeSideVisibility(
+    flipped ? 'left' : 'right',
+    $fileBrowserOpen,
+    setFileBrowserOpen,
+  )
+}
+
+_rebindSideVisibility()
+$panesFlipped.listen(_rebindSideVisibility)
+// ── End flip-aware side visibility ────────────────────────────────────
 
 // Workspace-scoped surfaces: the file tree and git diff only mean something
 // inside a project. A detached chat (no cwd) hides them — their zones

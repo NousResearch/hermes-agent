@@ -1294,6 +1294,13 @@ display:
   #     prompt_symbol: "⚔"                  # Prompt symbol (bare token; renderers add trailing space)
   #   tool_prefix: "╎"                       # Tool output line prefix (default: ┊)
   #
+  # Show OpenAI Codex OAuth quota remaining in the classic CLI status bar.
+  # The refresh is non-blocking; unavailable 5-hour or weekly windows are
+  # omitted instead of rendered as placeholders.
+  account_usage_footer:
+    enabled: false
+    refresh_seconds: 300
+
   skin: default
 
 # =============================================================================

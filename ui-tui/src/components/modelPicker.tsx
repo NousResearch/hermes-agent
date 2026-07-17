@@ -19,7 +19,10 @@ type Stage = 'provider' | 'key' | 'model' | 'disconnect'
 
 type ProviderRow = { name: string; provider: ModelOptionProvider }
 
-export function providerIndexAfterClearingFilter(providerRows: ProviderRow[], provider: ModelOptionProvider | undefined) {
+export function providerIndexAfterClearingFilter(
+  providerRows: ProviderRow[],
+  provider: ModelOptionProvider | undefined
+) {
   if (!provider) {
     return -1
   }

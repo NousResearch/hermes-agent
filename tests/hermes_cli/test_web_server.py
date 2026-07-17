@@ -861,6 +861,72 @@ class TestWebServerEndpoints:
         assert cfg["moa"]["reference_models"] == payload["reference_models"]
         assert cfg["moa"]["aggregator"] == payload["aggregator"]
 
+    def test_put_moa_models_rejects_half_filled_slot_with_422(self):
+        """#64156: a mid-edit autosave (provider picked, model empty) used to be
+        silently normalized into the hardcoded default preset — the user's
+        config was replaced without any error. The write path must reject it."""
+        from hermes_cli.config import load_config
+
+        original = load_config().get("moa")
+
+        payload = {
+            "presets": {
+                "default": {
+                    "reference_models": [{"provider": "kilo", "model": ""}],
+                    "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                }
+            }
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 422
+        assert "model is required" in resp.json()["detail"]
+        # Config untouched — not swapped for defaults.
+        assert load_config().get("moa") == original
+
+    def test_put_moa_models_rejects_half_filled_aggregator_with_422(self):
+        payload = {
+            "presets": {
+                "default": {
+                    "reference_models": [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}],
+                    "aggregator": {"provider": "openrouter", "model": ""},
+                }
+            }
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 422
+        assert "aggregator" in resp.json()["detail"]
+
+    def test_put_moa_models_round_trips_fanout_and_reference_max_tokens(self):
+        """GET → PUT round-trip must not erase newer per-preset knobs. The old
+        Pydantic payload didn't declare fanout / reference_max_tokens, so any
+        client save silently wiped hand-set values back to defaults."""
+        from hermes_cli.config import load_config
+
+        payload = {
+            "presets": {
+                "default": {
+                    "reference_models": [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}],
+                    "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                    "fanout": "user_turn",
+                    "reference_max_tokens": 600,
+                }
+            }
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 200
+
+        saved = load_config()["moa"]["presets"]["default"]
+        assert saved["fanout"] == "user_turn"
+        assert saved["reference_max_tokens"] == 600
+
+        # And the GET view carries them back to the client.
+        fetched = self.client.get("/api/model/moa").json()
+        assert fetched["presets"]["default"]["fanout"] == "user_turn"
+        assert fetched["presets"]["default"]["reference_max_tokens"] == 600
+
     # ── GET /api/media (remote image display) ───────────────────────────
 
     def test_get_media_serves_image_in_root(self):
@@ -2385,7 +2451,7 @@ class TestWebServerEndpoints:
 
         assert data["name"] == "backup"
         assert captured["name"] == "backup"
-        assert captured["args"] == ["backup", str(archive)]
+        assert captured["args"] == ["backup", "-o", str(archive)]
         assert archive.parent == get_hermes_home() / "backups"
         assert archive.name.startswith("hermes-backup-")
         assert archive.suffix == ".zip"
@@ -2412,7 +2478,7 @@ class TestWebServerEndpoints:
         archive = Path(resp.json()["archive"])
 
         assert archive.parent == hosted_home / "backups"
-        assert captured["args"] == ["backup", str(archive)]
+        assert captured["args"] == ["backup", "-o", str(archive)]
         assert archive.parent.is_dir()
 
     def test_ops_backup_download_streams_dashboard_backup(self, tmp_path):
@@ -2593,7 +2659,12 @@ class TestWebServerEndpoints:
         telegram = next(platform for platform in platforms if platform["id"] == "telegram")
         assert telegram["name"] == "Telegram"
         assert telegram["enabled"] is False
-        assert any(field["key"] == "TELEGRAM_BOT_TOKEN" and field["required"] for field in telegram["env_vars"])
+        fields = {field["key"]: field for field in telegram["env_vars"]}
+        assert fields["TELEGRAM_BOT_TOKEN"]["required"] is True
+        assert fields["TELEGRAM_BOT_TOKEN"]["url"] == "https://t.me/BotFather"
+        assert "Complete Telegram bot token" in fields["TELEGRAM_BOT_TOKEN"]["description"]
+        assert fields["TELEGRAM_ALLOWED_USERS"]["url"] == "https://t.me/userinfobot"
+        assert "DM pairing" in fields["TELEGRAM_ALLOWED_USERS"]["description"]
 
     def test_slack_messaging_platform_exposes_user_allowlist(self):
         resp = self.client.get("/api/messaging/platforms")
@@ -2705,17 +2776,35 @@ class TestWebServerEndpoints:
             "/api/messaging/platforms/telegram",
             json={
                 "enabled": False,
-                "env": {"TELEGRAM_BOT_TOKEN": "1234567890abcdef"},
+                "env": {"TELEGRAM_BOT_TOKEN": "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_1234"},
             },
         )
 
         assert resp.status_code == 200
-        assert load_env()["TELEGRAM_BOT_TOKEN"] == "1234567890abcdef"
+        assert load_env()["TELEGRAM_BOT_TOKEN"] == "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_1234"
         assert load_config()["platforms"]["telegram"]["enabled"] is False
 
         status = self.client.get("/api/messaging/platforms").json()["platforms"]
         telegram = next(platform for platform in status if platform["id"] == "telegram")
         assert telegram["enabled"] is False
+
+    def test_update_messaging_platform_rejects_invalid_telegram_bot_token(self):
+        resp = self.client.put(
+            "/api/messaging/platforms/telegram",
+            json={"env": {"TELEGRAM_BOT_TOKEN": "not-a-botfather-token"}},
+        )
+
+        assert resp.status_code == 400
+        assert "@BotFather" in resp.json()["detail"]
+
+    def test_update_messaging_platform_rejects_invalid_telegram_allowed_users(self):
+        resp = self.client.put(
+            "/api/messaging/platforms/telegram",
+            json={"env": {"TELEGRAM_ALLOWED_USERS": "123456,@username"}},
+        )
+
+        assert resp.status_code == 400
+        assert "numeric user IDs" in resp.json()["detail"]
 
     def test_update_messaging_platform_saves_slack_allowed_users(self):
         from hermes_cli.config import load_env
@@ -4348,6 +4437,87 @@ class TestNewEndpoints:
         finally:
             reset_hermes_home_override(token)
 
+    def test_profiles_create_builder_mcp_auth_is_profile_scoped(
+        self, monkeypatch
+    ):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        secret = "profile-builder-secret"
+        resp = self.client.post(
+            "/api/profiles",
+            json={
+                "name": "builder-auth",
+                "mcp_servers": [
+                    {
+                        "name": "Bearer Server",
+                        "url": "https://example.com/mcp",
+                        "auth": "header",
+                        "bearer_token": f"Bearer {secret}",
+                    },
+                    {
+                        "name": "oauth-server",
+                        "url": "https://example.com/oauth-mcp",
+                        "auth": "oauth",
+                    },
+                    {
+                        "name": "local-server",
+                        "command": "uvx",
+                        "args": ["mcp-server", "--debug"],
+                        "env": {"API_KEY": "stdio-secret"},
+                    },
+                    {
+                        "name": "missing-token",
+                        "url": "https://example.com/bad",
+                        "auth": "header",
+                    },
+                    {
+                        "name": "http-with-env",
+                        "url": "https://example.com/bad-env",
+                        "env": {"NOT_SUPPORTED": "value"},
+                    },
+                ],
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["mcp_written"] == 3
+
+        root = get_hermes_home()
+        profile_dir = root / "profiles" / "builder-auth"
+        config_text = (profile_dir / "config.yaml").read_text(encoding="utf-8")
+        config = yaml.safe_load(config_text)
+        servers = config["mcp_servers"]
+
+        assert sorted(servers) == [
+            "Bearer Server",
+            "local-server",
+            "oauth-server",
+        ]
+        assert servers["Bearer Server"] == {
+            "url": "https://example.com/mcp",
+            "headers": {
+                "Authorization": "Bearer ${MCP_BEARER_SERVER_API_KEY}",
+            },
+        }
+        assert servers["oauth-server"] == {
+            "url": "https://example.com/oauth-mcp",
+            "auth": "oauth",
+        }
+        assert servers["local-server"] == {
+            "command": "uvx",
+            "args": ["mcp-server", "--debug"],
+            "env": {"API_KEY": "stdio-secret"},
+        }
+
+        assert secret not in config_text
+        profile_env = (profile_dir / ".env").read_text(encoding="utf-8")
+        assert f"MCP_BEARER_SERVER_API_KEY={secret}" in profile_env
+        assert "Bearer Bearer" not in profile_env
+        assert not (root / ".env").exists()
+
     def test_profile_open_terminal_uses_macos_terminal(self, monkeypatch):
         from hermes_constants import get_hermes_home
         import hermes_cli.web_server as web_server
@@ -4645,6 +4815,8 @@ class TestNewEndpoints:
                 "name": "web",
                 "label": "Web Search & Scraping",
                 "description": "web_search, web_extract",
+                "platform": "cli",
+                "platform_label": "CLI",
                 "enabled": True,
                 "available": True,
                 "configured": False,
@@ -4654,6 +4826,8 @@ class TestNewEndpoints:
                 "name": "skills",
                 "label": "Skills",
                 "description": "list, view, manage",
+                "platform": "cli",
+                "platform_label": "CLI",
                 "enabled": True,
                 "available": True,
                 "configured": True,
@@ -4663,6 +4837,8 @@ class TestNewEndpoints:
                 "name": "memory",
                 "label": "Memory",
                 "description": "persistent memory across sessions",
+                "platform": "cli",
+                "platform_label": "CLI",
                 "enabled": False,
                 "available": False,
                 "configured": True,
@@ -4690,6 +4866,41 @@ class TestNewEndpoints:
 
         listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
         assert listing["x_search"]["enabled"] is False
+
+    def test_discord_toolsets_read_and_write_discord_platform(self):
+        """Platform-restricted toolsets must not be saved as successful CLI no-ops."""
+        from hermes_cli.config import load_config
+
+        listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
+        assert listing["discord"]["platform"] == "discord"
+        assert listing["discord"]["platform_label"] == "Discord"
+        assert listing["discord"]["enabled"] is False
+
+        resp = self.client.put("/api/tools/toolsets/discord", json={"enabled": True})
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "ok": True,
+            "name": "discord",
+            "platform": "discord",
+            "enabled": True,
+        }
+
+        config = load_config()
+        assert "discord" in config["platform_toolsets"]["discord"]
+        assert "discord" not in config["platform_toolsets"].get("cli", [])
+
+        listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
+        assert listing["discord"]["enabled"] is True
+        assert listing["discord_admin"]["enabled"] is False
+
+        resp = self.client.put(
+            "/api/tools/toolsets/discord_admin", json={"enabled": True}
+        )
+        assert resp.status_code == 200
+        config = load_config()
+        assert {"discord", "discord_admin"} <= set(
+            config["platform_toolsets"]["discord"]
+        )
 
     def test_toggle_toolset_unknown_returns_400(self):
         resp = self.client.put(
@@ -5917,6 +6128,189 @@ class TestDiscoverUserThemes:
         assert "ok" in names
         assert "bad" not in names  # malformed YAML
         assert len(results) == 1  # only the valid one
+
+
+class TestThemeBootstrapCSS:
+    """Tests for _render_active_theme_bootstrap_css() and its injection
+    into index.html via _serve_index() — the critical-CSS shim that kills
+    the default-teal first-paint flash for user YAML themes."""
+
+    @staticmethod
+    def _write_theme(hermes_home, name="ocean"):
+        themes_dir = hermes_home / "dashboard-themes"
+        themes_dir.mkdir(exist_ok=True)
+        (themes_dir / f"{name}.yaml").write_text(
+            f"name: {name}\n"
+            "label: Ocean\n"
+            "palette:\n"
+            "  background:\n"
+            "    hex: \"#0a1628\"\n"
+            "  midground:\n"
+            "    hex: \"#dbe4f0\"\n"
+            "typography:\n"
+            "  fontSans: \"Inter, sans-serif\"\n"
+            "  baseSize: \"17px\"\n",
+            encoding="utf-8",
+        )
+
+    def test_user_theme_renders_bundle_vars(self, tmp_path, monkeypatch):
+        """Active user theme → style block with ONLY variable names the
+        bundle actually consumes (layerVars/typographyVars tokens)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_theme(tmp_path)
+        from hermes_cli import web_server
+        monkeypatch.setattr(
+            web_server, "load_config", lambda: {"dashboard": {"theme": "ocean"}}
+        )
+        css = web_server._render_active_theme_bootstrap_css()
+        assert css.startswith('<style id="hermes-theme-bootstrap">')
+        assert css.endswith("</style>")
+        # Real bundle tokens (web/src/themes/context.tsx + index.css).
+        assert "--background-base:#0a1628;" in css
+        assert "--midground-base:#dbe4f0;" in css
+        assert "--theme-font-sans:Inter, sans-serif;" in css
+        assert "--theme-base-size:17px;" in css
+        # Names that do NOT exist in the bundle must not be emitted.
+        for bogus in ("--color-background", "--color-midground",
+                      "--font-sans:", "--font-base-size"):
+            assert bogus not in css
+        # Canvas rule flows through the variables (never goes stale when
+        # applyTheme() rewrites them as inline styles at runtime).
+        assert "html,body{background-color:var(--background-base);" in css
+        assert "font-family:var(--theme-font-sans);" in css
+        assert "font-size:var(--theme-base-size);" in css
+        # No baked literal values in the html,body rule.
+        assert "#0a1628" not in css.split("html,body")[1]
+
+    def test_builtin_theme_renders_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli import web_server
+        for builtin in ("default", "midnight", "cyberpunk"):
+            monkeypatch.setattr(
+                web_server, "load_config",
+                lambda b=builtin: {"dashboard": {"theme": b}},
+            )
+            assert web_server._render_active_theme_bootstrap_css() == ""
+
+    def test_unknown_theme_renders_nothing(self, tmp_path, monkeypatch):
+        """Configured theme has no YAML on disk → empty string, no crash."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli import web_server
+        monkeypatch.setattr(
+            web_server, "load_config", lambda: {"dashboard": {"theme": "ghost"}}
+        )
+        assert web_server._render_active_theme_bootstrap_css() == ""
+
+    def test_non_string_theme_renders_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli import web_server
+        monkeypatch.setattr(
+            web_server, "load_config", lambda: {"dashboard": {"theme": 42}}
+        )
+        assert web_server._render_active_theme_bootstrap_css() == ""
+
+    def test_malformed_theme_yaml_no_crash(self, tmp_path, monkeypatch):
+        """A garbage YAML for the active theme name must not crash — the
+        discover helper skips it, so no style block is emitted."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        themes_dir = tmp_path / "dashboard-themes"
+        themes_dir.mkdir()
+        (themes_dir / "broken.yaml").write_text(
+            "::: not valid yaml :::\n\tindent wrong", encoding="utf-8"
+        )
+        from hermes_cli import web_server
+        monkeypatch.setattr(
+            web_server, "load_config", lambda: {"dashboard": {"theme": "broken"}}
+        )
+        assert web_server._render_active_theme_bootstrap_css() == ""
+
+    def test_load_config_exception_no_crash(self, monkeypatch):
+        from hermes_cli import web_server
+
+        def boom():
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr(web_server, "load_config", boom)
+        assert web_server._render_active_theme_bootstrap_css() == ""
+
+    def test_style_escape_defends_style_breakout(self, tmp_path, monkeypatch):
+        """`</style>` in a theme value cannot break out of the block."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        themes_dir = tmp_path / "dashboard-themes"
+        themes_dir.mkdir()
+        (themes_dir / "sneaky.yaml").write_text(
+            "name: sneaky\n"
+            "typography:\n"
+            "  fontSans: '</style><script>alert(1)</script>'\n",
+            encoding="utf-8",
+        )
+        from hermes_cli import web_server
+        monkeypatch.setattr(
+            web_server, "load_config", lambda: {"dashboard": {"theme": "sneaky"}}
+        )
+        css = web_server._render_active_theme_bootstrap_css()
+        assert css.count("</style>") == 1  # only the legitimate closer
+        assert "<\\/style>" in css  # payload was escaped, not emitted raw
+
+    @staticmethod
+    def _mount_spa_client(tmp_path, monkeypatch):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        dist = tmp_path / "web_dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text(
+            "<html><head><title>t</title></head><body>SPA</body></html>",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(ws, "WEB_DIST", dist)
+        spa_app = FastAPI()
+        ws.mount_spa(spa_app)
+        return TestClient(spa_app)
+
+    def test_serve_index_injects_bootstrap_for_user_theme(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_theme(tmp_path)
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(
+            ws, "load_config", lambda: {"dashboard": {"theme": "ocean"}}
+        )
+        client = self._mount_spa_client(tmp_path, monkeypatch)
+        resp = client.get("/chat")
+        assert resp.status_code == 200
+        assert '<style id="hermes-theme-bootstrap">' in resp.text
+        assert "--background-base:#0a1628;" in resp.text
+        # Injected inside <head>, before the closing tag.
+        head = resp.text.split("</head>")[0]
+        assert "hermes-theme-bootstrap" in head
+
+    def test_serve_index_no_bootstrap_for_builtin_theme(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(
+            ws, "load_config", lambda: {"dashboard": {"theme": "default"}}
+        )
+        client = self._mount_spa_client(tmp_path, monkeypatch)
+        resp = client.get("/chat")
+        assert resp.status_code == 200
+        assert "hermes-theme-bootstrap" not in resp.text
+
+    def test_serve_index_survives_render_failure(self, tmp_path, monkeypatch):
+        """Even if theme rendering blows up internally, index serving
+        must not crash (the helper swallows and returns '')."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import hermes_cli.web_server as ws
+
+        def boom():
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(ws, "load_config", boom)
+        client = self._mount_spa_client(tmp_path, monkeypatch)
+        resp = client.get("/chat")
+        assert resp.status_code == 200
+        assert "hermes-theme-bootstrap" not in resp.text
+        assert "SPA" in resp.text
 
 
 class TestNormaliseThemeExtensions:

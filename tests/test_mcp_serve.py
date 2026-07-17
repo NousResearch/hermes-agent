@@ -277,6 +277,43 @@ class TestHelpers:
         result = _get_sessions_dir()
         assert result == tmp_path / "sessions"
 
+    def test_get_session_db_uses_configured_home_factory(self, tmp_path, monkeypatch):
+        import hermes_state
+        import mcp_serve
+
+        expected_db = MagicMock()
+        opened = []
+
+        class _FactoryOnlyDB:
+            def __init__(self):
+                raise AssertionError("MCP must not fall back to SessionDB()")
+
+            @staticmethod
+            def for_home(home):
+                opened.append(home)
+                return expected_db
+
+        monkeypatch.setattr(hermes_state, "SessionDB", _FactoryOnlyDB)
+
+        assert mcp_serve._get_session_db() is expected_db
+        assert opened == [tmp_path]
+
+    def test_get_session_db_failure_does_not_fallback_to_sqlite(self, monkeypatch):
+        import hermes_state
+        import mcp_serve
+
+        class _FailingFactoryDB:
+            def __init__(self):
+                raise AssertionError("MCP must not fall back to SessionDB()")
+
+            @staticmethod
+            def for_home(_home):
+                raise RuntimeError("configured backend unavailable")
+
+        monkeypatch.setattr(hermes_state, "SessionDB", _FailingFactoryDB)
+
+        assert mcp_serve._get_session_db() is None
+
     def test_coerce_int_handles_invalid_and_out_of_range_values(self):
         from mcp_serve import _coerce_int
 
@@ -1052,11 +1089,11 @@ class TestEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# 7. EVENT BRIDGE POLL LOOP E2E — real SQLite DB, mtime optimization
+# 7. EVENT BRIDGE POLL LOOP E2E — backend-aware refresh behavior
 # ---------------------------------------------------------------------------
 
 class TestEventBridgePollE2E:
-    """End-to-end tests for the EventBridge polling loop with real files."""
+    """End-to-end tests for SQLite mtime and remote-store refresh paths."""
 
     def test_poll_detects_new_messages(self, tmp_path, monkeypatch):
         """Write to SQLite + sessions.json, verify EventBridge picks it up."""
@@ -1093,6 +1130,9 @@ class TestEventBridgePollE2E:
 
         # Create a mock SessionDB that reads our test DB
         class TestDB:
+            def __init__(self):
+                self.db_path = db_path
+
             def get_messages(self, sid):
                 conn = sqlite3.connect(str(db_path))
                 conn.row_factory = sqlite3.Row
@@ -1103,7 +1143,7 @@ class TestEventBridgePollE2E:
                 conn.close()
                 return [dict(r) for r in rows]
 
-        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: TestDB())
+        monkeypatch.setattr(mcp_serve, "_get_session_db", TestDB)
 
         bridge = mcp_serve.EventBridge()
         # Run one poll cycle manually
@@ -1142,6 +1182,7 @@ class TestEventBridgePollE2E:
 
         class TestDB:
             def __init__(self):
+                self.db_path = db_path
                 self.call_count = 0
 
             def get_messages(self, sid):
@@ -1157,6 +1198,7 @@ class TestEventBridgePollE2E:
 
         db = TestDB()
         bridge = mcp_serve.EventBridge()
+        monkeypatch.setattr(mcp_serve, "_load_sessions_index", lambda: sessions_data)
 
         # First poll — should process
         bridge._poll_once(db)
@@ -1193,6 +1235,9 @@ class TestEventBridgePollE2E:
         ])
 
         class TestDB:
+            def __init__(self):
+                self.db_path = db_path
+
             def get_messages(self, sid):
                 conn = sqlite3.connect(str(db_path))
                 conn.row_factory = sqlite3.Row
@@ -1235,33 +1280,16 @@ class TestEventBridgePollE2E:
     def test_poll_picks_up_new_conversation_on_db_change(
         self, tmp_path, monkeypatch
     ):
-        """A brand-new conversation must be picked up on the tick where
-        state.db changes.
-
-        Since #9006 the routing index lives IN state.db (session rows carry
-        session_key/origin metadata), so a new conversation's registration and
-        its first message land in the same file — a single mtime check covers
-        both and the old dual-file (sessions.json + state.db) race (#8925) is
-        structurally impossible. This test asserts the index is refreshed on a
-        db-mtime bump, so a conversation the bridge has never seen before is
-        emitted on the same tick.
-        """
+        """A new configured-store conversation is emitted on its first poll."""
         import mcp_serve
 
         sessions_dir = tmp_path / "sessions"
         sessions_dir.mkdir()
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
 
-        # _poll_once reads <HERMES_HOME>/state.db for its mtime gate; the autouse
-        # fixture points HERMES_HOME at tmp_path.
-        db_path = tmp_path / "state.db"
-        db_path.write_text("placeholder")
-
         session_id = "20260329_150000_late_register"
-        # The routing index now comes from _load_sessions_index() (state.db
-        # primary, sessions.json fallback). Stub it to return the new
-        # conversation, simulating the gateway having just written the
-        # session row + first message in one state.db transaction.
+        # The routing index is store-backed, with sessions.json retained only
+        # for legacy stores. Simulate a session row and its first message.
         monkeypatch.setattr(
             mcp_serve, "_load_sessions_index",
             lambda: {
@@ -1282,10 +1310,6 @@ class TestEventBridgePollE2E:
                 }]
 
         bridge = mcp_serve.EventBridge()
-        # Bridge has never seen this db state (mtime differs) and has an
-        # empty cached index — exactly the state after a new conversation's
-        # first write.
-        bridge._state_db_mtime = 0.0
         assert bridge._cached_sessions_index == {}
 
         bridge._poll_once(DB())
@@ -1294,6 +1318,48 @@ class TestEventBridgePollE2E:
         assert len(result["events"]) == 1
         assert result["events"][0]["session_key"] == "agent:main:telegram:dm:late"
         assert result["events"][0]["content"].startswith("Hello from a freshly")
+
+    def test_remote_store_refreshes_without_local_mtime(self, monkeypatch):
+        """PostgreSQL-like stores have no db_path, so every tick refreshes."""
+        import mcp_serve
+
+        session_id = "remote-session"
+        index_calls = 0
+
+        def _load_index():
+            nonlocal index_calls
+            index_calls += 1
+            return {
+                "agent:main:telegram:dm:remote": {
+                    "session_id": session_id,
+                    "platform": "telegram",
+                    "origin": {"platform": "telegram", "chat_id": "remote"},
+                }
+            }
+
+        class RemoteDB:
+            def __init__(self):
+                self.message_calls = 0
+
+            def get_messages(self, sid):
+                assert sid == session_id
+                self.message_calls += 1
+                return [{
+                    "id": 1,
+                    "role": "user",
+                    "content": "Remote store message",
+                    "timestamp": "2026-03-29T15:00:00",
+                }]
+
+        monkeypatch.setattr(mcp_serve, "_load_sessions_index", _load_index)
+        db = RemoteDB()
+        bridge = mcp_serve.EventBridge()
+
+        bridge._poll_once(db)
+        bridge._poll_once(db)
+
+        assert index_calls == 2
+        assert db.message_calls == 2
 
     def test_poll_interval_is_200ms(self):
         """Verify the poll interval constant."""

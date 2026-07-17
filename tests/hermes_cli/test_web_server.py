@@ -267,54 +267,38 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
 
-    def test_status_active_session_count_uses_read_only_db(self, monkeypatch, tmp_path):
+    def test_status_active_session_count_excludes_ended_and_stale_sessions(self):
+        """Status exposes only sessions that are currently active."""
+        import time
+
         import hermes_cli.web_server as web_server
-        import hermes_state
+        from hermes_state import SessionDB
 
-        # Satisfy the fresh-install guard: read_only opens require the DB
-        # file to already exist.
-        fake_db_path = tmp_path / "state.db"
-        fake_db_path.touch()
-        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", fake_db_path)
-
-        captured = {}
-
-        class _FakeDB:
-            def __init__(self, *args, **kwargs):
-                captured["read_only"] = kwargs.get("read_only")
-
-            def list_sessions_rich(self, limit, compact_rows=False):
-                captured["limit"] = limit
-                captured["compact_rows"] = compact_rows
-                return [
-                    {"ended_at": None, "last_active": 95},
-                    {"ended_at": 99, "last_active": 99},
-                    {"ended_at": None, "last_active": -300},
-                ]
-
-            def close(self):
-                captured["closed"] = True
-
-        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
-        monkeypatch.setattr(web_server.time, "time", lambda: 100)
+        db = SessionDB()
+        try:
+            db.create_session(session_id="active-status", source="cli")
+            db.create_session(session_id="ended-status", source="cli")
+            db.end_session("ended-status", "completed")
+            db.create_session(session_id="stale-status", source="cli")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (time.time() - 301, "stale-status"),
+            )
+        finally:
+            db.close()
 
         assert web_server._count_status_active_sessions() == 1
-        assert captured == {
-            "read_only": True, "limit": 50, "compact_rows": True, "closed": True
-        }
 
     def test_status_active_session_count_fresh_install_returns_zero(self, monkeypatch, tmp_path):
-        """No state.db yet (fresh install): return 0 without attempting a
-        read-only open, which would raise OperationalError on every poll."""
+        """Unavailable read-only state returns zero for the status garnish."""
         import hermes_cli.web_server as web_server
-        import hermes_state
 
-        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "absent.db")
+        class _UnavailableDB:
+            @classmethod
+            def for_home(cls, home, read_only=False):
+                raise RuntimeError("state store unavailable")
 
-        def _boom(*a, **k):
-            raise AssertionError("SessionDB must not be constructed when db file is absent")
-
-        monkeypatch.setattr("hermes_state.SessionDB", _boom)
+        monkeypatch.setattr("hermes_state.SessionDB", _UnavailableDB)
         assert web_server._count_status_active_sessions() == 0
 
     def test_get_status_degrades_when_active_session_count_fails(self, monkeypatch):
@@ -1164,36 +1148,24 @@ class TestWebServerEndpoints:
         row = next(s for s in rows if s["id"] == "session-no-cwd")
         assert row["cwd"] is None
 
-    def test_get_sessions_forwards_min_messages(self, monkeypatch):
-        """The ?min_messages= filter must reach SessionDB.
+    def test_get_sessions_filters_min_messages(self):
+        """The session list hides rows below the requested message threshold."""
+        from hermes_state import SessionDB
 
-        The desktop session picker calls /api/sessions?...&min_messages=N to
-        hide empty sessions. The param was silently dropped from the handler
-        in a merge once (SessionDB still supported it); guard the wiring.
-        """
-        captured = {}
-
-        class _FakeDB:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def list_sessions_rich(self, limit, offset, min_message_count=0, **kwargs):
-                captured["list"] = min_message_count
-                return []
-
-            def session_count(self, min_message_count=0, **kwargs):
-                captured["count"] = min_message_count
-                return 0
-
-            def close(self):
-                pass
-
-        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        db = SessionDB()
+        try:
+            db.create_session(session_id="empty-session", source="cli")
+            db.create_session(session_id="three-messages", source="cli")
+            db.append_message("three-messages", role="user", content="one")
+            db.append_message("three-messages", role="assistant", content="two")
+            db.append_message("three-messages", role="user", content="three")
+        finally:
+            db.close()
 
         resp = self.client.get("/api/sessions?limit=5&offset=0&min_messages=3")
         assert resp.status_code == 200
-        assert captured["list"] == 3
-        assert captured["count"] == 3
+        assert [row["id"] for row in resp.json()["sessions"]] == ["three-messages"]
+        assert resp.json()["total"] == 1
 
     def _create_session_with_heavy_fields(self, session_id: str) -> None:
         from hermes_state import SessionDB
@@ -1477,19 +1449,20 @@ class TestWebServerEndpoints:
         """The machine dashboard's global profile switcher must retarget
         the Sessions page, not just config/skills/model pages."""
         from hermes_state import SessionDB
+        from hermes_constants import get_hermes_home
         from hermes_cli import profiles as profiles_mod
 
         worker_home = profiles_mod.get_profile_dir("worker")
         worker_home.mkdir(parents=True)
 
-        default_db = SessionDB()
+        default_db = SessionDB.for_home(get_hermes_home())
         try:
             default_db.create_session(session_id="default-only", source="cli")
             default_db.append_message("default-only", role="user", content="default")
         finally:
             default_db.close()
 
-        worker_db = SessionDB(db_path=worker_home / "state.db")
+        worker_db = SessionDB.for_home(worker_home)
         try:
             worker_db.create_session(session_id="worker-only", source="cli")
             worker_db.append_message("worker-only", role="user", content="worker")
@@ -1513,21 +1486,65 @@ class TestWebServerEndpoints:
         messages = self.client.get("/api/sessions/worker-only/messages?profile=worker").json()
         assert [m["content"] for m in messages["messages"]] == ["worker"]
 
+    def test_sessions_missing_profile_never_uses_default_state(self):
+        """An unresolved named profile is an error, never an ambient fallback."""
+        from hermes_state import SessionDB
+        from hermes_constants import get_hermes_home
+
+        db = SessionDB.for_home(get_hermes_home())
+        try:
+            db.create_session(session_id="default-must-stay-isolated", source="cli")
+        finally:
+            db.close()
+
+        response = self.client.get(
+            "/api/sessions?profile=missing-profile&limit=20&min_messages=0"
+        )
+
+        assert response.status_code == 404
+        verify_db = SessionDB.for_home(get_hermes_home())
+        try:
+            assert verify_db.get_session("default-must-stay-isolated") is not None
+        finally:
+            verify_db.close()
+
+    def test_read_only_session_search_uses_existing_sqlite_fts(self):
+        """Read-only dashboard opens still discover the existing FTS index."""
+        from hermes_state import SessionDB
+        from hermes_constants import get_hermes_home
+
+        db = SessionDB.for_home(get_hermes_home())
+        try:
+            db.create_session(session_id="readonly-search", source="cli")
+            db.append_message(
+                "readonly-search",
+                role="user",
+                content="readonlyftsneedle",
+            )
+        finally:
+            db.close()
+
+        response = self.client.get("/api/sessions/search?q=readonlyftsneedle")
+
+        assert response.status_code == 200
+        assert response.json()["results"][0]["session_id"] == "readonly-search"
+
     def test_latest_descendant_reads_requested_profile(self):
         """Chat resume must resolve compression tips in the chat profile DB."""
         from hermes_state import SessionDB
+        from hermes_constants import get_hermes_home
         from hermes_cli import profiles as profiles_mod
 
         worker_home = profiles_mod.get_profile_dir("worker")
         worker_home.mkdir(parents=True)
 
-        default_db = SessionDB()
+        default_db = SessionDB.for_home(get_hermes_home())
         try:
             default_db.create_session(session_id="shared-root", source="cli")
         finally:
             default_db.close()
 
-        worker_db = SessionDB(db_path=worker_home / "state.db")
+        worker_db = SessionDB.for_home(worker_home)
         try:
             worker_db.create_session(session_id="shared-root", source="cli")
             worker_db.create_session(
@@ -1573,19 +1590,20 @@ class TestWebServerEndpoints:
 
     def test_analytics_endpoints_read_requested_profile(self):
         from hermes_state import SessionDB
+        from hermes_constants import get_hermes_home
         from hermes_cli import profiles as profiles_mod
 
         worker_home = profiles_mod.get_profile_dir("worker")
         worker_home.mkdir(parents=True)
 
-        default_db = SessionDB()
+        default_db = SessionDB.for_home(get_hermes_home())
         try:
             default_db.create_session(session_id="default-usage", source="cli", model="default/model")
             default_db.update_token_counts("default-usage", input_tokens=10, output_tokens=5)
         finally:
             default_db.close()
 
-        worker_db = SessionDB(db_path=worker_home / "state.db")
+        worker_db = SessionDB.for_home(worker_home)
         try:
             worker_db.create_session(session_id="worker-usage", source="cli", model="worker/model")
             worker_db.update_token_counts(
@@ -4330,6 +4348,49 @@ class TestNewEndpoints:
         assert (target_dir / "config.yaml").read_text(encoding="utf-8") == "model:\n  provider: source-only\n"
         assert (target_dir / "workspace" / "artifact.txt").read_text(encoding="utf-8") == "copied"
 
+    def test_profiles_create_forwards_postgres_clone_schema(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+        monkeypatch.setattr(
+            profiles_mod,
+            "_provision_empty_postgres_schema",
+            lambda _dsn_env, _schema: False,
+        )
+        (get_hermes_home() / "config.yaml").write_text(
+            "sessions:\n"
+            "  state:\n"
+            "    backend: postgres\n"
+            "    postgres:\n"
+            "      dsn_env: HERMES_STATE_POSTGRES_DSN\n"
+            "      schema: default_state\n",
+            encoding="utf-8",
+        )
+
+        response = self.client.post(
+            "/api/profiles",
+            json={
+                "name": "postgres-copy",
+                "clone_from": "default",
+                "postgres_schema": "postgres_copy_state",
+            },
+        )
+
+        assert response.status_code == 200
+        cloned_config = yaml.safe_load(
+            (
+                get_hermes_home()
+                / "profiles"
+                / "postgres-copy"
+                / "config.yaml"
+            ).read_text(encoding="utf-8")
+        )
+        assert cloned_config["sessions"]["state"]["postgres"] == {
+            "dsn_env": "HERMES_STATE_POSTGRES_DSN",
+            "schema": "postgres_copy_state",
+        }
+
     def test_profiles_create_without_clone_seeds_bundled_skills(self, monkeypatch):
         from hermes_constants import get_hermes_home
         import hermes_cli.profiles as profiles_mod
@@ -5104,8 +5165,16 @@ class TestNewEndpoints:
         assert "totals" in data
         assert "skills" in data
         assert isinstance(data["daily"], list)
-        assert "total_sessions" in data["totals"]
-        assert "total_api_calls" in data["totals"]
+        assert data["totals"] == {
+            "total_input": None,
+            "total_output": None,
+            "total_cache_read": None,
+            "total_reasoning": None,
+            "total_estimated_cost": 0,
+            "total_actual_cost": 0,
+            "total_sessions": 0,
+            "total_api_calls": None,
+        }
         assert data["skills"] == {
             "summary": {
                 "total_skill_loads": 0,
@@ -5115,6 +5184,219 @@ class TestNewEndpoints:
             },
             "top_skills": [],
         }
+
+    def test_analytics_uses_backend_neutral_public_state_rows(self, monkeypatch):
+        """Analytics must work for a configured store with no SQLite connection."""
+        import hermes_cli.web_server as web_server
+        from hermes_state import SessionDB
+
+        class _StateStore:
+            def get_insights_sessions(self, cutoff):
+                return [
+                    {
+                        "id": "main-session",
+                        "model": "main-model",
+                        "started_at": 1_700_000_000,
+                        "input_tokens": 120,
+                        "output_tokens": 30,
+                        "cache_read_tokens": 11,
+                        "reasoning_tokens": 7,
+                        "estimated_cost_usd": 1.25,
+                        "actual_cost_usd": 1.1,
+                        "api_call_count": 3,
+                        "tool_call_count": 2,
+                        "billing_provider": "main-provider",
+                    }
+                ]
+
+            def get_insights_model_usage(self, cutoff):
+                return [
+                    {
+                        "session_id": "main-session",
+                        "model": "vision-model",
+                        "task": "vision",
+                        "billing_provider": "vision-provider",
+                        "input_tokens": 9,
+                        "output_tokens": 4,
+                        "cache_read_tokens": 2,
+                        "reasoning_tokens": 1,
+                        "estimated_cost_usd": 0.2,
+                        "api_call_count": 1,
+                        "last_seen": 1_700_000_001,
+                    }
+                ]
+
+            def close(self):
+                pass
+
+        class _InsightsEngine:
+            def __init__(self, db):
+                self.db = db
+
+            def generate(self, days):
+                return {"skills": {"summary": {}, "top_skills": []}, "tools": []}
+
+        store = _StateStore()
+        monkeypatch.setattr(
+            SessionDB,
+            "for_home",
+            classmethod(lambda cls, home, **kwargs: store),
+        )
+        monkeypatch.setattr("agent.insights.InsightsEngine", _InsightsEngine)
+        monkeypatch.setattr(
+            "agent.models_dev.get_model_capabilities", lambda **kwargs: None
+        )
+
+        usage = self.client.get("/api/analytics/usage?days=7")
+        assert usage.status_code == 200
+        usage_data = usage.json()
+        assert usage_data["totals"] == {
+            "total_input": 120,
+            "total_output": 30,
+            "total_cache_read": 11,
+            "total_reasoning": 7,
+            "total_estimated_cost": 1.25,
+            "total_actual_cost": 1.1,
+            "total_sessions": 1,
+            "total_api_calls": 3,
+        }
+        assert usage_data["by_task"] == [
+            {
+                "task": "vision",
+                "input_tokens": 9,
+                "output_tokens": 4,
+                "estimated_cost": 0.2,
+                "api_calls": 1,
+                "models": ["vision-model"],
+            }
+        ]
+
+        models = self.client.get("/api/analytics/models?days=7")
+        assert models.status_code == 200
+        assert models.json()["models"] == [
+            {
+                "model": "main-model",
+                "provider": "main-provider",
+                "input_tokens": 120,
+                "output_tokens": 30,
+                "cache_read_tokens": 11,
+                "reasoning_tokens": 7,
+                "estimated_cost": 1.25,
+                "actual_cost": 1.1,
+                "sessions": 1,
+                "api_calls": 3,
+                "tool_calls": 2,
+                "last_used_at": 1_700_000_000,
+                "avg_tokens_per_session": 150,
+                "capabilities": {},
+            },
+            {
+                "model": "vision-model",
+                "provider": "vision-provider",
+                "input_tokens": 9,
+                "output_tokens": 4,
+                "cache_read_tokens": 2,
+                "reasoning_tokens": 1,
+                "estimated_cost": 0.2,
+                "actual_cost": 0,
+                "sessions": 1,
+                "api_calls": 1,
+                "tool_calls": 0,
+                "last_used_at": 1_700_000_001,
+                "avg_tokens_per_session": 0,
+                "capabilities": {},
+            },
+        ]
+
+    def test_analytics_excludes_session_at_window_boundary(self, monkeypatch):
+        """The dashboard preserves the legacy strict start-time window."""
+        import hermes_cli.web_server as web_server
+        from hermes_state import SessionDB
+
+        now = 1_700_000_000
+        cutoff = now - 86_400
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="usage-at-cutoff",
+                source="cli",
+                model="boundary-model",
+            )
+            db.update_token_counts(
+                "usage-at-cutoff", input_tokens=100, output_tokens=10
+            )
+            db.create_session(
+                session_id="usage-inside-window",
+                source="cli",
+                model="inside-model",
+            )
+            db.update_token_counts(
+                "usage-inside-window", input_tokens=20, output_tokens=3
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (cutoff, "usage-at-cutoff"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (cutoff + 1, "usage-inside-window"),
+            )
+        finally:
+            db.close()
+
+        monkeypatch.setattr(web_server.time, "time", lambda: now)
+
+        usage = self.client.get("/api/analytics/usage?days=1")
+        assert usage.status_code == 200
+        assert usage.json()["totals"]["total_sessions"] == 1
+        assert usage.json()["totals"]["total_input"] == 20
+        assert [row["model"] for row in usage.json()["by_model"]] == [
+            "inside-model"
+        ]
+
+    def test_models_analytics_keeps_event_loop_responsive(self, monkeypatch):
+        """A cold models.dev lookup must not block concurrent dashboard work."""
+        import time
+
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "_analytics_sessions_for_profile",
+            lambda profile, days: (
+                [
+                    {
+                        "id": "slow-capabilities",
+                        "model": "slow-model",
+                        "started_at": time.time(),
+                        "input_tokens": 1,
+                        "output_tokens": 1,
+                    }
+                ],
+                [],
+                0,
+            ),
+        )
+
+        def slow_capabilities(*, provider, model):
+            time.sleep(0.1)
+            return None
+
+        monkeypatch.setattr(
+            "agent.models_dev.get_model_capabilities", slow_capabilities
+        )
+
+        async def request_without_blocking_loop():
+            task = asyncio.create_task(web_server.get_models_analytics(days=7))
+            started = time.perf_counter()
+            await asyncio.sleep(0.01)
+            elapsed = time.perf_counter() - started
+            payload = await task
+            return elapsed, payload
+
+        elapsed, payload = asyncio.run(request_without_blocking_loop())
+        assert elapsed < 0.08
+        assert payload["models"][0]["model"] == "slow-model"
 
     def test_models_analytics_merges_session_only_duplicate_into_accounted_provider(self):
         """Session-only model rows should not render as duplicate zero-token cards.

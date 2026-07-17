@@ -48,6 +48,14 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         help="Source profile to clone from; implies --clone unless --clone-all is set",
     )
     profile_create.add_argument(
+        "--postgres-schema",
+        metavar="SCHEMA",
+        help=(
+            "New explicit PostgreSQL schema for a PostgreSQL-backed clone; "
+            "required to prevent sharing the source profile's state"
+        ),
+    )
+    profile_create.add_argument(
         "--no-alias", action="store_true", help="Skip wrapper script creation"
     )
     profile_create.add_argument(

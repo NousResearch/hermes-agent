@@ -27,7 +27,11 @@ from rich import box as rich_box
 from rich.markup import escape as _escape
 from rich.panel import Panel
 
-from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
+from hermes_constants import (
+    display_hermes_home,
+    get_hermes_home,
+    is_termux as _is_termux_environment,
+)
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL,
     discover_local_cdp_url,
@@ -583,18 +587,18 @@ class CLICommandsMixin:
             _cprint("  Agent is busy. Wait for the current turn to finish, then retry /handoff.")
             return True
 
-        # Make sure we have a SessionDB handle.
+        # Make sure we have a configured state-store handle.
         if not self._session_db:
             try:
                 from hermes_state import SessionDB
-                self._session_db = SessionDB()
+                self._session_db = SessionDB.for_home(get_hermes_home())
             except Exception:
                 pass
         if not self._session_db:
             _cprint(f"  {format_session_db_unavailable()}")
             return True
 
-        # Make sure the session row exists in state.db. Most CLI sessions
+        # Make sure the session row exists in the configured store. Most CLI sessions
         # are written via _flush_messages_to_session_db on the first turn
         # already, but if the user tries to hand off an empty session we
         # still want a row to mark.

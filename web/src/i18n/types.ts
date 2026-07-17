@@ -407,6 +407,8 @@ export interface Translations {
     advancedOptions?: string;
     cloneAll?: string;
     noSkillsOption?: string;
+    postgresSchema?: string;
+    postgresSchemaHint?: string;
     descriptionOptional?: string;
     modelOptional?: string;
     modelInherit?: string;

@@ -727,7 +727,7 @@ def _maybe_mirror_cron_delivery(
         # alternation (issue #2221, the exact failure #2313 removed). A
         # user-role turn collapses safely via repair_message_sequence's
         # consecutive-user merge on every provider, and the prefix preserves the
-        # "this came from cron" context that the dropped SQLite mirror metadata
+        # "this came from cron" context that the dropped mirror metadata
         # would otherwise lose on replay.
         ok = mirror_to_session(
             platform_name,
@@ -2789,16 +2789,15 @@ def run_job(
     # ---------------------------------------------------------------
     from run_agent import AIAgent
 
-    # Initialize SQLite session store so cron job messages are persisted
+    # Initialize the configured session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
     #
     # Bounded with its own timeout (separate from HERMES_CRON_TIMEOUT, which
-    # only watches the agent's run_conversation below): SessionDB.__init__
-    # opens/migrates state.db synchronously and has no timeout of its own
-    # against a wedged sqlite3.connect (e.g. a stale flock left by a crashed
-    # sibling process). An unbounded hang here is invisible to every other
-    # cron safeguard, because it happens BEFORE _submit_with_guard's future
-    # exists — the finally block that releases the job from
+    # only watches the agent's run_conversation below): opening/migrating the
+    # configured store is synchronous and has no timeout of its own. An
+    # unbounded connection hang here is invisible to every other cron
+    # safeguard, because it happens BEFORE _submit_with_guard's future exists
+    # — the finally block that releases the job from
     # _running_job_ids never runs, so the job stays wedged "running" until
     # the whole gateway process is restarted, silently skipping every
     # scheduled fire in between with "already running — skipping".
@@ -2837,7 +2836,9 @@ def run_job(
         if _session_db_timeout > 0:
             _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
             try:
-                _session_db = _session_db_pool.submit(SessionDB).result(timeout=_session_db_timeout)
+                _session_db = _session_db_pool.submit(
+                    SessionDB.for_home, _get_hermes_home()
+                ).result(timeout=_session_db_timeout)
             finally:
                 # Don't wait for a wedged connect() to unwind — abandon the
                 # worker thread (same pattern as the agent inactivity timeout
@@ -2845,7 +2846,7 @@ def run_job(
                 _session_db_pool.shutdown(wait=False)
         else:
             # 0 = unlimited (legacy behavior, opt-in for debugging)
-            _session_db = SessionDB()
+            _session_db = SessionDB.for_home(_get_hermes_home())
     except concurrent.futures.TimeoutError:
         logger.error(
             "Job '%s': SessionDB init did not return within %.0fs — proceeding "
@@ -2854,7 +2855,7 @@ def run_job(
             job.get("id", "?"), _session_db_timeout,
         )
     except Exception as e:
-        logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
+        logger.debug("Job '%s': session store not available: %s", job.get("id", "?"), e)
 
     # Wake-gate: if this job has a pre-check script, run it BEFORE building
     # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
@@ -3662,7 +3663,7 @@ def run_job(
             try:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:
-                logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
+                logger.debug("Job '%s': failed to close session store: %s", job_id, e)
         # Release subprocesses, terminal sandboxes, browser daemons, and the
         # main OpenAI/httpx client held by this ephemeral cron agent. Without
         # this, a gateway that ticks cron every N minutes leaks fds per job

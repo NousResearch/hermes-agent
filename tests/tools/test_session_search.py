@@ -9,6 +9,7 @@ All run zero LLM calls.
 """
 import json
 import time
+from unittest.mock import Mock
 
 import pytest
 
@@ -58,6 +59,97 @@ def _seed_modpack_sessions(db):
     db.append_message("s_newest", role="assistant", content="Investigating elite mob gating in the modpack KubeJS.")
     db.append_message("s_newest", role="assistant", content="Shipped commit b850442. Modpack alternator nerfed too.")
     db._conn.commit()
+
+
+# =========================================================================
+# Configured state-store selection and ownership
+# =========================================================================
+
+class TestConfiguredStateStore:
+    def test_default_uses_current_profile_postgres_store_and_closes_it(self, monkeypatch, tmp_path):
+        """The default path must go through the backend resolver, not SQLite."""
+        current_home = tmp_path / "postgres-profile"
+        postgres_db = Mock()
+        postgres_db.list_sessions_rich.return_value = [{
+            "id": "pg-session",
+            "title": "Stored in PostgreSQL",
+            "source": "cli",
+            "started_at": 1,
+            "last_active": 1,
+            "message_count": 1,
+            "preview": "hello",
+        }]
+        opened = []
+
+        def open_for_home(home, *, read_only=False):
+            opened.append((home, read_only))
+            return postgres_db
+
+        def unexpected_sqlite_constructor(*_args, **_kwargs):
+            raise AssertionError("session_search must use SessionDB.for_home")
+
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: current_home)
+        monkeypatch.setattr(SessionDB, "for_home", open_for_home)
+        monkeypatch.setattr(SessionDB, "__init__", unexpected_sqlite_constructor)
+
+        result = json.loads(session_search())
+
+        assert result["success"] is True
+        assert result["results"][0]["session_id"] == "pg-session"
+        assert opened == [(current_home, True)]
+        postgres_db.close.assert_called_once_with()
+
+    def test_injected_db_is_not_replaced_or_closed(self, monkeypatch):
+        injected_db = Mock()
+        injected_db.list_sessions_rich.return_value = []
+
+        def unexpected_open(*_args, **_kwargs):
+            raise AssertionError("injected db must bypass SessionDB.for_home")
+
+        monkeypatch.setattr(SessionDB, "for_home", unexpected_open)
+
+        result = json.loads(session_search(db=injected_db))
+
+        assert result["success"] is True
+        injected_db.close.assert_not_called()
+
+    def test_explicit_profile_replaces_injected_db_and_closes_profile_handle(self, monkeypatch):
+        injected_db = Mock()
+        profile_db = Mock()
+        profile_db.list_sessions_rich.return_value = [{
+            "id": "other-session",
+            "title": "Other profile",
+            "source": "cli",
+            "started_at": 1,
+            "last_active": 1,
+            "message_count": 1,
+            "preview": "hello",
+        }]
+
+        monkeypatch.setattr(
+            "tools.session_search_tool._resolve_profile_db",
+            lambda profile: profile_db,
+        )
+
+        result = json.loads(session_search(profile="other", db=injected_db))
+
+        assert result["success"] is True
+        assert result["results"][0]["session_id"] == "other-session"
+        injected_db.close.assert_not_called()
+        profile_db.close.assert_called_once_with()
+
+    def test_default_backend_open_failure_hides_dsn(self, monkeypatch):
+        secret_dsn = "postgresql://hermes:super-secret@db.example/state"
+
+        def fail_to_open(*_args, **_kwargs):
+            raise RuntimeError(f"connection failed for {secret_dsn}")
+
+        monkeypatch.setattr(SessionDB, "for_home", fail_to_open)
+
+        result = json.loads(session_search())
+
+        assert result["success"] is False
+        assert secret_dsn not in json.dumps(result)
 
 
 # =========================================================================

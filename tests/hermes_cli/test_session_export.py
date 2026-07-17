@@ -179,7 +179,9 @@ def test_sessions_export_cli_prompt_only_stdout(monkeypatch, capsys):
         def close(self):
             captured["closed"] = True
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(
+        hermes_state.SessionDB, "for_home", staticmethod(lambda _home: FakeDB())
+    )
     monkeypatch.setattr(
         sys,
         "argv",
@@ -216,7 +218,9 @@ def test_sessions_export_cli_prompt_only_markdown_file(monkeypatch, capsys, tmp_
             pass
 
     output_path = tmp_path / "prompts.md"
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(
+        hermes_state.SessionDB, "for_home", staticmethod(lambda _home: FakeDB())
+    )
     monkeypatch.setattr(
         sys,
         "argv",
@@ -254,7 +258,9 @@ def test_sessions_export_only_rejects_unsupported_format(monkeypatch, capsys):
         def close(self):
             pass
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(
+        hermes_state.SessionDB, "for_home", staticmethod(lambda _home: FakeDB())
+    )
     monkeypatch.setattr(
         sys,
         "argv",

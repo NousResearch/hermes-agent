@@ -211,6 +211,45 @@ def test_operations_keep_cursors_bounded_and_private() -> None:
     assert "self._run(" in source
 
 
+def test_insights_rows_preserve_dashboard_fields_without_postgres_truncation() -> None:
+    session_rows = [{"id": str(index)} for index in range(10_001)]
+    session_cursor = FakeCursor(rows=session_rows)
+    usage_cursor = FakeCursor(
+        rows=[
+            {
+                "session_id": "s1",
+                "model": "vision-model",
+                "task": "vision",
+                "last_seen": 123.5,
+                "reasoning_tokens": 4,
+            }
+        ]
+    )
+    db, store = _db(session_cursor, usage_cursor)
+
+    sessions = db.get_insights_sessions(1.0)
+    usage = db.get_insights_model_usage(1.0)
+
+    assert len(sessions) == 10_001
+    assert sessions[-1] == {"id": "10000"}
+    assert usage == [
+        {
+            "session_id": "s1",
+            "model": "vision-model",
+            "task": "vision",
+            "last_seen": 123.5,
+            "reasoning_tokens": 4,
+        }
+    ]
+    assert max(session_cursor.fetchmany_sizes) <= db._READ_BATCH_SIZE
+    assert max(usage_cursor.fetchmany_sizes) <= db._READ_BATCH_SIZE
+    assert all("LIMIT" not in query for query, _ in store.connection.executed)
+    assert "reasoning_tokens" in store.connection.executed[0][0]
+    assert "u.task" in store.connection.executed[1][0]
+    assert "u.last_seen" in store.connection.executed[1][0]
+    assert store.transaction_modes == [True, True]
+
+
 def test_api_create_uses_one_locked_transaction_and_returns_existing_outcome() -> None:
     db, store = _db(FakeCursor(row={"id": "already-there"}))
 

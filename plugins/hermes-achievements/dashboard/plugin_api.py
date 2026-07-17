@@ -567,8 +567,8 @@ def scan_sessions(
     ``limit=None`` (the default) scans the ENTIRE session history. Prior
     versions capped this at 200, which silently reduced achievement totals
     to ~2% of history on long-running installs and made lifetime badges
-    unreachable. SQLite's ``LIMIT -1`` means "unlimited"; we map ``None``
-    and non-positive values to ``-1`` so callers get the full catalog.
+    unreachable. Unbounded scans page through the backend-neutral session
+    listing API so callers get the full catalog.
 
     Warm scans stay cheap: the checkpoint cache stores per-session stats
     keyed by ``(started_at, last_active)`` and only re-analyzes sessions
@@ -594,14 +594,29 @@ def scan_sessions(
     reused = 0
     rescanned = 0
 
-    # SQLite treats LIMIT -1 as "no limit". Map None / <=0 to -1 so the
-    # full session history flows through unless the caller explicitly
-    # requests a small sample (e.g. a smoke test).
-    db_limit = -1 if (limit is None or limit <= 0) else int(limit)
-
-    db = SessionDB()
+    db = SessionDB.for_home(get_hermes_home())
     try:
-        sessions_meta = db.list_sessions_rich(limit=db_limit, include_children=True, project_compression_tips=False)
+        if limit is not None and limit > 0:
+            sessions_meta = db.list_sessions_rich(
+                limit=int(limit),
+                include_children=True,
+                project_compression_tips=False,
+            )
+        else:
+            sessions_meta = []
+            page_size = 1000
+            offset = 0
+            while True:
+                page = db.list_sessions_rich(
+                    limit=page_size,
+                    offset=offset,
+                    include_children=True,
+                    project_compression_tips=False,
+                )
+                sessions_meta.extend(page)
+                if len(page) < page_size:
+                    break
+                offset += len(page)
         total_sessions = len(sessions_meta)
         sessions: List[Dict[str, Any]] = []
         checkpoint_sessions: Dict[str, Any] = {}

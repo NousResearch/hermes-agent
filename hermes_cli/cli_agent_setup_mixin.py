@@ -226,7 +226,7 @@ class CLIAgentSetupMixin:
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
         """
         Initialize the agent on first use.
-        When resuming a session, restores conversation history from SQLite.
+        When resuming a session, restores conversation history from the configured state store.
         
         Returns:
             bool: True if successful, False otherwise
@@ -246,13 +246,14 @@ class CLIAgentSetupMixin:
 
         wait_for_mcp_discovery()
 
-        # Initialize SQLite session store for CLI sessions (if not already done in __init__)
+        # Initialize the configured session store for CLI sessions (if not already done in __init__).
         if self._session_db is None:
             try:
+                from hermes_constants import get_hermes_home
                 from hermes_state import SessionDB
-                self._session_db = SessionDB()
+                self._session_db = SessionDB.for_home(get_hermes_home())
             except Exception as e:
-                logger.warning("SQLite session store not available — session will NOT be indexed: %s", e)
+                logger.warning("Session store not available — session will NOT be indexed: %s", e)
         
         # If resuming, validate the session exists and load its history.
         # _preload_resumed_session() may have already loaded it (called from

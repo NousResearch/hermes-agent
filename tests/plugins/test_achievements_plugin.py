@@ -65,7 +65,8 @@ class _FakeSessionDB:
     def __init__(self, session_count: int, scan_delay: float = 0):
         self.session_count = session_count
         self.scan_delay = scan_delay
-        self.last_limit: Optional[int] = None
+        self.last_limits: List[int] = []
+        self.last_offsets: List[int] = []
         self.last_include_children: Optional[bool] = None
         self.list_calls = 0
         self.messages_calls = 0
@@ -81,11 +82,11 @@ class _FakeSessionDB:
     ) -> List[Dict[str, Any]]:
         if self.scan_delay:
             time.sleep(self.scan_delay)
-        self.last_limit = limit
+        self.last_limits.append(limit)
+        self.last_offsets.append(offset)
         self.last_include_children = include_children
         self.list_calls += 1
-        # SQLite semantics: LIMIT -1 = unlimited. Honor that here.
-        effective = self.session_count if limit == -1 else min(self.session_count, limit)
+        effective = min(self.session_count, offset + limit)
         now = int(time.time())
         return [
             {
@@ -97,7 +98,7 @@ class _FakeSessionDB:
                 "source": "cli",
                 "model": "test-model",
             }
-            for i in range(effective)
+            for i in range(offset, effective)
         ]
 
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
@@ -122,8 +123,17 @@ def _install_fake_session_db(plugin_api, fake_db):
     ``sys.modules['hermes_state']`` swap is auto-restored at test teardown
     and cannot leak into unrelated tests in the same xdist worker.
     """
+    class _FactoryOnlySessionDB:
+        def __init__(self):
+            raise AssertionError("plugin scan must not fall back to SessionDB()")
+
+        @staticmethod
+        def for_home(home):
+            fake_db.opened_home = home
+            return fake_db
+
     fake_module = type(sys)("hermes_state")
-    fake_module.SessionDB = lambda: fake_db
+    fake_module.SessionDB = _FactoryOnlySessionDB
     plugin_api._test_monkeypatch.setitem(sys.modules, "hermes_state", fake_module)
 
 
@@ -132,17 +142,19 @@ def test_scan_sessions_default_scans_all_history_not_first_200(plugin_api):
 
     A user with 8000+ sessions would only see ~2% of their history in
     achievement totals, making lifetime badges unreachable. The default
-    now passes ``LIMIT -1`` (SQLite "unlimited") to ``list_sessions_rich``.
+    now pages through the backend-neutral session listing API.
     """
     fake_db = _FakeSessionDB(session_count=500)  # > old 200 cap
     _install_fake_session_db(plugin_api, fake_db)
 
     result = plugin_api.scan_sessions()
 
-    assert fake_db.last_limit == -1, (
-        "scan_sessions() must pass LIMIT=-1 (unlimited) to list_sessions_rich "
-        f"by default, got {fake_db.last_limit}"
+    assert fake_db.last_limits == [1000], (
+        "scan_sessions() must page unbounded scans through list_sessions_rich "
+        f"with a backend-neutral limit, got {fake_db.last_limits}"
     )
+    assert fake_db.last_offsets == [0]
+    assert fake_db.opened_home == plugin_api.get_hermes_home()
     assert fake_db.last_include_children is True, (
         "scan_sessions() must include subagent/compression child sessions so "
         "tool calls made in delegated agents still count toward achievements"
@@ -158,20 +170,31 @@ def test_scan_sessions_explicit_positive_limit_is_honored(plugin_api):
 
     result = plugin_api.scan_sessions(limit=10)
 
-    assert fake_db.last_limit == 10
+    assert fake_db.last_limits == [10]
     assert len(result["sessions"]) == 10
 
 
 def test_scan_sessions_zero_or_negative_limit_means_unlimited(plugin_api):
-    """``limit=0`` and ``limit=-1`` both map to the unlimited path."""
+    """``limit=0`` and ``limit=-1`` both map to the unbounded scan path."""
     fake_db = _FakeSessionDB(session_count=300)
     _install_fake_session_db(plugin_api, fake_db)
 
     plugin_api.scan_sessions(limit=0)
-    assert fake_db.last_limit == -1
+    assert fake_db.last_limits == [1000]
 
     plugin_api.scan_sessions(limit=-1)
-    assert fake_db.last_limit == -1
+    assert fake_db.last_limits == [1000, 1000]
+
+
+def test_scan_sessions_pages_full_history_for_backend_neutral_unbounded_scans(plugin_api):
+    fake_db = _FakeSessionDB(session_count=1201)
+    _install_fake_session_db(plugin_api, fake_db)
+
+    result = plugin_api.scan_sessions()
+
+    assert len(result["sessions"]) == 1201
+    assert fake_db.last_limits == [1000, 1000]
+    assert fake_db.last_offsets == [0, 1000]
 
 
 def test_evaluate_all_first_run_returns_pending_and_starts_background_scan(plugin_api):

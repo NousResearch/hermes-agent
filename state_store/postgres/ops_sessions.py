@@ -12,7 +12,11 @@ import time
 from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Sequence
 
-from state_store.session_api import APISessionMutationAbort, APISessionMutationResult
+from state_store.session_api import (
+    APISessionMutationAbort,
+    APISessionMutationResult,
+    normalize_row,
+)
 
 
 class PostgresSessionOperations:
@@ -25,9 +29,30 @@ class PostgresSessionOperations:
         return self._normalize_cursor_row(cursor)
 
     def _normalize_cursor_row(self, cursor: Any) -> Optional[Dict[str, Any]]:
-        from state_store.session_api import normalize_row
-
         return normalize_row(cursor.fetchone(), columns=self._cursor_columns(cursor))
+
+    def _read_all_insight_rows(
+        self, query: str, params: Sequence[Any] = ()
+    ) -> List[Dict[str, Any]]:
+        """Read complete analytics rows in bounded cursor batches.
+
+        SQLite's insight contract returns every matching row. Keep PostgreSQL
+        behavior aligned without exposing a cursor or using ``fetchall()``.
+        """
+        def operation(connection: Any) -> List[Dict[str, Any]]:
+            cursor = connection.execute(query, params)
+            columns = self._cursor_columns(cursor)
+            rows: List[Dict[str, Any]] = []
+            while True:
+                batch = cursor.fetchmany(self._READ_BATCH_SIZE)
+                if not batch:
+                    return rows
+                for raw_row in batch:
+                    row = normalize_row(raw_row, columns=columns)
+                    if row is not None:
+                        rows.append(row)
+
+        return self._run(operation, read_only=True)
 
     @staticmethod
     def sanitize_title(title: Optional[str]) -> Optional[str]:
@@ -1128,14 +1153,15 @@ class PostgresSessionOperations:
         query = (
             "SELECT id, source, model, started_at, ended_at, message_count, tool_call_count, "
             "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, "
+            "reasoning_tokens, "
             "billing_provider, billing_base_url, billing_mode, estimated_cost_usd, "
             "actual_cost_usd, cost_status, cost_source, api_call_count FROM sessions "
             "WHERE started_at >= %s"
             + (" AND source = %s" if source else "")
-            + " ORDER BY started_at DESC LIMIT %s"
+            + " ORDER BY started_at DESC"
         )
-        params: Sequence[Any] = (cutoff, source, self._MAX_READ_ROWS) if source else (cutoff, self._MAX_READ_ROWS)
-        return self._read_many(query, params, limit=self._MAX_READ_ROWS)
+        params: Sequence[Any] = (cutoff, source) if source else (cutoff,)
+        return self._read_all_insight_rows(query, params)
 
     def get_insights_tool_name_counts(self, cutoff: float, source: Optional[str] = None) -> List[Dict[str, Any]]:
         query = (
@@ -1181,13 +1207,12 @@ class PostgresSessionOperations:
             "SELECT u.session_id, u.model, u.billing_provider, u.billing_base_url, u.api_call_count, "
             "u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens, "
             "u.reasoning_tokens, u.estimated_cost_usd, u.actual_cost_usd, u.cost_status, "
-            "u.cost_source, u.billing_mode FROM session_model_usage u JOIN sessions s "
+            "u.cost_source, u.billing_mode, u.task, u.last_seen FROM session_model_usage u JOIN sessions s "
             "ON s.id = u.session_id WHERE s.started_at >= %s"
             + (" AND s.source = %s" if source else "")
-            + " LIMIT %s"
         )
-        params: Sequence[Any] = (cutoff, source, self._MAX_READ_ROWS) if source else (cutoff, self._MAX_READ_ROWS)
-        return self._read_many(query, params, limit=self._MAX_READ_ROWS)
+        params: Sequence[Any] = (cutoff, source) if source else (cutoff,)
+        return self._read_all_insight_rows(query, params)
 
     # ── Async delegation durability ──────────────────────────────────────
 

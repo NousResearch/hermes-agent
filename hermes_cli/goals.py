@@ -496,8 +496,8 @@ _DB_CACHE: Dict[str, Any] = {}
 def _get_session_db() -> Optional[Any]:
     """Return a SessionDB instance for the current HERMES_HOME.
 
-    SessionDB has no built-in singleton, but opening a new connection per
-    /goal call would thrash the file. We cache one instance per
+    SessionDB has no built-in singleton, but opening a new store per
+    /goal call would thrash the backend. We cache one instance per
     ``hermes_home`` path so profile switches still pick up the right DB.
     Defensive against import/instantiation failures so tests and
     non-standard launchers can still use the GoalManager.
@@ -506,7 +506,8 @@ def _get_session_db() -> Optional[Any]:
         from hermes_constants import get_hermes_home
         from hermes_state import SessionDB
 
-        home = str(get_hermes_home())
+        home_path = get_hermes_home()
+        home = str(home_path)
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: SessionDB bootstrap failed (%s)", exc)
         return None
@@ -515,9 +516,9 @@ def _get_session_db() -> Optional[Any]:
     if cached is not None:
         return cached
     try:
-        db = SessionDB()
+        db = SessionDB.for_home(home_path)
     except Exception as exc:  # pragma: no cover
-        logger.debug("GoalManager: SessionDB() raised (%s)", exc)
+        logger.debug("GoalManager: configured state store bootstrap failed (%s)", exc)
         return None
     _DB_CACHE[home] = db
     return db

@@ -322,7 +322,7 @@ class TestAnalyticsAuxRows:
             billing_provider="nous", input_tokens=200, output_tokens=20,
         )
 
-        aux = _aux_usage_rows(db, cutoff=0)
+        aux = _aux_usage_rows(db.get_insights_model_usage(0))
         assert {r["task"] for r in aux} == {"vision", "compression"}
 
         by_model = [{
@@ -340,6 +340,33 @@ class TestAnalyticsAuxRows:
 
         tasks = _aux_task_summary(aux)
         assert {t["task"] for t in tasks} == {"vision", "compression"}
+
+    def test_insight_rows_preserve_reasoning_and_auxiliary_metadata(self, db):
+        db.create_session("s1", source="cli", model="main-model")
+        db.update_token_counts(
+            "s1",
+            input_tokens=100,
+            reasoning_tokens=17,
+            model="main-model",
+            billing_provider="nous",
+        )
+        db.record_auxiliary_usage(
+            "s1",
+            "vision",
+            model="vision-model",
+            billing_provider="gemini",
+            input_tokens=25,
+            reasoning_tokens=4,
+        )
+
+        session = db.get_insights_sessions(0)[0]
+        usage = {
+            row["task"]: row for row in db.get_insights_model_usage(0)
+        }
+
+        assert session["reasoning_tokens"] == 17
+        assert usage["vision"]["reasoning_tokens"] == 4
+        assert usage["vision"]["last_seen"] is not None
 
 
 class TestInsightsAuxTotals:

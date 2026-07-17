@@ -43,6 +43,7 @@ export function CreateProfileDialog({
   const p = t.profiles
   const [name, setName] = useState('')
   const [cloneFrom, setCloneFrom] = useState<null | string>('default')
+  const [postgresSchema, setPostgresSchema] = useState('')
   const [soul, setSoul] = useState('')
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
@@ -54,6 +55,7 @@ export function CreateProfileDialog({
 
     setName('')
     setCloneFrom('default')
+    setPostgresSchema('')
     setSoul('')
     setError(null)
     setStatus('idle')
@@ -76,7 +78,11 @@ export function CreateProfileDialog({
     setError(null)
 
     try {
-      await createProfile({ name: trimmed, clone_from: cloneFrom })
+      await createProfile({
+        name: trimmed,
+        clone_from: cloneFrom,
+        ...(cloneFrom && postgresSchema.trim() ? { postgres_schema: postgresSchema.trim() } : {})
+      })
 
       if (soul.trim()) {
         await updateProfileSoul(trimmed, soul)
@@ -122,7 +128,14 @@ export function CreateProfileDialog({
               {p.cloneFrom}
             </label>
             <Select
-              onValueChange={value => setCloneFrom(value === '__none__' ? null : value)}
+              onValueChange={value => {
+                const next = value === '__none__' ? null : value
+
+                setCloneFrom(next)
+                if (next === null) {
+                  setPostgresSchema('')
+                }
+              }}
               value={cloneFrom ?? '__none__'}
             >
               <SelectTrigger className="h-9 rounded-md" id="new-profile-clone-from">
@@ -139,6 +152,22 @@ export function CreateProfileDialog({
             </Select>
             <p className="text-xs text-muted-foreground">{p.cloneFromDesc}</p>
           </div>
+
+          {cloneFrom && (
+            <div className="grid gap-1.5">
+              <label className="text-xs font-medium" htmlFor="new-profile-postgres-schema">
+                {p.postgresSchema ?? 'PostgreSQL schema (optional)'}
+              </label>
+              <Input
+                id="new-profile-postgres-schema"
+                onChange={event => setPostgresSchema(event.target.value)}
+                value={postgresSchema}
+              />
+              <p className="text-xs text-muted-foreground">
+                {p.postgresSchemaHint ?? 'Required only when cloning a PostgreSQL-backed source profile.'}
+              </p>
+            </div>
+          )}
 
           <div className="grid gap-1.5">
             <label className="text-xs font-medium" htmlFor="new-profile-soul">

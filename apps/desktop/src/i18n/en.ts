@@ -1373,6 +1373,8 @@ export const en: Translations = {
     cloneFrom: 'Clone from',
     cloneFromNone: 'None (blank)',
     cloneFromDesc: 'Copies config, skills, and SOUL.md from the selected source profile.',
+    postgresSchema: 'PostgreSQL schema (optional)',
+    postgresSchemaHint: 'Required only when cloning a PostgreSQL-backed source profile.',
     cloneFromDefault: 'Clone from default',
     cloneFromDefaultDesc: 'Copy config, skills, and SOUL.md from your default profile.',
     invalidName: hint => `Invalid name. ${hint}`,

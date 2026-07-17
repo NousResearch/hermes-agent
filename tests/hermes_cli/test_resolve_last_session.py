@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from hermes_cli.main import _resolve_last_session
 
 
@@ -22,6 +24,18 @@ class _FakeDB:
         self.closed = True
 
 
+def _patch_state_store(monkeypatch, db):
+    import hermes_state
+
+    homes = []
+    monkeypatch.setattr(
+        hermes_state.SessionDB,
+        "for_home",
+        staticmethod(lambda home: homes.append(home) or db),
+    )
+    return homes
+
+
 def test_resolve_last_session_prefers_last_active_over_started_at(monkeypatch):
     # `search_sessions` should return in MRU order, so -c can trust row 0.
     rows = [
@@ -40,10 +54,13 @@ def test_resolve_last_session_prefers_last_active_over_started_at(monkeypatch):
     ]
 
     fake_db = _FakeDB(rows)
-    monkeypatch.setattr("hermes_state.SessionDB", lambda: fake_db)
+    home = Path("/configured/profile")
+    monkeypatch.setattr("hermes_cli.main.get_hermes_home", lambda: home)
+    homes = _patch_state_store(monkeypatch, fake_db)
 
     assert _resolve_last_session("cli") == "old_started_recently_active"
     assert fake_db.closed
+    assert homes == [home]
 
 
 def test_search_sessions_exposes_last_active_column(tmp_path, monkeypatch):
@@ -85,7 +102,7 @@ def test_search_sessions_exposes_last_active_column(tmp_path, monkeypatch):
 
 
 def test_resolve_last_session_returns_none_when_empty(monkeypatch):
-    monkeypatch.setattr("hermes_state.SessionDB", lambda: _FakeDB([]))
+    _patch_state_store(monkeypatch, _FakeDB([]))
     assert _resolve_last_session("cli") is None
 
 
@@ -101,7 +118,7 @@ def test_resolve_last_session_closes_db_on_search_error(monkeypatch):
             self.closed = True
 
     db = _FailingDB()
-    monkeypatch.setattr("hermes_state.SessionDB", lambda: db)
+    _patch_state_store(monkeypatch, db)
 
     assert _resolve_last_session("cli") is None
     assert db.closed is True
@@ -114,7 +131,7 @@ def test_resolve_last_session_falls_back_to_started_at(monkeypatch):
         {"id": "older", "source": "cli", "started_at": 10.0},
         {"id": "newer", "source": "cli", "started_at": 20.0},
     ]
-    monkeypatch.setattr("hermes_state.SessionDB", lambda: _FakeDB(rows))
+    _patch_state_store(monkeypatch, _FakeDB(rows))
     assert _resolve_last_session("cli") == "newer"
 
 
@@ -153,5 +170,4 @@ def test_resolve_last_session_not_limited_to_newest_started_20(tmp_path, monkeyp
     finally:
         db.close()
 
-    monkeypatch.setattr("hermes_state.SessionDB", lambda: real_session_db(db_path=state_db))
     assert _resolve_last_session("cli") == target

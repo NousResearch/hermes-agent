@@ -1095,6 +1095,18 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                schema_objects = {
+                    row[0]
+                    for row in self._conn.execute(
+                        """
+                        SELECT name
+                        FROM sqlite_master
+                        WHERE name IN ('messages_fts', 'messages_fts_trigram')
+                        """
+                    ).fetchall()
+                }
+                self._fts_enabled = "messages_fts" in schema_objects
+                self._trigram_available = "messages_fts_trigram" in schema_objects
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2998,6 +3010,7 @@ class SessionDB:
         columns = (
             "id, source, model, started_at, ended_at, message_count, tool_call_count, "
             "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, "
+            "reasoning_tokens, "
             "billing_provider, billing_base_url, billing_mode, estimated_cost_usd, "
             "actual_cost_usd, cost_status, cost_source, api_call_count"
         )
@@ -3099,7 +3112,7 @@ class SessionDB:
                       u.api_call_count, u.input_tokens, u.output_tokens,
                       u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,
                       u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,
-                      u.cost_source, u.billing_mode
+                      u.cost_source, u.billing_mode, u.task, u.last_seen
                FROM session_model_usage u JOIN sessions s ON s.id = u.session_id
                WHERE s.started_at >= ?"""
             + (" AND s.source = ?" if source else "")

@@ -621,6 +621,7 @@ export const api = {
     clone_from_default?: boolean;
     clone_all?: boolean;
     no_skills?: boolean;
+    postgres_schema?: string;
     description?: string;
     provider?: string;
     model?: string;

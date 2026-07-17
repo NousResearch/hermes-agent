@@ -12,6 +12,7 @@ import shutil
 import sys
 import tarfile
 import types
+import argparse
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -222,6 +223,230 @@ class TestCreateProfile:
         assert cloned_config["model"] == "test"
         assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
+
+    def test_postgres_clone_requires_and_rewrites_unique_schema(
+        self, profile_env, monkeypatch
+    ):
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "sessions:\n"
+            "  state:\n"
+            "    backend: postgres\n"
+            "    postgres:\n"
+            "      dsn_env: HERMES_STATE_POSTGRES_DSN\n"
+            "      schema: source_state\n",
+            encoding="utf-8",
+        )
+        provisioned = []
+        monkeypatch.setattr(
+            profiles,
+            "_provision_empty_postgres_schema",
+            lambda dsn_env, schema: provisioned.append((dsn_env, schema)),
+        )
+
+        with pytest.raises(ValueError, match="requires an explicit"):
+            create_profile("missing", clone_config=True, no_alias=True)
+        assert not get_profile_dir("missing").exists()
+
+        profile_dir = create_profile(
+            "coder",
+            clone_config=True,
+            no_alias=True,
+            target_postgres_schema="coder_state",
+        )
+        config = yaml.safe_load((profile_dir / "config.yaml").read_text())
+
+        assert config["sessions"]["state"] == {
+            "backend": "postgres",
+            "postgres": {
+                "dsn_env": "HERMES_STATE_POSTGRES_DSN",
+                "schema": "coder_state",
+            },
+        }
+        assert provisioned == [
+            ("HERMES_STATE_POSTGRES_DSN", "coder_state")
+        ]
+
+    def test_postgres_clone_all_rewrites_schema(self, profile_env, monkeypatch):
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "sessions:\n"
+            "  state:\n"
+            "    backend: postgres\n"
+            "    postgres:\n"
+            "      schema: source_state\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            profiles,
+            "_provision_empty_postgres_schema",
+            lambda _dsn_env, _schema: None,
+        )
+
+        profile_dir = create_profile(
+            "coder",
+            clone_all=True,
+            no_alias=True,
+            target_postgres_schema="coder_state",
+        )
+        config = yaml.safe_load((profile_dir / "config.yaml").read_text())
+
+        assert config["sessions"]["state"]["postgres"]["schema"] == "coder_state"
+
+    @pytest.mark.parametrize(
+        "schema, message",
+        [
+            ("source_state", "must differ"),
+            ("Unsafe-Schema", "requires an explicit"),
+        ],
+    )
+    def test_postgres_clone_rejects_unsafe_or_source_schema(
+        self, profile_env, monkeypatch, schema, message
+    ):
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "sessions:\n"
+            "  state:\n"
+            "    backend: postgres\n"
+            "    postgres:\n"
+            "      schema: source_state\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            profiles,
+            "_provision_empty_postgres_schema",
+            lambda *_args: pytest.fail("invalid schemas must fail before provisioning"),
+        )
+
+        with pytest.raises(ValueError, match=message):
+            create_profile(
+                "coder",
+                clone_config=True,
+                no_alias=True,
+                target_postgres_schema=schema,
+            )
+        assert not get_profile_dir("coder").exists()
+
+    def test_postgres_clone_rejects_schema_claimed_by_local_profile(
+        self, profile_env, monkeypatch
+    ):
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "sessions:\n"
+            "  state:\n"
+            "    backend: postgres\n"
+            "    postgres:\n"
+            "      schema: source_state\n",
+            encoding="utf-8",
+        )
+        claimed = get_profile_dir("claimed")
+        claimed.mkdir(parents=True)
+        (claimed / "config.yaml").write_text(
+            "sessions:\n"
+            "  state:\n"
+            "    backend: postgres\n"
+            "    postgres:\n"
+            "      schema: claimed_state\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            profiles,
+            "_provision_empty_postgres_schema",
+            lambda *_args: pytest.fail("conflicts must fail before provisioning"),
+        )
+
+        with pytest.raises(ValueError, match="already configured"):
+            create_profile(
+                "coder",
+                clone_config=True,
+                no_alias=True,
+                target_postgres_schema="claimed_state",
+            )
+        assert not get_profile_dir("coder").exists()
+
+    def test_postgres_clone_provisioning_error_redacts_dsn(
+        self, profile_env, monkeypatch
+    ):
+        secret_dsn = "postgresql://user:super-secret@db.example/hermes"
+        monkeypatch.setenv("HERMES_STATE_POSTGRES_DSN", secret_dsn)
+
+        class _Psycopg:
+            @staticmethod
+            def connect(*_args, **_kwargs):
+                raise RuntimeError(f"failed to connect to {secret_dsn}")
+
+        monkeypatch.setitem(sys.modules, "psycopg", _Psycopg)
+
+        with pytest.raises(ValueError) as exc_info:
+            profiles._provision_empty_postgres_schema(
+                "HERMES_STATE_POSTGRES_DSN",
+                "target_state",
+            )
+
+        assert secret_dsn not in str(exc_info.value)
+
+    def test_postgres_clone_copy_failure_cleans_created_schema(
+        self, profile_env, monkeypatch
+    ):
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "sessions:\n"
+            "  state:\n"
+            "    backend: postgres\n"
+            "    postgres:\n"
+            "      dsn_env: HERMES_STATE_POSTGRES_DSN\n"
+            "      schema: source_state\n",
+            encoding="utf-8",
+        )
+        cleaned = []
+        monkeypatch.setattr(
+            profiles,
+            "_provision_empty_postgres_schema",
+            lambda _dsn_env, _schema: True,
+        )
+        monkeypatch.setattr(
+            profiles,
+            "_cleanup_empty_postgres_schema",
+            lambda dsn_env, schema: cleaned.append((dsn_env, schema)),
+        )
+        monkeypatch.setattr(
+            profiles.shutil,
+            "copy2",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("simulated copy failure")
+            ),
+        )
+
+        with pytest.raises(OSError, match="simulated copy failure"):
+            create_profile(
+                "coder",
+                clone_config=True,
+                no_alias=True,
+                target_postgres_schema="coder_state",
+            )
+
+        assert not get_profile_dir("coder").exists()
+        assert cleaned == [("HERMES_STATE_POSTGRES_DSN", "coder_state")]
+
+    def test_profile_create_parser_accepts_postgres_schema(self):
+        from hermes_cli.subcommands.profile import build_profile_parser
+
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="command")
+        build_profile_parser(subparsers, cmd_profile=lambda _args: None)
+
+        args = parser.parse_args(
+            [
+                "profile",
+                "create",
+                "coder",
+                "--clone",
+                "--postgres-schema",
+                "coder_state",
+            ]
+        )
+
+        assert args.postgres_schema == "coder_state"
 
     def test_clone_config_migrates_legacy_config_version(self, profile_env):
         tmp_path = profile_env
@@ -1069,6 +1294,23 @@ class TestRenameProfile:
         assert not old_dir.is_dir()
         assert new_dir.is_dir()
         assert new_dir == tmp_path / ".hermes" / "profiles" / "newname"
+
+    def test_rename_preserves_explicit_postgres_schema(self, profile_env):
+        profile_dir = create_profile("oldname", no_alias=True)
+        (profile_dir / "config.yaml").write_text(
+            "sessions:\n"
+            "  state:\n"
+            "    backend: postgres\n"
+            "    postgres:\n"
+            "      schema: durable_identity\n",
+            encoding="utf-8",
+        )
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            new_dir = rename_profile("oldname", "newname")
+
+        config = yaml.safe_load((new_dir / "config.yaml").read_text())
+        assert config["sessions"]["state"]["postgres"]["schema"] == "durable_identity"
 
     def test_renames_root_honcho_host_without_changing_ai_peer(self, profile_env):
         tmp_path = profile_env

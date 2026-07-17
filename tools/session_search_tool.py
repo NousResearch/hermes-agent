@@ -18,9 +18,9 @@ mode parameter):
   3. BROWSE — no args. Returns recent sessions chronologically (titles,
      previews, timestamps).
 
-All three modes operate on the SQLite session DB via the FTS5 index and
-the get_anchored_view / get_messages_around primitives in hermes_state.
-No LLM calls anywhere — every shape returns actual messages from the DB.
+All three modes operate on the configured session state store via the
+get_anchored_view / get_messages_around primitives in hermes_state. No LLM
+calls anywhere — every shape returns actual messages from the DB.
 
 History: PR #20238 (JabberELF) seeded a fast/summary dual-mode split; the
 toolkit expansion in PR #26419 (yoniebans) added the anchored drill-down,
@@ -643,15 +643,6 @@ def session_search(
     ``@session:<profile>/<id>`` link). Scroll wins over read/discovery when an
     anchor is set — the agent has asked for a specific slice.
     """
-    if db is None:
-        try:
-            from hermes_state import SessionDB
-            db = SessionDB()
-        except Exception:
-            logging.debug("SessionDB unavailable for session_search", exc_info=True)
-            from hermes_state import format_session_db_unavailable
-            return tool_error(format_session_db_unavailable(), success=False)
-
     # Normalise a raw `@session:<profile>/<id>` link value passed as session_id.
     # Session ids never contain "/", so a slash unambiguously means profile/id —
     # always strip the prefix off the id, and adopt the embedded profile only
@@ -664,81 +655,101 @@ def session_search(
             if emb_profile and (profile is None or not str(profile).strip()):
                 profile = emb_profile
 
-    # Cross-profile read: swap in the named profile's DB (read-only) for every
-    # shape below. The current-session-lineage guards no longer apply across
-    # profiles, but they key off ids that won't collide, so they stay inert.
+    owned_db = None
+
+    # Cross-profile reads are explicit and always supersede an injected current
+    # profile DB. The resolver-created read-only handle is ours to close.
     if profile is not None and str(profile).strip():
         try:
             profile_db = _resolve_profile_db(profile)
-        except Exception as e:
-            return tool_error(f"profile '{profile}': {e}", success=False)
+        except Exception:
+            logging.debug("Configured state store unavailable for profile %r", profile)
+            return tool_error(f"profile '{profile}' is unavailable", success=False)
         if profile_db is not None:
             db = profile_db
+            owned_db = profile_db
             current_session_id = None
+    elif db is None:
+        try:
+            from hermes_constants import get_hermes_home
+            from hermes_state import SessionDB
 
-    # Scroll shape takes precedence — explicit anchor beats any query.
-    if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
-        return _scroll(
-            db=db,
-            session_id=session_id,
-            around_message_id=around_message_id,
-            window=window,
-            current_session_id=current_session_id,
-        )
+            db = SessionDB.for_home(get_hermes_home(), read_only=True)
+            owned_db = db
+        except Exception:
+            logging.debug("Configured session state store unavailable")
+            return tool_error("Session database unavailable.", success=False)
 
-    # Read shape: a session_id with no anchor → dump the whole session.
-    if isinstance(session_id, str) and session_id.strip():
-        sid = session_id.strip()
-        result = _read_session(db, sid)
-        if json.loads(result).get("success"):
+    try:
+        # Scroll shape takes precedence — explicit anchor beats any query.
+        if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
+            return _scroll(
+                db=db,
+                session_id=session_id,
+                around_message_id=around_message_id,
+                window=window,
+                current_session_id=current_session_id,
+            )
+
+        # Read shape: a session_id with no anchor → dump the whole session.
+        if isinstance(session_id, str) and session_id.strip():
+            sid = session_id.strip()
+            result = _read_session(db, sid)
+            if json.loads(result).get("success"):
+                return result
+
+            # Miss in the target profile — the model may have dropped the owning
+            # profile from the link. Scan every profile and read it from wherever
+            # it lives, tagging the profile it was found in.
+            located, owner = _locate_session_db(sid)
+            if located is not None:
+                try:
+                    found = json.loads(_read_session(located, sid))
+                finally:
+                    located.close()
+                if found.get("success"):
+                    found["profile"] = owner
+                    return json.dumps(found, ensure_ascii=False)
             return result
 
-        # Miss in the target profile — the model may have dropped the owning
-        # profile from the link. Scan every profile and read it from wherever
-        # it lives, tagging the profile it was found in.
-        located, owner = _locate_session_db(sid)
-        if located is not None:
+        # Limit clamp [1, 10]
+        if not isinstance(limit, int):
             try:
-                found = json.loads(_read_session(located, sid))
-            finally:
-                located.close()
-            if found.get("success"):
-                found["profile"] = owner
-                return json.dumps(found, ensure_ascii=False)
-        return result
+                limit = int(limit)
+            except (TypeError, ValueError):
+                limit = 3
+        limit = max(1, min(limit, 10))
 
-    # Limit clamp [1, 10]
-    if not isinstance(limit, int):
-        try:
-            limit = int(limit)
-        except (TypeError, ValueError):
-            limit = 3
-    limit = max(1, min(limit, 10))
+        # Browse shape: no query → recent sessions.
+        if not query or not isinstance(query, str) or not query.strip():
+            return _list_recent_sessions(db, limit, current_session_id)
 
-    # Browse shape: no query → recent sessions.
-    if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id)
+        # Parse role_filter
+        role_list: Optional[List[str]] = None
+        if isinstance(role_filter, str) and role_filter.strip():
+            role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
 
-    # Parse role_filter
-    role_list: Optional[List[str]] = None
-    if isinstance(role_filter, str) and role_filter.strip():
-        role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
+        # Normalise sort
+        sort_norm: Optional[str] = None
+        if isinstance(sort, str):
+            candidate = sort.strip().lower()
+            if candidate in ("newest", "oldest"):
+                sort_norm = candidate
 
-    # Normalise sort
-    sort_norm: Optional[str] = None
-    if isinstance(sort, str):
-        candidate = sort.strip().lower()
-        if candidate in ("newest", "oldest"):
-            sort_norm = candidate
-
-    return _discover(
-        db=db,
-        query=query.strip(),
-        role_filter=role_list,
-        limit=limit,
-        sort=sort_norm,
-        current_session_id=current_session_id,
-    )
+        return _discover(
+            db=db,
+            query=query.strip(),
+            role_filter=role_list,
+            limit=limit,
+            sort=sort_norm,
+            current_session_id=current_session_id,
+        )
+    finally:
+        if owned_db is not None:
+            try:
+                owned_db.close()
+            except Exception:
+                logging.debug("Failed to close session_search state store")
 
 
 def check_session_search_requirements() -> bool:

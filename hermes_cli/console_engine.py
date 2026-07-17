@@ -20,6 +20,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable, Literal, NoReturn, Sequence
 
+from hermes_constants import get_hermes_home
 from tools.ansi_strip import strip_ansi as _strip_ansi
 
 
@@ -1321,7 +1322,7 @@ def _sessions_list(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
     from hermes_state import SessionDB
 
-    db = SessionDB()
+    db = SessionDB.for_home(get_hermes_home())
     try:
         sessions = db.list_sessions_rich(
             exclude_sources=["tool"],
@@ -1337,7 +1338,7 @@ def _sessions_stats(_engine: HermesConsoleEngine, args: list[str]) -> str:
     _expect_no_args(args, "sessions stats")
     from hermes_state import SessionDB
 
-    db = SessionDB()
+    db = SessionDB.for_home(get_hermes_home())
     try:
         total = db.session_count()
         listable = db.session_count(exclude_children=True, exclude_sources=["tool"])
@@ -1408,7 +1409,7 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> str:
     def _run() -> None:
         from hermes_state import SessionDB
 
-        db = SessionDB()
+        db = SessionDB.for_home(get_hermes_home())
         try:
             if ns.session_id:
                 resolved_session_id = db.resolve_session_id(ns.session_id)
@@ -1445,7 +1446,7 @@ def _sessions_rename(_engine: HermesConsoleEngine, args: list[str]) -> str:
     def _run() -> None:
         from hermes_state import SessionDB
 
-        db = SessionDB()
+        db = SessionDB.for_home(get_hermes_home())
         try:
             resolved_session_id = db.resolve_session_id(ns.session_id)
             if not resolved_session_id:
@@ -1466,7 +1467,7 @@ def _sessions_optimize(_engine: HermesConsoleEngine, args: list[str]) -> str:
     def _run() -> None:
         from hermes_state import SessionDB
 
-        db = SessionDB()
+        db = SessionDB.for_home(get_hermes_home())
         try:
             count = db.vacuum()
             print(f"Optimized {count} FTS index(es).")

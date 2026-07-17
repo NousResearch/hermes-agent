@@ -257,6 +257,26 @@ export function effectiveRemoteToken(envOverride, rawEnvToken, savedToken) {
   return envOverride ? envToken : savedToken
 }
 
+export function resolveDisplayedRemoteAuthMode(
+  envOverride,
+  rawEnvToken,
+  savedAuthMode,
+  probe: any = null
+): 'oauth' | 'token' {
+  if (!envOverride) {
+    return normAuthMode(savedAuthMode)
+  }
+
+  if (String(rawEnvToken || '').trim()) {
+    return 'token'
+  }
+
+  // A tokenless environment override is only valid for session auth. If the
+  // gateway is temporarily unreachable, do not inherit an unrelated saved
+  // fallback mode; the connect path will probe again and enforce the contract.
+  return probe?.reachable === true && probe.authMode === 'token' ? 'token' : 'oauth'
+}
+
 export function resolveEnvRemoteAuth(rawToken, probe: any = null) {
   const token = String(rawToken || '').trim()
 

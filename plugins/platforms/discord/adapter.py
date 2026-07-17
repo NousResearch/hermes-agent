@@ -1912,7 +1912,12 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         raw = os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "")
         if not raw.strip():
-            return self._discord_free_response_channels()
+            allowed = {
+                item.strip()
+                for item in os.getenv("DISCORD_ALLOWED_CHANNELS", "").split(",")
+                if item.strip()
+            }
+            return allowed | self._discord_free_response_channels()
         return {item.strip() for item in raw.split(",") if item.strip()}
 
     def _missed_message_backfill_window_seconds(self) -> float:
@@ -2012,9 +2017,7 @@ class DiscordAdapter(BasePlatformAdapter):
     async def _iter_missed_message_backfill_candidates(self, channel_ids: set[str]):
         if not self._client:
             return
-        import datetime as _dt
-
-        after = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
+        after = dt.datetime.now(dt.timezone.utc) - dt.timedelta(
             seconds=self._missed_message_backfill_window_seconds()
         )
         limit = self._missed_message_backfill_limit()
@@ -2057,10 +2060,18 @@ class DiscordAdapter(BasePlatformAdapter):
         history = getattr(channel, "history", None)
         if callable(history):
             try:
+                # Fetch the latest N messages in the window, then restore
+                # chronological dispatch order. With oldest_first=True the API
+                # returns the earliest N and can permanently starve newer work.
+                history_iter = history(
+                    limit=limit,
+                    after=after,
+                    oldest_first=False,
+                )
                 messages = []
-                async for message in history(limit=limit, after=after, oldest_first=True):
+                async for message in history_iter:  # type: ignore[attr-defined]
                     messages.append(message)
-                for message in messages:
+                for message in reversed(messages):
                     yield message
             except Exception as exc:
                 logger.debug("[%s] Cannot read history for %s: %s", self.name, channel_key, exc)
@@ -2117,19 +2128,12 @@ class DiscordAdapter(BasePlatformAdapter):
         return False
 
     def _is_down_notice_content(self, content: str) -> bool:
+        """Recognize only explicit Hermes/gateway outage notices."""
         text = (content or "").lower()
-        down_markers = (
-            "agent is down",
-            "agent was down",
-            "gateway is down",
-            "gateway was down",
-            "bmo is down",
-            "currently down",
-            "offline",
-            "unavailable",
-            "not running",
-        )
-        return any(marker in text for marker in down_markers)
+        subject = r"(?:hermes|the agent|agent|the gateway|gateway|bmo)"
+        state = r"(?:is|was|appears to be|is currently|was currently)"
+        condition = r"(?:down|offline|unavailable|not running)"
+        return re.search(rf"\b{subject}\s+{state}\s+{condition}\b", text) is not None
 
     async def _message_has_non_down_bot_response(self, message: Any) -> bool:
         """Detect an already-addressed message without trusting down notices."""
@@ -2259,6 +2263,8 @@ class DiscordAdapter(BasePlatformAdapter):
         return channel_id, thread_id, parent_id
 
     def _record_discord_message_seen(self, message: Any, *, status: str) -> None:
+        if not self._missed_message_backfill_enabled():
+            return
         message_id = str(getattr(message, "id", "") or "")
         if not message_id:
             return
@@ -2290,6 +2296,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self._with_discord_recovery_db(_op)
 
     def _record_recovery_attempt(self, message: Any, *, status: str, error: Optional[str] = None) -> None:
+        if not self._missed_message_backfill_enabled():
+            return
         self._record_discord_message_seen(message, status=status)
         message_id = str(getattr(message, "id", "") or "")
         if not message_id:
@@ -2309,6 +2317,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self._with_discord_recovery_db(_op)
 
     def _record_discord_processing_start(self, event: MessageEvent, *, emoji_ack: bool) -> None:
+        if not self._missed_message_backfill_enabled():
+            return
         message = event.raw_message
         self._record_discord_message_seen(message, status="processing")
         message_id = str(getattr(message, "id", "") or getattr(event, "message_id", "") or "")
@@ -2325,6 +2335,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self._with_discord_recovery_db(_op)
 
     def _record_discord_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        if not self._missed_message_backfill_enabled():
+            return
         message_id = str(getattr(getattr(event, "raw_message", None), "id", "") or getattr(event, "message_id", "") or "")
         if not message_id:
             return
@@ -2340,7 +2352,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._with_discord_recovery_db(_op)
 
     def _record_discord_response(self, *, reply_to: Optional[str], result: SendResult, content: str) -> None:
-        if not reply_to:
+        if not self._missed_message_backfill_enabled() or not reply_to:
             return
         now = self._utc_now_iso()
         outage = self._is_down_notice_content(content)
@@ -2684,7 +2696,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                return await self._send_to_forum(channel, content)
+                result = await self._send_to_forum(channel, content)
+                self._record_discord_response(
+                    reply_to=reply_to,
+                    result=result,
+                    content=content,
+                )
+                return result
 
             # Format and split message if needed
             formatted = self.format_message(content)

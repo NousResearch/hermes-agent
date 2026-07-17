@@ -7389,12 +7389,16 @@ def extract_content_or_reasoning(response) -> str:
     content = (msg.content or "").strip()
 
     if content:
-        # Strip inline think/reasoning blocks (mirrors _strip_think_blocks)
+        # Strip a leaked harmony reasoning channel first (this path already
+        # guards <think>-style tags but not harmony), then inline think/
+        # reasoning blocks (mirrors _strip_think_blocks).
+        from agent.harmony_scrub import strip_harmony_leak
+        cleaned = strip_harmony_leak(content)
         cleaned = re.sub(
             r"<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>"
             r".*?"
             r"</(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>",
-            "", content, flags=re.DOTALL | re.IGNORECASE,
+            "", cleaned, flags=re.DOTALL | re.IGNORECASE,
         ).strip()
         if cleaned:
             return cleaned

@@ -212,7 +212,12 @@ def _strip_reasoning_tags(text: str) -> str:
     ``<function name="…">…</function>``). Ported from
     openclaw/openclaw#67318.
     """
-    cleaned = text
+    # Harmony reasoning-channel leak (analysis/commentary channel dumped into
+    # content). Shared with strip_think_blocks + the streaming scrubber via
+    # agent/harmony_scrub.py so all three stay in sync; only fires when the text
+    # begins with harmony structure, so benign prose is untouched.
+    from agent.harmony_scrub import strip_harmony_leak
+    cleaned = strip_harmony_leak(text)
     for tag in _REASONING_TAGS:
         # Closed pair — case-insensitive so <THINK>…</THINK> is handled too.
         cleaned = re.sub(

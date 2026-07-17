@@ -680,6 +680,15 @@ def strip_think_blocks(agent, content: str) -> str:
     content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
+    # 1a2. Harmony reasoning-channel leak — a harmony-format model's analysis/commentary
+    #      channel dumped into ``content`` when Ollama's native thinking-parse misses, so the
+    #      chain-of-thought ships before the visible answer (seen live 2026-07-11). Centralised
+    #      in agent/harmony_scrub.py so the streaming scrubber (StreamingThinkScrubber) and the
+    #      CLI display path (cli._strip_reasoning_tags) apply the SAME grammar + false-positive
+    #      guards. Only fires when ``content`` begins with harmony structure; benign prose that
+    #      merely mentions "analysis" or quotes ``<|channel|>`` mid-message is left untouched.
+    from agent.harmony_scrub import strip_harmony_leak
+    content = strip_harmony_leak(content)
     # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
     #     generic tag names first — they have no attribute gating since
     #     a literal <tool_call> in prose is already vanishingly rare.

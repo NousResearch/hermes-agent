@@ -3006,7 +3006,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
-{_format_model_provider_line(model, runtime.get('provider'))}
+{_format_model_provider_line(model, runtime.get('provider') or '')}
 
 ## Prompt
 
@@ -3029,7 +3029,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
-{_format_model_provider_line(model, runtime.get('provider'))}
+{_format_model_provider_line(model, runtime.get('provider') or '')}
 
 ## Prompt
 

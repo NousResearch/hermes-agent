@@ -624,6 +624,12 @@ export const zhHant = defineLocale({
       clear: '清除'
     },
     gateway: {
+      cloudflareAccessClientId: 'Cloudflare Access 用戶端 ID',
+      cloudflareAccessClientSecret: 'Cloudflare Access 用戶端密鑰',
+      cloudflareAccessDesc:
+        '用於受 Cloudflare Access 保護的儀表板之選用服務權杖。標頭只會傳送至此遠端 URL，並透過安全的認證儲存空間保存。',
+      cloudflareAccessIncomplete: '請輸入 Cloudflare Access 用戶端 ID 和用戶端密鑰，或同時清除這兩個欄位。',
+      clearCloudflareAccess: '清除',
       loading: '正在載入閘道設定...',
       unavailableTitle: '閘道設定不可用',
       unavailableDesc: '桌面 IPC 橋接器未公開閘道設定。',

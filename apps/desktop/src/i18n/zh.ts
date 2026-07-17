@@ -735,6 +735,12 @@ export const zh: Translations = {
       clear: '清除'
     },
     gateway: {
+      cloudflareAccessClientId: 'Cloudflare Access 客户端 ID',
+      cloudflareAccessClientSecret: 'Cloudflare Access 客户端密钥',
+      cloudflareAccessDesc:
+        '用于受 Cloudflare Access 保护的仪表板的可选服务令牌。请求头仅发送到此远程 URL，并通过安全凭据存储保存。',
+      cloudflareAccessIncomplete: '请输入 Cloudflare Access 客户端 ID 和客户端密钥，或同时清除这两个字段。',
+      clearCloudflareAccess: '清除',
       loading: '正在加载网关设置...',
       unavailableTitle: '网关设置不可用',
       unavailableDesc: '桌面 IPC 桥未暴露网关设置。',

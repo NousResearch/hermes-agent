@@ -177,7 +177,8 @@ function modeIsRemoteLike(mode) {
  * The config may carry a `profiles` map keyed by name; an entry counts as an
  * override only with a remote-like `mode` (remote or cloud) and a non-empty
  * `url`. Pure: `token` is the raw stored secret; main.ts decrypts it. Returns
- * `{ url, authMode, token } | null`.
+ * `{ url, authMode, token, cloudflareAccessClientId,
+ * cloudflareAccessClientSecret } | null`.
  */
 function profileRemoteOverride(config, profile) {
   const key = connectionScopeKey(profile)
@@ -193,7 +194,13 @@ function profileRemoteOverride(config, profile) {
     return null
   }
 
-  return { url, authMode: normAuthMode(entry.authMode), token: entry.token }
+  return {
+    url,
+    authMode: normAuthMode(entry.authMode),
+    token: entry.token,
+    cloudflareAccessClientId: entry.cloudflareAccessClientId,
+    cloudflareAccessClientSecret: entry.cloudflareAccessClientSecret
+  }
 }
 
 /**

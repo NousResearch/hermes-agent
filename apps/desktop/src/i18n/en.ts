@@ -597,6 +597,12 @@ export const en: Translations = {
       cloudStatusLabel: status => `Status: ${status}`,
       remoteUrlTitle: 'Remote URL',
       remoteUrlDesc: 'Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes.',
+      cloudflareAccessClientId: 'Cloudflare Access Client ID',
+      cloudflareAccessClientSecret: 'Cloudflare Access Client Secret',
+      cloudflareAccessDesc:
+        'Optional service token for a dashboard protected by Cloudflare Access. Headers are sent only to this remote URL and stored with secure credential storage.',
+      cloudflareAccessIncomplete: 'Enter both the Cloudflare Access Client ID and Client Secret, or clear both fields.',
+      clearCloudflareAccess: 'Clear',
       probing: 'Checking how this gateway authenticates…',
       probeError: 'Could not reach this gateway yet. Check the URL — the auth method will appear once it responds.',
       signedIn: 'Signed in',

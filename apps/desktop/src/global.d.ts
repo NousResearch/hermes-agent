@@ -52,7 +52,7 @@ declare global {
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
-      probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
+      probeConnectionConfig: (input: DesktopConnectionProbeInput | string) => Promise<DesktopConnectionProbeResult>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
       // Hermes Cloud: one portal login powers discovery + silent per-agent
@@ -426,6 +426,9 @@ export interface DesktopConnectionConfig {
   // connection. Per-profile entries let a profile point at its own backend.
   profile: null | string
   remoteAuthMode: 'oauth' | 'token'
+  remoteCloudflareAccessClientIdPreview: string | null
+  remoteCloudflareAccessClientIdSet: boolean
+  remoteCloudflareAccessClientSecretSet: boolean
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
@@ -442,11 +445,22 @@ export interface DesktopConnectionConfigInput {
   // override instead of the global connection.
   profile?: null | string
   remoteAuthMode?: 'oauth' | 'token'
+  remoteCloudflareAccessClear?: boolean
+  remoteCloudflareAccessClientId?: string
+  remoteCloudflareAccessClientSecret?: string
   remoteToken?: string
   remoteUrl?: string
   // For a 'cloud' connection: the selected Hermes Cloud org (slug or id) to
   // persist so Settings can reopen into it. Ignored for remote/local modes.
   cloudOrg?: string
+}
+
+export interface DesktopConnectionProbeInput {
+  profile?: null | string
+  remoteCloudflareAccessClear?: boolean
+  remoteCloudflareAccessClientId?: string
+  remoteCloudflareAccessClientSecret?: string
+  remoteUrl: string
 }
 
 export interface DesktopConnectionTestResult {

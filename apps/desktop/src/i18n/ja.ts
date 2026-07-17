@@ -636,6 +636,13 @@ export const ja = defineLocale({
       clear: 'クリア'
     },
     gateway: {
+      cloudflareAccessClientId: 'Cloudflare Access クライアント ID',
+      cloudflareAccessClientSecret: 'Cloudflare Access クライアントシークレット',
+      cloudflareAccessDesc:
+        'Cloudflare Access で保護されたダッシュボード用の任意のサービストークンです。ヘッダーはこのリモート URL にのみ送信され、認証情報ストレージに安全に保存されます。',
+      cloudflareAccessIncomplete:
+        'Cloudflare Access のクライアント ID とクライアントシークレットを両方入力するか、両方をクリアしてください。',
+      clearCloudflareAccess: 'クリア',
       loading: 'ゲートウェイ設定を読み込み中...',
       unavailableTitle: 'ゲートウェイ設定は利用できません',
       unavailableDesc: 'デスクトップ IPC ブリッジはゲートウェイ設定を公開していません。',

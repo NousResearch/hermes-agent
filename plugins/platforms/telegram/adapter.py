@@ -592,10 +592,12 @@ class TelegramAdapter(BasePlatformAdapter):
     # budget while the completed answer remains undelivered. Move directly to
     # the final fallback path instead.
     FALLBACK_ON_FINAL_EDIT_FLOOD: bool = True
-    # A failed final edit can leave Telegram clients with only a partial or
-    # non-durable preview. Commit empty-tail fallbacks as a fresh final message
-    # instead of trusting the preview as completed delivery.
-    RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK: bool = True
+    # A completed edit preview is already a durable Telegram message.  Fresh-
+    # sending the same text and then best-effort deleting that preview can leave
+    # duplicates whenever cleanup fails, especially during the same degraded
+    # connection that caused finalization to fail.  Keep a complete preview in
+    # place; the fallback still sends any genuinely missing tail.
+    RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK: bool = False
 
     # Adaptive text-batch ingress: short messages need a tighter delay so the
     # first token reaches the agent fast.  Numbers tuned for "feels instant":

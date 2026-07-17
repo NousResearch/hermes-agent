@@ -27,6 +27,9 @@ def _adapter() -> MagicMock:
 async def test_turn_final_flood_immediately_delivers_missing_tail():
     """A short visible preview must not suppress the completed answer."""
     adapter = _adapter()
+    adapter.RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK = (
+        TelegramAdapter.RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK
+    )
     adapter.edit_message.return_value = SendResult(
         success=False,
         error="Flood control exceeded. Retry in 180 seconds",
@@ -97,15 +100,17 @@ async def test_non_opt_in_adapter_keeps_adaptive_final_edit_retry():
 
 
 @pytest.mark.asyncio
-async def test_turn_final_flood_commits_empty_tail_as_fresh_message():
-    """Telegram gets a durable final even when the internal tail is empty."""
+async def test_turn_final_flood_keeps_complete_preview_without_fresh_resend():
+    """Telegram must not send-then-delete when the whole answer is already visible."""
     adapter = _adapter()
+    adapter.RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK = (
+        TelegramAdapter.RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK
+    )
     adapter.edit_message.return_value = SendResult(
         success=False,
         error="Flood control exceeded. Retry in 30 seconds",
         retry_after=30.0,
     )
-    adapter.send.return_value = SendResult(success=True, message_id="final-1")
 
     consumer = GatewayStreamConsumer(
         adapter,
@@ -131,11 +136,9 @@ async def test_turn_final_flood_commits_empty_tail_as_fresh_message():
 
     await consumer._send_fallback_final(final_text)
 
-    adapter.send.assert_awaited_once()
-    assert adapter.send.await_args.kwargs["content"] == final_text
-    assert adapter.send.await_args.kwargs["metadata"] == {"notify": True}
-    adapter.delete_message.assert_awaited_once_with("chat-1", "preview-1")
-    assert consumer.message_id == "final-1"
+    adapter.send.assert_not_awaited()
+    adapter.delete_message.assert_not_awaited()
+    assert consumer.message_id == "preview-1"
     assert consumer.final_response_sent is True
     assert consumer.final_content_delivered is True
 

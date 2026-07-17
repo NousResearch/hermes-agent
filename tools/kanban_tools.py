@@ -1314,10 +1314,14 @@ def _handle_unblock(args: dict, **kw) -> str:
     if ownership_err:
         return ownership_err
     board = args.get("board")
+    reason = str(args.get("reason") or "").strip() or None
+    actor = os.environ.get("HERMES_PROFILE") or "orchestrator"
     try:
         kb, conn = _connect(board=board)
         try:
-            ok = kb.unblock_task(conn, str(tid))
+            ok = kb.unblock_task(
+                conn, str(tid), actor=actor, reason=reason,
+            )
             if not ok:
                 return tool_error(f"could not unblock {tid} (not blocked or unknown)")
             task = kb.get_task(conn, str(tid))
@@ -1913,6 +1917,10 @@ KANBAN_UNBLOCK_SCHEMA = {
             "task_id": {
                 "type": "string",
                 "description": "Blocked task id to move to ready or parent-gated todo.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why the human/controller is unblocking the task.",
             },
             "board": _board_schema_prop(),
         },

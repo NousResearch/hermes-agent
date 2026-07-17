@@ -7,11 +7,11 @@ forever. The fix gives ``block_task`` a typed ``kind`` and a persistent
 
 * ``dependency`` blocks route to ``todo`` (parent-gated, auto-resumed) and
   never enter the human ``blocked`` bucket a cron would keep unblocking.
-* ``needs_input`` / ``capability`` / un-typed blocks land in ``blocked``;
-  each same-cause re-block after an unblock increments ``block_recurrences``,
-  and at ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
-* ``unblock_task`` deliberately does NOT reset ``block_recurrences`` (the
-  amnesia that let the loop run unbounded).
+* ``needs_input`` lands in terminal ``blocked`` and only explicit unblock
+  clears its active block marker.
+* ``capability`` / un-typed blocks retain the recurrence-to-triage breaker.
+* ``unblock_task`` preserves recurrence memory for those technical/legacy
+  kinds, while clearing ``needs_input`` because it is active state.
 * A successful ``complete_task`` resets the loop memory.
 """
 
@@ -65,8 +65,8 @@ def test_first_typed_block_lands_in_blocked(kanban_home: Path) -> None:
         assert t.block_recurrences == 1
 
 
-def test_unblock_does_not_reset_recurrence_counter(kanban_home: Path) -> None:
-    """The crux of the fix: unblock must preserve the loop counter."""
+def test_needs_input_unblock_clears_terminal_marker(kanban_home: Path) -> None:
+    """Explicit unblock is the only transition that clears needs_input."""
     with kb.connect_closing() as conn:
         tid = _running_task(conn)
         kb.block_task(conn, tid, reason="x", kind="needs_input")
@@ -74,12 +74,12 @@ def test_unblock_does_not_reset_recurrence_counter(kanban_home: Path) -> None:
         assert kb.unblock_task(conn, tid)
         t = kb.get_task(conn, tid)
         assert t.status == "ready"
-        assert t.block_recurrences == 1  # NOT reset to 0
-        assert t.block_kind == "needs_input"  # kind preserved for comparison
+        assert t.block_recurrences == 0
+        assert t.block_kind is None
 
 
-def test_same_cause_reblock_routes_to_triage(kanban_home: Path) -> None:
-    """Dale's loop: block → unblock → re-block same kind → triage."""
+def test_same_cause_needs_input_reblock_stays_terminal(kanban_home: Path) -> None:
+    """A fresh needs_input block never routes through auto-decomposer triage."""
     with kb.connect_closing() as conn:
         tid = _running_task(conn)
         kb.block_task(conn, tid, reason="need creds", kind="needs_input")
@@ -87,8 +87,9 @@ def test_same_cause_reblock_routes_to_triage(kanban_home: Path) -> None:
         _make_running_again(conn, tid)
         kb.block_task(conn, tid, reason="still need creds", kind="needs_input")
         t = kb.get_task(conn, tid)
-        assert t.status == "triage"
-        assert t.block_recurrences == 2
+        assert t.status == "blocked"
+        assert t.block_kind == "needs_input"
+        assert t.block_recurrences == 1
 
 
 def test_untyped_block_loop_also_protected(kanban_home: Path) -> None:

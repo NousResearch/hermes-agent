@@ -996,11 +996,12 @@ class Task:
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
     # Typed block reason (one of VALID_BLOCK_KINDS) or None for legacy/un-typed
-    # blocks. Set by ``block_task``; preserved across unblock so a re-block for
-    # the same kind is recognisable as an unblock↔re-block loop.
+    # blocks. Set by ``block_task``. An explicit unblock clears ``needs_input``
+    # because that marker is an active terminal guard, not retry history.
     block_kind: Optional[str] = None
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
-    # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
+    # ``BLOCK_RECURRENCE_LIMIT``. Explicit needs-input unblock clears it;
+    # technical/legacy loop memory survives until successful completion.
     block_recurrences: int = 0
     # Versioned task-admission contract (JSON object) or None for legacy
     # tasks that predate HERMES-ORCH-001. Storage/ser-de in ORCH-001A;
@@ -1101,6 +1102,23 @@ class Task:
             ),
             contract=contract_value,
         )
+
+
+def is_automatically_actionable(task: Task) -> bool:
+    """Return whether automatic Kanban control may advance ``task``.
+
+    ``needs_input`` is a durable, machine-enforced terminal marker. It is
+    cleared only by :func:`unblock_task`; until then dispatcher, promotion,
+    decomposition, and recovery paths must leave the task alone regardless of
+    a stale or inconsistent status column.
+    """
+    return task.block_kind != "needs_input"
+
+
+def _automatic_recovery_status(conn: sqlite3.Connection, task_id: str) -> str:
+    """Choose the safe landing status for an automatic recovery path."""
+    task = get_task(conn, task_id)
+    return "ready" if task is None or is_automatically_actionable(task) else "blocked"
 
 
 @dataclass
@@ -1863,17 +1881,18 @@ CREATE TABLE IF NOT EXISTS tasks (
     session_id           TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
-    -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
-    -- to ``blocked`` for a human. Preserved across unblock so a re-block for
-    -- the SAME kind can be recognised as a loop.
+    -- sits in ``blocked`` (goes to ``todo`` for parent-gating); ``needs_input``
+    -- is terminal until explicit unblock clears it; technical/legacy kinds are
+    -- preserved across unblock so same-kind retry loops can be recognised.
     block_kind           TEXT,
     -- Unblock-loop counter. Incremented each time a task is re-blocked for the
     -- same truly-blocked reason after having been unblocked. When it reaches
-    -- BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead of
-    -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
-    -- successful completion — NOT on unblock (resetting on unblock is exactly
-    -- the amnesia that let the loop run unbounded).
+    -- ``BLOCK_RECURRENCE_LIMIT`` the task is routed to ``triage`` (except
+    -- ``needs_input``, which is terminal until explicit unblock).
     block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Explicit unblock of ``needs_input`` clears this marker as part of
+    -- normal recovery; for technical/legacy kinds, the same-kind recurrence
+    -- counter is preserved across unblock to detect loops.
     -- Versioned task-admission contract (JSON object). NULL = legacy task
     -- without a machine-readable contract (pre-HERMES-ORCH-001). ORCH-001A
     -- only persists/validates structure; admission enforcement is later.
@@ -4302,12 +4321,15 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, block_kind "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            task = get_task(conn, task_id)
+            if task is not None and not is_automatically_actionable(task):
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for human review — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -4396,6 +4418,9 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        task = get_task(conn, task_id)
+        if task is None or not is_automatically_actionable(task):
+            return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -4663,7 +4688,7 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
+        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at, block_kind "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?",
@@ -4735,12 +4760,13 @@ def release_stale_claims(
             )
             continue
         with write_txn(conn):
+            recovery_status = _automatic_recovery_status(conn, row["id"])
             cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (row["id"], row["claim_lock"], now),
+                (recovery_status, row["id"], row["claim_lock"], now),
             )
             if cur.rowcount != 1:
                 continue
@@ -5813,13 +5839,12 @@ def block_task(
       promotes it automatically once its parents finish. No human, no cron, no
       retry storm. This is Dale's "Type 2 — dependency blocked".
 
-    * ``needs_input`` / ``capability`` / ``None`` — "truly blocked" (Dale's
-      "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task
-      is re-blocked for the SAME kind after having been unblocked, the
-      unblock-loop counter (``block_recurrences``) increments. When it reaches
-      :data:`BLOCK_RECURRENCE_LIMIT`, the task is routed to ``triage`` instead
-      of ``blocked`` — breaking the cron-unblock ↔ worker-re-block loop and
-      forcing a human-in-the-loop triage decision.
+    * ``needs_input`` — terminal until an explicit :func:`unblock_task` clears
+      the marker. It never enters the recurrence-to-triage loop breaker.
+
+    * ``capability`` / ``None`` — "truly blocked" (Dale's "Type 1"). Lands in
+      ``blocked`` for a human. Repeated same-kind blocks may route to ``triage``
+      at :data:`BLOCK_RECURRENCE_LIMIT`.
 
     * ``transient`` — treated like a generic block for routing, but a worker
       can use it to signal "this might clear on its own"; it still participates
@@ -5904,7 +5929,7 @@ def block_task(
         same_cause = prev_kind == kind
         recurrences = prev_recurrences + 1 if same_cause else 1
 
-        if recurrences >= BLOCK_RECURRENCE_LIMIT:
+        if kind != "needs_input" and recurrences >= BLOCK_RECURRENCE_LIMIT:
             # Loop detected — stop letting the unblocker spin this task. Route
             # to triage for a human-in-the-loop decision instead of blocked.
             cur = conn.execute(
@@ -6033,12 +6058,14 @@ def promote_task(
     and the task fails the admission validator (unless ``force=True``).
     """
     row = conn.execute(
-        "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        "SELECT status, block_kind FROM tasks WHERE id = ?", (task_id,)
     ).fetchone()
     if row is None:
         return False, f"task {task_id} not found"
 
     cur_status = row["status"]
+    if row["block_kind"] == "needs_input":
+        return False, "task needs explicit unblock before promotion"
     if cur_status not in ("todo", "blocked"):
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
@@ -6112,8 +6139,17 @@ def promote_task(
     return True, None
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> bool:
     """Transition ``blocked``/``scheduled`` -> ready or todo.
+
+    For ``needs_input`` blocks this is the sole action that clears the active
+    terminal marker. ``actor`` and ``reason`` are persisted in the audit event.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
     status. In the common path (``block_task`` closed the run already) this
@@ -6125,7 +6161,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "SELECT current_run_id, status, block_kind FROM tasks "
+            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
@@ -6153,6 +6190,10 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             (task_id,),
         ).fetchone()
         new_status = "todo" if undone_parents else "ready"
+        previous_status = stale["status"] if stale is not None else None
+        previous_block_kind = stale["block_kind"] if stale is not None else None
+        clear_needs_input = previous_block_kind == "needs_input"
+
         # ORCH-001B: admission gate on ready transition from unblock.
         if new_status == "ready":
             decision = evaluate_task_admission(conn, task_id)
@@ -6165,27 +6206,30 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
                     phase="ready",
                     event_kind="admission_rejected",
                 )
-        # NOTE: deliberately does NOT touch ``block_recurrences`` or
-        # ``block_kind``. Resetting the recurrence counter on unblock is exactly
-        # the amnesia that let a cron unblock → worker re-block loop run
-        # unbounded (Dale's report). The counter survives the unblock so that a
-        # subsequent same-cause ``block_task`` can detect the loop and route to
-        # triage at ``BLOCK_RECURRENCE_LIMIT``. It is reset to 0 only on a
-        # successful completion (see ``complete_task``). ``consecutive_failures``
-        # (the *dispatcher* spawn/crash/timeout counter — a different signal) is
-        # still reset here, which is correct: a deliberate unblock is a fresh
-        # start for the dispatcher's retry budget.
+
+        # NOTE: explicit unblock is the terminal recovery for ``needs_input``.
+        # Preserve loop memory for technical/legacy kinds so the same-cause
+        # blocker can still escalate at ``BLOCK_RECURRENCE_LIMIT``; clear the
+        # marker and counter only for ``needs_input`` unblock.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
+            "consecutive_failures = 0, last_failure_error = NULL, "
+            "block_kind = CASE WHEN ? THEN NULL ELSE block_kind END, "
+            "block_recurrences = CASE WHEN ? THEN 0 ELSE block_recurrences END "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')",
-            (new_status, task_id),
+            (new_status, clear_needs_input, clear_needs_input, task_id),
         )
         if cur.rowcount != 1:
             return False
         _append_event(
             conn, task_id, "unblocked",
-            {"status": new_status} if new_status != "ready" else None,
+            {
+                "previous_status": previous_status,
+                "previous_block_kind": previous_block_kind,
+                "status": new_status,
+                "actor": actor,
+                "reason": reason,
+            },
         )
         return True
 
@@ -6220,10 +6264,14 @@ def specify_triage_task(
     assignee = _canonical_assignee(assignee)
     with write_txn(conn):
         existing = conn.execute(
-            "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",
+            "SELECT title, body, assignee, block_kind FROM tasks "
+            "WHERE id = ? AND status = 'triage'",
             (task_id,),
         ).fetchone()
         if existing is None:
+            return False
+        task = get_task(conn, task_id)
+        if task is not None and not is_automatically_actionable(task):
             return False
         sets: list[str] = ["status = 'todo'"]
         params: list[Any] = []
@@ -6374,13 +6422,16 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, workspace_kind, workspace_path, block_kind "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if root_row is None:
             return None
         if root_row["status"] != "triage":
+            return None
+        task = get_task(conn, task_id)
+        if task is not None and not is_automatically_actionable(task):
             return None
         tenant = root_row["tenant"]
         # Children inherit the root's workspace by default so a fan-out
@@ -7419,7 +7470,7 @@ def enforce_max_runtime(
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
-        "       t.max_runtime_seconds, t.claim_lock "
+        "       t.max_runtime_seconds, t.claim_lock, t.block_kind "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
@@ -7466,13 +7517,14 @@ def enforce_max_runtime(
                     pass
 
         with write_txn(conn):
+            recovery_status = _automatic_recovery_status(conn, tid)
             cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
-                (tid, pid, row["claim_lock"]),
+                (recovery_status, tid, pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
                 payload = {
@@ -7553,6 +7605,7 @@ def detect_stale_running(
 
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "       t.block_kind, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -7592,13 +7645,14 @@ def detect_stale_running(
             continue
 
         with write_txn(conn):
+            recovery_status = _automatic_recovery_status(conn, tid)
             cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ?",
-                (tid, row["claim_lock"]),
+                (recovery_status, tid, row["claim_lock"]),
             )
             if cur.rowcount != 1:
                 continue
@@ -7766,7 +7820,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, worker_pid, claim_lock, started_at, block_kind FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -7850,12 +7904,13 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
 
+            recovery_status = _automatic_recovery_status(conn, row["id"])
             cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
-                (row["id"], pid, row["claim_lock"]),
+                (recovery_status, row["id"], pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
                 # Rate-limited requeues are a clean release, not a crash —
@@ -8566,7 +8621,7 @@ def _dispatch_once_locked(
         )
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT * FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -8622,6 +8677,9 @@ def _dispatch_once_locked(
             # there, with the existing diagnostic.
             _default_assignee_resolved = True
     for row in ready_rows:
+        task = Task.from_row(row)
+        if not is_automatically_actionable(task):
+            continue
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
         row_assignee = row["assignee"]

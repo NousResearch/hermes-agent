@@ -856,7 +856,12 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 # Re-open a blocked/scheduled task, or just an explicit status set.
                 current = kanban_db.get_task(conn, task_id)
                 if current and current.status in ("blocked", "scheduled"):
-                    ok = kanban_db.unblock_task(conn, task_id)
+                    ok = kanban_db.unblock_task(
+                        conn,
+                        task_id,
+                        actor="dashboard",
+                        reason=payload.block_reason,
+                    )
                 else:
                     # Direct status write for drag-drop (todo -> ready etc).
                     ok = _set_status_direct(conn, task_id, "ready")
@@ -992,10 +997,12 @@ def _set_status_direct(
     with kanban_db.write_txn(conn):
         # Snapshot current state so we know whether to close a run.
         prev = conn.execute(
-            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            "SELECT status, current_run_id, block_kind FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if prev is None:
+            return False
+        if prev["block_kind"] == "needs_input" and new_status != prev["status"]:
             return False
 
         # Guard: don't allow promoting to 'ready' unless all parents are done.
@@ -1196,7 +1203,9 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                     elif s == "ready":
                         cur = kanban_db.get_task(conn, tid)
                         if cur and cur.status in ("blocked", "scheduled"):
-                            ok = kanban_db.unblock_task(conn, tid)
+                            ok = kanban_db.unblock_task(
+                                conn, tid, actor="dashboard", reason=None,
+                            )
                         else:
                             ok = _set_status_direct(conn, tid, "ready")
                     elif s == "running":

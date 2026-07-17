@@ -10,6 +10,7 @@ import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/key
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { $repoStatus } from '@/store/coding-status'
 import { toggleCommandPalette } from '@/store/command-palette'
+import { openFindBar } from '@/store/find-in-page'
 import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
 import {
   requestSessionSearchFocus,
@@ -188,6 +189,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // the Win/Linux path where ⌘W reaches the renderer directly.
     'view.closeTab': () => void closeActiveTab(id => navigate(sessionRoute(id))),
     'view.reopenTab': reopenLastClosedTile,
+    'view.findInPage': openFindBar,
 
     'appearance.toggleMode': () => setMode(resolvedMode === 'dark' ? 'light' : 'dark'),
 

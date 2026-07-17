@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import posixpath
+import re
 import sys
 import threading
 from pathlib import Path, PurePosixPath
@@ -1846,6 +1847,57 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         return tool_error(str(e))
 
 
+_GLOBISH_CONTENT_REGEX_META_RE = re.compile(r"[\[\]{}()|+^$\\\r\n]")
+_REGEX_SYNTAX_ERROR_MARKERS = (
+    "regex parse error",
+    "invalid regular expression",
+    "repetition operator missing expression",
+    "unclosed character class",
+    "nothing to repeat",
+)
+
+
+def _globish_content_pattern_to_regex(pattern: str) -> str | None:
+    """Translate a clearly glob-shaped invalid content pattern once.
+
+    Content search accepts regular expressions, but smaller/local models
+    sometimes pass filename-glob syntax such as ``*foo*bar*``. Only
+    translate after Python's regex parser rejects the original pattern,
+    and only when the remaining text contains glob wildcards without any
+    other regex-only metacharacters. Valid regex semantics stay unchanged.
+    """
+    candidate = pattern.strip()
+    if candidate.startswith("(?:") and candidate.endswith(")"):
+        candidate = candidate[3:-1]
+    if not candidate or not any(char in candidate for char in "*?"):
+        return None
+    if _GLOBISH_CONTENT_REGEX_META_RE.search(candidate):
+        return None
+    return re.escape(candidate).replace(r"\*", ".*").replace(r"\?", ".")
+
+
+def _normalize_content_search_pattern(pattern: str) -> tuple[str, str | None]:
+    """Return a valid content regex plus an optional recovery warning."""
+    try:
+        re.compile(pattern)
+    except re.error:
+        translated = _globish_content_pattern_to_regex(pattern)
+        if translated is not None:
+            return translated, (
+                "The supplied content-search pattern was not a valid regular "
+                f"expression and was interpreted as the glob-like pattern {pattern!r} "
+                f"(translated regex: {translated!r}). Use target='files' when "
+                "matching file names with globs."
+            )
+    return pattern, None
+
+
+def _looks_like_regex_syntax_error(error: object) -> bool:
+    """Return True when a search failure is specifically regex syntax."""
+    lowered = str(error or "").lower()
+    return any(marker in lowered for marker in _REGEX_SYNTAX_ERROR_MARKERS)
+
+
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
@@ -1853,6 +1905,11 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
     """Search for content or files."""
     try:
         offset, limit = normalize_search_pagination(offset, limit)
+
+        normalized_pattern = pattern
+        pattern_warning = None
+        if target == "content":
+            normalized_pattern, pattern_warning = _normalize_content_search_pattern(pattern)
 
         # Track searches to detect *consecutive* repeated search loops.
         # Include pagination args so users can page through truncated
@@ -1898,7 +1955,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
 
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
+            pattern=normalized_pattern, path=path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
         omitted = _filter_read_blocked_search_results(result, task_id)
@@ -1907,6 +1964,21 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 if hasattr(m, 'content') and m.content:
                     m.content = redact_sensitive_text(m.content, file_read=True)
         result_dict = result.to_dict(densify=True)
+
+        if pattern_warning and not result_dict.get("error"):
+            existing_warning = result_dict.get("warning")
+            result_dict["warning"] = (
+                f"{pattern_warning} {existing_warning}"
+                if existing_warning
+                else pattern_warning
+            )
+        elif target == "content" and result_dict.get("error") and _looks_like_regex_syntax_error(
+            result_dict["error"]
+        ):
+            result_dict["error"] = (
+                f"{result_dict['error']} Content search expects a regular expression. "
+                "Use target='files' when matching file names with globs."
+            )
 
         if omitted:
             result_dict["_omitted"] = (

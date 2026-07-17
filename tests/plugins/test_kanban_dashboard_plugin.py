@@ -776,6 +776,32 @@ def test_dispatch_refuses_gateway_owned_dispatch_before_db_access(client, monkey
     assert calls == []
 
 
+@pytest.mark.parametrize("dispatch_in_gateway", [None, 0, "", [], {}])
+def test_dispatch_refuses_malformed_falsy_gateway_admission_before_db_access(
+    client, monkeypatch, dispatch_in_gateway,
+):
+    """Only literal false grants standalone dispatch authority."""
+    from hermes_cli import config
+
+    monkeypatch.setattr(
+        config, "load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": dispatch_in_gateway}},
+    )
+    monkeypatch.setattr(
+        "hermes_dashboard_plugin_kanban_test._conn",
+        lambda **kwargs: pytest.fail("malformed admission must not open the DB"),
+    )
+    calls = []
+    monkeypatch.setattr(
+        kb, "dispatch_once", lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    response = client.post("/api/plugins/kanban/dispatch?dry_run=true&max=4")
+
+    assert response.status_code == 409
+    assert calls == []
+
+
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_dispatch_refuses_when_config_admission_fails(client, monkeypatch, dry_run):
     """A failed config read must not make either dispatch mode permissive."""

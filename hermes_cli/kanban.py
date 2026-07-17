@@ -2230,7 +2230,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
         if not isinstance(_kanban_cfg, dict):
             _kanban_cfg = {}
-        if _kanban_cfg.get("dispatch_in_gateway", True):
+        if _kanban_cfg.get("dispatch_in_gateway", True) is not False:
             print(
                 "kanban: manual dispatch is disabled while "
                 "kanban.dispatch_in_gateway=true; use the singleton gateway "

@@ -125,6 +125,35 @@ def test_cli_dispatch_refuses_gateway_owned_dispatch_before_db_access(
     dispatch_once.assert_not_called()
 
 
+@pytest.mark.parametrize("dispatch_in_gateway", [None, 0, "", [], {}])
+def test_cli_dispatch_refuses_malformed_falsy_gateway_admission_before_db_access(
+    isolated_kanban_home, monkeypatch, capsys, dispatch_in_gateway,
+):
+    """Only literal false grants standalone dispatch authority."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": dispatch_in_gateway}},
+    )
+    monkeypatch.setattr(
+        kanban_db, "connect_closing",
+        lambda: pytest.fail("malformed admission must not open the DB"),
+    )
+    dispatch_once = MagicMock()
+    monkeypatch.setattr(kanban_db, "dispatch_once", dispatch_once)
+
+    rc = kb_cli.kanban_command(argparse.Namespace(
+        kanban_action="dispatch", dry_run=True, max=None,
+        failure_limit=2, json=False,
+    ))
+
+    assert rc == 2
+    assert "manual dispatch is disabled" in capsys.readouterr().err
+    dispatch_once.assert_not_called()
+
+
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_cli_dispatch_standalone_holds_singleton_lock(
     isolated_kanban_home, monkeypatch, dry_run,

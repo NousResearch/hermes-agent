@@ -1969,7 +1969,7 @@ def dispatch(
             status_code=503,
             detail="kanban dispatcher admission is unavailable",
         ) from exc
-    if kanban_config.get("dispatch_in_gateway", True):
+    if kanban_config.get("dispatch_in_gateway", True) is not False:
         raise HTTPException(
             status_code=409,
             detail="kanban dispatch is owned by the gateway",

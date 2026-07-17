@@ -591,6 +591,10 @@ fn force_kill_other_hermes() {
     force_kill_other_hermes_for(None);
 }
 
+fn should_use_global_hermes_kill(install_root: Option<&Path>) -> bool {
+    install_root.is_none()
+}
+
 /// Same as [`force_kill_other_hermes`], optionally scoped to a specific
 /// install root so we only kill that install's venv interpreters (avoids
 /// collateral damage if another Hermes tree is also present).
@@ -601,19 +605,23 @@ fn force_kill_other_hermes_for(install_root: Option<&Path>) {
     #[cfg(target_os = "windows")]
     {
         let my_pid = std::process::id();
-        // /FI excludes our own PID; /T kills the tree; /F forces.
-        let _ = std::process::Command::new("taskkill")
-            .args([
-                "/F",
-                "/T",
-                "/IM",
-                "hermes.exe",
-                "/FI",
-                &format!("PID ne {my_pid}"),
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        // The legacy no-root caller has no install boundary, so preserve its
+        // broad image cleanup. With a root, the scoped CIM query below also
+        // catches venv\Scripts\hermes.exe without touching other installs.
+        if should_use_global_hermes_kill(install_root) {
+            let _ = std::process::Command::new("taskkill")
+                .args([
+                    "/F",
+                    "/T",
+                    "/IM",
+                    "hermes.exe",
+                    "/FI",
+                    &format!("PID ne {my_pid}"),
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
 
         // Kill venv python(w).exe holders. Prefer a scoped PowerShell filter
         // when we know the install root; otherwise fall back to a broader
@@ -1098,6 +1106,18 @@ fn emit_log(app: &AppHandle, stage: Option<&str>, stream: LogStream, line: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scoped_cleanup_skips_global_image_kill() {
+        assert!(!should_use_global_hermes_kill(Some(Path::new(
+            r"C:\Hermes"
+        ))));
+    }
+
+    #[test]
+    fn legacy_cleanup_keeps_global_image_kill_without_root() {
+        assert!(should_use_global_hermes_kill(None));
+    }
 
     #[test]
     fn venv_hermes_is_under_install_root() {

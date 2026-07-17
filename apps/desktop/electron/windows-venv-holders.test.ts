@@ -6,7 +6,7 @@ import {
   selectVenvHolders
 } from './windows-venv-holders'
 
-const ROOT = 'C:\\Users\\si\\AppData\\Local\\hermes\\hermes-agent'
+const ROOT = 'C:\\Users\\TestUser\\AppData\\Local\\hermes\\hermes-agent'
 
 describe('normalizeWinPath', () => {
   it('lowercases and unifies separators', () => {
@@ -35,7 +35,7 @@ describe('isVenvHolderProcess', () => {
       isVenvHolderProcess(
         {
           pid: 7,
-          exe: 'C:\\Users\\si\\AppData\\Local\\Programs\\Python\\Python311\\python.exe',
+          exe: 'C:\\Users\\TestUser\\AppData\\Local\\Programs\\Python\\Python311\\python.exe',
           cmdline:
             'python.exe -m hermes_cli.main --profile sophie gateway run ' +
             ROOT +

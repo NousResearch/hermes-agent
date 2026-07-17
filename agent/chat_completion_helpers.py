@@ -2214,6 +2214,67 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # resolved, so the builder degrades to its plain default if it ever runs
     # first.
     _stream_stale_timeout = None
+    stream_attempt_lock = threading.Lock()
+    stream_attempt_state = {
+        "current": 0,
+        "cancelled": set(),
+        "discarded_chunks": 0,
+        "discarded_bytes": 0,
+    }
+
+    def _start_stream_attempt() -> int:
+        with stream_attempt_lock:
+            stream_attempt_state["current"] += 1
+            return int(stream_attempt_state["current"])
+
+    def _cancel_current_stream_attempt(reason: str) -> None:
+        with stream_attempt_lock:
+            current = int(stream_attempt_state.get("current") or 0)
+            if current:
+                stream_attempt_state["cancelled"].add(current)
+        if current:
+            logger.debug(
+                "Marked stream attempt %s cancelled: %s",
+                current,
+                reason,
+            )
+
+    def _stream_attempt_is_active(stream_attempt_id: int) -> bool:
+        with stream_attempt_lock:
+            return (
+                stream_attempt_id == int(stream_attempt_state.get("current") or 0)
+                and stream_attempt_id not in stream_attempt_state["cancelled"]
+            )
+
+    def _stream_attempt_was_cancelled(stream_attempt_id: int) -> bool:
+        with stream_attempt_lock:
+            return stream_attempt_id in stream_attempt_state["cancelled"]
+
+    def _discard_stale_stream_chunk(stream_attempt_id: int, chunk) -> None:
+        try:
+            chunk_bytes = len(repr(chunk))
+        except Exception:
+            chunk_bytes = 0
+        with stream_attempt_lock:
+            stream_attempt_state["discarded_chunks"] += 1
+            stream_attempt_state["discarded_bytes"] += chunk_bytes
+            discarded_chunks = stream_attempt_state["discarded_chunks"]
+            discarded_bytes = stream_attempt_state["discarded_bytes"]
+        if discarded_chunks == 1:
+            logger.warning(
+                "Discarding chunk from superseded stream attempt %s "
+                "(discarded_chunks=%s discarded_bytes=%s)",
+                stream_attempt_id,
+                discarded_chunks,
+                discarded_bytes,
+            )
+        logger.debug(
+            "Discarded stale stream chunk from attempt %s "
+            "(discarded_chunks=%s discarded_bytes=%s)",
+            stream_attempt_id,
+            discarded_chunks,
+            discarded_bytes,
+        )
 
     def _fire_first_delta():
         if not first_delta_fired["done"] and on_first_delta:
@@ -2223,7 +2284,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             except Exception:
                 pass
 
-    def _call_chat_completions():
+    def _call_chat_completions(stream_attempt_id: int):
         """Stream a chat completions response."""
         import httpx as _httpx
         # Per-provider / per-model request_timeout_seconds (from config.yaml)
@@ -2403,6 +2464,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if agent._interrupt_requested:
                 break
 
+            if not _stream_attempt_is_active(stream_attempt_id):
+                _discard_stale_stream_chunk(stream_attempt_id, chunk)
+                continue
+
             if not chunk.choices:
                 if hasattr(chunk, "model") and chunk.model:
                     model_name = chunk.model
@@ -2527,6 +2592,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Usage in the final chunk
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
+
+        if _stream_attempt_was_cancelled(stream_attempt_id):
+            raise _httpx.RemoteProtocolError(
+                f"stream attempt {stream_attempt_id} was superseded"
+            )
 
         # Build mock response matching non-streaming shape
         full_content = "".join(content_parts) or None
@@ -2803,6 +2873,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         try:
             for _stream_attempt in range(_max_stream_retries + 1):
+                stream_attempt_id = _start_stream_attempt()
                 # Check for interrupt before each retry attempt.  Without
                 # this, /stop closes the HTTP connection (outer poll loop),
                 # but the retry loop opens a FRESH connection — negating the
@@ -2810,13 +2881,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # retry can block for the full stream-read timeout (120s+),
                 # causing multi-minute delays between /stop and response.
                 if agent._interrupt_requested:
+                    _cancel_current_stream_attempt("interrupt_before_stream_retry")
                     raise InterruptedError("Agent interrupted before stream retry")
                 try:
                     if agent.api_mode == "anthropic_messages":
                         agent._try_refresh_anthropic_client_credentials()
                         result["response"] = _call_anthropic()
                     else:
-                        result["response"] = _call_chat_completions()
+                        result["response"] = _call_chat_completions(stream_attempt_id)
                     return  # success
                 except Exception as e:
                     # If the main poll loop force-closed this request because
@@ -2938,6 +3010,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             mid_tool_call=True,
                             diag=request_client_holder.get("diag"),
                         )
+                        _cancel_current_stream_attempt("stream_mid_tool_retry_cleanup")
                         _close_request_client_once("stream_mid_tool_retry_cleanup")
                         if agent.api_mode == "anthropic_messages":
                             try:
@@ -3002,6 +3075,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 diag=request_client_holder.get("diag"),
                             )
                             # Close the stale request client before retry
+                            _cancel_current_stream_attempt("stream_retry_cleanup")
                             _close_request_client_once("stream_retry_cleanup")
                             # Also rebuild the primary client to purge
                             # any dead connections from the pool.
@@ -3218,6 +3292,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 f"Reconnecting..."
             )
             try:
+                _cancel_current_stream_attempt("stale_stream_kill")
                 _close_request_client_once("stale_stream_kill")
             except Exception:
                 pass
@@ -3259,6 +3334,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 "(not a network error)."
             )
             try:
+                _cancel_current_stream_attempt("stream_interrupt_abort")
                 if agent.api_mode == "anthropic_messages":
                     agent._anthropic_client.close()
                     agent._rebuild_anthropic_client()

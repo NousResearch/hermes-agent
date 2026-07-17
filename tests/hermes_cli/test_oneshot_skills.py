@@ -133,3 +133,105 @@ class TestRunOneshotSkillsWiring:
         ):
             rc = run_oneshot("hi")
         assert rc == 0
+
+
+SENTINEL = "ONESHOT-SKILLS-E2E-SENTINEL-31548 use the frobnicate protocol"
+
+
+def _make_real_skill(hermes_home, name, body_sentinel=SENTINEL):
+    """Write a real SKILL.md under <hermes_home>/skills/<name>/."""
+    skill_dir = hermes_home / "skills" / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"""\
+---
+name: {name}
+description: Integration regression fixture for issue #31548.
+---
+
+# {name}
+
+{body_sentinel}
+""",
+        encoding="utf-8",
+    )
+    return skill_dir
+
+
+def _fake_runtime(**overrides):
+    """Minimal resolve_runtime_provider() shape for a mocked-agent run."""
+    runtime = {
+        "api_key": "test-key",
+        "base_url": "http://127.0.0.1:1",
+        "provider": "openai",
+        "api_mode": "chat_completions",
+        "credential_pool": None,
+    }
+    runtime.update(overrides)
+    return runtime
+
+
+class TestOneshotSkillsEndToEnd:
+    """Integration regression (review feedback on #63814): no skill-loader
+    stubs. A REAL skill on disk under a temp HERMES_HOME must be discovered
+    by the actual agent.skill_commands loader and its body must reach the
+    ``ephemeral_system_prompt`` handed to AIAgent. Only the external
+    boundaries (provider resolution, the agent itself) are mocked."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_logging(self):
+        # run_oneshot() calls logging.disable(CRITICAL) globally; undo it so
+        # this test can't degrade later files in shared-process runs.
+        import logging
+
+        yield
+        logging.disable(logging.NOTSET)
+
+    def _run(self, tmp_path, monkeypatch, skills):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+
+        agent_cls = mock.MagicMock()
+        agent_cls.return_value.run_conversation.return_value = {
+            "final_response": "done",
+            "api_calls": 1,
+        }
+        with mock.patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=_fake_runtime(),
+        ), mock.patch("run_agent.AIAgent", agent_cls):
+            rc = run_oneshot("hi", skills=skills)
+        return rc, agent_cls
+
+    def test_real_skill_body_reaches_agent_ephemeral_prompt(
+        self, tmp_path, monkeypatch
+    ):
+        _make_real_skill(tmp_path, "oneshot-e2e-skill")
+
+        rc, agent_cls = self._run(tmp_path, monkeypatch, "oneshot-e2e-skill")
+
+        assert rc == 0
+        agent_cls.assert_called_once()
+        prompt = agent_cls.call_args.kwargs["ephemeral_system_prompt"]
+        # The actual on-disk skill body — not a stub — must arrive verbatim.
+        assert SENTINEL in prompt
+        assert "oneshot-e2e-skill" in prompt
+
+    def test_missing_skill_with_real_loader_exits_2_before_agent(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        (tmp_path / "skills").mkdir(parents=True)  # empty skills dir
+
+        rc, agent_cls = self._run(tmp_path, monkeypatch, "no-such-skill")
+
+        assert rc == 2
+        agent_cls.assert_not_called()
+        assert "no-such-skill" in capsys.readouterr().err
+
+    def test_no_skills_requested_passes_none_ephemeral_prompt(
+        self, tmp_path, monkeypatch
+    ):
+        rc, agent_cls = self._run(tmp_path, monkeypatch, None)
+
+        assert rc == 0
+        assert agent_cls.call_args.kwargs["ephemeral_system_prompt"] is None

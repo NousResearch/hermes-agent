@@ -2020,15 +2020,20 @@ def _apply_tui_python_env(env: dict) -> None:
     if not src_root or not Path(src_root).is_dir():
         env["HERMES_PYTHON_SRC_ROOT"] = str(PROJECT_ROOT)
 
-    python = str(env.get("HERMES_PYTHON") or "").strip()
-    if not python or not (
-        (Path(python).is_file() and os.access(python, os.X_OK)) or shutil.which(python)
-    ):
-        env["HERMES_PYTHON"] = sys.executable
-
     cwd = str(env.get("HERMES_CWD") or "").strip()
     if not cwd or not Path(cwd).is_dir():
         env["HERMES_CWD"] = _safe_tui_cwd(env)
+
+    python = str(env.get("HERMES_PYTHON") or "").strip()
+    if os.path.dirname(python):
+        python_path = Path(python)
+        if not python_path.is_absolute():
+            python_path = Path(env["HERMES_CWD"]) / python_path
+        python_is_executable = python_path.is_file() and os.access(python_path, os.X_OK)
+    else:
+        python_is_executable = bool(shutil.which(python, path=env.get("PATH")))
+    if not python_is_executable:
+        env["HERMES_PYTHON"] = sys.executable
 
 
 def _launch_tui(
@@ -2064,7 +2069,6 @@ def _launch_tui(
     )
     os.close(active_session_fd)
     env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
-    _apply_tui_python_env(env)
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
 
     wt_info = None
@@ -2088,6 +2092,8 @@ def _launch_tui(
             sys.exit(1)
         env["HERMES_CWD"] = wt_info["path"]
         env["TERMINAL_CWD"] = wt_info["path"]
+
+    _apply_tui_python_env(env)
 
     if model:
         env["HERMES_MODEL"] = model

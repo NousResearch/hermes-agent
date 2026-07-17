@@ -789,6 +789,7 @@ def stream_converse_with_callbacks(
     on_tool_start=None,
     on_reasoning_delta=None,
     on_interrupt_check=None,
+    on_event=None,
 ) -> SimpleNamespace:
     """Process a Bedrock ConverseStream event stream with real-time callbacks.
 
@@ -808,6 +809,12 @@ def stream_converse_with_callbacks(
             on supported models (Claude 4.6+).
         on_interrupt_check: Called on each event. Should return True if the
             agent has been interrupted and streaming should stop.
+        on_event: Called once at the top of the loop body for EVERY yielded
+            Bedrock event (text/tool-input/reasoning/metadata deltas alike),
+            before any branching. Provides a wire-level liveness signal so an
+            external watchdog can distinguish "still receiving events" from
+            "stream wedged with no data". Errors raised by the callback are
+            swallowed so a liveness hook can never abort the stream.
 
     Returns:
         An OpenAI-compatible SimpleNamespace response, identical in shape to
@@ -823,6 +830,15 @@ def stream_converse_with_callbacks(
     usage_data: Dict[str, int] = {}
 
     for event in event_stream.get("stream", []):
+        # Wire-level liveness signal: fire on EVERY yielded event (text, tool
+        # input, reasoning, metadata) before branching so an external watchdog
+        # can tell a still-flowing stream from a wedged one. Best-effort — a
+        # liveness callback must never be able to abort the stream.
+        if on_event is not None:
+            try:
+                on_event()
+            except Exception:
+                pass
         # Check for interrupt
         if on_interrupt_check and on_interrupt_check():
             break

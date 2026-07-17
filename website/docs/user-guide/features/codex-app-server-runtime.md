@@ -132,6 +132,21 @@ The kanban tools are gated by `HERMES_KANBAN_TASK` env var the dispatcher sets â
 | All gateway platforms | yes | yes |
 | Non-OpenAI providers | yes | n/a â€” OpenAI/Codex-scoped |
 
+### Live display
+
+Even though the agent loop runs inside the Codex subprocess, the runtime
+bridges Codex's event stream into the same display path the default runtime
+uses:
+
+- Live assistant deltas, reasoning (including summary deltas), and stable-ID
+  tool start/completion events surface in the TUI, desktop, and messaging
+  gateways as the turn runs. The completion-only history projector remains
+  separate, so a resumed session hydrates the same tool cards shown during
+  the turn.
+- Gateway commentary stays visible when token streaming is disabled, and
+  live tool events are forwarded even for notifications drained ahead of an
+  approval request. Commentary honors `display.show_commentary`.
+
 ## Prerequisites
 
 1. **Codex CLI installed:**

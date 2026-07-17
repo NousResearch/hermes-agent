@@ -64,6 +64,15 @@ def test_valid_json_2xx_body_parses(monkeypatch):
         assert nb.get_billing_state() == payload
 
 
+def test_transient_siblings_not_parent_child():
+    assert issubclass(nb.BillingRateLimited, nb.BillingTransient)
+    assert issubclass(nb.BillingStripeUnavailable, nb.BillingTransient)
+    assert issubclass(nb.BillingUpgradeCapExceeded, nb.BillingTransient)
+    assert not issubclass(nb.BillingStripeUnavailable, nb.BillingRateLimited)
+    assert not issubclass(nb.BillingUpgradeCapExceeded, nb.BillingRateLimited)
+    assert not issubclass(nb.BillingRateLimited, nb.BillingStripeUnavailable)
+
+
 # ---------------------------------------------------------------------------
 # Subscription change (V3): the request the client actually puts on the wire.
 # ---------------------------------------------------------------------------

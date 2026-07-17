@@ -9955,7 +9955,7 @@ def test_billing_error_serialization_preserves_server_code(
     import hermes_cli.nous_billing as nb
 
     headers = _BillingHeaders({"Retry-After": str(retry_after)}) if retry_after else None
-    with pytest.raises(nb.BillingRateLimited) as ei:
+    with pytest.raises(nb.BillingTransient) as ei:
         nb._raise_for_error(status, {"error": error}, headers)
 
     result = server._serialize_billing_error(ei.value)
@@ -9963,6 +9963,16 @@ def test_billing_error_serialization_preserves_server_code(
     assert result["error"] == error
     assert ei.value.error == error
     assert result["retry_after"] == retry_after
+
+
+def test_billing_rate_limit_without_error_defaults_wire_code():
+    import hermes_cli.nous_billing as nb
+
+    exc = nb.BillingRateLimited("slow down", status=429, retry_after=10)
+
+    result = server._serialize_billing_error(exc)
+
+    assert result["error"] == "rate_limited"
 
 
 # ── subscription change RPCs (V3): preview + pending-change + upgrade ──

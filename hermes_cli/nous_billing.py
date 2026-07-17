@@ -122,7 +122,19 @@ class BillingSessionRevoked(BillingAuthError):
     """
 
 
-class BillingRateLimited(BillingError):
+class BillingTransient(BillingError):
+    """A deterministic non-charge outcome: the request definitely did NOT
+    reach/complete at Stripe, so it's always safe to retry after backoff —
+    never the "maybe charged" ambiguity of a real 5xx/timeout. Covers
+    429 rate limiting, 503 gate-unavailable, Stripe being down, and the
+    daily upgrade cap — distinct failure modes that share this one
+    contract property. Catch this (not the old ad-hoc subclass hierarchy)
+    wherever the intent is "any transient, definitely-not-charged billing
+    failure, back off and retry/poll".
+    """
+
+
+class BillingRateLimited(BillingTransient):
     """``429 rate_limited`` or ``503 temporarily_unavailable``.
 
     NOT a payment failure. Carries ``retry_after`` (seconds) — back off and tell
@@ -132,22 +144,24 @@ class BillingRateLimited(BillingError):
     """
 
 
-class BillingStripeUnavailable(BillingRateLimited):
+class BillingStripeUnavailable(BillingTransient):
     """``503 stripe_unavailable`` — Stripe itself is down.
 
     TRANSIENT: back off and retry using Retry-After; this is NOT the same as
     being throttled by our own rate limiter, so surfaces must not render "rate
     limited" copy for it — they should read ``.error`` to tell the two apart.
-    Subclasses BillingRateLimited so existing back-off call sites still catch it.
+    A BillingTransient sibling of BillingRateLimited (not a subclass) — surfaces
+    must not render "rate limited" copy for it; read ``.error`` to distinguish it.
     """
 
 
-class BillingUpgradeCapExceeded(BillingRateLimited):
+class BillingUpgradeCapExceeded(BillingTransient):
     """``429 upgrade_cap_exceeded`` — the org hit its 5-upgrades/day cap.
 
     Distinct from the hourly ``rate_limited`` charge cap (same HTTP status,
-    different meaning + no useful short-Retry-After backoff). Subclasses
-    BillingRateLimited for the same reason as BillingStripeUnavailable.
+    different meaning + no useful short-Retry-After backoff). A BillingTransient
+    sibling of BillingRateLimited (not a subclass) — surfaces must read ``.error``
+    to distinguish the failure mode.
     """
 
 
@@ -198,6 +212,20 @@ def _absolutize_portal_url(portal_url: Optional[str]) -> Optional[str]:
 # normally (the cache holds a valid token, not the HTTP outcome).
 _TOKEN_CACHE_TTL_SECONDS = 30.0
 _token_cache: tuple[float, str, str] | None = None  # (cached_at, token, base)
+
+
+def invalidate_cached_token() -> None:
+    """Bust the 30s token cache so post-step-up replays use the freshly-scoped token.
+
+    ``_request`` only self-busts the cache on a 401 (an expired/invalid
+    token), not on a 403 scope denial — so after a step-up grant, the
+    cache would otherwise still hold the pre-grant unscoped token and
+    the immediate replay would 403 again. Callers outside this module
+    (e.g. the CLI's scope step-up flow) call this instead of poking
+    the private ``_token_cache`` global directly.
+    """
+    global _token_cache
+    _token_cache = None
 
 
 def _billing_not_logged_in(exc: Optional[BaseException] = None) -> "BillingAuthError":

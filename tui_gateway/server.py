@@ -7890,25 +7890,6 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5031, f"pet.hatch failed: {exc}")
 
 
-@method("credits.view")
-def _(rid, params: dict) -> dict:
-    """Structured Nous credit view for the TUI /credits command.
-
-    Account-independent (a portal fetch gated on "a Nous account is logged in"),
-    so it works with no live agent / on a resumed session — same as the /usage
-    credits block. Returns the surface-agnostic CreditsView fields so the TUI can
-    render a clickable top-up <Link>. Fail-open: a portal hiccup or logged-out
-    account yields {logged_in: false}, never an error the user has to parse.
-    """
-    try:
-        from agent.billing_usage import build_usage_model
-
-        usage["usage"] = _serialize_usage_model(build_usage_model())
-    except Exception:
-        pass
-    return _ok(rid, usage)
-
-
 # ===========================================================================
 # Phase 2b terminal billing RPC methods
 # ===========================================================================
@@ -7924,10 +7905,10 @@ def _(rid, params: dict) -> dict:
 def _serialize_billing_error(exc) -> dict:
     """Map a BillingError into the result.error envelope the TUI branches on."""
     from hermes_cli.nous_billing import (
-        BillingRateLimited,
         BillingRemoteSpendingRevoked,
         BillingScopeRequired,
         BillingSessionRevoked,
+        BillingTransient,
     )
 
     kind = "error"
@@ -7937,7 +7918,7 @@ def _serialize_billing_error(exc) -> dict:
         kind = "session_revoked"
     elif isinstance(exc, BillingScopeRequired):
         kind = "insufficient_scope"
-    elif isinstance(exc, BillingRateLimited):
+    elif isinstance(exc, BillingTransient):
         kind = str(exc.error) if getattr(exc, "error", None) else "rate_limited"
     elif getattr(exc, "error", None):
         kind = str(exc.error)

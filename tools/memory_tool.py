@@ -431,7 +431,7 @@ class MemoryStore:
 
             # Check that replacement doesn't blow the budget
             test_entries = entries.copy()
-            test_entries[idx] = new_content
+            test_entries[idx] = entries[idx].replace(old_text, new_content, 1)
             new_total = len(ENTRY_DELIMITER.join(test_entries))
 
             if new_total > limit:
@@ -448,7 +448,7 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries[idx] = new_content
+            entries[idx] = entries[idx].replace(old_text, new_content, 1)
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
@@ -559,7 +559,7 @@ class MemoryStore:
                             target,
                             f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.",
                         )
-                    working[matches[0]] = content
+                    working[matches[0]] = working[matches[0]].replace(old_text, content, 1)
 
                 elif act == "remove":
                     if not old_text:

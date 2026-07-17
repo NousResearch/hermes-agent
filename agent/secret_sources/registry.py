@@ -182,6 +182,19 @@ def _reset_registry_for_tests() -> None:
     _BUILTINS_LOADED = False
 
 
+def invalidate_caches(home_path: Path) -> None:
+    """Best-effort invalidation of every source cache for one exact home."""
+    _ensure_builtin_sources()
+    for source in _SOURCES.values():
+        try:
+            source.invalidate_cache(home_path)
+        except Exception:  # noqa: BLE001 — refresh must continue source-by-source
+            logger.warning(
+                "Failed to invalidate cache for secret source '%s'", source.name,
+                exc_info=True,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Orchestrated apply
 # ---------------------------------------------------------------------------

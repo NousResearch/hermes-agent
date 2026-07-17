@@ -75,8 +75,11 @@ _BWS_DOWNLOAD_TIMEOUT = 60
 _BWS_RUN_TIMEOUT = 30
 
 # In-process cache so repeated load_hermes_dotenv() calls (CLI startup,
-# gateway hot-reload, test suites) don't re-fetch from BSM.
-_CacheKey = Tuple[str, str, str]  # (access_token_fingerprint, project_id, server_url)
+# gateway hot-reload, test suites) don't re-fetch from BSM. The exact canonical
+# home is part of L1 identity so a multiplexed process cannot reuse profile A's
+# values for profile B. L2 is already partitioned by its home-specific path.
+_CacheKey = Tuple[str, str, str, str]
+# (access_token_fingerprint, project_id, server_url, canonical_home)
 _CACHE: Dict[_CacheKey, _CachedFetch] = {}
 
 # Disk-persisted cache so back-to-back CLI invocations (e.g. `hermes chat -q ...`
@@ -94,8 +97,8 @@ _DISK_CACHE_BASENAME = "bws_cache.json"
 
 
 def _cache_key_str(cache_key: _CacheKey) -> str:
-    """Serialize a cache key to a stable string for JSON storage."""
-    token_fp, project_id, server_url = cache_key
+    """Serialize a cache key for L2; its path already supplies home identity."""
+    token_fp, project_id, server_url, _home = cache_key
     return f"{token_fp}|{project_id}|{server_url}"
 
 
@@ -111,6 +114,12 @@ def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
     callers; falls back to `$HERMES_HOME` / `~/.hermes` when home is None.
     """
     return _DISK_CACHE.path(home_path)
+
+
+def _canonical_cache_home(home_path: Optional[Path] = None) -> str:
+    from agent.secret_sources._cache import resolve_cache_home
+
+    return str(resolve_cache_home(home_path).expanduser().resolve())
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +394,12 @@ def fetch_bitwarden_secrets(
     if not project_id:
         raise RuntimeError("Bitwarden project_id is empty")
 
-    cache_key = (_token_fingerprint(access_token), project_id, server_url or "")
+    cache_key = (
+        _token_fingerprint(access_token),
+        project_id,
+        server_url or "",
+        _canonical_cache_home(home_path),
+    )
     if use_cache:
         cached = _CACHE.get(cache_key)
         if cached and cached.is_fresh(cache_ttl_seconds):
@@ -599,6 +613,12 @@ class BitwardenSource(SecretSource):
     label = "Bitwarden Secrets Manager"
     shape = "bulk"
     scheme = "bws"
+
+    def invalidate_cache(self, home_path: Path) -> None:
+        canonical_home = _canonical_cache_home(home_path)
+        for key in [key for key in _CACHE if key[3] == canonical_home]:
+            _CACHE.pop(key, None)
+        _DISK_CACHE.clear(home_path)
 
     def override_existing(self, cfg: dict) -> bool:
         # Default True (matches DEFAULT_CONFIG): the point of BSM is

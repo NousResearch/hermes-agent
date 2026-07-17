@@ -1715,7 +1715,8 @@ class TestRunJobSessionPersistence:
         fake_db = MagicMock()
         call_order = []
 
-        def _record_reset():
+        def _record_reset(home):
+            assert home == tmp_path
             call_order.append("reset")
 
         def _record_load(*args, **kwargs):

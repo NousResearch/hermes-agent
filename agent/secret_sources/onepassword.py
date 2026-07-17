@@ -136,6 +136,12 @@ def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
     return _DISK_CACHE.path(home_path)
 
 
+def _canonical_cache_home(home_path: Optional[Path] = None) -> str:
+    from agent.secret_sources._cache import resolve_cache_home
+
+    return str(resolve_cache_home(home_path).expanduser().resolve())
+
+
 # ---------------------------------------------------------------------------
 # Reference validation + fingerprinting
 # ---------------------------------------------------------------------------
@@ -336,7 +342,7 @@ def fetch_onepassword_secrets(
     cache_key: _CacheKey = (
         _auth_fingerprint(token_env),
         account or "",
-        str(home_path) if home_path is not None else "",
+        _canonical_cache_home(home_path),
         _refs_fingerprint(valid),
     )
 
@@ -501,6 +507,12 @@ class OnePasswordSource(SecretSource):
     label = "1Password"
     shape = "mapped"
     scheme = "op"
+
+    def invalidate_cache(self, home_path: Path) -> None:
+        canonical_home = _canonical_cache_home(home_path)
+        for key in [key for key in _CACHE if key[2] == canonical_home]:
+            _CACHE.pop(key, None)
+        _DISK_CACHE.clear(home_path)
 
     def override_existing(self, cfg: dict) -> bool:
         # Default True: an explicit VAR→op:// binding is the strongest

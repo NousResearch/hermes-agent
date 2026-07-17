@@ -244,7 +244,7 @@ def test_run_job_no_agent_refreshes_external_secrets_before_subprocess(hermes_en
     assert success is True
     assert error is None
     assert final_response == "secret-loaded"
-    reset.assert_called_once_with()
+    reset.assert_called_once_with(hermes_env)
     load.assert_called_once_with(hermes_home=hermes_env)
 
 

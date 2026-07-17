@@ -7794,18 +7794,24 @@ class TestDesktopCronTicker:
         with self._client():
             assert called.wait(3.0), "expected cron tick for explicit desktop owner"
 
-    def test_ticker_skipped_for_default_gateway_owner(
+    def test_auto_ticker_yields_to_live_gateway(
         self, monkeypatch, _isolate_hermes_home
     ):
         import threading
         import cron.scheduler as sched
+        import gateway.status as gateway_status
 
         called = threading.Event()
         monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
+        monkeypatch.setattr(
+            gateway_status,
+            "get_running_pid",
+            lambda *, cleanup_stale: 1234,
+        )
         monkeypatch.setenv("HERMES_DESKTOP", "1")
 
         with self._client():
-            assert not called.wait(0.5), "gateway owner must suppress Desktop ticker"
+            assert not called.wait(0.5), "live gateway must suppress Desktop ticker"
 
     def test_ticker_skipped_without_desktop(self, monkeypatch, _isolate_hermes_home):
         import threading

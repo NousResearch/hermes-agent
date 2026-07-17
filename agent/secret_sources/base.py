@@ -181,6 +181,14 @@ class SecretSource(ABC):
             return DEFAULT_FETCH_TIMEOUT_SECONDS
         return val if val > 0 else DEFAULT_FETCH_TIMEOUT_SECONDS
 
+    def invalidate_cache(self, home_path: Path) -> None:
+        """Invalidate memory and disk fetch caches for one exact Hermes home.
+
+        Sources without caches may keep this no-op default. Cached sources must
+        override it so long-running schedulers can observe secret rotation
+        without flushing or exposing another profile's values.
+        """
+
     def config_schema(self) -> dict:
         """Optional description of this source's config keys.
 

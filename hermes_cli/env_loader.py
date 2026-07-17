@@ -52,7 +52,7 @@ def get_secret_source(env_var: str) -> str | None:
     return _SECRET_SOURCES.get(env_var)
 
 
-def reset_secret_source_cache() -> None:
+def reset_secret_source_cache(hermes_home: Path | None = None) -> None:
     """Forget which HERMES_HOME paths have already had external secrets applied.
 
     The first call to ``_apply_external_secret_sources(home_path)`` in a
@@ -62,7 +62,18 @@ def reset_secret_source_cache() -> None:
     next call to re-pull — useful for tests, and for long-running processes
     that want to refresh after a config change.
     """
-    _APPLIED_HOMES.clear()
+    if hermes_home is None:
+        # Backward-compatible test/startup reset. Callers that need a genuine
+        # backend refresh must provide the exact home so another profile's L1
+        # and L2 entries are not destroyed.
+        _APPLIED_HOMES.clear()
+        return
+
+    canonical_home = hermes_home.expanduser().resolve()
+    _APPLIED_HOMES.discard(str(canonical_home))
+    from agent.secret_sources.registry import invalidate_caches
+
+    invalidate_caches(canonical_home)
 
 
 def format_secret_source_suffix(env_var: str) -> str:

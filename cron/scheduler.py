@@ -2595,8 +2595,9 @@ def _refresh_cron_runtime_secrets() -> None:
     from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
 
     with _cron_secret_refresh_lock:
-        reset_secret_source_cache()
-        load_hermes_dotenv(hermes_home=_get_hermes_home())
+        hermes_home = _get_hermes_home()
+        reset_secret_source_cache(hermes_home)
+        load_hermes_dotenv(hermes_home=hermes_home)
 
 
 def run_job(

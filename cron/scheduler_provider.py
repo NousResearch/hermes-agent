@@ -23,7 +23,7 @@ import io
 import logging
 import threading
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, cast
 
 
 logger = logging.getLogger("cron.scheduler_provider")
@@ -34,7 +34,7 @@ _CRON_SCHEDULER_RUNTIME_OWNERS = frozenset({"gateway", "desktop"})
 def _read_scheduler_owner_config_strict() -> dict[str, Any] | None:
     """Read scheduler ownership without the normal tolerant config fallback."""
     from hermes_cli import managed_scope
-    from hermes_cli.config import get_config_path
+    from hermes_cli.config import _expand_env_vars, get_config_path
     from utils import fast_safe_load
 
     def _read_mapping(path) -> dict[str, Any]:
@@ -56,10 +56,15 @@ def _read_scheduler_owner_config_strict() -> dict[str, Any] | None:
         return parsed
 
     try:
-        user_config = _read_mapping(get_config_path())
+        user_config = cast(
+            dict[str, Any], _expand_env_vars(_read_mapping(get_config_path()))
+        )
         managed_dir = managed_scope.get_managed_dir()
         managed_config = (
-            _read_mapping(managed_dir / "config.yaml")
+            cast(
+                dict[str, Any],
+                _expand_env_vars(_read_mapping(managed_dir / "config.yaml")),
+            )
             if managed_dir is not None
             else {}
         )
@@ -81,7 +86,7 @@ def _read_scheduler_owner_config_strict() -> dict[str, Any] | None:
 
 
 def resolve_cron_scheduler_owner(*, config: dict[str, Any] | None = None) -> str | None:
-    """Resolve the single automatic scheduler owner, failing closed on errors."""
+    """Resolve the ownership policy, failing closed on malformed input."""
     if config is None:
         config = _read_scheduler_owner_config_strict()
         if config is None:
@@ -95,9 +100,7 @@ def resolve_cron_scheduler_owner(*, config: dict[str, Any] | None = None) -> str
         return None
     raw_owner = cron_config.get("scheduler_owner", "auto")
     owner = raw_owner.strip().lower() if isinstance(raw_owner, str) else None
-    if owner == "auto":
-        return "gateway"
-    if owner in _CRON_SCHEDULER_RUNTIME_OWNERS:
+    if owner == "auto" or owner in _CRON_SCHEDULER_RUNTIME_OWNERS:
         return owner
     logger.error(
         "Invalid cron.scheduler_owner; scheduler startup disabled. "
@@ -109,19 +112,50 @@ def resolve_cron_scheduler_owner(*, config: dict[str, Any] | None = None) -> str
 def should_start_cron_scheduler(
     runtime_owner: str, *, config: dict[str, Any] | None = None
 ) -> bool:
-    """Return whether this long-running runtime owns automatic dispatch."""
+    """Return whether this runtime participates in the ownership policy.
+
+    Under ``auto`` the gateway is preferred and Desktop may run the built-in
+    ticker as a dynamically yielding standby. Provider-specific fail-closed
+    handling for that standby happens in ``resolve_cron_scheduler_startup``.
+    """
     if runtime_owner not in _CRON_SCHEDULER_RUNTIME_OWNERS:
         raise ValueError("Unknown cron scheduler runtime owner")
-    return resolve_cron_scheduler_owner(config=config) == runtime_owner
+    owner = resolve_cron_scheduler_owner(config=config)
+    return owner == runtime_owner or owner == "auto"
 
 
 def resolve_owned_cron_scheduler(
     runtime_owner: str, *, config: dict[str, Any] | None = None
 ) -> "CronScheduler | None":
     """Resolve the provider only after the shared ownership gate succeeds."""
-    if not should_start_cron_scheduler(runtime_owner, config=config):
-        return None
-    return resolve_cron_scheduler()
+    _owner, provider = resolve_cron_scheduler_startup(runtime_owner, config=config)
+    return provider
+
+
+def resolve_cron_scheduler_startup(
+    runtime_owner: str, *, config: dict[str, Any] | None = None
+) -> "tuple[str | None, CronScheduler | None]":
+    """Resolve one ownership snapshot and its provider for runtime startup."""
+    if runtime_owner not in _CRON_SCHEDULER_RUNTIME_OWNERS:
+        raise ValueError("Unknown cron scheduler runtime owner")
+    if config is None:
+        config = _read_scheduler_owner_config_strict()
+        if config is None:
+            return None, None
+    owner = resolve_cron_scheduler_owner(config=config)
+    if owner is None or (owner != runtime_owner and owner != "auto"):
+        return owner, None
+    provider = resolve_cron_scheduler()
+    if (
+        owner == "auto"
+        and runtime_owner == "desktop"
+        and not isinstance(provider, InProcessCronScheduler)
+    ):
+        logger.info(
+            "Desktop cron standby disabled for external provider under auto ownership"
+        )
+        return owner, None
+    return owner, provider
 
 
 class CronScheduler(ABC):

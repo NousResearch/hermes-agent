@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import sys
 import threading
 import types
@@ -115,6 +116,95 @@ def test_delivery_io_failure_is_retained_and_never_retried(failure_point):
     assert delivery.delivered is False
 
 
+@pytest.mark.parametrize("short_phase", ["content", "newline"])
+def test_delivery_retains_short_write_failure_without_duplicate(short_phase):
+    class ShortWriteStream(RecordingStdout):
+        def __init__(self):
+            super().__init__([])
+            self.calls = 0
+
+        def write(self, value):
+            self.calls += 1
+            if short_phase == "content" and self.calls == 1:
+                super().write(value[:2])
+                return 2
+            if short_phase == "newline" and value == "\n":
+                return 0
+            return super().write(value)
+
+    stream = ShortWriteStream()
+    delivery = oneshot._FinalDelivery(stream, lambda: None)
+
+    with pytest.raises(oneshot._IncompleteFinalWriteError) as first:
+        delivery.deliver("answer")
+    calls_after_first = stream.calls
+    with pytest.raises(oneshot._IncompleteFinalWriteError) as second:
+        delivery.deliver("fallback")
+
+    assert first.value is second.value
+    assert "answer" not in str(first.value)
+    assert stream.calls == calls_after_first
+    assert delivery.delivered is False
+
+
+def test_delivery_rejects_non_integer_write_result_and_retains_failure():
+    class InvalidWriteStream(RecordingStdout):
+        def write(self, value):
+            self.events.append(("write", value))
+            return None
+
+    stream = InvalidWriteStream([])
+    delivery = oneshot._FinalDelivery(stream, lambda: None)
+
+    with pytest.raises(oneshot._IncompleteFinalWriteError) as first:
+        delivery.deliver("private response")
+    with pytest.raises(oneshot._IncompleteFinalWriteError) as second:
+        delivery.deliver("fallback")
+
+    assert first.value is second.value
+    assert "private response" not in str(first.value)
+    assert stream.events == [("write", "private response")]
+
+
+@pytest.mark.parametrize("short_phase", ["content", "newline"])
+def test_run_oneshot_short_write_fails_nonzero_without_fallback_duplicate(
+    monkeypatch,
+    capsys,
+    short_phase,
+):
+    class ShortWriteStream(io.StringIO):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def write(self, value):
+            self.calls += 1
+            if short_phase == "content" and self.calls == 1:
+                super().write(value[:2])
+                return 2
+            if short_phase == "newline" and value == "\n":
+                return 0
+            return super().write(value)
+
+    stream = ShortWriteStream()
+    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(
+        oneshot,
+        "_run_agent",
+        lambda *_args, **_kwargs: ("private answer", {}),
+    )
+    monkeypatch.setattr(oneshot._OneshotResources, "close", lambda *_args, **_kwargs: None)
+
+    try:
+        assert oneshot.run_oneshot("prompt") == 1
+    finally:
+        logging.disable(logging.NOTSET)
+
+    assert stream.calls == (1 if short_phase == "content" else 2)
+    assert stream.getvalue() in {"pr", "private answer"}
+    assert "private answer" not in capsys.readouterr().err
+
+
 def test_delivery_swallows_ordinary_callback_failure_after_flush(caplog):
     stream = RecordingStdout([])
 
@@ -151,6 +241,7 @@ def test_transient_hook_is_first_and_removes_only_it_in_place(monkeypatch, raise
     events: list[tuple[str, object]] = []
     stream = RecordingStdout(events)
     resources = oneshot._OneshotResources()
+    resources.task_id = "task-current"
     delivery = oneshot._FinalDelivery(stream, lambda: events.append(("delivered", None)))
 
     def existing(**_kwargs):
@@ -165,7 +256,10 @@ def test_transient_hook_is_first_and_removes_only_it_in_place(monkeypatch, raise
             assert manager._hooks["post_llm_call"] is callbacks
             assert callbacks[0] is not existing
             for callback in list(callbacks):
-                callback(assistant_response="transformed final")
+                callback(
+                    assistant_response="transformed final",
+                    task_id="task-current",
+                )
             if raised is not None:
                 raise raised
 
@@ -179,6 +273,74 @@ def test_transient_hook_is_first_and_removes_only_it_in_place(monkeypatch, raise
     assert manager._hooks["post_llm_call"] is callbacks
     assert callbacks == [existing]
     assert events.index(("flush", None)) < events.index(("existing", None))
+
+
+def test_overlapping_transient_hooks_route_only_matching_task_and_leave_no_residue(monkeypatch):
+    callbacks = [lambda **_kwargs: None]
+    original_callbacks = callbacks
+    manager = types.SimpleNamespace(_hooks={"post_llm_call": callbacks})
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    events_a: list[tuple[str, object]] = []
+    events_b: list[tuple[str, object]] = []
+    delivery_a = oneshot._FinalDelivery(RecordingStdout(events_a), lambda: None)
+    delivery_b = oneshot._FinalDelivery(RecordingStdout(events_b), lambda: None)
+    resources_a = oneshot._OneshotResources()
+    resources_b = oneshot._OneshotResources()
+    resources_a.task_id = "task-a"
+    resources_b.task_id = "task-b"
+
+    with oneshot._install_final_delivery_hook(delivery_a, resources_a):
+        dispatcher = callbacks[0]
+        with oneshot._install_final_delivery_hook(delivery_b, resources_b):
+            assert callbacks[0] is dispatcher
+            assert callbacks.count(dispatcher) == 1
+            dispatcher(task_id="task-a", assistant_response="answer-a")
+            assert delivery_a.delivered is True
+            assert delivery_b.delivered is False
+            dispatcher(task_id="unknown", assistant_response="wrong")
+            dispatcher(task_id="task-b", assistant_response="answer-b")
+            assert delivery_b.delivered is True
+        assert callbacks[0] is dispatcher
+
+    assert manager._hooks["post_llm_call"] is original_callbacks
+    assert len(callbacks) == 1
+    assert events_a[0] == ("write", "answer-a")
+    assert events_b[0] == ("write", "answer-b")
+
+
+def test_dispatcher_snapshot_survives_matching_context_removal_during_invocation(monkeypatch):
+    callbacks = []
+    manager = types.SimpleNamespace(_hooks={"post_llm_call": callbacks})
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    resources = oneshot._OneshotResources()
+    resources.task_id = "task-a"
+    entered = threading.Event()
+    release = threading.Event()
+    stream = RecordingStdout([])
+
+    class BlockingDelivery(oneshot._FinalDelivery):
+        def deliver(self, text):
+            entered.set()
+            assert release.wait(timeout=2)
+            return super().deliver(text)
+
+    delivery = BlockingDelivery(stream, lambda: None)
+
+    with oneshot._install_final_delivery_hook(delivery, resources):
+        dispatcher = callbacks[0]
+        worker = threading.Thread(
+            target=dispatcher,
+            kwargs={"task_id": "task-a", "assistant_response": "answer"},
+        )
+        worker.start()
+        assert entered.wait(timeout=2)
+    assert callbacks == []
+    release.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert delivery.delivered is True
+    assert stream.getvalue() == "answer\n"
 
 
 def _install_cleanup_modules(monkeypatch, events):
@@ -305,6 +467,52 @@ def test_resources_primary_failure_wins_over_cleanup_control_flow(monkeypatch):
     assert "aux" in events
 
 
+def test_watchdog_failed_delivery_arm_is_retried_by_cleanup(monkeypatch):
+    events: list[str] = []
+    _install_cleanup_modules(monkeypatch, events)
+    attempts = Mock(side_effect=[RuntimeError("unavailable"), None])
+    monkeypatch.setattr("hermes_cli.exit_watchdog.arm_exit_watchdog", attempts)
+    resources = oneshot._OneshotResources()
+    resources.task_id = str(uuid.uuid4())
+
+    resources.mark_final_delivered()
+    resources.close()
+
+    assert attempts.call_args_list == [call(exit_code=70), call(exit_code=70)]
+
+
+@pytest.mark.parametrize("failure", [KeyboardInterrupt(), SystemExit(70)])
+def test_watchdog_baseexception_does_not_poison_retry(monkeypatch, failure):
+    attempts = Mock(side_effect=[failure, None])
+    monkeypatch.setattr("hermes_cli.exit_watchdog.arm_exit_watchdog", attempts)
+    resources = oneshot._OneshotResources()
+
+    with pytest.raises(type(failure)):
+        resources._arm_watchdog_once()
+    resources._arm_watchdog_once()
+    resources._arm_watchdog_once()
+
+    assert attempts.call_count == 2
+
+
+def test_watchdog_concurrent_success_arms_exactly_once(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    attempts = Mock(side_effect=lambda **_kwargs: (entered.set(), release.wait(timeout=2)))
+    monkeypatch.setattr("hermes_cli.exit_watchdog.arm_exit_watchdog", attempts)
+    resources = oneshot._OneshotResources()
+    threads = [threading.Thread(target=resources._arm_watchdog_once) for _ in range(6)]
+
+    for thread in threads:
+        thread.start()
+    assert entered.wait(timeout=2)
+    release.set()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert attempts.call_count == 1
+
+
 def test_mark_final_delivered_arms_then_ends_current_session_once(monkeypatch):
     events: list[str] = []
     resources = oneshot._OneshotResources()
@@ -381,6 +589,60 @@ def test_resources_without_task_id_never_issue_global_process_cleanup(monkeypatc
     cleanup.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("flush_result", "expect_success_log"),
+    [(False, False), (None, True), (True, True)],
+)
+def test_memory_flush_false_is_cleanup_failure_but_none_and_true_succeed(
+    monkeypatch,
+    flush_result,
+    expect_success_log,
+):
+    events: list[str] = []
+    _install_cleanup_modules(monkeypatch, events)
+    monkeypatch.setattr(oneshot._OneshotResources, "_arm_watchdog_once", Mock())
+    info = Mock()
+    warning = Mock()
+    monkeypatch.setattr(oneshot.logger, "info", info)
+    monkeypatch.setattr(oneshot.logger, "warning", warning)
+    resources = oneshot._OneshotResources()
+    resources.task_id = str(uuid.uuid4())
+    resources.agent = types.SimpleNamespace(
+        session_id="session",
+        _session_messages=[],
+        _memory_manager=types.SimpleNamespace(
+            flush_pending=Mock(return_value=flush_result)
+        ),
+        shutdown_memory_provider=Mock(side_effect=lambda _messages: events.append("memory_stop")),
+        _cleanup_task_resources=Mock(side_effect=lambda _task_id: events.append("task_resources")),
+        close=Mock(side_effect=lambda: events.append("agent")),
+    )
+    resources.session_db = types.SimpleNamespace(
+        close=Mock(side_effect=lambda: events.append("db"))
+    )
+
+    resources.close()
+
+    assert "memory_stop" in events
+    assert "agent" in events
+    assert "mcp" in events
+    assert "aux" in events
+    assert "db" in events
+    success_calls = [
+        item for item in info.call_args_list if item.args and item.args[0].startswith("oneshot cleanup completed")
+    ]
+    assert bool(success_calls) is expect_success_log
+    if flush_result is False:
+        assert any(
+            item.args == (
+                "oneshot lifecycle operation failed operation=%s exception_type=%s",
+                "memory_flush",
+                "_IncompleteCleanupError",
+            )
+            for item in warning.call_args_list
+        )
+
+
 def test_mark_final_delivered_leaves_agent_fallback_when_db_end_fails(monkeypatch):
     resources = oneshot._OneshotResources()
     agent = types.SimpleNamespace(session_id="current-child", _end_session_on_close=True)
@@ -412,7 +674,10 @@ def test_run_agent_passes_explicit_uuid_task_id_and_installs_hook(monkeypatch):
             captured["prompt"] = prompt
             captured["task_id"] = task_id
             captured["hook_present"] = bool(manager._hooks["post_llm_call"])
-            manager._hooks["post_llm_call"][0](assistant_response="transformed")
+            manager._hooks["post_llm_call"][0](
+                assistant_response="transformed",
+                task_id=task_id,
+            )
             return {"final_response": "transformed", "failed": False}
 
     def mod(name, **attrs):

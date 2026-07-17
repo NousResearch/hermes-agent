@@ -36,6 +36,20 @@ from hermes_cli.fallback_config import get_fallback_chain
 logger = logging.getLogger(__name__)
 
 
+class _IncompleteFinalWriteError(OSError):
+    """A final-response stream accepted fewer characters than requested."""
+
+    def __init__(self) -> None:
+        super().__init__("oneshot final response write was incomplete")
+
+
+class _IncompleteCleanupError(RuntimeError):
+    """A bounded cleanup operation reported that it did not complete."""
+
+    def __init__(self) -> None:
+        super().__init__("oneshot bounded cleanup did not complete")
+
+
 class _FinalDelivery:
     """Claim, write, and flush the one-shot final response exactly once."""
 
@@ -62,9 +76,13 @@ class _FinalDelivery:
                 return False
             self._claimed = True
             try:
-                self._stream.write(value)
+                written = self._stream.write(value)
+                if type(written) is not int or written != len(value):
+                    raise _IncompleteFinalWriteError()
                 if not value.endswith("\n"):
-                    self._stream.write("\n")
+                    newline_written = self._stream.write("\n")
+                    if type(newline_written) is not int or newline_written != 1:
+                        raise _IncompleteFinalWriteError()
                 self._stream.flush()
             except BaseException as exc:
                 self._delivery_error = exc
@@ -93,10 +111,13 @@ class _OneshotResources:
         with self._state_lock:
             if self._watchdog_armed:
                 return
-            self._watchdog_armed = True
-        from hermes_cli.exit_watchdog import arm_exit_watchdog
+            from hermes_cli.exit_watchdog import arm_exit_watchdog
 
-        arm_exit_watchdog(exit_code=exit_code)
+            # Keep the lock through setup so concurrent callers cannot start
+            # duplicate successful timers. A BaseException exits before the
+            # latch is claimed, allowing cleanup to retry safely.
+            arm_exit_watchdog(exit_code=exit_code)
+            self._watchdog_armed = True
 
     @staticmethod
     def _log_failure(operation: str, exc: BaseException) -> None:
@@ -180,7 +201,8 @@ class _OneshotResources:
             manager = getattr(agent, "_memory_manager", None) if agent is not None else None
             flush_pending = getattr(manager, "flush_pending", None)
             if callable(flush_pending):
-                flush_pending(timeout=10)
+                if flush_pending(timeout=10) is False:
+                    raise _IncompleteCleanupError()
 
         attempt("memory_flush", flush_memory)
 
@@ -245,28 +267,70 @@ class _OneshotResources:
             raise control_failure
 
 
+class _DeliveryDispatcherState:
+    def __init__(self, manager) -> None:
+        self.manager = manager
+        self.deliveries: dict[str, _FinalDelivery] = {}
+        self.dispatcher: Callable[..., None] | None = None
+
+
+_delivery_dispatch_lock = threading.RLock()
+_delivery_dispatchers: dict[int, _DeliveryDispatcherState] = {}
+
+
 @contextmanager
 def _install_final_delivery_hook(
     delivery: _FinalDelivery,
     resources: _OneshotResources,
 ) -> Iterator[None]:
-    """Temporarily deliver transformed output before all existing post hooks."""
+    """Route matching one-shot task output through one transient first hook."""
     from hermes_cli.plugins import get_plugin_manager
 
     manager = get_plugin_manager()
+    task_id = resources.task_id
+    if not task_id:
+        raise ValueError("one-shot task_id must be set before installing delivery hook")
 
-    def _deliver_hook(assistant_response: str = "", **_kwargs) -> None:
-        delivery.deliver(assistant_response)
+    manager_key = id(manager)
+    with _delivery_dispatch_lock:
+        state = _delivery_dispatchers.get(manager_key)
+        if state is None or state.manager is not manager:
+            state = _DeliveryDispatcherState(manager)
 
-    callbacks = manager._hooks.setdefault("post_llm_call", [])
-    callbacks.insert(0, _deliver_hook)
+            def _dispatch(
+                assistant_response: str = "",
+                task_id: str | None = None,
+                **_kwargs,
+            ) -> None:
+                # Snapshot under the registry lock. Context removal after this
+                # point cannot revoke the rightful in-flight delivery.
+                with _delivery_dispatch_lock:
+                    target = state.deliveries.get(task_id or "")
+                if target is not None:
+                    target.deliver(assistant_response)
+
+            state.dispatcher = _dispatch
+            callbacks = manager._hooks.setdefault("post_llm_call", [])
+            callbacks.insert(0, _dispatch)
+            _delivery_dispatchers[manager_key] = state
+        if task_id in state.deliveries:
+            raise RuntimeError("duplicate active one-shot task_id")
+        state.deliveries[task_id] = delivery
+
     try:
         yield
     finally:
-        current = manager._hooks.get("post_llm_call", [])
-        for index in range(len(current) - 1, -1, -1):
-            if current[index] is _deliver_hook:
-                del current[index]
+        with _delivery_dispatch_lock:
+            current_state = _delivery_dispatchers.get(manager_key)
+            if current_state is state:
+                if state.deliveries.get(task_id) is delivery:
+                    del state.deliveries[task_id]
+                if not state.deliveries:
+                    current = manager._hooks.get("post_llm_call", [])
+                    for index in range(len(current) - 1, -1, -1):
+                        if current[index] is state.dispatcher:
+                            del current[index]
+                    del _delivery_dispatchers[manager_key]
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:

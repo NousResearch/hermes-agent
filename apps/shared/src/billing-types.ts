@@ -34,12 +34,14 @@ export interface UsageModelData {
 }
 
 /**
- * Refusal/error codes the gateway serializes today (`_serialize_billing_error`
- * preserves the raw NAS code where one exists). The `(string & {})` arm keeps
- * unknown future codes (e.g. the NAS W3 card-health family) assignable —
- * consumers must keep an unknown-code fallback branch.
+ * The closed set of refusal/error codes the gateway serializes today
+ * (`_serialize_billing_error` preserves the raw NAS code where one exists,
+ * plus the client-originated transport codes). Closed on purpose: an
+ * exhaustive `Record<KnownBillingRefusalCode, …>` (classification tables,
+ * copy maps, tests) gets a compile error when a code is added here but not
+ * mapped.
  */
-export type BillingRefusalCode =
+export type KnownBillingRefusalCode =
   | 'auto_top_up_disabled_failures'
   | 'cli_billing_disabled'
   | 'consent_required'
@@ -51,6 +53,7 @@ export type BillingRefusalCode =
   | 'invalid_charge_id'
   | 'invalid_request'
   | 'monthly_cap_exceeded'
+  | 'network_error'
   | 'no_payment_method'
   | 'org_access_denied'
   | 'preview_rejected'
@@ -63,20 +66,28 @@ export type BillingRefusalCode =
   | 'temporarily_unavailable'
   | 'upgrade_cap_exceeded'
   | 'validation_failed'
-  | (string & {})
 
 /**
- * Terminal reasons a settled-poll charge can fail with (NAS
- * `cli-charge-failure-reason.ts` — all four values), plus the raw Stripe code
- * NAS pre-#711 leaks for SCA-on-upgrade. Unknown reasons must degrade safely.
+ * What the wire actually carries: a known code, or an unknown future one
+ * (e.g. the NAS W3 card-health family). The `(string & {})` arm keeps unknown
+ * codes assignable — consumers must keep an unknown-code fallback branch.
  */
-export type ChargeFailureReason =
+export type BillingRefusalCode = KnownBillingRefusalCode | (string & {})
+
+/**
+ * The closed set of terminal reasons a settled-poll charge can fail with (NAS
+ * `cli-charge-failure-reason.ts` — all four values), plus the raw Stripe code
+ * NAS pre-#711 leaks for SCA-on-upgrade.
+ */
+export type KnownChargeFailureReason =
   | 'authentication_required'
   | 'card_declined'
   | 'payment_method_expired'
   | 'processing_error'
   | 'subscription_payment_intent_requires_action'
-  | (string & {})
+
+/** Wire shape: a known reason or an unknown future one; degrade safely. */
+export type ChargeFailureReason = KnownChargeFailureReason | (string & {})
 
 export interface BillingCardInfo {
   brand: string

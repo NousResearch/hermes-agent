@@ -2142,6 +2142,18 @@ def list_authenticated_providers(
             == str(current_base_url).strip().rstrip("/").lower()
             for _cp in (custom_providers or [])
         )
+        # A named ``providers:`` entry (section 3) can already represent this
+        # endpoint even when it isn't in ``custom_providers``. Its row matches
+        # the active model via base_url (``_ep_is_current``), so emitting the
+        # bare "Custom endpoint" fallback too would leave TWO is_current rows
+        # and group the model under "CUSTOM ENDPOINT" instead of its real
+        # provider (#66329). Skip when an already-emitted row covers the URL.
+        and not any(
+            str(_r.get("api_url", "")).strip().rstrip("/").lower()
+            == _current_base_url_norm
+            for _r in results
+            if _r.get("api_url")
+        )
     ):
         _models = [current_model] if current_model else []
         if refresh or probe_current_custom_provider:

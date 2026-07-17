@@ -2979,7 +2979,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _restart_command_source: Optional[SessionSource] = None
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
-    _systemd_watchdog: Optional[Any] = None
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, Dict[str, Any]]]] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -3055,7 +3054,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._exit_reason: Optional[str] = None
         self._exit_code: Optional[int] = None
         self._draining = False
-        self._systemd_watchdog = None
         self._profile_failed_platforms: Dict[str, Dict[Platform, Dict[str, Any]]] = {}
         # External (NAS-driven) drain state — distinct from the shutdown
         # ``_draining`` flag above. Set by ``_drain_control_watcher`` when the
@@ -3532,6 +3530,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if mode in {"voice_only", "all"} and key.startswith(prefix)
             )
 
+    @staticmethod
+    def _consume_detached_adapter_cleanup_result(task: asyncio.Future[Any]) -> None:
+        """Retrieve a detached cleanup task result without surfacing cancellation."""
+        try:
+            task.exception()
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    async def _await_adapter_cleanup_with_timeout(
+        self, awaitable: Awaitable[Any], timeout: float
+    ) -> bool:
+        """Wait for adapter cleanup without letting cancellation swallowing hang us.
+
+        ``asyncio.wait_for`` cancels an overdue child but then waits for it to
+        exit. An adapter close path that catches ``CancelledError`` can therefore
+        block recovery forever. Keep ownership of the old task through its done
+        callback, but release the runner at the deadline.
+        """
+        if timeout <= 0:
+            await awaitable
+            return True
+
+        task = asyncio.ensure_future(awaitable)
+        try:
+            done, _pending = await asyncio.wait({task}, timeout=timeout)
+        except asyncio.CancelledError:
+            task.cancel()
+            task.add_done_callback(self._consume_detached_adapter_cleanup_result)
+            raise
+        if task in done:
+            await task
+            return True
+
+        task.cancel()
+        task.add_done_callback(self._consume_detached_adapter_cleanup_result)
+        return False
+
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
         """Call adapter.disconnect() defensively, swallowing any error.
 
@@ -3545,16 +3580,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         timeout = self._adapter_disconnect_timeout_secs()
         try:
-            if timeout <= 0:
-                await adapter.disconnect()
-            else:
-                await asyncio.wait_for(adapter.disconnect(), timeout=timeout)
-        except asyncio.TimeoutError:
-            logger.warning(
-                "Timed out after %.1fs while disconnecting %s adapter; continuing shutdown",
-                timeout,
-                platform.value if platform is not None else "adapter",
+            completed = await self._await_adapter_cleanup_with_timeout(
+                adapter.disconnect(), timeout
             )
+            if not completed:
+                logger.warning(
+                    "Timed out after %.1fs while disconnecting %s adapter; continuing shutdown",
+                    timeout,
+                    platform.value if platform is not None else "adapter",
+                )
         except Exception as e:
             logger.debug(
                 "Defensive %s disconnect after failed connect raised: %s",
@@ -3574,42 +3608,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``TimeoutStopSec``; the resulting SIGKILL skips ``atexit`` PID-file
         cleanup, so the next start dies with "PID file race lost" (#14128).
 
-        Each await is wrapped in the existing per-adapter timeout budget
-        (``HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT``). On timeout we log
-        and force forward progress; the loop never hangs regardless of any
-        adapter's internal behavior. Never raises.
+        Each await uses the existing per-adapter timeout budget
+        (``HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT``). On timeout the old
+        task is cancelled and detached, then teardown forces forward progress;
+        the loop never hangs even if an adapter swallows cancellation. Never
+        raises.
         """
         timeout = self._adapter_disconnect_timeout_secs()
         suffix = f" (profile: {profile})" if profile else ""
         started_at = time.monotonic()
         try:
-            if timeout <= 0:
-                await adapter.cancel_background_tasks()
-            else:
-                await asyncio.wait_for(
-                    adapter.cancel_background_tasks(), timeout=timeout
-                )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "✗ %s background-task cancel timed out after %.1fs - forcing continue%s",
-                platform.value, timeout, suffix,
+            cancelled = await self._await_adapter_cleanup_with_timeout(
+                adapter.cancel_background_tasks(), timeout
             )
+            if not cancelled:
+                logger.warning(
+                    "✗ %s background-task cancel timed out after %.1fs - forcing continue%s",
+                    platform.value, timeout, suffix,
+                )
         except Exception as e:
             logger.debug("✗ %s background-task cancel error%s: %s", platform.value, suffix, e)
         try:
-            if timeout <= 0:
-                await adapter.disconnect()
+            disconnected = await self._await_adapter_cleanup_with_timeout(
+                adapter.disconnect(), timeout
+            )
+            if disconnected:
+                logger.info(
+                    "✓ %s disconnected (%.2fs)%s",
+                    platform.value, time.monotonic() - started_at, suffix,
+                )
             else:
-                await asyncio.wait_for(adapter.disconnect(), timeout=timeout)
-            logger.info(
-                "✓ %s disconnected (%.2fs)%s",
-                platform.value, time.monotonic() - started_at, suffix,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "✗ %s disconnect timed out after %.1fs - forcing continue%s",
-                platform.value, timeout, suffix,
-            )
+                logger.warning(
+                    "✗ %s disconnect timed out after %.1fs - forcing continue%s",
+                    platform.value, timeout, suffix,
+                )
         except Exception as e:
             logger.error(
                 "✗ %s disconnect error after %.2fs%s: %s",
@@ -4838,7 +4870,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         platform_state: Optional[str] = None,
         error_code: Optional[str] = None,
         error_message: Optional[str] = None,
-        health: Optional[dict] = None,
     ) -> None:
         try:
             from gateway.status import write_runtime_status
@@ -4847,7 +4878,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 platform_state=platform_state,
                 error_code=error_code,
                 error_message=error_message,
-                **({"health": health} if health is not None else {}),
             )
         except Exception:
             pass
@@ -8348,30 +8378,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
                 await asyncio.sleep(1)
 
-    def _start_systemd_watchdog(self) -> bool:
-        """Start sd_notify only after a configured gateway is truly running."""
-        if not self._running or self.config.systemd_watchdog_seconds <= 0:
-            return False
-        if self._systemd_watchdog is not None:
-            return True
-
-        from gateway.systemd_notify import SystemdWatchdog
-
-        watchdog = SystemdWatchdog(config_enabled=True)
-        if not watchdog.start():
-            return False
-        self._systemd_watchdog = watchdog
-        watchdog.ready("Hermes Gateway running")
-        return True
-
-    async def _stop_systemd_watchdog(self) -> None:
-        """Stop heartbeats before any potentially long shutdown drain."""
-        watchdog = self._systemd_watchdog
-        if watchdog is None:
-            return
-        self._systemd_watchdog = None
-        await watchdog.stop()
-
     async def _cancel_secondary_profile_reconnect_tasks(self) -> None:
         """Cancel profile-scoped reconnects before tearing down their registry.
 
@@ -8499,7 +8505,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running = False
             self._draining = True
 
-            await self._stop_systemd_watchdog()
             await self._cancel_secondary_profile_reconnect_tasks()
 
             # Notify all chats with active agents BEFORE draining.
@@ -21903,8 +21908,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             raise SystemExit(runner.exit_code)
         return True
 
-    runner._update_runtime_status("running")
-
     # Start the background cron scheduler via the resolved provider so
     # scheduled jobs fire automatically. The built-in provider is the
     # historical in-process 60s ticker; an external provider (e.g. chronos)
@@ -21942,13 +21945,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     )
     housekeeping_thread.start()
 
-    # READY is emitted only after adapters, cron, and housekeeping have all
-    # reached their running boundary. Missing config/systemd runtime state
-    # leaves the watchdog disabled without changing gateway behavior.
-    start_watchdog = getattr(runner, "_start_systemd_watchdog", None)
-    if callable(start_watchdog):
-        start_watchdog()
-    
     # Wait for shutdown
     await runner.wait_for_shutdown()
 

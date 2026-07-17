@@ -2926,12 +2926,9 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
-    # Gateway settings — control messaging-platform service behavior and file delivery.
+    # Gateway settings — control how messaging platforms (Telegram, Discord,
+    # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
-        # Opt-in systemd event-loop watchdog. A positive value changes generated
-        # systemd units from Type=simple to Type=notify; zero preserves existing
-        # service behavior on all platforms.
-        "systemd_watchdog_seconds": 0,
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash

@@ -30,7 +30,6 @@ if os.name == "posix":
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from gateway.status import terminate_pid
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -40,7 +39,6 @@ from gateway.restart import (
     is_gateway_supervisor_process,
     parse_restart_drain_timeout,
 )
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.config import (
     get_env_value,
     get_hermes_home,
@@ -2714,37 +2712,6 @@ def _stable_service_working_dir() -> str:
     return str(PROJECT_ROOT)
 
 
-def _systemd_watchdog_seconds(hermes_home: str | Path | None = None) -> int:
-    """Resolve the effective opt-in watchdog setting for one service home.
-
-    Service generation must consume the same managed-overlay-aware config as the
-    running gateway. A context-local home override lets a system unit be built
-    for its target user without changing the invoking process environment.
-    """
-    override_token = None
-    if hermes_home is not None:
-        override_token = set_hermes_home_override(hermes_home)
-    try:
-        config = load_gateway_config()
-        return coerce_systemd_watchdog_seconds(
-            getattr(config, "systemd_watchdog_seconds", 0),
-        )
-    except Exception:
-        logger.debug("Could not resolve effective systemd watchdog configuration", exc_info=True)
-        return 0
-    finally:
-        if override_token is not None:
-            reset_hermes_home_override(override_token)
-
-
-def _systemd_watchdog_service_fields(hermes_home: str | Path | None = None) -> tuple[str, str]:
-    """Return the unit type and directives for one effective configuration."""
-    seconds = _systemd_watchdog_seconds(hermes_home)
-    if seconds <= 0:
-        return "simple", ""
-    return "notify", f"NotifyAccess=main\nWatchdogSec={seconds}s\n"
-
-
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
@@ -2784,9 +2751,6 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
-        _systemd_type, _systemd_watchdog_directives = _systemd_watchdog_service_fields(
-            hermes_home
-        )
         profile_arg = _profile_arg_for_target_user(hermes_home, home_dir)
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
@@ -2809,8 +2773,8 @@ Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
-Type={_systemd_type}
-{_systemd_watchdog_directives}User={username}
+Type=simple
+User={username}
 Group={group_name}
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
@@ -2837,9 +2801,6 @@ WantedBy=multi-user.target
 """
 
     hermes_home = str(get_hermes_home().resolve())
-    _systemd_type, _systemd_watchdog_directives = _systemd_watchdog_service_fields(
-        hermes_home
-    )
     profile_arg = _profile_arg(hermes_home)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
@@ -2852,8 +2813,8 @@ Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
-Type={_systemd_type}
-{_systemd_watchdog_directives}ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
+Type=simple
+ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"

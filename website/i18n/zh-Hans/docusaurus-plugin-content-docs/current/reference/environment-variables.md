@@ -189,12 +189,10 @@ Discord Gateway WebSocket 健康参数属于 `config.yaml` 的非秘密配置，
 | `discord.websocket_liveness_failure_threshold` | `2` | 触发可重试重连所需的连续异常次数 |
 | `discord.websocket_heartbeat_ack_max_age_seconds` | `60` | heartbeat ACK 最大年龄 |
 | `discord.websocket_max_latency_seconds` | `30` | 有限 heartbeat latency 上限 |
-| `gateway.systemd_watchdog_seconds` | `0` | opt-in systemd 事件循环 watchdog；`0` 保持 `Type=simple` |
 
 REST HTTP 200 不是 Gateway WebSocket 健康信号。runtime status 和 `hermes gateway status --full` 只展示脱敏的 WebSocket 证据，不包含 bot token、原始 Gateway 帧或 Discord 用户/频道/Guild 标识。旧的 `discord.liveness_interval_seconds` 和 `discord.liveness_failure_threshold` 仅作为兼容别名，不再表示 REST probe。
 
-`gateway.systemd_watchdog_seconds` 为正数时重新生成 systemd unit，unit 使用 `Type=notify`、`NotifyAccess=main` 和 `WatchdogSec`，只监控 asyncio 事件循环是否继续推进；Discord transport 恢复仍由应用内重连负责。默认关闭，launchd、Windows 和其他 supervisor 不受影响。
-
+## 终端后端
 
 | 变量 | 描述 |
 |----------|-------------|

@@ -130,50 +130,6 @@ def _coerce_optional_positive_int(value: Any, key: str) -> Optional[int]:
     return parsed
 
 
-_SYSTEMD_WATCHDOG_MAX_SECONDS = 2_147_483_647
-
-
-def coerce_systemd_watchdog_seconds(
-    value: Any, key: str = "gateway.systemd_watchdog_seconds"
-) -> int:
-    """Return a finite, bounded positive watchdog interval or zero when disabled.
-
-    This normalization is shared by the runtime and service-unit generator so
-    `Type=notify` can never be emitted for a value that disables notifications
-    in the running gateway.
-    """
-    if value is None:
-        return 0
-    if isinstance(value, bool):
-        logger.warning("Ignoring invalid %s (expected a positive integer)", key)
-        return 0
-    if isinstance(value, int):
-        parsed = value
-    elif isinstance(value, str):
-        raw = value.strip()
-        if not raw or not raw.isascii() or not raw.isdecimal():
-            logger.warning("Ignoring invalid %s (expected a positive integer)", key)
-            return 0
-        try:
-            parsed = int(raw, 10)
-        except (TypeError, ValueError, OverflowError):
-            logger.warning("Ignoring invalid %s (expected a positive integer)", key)
-            return 0
-    else:
-        logger.warning("Ignoring invalid %s (expected a positive integer)", key)
-        return 0
-    if parsed == 0:
-        return 0
-    if not 0 < parsed <= _SYSTEMD_WATCHDOG_MAX_SECONDS:
-        logger.warning(
-            "Ignoring invalid %s (expected an integer from 1 to %d)",
-            key,
-            _SYSTEMD_WATCHDOG_MAX_SECONDS,
-        )
-        return 0
-    return parsed
-
-
 def _coerce_dict(value: Any) -> Dict[str, Any]:
     """Return *value* when it is a mapping, otherwise an empty dict."""
     return value if isinstance(value, dict) else {}
@@ -812,10 +768,6 @@ class GatewayConfig:
     # gateway behaves exactly as before — single HERMES_HOME, no profile stamping.
     multiplex_profiles: bool = False
 
-    # Opt-in systemd event-loop watchdog. Zero keeps the existing Type=simple
-    # service contract and disables sd_notify at runtime.
-    systemd_watchdog_seconds: int = 0
-
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
@@ -833,11 +785,6 @@ class GatewayConfig:
     # different profiles. See gateway/profile_routing.py. Each entry is a
     # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
     profile_routes: list = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
-            self.systemd_watchdog_seconds
-        )
 
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
@@ -942,7 +889,6 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
-            "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -1004,26 +950,20 @@ class GatewayConfig:
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
         multiplex_profiles = data.get("multiplex_profiles")
-        nested_gateway: Dict[str, Any] = _coerce_dict(data.get("gateway"))
-        if "systemd_watchdog_seconds" in data:
-            systemd_watchdog_raw = data.get("systemd_watchdog_seconds")
-            systemd_watchdog_key = "systemd_watchdog_seconds"
-        else:
-            systemd_watchdog_raw = nested_gateway.get("systemd_watchdog_seconds")
-            systemd_watchdog_key = "gateway.systemd_watchdog_seconds"
-        systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
-            systemd_watchdog_raw,
-            systemd_watchdog_key,
-        )
+        nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
         if multiplex_profiles is None and isinstance(nested_gateway, dict):
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
             multiplex_profiles = nested_gateway.get("multiplex_profiles")
         # Operator override: GATEWAY_MULTIPLEX_PROFILES wins over config.yaml when
-        # set to a recognized value. This allows the process launcher to force the
-        # shared gateway mode while users can still configure it in config.yaml.
-        # Blank or unrecognized values fall through to config, so a provisioned
-        # but empty setting cannot shadow an explicit config value.
+        # set to a recognized value. Hosted deployments (Nous Portal / Fly) stamp
+        # it on the container so the single multiplexed gateway — which the
+        # connector now depends on for per-profile relay routing — is forced on at
+        # every boot regardless of the image's config.yaml, while self-hosted
+        # users keep setting gateway.multiplex_profiles in config.yaml. A blank or
+        # unrecognized env value falls through to config (the empty-secret trap:
+        # a provisioned-but-unpopulated Fly secret must not shadow config), so
+        # this is a genuine 3-tier chain: env > config.yaml > default False.
         env_multiplex = _env_multiplex_profiles_override()
         if env_multiplex is not None:
             multiplex_profiles = env_multiplex
@@ -1070,7 +1010,6 @@ class GatewayConfig:
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
-            systemd_watchdog_seconds=systemd_watchdog_seconds,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
@@ -1206,10 +1145,6 @@ def load_gateway_config() -> GatewayConfig:
                     gw_data["multiplex_profiles"] = gateway_section["multiplex_profiles"]
                 if "max_concurrent_sessions" in gateway_section:
                     gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
-                if "systemd_watchdog_seconds" in gateway_section:
-                    gw_data["systemd_watchdog_seconds"] = gateway_section[
-                        "systemd_watchdog_seconds"
-                    ]
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]

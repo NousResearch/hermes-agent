@@ -2,7 +2,6 @@
 
 import logging
 import os
-from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -307,7 +306,6 @@ class TestGatewayConfigRoundtrip:
             quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
             group_sessions_per_user=False,
             thread_sessions_per_user=True,
-            systemd_watchdog_seconds=120,
         )
         d = config.to_dict()
         restored = GatewayConfig.from_dict(d)
@@ -318,47 +316,6 @@ class TestGatewayConfigRoundtrip:
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
         assert restored.group_sessions_per_user is False
         assert restored.thread_sessions_per_user is True
-        assert restored.systemd_watchdog_seconds == 120
-
-    @pytest.mark.parametrize(
-        "raw",
-        [
-            None,
-            0,
-            -1,
-            True,
-            False,
-            1.5,
-            45.0,
-            float("nan"),
-            float("inf"),
-            "120.0",
-            "1e3",
-            "bad",
-            2_147_483_648,
-        ],
-    )
-    def test_systemd_watchdog_from_dict_disables_invalid_values(self, raw):
-        config = GatewayConfig.from_dict({"systemd_watchdog_seconds": raw})
-
-        assert config.systemd_watchdog_seconds == 0
-
-    def test_systemd_watchdog_constructor_normalizes_invalid_value(self):
-        config = GatewayConfig(systemd_watchdog_seconds=cast(int, 45.0))
-
-        assert config.systemd_watchdog_seconds == 0
-
-    def test_systemd_watchdog_from_dict_accepts_bounded_positive_integer(self):
-        config = GatewayConfig.from_dict({"systemd_watchdog_seconds": 2_147_483_647})
-
-        assert config.systemd_watchdog_seconds == 2_147_483_647
-
-    def test_systemd_watchdog_from_dict_accepts_nested_positive_integer(self):
-        config = GatewayConfig.from_dict(
-            {"gateway": {"systemd_watchdog_seconds": "45"}}
-        )
-
-        assert config.systemd_watchdog_seconds == 45
 
     def test_max_concurrent_sessions_from_dict_normalizes_disabled_values(self):
         assert GatewayConfig.from_dict({}).max_concurrent_sessions is None
@@ -522,19 +479,6 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.multiplex_profiles is True
-
-    def test_systemd_watchdog_from_nested_gateway_section(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
-            "gateway:\n  systemd_watchdog_seconds: 90\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        config = load_gateway_config()
-
-        assert config.systemd_watchdog_seconds == 90
 
     def test_discord_websocket_health_settings_seed_platform_extra(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

@@ -100,17 +100,6 @@ discord:
 
 The old `liveness_interval_seconds` and `liveness_failure_threshold` names remain compatibility aliases only; they no longer mean REST probing.
 
-### Optional systemd event-loop watchdog
-
-The systemd watchdog is disabled by default. To monitor whether the Hermes asyncio event loop still receives scheduling time, enable it explicitly and refresh the service unit:
-
-```yaml
-gateway:
-  systemd_watchdog_seconds: 120
-```
-
-The generated systemd unit then uses `Type=notify`, `NotifyAccess=main`, and `WatchdogSec=120s`. Ordinary Discord network interruptions remain an application-level WebSocket reconnect concern and do not stop the watchdog by themselves. `0` preserves `Type=simple`; this protocol does not affect launchd, Windows, or other supervisors.
-
 ## Step 1: Create a Discord Application
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and sign in with your Discord account.

@@ -98,17 +98,6 @@ discord:
 
 `hermes gateway status --full` 会显示 WebSocket 的 ACK age、latency 和最近失败原因。旧的 `liveness_interval_seconds` / `liveness_failure_threshold` 仅作为迁移别名保留，不再表示 REST probe。状态记录不包含 token、Gateway 原始帧、用户、频道或 Guild 标识。
 
-### systemd 事件循环 watchdog
-
-systemd watchdog 默认关闭。需要时在 `config.yaml` 中显式启用并刷新 service unit：
-
-```yaml
-gateway:
-  systemd_watchdog_seconds: 120
-```
-
-启用后 unit 使用 `Type=notify`、`NotifyAccess=main` 和 `WatchdogSec=120s`；它只监控 Hermes asyncio event loop 是否仍能调度，不会因 Discord 普通网络波动单独触发重启。`0` 保持 `Type=simple`，launchd、Windows 和其他 supervisor 不使用该 systemd 协议。
-
 ## 第一步：创建 Discord 应用
 
 1. 前往 [Discord 开发者门户](https://discord.com/developers/applications) 并使用你的 Discord 账号登录。

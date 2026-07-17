@@ -121,3 +121,82 @@ def test_preflight_scan_requires_named_seams(tmp_path):
     with pytest.raises(Exception):
         preflight_scan([target], named_seams=[])
     preflight_scan([target], named_seams=["monotonic"])
+
+
+def test_sandbox_guard_refuses_real_home(monkeypatch, tmp_path):
+    """The 2026-07-16 incident class: a runner invoked outside Determinism()
+    with HERMES_HOME pointing at the operator's real ~/.hermes must refuse."""
+    import pytest
+
+    from scripts.refactor_equiv.sandbox_guard import UnsafeHomeError, require_sandboxed_home
+
+    real = Path.home() / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(real))
+    with pytest.raises(UnsafeHomeError):
+        require_sandboxed_home()
+    # ...and any path INSIDE the real home
+    monkeypatch.setenv("HERMES_HOME", str(real / "sub"))
+    with pytest.raises(UnsafeHomeError):
+        require_sandboxed_home()
+    # unset is also a refusal
+    monkeypatch.delenv("HERMES_HOME")
+    with pytest.raises(UnsafeHomeError):
+        require_sandboxed_home()
+
+
+def test_sandbox_guard_allows_temp_and_marker(monkeypatch, tmp_path):
+    from scripts.refactor_equiv.sandbox_guard import require_sandboxed_home
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    assert require_sandboxed_home() == (tmp_path / "home").resolve()
+
+    # a non-temp path is allowed only with the explicit marker
+    import pytest
+
+    from scripts.refactor_equiv.sandbox_guard import UnsafeHomeError
+
+    # simulate a non-temp location WITHOUT touching the real home: fabricate
+    # a fake user home under tmp_path and monkeypatch both Path.home and
+    # tempfile.gettempdir so tmp_path itself no longer counts as temp.
+    import tempfile
+
+    fake_home = tmp_path / "fakeuser"
+    fake_tmp = tmp_path / "faketmp"
+    fake_home.mkdir()
+    fake_tmp.mkdir()
+    import scripts.refactor_equiv.sandbox_guard as sg
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_tmp))
+    monkeypatch.setattr(sg, "_EXTRA_TMP_ROOTS", ())
+
+    non_temp = tmp_path / "not-temp-shaped"
+    non_temp.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(non_temp))
+    with pytest.raises(UnsafeHomeError):
+        require_sandboxed_home()
+    (non_temp / ".refactor-equiv-sandbox").touch()
+    assert require_sandboxed_home() == non_temp.resolve()
+
+
+def test_state_ext_runner_writes_are_guarded(monkeypatch):
+    """The runner itself must refuse before its first write when pointed at
+    the real home — the exact incident invocation shape."""
+    import pytest
+
+    from scripts.refactor_equiv.sandbox_guard import UnsafeHomeError
+    from tests.golden.state_ext import runner as state_runner
+
+    monkeypatch.setenv("HERMES_HOME", str(Path.home() / ".hermes"))
+    with pytest.raises(UnsafeHomeError):
+        state_runner.run_case({"kind": "denorm_flag", "configs": [True]})
+    with pytest.raises(UnsafeHomeError):
+        state_runner.run_case(
+            {
+                "kind": "title_search",
+                "name": "guard probe",
+                "query": "x",
+                "limit": 1,
+                "include_archived": False,
+            }
+        )

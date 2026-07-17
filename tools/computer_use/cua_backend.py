@@ -376,8 +376,12 @@ def _resolve_mcp_invocation(
     if not isinstance(command, str) or not command:
         # The driver knows the subcommand but didn't surface its own path.
         # Keep our resolved driver_cmd; the args are still authoritative.
-        return driver_cmd, _mcp_args_with_overlay_flag(args)
-    return command, _mcp_args_with_overlay_flag(args)
+        return driver_cmd, _mcp_args_with_overlay_flag(args, driver_cmd=driver_cmd)
+    # Manifest surfaced a relocated executable — probe THAT binary for
+    # `--no-overlay` support rather than the system-resolved one, so a
+    # wrapper/relocation with a different feature set doesn't crash on
+    # an unknown flag (or silently keep an unwanted overlay).
+    return command, _mcp_args_with_overlay_flag(args, driver_cmd=command)
 
 
 def _mcp_args_with_overlay_flag(
@@ -399,10 +403,15 @@ def _cua_driver_supports_no_overlay(driver_cmd: str) -> bool:
     would crash the MCP spawn.
     """
     try:
+        # cua-driver is a third-party binary — never hand it provider
+        # API keys via inherited env (same policy as the manifest probe
+        # and MCP spawn; #53503/#55709/#58889 lineage).
+        from tools.environments.local import _sanitize_subprocess_env
         proc = subprocess.run(
             [driver_cmd, "--help"],
             capture_output=True, text=True, timeout=3.0,
             stdin=subprocess.DEVNULL,
+            env=_sanitize_subprocess_env(cua_driver_child_env()),
         )
         help_text = (proc.stdout or "") + (proc.stderr or "")
         return "--no-overlay" in help_text

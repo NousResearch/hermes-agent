@@ -659,8 +659,11 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                 tool_call_indices[call_key] = slot
             emitted_arguments = args_str
             last_arguments = str(slot.get("last_arguments") or "")
-            if last_arguments and args_str == last_arguments:
-                emitted_arguments = ""
+            if last_arguments:
+                if args_str == last_arguments:
+                    emitted_arguments = ""
+                elif args_str.startswith(last_arguments):
+                    emitted_arguments = args_str[len(last_arguments):]
             slot["last_arguments"] = args_str
             chunks.append(
                 _make_stream_chunk(

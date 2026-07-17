@@ -326,3 +326,41 @@ def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
     assert tool_chunks[0].choices[0].delta.tool_calls[0].index == 0
     assert tool_chunks[1].choices[0].delta.tool_calls[0].index == 1
     assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id
+
+
+def test_translate_native_response_sequential_indices_with_mixed_parts():
+    """Tool-call indices must be sequential (0, 1, 2, …) even when
+    non-tool-call parts like reasoning thoughts are interleaved.
+    Regression test for the enumerate(parts) bug — enumerate would
+    skip indices when thought parts preceded functionCall parts."""
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    payload = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"thought": True, "text": "Let me check two things at once."},
+                        {"functionCall": {"name": "get_weather", "args": {"city": "Paris"}}},
+                        {"functionCall": {"name": "get_time", "args": {"tz": "CET"}}},
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 20,
+            "candidatesTokenCount": 30,
+            "totalTokenCount": 50,
+        },
+    }
+
+    response = translate_gemini_response(payload, model="gemini-2.5-flash")
+    tool_calls = response.choices[0].message.tool_calls
+    assert len(tool_calls) == 2
+    assert tool_calls[0].index == 0
+    assert tool_calls[0].function.name == "get_weather"
+    assert tool_calls[1].index == 1
+    assert tool_calls[1].function.name == "get_time"
+    assert json.loads(tool_calls[0].function.arguments) == {"city": "Paris"}
+    assert json.loads(tool_calls[1].function.arguments) == {"tz": "CET"}

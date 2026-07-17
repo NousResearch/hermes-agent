@@ -2334,6 +2334,33 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         manifest_ids = get_curated_nous_model_ids()
         if manifest_ids:
             return manifest_ids
+    if normalized == "azure-foundry":
+        # Azure Foundry deployment aliases are user-specific, so the static
+        # catalog is intentionally empty. Surface only configured aliases here:
+        # an unfiltered /models response can mix chat deployments with image,
+        # audio, and embedding entries that do not belong in an agent picker.
+        model_cfg = _get_model_config_dict()
+        cfg_provider = normalize_provider(str(model_cfg.get("provider", "") or ""))
+        configured: list[str] = []
+        if cfg_provider == "azure-foundry":
+            default = str(model_cfg.get("default") or "").strip()
+            if default:
+                configured.append(default)
+
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.fallback_config import get_fallback_chain
+
+            for entry in get_fallback_chain(load_config() or {}):
+                if normalize_provider(str(entry.get("provider") or "")) != "azure-foundry":
+                    continue
+                fallback_model = str(entry.get("model") or "").strip()
+                if fallback_model and fallback_model.lower() not in {m.lower() for m in configured}:
+                    configured.append(fallback_model)
+        except Exception:
+            pass
+
+        return configured
     if normalized == "stepfun":
         try:
             from hermes_cli.auth import resolve_api_key_provider_credentials
@@ -2650,6 +2677,17 @@ def cached_provider_model_ids(
     normalized = normalize_provider(provider) or (provider or "")
     if not normalized:
         return []
+
+    # Azure Foundry exposes user-defined deployment aliases, not a stable
+    # provider catalog. Always derive them from current config and discard any
+    # legacy cache entry that may contain raw image/embedding deployments.
+    if normalized == "azure-foundry":
+        aliases = provider_model_ids(normalized, force_refresh=force_refresh)
+        cache = _load_provider_models_cache()
+        if normalized in cache:
+            del cache[normalized]
+            _save_provider_models_cache(cache)
+        return list(aliases or [])
 
     cache = _load_provider_models_cache()
     fp = _credential_fingerprint(normalized)

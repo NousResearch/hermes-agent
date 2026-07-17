@@ -485,7 +485,6 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         input_cost_per_million=Decimal("1.50"),
         output_cost_per_million=Decimal("9.00"),
         cache_read_cost_per_million=Decimal("0.15"),
-        cache_write_cost_per_million=Decimal("1.50"),
         source="official_docs_snapshot",
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-07-07",
@@ -497,7 +496,6 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         input_cost_per_million=Decimal("2.00"),
         output_cost_per_million=Decimal("12.00"),
         cache_read_cost_per_million=Decimal("0.20"),
-        cache_write_cost_per_million=Decimal("2.00"),
         source="official_docs_snapshot",
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-07-07",
@@ -509,7 +507,28 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         input_cost_per_million=Decimal("0.25"),
         output_cost_per_million=Decimal("1.50"),
         cache_read_cost_per_million=Decimal("0.025"),
-        cache_write_cost_per_million=Decimal("0.25"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
+        "gemini-3-pro-preview",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("12.00"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
+        "gemini-3-flash-preview",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.50"),
+        output_cost_per_million=Decimal("3.00"),
+        cache_read_cost_per_million=Decimal("0.05"),
         source="official_docs_snapshot",
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-07-07",
@@ -521,7 +540,6 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         input_cost_per_million=Decimal("1.25"),
         output_cost_per_million=Decimal("10.00"),
         cache_read_cost_per_million=Decimal("0.125"),
-        cache_write_cost_per_million=Decimal("1.25"),
         source="official_docs_snapshot",
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-07-07",
@@ -533,7 +551,6 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         input_cost_per_million=Decimal("0.15"),
         output_cost_per_million=Decimal("0.60"),
         cache_read_cost_per_million=Decimal("0.015"),
-        cache_write_cost_per_million=Decimal("0.15"),
         source="official_docs_snapshot",
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-07-07",
@@ -545,7 +562,6 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         input_cost_per_million=Decimal("0.10"),
         output_cost_per_million=Decimal("0.40"),
         cache_read_cost_per_million=Decimal("0.01"),
-        cache_write_cost_per_million=Decimal("0.10"),
         source="official_docs_snapshot",
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-07-07",
@@ -661,6 +677,18 @@ for _base_56 in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
         ("openai", _base_56)
     ]
 del _base_56
+
+# The direct Gemini provider currently exposes preview IDs for these two
+# models. Keep the official snapshot keyed by both their documented stable
+# names and the provider's emitted IDs so a catalog selection is billable.
+for _alias, _canonical in {
+    "gemini-3.1-pro-preview": "gemini-3.1-pro",
+    "gemini-3.1-flash-lite-preview": "gemini-3.1-flash-lite",
+}.items():
+    _OFFICIAL_DOCS_PRICING[("google", _alias)] = _OFFICIAL_DOCS_PRICING[
+        ("google", _canonical)
+    ]
+del _alias, _canonical
 
 
 def _to_decimal(value: Any) -> Optional[Decimal]:

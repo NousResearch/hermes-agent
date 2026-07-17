@@ -3094,18 +3094,36 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 _is_stream_options_rejected = True
                         if _is_stream_options_rejected:
                             _host = base_url_hostname(agent.base_url or "")
-                            if _host and _host not in _STREAM_OPTIONS_INCOMPATIBLE:
+                            if _host:
+                                # Idempotent insert — ``set.add`` is atomic under
+                                # the GIL, so two concurrent rejections for the
+                                # same host both populate the cache without
+                                # racing on the read-then-write.  Track first
+                                # sighting so the user-visible INFO log fires
+                                # only once per host instead of once per
+                                # concurrent retry.
+                                _first_time = (
+                                    _host not in _STREAM_OPTIONS_INCOMPATIBLE
+                                )
                                 _STREAM_OPTIONS_INCOMPATIBLE.add(_host)
-                                logger.info(
-                                    "Endpoint %s rejected stream_options "
-                                    "(HTTP %s) — caching incompatibility "
-                                    "and retrying without it.",
-                                    _host, _status,
-                                )
-                                _close_request_client_once(
-                                    "stream_options_422_retry_cleanup"
-                                )
-                                continue
+                                if _first_time:
+                                    logger.info(
+                                        "Endpoint %s rejected stream_options "
+                                        "(HTTP %s) — caching incompatibility "
+                                        "and retrying without it.",
+                                        _host, _status,
+                                    )
+                            # Always clean up the failed request's client and
+                            # retry, regardless of whether the host was already
+                            # cached.  A concurrent request that lost the race
+                            # to populate the cache still needs to drop
+                            # ``stream_options`` for its own retry — otherwise
+                            # it falls through with the 422 even though the
+                            # host is now known incompatible.
+                            _close_request_client_once(
+                                "stream_options_422_retry_cleanup"
+                            )
+                            continue
                         _is_stream_unsupported = (
                             "stream" in _err_lower
                             and "not supported" in _err_lower

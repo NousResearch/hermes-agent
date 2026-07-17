@@ -148,6 +148,7 @@ from tools.browser_tool import cleanup_browser
 from agent.memory_manager import sanitize_context
 from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
+from agent.message_content import flatten_message_text
 from agent.model_metadata import (
     estimate_request_tokens_rough,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.estimate_request_tokens_rough")
     is_local_endpoint,
@@ -4823,12 +4824,15 @@ class AIAgent:
         response can contain both commentary and a partial/final-answer message
         while tools are still pending; treating top-level content as progress
         in that shape leaks the answer before the tool call runs.
+
+        Content may be a string or a structured parts list (e.g. after vision
+        turns or context compaction), so flatten it before stripping reasoning.
         """
         visible = self._extract_codex_interim_visible_text(assistant_msg)
         if visible:
             return visible
         content = assistant_msg.get("content")
-        return self._strip_think_blocks(content or "").strip()
+        return self._strip_think_blocks(flatten_message_text(content)).strip()
 
     def _interim_text_was_delivered(self, text: str) -> bool:
         normalized = self._normalize_interim_visible_text(text)

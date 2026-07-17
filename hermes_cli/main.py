@@ -425,6 +425,10 @@ from hermes_cli.subcommands.config import build_config_parser
 from hermes_cli.subcommands.skin import build_skin_parser
 from hermes_cli.subcommands.console import build_console_parser
 from hermes_cli.subcommands.version import build_version_parser
+from hermes_cli.subcommands.release_notes import (
+    build_release_notes_parser,
+    cmd_release_notes,
+)
 from hermes_cli.subcommands.update import build_update_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
 from hermes_cli.subcommands.dashboard import build_dashboard_parser
@@ -11941,6 +11945,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "sessions",
         "insights",
         "version",
+        "release-notes",
         "update",
         "uninstall",
         "profile",
@@ -13348,7 +13353,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
+        "version", "release-notes", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -15722,6 +15727,11 @@ def main():
     # version command  (parser built in hermes_cli/subcommands/version.py)
     # =========================================================================
     build_version_parser(subparsers, cmd_version=cmd_version)
+
+    # =========================================================================
+    # release-notes command  (issue #64133; parser in hermes_cli/subcommands/release_notes.py)
+    # =========================================================================
+    build_release_notes_parser(subparsers, cmd_release_notes=cmd_release_notes)
 
     # =========================================================================
     # update command  (parser built in hermes_cli/subcommands/update.py)

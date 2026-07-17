@@ -51,13 +51,9 @@ Repair checker-reported evidence defects only for `FAIL_REPAIRABLE` in CPA-002/C
 ## Next actionable step
 1. Re-run checker with command below and confirm `FAIL_REPAIRABLE` cleared:
    ```bash
-   PYTHONPATH='C:/Users/fallo/AppData/Local/hermes/worktrees/hermes-orch-control-plane-alignment;C:/Users/fallo/AppData/Local/hermes/hermes-agent/venv/Lib/site-packages' C:/Python314/python.exe -m pytest \
-     tests/hermes_cli/test_kanban_task_contract.py \
-     tests/hermes_cli/test_kanban_task_admission.py \
-     tests/hermes_cli/test_kanban_notify_inheritance.py \
-     tests/hermes_cli/test_kanban_task_inspection.py \
-     tests/tools/test_kanban_child_policy.py
+   cd C:/Users/fallo/AppData/Local/hermes/worktrees/hermes-orch-control-plane-alignment && PYTHONNOUSERSITE=1 PYTHONPATH='C:/Users/fallo/AppData/Local/hermes/worktrees/hermes-orch-control-plane-alignment;C:/Users/fallo/AppData/Local/hermes/hermes-agent/venv/Lib/site-packages' C:/Python314/python.exe -m pytest tests/hermes_cli/test_kanban_task_contract.py tests/hermes_cli/test_kanban_task_admission.py tests/hermes_cli/test_kanban_notify_inheritance.py tests/hermes_cli/test_kanban_task_inspection.py tests/tools/test_kanban_child_policy.py -q -n 0
    ```
+   - Why this exact harness is required: checker subprocesses sanitize inherited `PYTHONPATH` and user-site; `C:/Python314/python.exe` can import `pytest 9.1.1` only when the known live venv site-packages path is explicitly added, while candidate remains first and an import probe resolved `hermes_cli` under the candidate. This is checker-harness wiring only, not source behavior evidence or an independent PASS.
 2. Re-verify checkpointed path/evidence fields if checker still reports any mismatch.
 3. Do not claim CPA-002 independent acceptance until checker clears.
 

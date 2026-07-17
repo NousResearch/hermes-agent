@@ -102,13 +102,9 @@ Total observed pre-repair path count from this range: 15.
 - First checker invocation under sanitized profile failed before collection because `pytest` in the profile-specific Python311 user-site was unavailable. This is a verifier-environment setup issue (tooling), not evidence of product regression.
 - Prescribed next checker harness command (no claim of independent pass yet):
   ```bash
-  PYTHONPATH='C:/Users/fallo/AppData/Local/hermes/worktrees/hermes-orch-control-plane-alignment;C:/Users/fallo/AppData/Local/hermes/hermes-agent/venv/Lib/site-packages' C:/Python314/python.exe -m pytest \
-    tests/hermes_cli/test_kanban_task_contract.py \
-    tests/hermes_cli/test_kanban_task_admission.py \
-    tests/hermes_cli/test_kanban_notify_inheritance.py \
-    tests/hermes_cli/test_kanban_task_inspection.py \
-    tests/tools/test_kanban_child_policy.py
+  cd C:/Users/fallo/AppData/Local/hermes/worktrees/hermes-orch-control-plane-alignment && PYTHONNOUSERSITE=1 PYTHONPATH='C:/Users/fallo/AppData/Local/hermes/worktrees/hermes-orch-control-plane-alignment;C:/Users/fallo/AppData/Local/hermes/hermes-agent/venv/Lib/site-packages' C:/Python314/python.exe -m pytest tests/hermes_cli/test_kanban_task_contract.py tests/hermes_cli/test_kanban_task_admission.py tests/hermes_cli/test_kanban_notify_inheritance.py tests/hermes_cli/test_kanban_task_inspection.py tests/tools/test_kanban_child_policy.py -q -n 0
   ```
+- Why this exact harness is required: checker subprocesses sanitize inherited `PYTHONPATH` and user-site; `C:/Python314/python.exe` can import `pytest 9.1.1` only when the known live venv site-packages path is explicitly added, while candidate remains first and an import probe resolved `hermes_cli` under the candidate. This is checker-harness wiring only, not source behavior evidence or an independent PASS.
 
 ## SHA-256 evidence snapshots for current pre-repair CPA documents
 - `CPA-001-ORCH-001-RUNTIME-ALIGNMENT-CONTRACT.md`: `d417cdf84eb468cd82742849522605b292e56a072f9ff76ac01db1b548f63318`

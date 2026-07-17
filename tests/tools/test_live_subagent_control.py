@@ -2,12 +2,15 @@
 
 import json
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from run_agent import AIAgent
+from tools import async_delegation as ad
 from tools import delegate_tool as dt
+from tools.process_registry import process_registry
 
 
 class Controller:
@@ -240,6 +243,169 @@ def test_model_dispatch_forwards_live_control_arguments():
     assert captured["subagent_id"] == "root-a:4"
     assert captured["instruction"] == "use the new API"
     assert captured["parent_agent"] is parent
+
+
+def test_model_dispatch_end_to_end_spawn_status_steer_interrupt_and_cleanup(request):
+    """Exercise the complete model-facing control path without a network LLM call."""
+
+    class Parent(AIAgent):
+        _delegate_depth = 0
+        _active_children = []
+        _active_children_lock = threading.RLock()
+        _current_task_id = None
+        _current_turn_id = "turn-e2e"
+        _memory_manager = None
+        _session_db = None
+        provider = "test"
+        model = "test-model"
+        session_id = "session-e2e"
+        session_estimated_cost_usd = 0.0
+        session_cost_source = "none"
+        session_cost_status = "unknown"
+
+        def _touch_activity(self, desc):
+            del desc
+
+    class ControlledChild:
+        def __init__(self, parent):
+            self._subagent_id = "subagent-e2e"
+            self._parent_subagent_id = None
+            self._delegation_root_agent = parent
+            self._delegate_depth = 1
+            self._delegate_role = "leaf"
+            self._active_children = []
+            self._active_children_lock = threading.RLock()
+            self._pending_steer = None
+            self._pending_steer_lock = threading.Lock()
+            self._interrupt_requested = False
+            self._interrupt_message = None
+            self._interrupt_thread_signal_pending = False
+            self._execution_thread_id = None
+            self._tool_worker_threads = set()
+            self._tool_worker_threads_lock = threading.Lock()
+            self._steer_seen = threading.Event()
+            self._closed = threading.Event()
+            self.seen_instruction = None
+            self.model = "test-model"
+            self.session_id = "child-session-e2e"
+            self.session_prompt_tokens = 0
+            self.session_completion_tokens = 0
+            self.session_reasoning_tokens = 0
+            self.session_estimated_cost_usd = 0.0
+            self.quiet_mode = True
+
+        steer = AIAgent.steer
+        interrupt = AIAgent.interrupt
+        _drain_pending_steer = AIAgent._drain_pending_steer
+
+        def get_activity_summary(self):
+            return {
+                "api_call_count": 1,
+                "max_iterations": 8,
+                "current_tool": "e2e_wait",
+                "last_activity_desc": "waiting for live control",
+            }
+
+        def run_conversation(self, **_kwargs):
+            deadline = time.monotonic() + 5
+            while not self._interrupt_requested and time.monotonic() < deadline:
+                instruction = self._drain_pending_steer()
+                if instruction:
+                    self.seen_instruction = instruction
+                    self._steer_seen.set()
+                time.sleep(0.01)
+            return {
+                "final_response": "interrupted after live control",
+                "completed": False,
+                "interrupted": self._interrupt_requested,
+                "api_calls": 1,
+                "messages": [],
+            }
+
+        def close(self):
+            self._closed.set()
+
+    parent = object.__new__(Parent)
+    child = ControlledChild(parent)
+    credentials = {
+        "model": None,
+        "provider": None,
+        "base_url": None,
+        "api_key": None,
+        "api_mode": None,
+        "request_overrides": None,
+        "max_output_tokens": None,
+        "command": None,
+        "args": None,
+    }
+
+    ad._reset_for_tests()
+    request.addfinalizer(ad._reset_for_tests)
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    with (
+        patch.object(dt, "_build_child_agent", return_value=child),
+        patch.object(dt, "_resolve_delegation_credentials", return_value=credentials),
+        patch("gateway.session_context.async_delivery_supported", return_value=True),
+    ):
+        spawned = json.loads(
+            AIAgent._dispatch_delegate_task(parent, {"goal": "e2e task"})
+        )
+        assert spawned["status"] == "dispatched"
+
+        deadline = time.monotonic() + 3
+        active = []
+        while time.monotonic() < deadline:
+            active = json.loads(
+                AIAgent._dispatch_delegate_task(parent, {"action": "status"})
+            )["active"]
+            if active:
+                break
+            time.sleep(0.01)
+        assert [record["subagent_id"] for record in active] == ["subagent-e2e"]
+
+        steered = json.loads(
+            AIAgent._dispatch_delegate_task(
+                parent,
+                {
+                    "action": "steer",
+                    "subagent_id": "subagent-e2e",
+                    "instruction": "use the revised constraint",
+                },
+            )
+        )
+        assert steered["accepted"] is True
+        assert child._steer_seen.wait(timeout=3)
+        assert child.seen_instruction == "use the revised constraint"
+
+        interrupted = json.loads(
+            AIAgent._dispatch_delegate_task(
+                parent,
+                {"action": "interrupt", "subagent_id": "subagent-e2e"},
+            )
+        )
+        assert interrupted["accepted"] is True
+        assert child._closed.wait(timeout=3)
+
+        final_status = json.loads(
+            AIAgent._dispatch_delegate_task(parent, {"action": "status"})
+        )
+        assert final_status["active"] == []
+
+        deadline = time.monotonic() + 3
+        completion = None
+        while time.monotonic() < deadline:
+            if not process_registry.completion_queue.empty():
+                candidate = process_registry.completion_queue.get_nowait()
+                if candidate.get("delegation_id") == spawned["delegation_id"]:
+                    completion = candidate
+                    break
+            time.sleep(0.01)
+        assert completion is not None
+        assert completion["status"] == "interrupted", json.dumps(
+            completion, default=str
+        )
 
 
 @pytest.mark.parametrize(

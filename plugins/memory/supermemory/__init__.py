@@ -200,7 +200,7 @@ def _deduplicate_recall(static_facts: list, dynamic_facts: list, search_results:
             seen.add(fact)
             out_dynamic.append(fact)
     for item in search_results or []:
-        memory = item.get("memory", "")
+        memory = _result_text(item)
         if memory and memory not in seen:
             seen.add(memory)
             out_search.append(item)
@@ -223,7 +223,7 @@ def _format_prefetch_context(static_facts: list, dynamic_facts: list, search_res
     if search:
         lines = []
         for item in search:
-            memory = item.get("memory", "")
+            memory = _result_text(item)
             if not memory:
                 continue
             similarity = item.get("similarity")
@@ -408,7 +408,7 @@ class _SupermemoryClient:
         if not memory_id:
             return {"success": False, "message": "Best matching memory has no id."}
         self.forget_memory(memory_id, container_tag=container_tag)
-        preview = (target.get("memory") or "")[:100]
+        preview = (_result_text(target) or "")[:100]
         return {"success": True, "message": f'Forgot: "{preview}"', "id": memory_id}
 
     def ingest_conversation(self, session_id: str, messages: list[dict], metadata: dict | None = None) -> None:
@@ -974,7 +974,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
             results = self._client.search_memories(query, limit=limit, container_tag=tag)
             formatted = []
             for item in results:
-                entry: dict[str, Any] = {"id": item.get("id", ""), "content": item.get("memory", "")}
+                entry: dict[str, Any] = {"id": item.get("id", ""), "content": _result_text(item)}
                 if item.get("similarity") is not None:
                     try:
                         entry["similarity"] = round(float(item["similarity"]) * 100)

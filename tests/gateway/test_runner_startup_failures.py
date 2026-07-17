@@ -568,3 +568,21 @@ def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatc
         "host-visible output mount" in record.message
         for record in caplog.records
     )
+
+
+class TestSignalShutdownExitCode:
+    """_should_run_nonzero_on_signal_shutdown — INVOCATION_ID branching."""
+
+    def test_under_systemd_returns_true(self, monkeypatch):
+        """Under systemd (INVOCATION_ID set), return True → exit code 1."""
+        monkeypatch.setenv("INVOCATION_ID", "test-systemd-id")
+        from gateway.run import _should_run_nonzero_on_signal_shutdown
+
+        assert _should_run_nonzero_on_signal_shutdown() is True
+
+    def test_under_launchd_returns_false(self, monkeypatch):
+        """Under launchd (no INVOCATION_ID), return False → exit code 0."""
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        from gateway.run import _should_run_nonzero_on_signal_shutdown
+
+        assert _should_run_nonzero_on_signal_shutdown() is False

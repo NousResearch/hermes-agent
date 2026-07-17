@@ -161,20 +161,25 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     with patch(
         "gateway.run._resolve_runtime_agent_kwargs_for_provider",
         return_value={
-            "api_key": "sk-fresh-from-keychain",
+            "api_key": "fresh-test-key",
             "api_mode": "responses",
             "base_url": "https://api.openai.example/v1",
             "provider": "openai",
         },
-    ):
+    ) as mock_resolve:
         runner._rehydrate_session_model_override(session_key)
 
+    mock_resolve.assert_called_once_with(
+        "openai",
+        base_url="https://api.openai.example/v1",
+        target_model="gpt-5o",
+    )
     override = runner._session_model_overrides[session_key]
     assert override["model"] == "gpt-5o"
     assert override["provider"] == "openai"
     assert override["base_url"] == "https://api.openai.example/v1"
     # Credentials come from live resolution, never from disk.
-    assert override["api_key"] == "sk-fresh-from-keychain"
+    assert override["api_key"] == "fresh-test-key"
     assert override["api_mode"] == "responses"
 
 

@@ -396,6 +396,91 @@ def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") 
         return None, _multimodal_validation_error(exc, param=param)
 
 
+def _session_chat_request_route(
+    body: Dict[str, Any],
+) -> tuple[Optional[Dict[str, str]], Optional["web.Response"]]:
+    """Return an authenticated session turn's explicit model/provider route."""
+    model = body.get("model")
+    if model is not None and not isinstance(model, str):
+        return None, web.json_response(
+            _openai_error("model must be a string", code="invalid_model"),
+            status=400,
+        )
+
+    provider = body.get("provider") if "provider" in body else body.get("model_provider")
+    if provider is not None and not isinstance(provider, str):
+        return None, web.json_response(
+            _openai_error("provider must be a string", code="invalid_provider"),
+            status=400,
+        )
+
+    route = {}
+    if model and model.strip():
+        route["model"] = model.strip()
+    if provider and provider.strip():
+        route["provider"] = provider.strip()
+    return route or None, None
+
+
+def _session_chat_runtime_overrides(
+    body: Dict[str, Any],
+) -> tuple[Optional[str], Optional[str], Optional["web.Response"]]:
+    """Validate per-request reasoning and priority-processing controls."""
+    reasoning_effort = body.get("reasoning_effort")
+    if reasoning_effort is not None:
+        if not isinstance(reasoning_effort, str):
+            return None, None, web.json_response(
+                _openai_error(
+                    "reasoning_effort must be a string",
+                    code="invalid_reasoning_effort",
+                ),
+                status=400,
+            )
+        reasoning_effort = reasoning_effort.strip().lower()
+        from hermes_constants import VALID_REASONING_EFFORTS
+
+        valid_reasoning_efforts = {"none", *VALID_REASONING_EFFORTS}
+        if reasoning_effort not in valid_reasoning_efforts:
+            return None, None, web.json_response(
+                _openai_error(
+                    "reasoning_effort must be one of: "
+                    + ", ".join(sorted(valid_reasoning_efforts)),
+                    code="invalid_reasoning_effort",
+                ),
+                status=400,
+            )
+
+    service_tier = body.get("service_tier")
+    if service_tier is not None:
+        if not isinstance(service_tier, str):
+            return None, None, web.json_response(
+                _openai_error(
+                    "service_tier must be a string",
+                    code="invalid_service_tier",
+                ),
+                status=400,
+            )
+        service_tier = service_tier.strip().lower()
+        tier_aliases = {
+            "fast": "priority",
+            "priority": "priority",
+            "normal": "normal",
+            "default": "normal",
+            "standard": "normal",
+        }
+        if service_tier not in tier_aliases:
+            return None, None, web.json_response(
+                _openai_error(
+                    "service_tier must be one of: priority, fast, normal, default, standard",
+                    code="invalid_service_tier",
+                ),
+                status=400,
+            )
+        service_tier = tier_aliases[service_tier]
+
+    return reasoning_effort, service_tier, None
+
+
 def check_api_server_requirements() -> bool:
     """Check if API server dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -1676,6 +1761,28 @@ class APIServerAdapter(BasePlatformAdapter):
             return None
         return self._model_routes.get(model_alias)
 
+    def _resolve_session_request_route(
+        self,
+        body: Dict[str, Any],
+    ) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
+        """Resolve a session turn's concrete selection or model route alias."""
+        request_route, err = _session_chat_request_route(body)
+        if err is not None or request_route is None:
+            return request_route, err
+
+        alias_route = self._resolve_route(request_route.get("model"))
+        if alias_route is None:
+            return request_route, None
+
+        resolved_route = dict(alias_route)
+        explicit_provider = request_route.get("provider")
+        if explicit_provider:
+            if explicit_provider != resolved_route.get("provider"):
+                resolved_route.pop("api_key", None)
+                resolved_route.pop("base_url", None)
+            resolved_route["provider"] = explicit_provider
+        return resolved_route, None
+
     def _session_model_override_for(self, session_key: Optional[str]) -> Optional[Dict[str, Any]]:
         """Return the gateway's session ``/model`` override for *session_key*, if any.
 
@@ -1692,6 +1799,7 @@ class APIServerAdapter(BasePlatformAdapter):
             runner = _gateway_runner_ref()
             if runner is None:
                 return None
+            runner._rehydrate_session_model_override(session_key)
             override = runner._session_model_overrides.get(session_key)
             return dict(override) if isinstance(override, dict) else None
         except Exception:
@@ -1707,6 +1815,9 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        request_route: Optional[Dict[str, Any]] = None,
+        reasoning_effort_override: Optional[str] = None,
+        service_tier_override: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1723,10 +1834,9 @@ class APIServerAdapter(BasePlatformAdapter):
         providers (e.g. Honcho) can scope their per-chat state correctly
         — matching the semantics of the native gateway's ``session_key``.
 
-        ``route`` is an optional ``model_routes`` entry (per-client model
-        routing).  When set — and no session ``/model`` override exists for
-        this session — its model/provider/api_key/base_url override the
-        global defaults for this agent instance only.
+        ``route`` is an optional static ``model_routes`` entry. A session
+        ``/model`` override wins over a static route. ``request_route`` is an
+        authenticated per-turn selection and is authoritative over both.
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -1740,6 +1850,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
+        service_tier = GatewayRunner._load_service_tier()
+        if reasoning_effort_override is not None:
+            from hermes_constants import parse_reasoning_effort
+
+            reasoning_config = parse_reasoning_effort(reasoning_effort_override)
+        if service_tier_override is not None:
+            service_tier = "priority" if service_tier_override == "priority" else None
         model = _resolve_gateway_model()
 
         # When the primary provider's auth fails (expired token / 429 quota
@@ -1754,50 +1871,62 @@ class APIServerAdapter(BasePlatformAdapter):
         if runtime_model:
             model = runtime_model
 
-        # Per-client model routing (model_routes config).  The route was
-        # resolved from the request's ``model`` field by the HTTP handler.
-        # Precedence (highest first): session ``/model`` override → model_routes
-        # route → global config — an explicit user-issued ``/model`` on the
-        # session always beats static per-client route config.
+        # Static aliases defer to a session /model override. Authenticated
+        # per-turn selections are authoritative over both.
         session_override = self._session_model_override_for(
             gateway_session_key or session_id
         )
-        if route and not session_override:
-            if route.get("provider"):
-                # Resolve real credentials for the routed provider (mirrors
-                # the channel_overrides path in gateway/run.py) so a route
-                # without an explicit api_key/base_url still gets the right
-                # provider auth instead of the default provider's key.
-                try:
-                    from gateway.run import _resolve_runtime_agent_kwargs_for_provider
-                    provider_kwargs = _resolve_runtime_agent_kwargs_for_provider(
-                        route["provider"]
-                    )
-                    provider_kwargs.pop("model", None)
-                    runtime_kwargs.update(provider_kwargs)
-                except Exception:
-                    # Fall back to just switching the provider name; explicit
-                    # per-route api_key/base_url below can still complete auth.
-                    runtime_kwargs["provider"] = route["provider"]
-            if route.get("model"):
-                model = route["model"]
-            # Per-route secrets are upstream provider credentials. Never log
-            # them (compare _check_auth: caller auth stays the global bearer
-            # key checked with hmac.compare_digest).
-            if route.get("api_key"):
-                runtime_kwargs["api_key"] = route["api_key"]
-            if route.get("base_url"):
-                runtime_kwargs["base_url"] = route["base_url"]
+        if request_route is not None:
+            effective_route = request_route
+        elif session_override:
+            effective_route = session_override
+        else:
+            effective_route = route
+        if effective_route:
+            if effective_route.get("model"):
+                model = effective_route["model"]
+            if effective_route.get("provider"):
+                # Resolve against route credentials and the selected model so
+                # provider-specific transports never inherit the default
+                # provider's credentials or stale API mode.
+                from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+
+                provider_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                    effective_route["provider"],
+                    api_key=effective_route.get("api_key"),
+                    base_url=effective_route.get("base_url"),
+                    target_model=model,
+                )
+                provider_kwargs.pop("model", None)
+                runtime_kwargs.update(provider_kwargs)
+            # Live session overrides may carry transport/runtime details in
+            # addition to route credentials. Explicit values win over the
+            # provider-derived defaults for this turn.
+            for key in (
+                "api_key",
+                "base_url",
+                "api_mode",
+                "credential_pool",
+                "command",
+                "args",
+                "max_tokens",
+            ):
+                value = effective_route.get(key)
+                if value is not None:
+                    runtime_kwargs[key] = value
+            if effective_route.get("api_key") and "credential_pool" not in effective_route:
+                runtime_kwargs["credential_pool"] = None
             logger.debug(
                 "api_server model route applied: model=%s provider=%s",
                 model,
                 runtime_kwargs.get("provider"),
             )
-        elif route and session_override:
-            logger.debug(
-                "api_server model route skipped: session /model override wins for %s",
-                gateway_session_key or session_id,
-            )
+
+        request_overrides: Dict[str, Any] = {}
+        if service_tier == "priority":
+            from hermes_cli.models import resolve_fast_mode_overrides
+
+            request_overrides = resolve_fast_mode_overrides(model) or {}
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -1825,6 +1954,8 @@ class APIServerAdapter(BasePlatformAdapter):
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
+            service_tier=service_tier,
+            request_overrides=request_overrides,
             gateway_session_key=gateway_session_key,
         )
         return agent
@@ -2411,6 +2542,14 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        request_route, route_err = self._resolve_session_request_route(body)
+        if route_err is not None:
+            return route_err
+        reasoning_effort_override, service_tier_override, runtime_err = (
+            _session_chat_runtime_overrides(body)
+        )
+        if runtime_err is not None:
+            return runtime_err
         history = self._conversation_history_for_session(session_id)
         result, usage = await self._run_agent(
             user_message=user_message,
@@ -2418,6 +2557,9 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            request_route=request_route,
+            reasoning_effort_override=reasoning_effort_override,
+            service_tier_override=service_tier_override,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
@@ -2453,6 +2595,14 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        request_route, route_err = self._resolve_session_request_route(body)
+        if route_err is not None:
+            return route_err
+        reasoning_effort_override, service_tier_override, runtime_err = (
+            _session_chat_runtime_overrides(body)
+        )
+        if runtime_err is not None:
+            return runtime_err
 
         loop = asyncio.get_running_loop()
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
@@ -2507,6 +2657,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    request_route=request_route,
+                    reasoning_effort_override=reasoning_effort_override,
+                    service_tier_override=service_tier_override,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -4558,6 +4711,9 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        request_route: Optional[Dict[str, Any]] = None,
+        reasoning_effort_override: Optional[str] = None,
+        service_tier_override: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4565,9 +4721,9 @@ class APIServerAdapter(BasePlatformAdapter):
         Returns ``(result_dict, usage_dict)`` where *usage_dict* contains
         ``input_tokens``, ``output_tokens`` and ``total_tokens``.
 
-        *route* is an optional ``model_routes`` entry (resolved from the
-        request's ``model`` field) that overrides the global model/provider
-        for this specific request.
+        *route* is an optional static ``model_routes`` entry. *request_route*
+        is an authenticated per-turn selection that overrides static and
+        session routes for this request.
 
         If *agent_ref* is a one-element list, the AIAgent instance is stored
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
@@ -4599,6 +4755,9 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key,
                         route=route,
+                        request_route=request_route,
+                        reasoning_effort_override=reasoning_effort_override,
+                        service_tier_override=service_tier_override,
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent

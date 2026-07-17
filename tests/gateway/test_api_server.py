@@ -4178,7 +4178,7 @@ class TestModelRoutesAgentCreation:
         _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
         monkeypatch.setattr(
             "gateway.run._resolve_runtime_agent_kwargs_for_provider",
-            lambda provider: {
+            lambda provider, **kwargs: {
                 "provider": provider,
                 "api_key": f"sk-{provider}",
                 "base_url": f"https://{provider}.example/v1",
@@ -4233,9 +4233,9 @@ class TestModelRoutesAgentCreation:
 
         adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
 
-        # The route must NOT be applied — the session override path (global
-        # runtime here, since the gateway applies /model separately) wins.
-        assert captured["model"] == "global/model"
+        # The session override is applied, while the static route's credential
+        # override is not.
+        assert captured["model"] == "session/override-model"
         assert captured["api_key"] == "sk-global"
 
     def test_session_override_lookup_reads_gateway_runner(self, monkeypatch):
@@ -4245,7 +4245,34 @@ class TestModelRoutesAgentCreation:
         class FakeRunner:
             _session_model_overrides = {"chan-1": {"model": "user/model"}}
 
+            def _rehydrate_session_model_override(self, session_key):
+                return None
+
         monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: FakeRunner())
         assert adapter._session_model_override_for("chan-1") == {"model": "user/model"}
         assert adapter._session_model_override_for("chan-2") is None
         assert adapter._session_model_override_for(None) is None
+
+    def test_session_override_lookup_rehydrates_persisted_override(self, monkeypatch):
+        adapter = _make_routing_adapter({})
+        rehydrated = []
+
+        class FakeRunner:
+            def __init__(self):
+                self._session_model_overrides = {}
+
+            def _rehydrate_session_model_override(self, session_key):
+                rehydrated.append(session_key)
+                self._session_model_overrides[session_key] = {
+                    "model": "persisted/model",
+                    "provider": "persisted-provider",
+                }
+
+        runner = FakeRunner()
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+        assert adapter._session_model_override_for("chan-persisted") == {
+            "model": "persisted/model",
+            "provider": "persisted-provider",
+        }
+        assert rehydrated == ["chan-persisted"]

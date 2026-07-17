@@ -7,7 +7,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server import APIServerAdapter, _session_chat_runtime_overrides
 from hermes_state import SessionDB
 
 
@@ -401,6 +401,76 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
 
 
 @pytest.mark.asyncio
+async def test_session_chat_forwards_explicit_model_and_provider(auth_adapter, session_db):
+    """The authenticated request body is authoritative for this agent turn."""
+    session_id = session_db.create_session("routed-chat-session", "api_server")
+    mock_run = AsyncMock(
+        return_value=(
+            {"final_response": "routed answer", "session_id": session_id},
+            {"total_tokens": 3},
+        )
+    )
+    app = _create_session_app(auth_adapter)
+
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={
+                    "message": "use the selected model",
+                    "model": "gpt-5.6-sol",
+                    "provider": "openai-codex",
+                    "reasoning_effort": "xhigh",
+                    "service_tier": "priority",
+                },
+                headers={"Authorization": "Bearer sk-test"},
+            )
+
+    assert resp.status == 200
+    kwargs = mock_run.call_args.kwargs
+    assert kwargs["request_route"] == {
+        "model": "gpt-5.6-sol",
+        "provider": "openai-codex",
+    }
+    assert kwargs["reasoning_effort_override"] == "xhigh"
+    assert kwargs["service_tier_override"] == "priority"
+
+
+@pytest.mark.asyncio
+async def test_session_chat_resolves_configured_model_route_alias(auth_adapter, session_db):
+    session_id = session_db.create_session("aliased-chat-session", "api_server")
+    auth_adapter._model_routes = {
+        "webui-gpt": {
+            "model": "gpt-5.6-sol",
+            "provider": "openai-codex",
+            "base_url": "https://example.invalid/v1",
+        }
+    }
+    mock_run = AsyncMock(
+        return_value=(
+            {"final_response": "routed answer", "session_id": session_id},
+            {"total_tokens": 3},
+        )
+    )
+    app = _create_session_app(auth_adapter)
+
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "use the alias", "model": "webui-gpt"},
+                headers={"Authorization": "Bearer sk-test"},
+            )
+
+    assert resp.status == 200
+    assert mock_run.call_args.kwargs["request_route"] == {
+        "model": "gpt-5.6-sol",
+        "provider": "openai-codex",
+        "base_url": "https://example.invalid/v1",
+    }
+
+
+@pytest.mark.asyncio
 async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db):
     session_id = session_db.create_session("image-session", "api_server")
     image_payload = [
@@ -461,6 +531,39 @@ async def test_session_chat_stream_accepts_multimodal_message(adapter, session_d
 
 
 @pytest.mark.asyncio
+async def test_session_chat_stream_forwards_explicit_model_and_provider(adapter, session_db):
+    session_id = session_db.create_session("routed-stream-session", "api_server")
+    captured = {}
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"final_response": "routed", "session_id": session_id}, {"total_tokens": 2}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={
+                    "message": "use the selected model",
+                    "model": "gpt-5.6-sol",
+                    "provider": "openai-codex",
+                    "reasoning_effort": "low",
+                    "service_tier": "normal",
+                },
+            )
+            assert resp.status == 200
+            await resp.text()
+
+    assert captured["request_route"] == {
+        "model": "gpt-5.6-sol",
+        "provider": "openai-codex",
+    }
+    assert captured["reasoning_effort_override"] == "low"
+    assert captured["service_tier_override"] == "normal"
+
+
+@pytest.mark.asyncio
 async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_shape(adapter, session_db):
     session_id = session_db.create_session("stream-session", "api_server")
     session_db.set_session_title(session_id, "Stream")
@@ -487,6 +590,53 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
     assert "event: assistant.completed" in body
     assert "event: run.completed" in body
     assert "event: done" in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "field", "value", "error_code"),
+    [
+        ("chat", "model", {"bad": "shape"}, "invalid_model"),
+        ("chat/stream", "provider", ["bad"], "invalid_provider"),
+        ("chat", "reasoning_effort", "extreme", "invalid_reasoning_effort"),
+        ("chat/stream", "reasoning_effort", {"bad": "shape"}, "invalid_reasoning_effort"),
+        ("chat", "service_tier", "turbo", "invalid_service_tier"),
+        ("chat/stream", "service_tier", True, "invalid_service_tier"),
+    ],
+)
+async def test_session_chat_rejects_invalid_request_controls(
+    adapter,
+    session_db,
+    endpoint,
+    field,
+    value,
+    error_code,
+):
+    session_id = session_db.create_session(
+        f"bad-request-control-{field}-{endpoint.replace('/', '-')}",
+        "api_server",
+    )
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(
+            f"/api/sessions/{session_id}/{endpoint}",
+            json={"message": "hello", field: value},
+        )
+        assert resp.status == 400
+        data = await resp.json()
+
+    assert data["error"]["code"] == error_code
+
+
+@pytest.mark.parametrize("effort", ["max", "ultra"])
+def test_session_chat_accepts_all_supported_reasoning_efforts(effort):
+    parsed_effort, service_tier, err = _session_chat_runtime_overrides(
+        {"reasoning_effort": effort}
+    )
+
+    assert err is None
+    assert parsed_effort == effort
+    assert service_tier is None
 
 
 @pytest.mark.asyncio

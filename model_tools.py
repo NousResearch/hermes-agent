@@ -276,6 +276,21 @@ def _clear_tool_defs_cache() -> None:
     _tool_defs_cache.clear()
 
 
+def _registered_mcp_toolsets() -> List[str]:
+    """Return dynamically registered MCP toolset names.
+
+    MCP servers register tools at runtime into ``mcp-<server>`` toolsets.
+    Those toolsets are not in the static platform toolset definitions, so
+    platform sessions with an explicit enabled list need a small bridge to see
+    them.
+    """
+    return [
+        ts_name
+        for ts_name in registry.get_registered_toolset_names()
+        if ts_name.startswith("mcp-")
+    ]
+
+
 def get_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
@@ -386,6 +401,19 @@ def _compute_tool_definitions(
                     print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
+
+        # MCP toolsets are discovered dynamically at runtime, so they do not
+        # appear in the static per-platform toolsets (hermes-telegram,
+        # hermes-discord, QQ, etc.).  Auto-include all configured MCP servers
+        # for those platform sessions, while preserving explicit MCP scoping:
+        # if the caller already named an MCP toolset, treat that as a deliberate
+        # subset and do not widen it to every MCP server.
+        if not any(ts.startswith("mcp-") for ts in effective_enabled_toolsets):
+            for toolset_name in _registered_mcp_toolsets():
+                resolved = resolve_toolset(toolset_name)
+                tools_to_include.update(resolved)
+                if resolved and not quiet_mode:
+                    print(f"✅ Auto-enabled MCP toolset '{toolset_name}': {', '.join(resolved)}")
     else:
         # Default: start with everything
         from toolsets import get_all_toolsets

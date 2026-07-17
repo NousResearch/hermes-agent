@@ -598,6 +598,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("session"):
+        result["session"] = job["session"]
     return result
 
 
@@ -675,6 +677,7 @@ def cronjob(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
+    session: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
     task_id: str = None,
@@ -748,6 +751,7 @@ def cronjob(
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
+                session=_normalize_optional_job_value(session),
                 no_agent=_no_agent,
                 attach_to_session=attach_to_session,
             )
@@ -927,6 +931,8 @@ def cronjob(
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
                 updates["workdir"] = _normalize_optional_job_value(workdir) or None
+            if session is not None:
+                updates["session"] = _normalize_optional_job_value(session)
             if no_agent is not None:
                 # Toggling no_agent on/off at update time. If flipping to True,
                 # we need a script to already exist on the job (or be part of
@@ -1085,6 +1091,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "boolean",
                 "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
+            "session": {
+                "type": "string",
+                "description": "Optional reusable cron-owned SessionDB id for create/update. Each run follows compression continuations, loads the latest history, and appends the new cron turn to that conversation. Existing CLI, gateway, or other non-cron sessions are rejected. Use 1-64 characters: letters, digits, '_' or '-', starting with a letter or digit. On update, pass an empty string to clear."
+            },
         },
         "required": ["action"]
     }
@@ -1139,7 +1149,9 @@ registry.register(
         context_from=args.get("context_from"),
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
+        session=args.get("session"),
         no_agent=args.get("no_agent"),
+        attach_to_session=args.get("attach_to_session"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

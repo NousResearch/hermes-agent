@@ -238,7 +238,15 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
+from cron.jobs import (
+    advance_next_run,
+    claim_dispatch,
+    get_due_jobs,
+    heartbeat_run_claim,
+    mark_job_run,
+    normalize_session_id,
+    save_job_output,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -2548,6 +2556,87 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+def _prepare_cron_session(
+    job: dict,
+    session_db,
+) -> tuple[str, Optional[List[dict]]]:
+    """Resolve the session id and history for one cron agent run.
+
+    Jobs without ``session`` retain the legacy timestamped-session behavior.
+    A configured id may create a new cron session or resume an existing
+    cron-owned session, but it may never replay a CLI, gateway, or other
+    runtime's conversation through cron's distinct prompt and tool contract.
+
+    Compression ends a session and continues in a child row. Resolve that
+    chain before reading history or mutating lifecycle state so a configured
+    parent always resumes at its live continuation tip.
+    """
+    job_id = str(job.get("id") or "unknown")
+    configured_session = normalize_session_id(job.get("session"))
+    if not configured_session:
+        return (
+            f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}",
+            None,
+        )
+
+    if session_db is None:
+        raise RuntimeError(
+            f"Cron job '{job_id}' cannot reuse session {configured_session!r}: "
+            "SessionDB is unavailable."
+        )
+
+    try:
+        configured_row = session_db.get_session(configured_session)
+        resolved_session = (
+            session_db.get_compression_tip(configured_session)
+            or configured_session
+        )
+        resolved_row = session_db.get_session(resolved_session)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Cron job '{job_id}' could not resolve reusable session "
+            f"{configured_session!r}: {exc}"
+        ) from exc
+
+    for session_id, row in (
+        (configured_session, configured_row),
+        (resolved_session, resolved_row),
+    ):
+        if row and str(row.get("source") or "").lower() != "cron":
+            source = str(row.get("source") or "unknown")
+            raise RuntimeError(
+                f"Cron job '{job_id}' cannot reuse session {session_id!r}: "
+                f"it is owned by runtime {source!r}, not 'cron'."
+            )
+
+    if configured_row is not None and resolved_row is None:
+        raise RuntimeError(
+            f"Cron job '{job_id}' resolved reusable session "
+            f"{configured_session!r} to missing tip {resolved_session!r}."
+        )
+
+    history: Optional[List[dict]] = None
+    if resolved_row is not None:
+        try:
+            history = session_db.get_messages_as_conversation(resolved_session)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Cron job '{job_id}' could not load reusable session "
+                f"{resolved_session!r}: {exc}"
+            ) from exc
+
+        if resolved_row.get("ended_at") is not None:
+            try:
+                session_db.reopen_session(resolved_session)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Cron job '{job_id}' could not reopen reusable session "
+                    f"{resolved_session!r}: {exc}"
+                ) from exc
+
+    return resolved_session, history
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -2800,6 +2889,8 @@ def run_job(
         return True, "", SILENT_MARKER, None
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    _cron_history: Optional[List[dict]] = None
+    _manage_cron_session_lifecycle = False
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -2838,6 +2929,7 @@ def run_job(
     # below, so clearing HERMES_SESSION_* here does not affect delivery.
     _ctx_tokens = set_session_vars(
         platform="",
+        source="cron",
         chat_id="",
         chat_name="",
     )
@@ -2893,6 +2985,9 @@ def run_job(
     # (every future job blocks on acquire_*); a leaked reader blocks all
     # future writers.  Acquire itself can't leak (it either blocks or returns).
     try:
+        _cron_session_id, _cron_history = _prepare_cron_session(job, _session_db)
+        _manage_cron_session_lifecycle = True
+
         if _job_workdir:
             os.environ["TERMINAL_CWD"] = _job_workdir
             logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
@@ -3302,7 +3397,15 @@ def run_job(
         # env passthrough registrations) when the cron run hops into the worker
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
-        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        _run_conversation_kwargs = {}
+        if _cron_history is not None:
+            _run_conversation_kwargs["conversation_history"] = _cron_history
+        _cron_future = _cron_pool.submit(
+            _cron_context.run,
+            agent.run_conversation,
+            prompt,
+            **_run_conversation_kwargs,
+        )
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:
@@ -3499,23 +3602,32 @@ def run_job(
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
-        if _session_db:
+        if _session_db and _manage_cron_session_lifecycle:
             # Title the cron session from the job (name → short prompt → id) so
             # sidebars/history show a meaningful label instead of the injected
             # "[IMPORTANT: …]" hint that is the session's first message. Set here
             # (not at create time) so the agent's own INSERT keeps model /
-            # system_prompt; this only UPDATEs the title column. The run-time
-            # suffix keeps it unique against the sessions.title index across runs.
+            # system_prompt; this only UPDATEs the title column. Ephemeral runs
+            # keep their timestamp suffix; a reusable cron-owned session keeps
+            # one stable title across runs.
             try:
                 _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
-                _cron_title = f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
-                _session_db.set_session_title(_cron_session_id, _cron_title)
+                _lifecycle_session_id = getattr(agent, "session_id", None)
+                if not isinstance(_lifecycle_session_id, str) or not _lifecycle_session_id:
+                    _lifecycle_session_id = _cron_session_id
+                _cron_title = (
+                    _title_base
+                    if job.get("session")
+                    else f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
+                )
+                _session_db.set_session_title(_lifecycle_session_id, _cron_title)
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
             try:
-                _session_db.end_session(_cron_session_id, "cron_complete")
+                _session_db.end_session(_lifecycle_session_id, "cron_complete")
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)
+        if _session_db:
             try:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:

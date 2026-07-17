@@ -325,6 +325,26 @@ def _jobs_lock():
 # updated lets an unsafe value (``../escape``, absolute path, nested) leak
 # into output writes/deletes.
 _IMMUTABLE_JOB_FIELDS = frozenset({"id"})
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def normalize_session_id(session: Optional[Any]) -> Optional[str]:
+    """Normalize an optional reusable cron-owned session id.
+
+    The value becomes a SessionDB primary key and may also be used in prompt
+    cache and optional JSON snapshot keys, so keep it portable and path-safe.
+    """
+    if session is None:
+        return None
+    text = str(session).strip()
+    if not text:
+        return None
+    if not _SESSION_ID_RE.fullmatch(text):
+        raise ValueError(
+            "Cron session must be 1-64 characters, start with a letter or digit, "
+            "and contain only letters, digits, '_' or '-'."
+        )
+    return text
 
 
 def _job_output_dir(job_id: str) -> Path:
@@ -419,6 +439,7 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         name = label_source[:50].strip() or "cron job"
     normalized["name"] = name
     normalized["schedule_display"] = _schedule_display_for_job(normalized)
+    normalized["session"] = _coerce_job_text(normalized.get("session")).strip() or None
 
     state = _coerce_job_text(normalized.get("state")).strip()
     if not state:
@@ -1052,6 +1073,7 @@ def create_job(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
+    session: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
 ) -> Dict[str, Any]:
@@ -1094,6 +1116,10 @@ def create_job(
                 With ``no_agent=True``, ``workdir`` is still applied as the
                 script's cwd so relative paths inside the script behave
                 predictably.
+        session: Optional reusable cron-owned SessionDB id. Each run resolves
+                compression continuations, loads the latest session history,
+                and appends the new turn to that conversation. Existing
+                sessions owned by another runtime are rejected at execution.
         no_agent: When True, skip the agent entirely — run ``script`` on schedule
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
@@ -1128,6 +1154,7 @@ def create_job(
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
+    normalized_session = normalize_session_id(session)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
 
@@ -1220,6 +1247,9 @@ def create_job(
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
     }
+    # Keep legacy jobs byte-identical when reusable-session mode is unset.
+    if normalized_session is not None:
+        job["session"] = normalized_session
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the
     # global cron.mirror_delivery config, default off).
@@ -1314,6 +1344,9 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            if "session" in updates:
+                updates["session"] = normalize_session_id(updates["session"])
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})

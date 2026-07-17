@@ -45,6 +45,97 @@ def _configured_tools_config(*, init_on_session_start: bool = False) -> _FakeHon
     return cfg
 
 
+
+class _RecordingSession:
+    def __init__(self):
+        self.messages = []
+
+    def add_message(self, role, content):
+        self.messages.append((role, content))
+
+
+class _RecordingManager:
+    def __init__(self):
+        self.session = _RecordingSession()
+        self.flushes = 0
+
+    def get_or_create(self, session_key):
+        return self.session
+
+    def _flush_session(self, session):
+        self.flushes += 1
+
+    def flush_all(self):
+        self.flushes += 1
+
+
+def _wait_for_sync(provider):
+    sync_thread = provider._sync_thread
+    if sync_thread:
+        sync_thread.join(timeout=1)
+
+
+def test_honcho_buffers_turn_until_background_init_succeeds(monkeypatch):
+    provider = HonchoMemoryProvider()
+    cfg = _configured_hybrid_config()
+    manager = _RecordingManager()
+    release = threading.Event()
+
+    monkeypatch.setattr(
+        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+        lambda: cfg,
+    )
+
+    def delayed_session_init(self, cfg, session_id, **kwargs):
+        release.wait(timeout=5)
+        self._manager = manager
+        self._session_key = "test-session"
+        self._session_initialized = True
+
+    monkeypatch.setattr(HonchoMemoryProvider, "_do_session_init", delayed_session_init)
+    provider.initialize("session-1", platform="api_server")
+    provider.sync_turn("buffered user", "buffered assistant")
+
+    assert len(provider._pending_turns) == 1
+    release.set()
+    provider._init_thread.join(timeout=1)
+    _wait_for_sync(provider)
+
+    assert manager.session.messages == [
+        ("user", "buffered user"),
+        ("assistant", "buffered assistant"),
+    ]
+
+
+def test_honcho_flushes_buffered_turns_fifo_after_init():
+    provider = HonchoMemoryProvider()
+    provider._config = _configured_hybrid_config()
+    provider._manager = _RecordingManager()
+    provider._session_key = "test-session"
+
+    provider.sync_turn("one", "one reply")
+    provider.sync_turn("two", "two reply")
+    provider._session_initialized = True
+    provider._flush_pending_turns()
+    _wait_for_sync(provider)
+
+    assert provider._manager.session.messages == [
+        ("user", "one"), ("assistant", "one reply"),
+        ("user", "two"), ("assistant", "two reply"),
+    ]
+
+
+def test_honcho_pending_turn_buffer_drops_new_turn_when_full(caplog):
+    provider = HonchoMemoryProvider()
+    provider._config = _configured_hybrid_config()
+    for index in range(provider._PENDING_TURN_MAX):
+        assert provider._buffer_pending_turn(f"user-{index}", "assistant")
+
+    assert not provider._buffer_pending_turn("overflow", "assistant")
+    assert len(provider._pending_turns) == provider._PENDING_TURN_MAX
+    assert "buffer full" in caplog.text
+    assert "overflow" not in caplog.text
+
 def test_honcho_hybrid_initialize_returns_without_waiting_for_session_init(monkeypatch):
     """Slow Honcho session creation must not block agent startup."""
     provider = HonchoMemoryProvider()
@@ -312,6 +403,41 @@ def test_honcho_sync_turn_waits_for_full_background_startup(monkeypatch):
 
     assert provider._session_initialized is True
 
+
+
+
+def test_honcho_shutdown_flushes_pending_turn_once_after_init():
+    provider = HonchoMemoryProvider()
+    provider._config = _configured_hybrid_config()
+    provider._manager = _RecordingManager()
+    provider._session_key = "test-session"
+    provider.sync_turn("user", "assistant")
+    provider._session_initialized = True
+
+    provider.shutdown()
+    provider.shutdown()
+
+    assert provider._manager.session.messages == [("user", "user"), ("assistant", "assistant")]
+
+
+def test_honcho_failed_background_init_drops_pending_turns(monkeypatch, caplog):
+    provider = HonchoMemoryProvider()
+    cfg = _configured_hybrid_config()
+
+    monkeypatch.setattr(
+        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+        lambda: cfg,
+    )
+    monkeypatch.setattr(
+        HonchoMemoryProvider, "_do_session_init",
+        lambda self, cfg, session_id, **kwargs: (_ for _ in ()).throw(RuntimeError("unavailable")),
+    )
+    provider.initialize("session-1", platform="api_server")
+    provider.sync_turn("user", "assistant")
+    provider._init_thread.join(timeout=1)
+
+    assert not provider._pending_turns
+    assert "initialization failed" in caplog.text
 
 def test_honcho_system_prompt_advertises_active_while_background_init_runs(monkeypatch):
     """Prompt metadata should not require a completed network session."""

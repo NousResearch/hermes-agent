@@ -51,6 +51,7 @@ import {
   setCurrentBranch,
   setCurrentCwd,
   setCurrentModel,
+  setCurrentModelSource,
   setCurrentProvider,
   setMessages
 } from '@/store/session'
@@ -87,7 +88,6 @@ import { useSessionListActions } from '../session/hooks/use-session-list-actions
 import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
-import { KeybindPanel } from '../shell/keybind-panel'
 import { titlebarControlsPosition } from '../shell/titlebar'
 import { TitlebarControls } from '../shell/titlebar-controls'
 import { UpdatesOverlay } from '../updates-overlay'
@@ -139,10 +139,19 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const profileScope = useStore($profileScope)
 
   const routedSessionId = routeSessionId(location.pathname)
+  const routedSessionIdRef = useRef(routedSessionId)
+
+  routedSessionIdRef.current = routedSessionId
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
   const routeTokenRef = useRef(routeToken)
   routeTokenRef.current = routeToken
   const getRouteToken = useCallback(() => routeTokenRef.current, [])
+
+  const getRoutedStoredSessionId = useCallback(() => routedSessionIdRef.current, [])
+
+  const clearRoutedSessionIntent = useCallback(() => {
+    routedSessionIdRef.current = null
+  }, [])
 
   // Mirror "the workspace is showing a full page" into its atom — the
   // workspace pane contribution re-registers headerVeto from it, so the main
@@ -171,6 +180,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const {
     activeSessionIdRef,
     ensureSessionState,
+    getRuntimeIdForStoredSession,
     resetViewSync,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
@@ -227,12 +237,20 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   })
 
   const { refreshCurrentModel, selectModel, updateModelOptionsCache } = useModelControls({
-    activeSessionId,
     queryClient,
     requestGateway
   })
 
   const openProviderSettings = useCallback(() => navigate(`${SETTINGS_ROUTE}?tab=providers`), [navigate])
+
+  // Palette "Keyboard shortcuts" entry dispatches a custom event (contributions
+  // don't have router access); listen and navigate to the settings keybinds tab.
+  useEffect(() => {
+    const onOpenKeybinds = () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`)
+    window.addEventListener('hermes:open-keybinds', onOpenKeybinds)
+
+    return () => window.removeEventListener('hermes:open-keybinds', onOpenKeybinds)
+  }, [navigate])
 
   // Post-turn rehydrate from stored history (same behavior as DesktopController,
   // including finished-todos restoration).
@@ -376,6 +394,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     ensureSessionState,
     getRouteToken,
     navigate,
+    onFreshDraftRouteIntent: clearRoutedSessionIntent,
     requestGateway,
     resetViewSync,
     runtimeIdByStoredSessionIdRef,
@@ -503,6 +522,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     branchCurrentSession: branchInNewChat,
     busyRef,
     createBackendSessionForSend,
+    getRoutedStoredSessionId,
+    getRuntimeIdForStoredSession,
     getRouteToken,
     handleSkinCommand,
     openMemoryGraph: openStarmap,
@@ -883,6 +904,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             onMainModelChanged={(provider, model) => {
               setCurrentProvider(provider)
               setCurrentModel(model)
+              setCurrentModelSource('default')
               updateModelOptionsCache(provider, model, true)
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
@@ -929,9 +951,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           <StarmapView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
-
-      {/* The full hotkey map (⌘/ and the titlebar keyboard button). */}
-      <KeybindPanel />
 
       {/* Toasts above everything. */}
       <NotificationStack />

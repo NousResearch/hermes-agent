@@ -43,6 +43,8 @@ import logging
 import os
 import random
 import re
+import threading
+import time
 from pathlib import Path as _Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -71,6 +73,59 @@ HttpError: Any = Exception  # type: ignore
 MediaFileUpload: Any = None  # type: ignore
 
 _google_modules_loaded: bool = False
+_GOOGLE_ID_TOKEN_CERTS_TTL_SECONDS = 300
+_google_id_token_request: Any = None
+_google_id_token_request_lock = threading.Lock()
+
+
+class _CachedGoogleAuthRequest:
+    def __init__(self, request: Any, ttl_seconds: int = _GOOGLE_ID_TOKEN_CERTS_TTL_SECONDS) -> None:
+        self._request = request
+        self._ttl_seconds = ttl_seconds
+        self._lock = threading.Lock()
+        self._cache: Dict[Tuple[str, str], Tuple[float, Any]] = {}
+
+    def __call__(self, url: str, method: str = "GET", **kwargs: Any) -> Any:
+        cache_key = (method.upper(), url)
+        if cache_key[0] != "GET":
+            return self._request(url=url, method=method, **kwargs)
+
+        now = time.monotonic()
+        with self._lock:
+            cached = self._cache.get(cache_key)
+            if cached and cached[0] > now:
+                return cached[1]
+
+        response = self._request(url=url, method=method, **kwargs)
+        if getattr(response, "status", None) == 200:
+            with self._lock:
+                self._cache[cache_key] = (now + self._ttl_seconds, response)
+        return response
+
+
+def _get_google_id_token_request() -> Any:
+    global _google_id_token_request
+    with _google_id_token_request_lock:
+        if _google_id_token_request is None:
+            try:
+                from google.auth.transport import requests as google_requests
+            except ImportError as exc:
+                raise RuntimeError("google-auth is required for Google Chat HTTP callbacks") from exc
+            _google_id_token_request = _CachedGoogleAuthRequest(google_requests.Request())
+        return _google_id_token_request
+
+
+def _verify_google_id_token(token: str, audience: str) -> Dict[str, Any]:
+    try:
+        from google.oauth2 import id_token
+    except ImportError as exc:
+        raise RuntimeError("google-auth is required for Google Chat HTTP callbacks") from exc
+
+    return id_token.verify_oauth2_token(
+        token,
+        _get_google_id_token_request(),
+        audience,
+    )
 
 
 def _load_google_modules() -> bool:
@@ -690,6 +745,21 @@ class GoogleChatAdapter(BasePlatformAdapter):
             self._max_bytes = int(os.getenv("GOOGLE_CHAT_MAX_BYTES", str(16 * 1024 * 1024)))
         except (ValueError, TypeError):
             self._max_bytes = 16 * 1024 * 1024
+        self._http_events_url = (
+            self.config.extra.get("http_events_url")
+            or os.getenv("GOOGLE_CHAT_HTTP_EVENTS_URL", "")
+            or ""
+        ).strip()
+        self._http_events_audience = (
+            self.config.extra.get("http_events_audience")
+            or os.getenv("GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE", "")
+            or self._http_events_url
+        ).strip()
+        self._http_events_service_account_email = (
+            self.config.extra.get("http_events_service_account_email")
+            or os.getenv("GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL", "")
+            or ""
+        ).strip().lower()
 
     # ------------------------------------------------------------------
     # Configuration loading and validation
@@ -1421,6 +1491,62 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 message.ack()
             except Exception:
                 pass
+
+    async def dispatch_http_event(self, envelope: Dict[str, Any]) -> Dict[str, Any]:
+        extracted = self._extract_message_payload(envelope)
+        if extracted is None:
+            return {}
+
+        msg, space, _fmt = extracted
+        sender = msg.get("sender") or {}
+        if sender.get("type") == "BOT":
+            return {}
+
+        msg_name = msg.get("name") or ""
+        if msg_name and self._dedup.is_duplicate(msg_name):
+            return {}
+
+        msg_with_space = dict(msg)
+        if "space" not in msg_with_space and space:
+            msg_with_space["space"] = space
+
+        enriched_env = dict(envelope)
+        if "space" not in enriched_env and space:
+            enriched_env["space"] = space
+
+        await self._dispatch_message(msg_with_space, enriched_env)
+        return {}
+
+    def verify_http_event_request(self, auth_header: str) -> Tuple[bool, str]:
+        if not self._http_events_audience or not self._http_events_service_account_email:
+            return False, "google_chat_http_events_not_configured"
+
+        if not auth_header.startswith("Bearer "):
+            return False, "missing_google_bearer"
+
+        token = auth_header[7:].strip()
+        if not token:
+            return False, "missing_google_bearer"
+
+        try:
+            claims = _verify_google_id_token(token, self._http_events_audience)
+        except Exception as exc:
+            logger.warning(
+                "[GoogleChat] HTTP event bearer verification failed: %s",
+                _redact_sensitive(str(exc)),
+            )
+            return False, "invalid_google_bearer"
+
+        expected = {
+            item.strip().lower()
+            for item in self._http_events_service_account_email.split(",")
+            if item.strip()
+        }
+        claim_email = str(claims.get("email") or "").strip().lower()
+        if not claim_email or claim_email not in expected:
+            return False, "unexpected_google_bearer_identity"
+
+        return True, ""
 
     async def _dispatch_message(self, msg: Dict[str, Any], envelope: Dict[str, Any]) -> None:
         """Translate a Chat message payload to a MessageEvent and hand off.
@@ -3270,6 +3396,12 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
         seed["subscription_name"] = subscription
     if http_events_url:
         seed["http_events_url"] = http_events_url
+    http_events_audience = os.getenv("GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE")
+    if http_events_audience:
+        seed["http_events_audience"] = http_events_audience
+    http_events_sa_email = os.getenv("GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL")
+    if http_events_sa_email:
+        seed["http_events_service_account_email"] = http_events_sa_email
     sa_json = (
         os.getenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
         or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")

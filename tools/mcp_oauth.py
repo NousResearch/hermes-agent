@@ -194,6 +194,41 @@ def _reserve_callback_port() -> int:
     return port
 
 
+def _cached_redirect_port(storage: "HermesTokenStorage | None") -> int | None:
+    """Return the loopback callback port from cached client registration.
+
+    OAuth providers bind a dynamically-registered ``client_id`` to the exact
+    redirect URI that was registered with it. If Hermes restarts and chooses a
+    new random callback port while reusing the stored ``client_id``, providers
+    such as Summ reject the authorization request with ``redirect_uri does not
+    match any registered URIs``. Reusing the cached redirect port keeps the
+    authorization request consistent with the stored client registration.
+    """
+    if storage is None:
+        return None
+
+    try:
+        data = _read_json(storage._client_info_path())
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not data:
+        return None
+
+    for uri in data.get("redirect_uris") or []:
+        try:
+            parsed = urlparse(str(uri))
+        except (TypeError, ValueError):
+            continue
+        if (
+            parsed.scheme == "http"
+            and parsed.hostname in {"127.0.0.1", "localhost"}
+            and parsed.path == "/callback"
+            and parsed.port is not None
+        ):
+            return int(parsed.port)
+    return None
+
+
 def _is_interactive() -> bool:
     """Return True if we can reasonably expect to interact with a user."""
     if not _oauth_interactive_enabled.get():
@@ -668,21 +703,14 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None):
 
 
 async def _wait_for_callback() -> tuple[str, str | None]:
-    """Wait for the OAuth callback to arrive on the local callback server.
+    """Wait for the OAuth callback on the legacy module-level port.
 
-    Uses the module-level ``_oauth_port`` which is set by ``build_oauth_auth``
-    before this is ever called.  Polls for the result without blocking the
-    event loop.
-
-    On an interactive TTY, races the HTTP listener against a stdin paste
-    fallback so users without an SSH tunnel can copy the redirect URL (or
-    just the ``code=...&state=...`` query string) from a browser on another
-    machine and paste it back. The HTTP listener wins when the redirect
-    reaches it first; the paste fallback wins when it doesn't.
+    Kept for backwards compatibility with callers that never went through
+    :func:`build_oauth_auth`'s per-flow wiring. New code paths receive a
+    per-flow waiter from :func:`_make_callback_waiter` so concurrent OAuth
+    flows cannot cross ports (#34260).
 
     Raises:
-        OAuthNonInteractiveError: If the callback times out (no user present
-            to complete the browser auth).
         RuntimeError: If ``_oauth_port`` has not been set, which would indicate
             that ``build_oauth_auth`` was skipped — the asserting form below
             was a silent bug when running Python with ``-O``/``-OO``.
@@ -692,102 +720,129 @@ async def _wait_for_callback() -> tuple[str, str | None]:
             "OAuth callback port not set — build_oauth_auth must be called "
             "before _wait_for_oauth_callback"
         )
+    return await _make_callback_waiter(_oauth_port)()
 
-    # Reject before binding the callback listener in non-interactive contexts.
-    # Reaching here means the SDK entered the authorization-code flow (a valid
-    # or refreshable token would never call the callback handler), so a cached
-    # token file is present but unusable. Binding the listener here would block
-    # for the full 300s timeout and — on the next connection retry — collide
-    # with the still-bound/TIME_WAIT port, surfacing as
-    # ``OSError: [Errno 98] Address already in use``. Failing fast keeps
-    # gateway startup independent of an unusable optional MCP server. This
-    # guard holds "regardless of whether a token file exists" — the point the
-    # build_oauth_auth token-file guard cannot cover. See #57836.
-    _raise_if_non_interactive(
-        "OAuth callback requires an interactive session but none is "
-        "available (non-interactive/background context); skipping browser "
-        "authorization without binding a callback listener."
-    )
 
-    # The callback server is already running (started in build_oauth_auth).
-    # We just need to poll for the result.
-    handler_cls, result = _make_callback_handler()
+def _make_callback_waiter(port: int):
+    """Return a callback waiter bound to a single OAuth flow's port.
 
-    # Start a temporary server on the known port, adopting the socket
-    # reserved at port-selection time when one exists. Holding the bound
-    # socket from _reserve_callback_port() until here closes the TOCTOU
-    # window where another process could steal the port between selection
-    # and bind (#22161). allow_reuse_address is set BEFORE binding (setting
-    # it after the constructor has already bound is a no-op) so a lingering
-    # TIME_WAIT socket from a previous flow cannot block the next one
-    # (#44590).
-    try:
-        server = HTTPServer(
-            ("127.0.0.1", _oauth_port), handler_cls, bind_and_activate=False
-        )
-        reserved = _reserved_sockets.pop(_oauth_port, None)
-        if reserved is not None:
-            # Adopt the reserved (already bound) socket and start listening.
-            server.socket.close()
-            server.socket = reserved
-            server.server_address = reserved.getsockname()
-            server.server_activate()
-        else:
-            server.allow_reuse_address = True
-            server.server_bind()
-            server.server_activate()
-    except OSError:
-        # Port already in use — the server from build_oauth_auth is running.
-        # Fall back to polling the server started by build_oauth_auth.
-        raise OAuthNonInteractiveError(
-            "OAuth callback timed out — could not bind callback port. "
-            "Complete the authorization in a browser first, then retry."
+    Closing over the port (instead of reading the module-level
+    ``_oauth_port``) keeps concurrent OAuth flows isolated: flow A's waiter
+    listens on flow A's port even when flow B's ``_configure_callback_port``
+    overwrites the legacy global afterwards (#34260, the callback-side
+    sibling of the #44588 redirect-handler fix).
+
+    The waiter polls for the redirect without blocking the event loop. On an
+    interactive TTY it races the HTTP listener against a stdin paste fallback
+    so users without an SSH tunnel can paste the redirect URL (or just the
+    ``code=...&state=...`` query string) from a browser on another machine.
+
+    Raises (when awaited):
+        OAuthNonInteractiveError: If the callback times out (no user present
+            to complete the browser auth), or in non-interactive contexts.
+    """
+
+    async def _wait() -> tuple[str, str | None]:
+        # Reject before binding the callback listener in non-interactive
+        # contexts. Reaching here means the SDK entered the authorization-code
+        # flow (a valid or refreshable token would never call the callback
+        # handler), so a cached token file is present but unusable. Binding the
+        # listener here would block for the full 300s timeout and — on the next
+        # connection retry — collide with the still-bound/TIME_WAIT port,
+        # surfacing as ``OSError: [Errno 98] Address already in use``. Failing
+        # fast keeps gateway startup independent of an unusable optional MCP
+        # server. This guard holds "regardless of whether a token file exists"
+        # — the point the build_oauth_auth token-file guard cannot cover.
+        # See #57836.
+        _raise_if_non_interactive(
+            "OAuth callback requires an interactive session but none is "
+            "available (non-interactive/background context); skipping browser "
+            "authorization without binding a callback listener."
         )
 
-    server_thread = threading.Thread(target=server.handle_request, daemon=True)
-    server_thread.start()
+        handler_cls, result = _make_callback_handler()
 
-    # Optional paste-fallback thread: only on interactive TTYs. Reads one
-    # line from stdin and writes the parsed code/state into the shared
-    # result dict. The HTTP listener and this thread race for the result;
-    # whichever fills it first wins.
-    paste_thread: threading.Thread | None = None
-    if _is_interactive():
-        print(
-            "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` "
-            "portion) and press Enter. Type ``skip`` + Enter to continue "
-            "without this server:",
-            file=sys.stderr,
-            flush=True,
-        )
-        paste_thread = threading.Thread(
-            target=_paste_callback_reader, args=(result,), daemon=True
-        )
-        paste_thread.start()
+        # Start a temporary server on this flow's port, adopting the socket
+        # reserved at port-selection time when one exists. Holding the bound
+        # socket from _reserve_callback_port() until here closes the TOCTOU
+        # window where another process could steal the port between selection
+        # and bind (#22161). allow_reuse_address is set BEFORE binding (setting
+        # it after the constructor has already bound is a no-op) so a lingering
+        # TIME_WAIT socket from a previous flow cannot block the next one
+        # (#44590).
+        try:
+            server = HTTPServer(
+                ("127.0.0.1", port), handler_cls, bind_and_activate=False
+            )
+            reserved = _reserved_sockets.pop(port, None)
+            if reserved is not None:
+                # Adopt the reserved (already bound) socket and start listening.
+                server.socket.close()
+                server.socket = reserved
+                server.server_address = reserved.getsockname()
+                server.server_activate()
+            else:
+                server.allow_reuse_address = True
+                server.server_bind()
+                server.server_activate()
+        except OSError as exc:
+            # The loopback callback port is genuinely in use: a concurrent OAuth
+            # flow, a leftover listener, or a fixed `oauth.redirect_port` that
+            # collided. build_oauth_auth does not start its own callback server,
+            # so there is nothing to poll here; surface a clear, actionable error
+            # instead of a misleading "timed out".
+            raise OAuthNonInteractiveError(
+                f"OAuth callback port {port} is already in use ({exc}). "
+                "Close any other in-progress login, or set a free `oauth.redirect_port` "
+                "in the server config, then retry."
+            ) from exc
 
-    timeout = 300.0
-    poll_interval = 0.5
-    elapsed = 0.0
-    try:
-        while elapsed < timeout:
-            if result["auth_code"] is not None or result["error"] is not None:
-                break
-            await asyncio.sleep(poll_interval)
-            elapsed += poll_interval
-    finally:
-        server.server_close()
+        server_thread = threading.Thread(target=server.handle_request, daemon=True)
+        server_thread.start()
 
-    if result["error"] == _USER_SKIPPED_SENTINEL:
-        raise OAuthNonInteractiveError("user_skipped")
-    if result["error"]:
-        raise RuntimeError(f"OAuth authorization failed: {result['error']}")
-    if result["auth_code"] is None:
-        raise OAuthNonInteractiveError(
-            "OAuth callback timed out — no authorization code received. "
-            "Ensure you completed the browser authorization flow."
-        )
+        # Optional paste-fallback thread: only on interactive TTYs. Reads one
+        # line from stdin and writes the parsed code/state into the shared
+        # result dict. The HTTP listener and this thread race for the result;
+        # whichever fills it first wins.
+        paste_thread: threading.Thread | None = None
+        if _is_interactive():
+            print(
+                "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` "
+                "portion) and press Enter. Type ``skip`` + Enter to continue "
+                "without this server:",
+                file=sys.stderr,
+                flush=True,
+            )
+            paste_thread = threading.Thread(
+                target=_paste_callback_reader, args=(result,), daemon=True
+            )
+            paste_thread.start()
 
-    return result["auth_code"], result["state"]
+        timeout = 300.0
+        poll_interval = 0.5
+        elapsed = 0.0
+        try:
+            while elapsed < timeout:
+                if result["auth_code"] is not None or result["error"] is not None:
+                    break
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+        finally:
+            server.server_close()
+
+        if result["error"] == _USER_SKIPPED_SENTINEL:
+            raise OAuthNonInteractiveError("user_skipped")
+        if result["error"]:
+            raise RuntimeError(f"OAuth authorization failed: {result['error']}")
+        if result["auth_code"] is None:
+            raise OAuthNonInteractiveError(
+                "OAuth callback timed out — no authorization code received. "
+                "Ensure you completed the browser authorization flow."
+            )
+
+        return result["auth_code"], result["state"]
+
+    return _wait
 
 
 def _paste_callback_reader(result: dict) -> None:
@@ -895,12 +950,20 @@ def remove_oauth_tokens(server_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _configure_callback_port(cfg: dict) -> int:
+def _configure_callback_port(
+    cfg: dict,
+    storage: "HermesTokenStorage | None" = None,
+) -> int:
     """Pick or validate the OAuth callback port.
 
     Stores the resolved port into ``cfg['_resolved_port']`` so sibling
     helpers (and the manager) can read it from the same dict. Returns the
     resolved port.
+
+    Port choice precedence:
+    1. explicit ``oauth.redirect_port`` config
+    2. cached client registration redirect URI port
+    3. newly allocated free port
 
     NOTE: also sets the legacy module-level ``_oauth_port`` so existing
     calls to ``_wait_for_callback`` keep working. The legacy global is
@@ -910,10 +973,15 @@ def _configure_callback_port(cfg: dict) -> int:
     """
     global _oauth_port
     requested = int(cfg.get("redirect_port", 0))
-    # Ephemeral selection reserves the bound socket until _wait_for_callback
-    # adopts it, closing the select→bind TOCTOU race (#22161). An explicit
-    # user-pinned port is used as-is.
-    port = _reserve_callback_port() if requested == 0 else requested
+    # Precedence: explicit config port → cached client-registration port →
+    # fresh ephemeral port. The cached port keeps re-auth consistent with the
+    # redirect URI pinned at dynamic client registration (providers reject a
+    # mismatched URI). Only a truly fresh ephemeral pick goes through
+    # _reserve_callback_port(), which keeps the socket bound until
+    # _wait_for_callback adopts it — closing the select→bind TOCTOU race
+    # (#22161). Explicit and cached ports are fixed, known values and bind
+    # via the reuse_address path instead.
+    port = requested or _cached_redirect_port(storage) or _reserve_callback_port()
     cfg["_resolved_port"] = port
     _oauth_port = port  # legacy consumer: _wait_for_callback reads this
     return port
@@ -1044,21 +1112,22 @@ def build_oauth_auth(
             "initial authorization, then cached tokens will be reused."
         )
 
-    _configure_callback_port(cfg)
+    _configure_callback_port(cfg, storage)
     client_metadata = _build_client_metadata(cfg)
     _maybe_preregister_client(storage, cfg, client_metadata)
 
-    # Use closure factories to avoid global state pollution (#44588).
+    # Use closure factories to avoid global state pollution (#44588, #34260).
     resolved_port = cfg.get("_resolved_port", _oauth_port)
     redirect_handler = _make_redirect_handler(
         resolved_port, redirect_uri=cfg.get("redirect_uri") or None
     )
+    callback_handler = _make_callback_waiter(resolved_port)
 
     return OAuthClientProvider(
         server_url=server_url,
         client_metadata=client_metadata,
         storage=storage,
         redirect_handler=redirect_handler,
-        callback_handler=_wait_for_callback,
+        callback_handler=callback_handler,
         timeout=float(cfg.get("timeout", 300)),
     )

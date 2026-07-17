@@ -561,6 +561,54 @@ class TestCallbackPortReservation:
         # Reservation was consumed by adoption.
         assert port not in mod._reserved_sockets
 
+    def test_concurrent_flows_keep_their_own_callback_ports(self, monkeypatch):
+        """#34260: flow A's waiter listens on A's port even after flow B
+        overwrites the legacy module-level global.
+
+        This is the callback-side sibling of the #44588 redirect-handler fix:
+        without a per-flow waiter, A's callback wait would bind B's port and
+        A's redirect (pointing at A's port) would never be received.
+        """
+        import asyncio
+        import threading
+        import urllib.request
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+        monkeypatch.setattr(mod, "_raise_if_non_interactive", lambda lead: None)
+
+        cfg_a: dict = {}
+        port_a = mod._configure_callback_port(cfg_a)
+        waiter_a = mod._make_callback_waiter(port_a)
+        # Flow B configures afterwards — overwrites mod._oauth_port.
+        cfg_b: dict = {}
+        port_b = mod._configure_callback_port(cfg_b)
+        assert mod._oauth_port == port_b != port_a
+
+        async def drive():
+            task = asyncio.create_task(waiter_a())
+            await asyncio.sleep(0.2)
+
+            def hit():
+                # The redirect goes to flow A's port — where A's waiter
+                # must be listening despite the clobbered global.
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port_a}/callback?code=flowA&state=sA",
+                    timeout=5,
+                )
+
+            threading.Thread(target=hit, daemon=True).start()
+            return await asyncio.wait_for(task, timeout=10)
+
+        try:
+            code, state = asyncio.run(drive())
+        finally:
+            leftover = mod._reserved_sockets.pop(port_b, None)
+            if leftover is not None:
+                leftover.close()
+        assert code == "flowA"
+        assert state == "sA"
+
 
 # ---------------------------------------------------------------------------
 # remove_oauth_tokens
@@ -1046,6 +1094,46 @@ def test_maybe_preregister_client_redirect_uri_defaults_to_localhost(tmp_path, m
     ]
 
 
+def test_configure_callback_port_reuses_cached_client_redirect_port(tmp_path, monkeypatch):
+    """Cached client registrations must keep using their registered port."""
+    from tools.mcp_oauth import _configure_callback_port
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    storage = HermesTokenStorage("summ")
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir(parents=True)
+    (token_dir / "summ.client.json").write_text(json.dumps({
+        "client_id": "client-123",
+        "redirect_uris": ["http://127.0.0.1:57727/callback"],
+    }))
+
+    cfg = {"redirect_port": 0}
+    port = _configure_callback_port(cfg, storage)
+
+    assert port == 57727
+    assert cfg["_resolved_port"] == 57727
+
+
+def test_configure_callback_port_explicit_overrides_cached_client_port(tmp_path, monkeypatch):
+    """Explicit config wins over any cached registration."""
+    from tools.mcp_oauth import _configure_callback_port
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    storage = HermesTokenStorage("summ")
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir(parents=True)
+    (token_dir / "summ.client.json").write_text(json.dumps({
+        "client_id": "client-123",
+        "redirect_uris": ["http://127.0.0.1:57727/callback"],
+    }))
+
+    cfg = {"redirect_port": 54321}
+    port = _configure_callback_port(cfg, storage)
+
+    assert port == 54321
+    assert cfg["_resolved_port"] == 54321
+
+
 def test_build_oauth_auth_preserves_server_url_path():
     """server_url with path is forwarded to OAuthClientProvider unmodified.
 
@@ -1470,3 +1558,22 @@ class TestPoisonClientRegistration:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         storage = HermesTokenStorage("srv")
         assert storage.poison_client_registration() is False
+
+
+def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):
+    """A busy loopback callback port surfaces a clear 'already in use' error,
+    not a misleading 'timed out'. Guards the stale-comment fix where the branch
+    also wrongly claimed build_oauth_auth had started a server to poll."""
+    import tools.mcp_oauth as mo
+
+    monkeypatch.setattr(mo, "_is_interactive", lambda: True)
+    with patch.object(mo, "_oauth_port", 54321), patch.object(
+        mo, "HTTPServer", side_effect=OSError("address already in use")
+    ):
+        with pytest.raises(mo.OAuthNonInteractiveError) as excinfo:
+            asyncio.run(mo._wait_for_callback())
+
+    msg = str(excinfo.value)
+    assert "54321" in msg
+    assert "already in use" in msg
+    assert "timed out" not in msg

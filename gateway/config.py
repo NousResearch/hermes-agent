@@ -313,6 +313,50 @@ class Platform(Enum):
 _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
 
 
+# Platforms that bind a host TCP port (HTTP/webhook listeners). In a profile
+# multiplexer the default profile owns the single shared listener and serves
+# every profile through the /p/<profile>/ URL prefix, so a SECONDARY profile
+# enabling one of these is always a misconfiguration: it would try to bind a
+# port already held by the default's listener. Single source of truth for
+# both the gateway's fail-fast startup validation (gateway/run.py) and the
+# dashboard's pre-write mutation validation (hermes_cli/web_server.py) so
+# the two policies cannot drift. Stored as platform .value strings.
+PORT_BINDING_PLATFORM_VALUES = frozenset({
+    "webhook",
+    "api_server",
+    "msgraph_webhook",
+    "feishu",
+    "wecom_callback",
+    "bluebubbles",
+    "sms",
+    "whatsapp_cloud",
+    "line",
+})
+
+# Platforms whose port-binding status depends on connection mode. Feishu in
+# websocket mode (its default) uses an outbound long connection — no listener.
+# Only webhook/callback mode binds a port. Maps platform value → the mode
+# value that actually binds (#52563).
+PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {
+    "feishu": "webhook",
+}
+
+
+def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bool:
+    """Return True when *platform_value* actually binds a port for *extra* config.
+
+    Mode-conditional platforms (Feishu) only bind in their listener mode;
+    everything else in ``PORT_BINDING_PLATFORM_VALUES`` always binds.
+    """
+    if platform_value not in PORT_BINDING_PLATFORM_VALUES:
+        return False
+    expected_mode = PORT_BINDING_CONDITIONAL_MODES.get(platform_value)
+    if expected_mode is not None:
+        actual = str((extra or {}).get("connection_mode", "websocket")).strip().lower()
+        return actual == expected_mode
+    return True
+
+
 @dataclass
 class HomeChannel:
     """

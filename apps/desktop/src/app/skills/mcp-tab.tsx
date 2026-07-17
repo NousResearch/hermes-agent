@@ -24,6 +24,7 @@ import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { TextTab } from '@/components/ui/text-tab'
+import { Tip } from '@/components/ui/tooltip'
 import {
   authMcpServer,
   getActionStatus,
@@ -1140,16 +1141,17 @@ function ServerConfig({
           row's h-11 centering exactly (h-5 controls → mt-3, size-6 avatar →
           mt-2.5, h-4 switch → mt-3.5) no matter how tall the text column gets. */}
       <div className="flex items-start gap-2 pr-1.5">
-        <Button
-          aria-label={m.allServers}
-          className={cn('mt-3', ICON_BUTTON)}
-          onClick={onBack}
-          size="icon"
-          title={m.allServers}
-          variant="ghost"
-        >
-          <Codicon name="chevron-left" size="0.8125rem" />
-        </Button>
+        <Tip label={m.allServers}>
+          <Button
+            aria-label={m.allServers}
+            className={cn('mt-3', ICON_BUTTON)}
+            onClick={onBack}
+            size="icon"
+            variant="ghost"
+          >
+            <Codicon name="chevron-left" size="0.8125rem" />
+          </Button>
+        </Tip>
         <McpAvatar className="mt-2.5" name={name} status={status} />
         <div className="min-w-0 flex-1 pt-1">
           <h3 className="min-w-0 truncate text-[0.9375rem] font-semibold tracking-tight">{prettyName(name)}</h3>
@@ -1283,28 +1285,30 @@ function ServerIconActions({
 
   return (
     <span className={cn('flex items-center gap-0.5', className)}>
-      <Button
-        aria-label={m.reload}
-        className={ICON_BUTTON}
-        disabled={probing}
-        onClick={onProbe}
-        size="icon"
-        title={m.reload}
-        variant="ghost"
-      >
-        <Codicon name="refresh" size="0.8125rem" spinning={probing} />
-      </Button>
-      <Button
-        aria-label={m.remove}
-        className={cn(ICON_BUTTON, 'hover:text-destructive')}
-        disabled={saving}
-        onClick={onRemove}
-        size="icon"
-        title={m.remove}
-        variant="ghost"
-      >
-        <Codicon name="trash" size="0.8125rem" />
-      </Button>
+      <Tip label={m.reload}>
+        <Button
+          aria-label={m.reload}
+          className={ICON_BUTTON}
+          disabled={probing}
+          onClick={onProbe}
+          size="icon"
+          variant="ghost"
+        >
+          <Codicon name="refresh" size="0.8125rem" spinning={probing} />
+        </Button>
+      </Tip>
+      <Tip label={m.remove}>
+        <Button
+          aria-label={m.remove}
+          className={cn(ICON_BUTTON, 'hover:text-destructive')}
+          disabled={saving}
+          onClick={onRemove}
+          size="icon"
+          variant="ghost"
+        >
+          <Codicon name="trash" size="0.8125rem" />
+        </Button>
+      </Tip>
     </span>
   )
 }

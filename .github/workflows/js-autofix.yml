@@ -7,9 +7,11 @@ name: auto-fix lint issues & formatting
 # auto-corrected on merge so PRs aren't blocked by them. The PR-time eslint
 # check in typecheck.yml fails only when un-fixable errors remain.
 #
-# Pushes made by GITHUB_TOKEN don't trigger further workflow runs, so there's
-# no infinite loop — the push to bot/js-autofix and the resulting squash merge
-# to main are both made by GITHUB_TOKEN.
+# NOTE: AUTOFIX_BOT_PAT pushes DO trigger further workflow runs (unlike
+# secrets.GITHUB_TOKEN). The concurrency group (ts-autofix-${{ github.ref }})
+# with cancel-in-progress: true prevents an infinite loop — a re-triggered
+# run cancels the in-flight one, and since the second run finds no new fixes
+# (the first run already applied them), it exits with an empty patch.
 #
 # ── Security model: two-job split ───────────────────────────────────────────
 #
@@ -27,6 +29,7 @@ name: auto-fix lint issues & formatting
 #      bot/js-autofix branch, creates/updates a PR, and enables auto-merge.
 #      This job never runs npm, never installs anything, never executes any
 #      repo code. The only input it trusts is the patch artifact.
+#      Skipped entirely when generate-patch reports no fixes (has-fixes != true).
 #      The PR auto-merges (squash) once CI passes. If CI fails or main moves,
 #      the PR is auto-closed and the branch deleted — the next run re-applies
 #      on the current state.
@@ -56,6 +59,8 @@ jobs:
     name: Generate eslint --fix patch
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      has-fixes: ${{ steps.produce-patch.outputs.has-fixes }}
     # No permissions override → inherits workflow-level contents: read.
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -78,13 +83,16 @@ jobs:
         run: npm run fix
 
       - name: Produce patch
+        id: produce-patch
         run: |
           if git diff --quiet; then
             echo "No fixes needed."
+            echo "has-fixes=false" >> "$GITHUB_OUTPUT"
             # Empty patch signals "nothing to do" to apply-patch.
             : > js-fix.patch
           else
             git diff > js-fix.patch
+            echo "has-fixes=true" >> "$GITHUB_OUTPUT"
             echo "Patch size: $(wc -c < js-fix.patch) bytes"
 
             # Reject patches that touch anything outside JS/TS/JSON sources.
@@ -109,6 +117,9 @@ jobs:
   apply-patch:
     name: Apply patch
     needs: generate-patch
+    # Skip entirely when generate-patch found no fixes — saves a runner,
+    # avoids a redundant checkout/download, and keeps the job graph honest.
+    if: needs.generate-patch.outputs.has-fixes == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -159,7 +170,7 @@ jobs:
 
       - name: Create/update PR and enable auto-merge
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
           BOT_BRANCH: bot/js-autofix
         run: |
           set -euo pipefail
@@ -182,7 +193,7 @@ jobs:
 
       - name: Wait for merge, auto-close on failure or stale
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
           START_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail

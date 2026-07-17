@@ -79,6 +79,24 @@ logger = logging.getLogger(__name__)
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def _is_eager_fallback_transport_reason(reason: FailoverReason) -> bool:
+    """True for transport/server-error reasons eligible for eager fallback.
+
+    Used by the main retry loop's ``_should_fallback`` gate: these reasons
+    get one retry first (transient hiccups recover), then fail over to
+    ``fallback_providers`` once ``retry_count >= 2`` — instead of only
+    reaching a configured fallback chain via the separate max-retry-
+    exhaustion fallback attempt later in the same loop. Extracted to a
+    plain function so the reason set is unit-testable without driving the
+    full conversation loop.
+    """
+    return reason in {
+        FailoverReason.timeout,
+        FailoverReason.overloaded,
+        FailoverReason.server_error,
+    }
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -3270,19 +3288,19 @@ def run_conversation(
                 # provider won't recover within the retry window.
                 # Transport/server errors: allow 1 retry first (transient
                 # hiccups recover), then fall back if the provider keeps
-                # failing. Includes server_error (500/502) so a primary that's
-                # erroring out doesn't retry to exhaustion with a configured
-                # fallback chain sitting unused.
+                # failing. server_error (500/502) joining this set moves its
+                # failover earlier (after 2 retries, matching timeout/
+                # overloaded) instead of waiting for the max-retry-exhaustion
+                # fallback attempt further down this loop — a primary that's
+                # erroring with 500s now hands off sooner rather than
+                # spending its whole retry budget on a provider that's
+                # already failing.
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                     FailoverReason.upstream_rate_limit,
                 }
-                _is_transport_failure = classified.reason in {
-                    FailoverReason.timeout,
-                    FailoverReason.overloaded,
-                    FailoverReason.server_error,
-                }
+                _is_transport_failure = _is_eager_fallback_transport_reason(classified.reason)
                 # Z.AI Coding Plan GLM-5.2 overload 429s classify as
                 # `overloaded` (to spare the credential pool), but `overloaded`
                 # is excluded from `is_rate_limited` — the gate for the adaptive

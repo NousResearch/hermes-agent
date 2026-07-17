@@ -5421,7 +5421,44 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     session["queued_prompt"] = {"text": text, "transport": transport}
 
 
-def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any) -> dict:
+def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
+    """Interrupt a busy turn without blocking the RPC reader or session lock.
+
+    Some providers cannot apply ``interrupt()`` until a synchronous tool or
+    network call returns. Running that call inline used to leave
+    ``prompt.submit`` holding ``history_lock`` for the whole wait, which in turn
+    blocked ``session.resume`` and delayed the queued prompt itself. Keep at
+    most one interrupt worker per session so repeated steering cannot leak an
+    unbounded number of blocked threads.
+    """
+    use_agent = agent is not None and hasattr(agent, "interrupt")
+    use_compute_host = not use_agent and _session_uses_compute_host(session)
+    if not use_agent and not use_compute_host:
+        return
+
+    with session["history_lock"]:
+        if session.get("_busy_interrupt_pending"):
+            return
+        session["_busy_interrupt_pending"] = True
+
+    def interrupt() -> None:
+        try:
+            if use_agent:
+                agent.interrupt()
+            else:
+                _get_compute_host_supervisor().interrupt(sid)
+        except Exception:
+            pass
+        finally:
+            with session["history_lock"]:
+                session["_busy_interrupt_pending"] = False
+
+    threading.Thread(target=interrupt, daemon=True, name=f"busy-interrupt-{sid}").start()
+
+
+def _handle_busy_submit(
+    rid, sid: str, session: dict, text: Any, transport: Any
+) -> dict | None:
     """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
     a turn is in flight, instead of rejecting it with ``session busy``.
 
@@ -5438,25 +5475,30 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any)
     """
     mode = _load_busy_input_mode()
     agent = session.get("agent")
+    with session["history_lock"]:
+        if not session.get("running"):
+            # The turn ended between prompt.submit's first busy check and this
+            # helper. Let the caller retry and claim the now-idle session.
+            return None
     if mode == "steer" and agent is not None and hasattr(agent, "steer"):
         try:
             if agent.steer(text):
-                session["last_active"] = time.time()
+                with session["history_lock"]:
+                    session["last_active"] = time.time()
                 return _ok(rid, {"status": "steered"})
         except Exception:
             pass  # fall through to queue
-    if mode != "queue" and agent is not None and hasattr(agent, "interrupt"):
-        try:
-            agent.interrupt()
-        except Exception:
-            pass
-    elif mode != "queue" and _session_uses_compute_host(session):
-        try:
-            _get_compute_host_supervisor().interrupt(sid)
-        except Exception:
-            pass
-    _enqueue_prompt(session, text, transport)
-    session["last_active"] = time.time()
+    # Queue before asking the live turn to stop. In particular, never call a
+    # provider or compute-host method while holding history_lock: an interrupt
+    # can wait behind the very operation it is trying to cancel.
+    with session["history_lock"]:
+        if not session.get("running"):
+            return None
+        _enqueue_prompt(session, text, transport)
+        session["last_active"] = time.time()
+
+    if mode != "queue":
+        _interrupt_busy_session(sid, session, agent)
     return _ok(rid, {"status": "queued"})
 
 
@@ -8847,13 +8889,25 @@ def _(rid, params: dict) -> dict:
     # or fallback moved the session transport to stdio.
     if (t := current_transport()) is not None:
         session["transport"] = t
+    while True:
+        busy_transport = None
+        with session["history_lock"]:
+            if session.get("running"):
+                # Don't reject a mid-turn prompt — queue it (and, by default,
+                # interrupt the live turn) so it runs as the next turn. The
+                # provider interrupt itself must happen after this lock is
+                # released: a non-interruptible tool may keep it waiting.
+                busy_transport = t or session.get("transport")
+            else:
+                break
+        busy_response = _handle_busy_submit(rid, sid, session, text, busy_transport)
+        if busy_response is not None:
+            return busy_response
+        # The old turn finished between the two lock acquisitions. Retry the
+        # claim so this prompt starts normally instead of being stranded in a
+        # queue whose drain already ran.
+
     with session["history_lock"]:
-        if session.get("running"):
-            # Don't reject a mid-turn prompt — queue it (and, by default,
-            # interrupt the live turn) so it runs as the next turn. See
-            # _handle_busy_submit for why the old "session busy" rejection
-            # dropped messages when teardown outlived the client's retry window.
-            return _handle_busy_submit(rid, sid, session, text, t or session.get("transport"))
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent
         # racing the in-flight child on the same stored session (interleaved

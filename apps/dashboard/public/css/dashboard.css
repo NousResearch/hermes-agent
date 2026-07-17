@@ -950,6 +950,27 @@ a { color: inherit; }
 .score-final { color: var(--muted); }
 .score-pre { color: var(--ink-2); }
 
+/* follow star + My Teams view */
+.score-follow { font-size: 13px; line-height: 1; padding: 0 2px; color: var(--muted); flex: 0 0 auto; }
+.score-follow.score-followed { color: var(--accent); }
+.score-teams-tab[aria-selected="true"] { color: var(--accent); }
+.score-teams-empty { padding: 14px 6px; line-height: 1.5; }
+.btn-tiny { font-size: 11px; padding: 2px 8px; line-height: 1.4; }
+.myteam { border: 1px solid var(--hairline); border-radius: 5px; padding: 10px; margin-bottom: 10px; }
+.myteam-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.myteam-league { margin-left: auto; letter-spacing: 0.08em; }
+.myteam-games { display: flex; flex-direction: column; gap: 4px; }
+.myteam-game { display: flex; align-items: center; gap: 8px; padding: 4px 2px; border-bottom: 1px solid var(--hairline); }
+.myteam-game:last-child { border-bottom: none; }
+.myteam-game.upcoming { background: var(--accent-dim); border-radius: 3px; }
+.myteam-match { flex: 1; font-variant-numeric: tabular-nums; min-width: 0; }
+.myteam-when { flex: 0 0 auto; }
+.myteam-cal { flex: 0 0 auto; }
+.myteam-news { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
+.myteam-news-item { display: block; text-decoration: none; padding: 3px 2px; border-left: 2px solid transparent; }
+.myteam-news-item:hover { border-left-color: var(--accent); background: var(--surface-2); }
+.myteam-news-title { line-height: 1.35; }
+
 /* ---------- SA MedBot ---------- */
 .med-log { display: flex; flex-direction: column; gap: 10px; max-height: 420px; overflow-y: auto; padding: 4px 2px; }
 .med-intro { border-left: 2px solid var(--accent); padding: 6px 10px; background: var(--accent-dim); border-radius: 0 4px 4px 0; }

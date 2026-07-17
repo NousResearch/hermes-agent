@@ -146,6 +146,7 @@ check("at-a-glance hero renders cells", (await page.locator(".widget-glance .gla
 check("glance weather cell populated", /\d+°/.test(await page.locator(".widget-glance").innerText()));
 check("clock shows time", /\d{1,2}:\d{2}/.test(await page.locator(".clock-time").innerText()));
 check("weather temp shown", /-?\d+°/.test(await page.locator(".weather-temp").innerText()));
+await page.waitForFunction(() => document.querySelectorAll(".ws-row").length >= 5, null, { timeout: 10000 });
 check("worldstate domains", (await page.locator(".ws-row").count()) >= 5);
 check("worldstate levels are labeled", (await page.locator(".ws-row .level-chip").first().innerText()).length > 2);
 check("sample badges when offline", (await page.locator(".widget-badge:not([hidden])").count()) >= 2);
@@ -600,8 +601,23 @@ check("standings table renders", (await page.locator(".detail-pop .stand-row").c
 await page.keyboard.press("Escape");
 await page.waitForSelector(".detail-pop", { state: "detached" });
 
+// ---- follow teams → My Teams tab + add fixture to calendar ----------------------
+await page.locator(".widget-scores .score-follow").first().click();
+await page.waitForSelector(".widget-scores .score-follow.score-followed", { timeout: 5000 });
+check("following a team fills the star", true);
+await page.locator(".widget-scores .score-teams-tab").click();
+await page.waitForSelector(".widget-scores .myteam", { timeout: 5000 });
+check("My Teams tab lists a followed team", (await page.locator(".widget-scores .myteam").count()) >= 1);
+await page.waitForSelector(".widget-scores .myteam-cal", { timeout: 5000 });
+await page.locator(".widget-scores .myteam-cal").first().click();
+await page.waitForFunction(() =>
+  /Added/.test(document.querySelector(".widget-scores .myteam-cal")?.textContent || ""),
+  null, { timeout: 5000 });
+check("add-to-calendar marks the fixture added", true);
+
 // ---- health & medicine (PubMed, trials, SA MedBot) -------------------------------
 await gotoWidget("pubmed");
+await page.waitForSelector(".widget-pubmed .pubmed-item", { timeout: 10000 });
 check("pubmed lists recent articles", (await page.locator(".widget-pubmed .pubmed-item").count()) >= 2);
 await gotoWidget("trials");
 check("clinical trials list renders", (await page.locator(".widget-trials .trial-item").count()) >= 2);

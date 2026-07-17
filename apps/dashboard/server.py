@@ -1043,6 +1043,88 @@ def sample_scores(league: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Team schedule ("My Teams" — recent + upcoming fixtures) and team news
+# ---------------------------------------------------------------------------
+TEAM_SCHEDULE_TTL = 30 * 60
+TEAM_NEWS_TTL = 30 * 60
+
+
+def live_team_schedule(league: str, team: str) -> dict:
+    sport, lg = SPORT_LEAGUES[league]
+    url = (f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{lg}"
+           f"/teams/{urllib.parse.quote(team)}/schedule")
+    raw = json.loads(fetch_url(url))
+    games = []
+    for event in raw.get("events", []):
+        try:
+            comp = (event.get("competitions") or [{}])[0]
+            status = (event.get("status") or {}).get("type") or {}
+            competitors = [_norm_competitor(c) for c in comp.get("competitors", [])]
+            home = next((c for c in competitors if c["home"]), None)
+            away = next((c for c in competitors if not c["home"]), None)
+            if not home or not away:
+                continue
+            games.append({
+                "id": event.get("id"),
+                "state": status.get("state", "pre"),
+                "status": status.get("shortDetail") or status.get("detail") or "",
+                "start": event.get("date"),
+                "home": home, "away": away,
+            })
+        except Exception:
+            continue
+    games.sort(key=lambda g: g.get("start") or "")
+    return {"source": "live", "league": league, "team": team.upper(), "games": games}
+
+
+def sample_team_schedule(league: str, team: str) -> dict:
+    now = datetime.now(timezone.utc)
+    opp = {"epl": ("TOT", "Spurs"), "mls": ("LAFC", "LAFC")}.get(league, ("LAL", "Lakers"))
+    games = []
+    for i, offset in enumerate((-6, -2, 3, 8)):
+        played = offset < 0
+        start = now + timedelta(days=offset)
+        home = i % 2 == 0
+        us = {"abbr": team.upper(), "name": team.upper(),
+              "score": str(90 + i) if played else None, "home": home,
+              "winner": played and i % 2 == 0}
+        them = {"abbr": opp[0], "name": opp[1],
+                "score": str(85 + i) if played else None, "home": not home,
+                "winner": played and i % 2 != 0}
+        games.append({
+            "id": f"{league}-{team}-{i}",
+            "state": "post" if played else "pre",
+            "status": "Final" if played else start.strftime("%a %d %b, %H:%M"),
+            "start": start.isoformat(),
+            "home": us if home else them,
+            "away": them if home else us,
+        })
+    return {"source": "sample", "league": league, "team": team.upper(), "games": games}
+
+
+def live_team_news(team: str) -> dict:
+    url = ("https://news.google.com/rss/search?q="
+           f"{urllib.parse.quote(team + ' ' + 'team')}&hl=en-US&gl=US&ceid=US:en")
+    items = merge_items(parse_feed(fetch_url(url), "Google News"), 8)
+    if not items:
+        raise RuntimeError("no team news")
+    return {"source": "live", "team": team, "items": items}
+
+
+def sample_team_news(team: str) -> dict:
+    now = datetime.now(timezone.utc)
+    items = [
+        {"title": f"{team} secure hard-fought win in weekend clash",
+         "url": "https://example.com/team-1", "source": "Sample Sports",
+         "summary": "", "published": (now - timedelta(hours=3)).isoformat()},
+        {"title": f"Injury update: {team} coach optimistic ahead of next fixture",
+         "url": "https://example.com/team-2", "source": "Sample Sports",
+         "summary": "", "published": (now - timedelta(hours=9)).isoformat()},
+    ]
+    return {"source": "sample", "team": team, "items": items}
+
+
+# ---------------------------------------------------------------------------
 # Stocks / indices / FX — Stooq CSV (no key)
 # ---------------------------------------------------------------------------
 import csv as _csv
@@ -2178,6 +2260,25 @@ class Api:
                             lambda: live_standings(league),
                             lambda: sample_standings(league))
 
+    def team_schedule(self, params: dict) -> dict:
+        league = params.get("league", ["nba"])[0].lower()
+        if league not in SPORT_LEAGUES:
+            raise ApiError(400, f"unknown league {league!r}")
+        team = re.sub(r"[^A-Za-z0-9 .-]", "", params.get("team", [""])[0]).strip()[:32]
+        if not team:
+            raise ApiError(400, "missing team")
+        return self._cached(f"teamsched:{league}:{team.lower()}", TEAM_SCHEDULE_TTL,
+                            lambda: live_team_schedule(league, team),
+                            lambda: sample_team_schedule(league, team))
+
+    def team_news(self, params: dict) -> dict:
+        team = re.sub(r"[^A-Za-z0-9 .&-]", "", params.get("team", [""])[0]).strip()[:48]
+        if not team:
+            raise ApiError(400, "missing team")
+        return self._cached(f"teamnews:{team.lower()}", TEAM_NEWS_TTL,
+                            lambda: live_team_news(team),
+                            lambda: sample_team_news(team))
+
     def social(self, params: dict) -> dict:
         network = params.get("network", ["hn"])[0].lower()
         if network == "hn":
@@ -2631,6 +2732,8 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/crypto/trending": "crypto_trending",
         "/api/scores": "scores",
         "/api/standings": "standings",
+        "/api/team-schedule": "team_schedule",
+        "/api/team-news": "team_news",
         "/api/quakes": "quakes",
         "/api/fx": "fx",
         "/api/convert": "convert",

@@ -636,6 +636,32 @@ class MarketsWatchlistTests(unittest.TestCase):
         with self.assertRaises(server.ApiError):
             self.api.scores({"league": ["quidditch"]})
 
+    def test_team_schedule_sample_shape(self):
+        d = self.api.team_schedule({"league": ["nba"], "team": ["BOS"]})
+        self.assertEqual(d["team"], "BOS")
+        self.assertTrue(d["games"])
+        states = {g["state"] for g in d["games"]}
+        self.assertTrue({"pre", "post"} & states)      # has recent and/or upcoming
+        for g in d["games"]:
+            self.assertIn("start", g)
+            for side in ("home", "away"):
+                self.assertIn("abbr", g[side])
+
+    def test_team_schedule_requires_team(self):
+        with self.assertRaises(server.ApiError):
+            self.api.team_schedule({"league": ["nba"], "team": [""]})
+
+    def test_team_schedule_unknown_league_rejected(self):
+        with self.assertRaises(server.ApiError):
+            self.api.team_schedule({"league": ["quidditch"], "team": ["BOS"]})
+
+    def test_team_news_sample_shape(self):
+        d = self.api.team_news({"team": ["Arsenal"]})
+        self.assertEqual(d["team"], "Arsenal")
+        self.assertTrue(d["items"])
+        for item in d["items"]:
+            self.assertTrue(item["title"] and item["url"])
+
     def test_standings_sample_shape(self):
         for lg in ("nba", "epl"):
             d = self.api.standings({"league": [lg]})

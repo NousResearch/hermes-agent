@@ -86,7 +86,7 @@ function defaultState() {
     reading: { items: [] },
     newsRead: {}, // url → timestamp of first open (bounded in markRead)
     markets: { ids: ["bitcoin", "ethereum", "solana", "dogecoin"], holdings: {} },
-    sports: { league: "nba" },
+    sports: { league: "nba", teams: [] },
     socials: { network: "hn", sub: "popular" },
     stocks: { symbols: ["^spx", "^ndq", "^dji", "aapl.us", "msft.us", "eurusd"] },
     podcasts: { feeds: [{ name: "The Changelog", url: "https://changelog.com/podcast/feed" }], active: "https://changelog.com/podcast/feed" },

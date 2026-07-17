@@ -3976,6 +3976,11 @@ class GatewaySlashCommandsMixin:
     async def _handle_branch_command(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.
 
+        On thread-capable platforms (Discord, Telegram, Slack), creates a new
+        thread by default so the branched conversation has its own scrollback.
+        Pass ``--here`` to keep the branch in the current chat/thread (legacy
+        behaviour).
+
         Copies conversation history to a new session so the user can explore
         a different approach without losing the original.
         Inspired by Claude Code's /branch command.
@@ -3995,7 +4000,22 @@ class GatewaySlashCommandsMixin:
         if not history:
             return t("gateway.branch.no_conversation")
 
-        branch_name = event.get_command_args().strip()
+        raw_args = event.get_command_args().strip()
+
+        # Parse --here flag: /branch --here [name] keeps the branch in the
+        # same chat/thread.  ``-h`` is accepted as a short alias.
+        here = False
+        if raw_args:
+            arg_parts = shlex.split(raw_args)
+            name_parts = []
+            for part in arg_parts:
+                if part in ("--here", "-h"):
+                    here = True
+                else:
+                    name_parts.append(part)
+            branch_name = " ".join(name_parts).strip()
+        else:
+            branch_name = ""
 
         # Generate the new session ID
         from datetime import datetime as _dt
@@ -4057,18 +4077,69 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
+        # --- Thread handling: create a new thread on thread-capable platforms ---
+        # Default: keep the branch in the current chat/thread (legacy).
+        target_session_key = session_key
+
+        if not here:
+            # Try to create a new thread so the branch has its own scrollback.
+            adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+            if adapter is not None:
+                try:
+                    create_thread = getattr(adapter, "create_handoff_thread", None)
+                    if create_thread is not None and callable(create_thread):
+                        new_thread_id = await create_thread(str(source.chat_id), branch_title)
+                        if new_thread_id:
+                            # Build a SessionSource pointing to the new thread.
+                            platform_cfg = None
+                            extra = {}
+                            if hasattr(self, "config") and self.config is not None:
+                                try:
+                                    platform_cfg = self.config.platforms.get(source.platform)
+                                except Exception:
+                                    platform_cfg = None
+                            if platform_cfg:
+                                extra = getattr(platform_cfg, "extra", None) or {}
+
+                            thread_source = SessionSource(
+                                platform=source.platform,
+                                chat_id=source.chat_id,
+                                chat_name=branch_title or source.chat_name,
+                                chat_type="thread",
+                                user_id=source.user_id,
+                                user_name=source.user_name,
+                                thread_id=new_thread_id,
+                                scope_id=source.scope_id,
+                                guild_id=source.guild_id,
+                                parent_chat_id=source.chat_id,
+                            )
+                            target_session_key = build_session_key(
+                                thread_source,
+                                group_sessions_per_user=extra.get("group_sessions_per_user", True),
+                                thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
+                            )
+                            # Ensure an entry exists in the session store for the new key.
+                            await self.async_session_store.get_or_create_session(thread_source)
+                            logger.info(
+                                "[branch] Created new thread %s in chat %s for branch %s",
+                                new_thread_id, source.chat_id, branch_title,
+                            )
+                except Exception as exc:
+                    logger.debug("[branch] create_handoff_thread failed: %s", exc)
+                    # Fall through — target_session_key remains session_key (same chat).
+
         # Switch the session store entry to the new session
-        new_entry = await self.async_session_store.switch_session(session_key, new_session_id)
+        new_entry = await self.async_session_store.switch_session(target_session_key, new_session_id)
         if not new_entry:
             return t("gateway.branch.switch_failed")
-        self._clear_session_boundary_security_state(session_key)
+        self._clear_session_boundary_security_state(target_session_key)
 
         # Evict any cached agent for this session
-        self._evict_cached_agent(session_key)
+        self._evict_cached_agent(target_session_key)
 
         msg_count = len([m for m in history if m.get("role") == "user"])
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
-        return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+        return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id) 
 
     async def _handle_credits_command(self, event: MessageEvent) -> str:
         """Handle /credits -- show Nous credit balance and the top-up handoff.

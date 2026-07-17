@@ -75,12 +75,8 @@ afterEach(() => {
 
 async function renderProvidersSettings() {
   const { ProvidersSettings } = await import('./providers-settings')
-  let result: ReturnType<typeof render>
-  await act(async () => {
-    result = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="accounts" />)
-  })
 
-  return result!
+  return render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="accounts" />)
 }
 
 describe('ProvidersSettings', () => {
@@ -99,9 +95,7 @@ describe('ProvidersSettings', () => {
   it('keeps provider selection separate from account removal', async () => {
     await renderProvidersSettings()
 
-    await act(async () => {
-      fireEvent.click(await screen.findByText('Nous Portal'))
-    })
+    fireEvent.click(await screen.findByText('Nous Portal'))
 
     expect(startManualProviderOAuth).toHaveBeenCalledWith('nous')
     expect(disconnectOAuthProvider).not.toHaveBeenCalled()
@@ -202,5 +196,66 @@ describe('ProvidersSettings', () => {
     fireEvent.click(row)
 
     await waitFor(() => expect(startManualLocalEndpoint).toHaveBeenCalledWith(null))
+  })
+
+  it('renders provider descriptions in connected rows', async () => {
+    listOAuthProviders.mockResolvedValue({
+      providers: [
+        provider('claude-code', true, {
+          description: 'Requires extra usage credits on top of a Claude Max plan.',
+          flow: 'external',
+          name: 'Anthropic OAuth (Claude Code)'
+        })
+      ]
+    })
+
+    await renderProvidersSettings()
+
+    expect(await screen.findByText('Anthropic OAuth (Claude Code)')).toBeTruthy()
+    expect(screen.getByText('Requires extra usage credits on top of a Claude Max plan.')).toBeTruthy()
+  })
+
+  it('renders provider descriptions in unconnected rows', async () => {
+    const { ProviderRow } = await import('@/components/onboarding/providers')
+    render(
+      <ProviderRow
+        onSelect={vi.fn()}
+        provider={provider('minimax-oauth', false, {
+          description: 'Browser-based MiniMax account sign-in.'
+        })}
+      />
+    )
+
+    expect(screen.getByText('Browser-based MiniMax account sign-in.')).toBeTruthy()
+  })
+
+  it('does not expose the terminal disconnect command in confirmation copy', async () => {
+    const command = 'remove-credential --secret sentinel-value'
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { terminal: {} }
+    })
+    vi.mocked(window.confirm).mockReturnValue(false)
+    listOAuthProviders.mockResolvedValue({
+      providers: [
+        provider('claude-code', true, {
+          disconnect_command: command,
+          disconnectable: false,
+          flow: 'external',
+          name: 'Anthropic OAuth (Claude Code)'
+        })
+      ]
+    })
+
+    try {
+      await renderProvidersSettings()
+      fireEvent.click(await screen.findByRole('button', { name: 'Disconnect Anthropic OAuth (Claude Code)' }))
+
+      const confirmation = vi.mocked(window.confirm).mock.calls[0]?.[0]
+      expect(confirmation).toContain('Anthropic OAuth (Claude Code)')
+      expect(confirmation).not.toContain(command)
+    } finally {
+      Reflect.deleteProperty(window, 'hermesDesktop')
+    }
   })
 })

@@ -12,7 +12,7 @@ const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
   // Both Anthropic entries sit at the bottom: the API-key path first, then
   // the subscription OAuth path (only works with extra usage credits).
   anthropic: { order: 5, title: 'Anthropic API Key' },
-  'claude-code': { order: 6, title: 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription' }
+  'claude-code': { order: 6, title: 'Anthropic OAuth (Claude Code)' }
 }
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
@@ -122,6 +122,9 @@ export function ProviderRow({
           {loggedIn ? <ConnectedTag /> : null}
         </div>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.flowSubtitles[provider.flow]}</p>
+        {provider.description && (
+          <p className="mt-0.5 text-[0.68rem] leading-5 text-muted-foreground/80">{provider.description}</p>
+        )}
       </div>
       <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
     </RowButton>

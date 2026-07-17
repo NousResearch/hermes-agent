@@ -1,12 +1,13 @@
 """Tests for the KDE Plasma/X11 crash guard (#66392).
 
 cua-driver 0.8.3's uinput virtual pointer can crash a KDE Plasma/Qt X11
-session during MCP initialization. The guard blocks ``start()`` on
-detected KDE Plasma / X11 hosts unless the user explicitly opts in via
-``computer_use.linux_opt_in: true`` in config.yaml.
+session during MCP initialization. The guard allows capture/read-only
+actions but blocks input actions on detected KDE Plasma / X11 hosts
+unless the user explicitly opts in via ``computer_use.linux_opt_in: true``
+in config.yaml.
 
-Non-Linux, non-KDE, and config-read-error paths all return True so the
-guard never blocks production macOS/Windows use.
+Non-Linux, non-KDE, non-X11, and config-read-error paths all return True
+so the guard never blocks production macOS/Windows use.
 """
 
 import os
@@ -89,39 +90,67 @@ class TestLinuxCuaAllowed:
              patch.dict(os.environ, {"XDG_CURRENT_DESKTOP": "GNOME"}):
             assert cua_backend._linux_cua_allowed() is True
 
-    def test_linux_kde_without_opt_in_blocked(self):
+    def test_linux_kde_wayland_allowed(self):
+        """KDE Plasma on Wayland (no DISPLAY) is safe — no uinput crash."""
         with patch.object(cua_backend.sys, "platform", "linux"), \
-             patch.dict(os.environ, {"KDE_FULL_SESSION": "true"}), \
+             patch.dict(os.environ, {"KDE_FULL_SESSION": "true"}, clear=True):
+            assert cua_backend._linux_cua_allowed() is True
+
+    def test_linux_kde_x11_without_opt_in_blocked(self):
+        with patch.object(cua_backend.sys, "platform", "linux"), \
+             patch.dict(os.environ, {"KDE_FULL_SESSION": "true", "DISPLAY": ":0"}), \
              patch("hermes_cli.config.load_config", return_value={}):
             assert cua_backend._linux_cua_allowed() is False
 
-    def test_linux_kde_with_opt_in_allowed(self):
+    def test_linux_kde_x11_with_opt_in_allowed(self):
         with patch.object(cua_backend.sys, "platform", "linux"), \
-             patch.dict(os.environ, {"KDE_FULL_SESSION": "true"}), \
+             patch.dict(os.environ, {"KDE_FULL_SESSION": "true", "DISPLAY": ":0"}), \
              patch("hermes_cli.config.load_config",
                    return_value={"computer_use": {"linux_opt_in": True}}):
             assert cua_backend._linux_cua_allowed() is True
 
     def test_config_read_error_fails_open(self):
         with patch.object(cua_backend.sys, "platform", "linux"), \
-             patch.dict(os.environ, {"KDE_FULL_SESSION": "true"}), \
+             patch.dict(os.environ, {"KDE_FULL_SESSION": "true", "DISPLAY": ":0"}), \
              patch("hermes_cli.config.load_config", side_effect=ImportError):
             assert cua_backend._linux_cua_allowed() is True
 
 
 class TestCuaDriverBackendStartGuard:
-    def test_start_raises_on_blocked(self):
+    def test_start_sets_capture_only_on_blocked(self):
+        """Instead of raising, start() enters capture-only mode."""
         backend = cua_backend.CuaDriverBackend()
+        assert backend._linux_capture_only is False
         with patch.object(cua_backend, "_linux_cua_allowed", return_value=False), \
-             patch.object(backend, "_session"):
-            import pytest
-            with pytest.raises(RuntimeError, match="computer_use is blocked.*KDE"):
-                backend.start()
+             patch.object(backend, "_session"), \
+             patch.object(cua_backend, "_maybe_nudge_update"), \
+             patch("tools.lazy_deps.ensure", lambda *a, **k: None):
+            backend.start()
+            assert backend._linux_capture_only is True
 
-    def test_start_proceeds_when_allowed(self):
+    def test_start_proceeds_normally_when_allowed(self):
         backend = cua_backend.CuaDriverBackend()
         with patch.object(cua_backend, "_linux_cua_allowed", return_value=True), \
              patch.object(backend, "_session"), \
-             patch.object(cua_backend, "_maybe_nudge_update"):
-            # Should not raise
+             patch.object(cua_backend, "_maybe_nudge_update"), \
+             patch("tools.lazy_deps.ensure", lambda *a, **k: None):
             backend.start()
+            assert backend._linux_capture_only is False
+
+    def test_capture_only_blocks_input_action(self):
+        """In capture-only mode, _action() returns an error ActionResult."""
+        backend = cua_backend.CuaDriverBackend()
+        backend._linux_capture_only = True
+        result = backend._action("click", {"element_index": 0})
+        assert result.ok is False
+        assert "capture-only" in result.message
+
+    def test_capture_only_allows_capture(self):
+        """capture() works in capture-only mode — uinput not needed."""
+        backend = cua_backend.CuaDriverBackend()
+        backend._linux_capture_only = True
+        backend._session_id = "test-session"
+        with patch.object(backend, "_session"):
+            # Must reach capture logic, not be short-circuited by _action
+            result = backend.capture(mode="vision")
+            assert result is not None

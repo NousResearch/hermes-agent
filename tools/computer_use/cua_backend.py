@@ -280,7 +280,15 @@ def _linux_cua_allowed() -> bool:
     guard never blocks production macOS/Windows use or new Linux desktop
     environments that don't carry the crash vector.
     """
+    # The crash vector is KDE Plasma + X11 specifically — cua-driver 0.8.3's
+    # uinput virtual pointer triggers a segfault in kwin_x11 that cascades
+    # to all Qt processes (#66392).  KDE under pure Wayland (no DISPLAY) is
+    # NOT affected because the uinput code path is never exercised via
+    # Wayland at this driver version.  Non-KDE or non-X11 Linux (GNOME,
+    # Sway/Hyprland, headless) is also safe.
     if not _is_linux() or not _kde_plasma_detected():
+        return True
+    if not _is_linux_x11():
         return True
     try:
         from hermes_cli.config import load_config
@@ -1282,17 +1290,26 @@ class CuaDriverBackend(ComputerUseBackend):
         # spin up the agent-cursor virtual pointer — on Linux/X11 that
         # uinput pointer can crash a KDE Plasma/Qt session (#66392).
         self._run_session_declared: bool = False
+        # Capture-only mode: set by start() when the KDE/X11 crash guard
+        # blocks uinput-virtual-pointer actions (#66392). When True,
+        # capture(), list_apps(), wait() still work but every _action()
+        # (click, type, scroll, drag, hotkey) returns an error instead of
+        # dispatching to cua-driver.
+        self._linux_capture_only: bool = False
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
         if not _linux_cua_allowed():
-            raise RuntimeError(
-                "computer_use is blocked on this Linux host: KDE Plasma / X11 "
-                "detected. cua-driver 0.8.3's uinput virtual pointer can crash "
-                "the entire KDE Plasma/Qt session (#66392). "
-                "To override, set `computer_use.linux_opt_in: true` in config.yaml "
-                "and ensure cua-driver >= 0.8.4 is installed."
+            logger.warning(
+                "KDE Plasma / X11 detected: cua-driver 0.8.3's uinput virtual "
+                "pointer can crash the entire KDE Plasma/Qt session (#66392). "
+                "Starting in capture-only mode. Input actions (click, type, "
+                "scroll, drag, hotkey) will be blocked. "
+                "To enable full computer_use, set "
+                "`computer_use.linux_opt_in: true` in config.yaml and ensure "
+                "cua-driver >= 0.8.4 is installed."
             )
+            self._linux_capture_only = True
         _maybe_nudge_update()
         # The MCP client SDK (`mcp`) is an optional dependency (the
         # `computer-use` / `mcp` extras), not part of Hermes' minimal core.
@@ -2399,6 +2416,21 @@ class CuaDriverBackend(ComputerUseBackend):
         args["element_token"] = token
 
     def _action(self, name: str, args: Dict[str, Any]) -> ActionResult:
+        # Capture-only mode: on KDE/X11 without opt-in, input actions that
+        # would spin up the uinput virtual pointer return an error instead
+        # of dispatching (#66392). Read-only capture/list flows are unaffected.
+        if self._linux_capture_only:
+            return ActionResult(
+                ok=False,
+                action=name,
+                message=(
+                    "computer_use is in capture-only mode on this Linux host: "
+                    "KDE Plasma / X11 detected. cua-driver 0.8.3's uinput virtual "
+                    "pointer can crash the KDE Plasma/Qt session (#66392). "
+                    "To enable input actions, set "
+                    "`computer_use.linux_opt_in: true` in config.yaml."
+                ),
+            )
         # Declare this run's agent-cursor session on the first input action
         # (lazily), never for read-only capture/list flows — see #66392.
         self._ensure_run_session_declared()

@@ -1273,9 +1273,6 @@ class SessionStore:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
 
         self._loaded = True
-        routing_migrated, peer_updates, retired_sessions = (
-            self._migrate_loaded_bluebubbles_keys_locked()
-        )
 
         # Prune any sessions.json entries that point to sessions already ended
         # in state.db. A hard gateway crash (exit code 1) skips the graceful
@@ -1287,6 +1284,13 @@ class SessionStore:
         # entries before the first message arrives. Pruning here (lock already
         # held) is cheap: one lookup per routing key, once at startup.
         self._prune_stale_sessions_locked()
+
+        # Compute alias winners only after stale pruning. Pruning may repoint an
+        # ended canonical entry to a still-live legacy alias; calculating the
+        # retirement list first would then end the session pruning just rescued.
+        routing_migrated, peer_updates, retired_sessions = (
+            self._migrate_loaded_bluebubbles_keys_locked()
+        )
         if routing_migrated:
             # Retire the siblings before rewriting the winner's peer row, so no
             # window exists where two live rows share the canonical key.

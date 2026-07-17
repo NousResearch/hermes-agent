@@ -282,4 +282,33 @@ class TestBlueBubblesRoutingMigration:
             "recovery reopened the retired stray and orphaned the transcript"
         )
 
+    def test_stale_canonical_winner_does_not_retire_live_alias(self, tmp_path):
+        """Stale pruning may promote an alias that migration planned to retire."""
+        sessions_dir = tmp_path / "sessions"
+        config = GatewayConfig()
+        now = datetime.now()
 
+        initial = SessionStore(sessions_dir=sessions_dir, config=config)
+        initial._loaded = True
+        live_source = self._seed(
+            initial,
+            chat_id=f"any;-;{HANDLE}",
+            session_id="live-alias",
+            updated_at=now - timedelta(minutes=5),
+        )
+        self._seed(
+            initial,
+            chat_id=HANDLE,
+            session_id="ended-canonical",
+            updated_at=now,
+        )
+        initial._db.end_session("ended-canonical", "user_reset")
+        initial._save_entries()
+
+        restarted = SessionStore(sessions_dir=sessions_dir, config=config)
+        recovered = restarted.get_or_create_session(live_source)
+
+        assert recovered.session_id == "live-alias"
+        assert restarted._db.get_session("live-alias")["ended_at"] is None
+        canonical_key = build_session_key(live_source)
+        assert restarted._entries[canonical_key].session_id == "live-alias"

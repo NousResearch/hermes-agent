@@ -2140,6 +2140,7 @@ _RunResult = tuple[bool, str, str, Optional[str]]
 
 def _prepare_job_prompt(
     job: dict, job_id: str, job_name: str, extra_prompt: Optional[str], cancel_event,
+    *, bound_skills_out: Optional[list] = None,
 ) -> tuple[Optional[_RunResult], Optional[str]]:
     """Run every pre-agent gate and build the prompt. Returns ``(early_result, prompt)``: an early
     result short-circuits ``run_job`` (no_agent job, empty payload, monitor gate, wake gate,
@@ -2200,6 +2201,7 @@ def _prepare_job_prompt(
         prompt = _build_job_prompt(
             job, prerun_script=prerun_script, extra_prompt=extra_prompt,
             runtime_data_prompt=monitor_context,
+            bound_skills_out=bound_skills_out,
         )
     except CronPromptInjectionBlocked as block_exc:
         # Injection scanner tripped: refuse this tick and tell the operator WHY.
@@ -2375,7 +2377,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     return setup
 
 
-def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db):
+def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db, bound_skills=None):
     runtime = setup.runtime
     pr = _cfg.get("provider_routing") or {}
     return AIAgent(
@@ -2403,6 +2405,10 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         quiet_mode=True,
         # Project context files only with a configured workdir; SOUL.md always.
         skip_context_files=not bool(workdir),
+        # Scope the offer-time skill index to the job's canonically-loaded
+        # skills (bundle members expanded, paths/aliases normalized).
+        # Empty (no skills, or none resolved) -> None = full index.
+        bound_skills=bound_skills,
         load_soul_identity=True,
         skip_memory=False,
         skip_background_review=True,  # Cron has no human-in-the-loop need for skill/memory review forks (~30K tok/event)
@@ -2458,7 +2464,10 @@ def run_job(
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
-    early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
+    _bound_skills_out: list = []
+    early, prompt = _prepare_job_prompt(
+        job, job_id, job_name, extra_prompt, cancel_event, bound_skills_out=_bound_skills_out,
+    )
     if early is not None:
         return early
     from run_agent import AIAgent
@@ -2491,7 +2500,7 @@ def run_job(
         _session_db = _open_cron_session_db(job)
         agent = _construct_cron_agent(
             AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
-            session_db=_session_db)
+            session_db=_session_db, bound_skills=_bound_skills_out or None)
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(

@@ -2290,7 +2290,7 @@ _PASSTHROUGH_PARAMS = (
     "enabled_toolsets", "disabled_toolsets",
     # Model response configuration (None = provider/model default)
     "max_tokens", "reasoning_config", "service_tier",
-    "side_agent",
+    "side_agent", "bound_skills",
 )
 # Gateway identity params stored as ``agent._<name>``. gateway_session_key is the stable
 # per-chat key (e.g. agent:main:telegram:dm:123).
@@ -2336,7 +2336,9 @@ def init_agent(
     request_overrides: Dict[str, Any] = None, prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None, user_id: str = None, user_id_alt: str = None, user_name: str = None,
     chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,
-    gateway_session_key: str = None, skip_context_files: bool = False,
+    gateway_session_key: str = None,
+    bound_skills: "list[str] | None" = None,  # Explicit skill allow-list (cron jobs with skills=[...]); scopes the offer-time skill index.
+    skip_context_files: bool = False,
     load_soul_identity: bool = False, skip_memory: bool = False,
     skip_background_review: bool = False, session_db=None, parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,

@@ -156,8 +156,17 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
     return prompt, injected
 
 
-def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
-    """Load each named skill/bundle into prompt parts; unknown ones are skipped with a notice."""
+def _load_cron_skill_parts(
+    job: dict, skill_names: list[str], *, bound_skills_out: Optional[list] = None,
+) -> list[str]:
+    """Load each named skill/bundle into prompt parts; unknown ones are skipped with a notice.
+
+    bound_skills_out: optional list the caller supplies to receive the CANONICAL names of the
+    skills that actually loaded — bundle members expanded, single-skill lookups resolved to the
+    name skill_view returns (already normalized for absolute paths / aliases). Mirrors what the
+    offer-time skill index (build_skills_system_prompt) emits, so the caller can scope that index
+    to exactly this job's skills. Left empty when the job lists no skills or none resolve.
+    """
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
@@ -172,6 +181,15 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
         logger.warning("Cron job '%s': " + msg, job_label, *args)
         skipped.append(skill_name)
 
+    def _bind(name: object) -> None:
+        # Record a canonical loaded-skill name into the caller's out-list, first-seen order,
+        # no duplicates — matches what the offer-time skill index emits.
+        if bound_skills_out is None:
+            return
+        text = str(name or "").strip()
+        if text and text not in bound_skills_out:
+            bound_skills_out.append(text)
+
     for skill_name in skill_names:
         # Bundles shadow same-slug skills, mirroring the CLI/gateway slash-command path.
         bundle_key = resolve_bundle_command_key(skill_name.lstrip("/"))
@@ -179,9 +197,12 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
             bundle_payload = build_bundle_invocation_message(
                 bundle_key, user_instruction="", task_id=task_id)
             if bundle_payload:
+                bundle_message, _loaded_bundle_skills, _missing_bundle_skills = bundle_payload
+                for _member in _loaded_bundle_skills:
+                    _bind(_member)
                 if parts:
                     parts.append("")
-                parts.append(bundle_payload[0])
+                parts.append(bundle_message)
             else:
                 _skip("bundle '%s' could not load any skills, skipping", skill_name)
             continue
@@ -196,6 +217,10 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
                 "skill not found, skipping — %s",
                 loaded.get("error") or f"Failed to load skill '{skill_name}'")
             continue
+
+        # Bind the canonical resolved name (skill_view normalizes absolute paths / aliases and
+        # returns the frontmatter name), falling back to the raw entry if the payload omitted it.
+        _bind(loaded.get("name") or skill_name)
 
         try:
             bump_use(skill_name, task_id=task_id)
@@ -246,7 +271,8 @@ _CRON_HINT = (
 def _build_job_prompt(
     job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None,
     runtime_data_prompt: Optional[str] = None,
-) -> str:
+    *, bound_skills_out: Optional[list] = None,
+) -> Optional[str]:
     """Build the effective prompt for a cron job, optionally loading skills first.
     ``prerun_script``: cached ``(success, stdout)`` from a script the caller already ran (wake-gate
     check) — skips re-execution. ``extra_prompt``: user-authored per-run ``## Run Context`` for this
@@ -303,7 +329,7 @@ def _build_job_prompt(
             user_prompt=user_prompt,
         )
 
-    parts = _load_cron_skill_parts(job, skill_names)
+    parts = _load_cron_skill_parts(job, skill_names, bound_skills_out=bound_skills_out)
     stable_prefix = None
     if prompt:
         from agent.skill_commands import append_user_instruction

@@ -543,6 +543,7 @@ class CLIAgentSetupMixin:
         an indicator for earlier hidden messages.
         """
         from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
+        from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
         if not self.conversation_history:
             return
 
@@ -583,13 +584,18 @@ class CLIAgentSetupMixin:
                         elif isinstance(part, dict) and part.get("type") == "image_url":
                             parts.append("[image]")
                     text = " ".join(parts)
+                # Stored history is untrusted for display: strip escape
+                # sequences/control chars so replaying a message can't
+                # clear the screen, retitle the window, or restyle the
+                # recap panel (see tools/ansi_strip.sanitize_display_text).
+                text = _sanitize_display_text(text)
                 if len(text) > MAX_USER_LEN:
                     text = text[:MAX_USER_LEN] + "..."
                 entries.append(("user", text))
 
             elif role == "assistant":
                 text = "" if content is None else str(content)
-                text = _strip_reasoning_tags(text)
+                text = _sanitize_display_text(_strip_reasoning_tags(text))
                 parts = []
                 full_parts = []  # un-truncated version
                 if text:

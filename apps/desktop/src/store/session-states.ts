@@ -30,7 +30,7 @@ import {
 import { readJson, writeJson } from '@/lib/storage'
 
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
-import { $activeSessionId, $selectedStoredSessionId } from './session'
+import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds, setActiveSessionStoredId } from './session'
 import { isSecondaryWindow } from './windows'
 
 // ---------------------------------------------------------------------------
@@ -39,12 +39,110 @@ import { isSecondaryWindow } from './windows'
 
 export const $sessionStates = atom<Record<string, ClientSessionState>>({})
 
-/** Publish one session's state (immutable per-key — slices stay stable). */
+// --- Watchdog: force-clears busy after 8 min of stream silence -------------
+const SESSION_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
+const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+type WatchdogClearFn = (runtimeId: string) => void
+let watchdogClearFn: WatchdogClearFn | null = null
+
+export function setWatchdogClearFn(fn: WatchdogClearFn | null) {
+  watchdogClearFn = fn
+}
+
+function armWatchdog(runtimeId: string) {
+  const existing = sessionWatchdogTimers.get(runtimeId)
+
+  if (existing) {clearTimeout(existing)}
+  sessionWatchdogTimers.set(
+    runtimeId,
+    setTimeout(() => {
+      sessionWatchdogTimers.delete(runtimeId)
+      watchdogClearFn?.(runtimeId)
+    }, SESSION_WATCHDOG_TIMEOUT_MS)
+  )
+}
+
+function clearWatchdog(runtimeId: string) {
+  const t = sessionWatchdogTimers.get(runtimeId)
+
+  if (t) {
+    clearTimeout(t)
+    sessionWatchdogTimers.delete(runtimeId)
+  }
+}
+
+// --- Settle grace: keeps a just-finished session in the sidebar merge set ---
+const SESSION_SETTLE_GRACE_MS = 30 * 1000
+const settledExpiry = new Map<string, number>()
+
+function markSettled(storedId: string) {
+  settledExpiry.set(storedId, Date.now() + SESSION_SETTLE_GRACE_MS)
+}
+
+function clearSettled(storedId: string) {
+  settledExpiry.delete(storedId)
+}
+
+/** Stored ids whose turn ended within the grace window. Prunes expired. */
+export function getRecentlySettledSessionIds(now: number = Date.now()): string[] {
+  const live: string[] = []
+
+  for (const [id, expiry] of settledExpiry) {
+    if (expiry > now) {live.push(id)}
+    else {settledExpiry.delete(id)}
+  }
+
+  return live
+}
+
+// --- Transition detection (called automatically from publishSessionState) ---
+function handleTransition(previous: ClientSessionState | null, next: ClientSessionState, runtimeId: string) {
+  // Compression id rotation: signal the route-follow effect.
+  if (previous?.storedSessionId && next.storedSessionId && previous.storedSessionId !== next.storedSessionId) {
+    if (runtimeId === $activeSessionId.get()) {setActiveSessionStoredId(next.storedSessionId)}
+    clearSettled(previous.storedSessionId)
+  }
+
+  // Watchdog: arm on any busy publish, disarm on idle.
+  if (next.busy) {armWatchdog(runtimeId)}
+  else {clearWatchdog(runtimeId)}
+
+  const storedId = next.storedSessionId
+
+  if (!storedId) {return}
+  const wasWorking = previous?.busy ?? false
+
+  if (next.busy && !wasWorking) {
+    clearSettled(storedId)
+  } else if (!next.busy && wasWorking) {
+    markSettled(storedId)
+
+    if (storedId !== $selectedStoredSessionId.get()) {
+      const cur = $unreadFinishedSessionIds.get()
+
+      if (!cur.includes(storedId)) {$unreadFinishedSessionIds.set([...cur, storedId])}
+    }
+  }
+}
+
+/** Publish one session's state. Automatically fires transition side-effects
+ *  (watchdog arm/disarm, settle grace, unread marker, compression id rotation)
+ *  by diffing previous vs next — callers never need to manually call a
+ *  transition handler. */
 export function publishSessionState(runtimeId: string, state: ClientSessionState) {
+  const prev = $sessionStates.get()[runtimeId] ?? null
   $sessionStates.set({ ...$sessionStates.get(), [runtimeId]: state })
+  handleTransition(prev, state, runtimeId)
 }
 
 export function dropSessionState(runtimeId: string) {
+  // Disarm the watchdog — a dropped runtime must not fire a stale clear later.
+  // Settle-grace entries are keyed by stored id and self-expire; leave them so
+  // a just-finished session's row survives merge eviction even if its tile or
+  // cached runtime is dropped in the meantime.
+  clearWatchdog(runtimeId)
+
   const current = $sessionStates.get()
 
   if (!(runtimeId in current)) {
@@ -54,6 +152,38 @@ export function dropSessionState(runtimeId: string) {
   const { [runtimeId]: _dropped, ...rest } = current
   $sessionStates.set(rest)
 }
+
+/** Drop every cached session state — used on soft gateway-mode apply so the
+ *  computed working / attention sets drain to empty alongside the session list.
+ *  Also disarms every watchdog timer and drops all settle-grace entries: a
+ *  wiped gateway's sessions must not fire stale clears or linger in the
+ *  sidebar merge keep-set after the switch. */
+export function clearAllSessionStates() {
+  for (const timer of sessionWatchdogTimers.values()) {
+    clearTimeout(timer)
+  }
+
+  sessionWatchdogTimers.clear()
+  settledExpiry.clear()
+  $sessionStates.set({})
+}
+
+// Derived per-session status sets. `$sessionStates` already holds `busy` and
+// `needsInput` for every runtime session (written by updateSessionState); these
+// are pure projections of it, not independently maintained atoms. This keeps the
+// data flow one-directional: gateway event → cache → $sessionStates → computed
+// views, eliminating the "projection atom out of sync with cache" bug class.
+export const $workingSessionIds = computed($sessionStates, states =>
+  Object.values(states)
+    .filter(s => s.busy && s.storedSessionId)
+    .map(s => s.storedSessionId!)
+)
+
+export const $attentionSessionIds = computed($sessionStates, states =>
+  Object.values(states)
+    .filter(s => s.needsInput && s.storedSessionId)
+    .map(s => s.storedSessionId!)
+)
 
 // ---------------------------------------------------------------------------
 // Session tiles.

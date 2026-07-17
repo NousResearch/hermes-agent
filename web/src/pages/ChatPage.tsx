@@ -969,6 +969,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
+      // Force one authoritative fit RIGHT NOW before we announce dims to
+      // Ink. On localhost the WS handshake completes in a few ms and can
+      // beat the double-rAF settle fit — without this, Ink boots against
+      // the pre-settle grid and the transcript renders at the wrong
+      // density until the user nudges the window/font, at which point
+      // ``syncTerminalMetrics`` finally sends a RESIZE. See #NS-XXX.
+      try {
+        syncTerminalMetrics();
+      } catch {
+        /* ignore — measurement code has its own try/catch */
+      }
       // Send the initial RESIZE immediately so Ink has *a* size to lay
       // out against on its first paint.  The double-rAF block above will
       // follow up with the authoritative measurement — at worst Ink

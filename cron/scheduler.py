@@ -112,6 +112,13 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
         )
 
     if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
+        # Check for script timeout BEFORE generic provider timeout, so script
+        # timeouts are not mislabeled as provider failures (#59549).
+        if "script timed out" in lower:
+            return (
+                f"⚠️ Cron '{job_name}' failed: script timed out. "
+                "Full details saved in cron output."
+            )
         return (
             f"⚠️ Cron '{job_name}' failed: provider timeout. "
             "Fallback chain was exhausted or unavailable. "
@@ -2138,17 +2145,21 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         from tools.environments.local import _sanitize_subprocess_env
 
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
-        result = subprocess.run(
+        # Use a new process group so timeout kills all descendants (#59549)
+        if sys.platform != "win32":
+            popen_kwargs["preexec_fn"] = os.setsid
+        proc = subprocess.Popen(
             argv,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=script_timeout,
             cwd=str(path.parent),
             env=_sanitize_subprocess_env(os.environ.copy()),
             **popen_kwargs,
         )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
+        stdout, stderr = proc.communicate(timeout=script_timeout)
+        stdout = (stdout or "").strip() if stdout is not None else ""
+        stderr = (stderr or "").strip() if stderr is not None else ""
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -2160,8 +2171,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             stdout = "[REDACTED - redaction failed]"
             stderr = "[REDACTED - redaction failed]"
 
-        if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
+        if proc.returncode != 0:
+            parts = [f"Script exited with code {proc.returncode}"]
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
             if stdout:
@@ -2171,6 +2182,12 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return True, stdout
 
     except subprocess.TimeoutExpired:
+        # Kill the entire process group to clean up orphaned children (#59549)
+        if sys.platform != "win32":
+            try:
+                os.killpg(os.getpgid(proc.pid), 9)  # SIGKILL — clean orphans
+            except (ProcessLookupError, AttributeError):
+                pass
         return False, f"Script timed out after {script_timeout}s: {path}"
     except Exception as exc:
         return False, f"Script execution failed: {exc}"

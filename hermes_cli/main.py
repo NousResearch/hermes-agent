@@ -8977,11 +8977,12 @@ def _run_pre_update_backup(args) -> Optional[str]:
     Single consolidated mechanism gated on ``updates.pre_update_backup``:
 
     - ``off``   — nothing runs. Explicit user opt-out is honored fully.
-    - ``quick`` (default) — a state snapshot of critical small files
-      (pairing JSONs, cron jobs, config, auth; see ``_QUICK_STATE_FILES``)
-      under ``state-snapshots/``. Files over 1 GiB are skipped with a
-      warning so a bloated state.db can never stall the update
-      (issues #15733, #34600 are the reason this safety net exists).
+    - ``quick`` (default) — profile-local state snapshots of critical small files
+      (pairing JSONs, cron jobs, config, auth; see ``_QUICK_STATE_FILES``) for
+      the invoking profile and every other running profile whose gateway will
+      restart. Files over 1 GiB are skipped with a warning so a bloated state.db
+      can never stall the update (issues #15733, #34600 are the reason this
+      safety net exists).
     - ``full``  — the quick snapshot PLUS a full zip of HERMES_HOME under
       ``backups/`` (restorable via ``hermes import``; the #48200 wrong-path
       wipe is the reason this level exists).
@@ -9006,17 +9007,60 @@ def _run_pre_update_backup(args) -> Optional[str]:
     snapshot_id = None
     try:
         from hermes_cli.backup import create_quick_snapshot
-
-        snapshot_id = create_quick_snapshot(
-            label="pre-update",
-            keep=_PRE_UPDATE_SNAPSHOT_KEEP,
-            max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
-        )
-        if snapshot_id:
-            print(f"◆ Pre-update snapshot: {snapshot_id}")
     except Exception as exc:
-        # Never let a snapshot failure block an update.
-        logging.getLogger(__name__).debug("Pre-update snapshot failed: %s", exc)
+        logging.getLogger(__name__).debug(
+            "Could not load pre-update snapshot support: %s", exc
+        )
+    else:
+        try:
+            snapshot_id = create_quick_snapshot(
+                label="pre-update",
+                keep=_PRE_UPDATE_SNAPSHOT_KEEP,
+                max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+            )
+            if snapshot_id:
+                print(f"◆ Pre-update snapshot: {snapshot_id}")
+        except Exception as exc:
+            # Never let an active-profile snapshot failure block the update or
+            # prevent snapshots for the other running profiles.
+            logging.getLogger(__name__).debug("Pre-update snapshot failed: %s", exc)
+
+        # The code checkout is shared across profiles and the update path later
+        # restarts every running gateway. Give each other running profile the
+        # same rollback point instead of snapshotting only the invoking profile.
+        try:
+            from hermes_constants import get_hermes_home
+            from hermes_cli.profiles import list_profiles
+
+            active_home = get_hermes_home().resolve()
+            for profile in list_profiles():
+                try:
+                    profile_home = profile.path.resolve()
+                    if not profile.gateway_running or profile_home == active_home:
+                        continue
+                    other_snapshot_id = create_quick_snapshot(
+                        label="pre-update",
+                        hermes_home=profile_home,
+                        keep=_PRE_UPDATE_SNAPSHOT_KEEP,
+                        max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+                    )
+                    if other_snapshot_id:
+                        print(
+                            f"◆ Pre-update snapshot [{profile.name}]: "
+                            f"{other_snapshot_id}"
+                        )
+                except Exception as exc:
+                    logging.getLogger(__name__).debug(
+                        "Pre-update snapshot failed for profile %s: %s",
+                        getattr(profile, "name", "<unknown>"),
+                        exc,
+                    )
+        except Exception as exc:
+            # Preserve the existing best-effort contract: profile discovery
+            # failure must not block the update.
+            logging.getLogger(__name__).debug(
+                "Pre-update snapshot discovery for other profiles failed: %s", exc
+            )
 
     if mode != "full":
         if snapshot_id:

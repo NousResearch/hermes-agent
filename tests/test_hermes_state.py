@@ -5708,6 +5708,57 @@ def test_gateway_session_peer_round_trip_and_recovery(db):
     assert recovered["id"] == "gw-session"
 
 
+def test_bluebubbles_legacy_guid_session_recovers_under_canonical_key(db):
+    """Canonicalizing the BlueBubbles DM key must not orphan existing sessions.
+
+    Sessions created before ``canonical_bluebubbles_identifier`` are keyed on
+    the raw chat GUID (``any;-;+1555…``).  After the upgrade the routing key is
+    the bare handle, so the exact-key lookup misses — but canonicalization
+    rewrites only the *key*, never ``source.chat_id``, so the peer-tuple
+    fallback still matches the stored row and adopts the transcript.
+
+    Drives ``build_session_key`` rather than hardcoding the new key, so this
+    fails if the canonicalization is dropped *or* if ``source.chat_id`` is ever
+    canonicalized too (which would break the fallback).
+    """
+    from gateway.config import Platform
+    from gateway.session import SessionSource, build_session_key
+
+    legacy_chat_id = "any;-;+15551234567"
+    legacy_key = "agent:main:bluebubbles:dm:" + legacy_chat_id
+    db.create_session(
+        "legacy-bb-session",
+        "bluebubbles",
+        user_id="+15551234567",
+        session_key=legacy_key,
+        chat_id=legacy_chat_id,
+        chat_type="dm",
+        thread_id=None,
+    )
+    db.append_message("legacy-bb-session", "user", "hello")
+
+    # The key the gateway now computes for that same inbound event.
+    source = SessionSource(
+        platform=Platform.BLUEBUBBLES,
+        chat_id=legacy_chat_id,
+        chat_type="dm",
+        user_id="+15551234567",
+    )
+    new_key = build_session_key(source)
+    assert new_key != legacy_key, "canonicalization is not in effect"
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="bluebubbles",
+        user_id=source.user_id,
+        session_key=new_key,
+        # Raw, uncanonicalized — this is what makes the fallback match.
+        chat_id=source.chat_id,
+        chat_type=source.chat_type,
+    )
+    assert recovered is not None, "legacy GUID-keyed session was orphaned"
+    assert recovered["id"] == "legacy-bb-session"
+
+
 def test_gateway_session_recovery_reopens_ws_orphan_reap_rows(db):
     """Rows wrongly ended by the TUI ws-orphan reaper must be recoverable (#63207)."""
     db.create_session(

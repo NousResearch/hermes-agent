@@ -890,6 +890,30 @@ def _session_key_namespace(profile: Optional[str]) -> str:
     return f"agent:{profile}"
 
 
+def canonical_bluebubbles_identifier(chat_id: Optional[str]) -> Optional[str]:
+    """Collapse BlueBubbles DM chat GUID variants to the bare handle.
+
+    BlueBubbles surfaces one 1:1 conversation under several chat ids: a
+    service-prefixed GUID (``iMessage;-;+1555…``, ``any;-;+1555…``, and the
+    prefix flips when the thread moves between iMessage and SMS) when the
+    webhook carries one, and the bare handle (``+1555…``) when it does not
+    and the adapter falls back to ``chatIdentifier``.  Keyed raw, each form
+    becomes a separate session, so a message arriving on a long-untouched
+    variant trips the idle reset and clears an active conversation.
+
+    Only the DM separator ``;-;`` is unwrapped.  Group GUIDs use ``;+;`` and
+    carry an opaque chat id that is not a participant handle, so they are
+    returned untouched.
+    """
+    if not chat_id:
+        return chat_id
+    value = chat_id.strip()
+    service, sep, handle = value.partition(";-;")
+    if sep and handle and ";" not in service:
+        return handle.strip()
+    return value
+
+
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
@@ -930,6 +954,8 @@ def build_session_key(
         dm_chat_id = source.chat_id
         if source.platform == Platform.WHATSAPP:
             dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
+        elif source.platform == Platform.BLUEBUBBLES:
+            dm_chat_id = canonical_bluebubbles_identifier(source.chat_id)
 
         if dm_chat_id:
             if source.thread_id:

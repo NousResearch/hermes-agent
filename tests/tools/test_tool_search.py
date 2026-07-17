@@ -797,3 +797,59 @@ class TestDeferAlwaysCoreTrue:
 
         # visible should be empty (bridge tools are injected separately)
         assert visible == [], f"Expected no visible tools, got: {[t['function']['name'] for t in visible]}"
+
+    def test_defer_always_core_implies_defer_core(self):
+        """Setting defer_always_core=True without defer_core=True must auto-promote defer_core."""
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"enabled": "on", "defer_always_core": True})
+        assert cfg.defer_core is True, (
+            "defer_always_core=True must auto-promote defer_core=True in from_raw()"
+        )
+        assert cfg.defer_always_core is True
+
+    def test_assemble_tool_defs_defer_always_core_e2e(self):
+        """E2E: assemble_tool_defs with defer_always_core=True activates and leaves only bridges."""
+        from tools.tool_search import (
+            ToolSearchConfig, assemble_tool_defs, BRIDGE_TOOL_NAMES,
+        )
+        from toolsets import _HERMES_ALWAYS_CORE_TOOLS
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_core": True, "defer_always_core": True}
+        )
+        tool_defs = [
+            {"type": "function", "function": {"name": n, "description": f"desc {n}", "parameters": {}}}
+            for n in _HERMES_ALWAYS_CORE_TOOLS
+        ]
+        result = assemble_tool_defs(tool_defs, config=cfg)
+        assert result.activated, "assemble_tool_defs should activate with defer_always_core=True"
+        visible_names = {t["function"]["name"] for t in result.tool_defs}
+        assert visible_names == BRIDGE_TOOL_NAMES, (
+            f"Only bridge tools should be visible, got: {visible_names}"
+        )
+
+    def test_scoped_deferrable_names_defer_always_core(self):
+        """With defer_always_core=True, always-core tools appear in the scoped deferrable set."""
+        from tools.tool_search import ToolSearchConfig, scoped_deferrable_names
+        from tools.registry import registry
+        import json
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True})
+
+        registry.register(
+            name="memory",
+            handler=_handler,
+            schema={"type": "function", "function": {"name": "memory", "description": "memory", "parameters": {}}},
+            toolset="memory",
+        )
+
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_core": True, "defer_always_core": True}
+        )
+        defs = [
+            {"type": "function", "function": {"name": "memory", "description": "Persistent memory", "parameters": {}}},
+        ]
+        names = scoped_deferrable_names(defs, config=cfg)
+        assert "memory" in names, (
+            "always-core tool 'memory' must appear in scoped deferrable set with defer_always_core=True"
+        )

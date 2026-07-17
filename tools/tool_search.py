@@ -74,7 +74,8 @@ class ToolSearchConfig:
     defer_core: bool  # When True, _HERMES_DEFERRABLE_CORE_TOOLS may be deferred
     defer_always_core: bool  # When True, even _HERMES_ALWAYS_CORE_TOOLS are deferred;
                              # only bridge tools remain visible (~1.6 KB payload).
-                             # Requires defer_core=True. Best for budget providers (Groq).
+                             # Setting this also implies defer_core=True — both flags
+                             # are auto-set together in from_raw().
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -129,6 +130,11 @@ class ToolSearchConfig:
 
         defer_always_core_raw = raw.get("defer_always_core", False)
         defer_always_core = bool(defer_always_core_raw) if not isinstance(defer_always_core_raw, bool) else defer_always_core_raw
+
+        # defer_always_core implies defer_core — auto-promote so users don't need
+        # to set both flags manually.
+        if defer_always_core:
+            defer_core = True
 
         return cls(
             enabled=enabled,

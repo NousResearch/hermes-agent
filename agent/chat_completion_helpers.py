@@ -323,10 +323,16 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     trailing date-stamp / ``-v1:0`` version suffix, so no suffix stripping is
     needed. First non-None wins; returns None for unknown models.
 
-    Known limitation: floor keys that embed a dotted version (e.g.
-    ``claude-sonnet-4.5``) will NOT match the Bedrock dashed form
-    (``claude-sonnet-4-5-...``); only floor keys with dashed/base slugs
-    (``claude-opus-4``, ``deepseek-r1``) match the Bedrock id shape.
+    The floor table mixes version-separator conventions: some keys are
+    keyed with a dashed version (``claude-opus-4``) while others embed a
+    dotted version (``claude-sonnet-4.5``, ``claude-sonnet-4.6``). Bedrock
+    always dashes the version (``claude-sonnet-4-5-v1:0``), so for every
+    candidate slug we also try the alternate version-separator form —
+    digit-dash-digit rewritten to digit-dot-digit and vice-versa — so a
+    dashed Bedrock id matches a dotted floor key (and the reverse). The
+    rewrite only touches version-number separators (a dash/dot flanked by
+    digits), never other dashes in the slug, so ``claude-sonnet`` is left
+    intact while ``4-5`` becomes ``4.5``.
     """
     from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
 
@@ -337,10 +343,20 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
         if name.startswith(prefix):
             name = name[len(prefix):]
             break
-    candidates = [name]
+    base_candidates = [name]
     if "." in name:
-        candidates.append(name.rsplit(".", 1)[1])   # claude-opus-4-6-v1:0
-        candidates.append(name.replace(".", "-", 1))  # deepseek-r1-v1:0
+        base_candidates.append(name.rsplit(".", 1)[1])   # claude-opus-4-6-v1:0
+        base_candidates.append(name.replace(".", "-", 1))  # deepseek-r1-v1:0
+    candidates: list[str] = []
+    for cand in base_candidates:
+        # Try the slug as-is plus both alternate version-separator forms.
+        # ``4-5`` <-> ``4.5`` only; a dash/dot not flanked by digits is
+        # left alone (e.g. ``claude-sonnet`` stays dashed).
+        dashed_to_dotted = re.sub(r"(?<=\d)-(?=\d)", ".", cand)
+        dotted_to_dashed = re.sub(r"(?<=\d)\.(?=\d)", "-", cand)
+        for form in (cand, dashed_to_dotted, dotted_to_dashed):
+            if form not in candidates:
+                candidates.append(form)
     for cand in candidates:
         floor = get_reasoning_stale_timeout_floor(cand)
         if floor is not None:

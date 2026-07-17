@@ -282,6 +282,12 @@ Future messages in this room will use that transcript until `/reset` or another 
     save_failed:           "홈 채널 저장에 실패했습니다: {error}"
     success:               "✅ 홈 채널이 **{name}**(ID: {chat_id})(으)로 설정되었습니다.\n크론 작업과 플랫폼 간 메시지가 여기로 전달됩니다."
 
+  start:
+    welcome:           "👋 Hermes가 연결되어 대기 중입니다.\n\n아무 메시지나 보내면 대화가 시작됩니다. 다음 명령도 사용할 수 있습니다:\n• /help — 전체 명령\n• /status — 세션 정보\n• /new — 새 세션"
+    home_not_set:      "홈 채널이 아직 설정되지 않았습니다. /sethome을 보내면 예약 작업과 백그라운드 작업 알림을 이 채팅에서 받을 수 있습니다."
+    home_here:         "이 채팅이 홈 채널입니다. 예약 작업과 백그라운드 작업 알림이 여기로 도착합니다."
+    home_elsewhere:    "홈 채널이 다른 채팅 (ID `{chat_id}`)으로 설정되어 있습니다. 여기서 /sethome을 보내면 이 채팅으로 이동합니다."
+
   status:
     header:                "📊 **Hermes 게이트웨이 상태**"
     matrix_scope_header:   "**Matrix scope:**"

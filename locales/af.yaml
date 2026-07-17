@@ -282,6 +282,12 @@ Future messages in this room will use that transcript until `/reset` or another 
     save_failed:           "Kon nie tuiste-kanaal stoor nie: {error}"
     success:               "✅ Tuiste-kanaal gestel op **{name}** (ID: {chat_id}).\nKron-take en kruisplatform-boodskappe sal hier afgelewer word."
 
+  start:
+    welcome:           "👋 Hermes is gekoppel en luister.\n\nStuur enige boodskap om 'n gesprek te begin, of probeer:\n• /help — alle opdragte\n• /status — sessie-inligting\n• /new — nuwe sessie"
+    home_not_set:      "Geen tuiskanaal is nog gestel nie. Stuur /sethome om kennisgewings oor geskeduleerde take en agtergrondtake in hierdie klets te ontvang."
+    home_here:         "Hierdie klets is die tuiskanaal: kennisgewings oor geskeduleerde take en agtergrondtake kom hier aan."
+    home_elsewhere:    "Die tuiskanaal is 'n ander klets (ID `{chat_id}`). Om /sethome hier te stuur sal dit na hierdie klets skuif."
+
   status:
     header:                "📊 **Hermes Gateway Status**"
     matrix_scope_header:   "**Matrix scope:**"

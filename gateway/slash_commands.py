@@ -2488,6 +2488,49 @@ class GatewaySlashCommandsMixin:
             preview=preview,
         )
 
+    async def _handle_start_command(self, event: MessageEvent) -> str:
+        """Handle /start -- the platform first-contact ping (Telegram Start button).
+
+        Telegram sends ``/start`` automatically when a user opens a DM with
+        the bot for the first time (or taps Start again later). Swallowing it
+        silently reads as "connected but not responding": an authorized user
+        taps Start, gets nothing back, and concludes the bot is broken
+        (#11640). Return a short welcome instead -- confirm the bot is alive,
+        list the commands a new user actually needs, and report whether a
+        home channel is set.
+
+        Mid-run ``/start`` pings never reach this handler: the active-session
+        fast path in ``_handle_message`` still ignores them, so a Start tap
+        cannot interrupt a running agent or dump text into its session.
+        Unauthorized users never reach it either -- the authorization gate
+        (pairing/allowlist) runs first.
+        """
+        from gateway.run import _home_target_env_var
+
+        source = event.source
+        platform_name = source.platform.value if source.platform else "unknown"
+
+        lines = [t("gateway.start.welcome")]
+
+        home = None
+        if source.platform:
+            home = self.config.get_home_channel(source.platform)
+        home_chat_id = str(home.chat_id) if home and home.chat_id else ""
+        if not home_chat_id:
+            home_chat_id = (
+                os.environ.get(_home_target_env_var(platform_name)) or ""
+            ).strip()
+
+        chat_id = str(source.chat_id) if source.chat_id is not None else ""
+        if not home_chat_id:
+            lines += ["", t("gateway.start.home_not_set")]
+        elif chat_id and home_chat_id == chat_id:
+            lines += ["", t("gateway.start.home_here")]
+        else:
+            lines += ["", t("gateway.start.home_elsewhere", chat_id=home_chat_id)]
+
+        return "\n".join(lines)
+
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""
         from gateway.run import _home_target_env_var, _home_thread_env_var

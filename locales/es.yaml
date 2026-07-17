@@ -279,6 +279,12 @@ gateway:
     save_failed:           "No se pudo guardar el canal principal: {error}"
     success:               "✅ Canal principal establecido en **{name}** (ID: {chat_id}).\nLas tareas cron y los mensajes entre plataformas se entregarán aquí."
 
+  start:
+    welcome:           "👋 Hermes está conectado y escuchando.\n\nEnvía cualquier mensaje para iniciar una conversación, o prueba:\n• /help — todos los comandos\n• /status — información de la sesión\n• /new — sesión nueva"
+    home_not_set:      "Aún no hay canal principal configurado. Envía /sethome para recibir notificaciones de tareas programadas y procesos en segundo plano en este chat."
+    home_here:         "Este chat es el canal principal: las notificaciones de tareas programadas y procesos en segundo plano llegan aquí."
+    home_elsewhere:    "El canal principal es otro chat (ID `{chat_id}`). Enviar /sethome aquí lo movería a este chat."
+
   status:
     header:                "📊 **Estado de Hermes Gateway**"
     matrix_scope_header:   "**Matrix scope:**"

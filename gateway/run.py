@@ -10055,8 +10055,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_help_command(event)
 
         if canonical == "start":
-            logger.info("Ignoring /start platform ping for session %s", _quick_key)
-            return ""
+            # Cold-path /start (no agent running): first contact from the
+            # platform Start button. Reply with a welcome instead of silence
+            # (#11640). The active-session fast path above still swallows
+            # mid-run /start pings so they can't interrupt a running agent.
+            return await self._handle_start_command(event)
 
         if canonical == "commands":
             return await self._handle_commands_command(event)

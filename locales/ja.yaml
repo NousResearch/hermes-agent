@@ -282,6 +282,12 @@ Future messages in this room will use that transcript until `/reset` or another 
     save_failed:           "ホームチャンネルを保存できませんでした: {error}"
     success:               "✅ ホームチャンネルを **{name}** (ID: {chat_id}) に設定しました。\nCron ジョブとプラットフォーム間メッセージはここに配信されます。"
 
+  start:
+    welcome:           "👋 Hermes は接続済みで待機中です。\n\n何かメッセージを送ると会話が始まります。次のコマンドも使えます:\n• /help — 全コマンド\n• /status — セッション情報\n• /new — 新しいセッション"
+    home_not_set:      "ホームチャンネルはまだ設定されていません。/sethome を送ると、定期タスクやバックグラウンド処理の通知をこのチャットで受け取れます。"
+    home_here:         "このチャットがホームチャンネルです。定期タスクやバックグラウンド処理の通知はここに届きます。"
+    home_elsewhere:    "ホームチャンネルは別のチャット (ID `{chat_id}`) に設定されています。ここで /sethome を送るとこのチャットに移動します。"
+
   status:
     header:                "📊 **Hermes ゲートウェイ状態**"
     matrix_scope_header:   "**Matrix scope:**"

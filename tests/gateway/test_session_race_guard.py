@@ -335,8 +335,10 @@ async def test_command_messages_do_not_leave_sentinel():
 
 
 @pytest.mark.asyncio
-async def test_start_command_is_noop_and_does_not_show_help():
-    """Telegram /start is a platform ping; it must not dump /help output."""
+async def test_start_command_returns_welcome_not_help(monkeypatch):
+    """Cold /start (first contact) must reply with a welcome, not /help output
+    and not silence (#11640)."""
+    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
     runner = _make_runner()
     event = _make_event(text="/start")
     session_key = build_session_key(event.source)
@@ -345,9 +347,32 @@ async def test_start_command_is_noop_and_does_not_show_help():
 
     result = await runner._handle_message(event)
 
-    assert result == ""
+    assert result, "first-contact /start must not be silent"
+    assert "connected" in result
+    assert "/help" in result
+    assert "/sethome" in result  # no home channel configured in this fixture
     runner._handle_help_command.assert_not_awaited()
     assert session_key not in runner._running_agents
+
+
+@pytest.mark.asyncio
+async def test_start_welcome_reports_home_channel_match(monkeypatch):
+    """When the current chat is the home channel, /start says so instead of
+    suggesting /sethome."""
+    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+    runner = _make_runner()
+    event = _make_event(text="/start", chat_id="12345")
+    from gateway.config import HomeChannel
+
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="12345", name="me"
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result
+    assert "home channel" in result
+    assert "/sethome" not in result
 
 
 @pytest.mark.asyncio

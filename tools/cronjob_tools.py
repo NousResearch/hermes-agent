@@ -706,6 +706,23 @@ def _parse_output_file(path: Path) -> Dict[str, Any]:
     }
 
 
+def _is_safe_output_component(job_id: str) -> bool:
+    """Whether ``job_id`` is a single safe path component under the output root.
+
+    Job IDs scope a filesystem read under the cron output dir. A crafted or
+    unresolved id containing ``..``, path separators, or an absolute path would
+    let the read escape the sandbox and glob ``*.md`` elsewhere. Mirrors the
+    containment guard in ``cron.jobs._job_output_dir`` (which protects the
+    write/delete side) so the read side is equally contained.
+    """
+    text = str(job_id or "").strip()
+    if not text or text in {".", ".."} or "/" in text or "\\" in text:
+        return False
+    if Path(text).is_absolute() or Path(text).drive:
+        return False
+    return True
+
+
 def _read_recent_outputs(
     job_id: Optional[str] = None,
     limit: int = 5,
@@ -727,6 +744,11 @@ def _read_recent_outputs(
         return []
 
     if job_id:
+        if not _is_safe_output_component(job_id):
+            logger.warning(
+                "Ignoring unsafe cron output job_id %r (path-escape attempt)", job_id
+            )
+            return []
         job_dir = root / job_id
         dirs = [job_dir] if job_dir.is_dir() else []
     else:
@@ -1249,6 +1271,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        limit=args.get("limit"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

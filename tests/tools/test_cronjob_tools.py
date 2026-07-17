@@ -772,3 +772,43 @@ class TestReadRecentOutputs:
     def test_read_recent_missing_root_is_empty(self, tmp_path):
         from tools.cronjob_tools import _read_recent_outputs
         assert _read_recent_outputs(output_root=tmp_path / "nope", limit=5) == []
+
+    def test_read_recent_rejects_parent_traversal(self, tmp_path):
+        """A job_id containing ``..`` must not escape the output root and read
+        .md files outside the cron sandbox (path-traversal via an unresolved id)."""
+        from tools.cronjob_tools import _read_recent_outputs
+        root = tmp_path / "out"
+        root.mkdir()
+        # Plant a readable .md OUTSIDE the root that `root / "../leak"` resolves to.
+        self._write(tmp_path, "leak",
+                    "s.md", "# Cron Job: SECRET\n\n**Job ID:** x\n**Run Time:** t\n\n---\n\nsecret\n")
+        got = _read_recent_outputs(job_id="../leak", output_root=root, limit=5)
+        assert got == [], "traversal job_id escaped the output root and read outside it"
+
+    def test_read_recent_rejects_absolute_job_id(self, tmp_path):
+        """An absolute job_id must not read from an arbitrary filesystem location."""
+        from tools.cronjob_tools import _read_recent_outputs
+        root = tmp_path / "out"
+        root.mkdir()
+        outside = tmp_path / "elsewhere"
+        self._write(tmp_path, "elsewhere",
+                    "s.md", "# Cron Job: SECRET\n\n**Job ID:** x\n**Run Time:** t\n\n---\n\nsecret\n")
+        got = _read_recent_outputs(job_id=str(outside), output_root=root, limit=5)
+        assert got == [], "absolute job_id escaped the output root"
+
+    def test_output_action_forwards_limit_through_registered_handler(self, monkeypatch):
+        """The registered `cronjob` tool handler must forward `limit`; the direct
+        cronjob() signature accepts it, but tool calls go through the handler's
+        arg mapping, which is the only path the model uses."""
+        import tools.cronjob_tools as ct
+        from tools.registry import registry
+        captured = {}
+
+        def _fake_read(job_id=None, limit=5, output_root=None):
+            captured["limit"] = limit
+            return []
+
+        monkeypatch.setattr(ct, "_read_recent_outputs", _fake_read)
+        handler = registry.get_entry("cronjob").handler
+        handler({"action": "output", "limit": 3})
+        assert captured["limit"] == 3, "handler did not forward limit (got default)"

@@ -387,6 +387,7 @@ class TestMaybeAutoTitle:
                 failure_callback=None,
                 main_runtime=None,
                 title_callback=None,
+                runtime_validator=None,
             )
 
     def test_skips_when_title_generation_disabled(self):
@@ -430,6 +431,7 @@ class TestMaybeAutoTitle:
                 failure_callback=_cb,
                 main_runtime=None,
                 title_callback=None,
+                runtime_validator=None,
             )
 
     def test_skips_if_no_response(self):
@@ -513,3 +515,64 @@ class TestAutoTitleDuplicateHandling:
         db.set_session_title.return_value = False
         with pytest.raises(RuntimeError):
             _persist_session_title(db, "missing", "Some Title")
+
+
+class TestRuntimeValidator:
+    """runtime_validator gating (#19027): a stale background title request
+    must not fire when the session's model/provider changed after spawn."""
+
+    def test_skips_when_validator_returns_false(self):
+        with patch("agent.title_generator.call_llm") as mock_llm:
+            title = generate_title(
+                "question", "answer",
+                runtime_validator=lambda: False,
+            )
+            assert title is None
+            mock_llm.assert_not_called()
+
+    def test_allows_when_validator_returns_true(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Validated Title"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as mock_llm:
+            title = generate_title(
+                "question", "answer",
+                runtime_validator=lambda: True,
+            )
+            assert title == "Validated Title"
+            mock_llm.assert_called_once()
+
+    def test_broken_validator_fails_open(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Resilient Title"
+
+        def _bad_validator():
+            raise RuntimeError("validator gone")
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as mock_llm:
+            title = generate_title(
+                "question", "answer",
+                runtime_validator=_bad_validator,
+            )
+            assert title == "Resilient Title"
+            mock_llm.assert_called_once()
+
+    def test_forwards_runtime_validator_to_worker(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        def _v():
+            return True
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", "hello", "hi there", history, runtime_validator=_v)
+            import time
+            time.sleep(0.3)
+            kwargs = mock_auto.call_args.kwargs
+            assert kwargs["runtime_validator"] is _v

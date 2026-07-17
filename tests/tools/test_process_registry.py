@@ -1336,6 +1336,66 @@ def test_drain_notifications_skips_consumed():
             process_registry.completion_queue.get_nowait()
 
 
+def test_drain_notifications_can_deliver_poll_observed_for_gateway(registry):
+    event = {
+        "type": "completion",
+        "session_id": "proc_polled",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "observed but not consumed",
+    }
+    registry._poll_observed.add(event["session_id"])
+    registry.completion_queue.put(event)
+
+    try:
+        results = registry.drain_notifications(
+            session_key="session-a",
+            owns_event=lambda _event: True,
+            skip_poll_observed=False,
+        )
+
+        assert [raw for raw, _ in results] == [event]
+    finally:
+        registry._poll_observed.discard(event["session_id"])
+
+
+@pytest.mark.parametrize(
+    "skip_state", ["_poll_observed", "_completion_consumed"]
+)
+def test_drain_notifications_routes_foreign_before_local_skip(
+    registry, skip_state
+):
+    event = {
+        "type": "completion",
+        "session_id": f"proc_foreign_{skip_state}",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "foreign",
+    }
+    ownership_calls = []
+    getattr(registry, skip_state).add(event["session_id"])
+    registry.completion_queue.put(event)
+
+    def owns_event(checked_event):
+        ownership_calls.append(checked_event)
+        return False
+
+    try:
+        results = registry.drain_notifications(
+            session_key="session-b",
+            owns_event=owns_event,
+        )
+
+        assert results == []
+        assert ownership_calls == [event]
+        assert registry.completion_queue.get_nowait() == event
+        assert registry.completion_queue.empty()
+    finally:
+        getattr(registry, skip_state).discard(event["session_id"])
+
+
 def test_drain_notifications_empty_queue():
     from tools.process_registry import process_registry
 
@@ -1344,6 +1404,151 @@ def test_drain_notifications_empty_queue():
 
     results = process_registry.drain_notifications()
     assert results == []
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_drain_notifications_filters_addressed_completion_by_owns_event(
+    registry, exit_code
+):
+    owned = {
+        "type": "completion",
+        "session_id": f"proc_owned_{exit_code}",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": exit_code,
+        "output": "owned",
+    }
+    foreign = {
+        "type": "completion",
+        "session_id": f"proc_foreign_{exit_code}",
+        "session_key": "session-b",
+        "command": "safe-test-command",
+        "exit_code": exit_code,
+        "output": "foreign",
+    }
+    registry.completion_queue.put(owned)
+    registry.completion_queue.put(foreign)
+
+    results = registry.drain_notifications(
+        session_key="session-a",
+        owns_event=lambda event: event.get("session_key") == "session-a",
+    )
+
+    assert [event["session_id"] for event, _ in results] == [
+        f"proc_owned_{exit_code}"
+    ]
+    assert registry.completion_queue.get_nowait() == foreign
+    assert registry.completion_queue.empty()
+
+
+def test_drain_notifications_filters_addressed_completion_by_session_key(registry):
+    owned = {
+        "type": "completion",
+        "session_id": "proc_owned",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "owned",
+    }
+    foreign = {
+        "type": "completion",
+        "session_id": "proc_foreign",
+        "session_key": "session-b",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "foreign",
+    }
+    registry.completion_queue.put(owned)
+    registry.completion_queue.put(foreign)
+
+    results = registry.drain_notifications(session_key="session-a")
+
+    assert [event["session_id"] for event, _ in results] == ["proc_owned"]
+    assert registry.completion_queue.get_nowait() == foreign
+    assert registry.completion_queue.empty()
+
+
+def test_drain_notifications_session_key_filter_requeues_origin_only_event(registry):
+    event = {
+        "type": "completion",
+        "session_id": "proc_origin_only",
+        "origin_ui_session_id": "ui-session-a",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "done",
+    }
+    registry.completion_queue.put(event)
+
+    results = registry.drain_notifications(session_key="session-a")
+
+    assert results == []
+    assert registry.completion_queue.get_nowait() == event
+    assert registry.completion_queue.empty()
+
+
+def test_drain_notifications_ownerless_completion_preserves_legacy_delivery(registry):
+    event = {
+        "type": "completion",
+        "session_id": "proc_ownerless",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "ownerless",
+    }
+    registry.completion_queue.put(event)
+
+    results = registry.drain_notifications(
+        session_key="session-a",
+        owns_event=lambda _event: False,
+    )
+
+    assert [raw for raw, _ in results] == [event]
+    assert registry.completion_queue.empty()
+
+
+def test_drain_notifications_ownerless_async_delegation_still_requires_proof(registry):
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_ownerless",
+        "goal": "task",
+        "status": "completed",
+        "summary": "done",
+        "api_calls": 1,
+        "duration_seconds": 0.1,
+    }
+    registry.completion_queue.put(event)
+
+    results = registry.drain_notifications(
+        session_key="session-a",
+        owns_event=lambda _event: False,
+    )
+
+    assert results == []
+    assert registry.completion_queue.get_nowait() == event
+    assert registry.completion_queue.empty()
+
+
+def test_drain_notifications_completion_callback_exception_fails_closed(registry):
+    event = {
+        "type": "completion",
+        "session_id": "proc_callback_error",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "done",
+    }
+    registry.completion_queue.put(event)
+
+    def broken(_event):
+        raise RuntimeError("ownership check exploded")
+
+    results = registry.drain_notifications(
+        session_key="session-a",
+        owns_event=broken,
+    )
+
+    assert results == []
+    assert registry.completion_queue.get_nowait() == event
+    assert registry.completion_queue.empty()
 
 
 def test_drain_notifications_filters_async_delegation_by_session_key():

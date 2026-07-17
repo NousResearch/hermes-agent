@@ -103,8 +103,14 @@ export function resolveGatewayEventSessionId({
   }
 
   const streamEvent = eventType ? UNSCOPED_STREAM_EVENT_TYPES.has(eventType) : false
+
   const sessionId =
-    eventType === 'message.start' ? activeSessionId : streamEvent ? unscopedStreamSessionId || activeSessionId : activeSessionId
+    eventType === 'message.start'
+      ? activeSessionId
+      : streamEvent
+        ? unscopedStreamSessionId || activeSessionId
+        : activeSessionId
+
   let nextUnscopedStreamSessionId = unscopedStreamSessionId
 
   if (eventType === 'message.start' && activeSessionId) {

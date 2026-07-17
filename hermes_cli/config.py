@@ -1165,6 +1165,42 @@ DEFAULT_CONFIG = {
         # matches a key in this dict.
         # Edit directly in config.yaml (no CLI support due to dots in keys).
         "reasoning_overrides": {},
+
+        # Autonomous heartbeat (Consciousness Loop) — off by default.
+        # When enabled, the agent runs a self-scheduling L2 tick loop
+        # between user messages so it can act on due reminders, advance
+        # long-running tasks, or make its own decision about when to
+        # speak up. Heartbeat prompts explicitly tell the model that
+        # ordinary assistant text is *private working text* and that
+        # only send_message-style calls actually reach anyone.
+        #
+        # Adapted from BaiLongma (MIT). See NOTICE.md.
+        "heartbeat": {
+            # Master switch. False = do not construct the loop at all.
+            "enabled": False,
+            # Base tick interval in seconds when idle (no messages, no
+            # custom cadence, no awakening). Bounded [10, 3600].
+            "base_tick_interval_seconds": 60,
+            # Watchdog: if a single run_turn call exceeds this many
+            # seconds, abort the underlying LLM call and re-schedule so
+            # the loop can never permanently stall on a stuck tool.
+            "run_turn_watchdog_seconds": 300,
+            # Fire one immediate L2 tick on startup (used to boot the
+            # startup self-check). Off by default so enabling the
+            # feature never surprises users with an immediate tick.
+            "run_immediate_tick_on_start": False,
+            # Cap on autonomous ticks per calendar day (soft budget).
+            # 0 disables the cap. The runtime honours whatever the loop
+            # returns; this only exists so a runaway configuration can't
+            # burn credits unattended.
+            "max_daily_ticks": 288,
+            # Quiet hours in local time (HH:MM 24h). When set, the loop
+            # keeps scheduling but skips autonomous ticks inside the
+            # window (user messages still preempt normally). Empty
+            # strings disable the window.
+            "quiet_hours_start": "",
+            "quiet_hours_end": "",
+        },
     },
 
     "terminal": {
@@ -1692,6 +1728,18 @@ DEFAULT_CONFIG = {
         # ``hermes profile describe <name> --auto`` and the dashboard's
         # auto-generate button. Short, cheap call.
         "profile_describer": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 60,
+            "extra_body": {},
+            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+        },
+        # Goal judge — evaluates whether a /goal run's latest response
+        # satisfies the goal/contract, and drafts goal contracts. Short
+        # structured-JSON calls; a fast cheap model is fine.
+        "goal_judge": {
             "provider": "auto",
             "model": "",
             "base_url": "",
@@ -4128,14 +4176,14 @@ OPTIONAL_ENV_VARS = {
 
     # ── Messaging platforms ──
     "TELEGRAM_BOT_TOKEN": {
-        "description": "Telegram bot token from @BotFather",
+        "description": "Complete Telegram bot token created by @BotFather (numeric bot ID followed by a colon and secret)",
         "prompt": "Telegram bot token",
         "url": "https://t.me/BotFather",
         "password": True,
         "category": "messaging",
     },
     "TELEGRAM_ALLOWED_USERS": {
-        "description": "Comma-separated Telegram user IDs allowed to use the bot (get ID from @userinfobot)",
+        "description": "Optional comma-separated numeric Telegram user IDs allowed immediately; leave blank to approve new users through DM pairing",
         "prompt": "Allowed Telegram user IDs (comma-separated)",
         "url": "https://t.me/userinfobot",
         "password": False,

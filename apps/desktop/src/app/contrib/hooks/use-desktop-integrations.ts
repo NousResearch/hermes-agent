@@ -6,7 +6,7 @@ import { respondToApprovalAction } from '@/store/native-notifications'
 import { getRememberedRoute, getRememberedSessionId, setRememberedRoute, setRememberedSessionId } from '@/store/session'
 import { onSessionsChanged } from '@/store/session-sync'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
-import { isSecondaryWindow } from '@/store/windows'
+import { isNewSessionWindow, isSecondaryWindow } from '@/store/windows'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
 import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
@@ -20,6 +20,13 @@ interface DesktopIntegrationsParams {
   resumeExhaustedSessionId: null | string
   routedSessionId: null | string
   runtimeIdByStoredSessionId: { readonly current: Map<string, string> }
+}
+
+export function shouldRestoreRememberedLocation(
+  locationPathname: string,
+  newSessionWindow: boolean
+): boolean {
+  return locationPathname === NEW_CHAT_ROUTE && !newSessionWindow
 }
 
 /**
@@ -73,11 +80,13 @@ export function useDesktopIntegrations({
 
   const restoredRef = useRef(false)
 
-  // Restore once on cold start — only when the renderer booted at the default
-  // route (a hidden-then-shown window keeps its own route). Prefer the full
-  // remembered route (covers pages); fall back to the last session id.
+  // Restore once on cold start — only when the primary renderer booted at the
+  // default route (a hidden-then-shown window keeps its own route). A compact
+  // `new=1` window deliberately starts there too, but must remain an isolated
+  // draft instead of inheriting this shared localStorage history. Prefer the
+  // full remembered route (covers pages); fall back to the last session id.
   useEffect(() => {
-    if (restoredRef.current || locationPathname !== NEW_CHAT_ROUTE) {
+    if (restoredRef.current || !shouldRestoreRememberedLocation(locationPathname, isNewSessionWindow())) {
       restoredRef.current = true
 
       return

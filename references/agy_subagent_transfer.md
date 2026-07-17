@@ -183,7 +183,19 @@ delegate_task(
 
 На целевой машине лучше выполнить локальную авторизацию и получить собственные runtime-параметры.
 
-## 11. Контрольный список
+## 11. Быстрый чек-лист переноса
+
+1. Cherry-pick двух коммитов: `4030c8d8a` и `194c2143a`.
+2. Задать на целевой машине:
+   - `ANTIGRAVITY_LS_ADDRESS`
+   - `ANTIGRAVITY_PROJECT_ID`
+3. Открыть новый PowerShell / перезапустить Hermes-gateway.
+4. Проверить `agy agentapi new-conversation`.
+5. Прогнать targeted tests.
+6. Проверить fresh-runtime `delegate_task(..., acp_command="agy", acp_args=["agentapi"])`.
+7. Только после этого подключать transport к постоянным Telegram workflows.
+
+## 12. Контрольный список
 
 1. Cherry-pick двух коммитов.
 2. Убедиться, что `agy --version` работает из того же service account/environment.

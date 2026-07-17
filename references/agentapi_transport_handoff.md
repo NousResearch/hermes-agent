@@ -191,6 +191,17 @@ AGY_AGENTAPI_DELEGATE_OK
 - `tests/agent/test_antigravity_agentapi_transport.py`
 - `tests/agent/test_copilot_acp_client.py`
 
+## Короткий чек-лист для другого ПК
+
+1. Применить оба коммита: `4030c8d8a` и `194c2143a`.
+2. Задать user env на целевой машине:
+   - `ANTIGRAVITY_LS_ADDRESS`
+   - `ANTIGRAVITY_PROJECT_ID`
+3. Открыть новый PowerShell / перезапустить Hermes-gateway.
+4. Проверить `agy agentapi new-conversation`.
+5. Проверить `delegate_task(..., acp_command="agy", acp_args=["agentapi"])`.
+6. Если `agentapi` недоступен, временно использовать `acp_args=[]`.
+
 ## Что осталось опционально
 
 - вынести machine-specific Antigravity service discovery в отдельную конфигурацию/auto-discovery

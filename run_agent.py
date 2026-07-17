@@ -4948,9 +4948,22 @@ class AIAgent:
             self._record_streamed_assistant_text(text)
 
     def _fire_reasoning_delta(self, text: str) -> None:
-        """Fire reasoning callback if registered."""
+        """Fire reasoning callback if registered.
+
+        Also latches ``_reasoning_streamed_this_response`` so the
+        post-completion path in ``build_assistant_message`` can tell that
+        reasoning was already delivered incrementally to the reasoning
+        callback and skip its full-text re-fire. This latch is one of two
+        suppression signals checked there — the other is active text-stream
+        consumers, which covers the CLI's <think>-tag extraction path
+        (cli.py _stream_reasoning_delta) that displays reasoning without
+        going through this method. The latch is cleared at the start of
+        every API call (interruptible_api_call /
+        interruptible_streaming_api_call), scoping it to a single response.
+        """
         cb = self.reasoning_callback
         if cb is not None:
+            self._reasoning_streamed_this_response = True
             try:
                 cb(text)
             except Exception:

@@ -16,6 +16,13 @@ export function useStatusSnapshot(gatewayState: string | undefined, requestGatew
     let cancelled = false
     let timer: number | undefined
 
+    // A closed/connecting gateway cannot have an authoritative live-runtime
+    // result. Clear readiness before starting the REST status leg so a hung
+    // getStatus() cannot leave a stale "ready" state visible after disconnect.
+    if (gatewayState !== 'open') {
+      setInferenceStatus(null)
+    }
+
     const scheduleRefresh = () => {
       if (!cancelled) {
         timer = window.setTimeout(() => void refresh(), REFRESH_MS)
@@ -30,9 +37,7 @@ export function useStatusSnapshot(gatewayState: string | undefined, requestGatew
         // race newer healthy results.
         const [statusResult, inferenceResult] = await Promise.allSettled([
           getStatus(),
-          gatewayState === 'open'
-            ? evaluateRuntimeReadiness(requestGateway)
-            : Promise.resolve(null)
+          gatewayState === 'open' ? evaluateRuntimeReadiness(requestGateway) : Promise.resolve(null)
         ])
 
         if (cancelled) {

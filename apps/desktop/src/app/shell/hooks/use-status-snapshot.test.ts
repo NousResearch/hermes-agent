@@ -31,7 +31,9 @@ async function flushAsync() {
 
 beforeEach(() => {
   vi.useFakeTimers()
-  vi.mocked(getStatus).mockReset().mockResolvedValue({} as never)
+  vi.mocked(getStatus)
+    .mockReset()
+    .mockResolvedValue({} as never)
 })
 
 afterEach(() => {
@@ -83,10 +85,11 @@ describe('useStatusSnapshot', () => {
   })
 
   it('still publishes an authoritative runtime failure', async () => {
-    const requestGatewayMock = vi.fn(async (method: string) =>
-      (method === 'setup.runtime_check'
-        ? { error: 'No usable credentials found for nous.', ok: false }
-        : { provider_configured: true }) as never
+    const requestGatewayMock = vi.fn(
+      async (method: string) =>
+        (method === 'setup.runtime_check'
+          ? { error: 'No usable credentials found for nous.', ok: false }
+          : { provider_configured: true }) as never
     )
 
     const requestGateway = requestGatewayMock as unknown as GatewayRequester
@@ -102,12 +105,37 @@ describe('useStatusSnapshot', () => {
     })
   })
 
+  it('clears readiness immediately when the gateway disconnects', async () => {
+    const pendingStatus = deferred<never>()
+
+    vi.mocked(getStatus)
+      .mockResolvedValueOnce({} as never)
+      .mockReturnValueOnce(pendingStatus.promise)
+
+    const requestGateway = vi.fn(
+      async (method: string) =>
+        (method === 'setup.runtime_check' ? { ok: true } : { provider_configured: true }) as never
+    ) as unknown as GatewayRequester
+
+    const { rerender, result } = renderHook(({ gatewayState }) => useStatusSnapshot(gatewayState, requestGateway), {
+      initialProps: { gatewayState: 'open' }
+    })
+
+    await flushAsync()
+    expect(result.current.inferenceStatus).toMatchObject({ ready: true, source: 'runtime_check' })
+
+    rerender({ gatewayState: 'connecting' })
+
+    expect(getStatus).toHaveBeenCalledTimes(2)
+    expect(result.current.inferenceStatus).toBeNull()
+  })
+
   it('waits for a slow refresh to settle before scheduling another one', async () => {
     const setup = deferred<unknown>()
     const runtime = deferred<unknown>()
 
-    const requestGatewayMock = vi.fn((method: string) =>
-      (method === 'setup.runtime_check' ? runtime.promise : setup.promise) as never
+    const requestGatewayMock = vi.fn(
+      (method: string) => (method === 'setup.runtime_check' ? runtime.promise : setup.promise) as never
     )
 
     const requestGateway = requestGatewayMock as unknown as GatewayRequester

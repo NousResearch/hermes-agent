@@ -2418,10 +2418,12 @@ def delegate_task(
     top_role = _normalize_role(role)
 
     # Background (async) delegation now applies to BOTH single tasks and
-    # batches. A batch simply becomes N independent async dispatches: each
-    # child runs on the daemon executor and re-enters the conversation via
-    # the completion queue on its own, carrying its own handle. There's no
-    # combined "wait for all" — fan-out is exactly N background subagents.
+    # batches. A batch is dispatched as ONE async unit: the whole fan-out runs
+    # on the daemon executor, joins on every child (see _execute_and_aggregate
+    # / dispatch_async_delegation_batch), and pushes a SINGLE completion event
+    # carrying the consolidated per-task results. It re-enters the conversation
+    # as one message once ALL children finish — the chat is not blocked while
+    # they run.
     background = is_truthy_value(background, default=False) if background is not None else False
 
     # Depth limit — configurable via delegation.max_spawn_depth,
@@ -3489,7 +3491,8 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
 
     Delegations from the top-level agent always run in the background — the
     model does not choose. This applies to both a single task and a fan-out
-    batch (each task becomes its own independent background subagent). The one
+    batch (the whole batch is one async unit that joins on all children and
+    returns one consolidated result). The one
     exception is a delegation from an orchestrator subagent (depth > 0), which
     needs its workers' results within its own turn. The live path is
     ``run_agent._dispatch_delegate_task``; this lambda mirrors it for the rare

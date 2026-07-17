@@ -79,6 +79,22 @@ class TestCodexItemToToolName:
             {"type": "dynamicToolCall", "tool": "web_search"}
         ) == "web_search"
 
+    def test_hermes_tools_mcp_server_emits_bare_tool_name(self):
+        """The hermes-tools MCP server wraps Hermes' own tools for codex;
+        the inner dispatch subprocess can't fire native progress events,
+        so the codex-level event IS the display event — shown without the
+        mcp.hermes-tools.* namespacing (from #26541 by @simpolism)."""
+        assert _codex_item_to_tool_name(
+            {"type": "mcpToolCall", "server": "hermes-tools", "tool": "web_search"}
+        ) == "web_search"
+        assert _codex_item_to_tool_name(
+            {"type": "mcpToolCall", "server": "hermes-tools", "tool": "browser_navigate"}
+        ) == "browser_navigate"
+
+    def test_web_search_builtin_maps_to_web_search(self):
+        """Codex's built-in webSearch tool gets a bubble too (#26541)."""
+        assert _codex_item_to_tool_name({"type": "webSearch"}) == "web_search"
+
     def test_unknown_type_returns_type_string(self):
         assert _codex_item_to_tool_name(
             {"type": "plan"}
@@ -367,6 +383,27 @@ class TestToolProgressDispatch:
         completed = agent.tool_progress_callback.call_args_list[1]
         assert completed.kwargs["is_error"] is False
         assert "results" in completed.kwargs["result"]
+
+    def test_web_search_builtin_fires_started_and_completed(self):
+        """Codex's built-in webSearch produces a start/complete bubble pair
+        with the query as preview and args (#26541)."""
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_started({
+            "type": "webSearch",
+            "id": "ws-1",
+            "query": "hermes agent docs",
+        }))
+        bridge(_item_completed({
+            "type": "webSearch",
+            "id": "ws-1",
+            "query": "hermes agent docs",
+        }))
+        calls = agent.tool_progress_callback.call_args_list
+        assert [c.args[0] for c in calls] == ["tool.started", "tool.completed"]
+        assert calls[0].args[1] == "web_search"
+        assert calls[0].args[2] == "hermes agent docs"
+        assert calls[0].args[3] == {"query": "hermes agent docs"}
 
     def test_duration_falls_back_to_wall_time_when_codex_missing_ms(self):
         agent = _make_stub_agent()

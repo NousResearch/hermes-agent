@@ -287,9 +287,22 @@ def _record_codex_app_server_compaction(
 # therefore deserve a tool_progress bubble pair). The projector lives in
 # agent/transports/codex_event_projector.py — keep these in sync so the
 # tool name shown in the UI matches the name recorded in messages.
+# webSearch is codex's built-in web search tool — it has no projector
+# entry (codex handles it internally) but still deserves a bubble.
 _CODEX_TOOL_ITEM_TYPES = frozenset(
-    {"commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall"}
+    {"commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"}
 )
+
+# Internal MCP server that wraps Hermes' native tools for codex. When
+# codex calls back through it, the inner dispatch runs in a SEPARATE
+# hermes-tools-mcp-server subprocess that has no access to the parent
+# agent's tool_progress_callback — so the inner call can never surface
+# its own native progress event. The codex-level mcpToolCall event IS
+# the display event for those calls; we strip the mcp.hermes-tools.*
+# namespacing and emit the bare tool name (web_search, browser_navigate,
+# vision_analyze, ...) since the user thinks of these as Hermes tools,
+# not as MCP calls.
+_INTERNAL_MCP_SERVER = "hermes-tools"
 
 
 def _codex_item_to_tool_name(item: dict) -> str:
@@ -304,9 +317,13 @@ def _codex_item_to_tool_name(item: dict) -> str:
     if item_type == "mcpToolCall":
         server = item.get("server") or "mcp"
         tool = item.get("tool") or "unknown"
+        if server == _INTERNAL_MCP_SERVER:
+            return tool
         return f"mcp.{server}.{tool}"
     if item_type == "dynamicToolCall":
         return item.get("tool") or "dynamic"
+    if item_type == "webSearch":
+        return "web_search"
     return item_type or "unknown"
 
 
@@ -327,6 +344,8 @@ def _codex_item_to_args(item: dict) -> dict:
     if item_type in {"mcpToolCall", "dynamicToolCall"}:
         args = item.get("arguments") or {}
         return args if isinstance(args, dict) else {"arguments": args}
+    if item_type == "webSearch":
+        return {"query": item.get("query") or ""}
     return {}
 
 
@@ -354,6 +373,9 @@ def _codex_item_to_preview(item: dict) -> Any:
             return json.dumps(args, ensure_ascii=False)[:120]
         except (TypeError, ValueError):
             return None
+    if item_type == "webSearch":
+        query = item.get("query") or ""
+        return query[:120] if query else None
     return None
 
 

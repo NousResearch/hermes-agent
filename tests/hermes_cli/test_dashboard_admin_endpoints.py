@@ -1283,3 +1283,35 @@ class TestToolsConfigEndpoints:
                 kwargs["json"] = payload
             r = fn(path, **kwargs)
             assert r.status_code == 401, f"{method} {path} not gated"
+
+
+# ---------------------------------------------------------------------------
+# _spawn_hermes_action env scrubbing (#52470)
+# ---------------------------------------------------------------------------
+
+def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path):
+    """The dashboard runs inside the gateway, so os.environ has
+    _HERMES_GATEWAY=1. Spawned actions (e.g. `gateway restart`) must NOT inherit
+    it, or the in-process restart-loop guard rejects the restart and it silently
+    fails (#52470).
+    """
+    import hermes_cli.web_server as ws
+
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setattr(ws, "_ACTION_LOG_DIR", tmp_path)
+
+    captured = {}
+
+    class _FakeProc:
+        pid = 1234
+
+    def _fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _FakeProc()
+
+    monkeypatch.setattr(ws.subprocess, "Popen", _fake_popen)
+
+    ws._spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+
+    assert "_HERMES_GATEWAY" not in captured["env"]
+    assert captured["env"]["HERMES_NONINTERACTIVE"] == "1"

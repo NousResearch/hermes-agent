@@ -9,7 +9,7 @@ import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } fro
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { $repoStatus } from '@/store/coding-status'
 import { toggleCommandPalette } from '@/store/command-palette'
-import { $capture, $comboIndex, endCapture, setBinding, toggleKeybindPanel } from '@/store/keybinds'
+import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
 import {
   requestSessionSearchFocus,
   setFileBrowserOpen,
@@ -120,7 +120,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   }
 
   handlersRef.current = {
-    'keybinds.openPanel': toggleKeybindPanel,
+    'keybinds.openPanel': () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`),
 
     'composer.focus': () => requestComposerFocus('main'),
     'composer.modelPicker': () => setModelPickerOpen(true),

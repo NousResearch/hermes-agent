@@ -139,7 +139,7 @@ from model_tools import (
     handle_function_call,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.handle_function_call")
     check_toolset_requirements,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.check_toolset_requirements")
 )
-from tools.terminal_tool import cleanup_vm
+from tools.terminal_tool import cleanup_vm, get_active_env
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
 
@@ -770,9 +770,12 @@ class AIAgent:
 
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """
-        Preload the LM Studio model with at least Hermes' minimum context.
+        Preload the LM Studio model unless configured to rely on LM Studio JIT loading.
         """
         if (self.provider or "").strip().lower() != "lmstudio":
+            return
+        if (getattr(self, "lmstudio_load_mode", "explicit") or "explicit").strip().lower() == "jit":
+            logger.debug("LM Studio explicit preload skipped: lmstudio_load_mode=jit")
             return
         try:
             from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
@@ -1726,12 +1729,15 @@ class AIAgent:
         # Close and turn-start persistence can run on separate CLI threads; the
         # marker test-and-append below must be one critical section or both can
         # observe the same unmarked dict and write duplicate durable rows.
+        from agent.agent_runtime_helpers import note_turn_persisted
+
         persist_lock = getattr(self, "_session_persist_lock", None)
         if persist_lock is None:
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
             self._save_session_log(messages)
             self._flush_messages_to_session_db(messages, conversation_history)
+            note_turn_persisted(self)
             return
 
         with persist_lock:
@@ -1739,6 +1745,7 @@ class AIAgent:
             self._session_messages = messages
             self._save_session_log(messages)
             self._flush_messages_to_session_db(messages, conversation_history)
+            note_turn_persisted(self)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
@@ -4725,6 +4732,12 @@ class AIAgent:
 
     def _record_streamed_assistant_text(self, text: str) -> None:
         """Accumulate visible assistant text emitted through stream callbacks."""
+        # Single-writer guard (#65991): a superseded stream must not pollute the
+        # turn's accumulated text (which also feeds the interim-visible-text
+        # de-dup comparison), even when a caller reaches this directly (the
+        # tool-suppressed content path) rather than through _fire_stream_delta.
+        if self._stream_writer_superseded():
+            return
         if isinstance(text, str) and text:
             self._current_streamed_assistant_text = (
                 getattr(self, "_current_streamed_assistant_text", "") + text
@@ -4747,23 +4760,228 @@ class AIAgent:
         )
         return bool(streamed) and streamed == visible_content
 
+    def _extract_codex_interim_visible_parts(
+        self,
+        assistant_msg: Dict[str, Any],
+    ) -> List[str]:
+        """Extract visible Codex commentary as one string per message item.
+
+        Codex Responses can keep user-facing mid-turn narration as structured
+        ``phase=commentary`` message items while final answer text remains in
+        assistant ``content``.  Non-streaming gateway surfaces need that
+        commentary through the interim assistant callback before tool calls run.
+        ``phase=analysis`` remains hidden because it is provider scratchpad.
+        """
+        if not getattr(self, "show_commentary", True):
+            # display.show_commentary=false — commentary stays on the
+            # reasoning channel (pre-commentary-channel behavior).
+            return []
+        items = assistant_msg.get("codex_message_items")
+        if not isinstance(items, list):
+            return []
+
+        messages: List[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "message":
+                continue
+            phase = item.get("phase")
+            if not isinstance(phase, str) or phase.strip().lower() != "commentary":
+                continue
+            content_parts = item.get("content")
+            if not isinstance(content_parts, list):
+                continue
+            item_parts: List[str] = []
+            for part in content_parts:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") != "output_text":
+                    continue
+                text = part.get("text")
+                if isinstance(text, str) and text.strip():
+                    item_parts.append(text)
+            visible = "".join(item_parts).strip()
+            if visible:
+                visible = self._strip_think_blocks(visible).strip()
+                visible = redact_sensitive_text(visible)
+            if visible:
+                messages.append(visible)
+        return messages
+
+    def _extract_codex_interim_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
+        """Extract all visible Codex commentary for comparison/fallback."""
+        return "\n\n".join(
+            self._extract_codex_interim_visible_parts(assistant_msg)
+        ).strip()
+
+    def _interim_assistant_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
+        """Return the exact assistant text eligible for interim delivery.
+
+        Prefer structured Codex commentary over top-level content. A Codex
+        response can contain both commentary and a partial/final-answer message
+        while tools are still pending; treating top-level content as progress
+        in that shape leaks the answer before the tool call runs.
+        """
+        visible = self._extract_codex_interim_visible_text(assistant_msg)
+        if visible:
+            return visible
+        content = assistant_msg.get("content")
+        return self._strip_think_blocks(content or "").strip()
+
+    def _interim_text_was_delivered(self, text: str) -> bool:
+        normalized = self._normalize_interim_visible_text(text)
+        if not normalized:
+            return False
+        return normalized in getattr(self, "_delivered_interim_texts", set())
+
+    def _record_delivered_interim_text(self, text: str) -> None:
+        normalized = self._normalize_interim_visible_text(text)
+        if normalized:
+            delivered = getattr(self, "_delivered_interim_texts", None)
+            if not isinstance(delivered, set):
+                delivered = set()
+                self._delivered_interim_texts = delivered
+            delivered.add(normalized)
+
+    def _fire_streamed_codex_commentary(self, text: str) -> None:
+        """Deliver a completed live Codex commentary message immediately."""
+        cb = getattr(self, "interim_assistant_callback", None)
+        if cb is None or not isinstance(text, str):
+            return
+        visible = self._strip_think_blocks(text).strip()
+        if visible:
+            visible = redact_sensitive_text(visible)
+        if not visible or visible == "(empty)" or self._interim_text_was_delivered(visible):
+            return
+        try:
+            cb(visible, already_streamed=False)
+            self._record_delivered_interim_text(visible)
+        except Exception:
+            logger.debug("interim_assistant_callback error", exc_info=True)
+
     def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
         """Surface a real mid-turn assistant commentary message to the UI layer."""
         cb = getattr(self, "interim_assistant_callback", None)
         if cb is None or not isinstance(assistant_msg, dict):
             return
-        content = assistant_msg.get("content")
-        visible = self._strip_think_blocks(content or "").strip()
-        if not visible or visible == "(empty)":
+        commentary_parts = self._extract_codex_interim_visible_parts(assistant_msg)
+        undelivered_parts: List[str] = []
+        pending_keys: set[str] = set()
+        for part in commentary_parts:
+            key = self._normalize_interim_visible_text(part)
+            if (
+                not key
+                or key in pending_keys
+                or self._interim_text_was_delivered(part)
+            ):
+                continue
+            pending_keys.add(key)
+            undelivered_parts.append(part)
+        visible = (
+            "\n\n".join(undelivered_parts).strip()
+            if commentary_parts
+            else self._interim_assistant_visible_text(assistant_msg)
+        )
+        if (
+            not visible
+            or visible == "(empty)"
+            or self._interim_text_was_delivered(visible)
+        ):
             return
         already_streamed = self._interim_content_was_streamed(visible)
         try:
             cb(visible, already_streamed=already_streamed)
+            if undelivered_parts:
+                for part in undelivered_parts:
+                    self._record_delivered_interim_text(part)
+            else:
+                self._record_delivered_interim_text(visible)
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
 
+    def _ensure_stream_writer_state(self) -> None:
+        """Lazily create the single-writer guard fields (#65991).
+
+        The fields are normally set in ``agent_init``, but agents constructed
+        via ``AIAgent.__new__`` (test doubles, legacy/partially-initialized
+        instances) skip that path. Claiming/checking the writer must not crash
+        those agents, so initialize the fields on first use.
+        """
+        if getattr(self, "_stream_writer_lock", None) is None:
+            self._stream_writer_lock = threading.Lock()
+        if not hasattr(self, "_stream_writer_token"):
+            self._stream_writer_token = 0
+        if getattr(self, "_stream_writer_tls", None) is None:
+            self._stream_writer_tls = threading.local()
+        if not hasattr(self, "_stream_writer_dropped"):
+            self._stream_writer_dropped = 0
+
+    def _claim_stream_writer(self) -> int:
+        """Claim exclusive ownership of the streaming delta sink for the calling
+        stream attempt and return its monotonic writer token (#65991).
+
+        Every streaming attempt (each provider path, each retry) calls this
+        right before it begins consuming its stream. Claiming bumps the shared
+        token, so any earlier attempt still alive on another thread is
+        immediately superseded: its cached token no longer matches and the sink
+        fences its late chunks out. The token is stored per-thread, so a thread
+        that never claimed (a non-streaming caller) is never treated as a
+        writer and can never be fenced.
+        """
+        self._ensure_stream_writer_state()
+        with self._stream_writer_lock:
+            self._stream_writer_token += 1
+            token = self._stream_writer_token
+        self._stream_writer_tls.token = token
+        return token
+
+    def _stream_writer_is_current(self, token: int) -> bool:
+        """True when ``token`` (from a prior _claim_stream_writer) is still the
+        active writer — i.e. no newer stream attempt has claimed the sink since
+        (#65991). Lets a stream loop bail out the instant it is superseded."""
+        return token == getattr(self, "_stream_writer_token", token)
+
+    def _stream_writer_superseded(self) -> bool:
+        """True when the calling thread claimed the delta sink but a newer
+        stream attempt has since claimed it — i.e. this thread is a stale
+        writer whose chunks must be dropped (#65991).
+
+        A thread that never claimed (``token is None``) is not a writer and is
+        never reported as superseded, so non-streaming delta callers are
+        unaffected.
+        """
+        tls = getattr(self, "_stream_writer_tls", None)
+        token = getattr(tls, "token", None) if tls is not None else None
+        if token is None:
+            return False
+        return token != getattr(self, "_stream_writer_token", token)
+
+    def _note_dropped_stream_writer(self, where: str) -> None:
+        """Record + log that a superseded stream's delta was discarded."""
+        try:
+            self._stream_writer_dropped = int(getattr(self, "_stream_writer_dropped", 0)) + 1
+        except Exception:
+            self._stream_writer_dropped = 1
+        # Log sparsely (first drop, then powers of two) so a chatty superseded
+        # stream can't flood the log, but a real provider problem is still
+        # visible. A silent discard would hide genuine failures.
+        _n = self._stream_writer_dropped
+        if _n == 1 or (_n & (_n - 1)) == 0:
+            logger.warning(
+                "Dropped delta from a superseded stream writer at %s "
+                "(discarded=%d this turn) — a stale stream tried to write into "
+                "the turn after a retry superseded it.",
+                where, _n,
+            )
+
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
+        # Single-writer guard (#65991): a superseded stream must not interleave
+        # its tokens into the turn alongside the retry that replaced it.
+        if self._stream_writer_superseded():
+            self._note_dropped_stream_writer("_fire_stream_delta")
+            return
         # If a tool iteration set the break flag, prepend a single paragraph
         # break before the first real text delta.  This prevents the original
         # problem (text concatenation across tool boundaries) without stacking
@@ -4817,6 +5035,11 @@ class AIAgent:
 
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered."""
+        # Single-writer guard (#65991): fence out a superseded stream's
+        # reasoning deltas the same way as content deltas.
+        if self._stream_writer_superseded():
+            self._note_dropped_stream_writer("_fire_reasoning_delta")
+            return
         cb = self.reasoning_callback
         if cb is not None:
             try:
@@ -5438,6 +5661,12 @@ class AIAgent:
             opts = self._lmstudio_reasoning_options_cached()
             # "off-only" (or absent) means no real reasoning capability.
             return any(opt and opt != "off" for opt in opts)
+        # Ollama Cloud (and any Ollama-compatible server): the native
+        # /api/show capabilities list is authoritative — emit reasoning_effort
+        # only for models that declare the "thinking" capability. deepseek-v4
+        # has it; gemma3 / qwen3-coder don't. Cached per (model, base_url).
+        if base_url_host_matches(self._base_url_lower, "ollama.com"):
+            return self._ollama_supports_thinking_cached()
         if "openrouter" not in self._base_url_lower:
             return False
         if "api.mistral.ai" in self._base_url_lower:
@@ -5491,6 +5720,37 @@ class AIAgent:
         cache[key] = (opts, _time.monotonic())
         return opts
 
+    def _ollama_supports_thinking_cached(self) -> bool:
+        """Probe Ollama's ``/api/show`` capabilities once per (model, base_url).
+
+        Returns True only when the model declares the ``thinking`` capability.
+        Caching mirrors the LM Studio probe: a True/False result is permanent
+        (capabilities don't change), while a probe failure (None) is cached
+        with a 60-second TTL so a transient outage doesn't suppress reasoning
+        for the rest of the session but also doesn't round-trip every turn.
+        """
+        import time as _time
+
+        cache = getattr(self, "_ollama_thinking_cache", None)
+        if cache is None:
+            cache = self._ollama_thinking_cache = {}
+        key = (self.model, self.base_url)
+        cached = cache.get(key)
+        if cached is not None:
+            supported, ts = cached
+            # Definitive True/False → permanent. Unknown (None) → 60s TTL.
+            if supported is not None or (_time.monotonic() - ts) < 60:
+                return bool(supported)
+        try:
+            from hermes_cli.models import ollama_model_supports_thinking
+            supported = ollama_model_supports_thinking(
+                self.model, self.base_url, getattr(self, "api_key", "")
+            )
+        except Exception:
+            supported = None
+        cache[key] = (supported, _time.monotonic())
+        return bool(supported)
+
     def _resolve_lmstudio_summary_reasoning_effort(self) -> Optional[str]:
         """Resolve a safe top-level ``reasoning_effort`` for LM Studio.
 
@@ -5524,7 +5784,7 @@ class AIAgent:
         else:
             requested_effort = "medium"
 
-        if requested_effort == "xhigh" and "high" in supported_efforts:
+        if requested_effort == "xhigh" and "xhigh" not in supported_efforts and "high" in supported_efforts:
             requested_effort = "high"
         elif requested_effort not in supported_efforts:
             if requested_effort == "minimal" and "low" in supported_efforts:
@@ -5765,7 +6025,9 @@ class AIAgent:
                 )
 
             from agent.tool_dispatch_helpers import _plan_tool_batch_segments
-            segments = _plan_tool_batch_segments(tool_calls)
+            _active_env = get_active_env(effective_task_id)
+            _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
+            segments = _plan_tool_batch_segments(tool_calls, execution_cwd=_exec_cwd)
 
             if len(segments) == 1:
                 kind = segments[0][0]
@@ -5876,6 +6138,35 @@ class AIAgent:
         from agent.chat_completion_helpers import handle_max_iterations
         return handle_max_iterations(self, messages, api_call_count)
 
+    def _conversation_root_id(self) -> Optional[str]:
+        """Resolve the stable conversation id for Portal usage attribution.
+
+        Returns the session-lineage ROOT id rather than the current segment
+        id, so one user-facing conversation keeps a single ``conversation=``
+        tag across context-compression rotation (`/new` starts a genuinely
+        new lineage). Delegate subagents resolve through their
+        ``_parent_session_id`` so an entire delegation tree tags as the
+        parent conversation.
+
+        Best-effort: falls back to the raw session id when the session DB
+        is unavailable or the lineage walk fails.
+        """
+        sid = getattr(self, "session_id", None)
+        if not sid:
+            return None
+        # Subagents may not have a DB row yet on their first turn; walking
+        # from the parent id still lands on the right root.
+        start = getattr(self, "_parent_session_id", None) or sid
+        db = getattr(self, "_session_db", None)
+        if db is not None:
+            try:
+                root = db.get_conversation_root(start)
+                if root:
+                    return root
+            except Exception:
+                logger.debug("Conversation root lineage walk failed", exc_info=True)
+        return start
+
     def run_conversation(
         self,
         user_message: Any,
@@ -5888,18 +6179,43 @@ class AIAgent:
         moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
-        from agent.conversation_loop import run_conversation
-        return run_conversation(
-            self,
-            user_message,
-            system_message,
-            conversation_history,
-            task_id,
-            stream_callback,
-            persist_user_message,
-            persist_user_timestamp=persist_user_timestamp,
-            moa_config=moa_config,
+        from agent.aux_accounting import (
+            reset_accounting_context,
+            set_accounting_context,
         )
+        from agent.conversation_loop import run_conversation
+        from agent.portal_tags import (
+            reset_conversation_context,
+            set_conversation_context,
+        )
+        # Publish the conversation id for ambient Nous Portal tagging. Every
+        # LLM call made inside this turn — main loop, compression, vision,
+        # web_extract, session_search, MoA slots, background-review forks
+        # (which copy this Context into their thread) — inherits the
+        # ``conversation=<root>`` tag with zero per-call-site plumbing.
+        token = set_conversation_context(self._conversation_root_id())
+        # Publish the session accounting handles the same way so auxiliary
+        # calls record their token usage into session_model_usage (task
+        # dimension) — the fix for aux spend being invisible in analytics
+        # (issue #23270).
+        acct_token = set_accounting_context(
+            getattr(self, "_session_db", None), getattr(self, "session_id", None)
+        )
+        try:
+            return run_conversation(
+                self,
+                user_message,
+                system_message,
+                conversation_history,
+                task_id,
+                stream_callback,
+                persist_user_message,
+                persist_user_timestamp=persist_user_timestamp,
+                moa_config=moa_config,
+            )
+        finally:
+            reset_accounting_context(acct_token)
+            reset_conversation_context(token)
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

@@ -76,6 +76,7 @@ describe('profile-scoped approval mode cache', () => {
 
   it('lets a backend event supersede an optimistic write and its later failure', async () => {
     const write = deferred<{ value: string }>()
+
     const pending = setApprovalModeForProfile(
       vi.fn(() => write.promise),
       'work',

@@ -140,7 +140,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -826,6 +826,7 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     billing_provider TEXT NOT NULL DEFAULT '',
     billing_base_url TEXT NOT NULL DEFAULT '',
     billing_mode TEXT NOT NULL DEFAULT '',
+    task TEXT NOT NULL DEFAULT '',
     api_call_count INTEGER NOT NULL DEFAULT 0,
     input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -838,7 +839,7 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     cost_source TEXT,
     first_seen REAL,
     last_seen REAL,
-    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode)
+    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -1704,18 +1705,111 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass
+            if current_version < 22:
+                # v22: task-dimension usage attribution (issue #23270).
+                # session_model_usage gains a ``task`` column ('' = main agent
+                # loop; 'vision'/'compression'/'title_generation'/... =
+                # auxiliary calls) so aux model spend is visible in analytics.
+                # The column participates in the PRIMARY KEY and SQLite cannot
+                # ALTER a PK, so rebuild the table. The reconciler will have
+                # already ADDed the plain column on legacy DBs (harmless);
+                # the rebuild bakes it into the PK properly. Existing rows are
+                # main-loop accounting by definition → task=''.
+                try:
+                    legacy_pk = cursor.execute(
+                        "SELECT COUNT(*) FROM pragma_table_info('session_model_usage') "
+                        "WHERE name = 'task' AND pk > 0"
+                    ).fetchone()[0]
+                    if not legacy_pk:
+                        cursor.execute("ALTER TABLE session_model_usage RENAME TO session_model_usage_v21")
+                        cursor.execute(
+                            """CREATE TABLE session_model_usage (
+                                   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                                   model TEXT NOT NULL,
+                                   billing_provider TEXT NOT NULL DEFAULT '',
+                                   billing_base_url TEXT NOT NULL DEFAULT '',
+                                   billing_mode TEXT NOT NULL DEFAULT '',
+                                   task TEXT NOT NULL DEFAULT '',
+                                   api_call_count INTEGER NOT NULL DEFAULT 0,
+                                   input_tokens INTEGER NOT NULL DEFAULT 0,
+                                   output_tokens INTEGER NOT NULL DEFAULT 0,
+                                   cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                                   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+                                   reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                                   estimated_cost_usd REAL NOT NULL DEFAULT 0,
+                                   actual_cost_usd REAL NOT NULL DEFAULT 0,
+                                   cost_status TEXT,
+                                   cost_source TEXT,
+                                   first_seen REAL,
+                                   last_seen REAL,
+                                   PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
+                               )"""
+                        )
+                        cursor.execute(
+                            """INSERT INTO session_model_usage (
+                                   session_id, model, billing_provider, billing_base_url,
+                                   billing_mode, task, api_call_count, input_tokens,
+                                   output_tokens, cache_read_tokens, cache_write_tokens,
+                                   reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                                   cost_status, cost_source, first_seen, last_seen
+                               )
+                               SELECT session_id, model, billing_provider, billing_base_url,
+                                      billing_mode, '', api_call_count, input_tokens,
+                                      output_tokens, cache_read_tokens, cache_write_tokens,
+                                      reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                                      cost_status, cost_source, first_seen, last_seen
+                               FROM session_model_usage_v21"""
+                        )
+                        cursor.execute("DROP TABLE session_model_usage_v21")
+                        cursor.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_session_model_usage_session "
+                            "ON session_model_usage(session_id)"
+                        )
+                        cursor.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_session_model_usage_model "
+                            "ON session_model_usage(model)"
+                        )
+                except sqlite3.OperationalError as exc:
+                    logger.debug("v22 session_model_usage rebuild skipped: %s", exc)
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
                     (SCHEMA_VERSION,),
                 )
 
-        # Unique title index — always ensure it exists
+        # Unique title index — always ensure it exists. Older databases may
+        # contain duplicate aliases from before the constraint was enforced;
+        # preserve every session while letting the newest one retain the alias.
+        title_index_sql = (
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
+            "ON sessions(title) WHERE title IS NOT NULL"
+        )
         try:
-            cursor.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
-                "ON sessions(title) WHERE title IS NOT NULL"
-            )
+            cursor.execute(title_index_sql)
+        except sqlite3.IntegrityError:
+            # The index is an optimization — its creation must never abort
+            # opening the database, so the repair itself is also guarded.
+            try:
+                cursor.execute(
+                    """UPDATE sessions AS older
+                       SET title = NULL
+                       WHERE title IS NOT NULL
+                         AND EXISTS (
+                             SELECT 1 FROM sessions AS newer
+                             WHERE newer.title = older.title
+                               AND newer.rowid > older.rowid
+                         )"""
+                )
+                logger.warning(
+                    "Cleared %d duplicate session title(s) while restoring the unique index",
+                    cursor.rowcount,
+                )
+                cursor.execute(title_index_sql)
+            except sqlite3.Error:
+                logger.exception(
+                    "Could not repair duplicate session titles; "
+                    "unique title index not created"
+                )
         except sqlite3.OperationalError:
             pass  # Index already exists
 
@@ -2191,6 +2285,55 @@ class SessionDB:
                 (session_id,),
             )
         self._execute_write(_do)
+
+    def promote_to_session_reset(
+        self, session_id: str, reason: str = "session_reset"
+    ) -> bool:
+        """Durably mark a session as ended by an intentional reset boundary.
+
+        Promotes *only* live rows (``ended_at IS NULL``) or rows carrying an
+        accidental end_reason that the recovery query
+        (``find_latest_gateway_session_for_peer``) treats as recoverable:
+        ``agent_close`` (older gateway cleanup bug) and ``ws_orphan_reap``
+        (mistaken TUI reaper).  Explicit conversation boundaries such as
+        ``compression``, ``session_reset``, ``session_switch``, etc. are
+        preserved — the first writer wins for those, and a later expiry
+        finalization must not silently overwrite them.
+
+        Plain ``end_session()`` is NOT sufficient for reset boundaries: it
+        no-ops on an already-ended row, so a row that agent cleanup already
+        closed as ``agent_close`` would stay recoverable and stale-route
+        recovery would resurrect the reset session with its full history
+        (#61220, #61993, #63539).
+
+        Keep this promotion set in sync with the recoverable set in
+        ``find_latest_gateway_session_for_peer`` — any reason recovery would
+        reopen must be promotable here.
+
+        ``reason`` lets reset paths keep their auditable specific reasons
+        (``idle``, ``daily``, ``suspended``, ``resume_pending_expired``).
+
+        Returns ``True`` when the row was promoted, ``False`` when skipped
+        (already has a different explicit end_reason, or row not found).
+        """
+        if not session_id:
+            return False
+        now = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET ended_at = ?, end_reason = ? "
+                "WHERE id = ? AND (ended_at IS NULL "
+                "OR end_reason IN ('agent_close', 'ws_orphan_reap'))",
+                (now, reason, session_id),
+            )
+            return cursor.rowcount
+
+        try:
+            rows = self._execute_write(_do)
+            return bool(rows)
+        except Exception:
+            return False
 
     def update_session_cwd(
         self, session_id: str, cwd: str, git_branch: str = None, git_repo_root: str = None
@@ -2786,6 +2929,7 @@ class SessionDB:
         cost_status: Optional[str],
         cost_source: Optional[str],
         api_call_count: int,
+        task: str = "",
     ) -> None:
         """Accumulate a per-API-call usage delta into session_model_usage.
 
@@ -2794,6 +2938,11 @@ class SessionDB:
         When the caller omits the model/provider (some paths only pass token
         deltas), fall back to the values already recorded on the session row —
         the same COALESCE-from-session behaviour the summary update uses.
+
+        ``task`` distinguishes what kind of work consumed the tokens:
+        ``''`` (empty) is the main agent loop; auxiliary calls record their
+        task name (``vision``, ``compression``, ``title_generation``, ...)
+        via :meth:`record_auxiliary_usage` (issue #23270).
         """
         row = conn.execute(
             "SELECT model, billing_provider, billing_base_url, billing_mode "
@@ -2805,20 +2954,30 @@ class SessionDB:
         sess_base_url = row["billing_base_url"] if row is not None else None
         sess_billing_mode = row["billing_mode"] if row is not None else None
 
-        eff_model = model or sess_model or "unknown"
-        eff_provider = billing_provider or sess_provider or ""
-        eff_base_url = billing_base_url or sess_base_url or ""
-        eff_billing_mode = billing_mode or sess_billing_mode or ""
+        # Aux-task rows (task != '') must NOT inherit the session's main-loop
+        # route: an aux call may use a completely different provider/model
+        # (vision on gemini while the main loop runs anthropic). Missing info
+        # stays 'unknown'/empty rather than borrowing a misleading route.
+        if task:
+            eff_model = model or "unknown"
+            eff_provider = billing_provider or ""
+            eff_base_url = billing_base_url or ""
+            eff_billing_mode = billing_mode or ""
+        else:
+            eff_model = model or sess_model or "unknown"
+            eff_provider = billing_provider or sess_provider or ""
+            eff_base_url = billing_base_url or sess_base_url or ""
+            eff_billing_mode = billing_mode or sess_billing_mode or ""
         now = time.time()
         conn.execute(
             """INSERT INTO session_model_usage (
                    session_id, model, billing_provider, billing_base_url, billing_mode,
-                   api_call_count, input_tokens, output_tokens,
+                   task, api_call_count, input_tokens, output_tokens,
                    cache_read_tokens, cache_write_tokens, reasoning_tokens,
                    estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
                    first_seen, last_seen
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode)
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode, task)
                DO UPDATE SET
                    api_call_count = api_call_count + excluded.api_call_count,
                    input_tokens = input_tokens + excluded.input_tokens,
@@ -2837,6 +2996,7 @@ class SessionDB:
                 eff_provider,
                 eff_base_url,
                 eff_billing_mode,
+                task or "",
                 api_call_count or 0,
                 input_tokens or 0,
                 output_tokens or 0,
@@ -2862,6 +3022,65 @@ class SessionDB:
         """Ensure a session row exists (INSERT OR IGNORE). Accepts optional kwargs."""
         self._insert_session_row(session_id, source, model=model, **kwargs)
         return session_id
+
+    def record_auxiliary_usage(
+        self,
+        session_id: str,
+        task: str,
+        *,
+        model: Optional[str] = None,
+        billing_provider: Optional[str] = None,
+        billing_base_url: Optional[str] = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        estimated_cost_usd: Optional[float] = None,
+    ) -> None:
+        """Record an auxiliary LLM call's usage against *session_id* (issue #23270).
+
+        Auxiliary calls (vision, compression, title_generation, web_extract,
+        session_search, ...) historically discarded their usage, leaving the
+        dashboard's per-model analytics blind to aux model spend. This writes
+        a per-(model, provider, task) delta into ``session_model_usage`` —
+        the same table the main loop's ``update_token_counts`` feeds — WITHOUT
+        touching the ``sessions`` summary row. That separation is deliberate:
+        the gateway overwrites session counters with absolute main-loop totals,
+        so folding aux tokens into the summary row would either be clobbered
+        or double-counted. Insights/analytics read the union of both.
+
+        Best-effort by contract: callers must never fail an aux call because
+        accounting failed.
+        """
+        if not session_id or not task:
+            return
+        # FK on session_model_usage.session_id → sessions.id: ensure the row
+        # exists (same INSERT OR IGNORE guard update_token_counts uses — the
+        # initial create_session() can fail under concurrent SQLite locking).
+        self._insert_session_row(session_id, "unknown")
+
+        def _do(conn):
+            self._record_model_usage(
+                conn,
+                session_id,
+                model=model,
+                billing_provider=billing_provider,
+                billing_base_url=billing_base_url,
+                billing_mode=None,
+                input_tokens=input_tokens or 0,
+                output_tokens=output_tokens or 0,
+                cache_read_tokens=cache_read_tokens or 0,
+                cache_write_tokens=cache_write_tokens or 0,
+                reasoning_tokens=reasoning_tokens or 0,
+                estimated_cost_usd=estimated_cost_usd,
+                actual_cost_usd=None,
+                cost_status=None,
+                cost_source=None,
+                api_call_count=1,
+                task=task,
+            )
+        self._execute_write(_do)
 
     def prune_empty_ghost_sessions(self, sessions_dir: "Optional[Path]" = None) -> int:
         """Remove empty TUI ghost sessions (no messages, no title, >24hr old)."""
@@ -3052,16 +3271,24 @@ class SessionDB:
         ).fetchone()
         return row is not None
 
-    def set_session_title(self, session_id: str, title: str) -> bool:
-        """Set or update a session's title.
-
-        Returns True if session was found and title was set.
-        Raises ValueError if title is already in use by another session,
-        or if the title fails validation (too long, invalid characters).
-        Empty/whitespace-only strings are normalized to None (clearing the title).
-        """
+    def _set_session_title(
+        self,
+        session_id: str,
+        title: str,
+        *,
+        only_if_empty: bool,
+    ) -> bool:
         title = self.sanitize_title(title)
+
         def _do(conn):
+            if only_if_empty:
+                current = conn.execute(
+                    "SELECT title FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
+                if current is None or current["title"] is not None:
+                    return 0
+
             if title:
                 # Check uniqueness (allow the same session to keep its own title)
                 cursor = conn.execute(
@@ -3093,13 +3320,34 @@ class SessionDB:
                         raise ValueError(
                             f"Title '{title}' is already in use by session {conflict_id}"
                         )
+            predicate = " AND title IS NULL" if only_if_empty else ""
             cursor = conn.execute(
-                "UPDATE sessions SET title = ? WHERE id = ?",
+                f"UPDATE sessions SET title = ? WHERE id = ?{predicate}",
                 (title, session_id),
             )
             return cursor.rowcount
+
         rowcount = self._execute_write(_do)
         return rowcount > 0
+
+    def set_session_title(self, session_id: str, title: str) -> bool:
+        """Set or update a session's title.
+
+        Returns True if session was found and title was set.
+        Raises ValueError if title is already in use by another session,
+        or if the title fails validation (too long, invalid characters).
+        Empty/whitespace-only strings are normalized to None (clearing the title).
+        """
+        return self._set_session_title(session_id, title, only_if_empty=False)
+
+    def set_auto_title_if_empty(self, session_id: str, title: str) -> bool:
+        """Set an auto-generated title only when the current title is NULL.
+
+        The predicate and write run in one transaction so a concurrent manual
+        rename cannot be overwritten. Validation and uniqueness behavior match
+        :meth:`set_session_title`.
+        """
+        return self._set_session_title(session_id, title, only_if_empty=True)
 
     def get_session_title(self, session_id: str) -> Optional[str]:
         """Get the title for a session, or None."""
@@ -4438,6 +4686,7 @@ class SessionDB:
         session_id: str,
         include_ancestors: bool = False,
         include_inactive: bool = False,
+        repair_alternation: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -4446,6 +4695,16 @@ class SessionDB:
         By default only active messages are returned. Pass
         ``include_inactive=True`` to load soft-deleted (rewound) rows
         as well. See :meth:`rewind_to_message`.
+
+        ``repair_alternation=True`` runs ``repair_message_sequence`` over the
+        loaded list before returning it. Callers that restore a session for
+        LIVE REPLAY should pass it: a durable alternation violation (e.g. a
+        ``user;user`` pair left by a turn that persisted no assistant row)
+        otherwise re-triggers the pre-request defensive repair on every
+        single request for the rest of the session's life — the repair
+        mutates only the per-request list, never the stored transcript.
+        Inspection/export consumers keep the default and see the transcript
+        verbatim.
         """
         session_ids = [session_id]
         if include_ancestors:
@@ -4542,7 +4801,36 @@ class SessionDB:
         # assistant reply immediately following it, so a polluted session
         # resumes clean even if stray rows exist.
         messages = _strip_background_review_harness(messages)
+        if repair_alternation and messages:
+            # Lazy import: hermes_state already depends on agent.* (see
+            # sanitize_context above), but keep this optional path from
+            # widening the import surface at module load.
+            from agent.agent_runtime_helpers import repair_message_sequence
+
+            repaired = repair_message_sequence(None, messages)
+            if repaired:
+                logger.info(
+                    "Repaired %d message-alternation violation(s) while "
+                    "restoring session %s — durable transcript kept them, "
+                    "see repair_message_sequence",
+                    repaired,
+                    session_id,
+                )
         return messages
+
+    def get_conversation_root(self, session_id: str) -> str:
+        """Return the ROOT id of *session_id*'s lineage chain.
+
+        The root is the stable "conversation id": context compression
+        rotates ``session_id`` to a new segment linked via
+        ``parent_session_id``, and delegate subagents hang off their
+        parent the same way. Walking to the root gives every segment of
+        one user-facing conversation (and its delegation tree) a single
+        identifier — used for Nous Portal ``conversation=`` usage tagging.
+        Returns *session_id* unchanged when it has no recorded parent.
+        """
+        chain = self._session_lineage_root_to_tip(session_id)
+        return (chain[0] if chain and chain[0] else session_id)
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
         if not session_id:
@@ -6984,6 +7272,37 @@ class SessionDB:
                         "FTS optimize failed for %s: %s", tbl, exc
                     )
         return optimized
+
+    def rebuild_fts(self) -> int:
+        """Rebuild FTS5 indexes from the canonical ``messages`` table.
+
+        Uses the FTS5 ``'rebuild'`` command, which rewrites the internal
+        b-tree segments from the content rows. This is the documented
+        recovery for a corrupt FTS index that rejects message writes while
+        reads still succeed (issue #50502). Unlike ``optimize_fts`` (which
+        merges existing segments), ``rebuild`` discards and recreates the
+        index data entirely.
+
+        Safe to call when FTS tables don't exist (skips them).
+        Returns the number of FTS indexes that were rebuilt.
+        """
+        rebuilt = 0
+        with self._lock:
+            for tbl in self._FTS_TABLES:
+                if not self._fts_table_exists(tbl):
+                    continue
+                try:
+                    self._conn.execute(
+                        f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')"
+                    )
+                    self._conn.commit()
+                    rebuilt += 1
+                except sqlite3.OperationalError as exc:
+                    self._conn.rollback()
+                    logger.warning(
+                        "FTS rebuild failed for %s: %s", tbl, exc
+                    )
+        return rebuilt
 
     def vacuum(self) -> int:
         """Run VACUUM to reclaim disk space after large deletes.

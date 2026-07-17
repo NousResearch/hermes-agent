@@ -4384,10 +4384,41 @@ def _resolve_auto(
         resolved_provider = main_provider
         explicit_base_url = runtime_base_url or None
         explicit_api_key = None
-        if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
+        if runtime_base_url and main_provider == "custom":
+            # Anonymous custom endpoint (OPENAI_BASE_URL / config.model.base_url)
+            # — pass through with explicit base_url + api_key.
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
+        elif main_provider.startswith("custom:"):
+            # Named custom provider (custom_providers / providers dict entry).
+            _has_named_entry = False
+            try:
+                from hermes_cli.runtime_provider import _get_named_custom_provider
+                _has_named_entry = _get_named_custom_provider(main_provider) is not None
+            except ImportError:
+                pass
+            if _has_named_entry:
+                # KEEP the full ``custom:<name>`` so resolve_provider_client
+                # lands in the named-custom-provider arm — that arm honours the
+                # entry's api_mode (e.g. anthropic_messages →
+                # AnthropicAuxiliaryClient, avoiding the /anthropic→/v1 rewrite
+                # that 404s against proxies like Palantir Foundry's Anthropic
+                # surface).  Do NOT collapse to plain "custom"; that path
+                # strips /anthropic and routes through OpenAI chat.completions.
+                # base_url and api_key come from the named entry itself, so
+                # leave the explicit_* overrides unset.
+                resolved_provider = main_provider
+                explicit_base_url = None
+            elif runtime_base_url:
+                # Config-less named custom provider (#34777): the entry only
+                # exists in the live runtime, so collapse to the anonymous
+                # custom arm with the runtime endpoint + key.
+                resolved_provider = "custom"
+                explicit_base_url = runtime_base_url
+                explicit_api_key = runtime_api_key or None
+            elif runtime_api_key:
+                explicit_api_key = runtime_api_key
         elif runtime_api_key:
             # Pin auxiliary to the same api_key as the active main chat session
             # so that a working key is reused instead of re-selecting from the pool
@@ -6626,7 +6657,12 @@ def _build_call_kwargs(
     return kwargs
 
 
-def _validate_llm_response(response: Any, task: str = None) -> Any:
+def _validate_llm_response(
+    response: Any,
+    task: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> Any:
     """Validate that an LLM response has the expected .choices[0].message shape.
 
     Fails fast with a clear error instead of letting malformed payloads
@@ -6634,11 +6670,21 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
     AttributeError (e.g. "'str' object has no attribute 'choices'").
 
     See #7264.
+
+    Also the single accounting chokepoint for auxiliary usage: every
+    successful non-streaming aux response passes through here exactly once,
+    so token usage is recorded against the ambient session context published
+    by the agent loop (``agent.aux_accounting``, issue #23270). Recording is
+    best-effort and never affects validation. *provider*/*base_url* are
+    optional accounting hints — fallback-path calls omit them and the row
+    keeps the model (read from the response itself) with an empty route.
     """
     if response is None:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
+    from agent.aux_accounting import record_aux_usage
+    record_aux_usage(response, task, provider=provider, base_url=base_url)
     # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
     # AnthropicAuxiliaryClient) — they have .choices[0].message.
     try:
@@ -6905,7 +6951,8 @@ def call_llm(
         # for the transient retry every auxiliary task shares. (PR #16587)
         try:
             return _validate_llm_response(
-                client.chat.completions.create(**kwargs), task)
+                client.chat.completions.create(**kwargs), task,
+                provider=resolved_provider, base_url=_base_info)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -7484,7 +7531,8 @@ async def async_call_llm(
         # for the rationale. (PR #16587)
         try:
             return _validate_llm_response(
-                await client.chat.completions.create(**kwargs), task)
+                await client.chat.completions.create(**kwargs), task,
+                provider=resolved_provider, base_url=_client_base)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise

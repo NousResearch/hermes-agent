@@ -330,19 +330,64 @@ class GatewaySlashCommandsMixin:
         return EphemeralReply(f"{header}{_tip_line}")
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
-        """Handle /profile — show active profile name and home directory."""
+        """Handle /profile [name] — show active profile or switch to a named profile.
+
+        Without arguments: shows the active profile name and home directory.
+        With a name: switches the active profile, closes the current session
+        (to preserve prompt-cache integrity), and instructs the user to start
+        a new session with /new.
+        """
         from hermes_constants import display_hermes_home
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_cli.profiles import get_active_profile_name, set_active_profile, profile_exists
+
+        args = event.get_command_args().strip()
+
+        # No argument — show current profile
+        if not args:
+            display = display_hermes_home()
+            profile_name = get_active_profile_name()
+            lines = [
+                t("gateway.profile.header", profile=profile_name),
+                t("gateway.profile.home", home=display),
+            ]
+            return "\n".join(lines)
+
+        # Switch profile
+        target_profile = args.lower()
+
+        if not profile_exists(target_profile) and target_profile != "default":
+            return (
+                f"❌ Profile `{target_profile}` does not exist.\n"
+                f"Create it with: `hermes profile create {target_profile}`"
+            )
+
+        current_profile = get_active_profile_name()
+        if target_profile == current_profile:
+            return f"✅ Already on profile `{target_profile}`."
+
+        try:
+            set_active_profile(target_profile)
+        except (ValueError, FileNotFoundError) as e:
+            return f"❌ Failed to switch profile: {e}"
+
+        # Close the current session to preserve prompt-cache integrity.
+        # A mid-conversation profile switch would invalidate the cached
+        # system prompt and tool schemas, breaking the per-conversation
+        # cache contract. The user starts fresh with /new on the new profile.
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        current_entry = await self.async_session_store.get_or_create_session(source)
+        await self.async_session_store.end_session(session_key, reason="profile_switch")
+        self._clear_session_boundary_security_state(session_key)
+        self._evict_cached_agent(session_key)
 
         display = display_hermes_home()
-        profile_name = get_active_profile_name()
-
-        lines = [
-            t("gateway.profile.header", profile=profile_name),
-            t("gateway.profile.home", home=display),
-        ]
-
-        return "\n".join(lines)
+        return (
+            f"✅ Switched from `{current_profile}` to `{target_profile}`.\n"
+            f"📁 Home: `{display}`\n\n"
+            f"⚠️ Current session closed to preserve cache integrity.\n"
+            f"Start a new session with `/new` to continue on `{target_profile}`."
+        )
 
     async def _handle_whoami_command(self, event: MessageEvent) -> str:
         """Handle /whoami — show the user's slash command access on this scope.

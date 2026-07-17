@@ -316,3 +316,79 @@ def test_clear_session_boundary_security_state_wakes_blocked_approvals():
     assert other_entry.result is None
     assert session_key not in approval_mod._gateway_queues
     assert other_key in approval_mod._gateway_queues
+
+
+@pytest.mark.asyncio
+async def test_profile_command_no_args_shows_current_profile():
+    """`/profile` without arguments should display the active profile."""
+    runner, _session_key = _make_branch_runner()
+    result = await runner._handle_profile_command(_make_event("/profile"))
+    assert "Active profile" in result or "Profile" in result
+
+
+@pytest.mark.asyncio
+async def test_profile_command_switch_closes_session():
+    """`/profile <name>` should switch the active profile and close the
+    current session to preserve cache integrity."""
+    from hermes_cli.profiles import get_active_profile_name
+
+    runner, session_key = _make_branch_runner()
+    runner.session_store.get_or_create_session.return_value = _make_entry("old-session", _make_source())
+
+    # Mock profile_exists to return True for "rental"
+    import hermes_cli.profiles as profiles_mod
+    original_exists = profiles_mod.profile_exists
+    original_set = profiles_mod.set_active_profile
+    profiles_mod.profile_exists = lambda name: name == "rental"
+    profiles_mod.set_active_profile = lambda name: None
+
+    try:
+        result = await runner._handle_profile_command(_make_event("/profile rental"))
+
+        assert "Switched from" in result
+        assert "rental" in result
+        assert "session closed" in result.lower()
+        assert "/new" in result
+
+        # Session should be ended
+        runner.session_store.end_session.assert_called_once()
+        call_args = runner.session_store.end_session.call_args
+        assert call_args[0][0] == session_key
+        assert call_args[1].get("reason") == "profile_switch"
+    finally:
+        profiles_mod.profile_exists = original_exists
+        profiles_mod.set_active_profile = original_set
+
+
+@pytest.mark.asyncio
+async def test_profile_command_switch_to_same_profile_is_noop():
+    """`/profile <same-name>` should be a no-op."""
+    runner, _session_key = _make_branch_runner()
+
+    import hermes_cli.profiles as profiles_mod
+    original_get = profiles_mod.get_active_profile_name
+    profiles_mod.get_active_profile_name = lambda: "default"
+
+    try:
+        result = await runner._handle_profile_command(_make_event("/profile default"))
+        assert "Already on profile" in result
+        runner.session_store.end_session.assert_not_called()
+    finally:
+        profiles_mod.get_active_profile_name = original_get
+
+
+@pytest.mark.asyncio
+async def test_profile_command_nonexistent_profile_returns_error():
+    """`/profile <nonexistent>` should return an error without switching."""
+    runner, _session_key = _make_branch_runner()
+
+    import hermes_cli.profiles as profiles_mod
+    original_exists = profiles_mod.profile_exists
+    profiles_mod.profile_exists = lambda name: False
+
+    try:
+        result = await runner._handle_profile_command(_make_event("/profile nonexistent"))
+        assert "does not exist" in result
+        runner.session_store.end_session.assert_not_called()
+    finally:
+        profiles_mod.profile_exists = original_exists

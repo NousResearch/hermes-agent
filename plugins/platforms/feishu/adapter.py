@@ -85,45 +85,35 @@ try:
 except ImportError:
     websockets = None  # type: ignore[assignment]
 
-try:
-    import lark_oapi as lark
-    from lark_oapi.api.application.v6 import GetApplicationRequest
-    from lark_oapi.api.im.v1 import (
-        CreateFileRequest,
-        CreateFileRequestBody,
-        CreateImageRequest,
-        CreateImageRequestBody,
-        CreateMessageRequest,
-        CreateMessageRequestBody,
-        GetChatRequest,
-        GetMessageRequest,
-        GetMessageResourceRequest,
-        P2ImMessageMessageReadV1,
-        ReplyMessageRequest,
-        ReplyMessageRequestBody,
-        UpdateMessageRequest,
-        UpdateMessageRequestBody,
-    )
-    from lark_oapi.core import AccessTokenType, HttpMethod
-    from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
-    from lark_oapi.core.model import BaseRequest
-    from lark_oapi.event.callback.model.p2_card_action_trigger import (
-        CallBackCard,
-        P2CardActionTriggerResponse,
-    )
-    from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
-    from lark_oapi.ws import Client as FeishuWSClient
-
-    FEISHU_AVAILABLE = True
-except ImportError:
-    FEISHU_AVAILABLE = False
-    lark = None  # type: ignore[assignment]
-    CallBackCard = None  # type: ignore[assignment]
-    P2CardActionTriggerResponse = None  # type: ignore[assignment]
-    EventDispatcherHandler = None  # type: ignore[assignment]
-    FeishuWSClient = None  # type: ignore[assignment]
-    FEISHU_DOMAIN = None  # type: ignore[assignment]
-    LARK_DOMAIN = None  # type: ignore[assignment]
+# lark_oapi takes a noticeable amount of time to import.  Keep the gateway
+# configuration path responsive by importing it only when Feishu connects.
+lark = None  # type: ignore[assignment]
+GetApplicationRequest = None  # type: ignore[assignment]
+CreateFileRequest = None  # type: ignore[assignment]
+CreateFileRequestBody = None  # type: ignore[assignment]
+CreateImageRequest = None  # type: ignore[assignment]
+CreateImageRequestBody = None  # type: ignore[assignment]
+CreateMessageRequest = None  # type: ignore[assignment]
+CreateMessageRequestBody = None  # type: ignore[assignment]
+GetChatRequest = None  # type: ignore[assignment]
+GetMessageRequest = None  # type: ignore[assignment]
+GetMessageResourceRequest = None  # type: ignore[assignment]
+P2ImMessageMessageReadV1 = None  # type: ignore[assignment]
+ReplyMessageRequest = None  # type: ignore[assignment]
+ReplyMessageRequestBody = None  # type: ignore[assignment]
+UpdateMessageRequest = None  # type: ignore[assignment]
+UpdateMessageRequestBody = None  # type: ignore[assignment]
+AccessTokenType = None  # type: ignore[assignment]
+HttpMethod = None  # type: ignore[assignment]
+FEISHU_DOMAIN = None  # type: ignore[assignment]
+LARK_DOMAIN = None  # type: ignore[assignment]
+BaseRequest = None  # type: ignore[assignment]
+CallBackCard = None  # type: ignore[assignment]
+P2CardActionTriggerResponse = None  # type: ignore[assignment]
+EventDispatcherHandler = None  # type: ignore[assignment]
+FeishuWSClient = None  # type: ignore[assignment]
+FEISHU_AVAILABLE = False
+_lark_import_lock = threading.Lock()
 
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
@@ -1358,36 +1348,38 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         adapter._ws_thread_loop = None
 
 
-def check_feishu_requirements() -> bool:
-    """Check if Feishu/Lark dependencies are available.
-
-    Lazy-installs lark-oapi via ``tools.lazy_deps.ensure("platform.feishu")``
-    on first call if not present. Rebinds all module-level globals on success.
-    """
+def _load_lark_oapi() -> bool:
+    """Import and bind the Feishu SDK after an explicit connection request."""
     if FEISHU_AVAILABLE:
         return True
 
-    def _import():
-        import lark_oapi as lark
-        from lark_oapi.api.application.v6 import GetApplicationRequest
-        from lark_oapi.api.im.v1 import (
-            CreateFileRequest, CreateFileRequestBody,
-            CreateImageRequest, CreateImageRequestBody,
-            CreateMessageRequest, CreateMessageRequestBody,
-            GetChatRequest, GetMessageRequest, GetMessageResourceRequest,
-            P2ImMessageMessageReadV1,
-            ReplyMessageRequest, ReplyMessageRequestBody,
-            UpdateMessageRequest, UpdateMessageRequestBody,
-        )
-        from lark_oapi.core import AccessTokenType, HttpMethod
-        from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
-        from lark_oapi.core.model import BaseRequest
-        from lark_oapi.event.callback.model.p2_card_action_trigger import (
-            CallBackCard, P2CardActionTriggerResponse,
-        )
-        from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
-        from lark_oapi.ws import Client as FeishuWSClient
-        return {
+    with _lark_import_lock:
+        if FEISHU_AVAILABLE:
+            return True
+        try:
+            import lark_oapi as lark
+            from lark_oapi.api.application.v6 import GetApplicationRequest
+            from lark_oapi.api.im.v1 import (
+                CreateFileRequest, CreateFileRequestBody,
+                CreateImageRequest, CreateImageRequestBody,
+                CreateMessageRequest, CreateMessageRequestBody,
+                GetChatRequest, GetMessageRequest, GetMessageResourceRequest,
+                P2ImMessageMessageReadV1,
+                ReplyMessageRequest, ReplyMessageRequestBody,
+                UpdateMessageRequest, UpdateMessageRequestBody,
+            )
+            from lark_oapi.core import AccessTokenType, HttpMethod
+            from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
+            from lark_oapi.core.model import BaseRequest
+            from lark_oapi.event.callback.model.p2_card_action_trigger import (
+                CallBackCard, P2CardActionTriggerResponse,
+            )
+            from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
+            from lark_oapi.ws import Client as FeishuWSClient
+        except ImportError:
+            return False
+
+        globals().update({
             "lark": lark,
             "GetApplicationRequest": GetApplicationRequest,
             "CreateFileRequest": CreateFileRequest,
@@ -1414,10 +1406,22 @@ def check_feishu_requirements() -> bool:
             "EventDispatcherHandler": EventDispatcherHandler,
             "FeishuWSClient": FeishuWSClient,
             "FEISHU_AVAILABLE": True,
-        }
+        })
+        return True
 
-    from tools.lazy_deps import ensure_and_bind
-    return ensure_and_bind("platform.feishu", _import, globals(), prompt=False)
+
+def check_feishu_requirements() -> bool:
+    """Ensure Feishu dependencies are installed without importing the SDK."""
+    if FEISHU_AVAILABLE:
+        return True
+
+    from tools.lazy_deps import ensure
+
+    try:
+        ensure("platform.feishu", prompt=False)
+        return True
+    except Exception:
+        return False
 
 
 class FeishuAdapter(BasePlatformAdapter):
@@ -1715,9 +1719,6 @@ class FeishuAdapter(BasePlatformAdapter):
         # A fresh connect (or reconnect) re-arms the SDK executor after a prior
         # disconnect set the closing flag.
         self._sdk_executor_closing = False
-        if not FEISHU_AVAILABLE:
-            logger.error("[Feishu] lark-oapi not installed")
-            return False
         if not self._app_id or not self._app_secret:
             logger.error("[Feishu] FEISHU_APP_ID or FEISHU_APP_SECRET not set")
             return False
@@ -1731,6 +1732,9 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error(
                 "[Feishu] Webhook mode requires FEISHU_VERIFICATION_TOKEN or FEISHU_ENCRYPT_KEY."
             )
+            return False
+        if not await asyncio.to_thread(_load_lark_oapi):
+            logger.error("[Feishu] lark-oapi not installed")
             return False
 
         try:
@@ -5417,7 +5421,7 @@ async def _standalone_send(
     FeishuAdapter, hydrates its lark client, and sends text + native media
     (images, video, voice, documents). Replaces the legacy _send_feishu helper.
     """
-    if not FEISHU_AVAILABLE:
+    if not await asyncio.to_thread(_load_lark_oapi):
         return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
 
     media_files = media_files or []

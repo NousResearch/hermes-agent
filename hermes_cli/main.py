@@ -2003,6 +2003,39 @@ def _resolve_tui_heap_mb(default_mb: int = 8192) -> int:
     return max(1536, sized) if limit_mb > 2048 else sized
 
 
+def _safe_tui_cwd(env: Optional[dict] = None) -> str:
+    """Return a stable cwd value for the Node TUI child environment."""
+    try:
+        return os.getcwd()
+    except FileNotFoundError:
+        candidate = ((env or {}).get("PWD") or os.environ.get("PWD") or "").strip()
+        if candidate and Path(candidate).is_dir():
+            return candidate
+        return str(PROJECT_ROOT)
+
+
+def _apply_tui_python_env(env: dict) -> None:
+    """Seed/repair Python-related env vars shared by CLI and dashboard TUI launches."""
+    src_root = str(env.get("HERMES_PYTHON_SRC_ROOT") or "").strip()
+    if not src_root or not Path(src_root).is_dir():
+        env["HERMES_PYTHON_SRC_ROOT"] = str(PROJECT_ROOT)
+
+    cwd = str(env.get("HERMES_CWD") or "").strip()
+    if not cwd or not Path(cwd).is_dir():
+        env["HERMES_CWD"] = _safe_tui_cwd(env)
+
+    python = str(env.get("HERMES_PYTHON") or "").strip()
+    if os.path.dirname(python):
+        python_path = Path(python)
+        if not python_path.is_absolute():
+            python_path = Path(env["HERMES_CWD"]) / python_path
+        python_is_executable = python_path.is_file() and os.access(python_path, os.X_OK)
+    else:
+        python_is_executable = bool(shutil.which(python, path=env.get("PATH")))
+    if not python_is_executable:
+        env["HERMES_PYTHON"] = sys.executable
+
+
 def _launch_tui(
     resume_session_id: Optional[str] = None,
     tui_dev: bool = False,
@@ -2036,11 +2069,6 @@ def _launch_tui(
     )
     os.close(active_session_fd)
     env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
-    env["HERMES_PYTHON_SRC_ROOT"] = os.environ.get(
-        "HERMES_PYTHON_SRC_ROOT", str(PROJECT_ROOT)
-    )
-    env.setdefault("HERMES_PYTHON", sys.executable)
-    env.setdefault("HERMES_CWD", os.getcwd())
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
 
     wt_info = None
@@ -2064,6 +2092,8 @@ def _launch_tui(
             sys.exit(1)
         env["HERMES_CWD"] = wt_info["path"]
         env["TERMINAL_CWD"] = wt_info["path"]
+
+    _apply_tui_python_env(env)
 
     if model:
         env["HERMES_MODEL"] = model

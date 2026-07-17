@@ -7104,6 +7104,106 @@ class TestPtyWebSocket:
 
         assert env["COLORTERM"] == "24bit"
 
+    def test_resolve_chat_argv_sets_tui_python_environment(self, monkeypatch):
+        """Dashboard chat gives the Node TUI the same Python env as CLI launches."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.delenv("HERMES_PYTHON_SRC_ROOT", raising=False)
+        monkeypatch.delenv("HERMES_PYTHON", raising=False)
+        monkeypatch.delenv("HERMES_CWD", raising=False)
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env is not None
+        assert env["HERMES_PYTHON_SRC_ROOT"] == str(main_mod.PROJECT_ROOT)
+        assert env["HERMES_PYTHON"] == sys.executable
+        assert env["HERMES_CWD"] == os.getcwd()
+
+    def test_resolve_chat_argv_replaces_invalid_tui_python_environment(self, monkeypatch):
+        """Dashboard chat does not preserve unusable inherited TUI Python env."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setenv("HERMES_PYTHON_SRC_ROOT", "/definitely/missing/hermes-src")
+        monkeypatch.setenv("HERMES_PYTHON", "/definitely/missing/python")
+        monkeypatch.setenv("HERMES_CWD", "/definitely/missing/cwd")
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env is not None
+        assert env["HERMES_PYTHON_SRC_ROOT"] == str(main_mod.PROJECT_ROOT)
+        assert env["HERMES_PYTHON"] == sys.executable
+        assert env["HERMES_CWD"] == os.getcwd()
+
+    def test_resolve_chat_argv_keeps_relative_python_under_tui_cwd(
+        self, monkeypatch, tmp_path
+    ):
+        """Relative Python paths are resolved from the TUI child's cwd."""
+        import hermes_cli.main as main_mod
+
+        relative_python = Path(".review-venv") / "bin" / Path(sys.executable).name
+        python_path = tmp_path / relative_python
+        python_path.parent.mkdir(parents=True)
+        os.link(sys.executable, python_path)
+        monkeypatch.setenv("HERMES_CWD", str(tmp_path))
+        monkeypatch.setenv("HERMES_PYTHON", str(relative_python))
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env is not None
+        assert env["HERMES_PYTHON"] == str(relative_python)
+
+    def test_tui_python_command_uses_child_path(self, tmp_path):
+        """Bare Python commands are resolved from the TUI child's PATH."""
+        import hermes_cli.main as main_mod
+
+        command = f"hermes-review-python{Path(sys.executable).suffix}"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        executable = bin_dir / command
+        os.link(sys.executable, executable)
+        env = {
+            "HERMES_CWD": str(tmp_path),
+            "HERMES_PYTHON": command,
+            "PATH": str(bin_dir),
+        }
+
+        main_mod._apply_tui_python_env(env)
+
+        assert env["HERMES_PYTHON"] == command
+
+    def test_resolve_chat_argv_falls_back_when_getcwd_is_missing(self, monkeypatch, tmp_path):
+        """Dashboard chat still starts if the service cwd was deleted."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.delenv("HERMES_CWD", raising=False)
+        monkeypatch.setenv("PWD", str(tmp_path))
+        monkeypatch.setattr(main_mod.os, "getcwd", lambda: (_ for _ in ()).throw(FileNotFoundError()))
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env is not None
+        assert env["HERMES_CWD"] == str(tmp_path)
+
     def test_resolve_chat_argv_applies_terminal_backend_config(
         self, monkeypatch, _isolate_hermes_home
     ):

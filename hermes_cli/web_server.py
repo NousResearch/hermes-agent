@@ -61,6 +61,7 @@ from hermes_cli.config import (
     get_config_path,
     get_env_path,
     get_hermes_home,
+    require_readable_config_before_write,
     load_config,
     load_env,
     read_raw_config,
@@ -2215,6 +2216,23 @@ async def fs_read_text(path: str):
     }
 
 
+def _fs_config_write_guard_target(target: Path) -> Path | None:
+    try:
+        resolved = target.resolve(strict=False)
+        config_path = get_config_path().resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+    if resolved == config_path:
+        return config_path
+    try:
+        rel = resolved.relative_to(get_hermes_home().resolve(strict=False))
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if len(rel.parts) == 3 and rel.parts[0] == "profiles" and rel.parts[2] == "config.yaml":
+        return resolved
+    return None
+
+
 class FsWriteText(BaseModel):
     path: str
     content: str
@@ -2236,6 +2254,13 @@ async def fs_write_text(payload: FsWriteText):
     text = payload.content or ""
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
+
+    guard_target = _fs_config_write_guard_target(target)
+    if guard_target is not None:
+        try:
+            require_readable_config_before_write(guard_target)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     try:
         st: Optional[os.stat_result] = target.stat()

@@ -174,6 +174,57 @@ def test_fs_default_cwd_falls_back_when_terminal_cwd_is_invalid(client, tmp_path
     assert response.json() == {"cwd": str(fallback), "branch": ""}
 
 
+def test_fs_write_text_checks_existing_root_config_readability(client, tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("model:\n  provider: openrouter\n")
+
+    calls = []
+
+    def fail_if_called(path=None):
+        calls.append(path)
+        raise RuntimeError("existing config.yaml cannot be read")
+
+    monkeypatch.setattr(web_server, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(
+        web_server, "require_readable_config_before_write", fail_if_called, raising=False
+    )
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(config_path), "content": "model:\n  provider: x\n"},
+    )
+
+    assert response.status_code == 403
+    assert calls == [config_path]
+    assert config_path.read_text() == "model:\n  provider: openrouter\n"
+
+
+def test_fs_write_text_checks_existing_profile_config_readability(client, tmp_path, monkeypatch):
+    profile_config = tmp_path / "profiles" / "work" / "config.yaml"
+    profile_config.parent.mkdir(parents=True)
+    profile_config.write_text("model:\n  provider: openrouter\n")
+
+    calls = []
+
+    def fail_if_called(path=None):
+        calls.append(path)
+        raise RuntimeError("existing config.yaml cannot be read")
+
+    monkeypatch.setattr(web_server, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        web_server, "require_readable_config_before_write", fail_if_called, raising=False
+    )
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(profile_config), "content": "model:\n  provider: x\n"},
+    )
+
+    assert response.status_code == 403
+    assert calls == [profile_config]
+    assert profile_config.read_text() == "model:\n  provider: openrouter\n"
+
+
 def test_fs_endpoints_require_auth(tmp_path):
     client = TestClient(web_server.app)
     target = tmp_path / "secret.txt"

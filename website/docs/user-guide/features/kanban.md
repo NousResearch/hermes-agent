@@ -69,6 +69,18 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
 - **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
 
+## Board and Flow views
+
+The dashboard offers two views over the same canonical tasks and `task_links` data. **Board** keeps the status-column workflow; **Flow** renders linked tasks as read-only dependency graphs without creating a second graph model or changing task links.
+
+![Kanban dependency Flow view](/img/kanban-flow/flow-view.png)
+
+Flow layouts are deterministic and board-scoped. Use the layout control to switch between balanced horizontal, balanced vertical, and compact presets; changing the presentation never changes task dependencies.
+
+Each connected workflow can also be archived from its overflow menu. Hermes previews the complete server-derived scope, requires confirmation, handles active workers safely, and records enough provenance to restore the workflow later.
+
+![Archive a linked Kanban workflow](/img/kanban-flow/archive-workflow.png)
+
 ## Boards (multi-project)
 
 Boards let you separate unrelated streams of work — one per project, repo,

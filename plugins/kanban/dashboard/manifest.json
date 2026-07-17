@@ -1,9 +1,9 @@
 {
   "name": "kanban",
   "label": "Kanban",
-  "description": "Multi-agent collaboration board — drag-drop cards across columns, read comment threads, see which profile is running what",
+  "description": "Multi-agent collaboration board with dependency Flow view, workflow archive and restore, drag-drop cards, comments, and live worker status",
   "icon": "Package",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "tab": {
     "path": "/kanban",
     "position": "after:skills"

@@ -504,6 +504,17 @@
   // Root page
   // -------------------------------------------------------------------------
 
+  function beginLayoutSettingsRequest(currentBoardRef, requestIdRef) {
+    const requestBoard = currentBoardRef.current;
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    return { requestBoard, requestId };
+  }
+
+  function isCurrentLayoutSettingsRequest(currentBoardRef, requestIdRef, requestBoard, requestId) {
+    return currentBoardRef.current === requestBoard && requestIdRef.current === requestId;
+  }
+
   function KanbanPage() {
     const { t } = useI18n();
     const [board, setBoard] = useState(() => readSelectedBoard() || null);
@@ -530,8 +541,22 @@
     const [search, setSearch] = useState("");
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
+    const [viewMode, setViewMode] = useState("board");
+    const [layoutPreset, setLayoutPreset] = useState("balanced-horizontal");
+    const [layoutSettingsState, setLayoutSettingsState] = useState("loading");
+    const currentBoardRef = useRef(board);
+    const layoutRequestIdRef = useRef(0);
+    currentBoardRef.current = board;
+
+    const setCurrentBoard = useCallback(function (nextBoard) {
+      currentBoardRef.current = nextBoard;
+      layoutRequestIdRef.current += 1;
+      setBoard(nextBoard);
+    }, []);
 
     const [selectedTaskId, setSelectedTaskId] = useState(null);
+    const [workflowAction, setWorkflowAction] = useState(null);
+    const workflowActionReturnFocusRef = useRef(null);
     const [selectedIds, setSelectedIds] = useState(() => new Set());
     const [lastSelectedId, setLastSelectedId] = useState(null);
     const [failedIds, setFailedIds] = useState(() => new Set());
@@ -583,6 +608,73 @@
         .finally(function () { setLoading(false); });
     }, [tenantFilter, includeArchived, board]);
 
+    const openWorkflowAction = useCallback(function (action, island) {
+      workflowActionReturnFocusRef.current = document.activeElement;
+      setWorkflowAction({ action, island });
+    }, []);
+    const closeWorkflowAction = useCallback(function () {
+      setWorkflowAction(null);
+      requestAnimationFrame(function () {
+        const target = workflowActionReturnFocusRef.current;
+        if (target && typeof target.focus === "function" && document.contains(target)) target.focus();
+      });
+    }, []);
+
+    useEffect(function () {
+      const { requestBoard, requestId } = beginLayoutSettingsRequest(
+        currentBoardRef,
+        layoutRequestIdRef,
+      );
+      let active = true;
+      setLayoutSettingsState("loading");
+      SDK.fetchJSON(withBoard(`${API}/flow-settings`, requestBoard))
+        .then(function (settings) {
+          if (!active || !isCurrentLayoutSettingsRequest(
+            currentBoardRef, layoutRequestIdRef, requestBoard, requestId,
+          )) return;
+          setLayoutPreset(settings.layout_preset || "balanced-horizontal");
+          setLayoutSettingsState("idle");
+        })
+        .catch(function () {
+          if (!active || !isCurrentLayoutSettingsRequest(
+            currentBoardRef, layoutRequestIdRef, requestBoard, requestId,
+          )) return;
+          setLayoutPreset("balanced-horizontal");
+          setLayoutSettingsState("error");
+        });
+      return function () {
+        active = false;
+        if (isCurrentLayoutSettingsRequest(
+          currentBoardRef, layoutRequestIdRef, requestBoard, requestId,
+        )) layoutRequestIdRef.current += 1;
+      };
+    }, [board]);
+
+    const changeLayoutPreset = useCallback(function (preset) {
+      const { requestBoard, requestId } = beginLayoutSettingsRequest(
+        currentBoardRef,
+        layoutRequestIdRef,
+      );
+      setLayoutPreset(preset);
+      setLayoutSettingsState("saving");
+      SDK.fetchJSON(withBoard(`${API}/flow-settings`, requestBoard), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ layout_preset: preset }),
+      }).then(function () {
+        if (!isCurrentLayoutSettingsRequest(
+          currentBoardRef, layoutRequestIdRef, requestBoard, requestId,
+        )) return;
+        setLayoutSettingsState("saved");
+      }).catch(function (err) {
+        if (!isCurrentLayoutSettingsRequest(
+          currentBoardRef, layoutRequestIdRef, requestBoard, requestId,
+        )) return;
+        setLayoutSettingsState("error");
+        setError("Layout update failed: " + parseApiErrorMessage(err));
+      });
+    }, []);
+
     // --- load list of boards for the switcher ------------------------------
     const loadBoardList = useCallback(function () {
       return SDK.fetchJSON(withBoard(`${API}/boards`, board))
@@ -591,19 +683,19 @@
           const storedBoard = readSelectedBoard();
           setBoardList(boards);
           if (!storedBoard && !board && data && data.current) {
-            setBoard(data.current);
+            setCurrentBoard(data.current);
             return;
           }
           // If the stored slug isn't in the list any longer (board was
           // deleted in the CLI while dashboard was open), fall back to
           // default so the UI doesn't hang on a 404.
           if (board && board !== "default" && !boards.find(function (b) { return b.slug === board; })) {
-            setBoard("default");
+            setCurrentBoard("default");
             writeSelectedBoard("default");
           }
         })
         .catch(function () { /* non-fatal */ });
-    }, [board]);
+    }, [board, setCurrentBoard]);
 
     useEffect(function () { loadBoardList(); }, [loadBoardList]);
 
@@ -949,7 +1041,7 @@
       setBoardData(null);
       cursorRef.current = 0;
       setLoading(true);
-      setBoard(nextSlug);
+      setCurrentBoard(nextSlug);
       writeSelectedBoard(nextSlug);
       // Reset filters so stale search/tenant/assignee don't persist across boards.
       setSearch("");
@@ -957,7 +1049,7 @@
       setAssigneeFilter("");
       setIncludeArchived(false);
       clearSelected();
-    }, [board, clearSelected]);
+    }, [board, clearSelected, setCurrentBoard]);
 
     const createNewBoard = useCallback(function (payload) {
       return SDK.fetchJSON(`${API}/boards`, {
@@ -1023,12 +1115,24 @@
     }, [selectedIds, board, loadBoard, t]);
 
     // --- render -------------------------------------------------------------
+    const layoutSettingsMessage = layoutSettingsState === "loading" ? "Loading layout…"
+      : layoutSettingsState === "saving" ? "Saving layout…"
+      : layoutSettingsState === "saved" ? "Layout saved"
+      : layoutSettingsState === "error" ? "Layout setting failed"
+      : "";
+    const layoutSettingsStatus = h("div", {
+      className: "hermes-kanban-graph-layout-status",
+      role: "status",
+      "aria-live": "polite",
+      "aria-atomic": "true",
+    }, layoutSettingsMessage);
+    let pageContent = null;
+
     if (loading && !boardData) {
-      return h("div", { className: "p-8 text-sm text-muted-foreground" },
+      pageContent = h("div", { className: "p-8 text-sm text-muted-foreground" },
         tx(t, "loading", "Loading Kanban board…"));
-    }
-    if (error && !boardData) {
-      return h(Card, null,
+    } else if (error && !boardData) {
+      pageContent = h(Card, null,
         h(CardContent, { className: "p-6" },
           h("div", { className: "text-sm text-destructive" },
             tx(t, "loadFailed", "Failed to load Kanban board: "), error),
@@ -1037,13 +1141,9 @@
               "The backend auto-creates kanban.db on first read. If this persists, check the dashboard logs.")),
         ),
       );
-    }
-    if (!filteredBoard) return null;
-
-    const renderMd = !config || config.render_markdown !== false;
-
-    return h(ErrorBoundary, null,
-      h("div", { className: "hermes-kanban flex flex-col gap-4" },
+    } else if (filteredBoard) {
+      const renderMd = !config || config.render_markdown !== false;
+      pageContent = h(React.Fragment, null,
         h(BoardSwitcher, {
           board: board,
           boardList: boardList,
@@ -1078,6 +1178,7 @@
           includeArchived, setIncludeArchived,
           laneByProfile, setLaneByProfile,
           search, setSearch,
+          viewMode, setViewMode,
           onNudgeDispatch: function () {
             SDK.fetchJSON(withBoard(`${API}/dispatch?max=8`, board), { method: "POST" })
               .then(loadBoard)
@@ -1085,16 +1186,26 @@
           },
           onRefresh: loadBoard,
         }),
-       selectedIds.size > 0 ? h(BulkActionBar, {
-         count: selectedIds.size,
-         assignees: (boardData && boardData.assignees) || [],
-         onApply: applyBulk,
-         onClear: clearSelected,
-         onSelectAllVisible: selectAllVisible,
-         onDelete: deleteSelected,
-       }) : null,
+        selectedIds.size > 0 ? h(BulkActionBar, {
+          count: selectedIds.size,
+          assignees: (boardData && boardData.assignees) || [],
+          onApply: applyBulk,
+          onClear: clearSelected,
+          onSelectAllVisible: selectAllVisible,
+          onDelete: deleteSelected,
+        }) : null,
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
-        h(BoardColumns, {
+        viewMode === "flow" ? h(TaskGraphView, {
+          board: boardData,
+          matchingBoard: filteredBoard,
+          highlightMatches: !!search.trim() || !!assigneeFilter,
+          onOpen: setSelectedTaskId,
+          layoutPreset,
+          onLayoutPresetChange: changeLayoutPreset,
+          focusTaskId: selectedTaskId,
+          layoutSettingsState,
+          onWorkflowAction: openWorkflowAction,
+        }) : h(BoardColumns, {
           board: filteredBoard,
           boardMeta: boardList.find(function (item) { return item.slug === board; }) || null,
           laneByProfile,
@@ -1124,6 +1235,22 @@
           assignees: (boardData && boardData.assignees) || [],
           eventTick: taskEventTick[selectedTaskId] || 0,
         }) : null,
+        workflowAction ? h(WorkflowArchiveDialog, {
+          action: workflowAction.action,
+          island: workflowAction.island,
+          boardSlug: board,
+          onClose: closeWorkflowAction,
+          onComplete: function () {
+            Promise.all([loadBoard(), loadBoardList()]).finally(closeWorkflowAction);
+          },
+        }) : null,
+      );
+    }
+
+    return h(ErrorBoundary, null,
+      h("div", { className: "hermes-kanban flex flex-col gap-4" },
+        layoutSettingsStatus,
+        pageContent,
       ),
     );
   }
@@ -2224,6 +2351,24 @@
         tx(t, "lanesByProfile", "Lanes by profile"),
       ),
       h("div", { className: "flex-1" }),
+      h("div", {
+        className: "hermes-kanban-view-toggle",
+        role: "group",
+        "aria-label": "Board view",
+      },
+        h("button", {
+          type: "button",
+          className: props.viewMode === "board" ? "is-active" : "",
+          "aria-pressed": props.viewMode === "board",
+          onClick: function () { props.setViewMode("board"); },
+        }, "Board"),
+        h("button", {
+          type: "button",
+          className: props.viewMode === "flow" ? "is-active" : "",
+          "aria-pressed": props.viewMode === "flow",
+          onClick: function () { props.setViewMode("flow"); },
+        }, "Flow"),
+      ),
       h(Button, {
         onClick: props.onNudgeDispatch,
         size: "sm",
@@ -2244,6 +2389,843 @@
         size: "sm",
         title: "Clear all active filters (search, tenant, assignee, archived).",
       }, tx(t, "clearFilters", "Clear filters")),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Flow view — a read-only dependency projection of the same board snapshot.
+  // The graph deliberately does not mutate links or task positions. Clicking a
+  // node opens the existing TaskDrawer through KanbanPage's shared selection.
+  // -------------------------------------------------------------------------
+
+  const GRAPH_NODE_W = 260;
+  const GRAPH_NODE_H = 116;
+  const GRAPH_PRESETS = {
+    "balanced-horizontal": { direction: "horizontal", rankGap: 88, laneGap: 34 },
+    "balanced-vertical": { direction: "vertical", rankGap: 72, laneGap: 34 },
+    compact: { direction: "horizontal", rankGap: 52, laneGap: 18 },
+  };
+
+  function mean(values) {
+    return values.length
+      ? values.reduce(function (sum, value) { return sum + value; }, 0) / values.length
+      : 0;
+  }
+
+  function stableTaskCompare(byId, a, b) {
+    const at = byId.get(a);
+    const bt = byId.get(b);
+    return (bt.priority || 0) - (at.priority || 0) || a.localeCompare(b);
+  }
+
+  function resolveCrossAxis(items, targetById, itemSize, gap) {
+    const ordered = items.slice().sort(function (a, b) {
+      return (targetById.get(a) - targetById.get(b)) || a.localeCompare(b);
+    });
+    const placed = new Map();
+    let edge = 0;
+    ordered.forEach(function (id) {
+      const desired = targetById.get(id) - itemSize / 2;
+      const position = Math.max(edge, desired);
+      placed.set(id, position);
+      edge = position + itemSize + gap;
+    });
+    if (ordered.length > 0) {
+      const desiredMean = mean(ordered.map(function (id) { return targetById.get(id); }));
+      const actualMean = mean(ordered.map(function (id) { return placed.get(id) + itemSize / 2; }));
+      const shift = Math.min(0, desiredMean - actualMean);
+      if (shift < 0) {
+        ordered.forEach(function (id) { placed.set(id, placed.get(id) + shift); });
+      }
+      const minimum = Math.min(...ordered.map(function (id) { return placed.get(id); }));
+      if (minimum < 0) {
+        ordered.forEach(function (id) { placed.set(id, placed.get(id) - minimum); });
+      }
+    }
+    return placed;
+  }
+
+  function reconcileCrossAxis(laneRanks, lanes, parents, children, crossPosition, itemSize, gap) {
+    const constraints = [];
+    laneRanks.forEach(function (laneRank) {
+      lanes.get(laneRank).forEach(function (id) {
+        const parentIds = parents.get(id) || [];
+        const childIds = children.get(id) || [];
+        if (parentIds.length > 1) constraints.push({ id, neighborIds: parentIds });
+        if (childIds.length > 1) constraints.push({ id, neighborIds: childIds });
+      });
+    });
+    if (constraints.length === 0) return;
+
+    const centers = new Map();
+    crossPosition.forEach(function (position, id) {
+      centers.set(id, position + itemSize / 2);
+    });
+    const laneOrders = laneRanks.map(function (laneRank) {
+      return lanes.get(laneRank).slice().sort(function (a, b) {
+        return (centers.get(a) - centers.get(b)) || a.localeCompare(b);
+      });
+    });
+    const separation = itemSize + gap;
+
+    for (let iteration = 0; iteration < 64; iteration += 1) {
+      constraints.forEach(function (constraint) {
+        const residual = centers.get(constraint.id) - mean(constraint.neighborIds.map(function (id) {
+          return centers.get(id);
+        }));
+        const neighborCount = constraint.neighborIds.length;
+        centers.set(
+          constraint.id,
+          centers.get(constraint.id) - residual * neighborCount / (neighborCount + 1),
+        );
+        constraint.neighborIds.forEach(function (id) {
+          centers.set(id, centers.get(id) + residual / (neighborCount + 1));
+        });
+      });
+      laneOrders.forEach(function (ordered) {
+        for (let index = 1; index < ordered.length; index += 1) {
+          const before = ordered[index - 1];
+          const after = ordered[index];
+          const overlap = separation - (centers.get(after) - centers.get(before));
+          if (overlap > 0) {
+            centers.set(before, centers.get(before) - overlap / 2);
+            centers.set(after, centers.get(after) + overlap / 2);
+          }
+        }
+      });
+    }
+
+    laneOrders.forEach(function (ordered) {
+      const centerBefore = mean(ordered.map(function (id) { return centers.get(id); }));
+      const finalSeparation = separation + 1e-9;
+      for (let index = 1; index < ordered.length; index += 1) {
+        const before = ordered[index - 1];
+        const after = ordered[index];
+        centers.set(after, Math.max(centers.get(after), centers.get(before) + finalSeparation));
+      }
+      const centerAfter = mean(ordered.map(function (id) { return centers.get(id); }));
+      const recenter = centerBefore - centerAfter;
+      ordered.forEach(function (id) {
+        centers.set(id, centers.get(id) + recenter);
+      });
+    });
+
+    let minimum = Infinity;
+    centers.forEach(function (value) { minimum = Math.min(minimum, value - itemSize / 2); });
+    const shift = minimum < 0 ? -minimum : 0;
+    centers.forEach(function (value, id) {
+      crossPosition.set(id, value - itemSize / 2 + shift);
+    });
+  }
+
+  const GRAPH_STATUS_LABELS = {
+    triage: "Triage",
+    todo: "Todo",
+    scheduled: "Scheduled",
+    ready: "Ready",
+    running: "In progress",
+    blocked: "Blocked",
+    review: "Review",
+    done: "Done",
+    archived: "Archived",
+  };
+
+  function graphCountLabel(count, singular, plural) {
+    return count + " " + (count === 1 ? singular : (plural || singular + "s"));
+  }
+
+  function flattenGraphTasks(board) {
+    const out = [];
+    for (const column of (board && board.columns) || []) {
+      for (const task of column.tasks || []) out.push(task);
+    }
+    return out;
+  }
+
+  function connectedGraphComponents(tasks, links) {
+    const ids = new Set(tasks.map(function (task) { return task.id; }));
+    const neighbors = new Map();
+    for (const id of ids) neighbors.set(id, []);
+    for (const link of links) {
+      if (!ids.has(link.parent_id) || !ids.has(link.child_id)) continue;
+      neighbors.get(link.parent_id).push(link.child_id);
+      neighbors.get(link.child_id).push(link.parent_id);
+    }
+    const components = [];
+    const seen = new Set();
+    for (const task of tasks) {
+      if (seen.has(task.id)) continue;
+      const queue = [task.id];
+      const component = [];
+      seen.add(task.id);
+      while (queue.length > 0) {
+        const id = queue.shift();
+        component.push(id);
+        for (const next of neighbors.get(id) || []) {
+          if (!seen.has(next)) { seen.add(next); queue.push(next); }
+        }
+      }
+      components.push(component);
+    }
+    const linked = components.filter(function (component) {
+      return component.length > 1 || links.some(function (link) {
+        return link.parent_id === component[0] || link.child_id === component[0];
+      });
+    });
+    const unlinked = components.filter(function (component) {
+      return component.length === 1 && !links.some(function (link) {
+        return link.parent_id === component[0] || link.child_id === component[0];
+      });
+    }).flat();
+    if (unlinked.length > 0) linked.push(unlinked);
+    return linked;
+  }
+
+  function graphComponentLabel(componentTasks, componentIndex, isUnlinked) {
+    if (isUnlinked) return "Unlinked tasks";
+    const tenants = Array.from(new Set(componentTasks.map(function (task) {
+      return task.tenant || "";
+    }).filter(Boolean)));
+    if (tenants.length === 1) return tenants[0];
+    const root = componentTasks.find(function (task) {
+      return !task.parent_task_id;
+    });
+    if (root && root.title) return root.title;
+    return "Workflow " + (componentIndex + 1);
+  }
+
+  function buildTaskGraphLayout(board, matchingBoard, preset) {
+    const config = GRAPH_PRESETS[preset] || GRAPH_PRESETS["balanced-horizontal"];
+    const tasks = flattenGraphTasks(board);
+    const byId = new Map(tasks.map(function (task) { return [task.id, task]; }));
+    const boardLinks = board && Array.isArray(board.links) ? board.links : [];
+    const links = boardLinks.filter(function (link) {
+      return link !== null && typeof link === "object"
+        && Object.prototype.hasOwnProperty.call(link, "parent_id")
+        && Object.prototype.hasOwnProperty.call(link, "child_id")
+        && byId.has(link.parent_id) && byId.has(link.child_id);
+    });
+    const matchingIds = new Set(flattenGraphTasks(matchingBoard).map(function (task) {
+      return task.id;
+    }));
+    const components = connectedGraphComponents(tasks, links);
+    const nodes = [];
+    const islands = [];
+    let top = 24;
+    let graphWidth = 720;
+
+    components.forEach(function (componentIds, componentIndex) {
+      const componentSet = new Set(componentIds);
+      const componentTasks = componentIds.map(function (id) { return byId.get(id); }).filter(Boolean);
+      const componentLinks = links.filter(function (link) {
+        return componentSet.has(link.parent_id) && componentSet.has(link.child_id);
+      });
+      const isUnlinked = componentLinks.length === 0;
+      const incoming = new Map(componentIds.map(function (id) { return [id, 0]; }));
+      const parents = new Map(componentIds.map(function (id) { return [id, []]; }));
+      const children = new Map(componentIds.map(function (id) { return [id, []]; }));
+      for (const link of componentLinks) {
+        incoming.set(link.child_id, (incoming.get(link.child_id) || 0) + 1);
+        parents.get(link.child_id).push(link.parent_id);
+        children.get(link.parent_id).push(link.child_id);
+      }
+      componentIds.forEach(function (id) {
+        parents.get(id).sort(function (a, b) { return stableTaskCompare(byId, a, b); });
+        children.get(id).sort(function (a, b) { return stableTaskCompare(byId, a, b); });
+      });
+
+      const rank = new Map();
+      const queue = componentIds.filter(function (id) { return incoming.get(id) === 0; })
+        .sort(function (a, b) { return stableTaskCompare(byId, a, b); });
+      for (const id of queue) rank.set(id, 0);
+      let cursor = 0;
+      while (cursor < queue.length) {
+        const id = queue[cursor++];
+        const nextRank = (rank.get(id) || 0) + 1;
+        for (const childId of children.get(id) || []) {
+          rank.set(childId, Math.max(rank.get(childId) || 0, nextRank));
+          incoming.set(childId, incoming.get(childId) - 1);
+          if (incoming.get(childId) === 0) queue.push(childId);
+        }
+      }
+      let maxRank = 0;
+      for (const value of rank.values()) maxRank = Math.max(maxRank, value);
+      for (const id of componentIds) {
+        if (!rank.has(id)) rank.set(id, maxRank + 1);
+      }
+      maxRank = 0;
+      for (const value of rank.values()) maxRank = Math.max(maxRank, value);
+
+      const lanes = new Map();
+      for (const id of componentIds) {
+        const value = isUnlinked ? 0 : rank.get(id);
+        if (!lanes.has(value)) lanes.set(value, []);
+        lanes.get(value).push(id);
+      }
+      const laneRanks = Array.from(lanes.keys()).sort(function (a, b) { return a - b; });
+      laneRanks.forEach(function (laneRank) {
+        lanes.get(laneRank).sort(function (a, b) { return stableTaskCompare(byId, a, b); });
+      });
+
+      const crossNodeSize = config.direction === "horizontal" ? GRAPH_NODE_H : GRAPH_NODE_W;
+      const crossPosition = new Map();
+      laneRanks.forEach(function (laneRank) {
+        lanes.get(laneRank).forEach(function (id, laneIndex) {
+          crossPosition.set(id, laneIndex * (crossNodeSize + config.laneGap));
+        });
+      });
+
+      function sweepLane(laneIds, neighborsById) {
+        const targetById = new Map();
+        laneIds.forEach(function (id) {
+          const neighborIds = neighborsById.get(id) || [];
+          const desiredCenter = neighborIds.length
+            ? mean(neighborIds.map(function (neighborId) {
+              return crossPosition.get(neighborId) + crossNodeSize / 2;
+            }))
+            : crossPosition.get(id) + crossNodeSize / 2;
+          targetById.set(id, desiredCenter);
+        });
+        const placed = resolveCrossAxis(laneIds, targetById, crossNodeSize, config.laneGap);
+        laneIds.forEach(function (id) { crossPosition.set(id, placed.get(id)); });
+      }
+
+      for (let iteration = 0; iteration < 4; iteration += 1) {
+        laneRanks.forEach(function (laneRank) {
+          sweepLane(lanes.get(laneRank), parents);
+        });
+        laneRanks.slice().reverse().forEach(function (laneRank) {
+          sweepLane(lanes.get(laneRank), children);
+        });
+      }
+      reconcileCrossAxis(
+        laneRanks,
+        lanes,
+        parents,
+        children,
+        crossPosition,
+        crossNodeSize,
+        config.laneGap,
+      );
+
+      let contentWidth = 0;
+      let contentHeight = 0;
+      const componentNodes = [];
+      laneRanks.forEach(function (laneRank) {
+        lanes.get(laneRank).forEach(function (id) {
+          const localX = config.direction === "horizontal"
+            ? laneRank * (GRAPH_NODE_W + config.rankGap)
+            : crossPosition.get(id);
+          const localY = config.direction === "horizontal"
+            ? crossPosition.get(id)
+            : laneRank * (GRAPH_NODE_H + config.rankGap);
+          contentWidth = Math.max(contentWidth, localX + GRAPH_NODE_W);
+          contentHeight = Math.max(contentHeight, localY + GRAPH_NODE_H);
+          componentNodes.push({ id, localX, localY });
+        });
+      });
+
+      const islandWidth = contentWidth + 56;
+      const islandHeight = contentHeight + 82;
+      const label = graphComponentLabel(componentTasks, componentIndex, isUnlinked);
+      const archiveIds = Array.from(new Set(componentTasks
+        .map(function (task) { return task.workflow_archive_id || null; })
+        .filter(Boolean)));
+      islands.push({
+        id: "island-" + componentIndex,
+        label,
+        count: componentIds.length,
+        active: componentTasks.filter(function (task) { return task.status !== "done"; }).length,
+        x: 20,
+        y: top,
+        width: islandWidth,
+        height: islandHeight,
+        isUnlinked,
+        archiveId: archiveIds.length === 1 ? archiveIds[0] : null,
+        taskIds: componentIds.slice(),
+        seedTaskId: componentIds[0],
+      });
+      componentNodes.forEach(function (componentNode) {
+        nodes.push({
+          id: componentNode.id,
+          task: byId.get(componentNode.id),
+          x: 48 + componentNode.localX,
+          y: top + 58 + componentNode.localY,
+          width: GRAPH_NODE_W,
+          height: GRAPH_NODE_H,
+          componentIndex,
+          dimmed: !!matchingBoard.__highlightMatches && !matchingIds.has(componentNode.id),
+        });
+      });
+      top += islandHeight + 28;
+      graphWidth = Math.max(graphWidth, islandWidth + 40);
+    });
+
+    const positioned = new Map(nodes.map(function (node) { return [node.id, node]; }));
+    const edges = links.map(function (link) {
+      const source = positioned.get(link.parent_id);
+      const target = positioned.get(link.child_id);
+      if (!source || !target) return null;
+      if (config.direction === "vertical") {
+        const sx = source.x + source.width / 2;
+        const sy = source.y + source.height;
+        const tx = target.x + target.width / 2;
+        const ty = target.y;
+        const middle = sy + Math.max(36, (ty - sy) / 2);
+        return {
+          id: link.parent_id + "->" + link.child_id,
+          source: source.task,
+          target: target.task,
+          d: "M " + sx + " " + sy + " C " + sx + " " + middle + ", " + tx + " " + middle + ", " + tx + " " + ty,
+        };
+      }
+      const sx = source.x + source.width;
+      const sy = source.y + source.height / 2;
+      const tx = target.x;
+      const ty = target.y + target.height / 2;
+      const middle = sx + Math.max(36, (tx - sx) / 2);
+      return {
+        id: link.parent_id + "->" + link.child_id,
+        source: source.task,
+        target: target.task,
+        d: "M " + sx + " " + sy + " C " + middle + " " + sy + ", " + middle + " " + ty + ", " + tx + " " + ty,
+      };
+    }).filter(Boolean);
+
+    return {
+      nodes,
+      edges,
+      islands,
+      width: graphWidth,
+      height: Math.max(480, top),
+      componentCount: components.length,
+    };
+  }
+
+  function GraphTaskNode(props) {
+    const task = props.node.task;
+    const status = task.status || "todo";
+    const progress = task.progress;
+    return h("button", {
+      type: "button",
+      className: cn(
+        "hermes-kanban-graph-node",
+        "hermes-kanban-graph-node--" + status,
+        props.node.dimmed ? "is-dimmed" : "",
+      ),
+      style: { left: props.node.x, top: props.node.y },
+      onClick: function () { props.onOpen(task.id); },
+    },
+      h("span", { className: "hermes-kanban-sr-only" }, "Open task details: "),
+      h("div", { className: "hermes-kanban-graph-node-head" },
+        h("span", { className: "hermes-kanban-graph-state" },
+          h("span", { className: "hermes-kanban-dot hermes-kanban-dot-" + status }),
+          GRAPH_STATUS_LABELS[status] || status,
+        ),
+        h("code", null, task.id),
+      ),
+      h("div", { className: "hermes-kanban-graph-node-title" }, task.title || "(untitled)"),
+      task.blocked_reason
+        ? h("div", { className: "hermes-kanban-graph-node-reason" }, task.blocked_reason)
+        : null,
+      h("div", { className: "hermes-kanban-graph-node-meta" },
+        h("span", null, task.assignee ? "@" + task.assignee : "unassigned"),
+        task.tenant ? h("span", null, task.tenant) : null,
+        progress ? h("span", null, progress.done + "/" + progress.total) : null,
+        task.comment_count ? h("span", null, graphCountLabel(task.comment_count, "comment")) : null,
+      ),
+    );
+  }
+
+  function workflowIslandAction(island) {
+    if (!island || island.isUnlinked) return null;
+    return island.archiveId ? "restore" : "archive";
+  }
+
+  function workflowArchiveCanSubmit(preview, busy, acknowledged) {
+    return !!preview && !busy && acknowledged === true;
+  }
+
+  function workflowArchiveCounts(preview) {
+    const counts = preview && preview.counts ? preview.counts : {};
+    return [
+      ["total", "Total"],
+      ["active", "Active"],
+      ["running", "Running"],
+      ["review", "Review"],
+      ["done", "Done"],
+      ["archived", "Archived"],
+    ].filter(function (item) {
+      return item[0] === "total" || Number(counts[item[0]] || 0) > 0;
+    }).map(function (item) {
+      return { key: item[0], label: item[1], value: Number(counts[item[0]] || 0) };
+    });
+  }
+
+  function WorkflowArchiveDialog(props) {
+    const isArchive = props.action === "archive";
+    const [preview, setPreview] = useState(isArchive ? null : {
+      counts: { total: props.island.count },
+      task_ids: props.island.taskIds,
+      label: props.island.label,
+    });
+    const [loading, setLoading] = useState(isArchive);
+    const [busy, setBusy] = useState(false);
+    const [acknowledged, setAcknowledged] = useState(false);
+    const [error, setDialogError] = useState(null);
+    const [activity, setActivity] = useState(isArchive ? "Loading workflow scope…" : "Ready to restore workflow");
+    const cancelRef = useRef(null);
+
+    const loadPreview = useCallback(function () {
+      if (!isArchive) return Promise.resolve();
+      setLoading(true);
+      setDialogError(null);
+      setAcknowledged(false);
+      setActivity("Loading workflow scope…");
+      return SDK.fetchJSON(withBoard(`${API}/workflow-groups/preview`, props.boardSlug), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          seed_task_id: props.island.seedTaskId,
+          visible_task_ids: props.island.taskIds,
+        }),
+      }).then(function (data) {
+        setPreview(data);
+        setActivity("Workflow scope loaded");
+      }).catch(function (err) {
+        const message = parseApiErrorMessage(err);
+        setPreview(null);
+        setDialogError(message);
+        setActivity("Workflow preview failed");
+      }).finally(function () { setLoading(false); });
+    }, [isArchive, props.boardSlug, props.island.seedTaskId, props.island.taskIds]);
+
+    useEffect(function () {
+      let active = true;
+      if (isArchive) {
+        loadPreview().catch(function () {});
+      }
+      const timer = requestAnimationFrame(function () {
+        if (active && cancelRef.current) cancelRef.current.focus();
+      });
+      const onKeyDown = function (event) {
+        if (event.key === "Escape" && !busy) props.onClose();
+      };
+      document.addEventListener("keydown", onKeyDown);
+      return function () {
+        active = false;
+        cancelAnimationFrame(timer);
+        document.removeEventListener("keydown", onKeyDown);
+      };
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const submit = function () {
+      if (!workflowArchiveCanSubmit(preview, busy, acknowledged)) return;
+      setBusy(true);
+      setDialogError(null);
+      setActivity(isArchive ? "Archiving workflow…" : "Restoring workflow…");
+      const url = isArchive
+        ? `${API}/workflow-groups/archive`
+        : `${API}/workflow-groups/${encodeURIComponent(props.island.archiveId)}/restore`;
+      const options = { method: "POST" };
+      if (isArchive) {
+        options.headers = { "Content-Type": "application/json" };
+        options.body = JSON.stringify({
+          board: preview.board,
+          seed_task_id: preview.seed_task_id,
+          preview_id: preview.preview_id,
+          task_ids: preview.task_ids,
+        });
+      }
+      SDK.fetchJSON(withBoard(url, props.boardSlug), options).then(function (result) {
+        setActivity(isArchive ? "Workflow archived" : "Workflow restored");
+        setTimeout(function () { props.onComplete(result); }, 350);
+      }).catch(function (err) {
+        setDialogError(parseApiErrorMessage(err));
+        setActivity(isArchive ? "Archive failed" : "Restore failed");
+        setBusy(false);
+      });
+    };
+
+    const counts = workflowArchiveCounts(preview);
+    const runningCount = preview && preview.counts ? Number(preview.counts.running || 0) : 0;
+    const title = isArchive ? "Archive workflow" : "Restore workflow";
+    return h("div", {
+      className: "hermes-kanban-workflow-dialog-shade",
+      onMouseDown: function (event) {
+        if (event.target === event.currentTarget && !busy) props.onClose();
+      },
+    },
+      h("section", {
+        className: "hermes-kanban-workflow-dialog",
+        role: "dialog",
+        "aria-modal": "true",
+        "aria-labelledby": "hermes-kanban-workflow-dialog-title",
+      },
+        h("div", { className: "hermes-kanban-workflow-dialog-head" },
+          h("div", null,
+            h("h2", { id: "hermes-kanban-workflow-dialog-title" }, title),
+            h("p", null, props.island.label),
+          ),
+          h("button", {
+            type: "button",
+            onClick: props.onClose,
+            disabled: busy,
+            "aria-label": "Close workflow dialog",
+          }, "×"),
+        ),
+        loading ? h("p", { className: "hermes-kanban-workflow-dialog-loading" }, "Loading canonical workflow scope…") : null,
+        counts.length ? h("dl", { className: "hermes-kanban-workflow-counts" },
+          counts.map(function (item) {
+            return h("div", { key: item.key },
+              h("dt", null, item.label),
+              h("dd", null, item.value),
+            );
+          }),
+        ) : null,
+        preview && preview.hidden_count > 0 ? h("p", { className: "hermes-kanban-workflow-warning" },
+          preview.hidden_count + " task(s) are hidden by current filters but are included in this workflow.") : null,
+        isArchive && runningCount > 0 ? h("p", { className: "hermes-kanban-workflow-warning" },
+          runningCount + " running worker(s) will be terminated before any task status changes.") : null,
+        !isArchive ? h("p", { className: "hermes-kanban-workflow-warning" },
+          "Restored running tasks return to Todo or Ready. Workers are not restarted.") : null,
+        error ? h("div", { className: "hermes-kanban-workflow-error", role: "alert" }, error) : null,
+        error && isArchive ? h("button", {
+          type: "button",
+          className: "hermes-kanban-workflow-refresh",
+          onClick: loadPreview,
+          disabled: loading || busy,
+        }, "Refresh preview") : null,
+        h("label", { className: "hermes-kanban-workflow-confirm" },
+          h("input", {
+            type: "checkbox",
+            checked: acknowledged,
+            disabled: loading || busy || !preview,
+            onChange: function (event) { setAcknowledged(event.target.checked); },
+          }),
+          isArchive
+            ? "I understand this archives the complete linked workflow and may stop active workers."
+            : "I understand this restores the complete archived workflow without restarting workers.",
+        ),
+        h("div", {
+          className: "hermes-kanban-workflow-activity",
+          role: "status",
+          "aria-live": "polite",
+          "aria-atomic": "true",
+          "aria-label": "Workflow archive activity",
+        }, activity),
+        h("div", { className: "hermes-kanban-workflow-dialog-actions" },
+          h("button", { type: "button", ref: cancelRef, onClick: props.onClose, disabled: busy }, "Cancel"),
+          h("button", {
+            type: "button",
+            className: isArchive ? "is-destructive" : "is-primary",
+            onClick: submit,
+            disabled: !workflowArchiveCanSubmit(preview, busy, acknowledged),
+          }, busy ? (isArchive ? "Archiving…" : "Restoring…") : title),
+        ),
+      ),
+    );
+  }
+
+  function TaskGraphView(props) {
+    const [scale, setScale] = useState(0.82);
+    const viewportRef = useRef(null);
+    const dragRef = useRef(null);
+    const layout = useMemo(function () {
+      const matchingBoard = Object.assign({}, props.matchingBoard, {
+        __highlightMatches: !!props.highlightMatches,
+      });
+      return buildTaskGraphLayout(props.board, matchingBoard, props.layoutPreset);
+    }, [props.board, props.matchingBoard, props.highlightMatches, props.layoutPreset]);
+
+    useEffect(function () {
+      const viewport = viewportRef.current;
+      if (!viewport) return;
+      const focus = layout.nodes.find(function (node) { return node.id === props.focusTaskId; })
+        || layout.nodes[0];
+      if (!focus) return;
+      const timer = requestAnimationFrame(function () {
+        const left = Math.max(0, (focus.x + focus.width / 2) * scale - viewport.clientWidth / 2);
+        const top = Math.max(0, (focus.y + focus.height / 2) * scale - viewport.clientHeight / 2);
+        viewport.scrollTo({ left, top, behavior: "smooth" });
+      });
+      return function () { cancelAnimationFrame(timer); };
+    }, [props.layoutPreset]);
+
+    const clampScale = function (value) {
+      return Math.max(0.35, Math.min(1.25, Math.round(value * 100) / 100));
+    };
+    const updateScale = function (value) { setScale(clampScale(value)); };
+    const fitView = function () {
+      const viewport = viewportRef.current;
+      if (!viewport) return;
+      updateScale((viewport.clientWidth - 48) / layout.width);
+      viewport.scrollTo({ left: 0, top: 0, behavior: "smooth" });
+    };
+    const startPan = function (event) {
+      if (event.button !== 0 || event.target.closest(".hermes-kanban-graph-node, .hermes-kanban-workflow-actions")) return;
+      const viewport = viewportRef.current;
+      if (!viewport) return;
+      dragRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+        left: viewport.scrollLeft,
+        top: viewport.scrollTop,
+      };
+      viewport.classList.add("is-panning");
+      viewport.setPointerCapture(event.pointerId);
+    };
+    const movePan = function (event) {
+      const drag = dragRef.current;
+      const viewport = viewportRef.current;
+      if (!drag || !viewport) return;
+      viewport.scrollLeft = drag.left - (event.clientX - drag.x);
+      viewport.scrollTop = drag.top - (event.clientY - drag.y);
+    };
+    const endPan = function () {
+      dragRef.current = null;
+      if (viewportRef.current) viewportRef.current.classList.remove("is-panning");
+    };
+
+    const isEmpty = layout.nodes.length === 0;
+
+    return h("section", {
+      className: "hermes-kanban-graph",
+      "aria-label": "Task dependency graph",
+    },
+      h("div", { className: "hermes-kanban-graph-summary" },
+        h("div", null,
+          h("strong", null, graphCountLabel(layout.nodes.length, "task")),
+          h("span", null, " across " + graphCountLabel(layout.componentCount, "workflow")),
+        ),
+        h("span", null, "Read-only dependency view · drag the canvas to pan"),
+      ),
+      isEmpty ? h("div", { className: "hermes-kanban-graph-empty" },
+        h("strong", null, "No tasks match this board scope"),
+        h("span", null, "Clear filters or create a task to start a workflow."),
+      ) : h("div", {
+        className: "hermes-kanban-graph-viewport",
+        ref: viewportRef,
+        onPointerDown: startPan,
+        onPointerMove: movePan,
+        onPointerUp: endPan,
+        onPointerCancel: endPan,
+      },
+        h("div", {
+          className: "hermes-kanban-graph-stage-shell",
+          style: { width: layout.width * scale, height: layout.height * scale },
+        },
+          h("div", {
+            className: "hermes-kanban-graph-stage",
+            style: {
+              width: layout.width,
+              height: layout.height,
+              transform: "scale(" + scale + ")",
+            },
+          },
+            layout.islands.map(function (island) {
+              const action = workflowIslandAction(island);
+              return h("div", {
+                key: island.id,
+                className: cn(
+                  "hermes-kanban-graph-island",
+                  island.archiveId ? "is-archived" : "",
+                ),
+                style: { left: island.x, top: island.y, width: island.width, height: island.height },
+              },
+                h("div", { className: "hermes-kanban-graph-island-label" },
+                  h("strong", { title: island.label }, island.label),
+                  h("div", { className: "hermes-kanban-graph-island-meta" },
+                    h("span", null, graphCountLabel(island.count, "task") + " · " + island.active + " active"),
+                    island.isUnlinked ? null : h("details", { className: "hermes-kanban-workflow-actions" },
+                      h("summary", { "aria-label": "Workflow actions for " + island.label }, "⋯"),
+                      h("div", { role: "menu" },
+                        h("button", {
+                          type: "button",
+                          role: "menuitem",
+                          onClick: function (event) {
+                            event.preventDefault();
+                            const details = event.currentTarget.closest("details");
+                            const trigger = details ? details.querySelector("summary") : null;
+                            if (details) details.removeAttribute("open");
+                            if (trigger) trigger.focus();
+                            props.onWorkflowAction(action, island);
+                          },
+                        }, action === "restore" ? "Restore workflow" : "Archive workflow"),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }),
+            h("svg", {
+              className: "hermes-kanban-graph-edges",
+              width: layout.width,
+              height: layout.height,
+              "aria-hidden": "true",
+            },
+              h("defs", null,
+                h("marker", {
+                  id: "hermes-kanban-arrow",
+                  markerWidth: 8,
+                  markerHeight: 8,
+                  refX: 7,
+                  refY: 4,
+                  orient: "auto",
+                }, h("path", { d: "M 0 0 L 8 4 L 0 8 z" })),
+              ),
+              layout.edges.map(function (edge) {
+                return h("path", {
+                  key: edge.id,
+                  className: cn(
+                    "hermes-kanban-graph-edge",
+                    edge.source.status === "done" ? "is-satisfied" : "",
+                    edge.target.status === "blocked" ? "is-blocked" : "",
+                    edge.target.status === "running" ? "is-active" : "",
+                  ),
+                  d: edge.d,
+                  markerEnd: "url(#hermes-kanban-arrow)",
+                });
+              }),
+            ),
+            layout.nodes.map(function (node) {
+              return h(GraphTaskNode, { key: node.id, node, onOpen: props.onOpen });
+            }),
+          ),
+        ),
+      ),
+      h("div", { className: "hermes-kanban-graph-controls", role: "group", "aria-label": "Graph view controls" },
+        h("label", { className: "hermes-kanban-graph-layout-control" },
+          h("span", { className: "hermes-kanban-sr-only" }, "Flow layout"),
+          h("select", {
+            value: props.layoutPreset,
+            disabled: props.layoutSettingsState === "loading" || props.layoutSettingsState === "saving",
+            onChange: function (event) {
+              props.onLayoutPresetChange(event.target.value);
+            },
+            "aria-label": "Flow layout",
+            title: "Choose how workflow ranks and branches are arranged",
+          },
+            h("option", { value: "balanced-horizontal" }, "Balanced horizontal"),
+            h("option", { value: "balanced-vertical" }, "Balanced vertical"),
+            h("option", { value: "compact" }, "Compact"),
+          ),
+        ),
+        h("button", {
+          type: "button",
+          onClick: function () { updateScale(scale - 0.1); },
+          disabled: scale <= 0.35,
+          "aria-label": "Zoom out",
+        }, "−"),
+        h("span", null, Math.round(scale * 100) + "%"),
+        h("button", {
+          type: "button",
+          onClick: function () { updateScale(scale + 0.1); },
+          disabled: scale >= 1.25,
+          "aria-label": "Zoom in",
+        }, "+"),
+        h("button", { type: "button", onClick: fitView }, "Fit"),
+      ),
     );
   }
 

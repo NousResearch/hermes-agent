@@ -1441,19 +1441,29 @@ def _skill_should_show(
 
 
 def _current_session_platform_hint() -> str:
-    """Return the active platform without importing the gateway package on CLI startup."""
-    platform = os.environ.get("HERMES_PLATFORM") or os.environ.get("HERMES_SESSION_PLATFORM")
-    if platform:
-        return platform
+    """Return the active platform without importing the gateway package on CLI startup.
 
+    Prefer the task-local session ContextVar when gateway.session_context is
+    already loaded. Process env is only a fallback for cold CLI start; reading
+    env first lets a concurrent gateway sibling's stale HERMES_SESSION_PLATFORM
+    win over this task's binding.
+    """
     session_context = sys.modules.get("gateway.session_context")
-    get_session_env = getattr(session_context, "get_session_env", None) if session_context else None
-    if get_session_env is None:
-        return ""
-    try:
-        return get_session_env("HERMES_SESSION_PLATFORM") or ""
-    except Exception:
-        return ""
+    resolve = (
+        getattr(session_context, "resolve_session_platform_hint", None)
+        if session_context
+        else None
+    )
+    if resolve is not None:
+        try:
+            return resolve() or ""
+        except Exception:
+            pass
+    return (
+        os.environ.get("HERMES_PLATFORM")
+        or os.environ.get("HERMES_SESSION_PLATFORM")
+        or ""
+    )
 
 
 def build_skills_system_prompt(

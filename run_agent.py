@@ -91,9 +91,9 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
 
 def _session_source_for_agent(platform: Optional[str]) -> str:
     try:
-        from gateway.session_context import get_session_env
+        from gateway.session_context import resolve_session_source_hint
 
-        source = get_session_env("HERMES_SESSION_SOURCE", "")
+        source = resolve_session_source_hint(default="")
     except Exception:
         source = os.environ.get("HERMES_SESSION_SOURCE", "")
     source = str(source or "").strip()

@@ -125,12 +125,9 @@ def _resolve_skill_commands_platform() -> Optional[str]:
     rollouts, standalone scripts).
     """
     try:
-        from gateway.session_context import get_session_env
+        from gateway.session_context import resolve_session_platform_hint
 
-        resolved_platform = (
-            os.getenv("HERMES_PLATFORM")
-            or get_session_env("HERMES_SESSION_PLATFORM")
-        )
+        resolved_platform = resolve_session_platform_hint()
     except Exception:
         resolved_platform = os.getenv("HERMES_PLATFORM")
     return resolved_platform or None

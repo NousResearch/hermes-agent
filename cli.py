@@ -7113,9 +7113,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if self._session_db:
                 try:
                     self.agent._session_db_created = False
+                    try:
+                        from gateway.session_context import resolve_session_source_hint
+
+                        _session_source = resolve_session_source_hint()
+                    except Exception:
+                        _session_source = os.environ.get("HERMES_SESSION_SOURCE", "cli")
                     self._session_db.create_session(
                         session_id=self.session_id,
-                        source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                        source=_session_source,
                         model=self.model,
                         model_config={
                             "max_iterations": self.max_turns,

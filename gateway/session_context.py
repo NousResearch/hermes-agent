@@ -327,6 +327,55 @@ def get_session_env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
+def resolve_session_platform_hint() -> str:
+    """Active platform for this task, ContextVar-first.
+
+    Concurrent gateway turns bind ``HERMES_SESSION_PLATFORM`` only in a
+    task-local ContextVar (``set_session_vars`` does not mirror it into
+    ``os.environ``). Call sites that read process env first pick up a
+    sibling session's stale value and mis-tag skills / provenance.
+
+    Resolution:
+    1. Task-local ``HERMES_SESSION_PLATFORM`` when bound (including empty
+       after ``clear_session_vars`` — no env fallback for SESSION_PLATFORM).
+    2. When never bound in this task: ``HERMES_PLATFORM`` then process
+       ``HERMES_SESSION_PLATFORM`` (CLI / cold start).
+    """
+    import os
+
+    var = _VAR_MAP.get("HERMES_SESSION_PLATFORM")
+    if var is not None:
+        value = var.get()
+        if value is not _UNSET:
+            if value:
+                return value
+            # Explicitly cleared for this task — do not resurrect a sibling
+            # session's process-global SESSION_PLATFORM.
+            return os.environ.get("HERMES_PLATFORM") or ""
+    return (
+        os.environ.get("HERMES_PLATFORM")
+        or os.environ.get("HERMES_SESSION_PLATFORM")
+        or ""
+    )
+
+
+def resolve_session_source_hint(default: str = "cli") -> str:
+    """Active session source for this task, ContextVar-first.
+
+    Same concurrency rule as :func:`resolve_session_platform_hint`: a
+    task-local binding wins over process env so concurrent turns cannot
+    stamp memory / session rows with a sibling source.
+    """
+    import os
+
+    var = _VAR_MAP.get("HERMES_SESSION_SOURCE")
+    if var is not None:
+        value = var.get()
+        if value is not _UNSET:
+            return value or default
+    return os.environ.get("HERMES_SESSION_SOURCE") or default
+
+
 def async_delivery_supported() -> bool:
     """Whether the current session can deliver a background completion later.
 

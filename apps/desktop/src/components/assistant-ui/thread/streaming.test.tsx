@@ -267,6 +267,7 @@ function StreamingHarness({ onControls }: { onControls?: (controls: StreamingCon
           setIsRunning(false)
         }
       })
+
       return () => window.clearTimeout(first)
     }
 
@@ -418,9 +419,11 @@ describe('assistant-ui streaming renderer', () => {
 
   it('renders assistant text incrementally before completion', async () => {
     let controls: StreamingControls | undefined
+
     const registerControls = (next: StreamingControls) => {
       controls = next
     }
+
     const { container } = render(<StreamingHarness onControls={registerControls} />)
 
     expect(screen.getByRole('status', { name: 'Hermes is loading a response' })).toBeTruthy()

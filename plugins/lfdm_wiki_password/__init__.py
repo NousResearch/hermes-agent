@@ -161,8 +161,13 @@ def _track_task(gateway: Any, task: "asyncio.Task[None]") -> None:
     task.add_done_callback(_done)
 
 
-def _on_pre_gateway_dispatch(event: Any = None, gateway: Any = None, session_store: Any = None) -> Optional[dict]:
-    del session_store
+def _on_pre_gateway_dispatch(
+    event: Any = None,
+    gateway: Any = None,
+    session_store: Any = None,
+    **kwargs: Any,
+) -> Optional[dict]:
+    del session_store, kwargs
     text = getattr(event, "text", "") or ""
     if not _is_wiki_password_request(text):
         return None

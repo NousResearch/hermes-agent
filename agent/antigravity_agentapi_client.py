@@ -16,15 +16,16 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
 
+from agent.antigravity_runtime import AntigravityRuntimeManager
+
 _DEFAULT_TITLE = "Hermes delegated task"
 _POLL_INTERVAL_SECONDS = 0.25
-_REQUIRED_ENV_VARS = ("ANTIGRAVITY_LS_ADDRESS", "ANTIGRAVITY_PROJECT_ID")
-
 # Copilot ACP defaults / print-mode flags that `agy agentapi` does not accept.
 _UNSUPPORTED_ARGS = {"--acp", "--stdio", "-p", "--print"}
 
@@ -70,12 +71,19 @@ class AntigravityAgentAPIClient:
         args: list[str] | None = None,
         cwd: str,
         env_factory: Callable[[], dict[str, str]],
+        runtime_manager: AntigravityRuntimeManager | None = None,
     ) -> None:
         self._command = command
         self._cwd = cwd
         self._env_factory = env_factory
         self._extra_args = self._clean_args(args or [])
         self._title = self._resolve_title(self._extra_args)
+        self._runtime_manager = runtime_manager or AntigravityRuntimeManager(
+            command=command,
+            cwd=cwd,
+            env_factory=env_factory,
+            platform=sys.platform,
+        )
         self._conversation_id: str | None = None
         self._conversation_lock = threading.RLock()
 
@@ -99,7 +107,7 @@ class AntigravityAgentAPIClient:
         with self._conversation_lock:
             deadline = time.monotonic() + float(timeout_seconds)
             try:
-                env = self._prepare_env()
+                env = self._prepare_env(timeout_seconds=max(_remaining_seconds(deadline), 0.01))
                 if self._conversation_id is None:
                     return self._start_conversation(prompt_text, env=env, deadline=deadline)
                 return self._continue_conversation(prompt_text, env=env, deadline=deadline)
@@ -191,18 +199,8 @@ class AntigravityAgentAPIClient:
             raise RuntimeError(f"Antigravity agentapi `{cmd[2]}` returned no response: {detail}")
         return stdout_text
 
-    def _prepare_env(self) -> dict[str, str]:
-        env = dict(self._env_factory())
-        missing = [name for name in _REQUIRED_ENV_VARS if not str(env.get(name) or "").strip()]
-        if missing:
-            raise RuntimeError(
-                "Antigravity `agy agentapi` requires "
-                + " and ".join(missing)
-                + " in the environment. Start the Antigravity CLI (which publishes the "
-                "language-server address and project id) and export those variables, or "
-                "drop the `agentapi` arg to use `agy -p` print mode instead."
-            )
-        return env
+    def _prepare_env(self, timeout_seconds: float) -> dict[str, str]:
+        return self._runtime_manager.prepare_env(timeout_seconds=timeout_seconds)
 
     # -- transcript --------------------------------------------------------
 

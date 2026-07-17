@@ -35,8 +35,10 @@ delegate_task(
 ## 3. Файлы реализации
 
 - `agent/antigravity_agentapi_client.py`
+- `agent/antigravity_runtime.py`
 - `agent/copilot_acp_client.py`
 - `tools/delegate_tool.py`
+- `tests/agent/test_antigravity_runtime.py`
 - `tests/agent/test_antigravity_agentapi_transport.py`
 - `tests/agent/test_copilot_acp_client.py`
 
@@ -63,56 +65,40 @@ git cherry-pick 194c2143a
 
 Минимум:
 
-- рабочий Hermes checkout и его Python 3.11 venv
-- установленный и авторизованный `agy`
-- запущенный локальный Antigravity service/language server
-- `agy` доступен в PATH процесса Hermes
+- рабочий Hermes checkout и его Python 3.11 venv;
+- установленный и авторизованный `agy`;
+- `agy` доступен в PATH процесса Hermes;
+- пакет `winpty`, доступный в Hermes venv на Windows.
 
-Для stateful agentapi обязательны:
+`ANTIGRAVITY_PROJECT_ID` можно передать через env. При его отсутствии используется `~/.gemini/antigravity-cli/cache/default_project_id.txt`.
 
-```bash
-export ANTIGRAVITY_LS_ADDRESS='<local Antigravity service URL>'
-export ANTIGRAVITY_PROJECT_ID='<local project id>'
-```
+Не переносить и не закреплять `ANTIGRAVITY_LS_ADDRESS` как постоянное значение: HTTP-порт выбирается каждым `agy` runtime случайно. Durable runtime manager валидирует configured address, ищет живой порт в managed state/logs и при необходимости автоматически запускает detached singleton daemon через ConPTY. После gateway restart или Windows reboot первый agentapi вызов восстанавливает runtime без ручного обновления env.
 
-На Windows можно закрепить их для текущего пользователя так:
-
-```powershell
-[Environment]::SetEnvironmentVariable('ANTIGRAVITY_LS_ADDRESS','http://localhost:61727','User')
-[Environment]::SetEnvironmentVariable('ANTIGRAVITY_PROJECT_ID','default-cli-project','User')
-```
-
-На исходной машине подтверждены:
+Managed state находится в:
 
 ```text
-ANTIGRAVITY_LS_ADDRESS=http://localhost:61727
-ANTIGRAVITY_PROJECT_ID=default-cli-project
+~/.gemini/antigravity-cli/log/hermes-antigravity-runtime.json
 ```
-
-Эти значения machine-specific. Не переносить их вслепую на другой компьютер.
-
-Для Telegram/gateway запуска переменные должны присутствовать именно в окружении gateway-процесса до его старта. Экспорт в отдельном интерактивном shell не изменит уже запущенный gateway.
 
 ## 6. Targeted tests
 
 ```bash
 cd /c/Path/To/hermes-agent
 PYTHONPATH=. pytest \
+  tests/agent/test_antigravity_runtime.py \
   tests/agent/test_antigravity_agentapi_transport.py \
   tests/agent/test_copilot_acp_client.py -q
 ```
 
-Ожидаемый результат для коммита `194c2143a`:
+Подтверждённый результат для durable runtime:
 
 ```text
-24 passed
+39 passed
 ```
 
 ## 7. Direct live smoke
 
 ```bash
-export ANTIGRAVITY_LS_ADDRESS='<local URL>'
-export ANTIGRAVITY_PROJECT_ID='<local project id>'
 PYTHONPATH=. python - <<'PY'
 from agent.copilot_acp_client import CopilotACPClient
 
@@ -146,16 +132,14 @@ PY
 ## 8. Fresh Hermes delegation smoke
 
 ```bash
-export ANTIGRAVITY_LS_ADDRESS='<local URL>'
-export ANTIGRAVITY_PROJECT_ID='<local project id>'
-venv/Scripts/hermes.exe --provider openai-codex -m gpt-5.4 -t delegation -z \
-  'Call delegate_task exactly once with goal="Reply with exactly AGY_AGENTAPI_DELEGATE_OK", acp_command="agy", acp_args=["agentapi"]. Return the delegated child result verbatim.'
+venv/Scripts/hermes.exe --provider openai-codex -m gpt-5.6-sol -t delegation -z \
+  'Call delegate_task exactly once with goal="Reply with exactly AGY_DURABLE_FRESH_OK", acp_command="agy", acp_args=["agentapi"]. Return the delegated child result verbatim.'
 ```
 
 Ожидаемый stdout:
 
 ```text
-AGY_AGENTAPI_DELEGATE_OK
+AGY_DURABLE_FRESH_OK
 ```
 
 ## 9. Если agentapi недоступен
@@ -185,22 +169,20 @@ delegate_task(
 
 ## 11. Быстрый чек-лист переноса
 
-1. Cherry-pick двух коммитов: `4030c8d8a` и `194c2143a`.
-2. Задать на целевой машине:
-   - `ANTIGRAVITY_LS_ADDRESS`
-   - `ANTIGRAVITY_PROJECT_ID`
-3. Открыть новый PowerShell / перезапустить Hermes-gateway.
-4. Проверить `agy agentapi new-conversation`.
-5. Прогнать targeted tests.
+1. Перенести два базовых коммита и durable-runtime изменения.
+2. Проверить `agy --version`, локальную авторизацию и project-id cache/env.
+3. Не сохранять случайный `ANTIGRAVITY_LS_ADDRESS` как постоянную конфигурацию.
+4. Прогнать targeted tests.
+5. Перезапустить Hermes-gateway.
 6. Проверить fresh-runtime `delegate_task(..., acp_command="agy", acp_args=["agentapi"])`.
 7. Только после этого подключать transport к постоянным Telegram workflows.
 
 ## 12. Контрольный список
 
-1. Cherry-pick двух коммитов.
+1. Перенести базовые коммиты и durable-runtime изменения.
 2. Убедиться, что `agy --version` работает из того же service account/environment.
-3. Настроить два env-параметра agentapi.
-4. Перезапустить Hermes/gateway.
-5. Выполнить targeted tests.
-6. Выполнить fresh-runtime `delegate_task` smoke.
+3. Проверить `ANTIGRAVITY_PROJECT_ID` или `default_project_id.txt`.
+4. Выполнить targeted tests.
+5. Перезапустить Hermes/gateway.
+6. Выполнить fresh-runtime `delegate_task` smoke без ручного экспорта LS address.
 7. Только после этого подключать transport к постоянным Telegram workflows.

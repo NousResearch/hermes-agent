@@ -24,6 +24,7 @@ import pytest
 
 import agent.antigravity_agentapi_client as aac
 import agent.copilot_acp_client as cac
+import agent.antigravity_runtime as aar
 from agent.copilot_acp_client import CopilotACPClient
 
 CONVERSATION_ID = "e7730000-0000-4000-8000-000000000001"
@@ -150,6 +151,17 @@ def agy_home(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTIGRAVITY_PROJECT_ID", "proj-test-1234")
     # Polling must never make the suite wait on wall-clock time.
     monkeypatch.setattr(cac.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        aar,
+        "probe_antigravity_address",
+        lambda address, timeout_seconds=0.2: aar.normalize_antigravity_address(address)
+        == "http://127.0.0.1:57321",
+    )
+    monkeypatch.setattr(
+        aar,
+        "_windows_listener_is_agy",
+        lambda address, *, expected_pid=None: True,
+    )
     return home
 
 

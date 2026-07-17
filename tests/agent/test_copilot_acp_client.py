@@ -252,9 +252,16 @@ def test_agy_transport_selects_agentapi_mode_for_agentapi_args(tmp_path):
     assert client._transport_mode == "antigravity-agentapi"
 
 
-def test_agentapi_mode_requires_antigravity_env(monkeypatch, tmp_path):
+def test_agentapi_mode_reports_actionable_error_when_runtime_autostart_unavailable(
+    monkeypatch, tmp_path
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-no-profile-home"))
     monkeypatch.delenv("ANTIGRAVITY_LS_ADDRESS", raising=False)
-    monkeypatch.delenv("ANTIGRAVITY_PROJECT_ID", raising=False)
+    monkeypatch.setenv("ANTIGRAVITY_PROJECT_ID", "proj-test")
+    monkeypatch.setattr("agent.antigravity_agentapi_client.sys.platform", "linux")
 
     client = CopilotACPClient(
         api_key="copilot-acp",
@@ -264,7 +271,7 @@ def test_agentapi_mode_requires_antigravity_env(monkeypatch, tmp_path):
         acp_cwd=str(tmp_path),
     )
 
-    with pytest.raises(RuntimeError, match="ANTIGRAVITY_LS_ADDRESS"):
+    with pytest.raises(RuntimeError, match="(?i)(windows|ANTIGRAVITY_LS_ADDRESS|agy -i)"):
         client._run_prompt("hello", timeout_seconds=5)
 
 

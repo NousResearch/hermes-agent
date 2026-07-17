@@ -18,6 +18,7 @@ import argparse
 import contextlib
 import json
 import os
+import secrets
 import shlex
 import sys
 import time
@@ -81,6 +82,17 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
     }
+
+
+def _redact_claim_credentials(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: ("[redacted]" if key in {"lock", "claim_lock"} and item else _redact_claim_credentials(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_claim_credentials(item) for item in value]
+    return value
 
 
 def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
@@ -504,6 +516,23 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_unlink.add_argument("parent_id")
     p_unlink.add_argument("child_id")
 
+    p_external_contract = sub.add_parser(
+        "external-runner-contract",
+        help="Report the machine-readable external runner CLI contract",
+    )
+    p_external_contract.add_argument("--json", action="store_true")
+
+    # --- external runner lane lease ---
+    p_lane_lease = sub.add_parser(
+        "lane-lease",
+        help="Acquire, renew, or release a board-local external runner lane lease",
+    )
+    p_lane_lease.add_argument("operation", choices=("acquire", "release"))
+    p_lane_lease.add_argument("lane")
+    p_lane_lease.add_argument("--owner", required=True)
+    p_lane_lease.add_argument("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS)
+    p_lane_lease.add_argument("--json", action="store_true")
+
     # --- claim ---
     p_claim = sub.add_parser(
         "claim",
@@ -512,6 +541,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_claim.add_argument("task_id")
     p_claim.add_argument("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS,
                          help="Claim TTL in seconds (default: 900)")
+    p_claim.add_argument(
+        "--json", action="store_true",
+        help="Emit the claim, run, lease, and resolved workspace as JSON",
+    )
 
     # --- comment / complete / block / unblock / archive ---
     p_comment = sub.add_parser("comment", help="Append a comment")
@@ -550,6 +583,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+    p_complete.add_argument(
+        "--run-id", type=int, default=None,
+        help="Fence a single-task completion to this running attempt id",
+    )
+    p_complete.add_argument(
+        "--claim-lock", default=None,
+        help="Also require this live claim token; requires --run-id",
+    )
 
     p_edit = sub.add_parser(
         "edit",
@@ -578,6 +619,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_block.add_argument("--ids", nargs="+", default=None,
                          help="Additional task ids to block with the same reason (bulk mode)")
     p_block.add_argument(
+        "--run-id", type=int, default=None,
+        help="Fence a single-task block to this running attempt id",
+    )
+    p_block.add_argument(
+        "--claim-lock", default=None,
+        help="Also require this live claim token; requires --run-id",
+    )
+    p_block.add_argument(
         "--kind", default=None, choices=sorted(kb.VALID_BLOCK_KINDS),
         help=(
             "Typed block reason. 'dependency' waits in todo (auto-promoted "
@@ -593,6 +642,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_schedule.add_argument("reason", nargs="*", help="Reason/timing note (also appended as a comment)")
     p_schedule.add_argument("--ids", nargs="+", default=None,
                             help="Additional task ids to schedule with the same reason (bulk mode)")
+    p_schedule.add_argument(
+        "--run-id", type=int, default=None,
+        help="Fence a single-task schedule to this running attempt id",
+    )
+    p_schedule.add_argument(
+        "--claim-lock", default=None,
+        help="Also require this live claim token; requires --run-id",
+    )
 
     p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled tasks to ready")
     p_unblock.add_argument(
@@ -778,6 +835,19 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_hb.add_argument("task_id")
     p_hb.add_argument("--note", default=None,
                       help="Optional short note attached to the heartbeat event")
+    p_hb.add_argument(
+        "--claim-lock", default=None,
+        help="Stable claim token returned by `claim --json`; requires --run-id",
+    )
+    p_hb.add_argument(
+        "--run-id", type=int, default=None,
+        help="Running attempt id returned by `claim --json`; requires --claim-lock",
+    )
+    p_hb.add_argument(
+        "--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS,
+        help="When renewing an external claim, extend its lease by this many seconds",
+    )
+    p_hb.add_argument("--json", action="store_true", help="Emit JSON result")
 
     # --- assignees ---
     p_asg = sub.add_parser(
@@ -967,6 +1037,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "diag":     _cmd_diagnostics,
             "link":     _cmd_link,
             "unlink":   _cmd_unlink,
+            "external-runner-contract": _cmd_external_runner_contract,
+            "lane-lease": _cmd_lane_lease,
             "claim":    _cmd_claim,
             "comment":  _cmd_comment,
             "attach":   _cmd_attach,
@@ -1290,17 +1362,49 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 
 def _cmd_heartbeat(args: argparse.Namespace) -> int:
-    with kb.connect_closing() as conn:
-        ok = kb.heartbeat_worker(
-            conn,
-            args.task_id,
-            note=getattr(args, "note", None),
-            expected_run_id=_worker_run_id_for(args.task_id),
+    claim_lock = getattr(args, "claim_lock", None)
+    run_id = getattr(args, "run_id", None)
+    if (claim_lock is None) != (run_id is None):
+        print(
+            "kanban: --claim-lock and --run-id must be provided together",
+            file=sys.stderr,
         )
+        return 2
+
+    claim_expires = None
+    with kb.connect_closing() as conn:
+        if claim_lock is not None:
+            claim_expires = kb.heartbeat_external_claim(
+                conn,
+                args.task_id,
+                claim_lock=claim_lock,
+                expected_run_id=run_id,
+                ttl_seconds=getattr(args, "ttl", None),
+                note=getattr(args, "note", None),
+            )
+            ok = claim_expires is not None
+        else:
+            ok = kb.heartbeat_worker(
+                conn,
+                args.task_id,
+                note=getattr(args, "note", None),
+                expected_run_id=_worker_run_id_for(args.task_id),
+            )
     if not ok:
-        print(f"cannot heartbeat {args.task_id} (not running?)", file=sys.stderr)
+        print(
+            f"cannot heartbeat {args.task_id} (not running or claim superseded?)",
+            file=sys.stderr,
+        )
         return 1
-    print(f"Heartbeat recorded for {args.task_id}")
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "task_id": args.task_id,
+            "run_id": run_id,
+            "claim_expires": claim_expires,
+            "renewed": claim_lock is not None,
+        }, indent=2, ensure_ascii=False))
+    else:
+        print(f"Heartbeat recorded for {args.task_id}")
     return 0
 
 
@@ -1501,7 +1605,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
             "events": [
                 {
                     "kind": e.kind,
-                    "payload": e.payload,
+                    "payload": _redact_claim_credentials(e.payload),
                     "created_at": e.created_at,
                     "run_id": e.run_id,
                 }
@@ -1834,9 +1938,72 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_external_runner_contract(args: argparse.Namespace) -> int:
+    payload = {
+        "contract_version": 1,
+        "capabilities": [
+            "atomic_lane_lease",
+            "claim_json_credentials",
+            "renewable_claim_lock",
+            "fenced_terminal_transitions",
+        ],
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2))
+    else:
+        print("External runner contract v1")
+    return 0
+
+
+def _cmd_lane_lease(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        if args.operation == "acquire":
+            expires = kb.acquire_external_lane_lease(
+                conn,
+                args.lane,
+                owner=args.owner,
+                ttl_seconds=args.ttl,
+            )
+            if expires is None:
+                print(f"lane {args.lane!r} is leased by another owner", file=sys.stderr)
+                return 1
+            payload = {
+                "lane": args.lane,
+                "owner": args.owner,
+                "expires_at": expires,
+                "acquired": True,
+            }
+        else:
+            released = kb.release_external_lane_lease(
+                conn,
+                args.lane,
+                owner=args.owner,
+            )
+            if not released:
+                print(f"cannot release lane {args.lane!r}: owner mismatch", file=sys.stderr)
+                return 1
+            payload = {
+                "lane": args.lane,
+                "owner": args.owner,
+                "released": True,
+            }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        verb = "Acquired" if args.operation == "acquire" else "Released"
+        print(f"{verb} lane lease {args.lane} for {args.owner}")
+    return 0
+
+
 def _cmd_claim(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
-        task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
+        task = kb.claim_task(
+            conn,
+            args.task_id,
+            ttl_seconds=args.ttl,
+            claimer=f"external:{secrets.token_urlsafe(32)}"
+            if getattr(args, "json", False) else None,
+        )
         if task is None:
             # Report why
             existing = kb.get_task(conn, args.task_id)
@@ -1845,14 +2012,38 @@ def _cmd_claim(args: argparse.Namespace) -> int:
                 return 1
             print(
                 f"cannot claim {args.task_id}: status={existing.status} "
-                f"lock={existing.claim_lock or '(none)'}",
+                "(already claimed or not ready)",
                 file=sys.stderr,
             )
             return 1
+        claim_lock = task.claim_lock
+        run_id = task.current_run_id
         workspace = kb.resolve_workspace(task)
-        kb.set_workspace_path(conn, task.id, str(workspace))
-    print(f"Claimed {task.id}")
-    print(f"Workspace: {workspace}")
+        if not kb.set_workspace_path_if_claim_owned(
+            conn,
+            task.id,
+            str(workspace),
+            claim_lock=claim_lock,
+            expected_run_id=run_id,
+        ):
+            print(
+                f"cannot claim {task.id}: claim expired or was superseded while "
+                "resolving workspace; workspace preserved",
+                file=sys.stderr,
+            )
+            return 1
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "task_id": task.id,
+            "run_id": run_id,
+            "status": task.status,
+            "workspace": str(workspace),
+            "claim_lock": claim_lock,
+            "claim_expires": task.claim_expires,
+        }, indent=2, ensure_ascii=False))
+    else:
+        print(f"Claimed {task.id}")
+        print(f"Workspace: {workspace}")
     return 0
 
 
@@ -1962,22 +2153,49 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _expected_run_id_for(args: argparse.Namespace, task_id: str) -> Optional[int]:
+    explicit = getattr(args, "run_id", None)
+    return int(explicit) if explicit is not None else _worker_run_id_for(task_id)
+
+
+def _explicit_claim_lock_for(args: argparse.Namespace) -> Optional[str]:
+    value = getattr(args, "claim_lock", None)
+    return str(value) if value is not None else None
+
+
+def _validate_terminal_fence(args: argparse.Namespace) -> bool:
+    has_lock = _explicit_claim_lock_for(args) is not None
+    has_run = getattr(args, "run_id", None) is not None
+    if has_lock != has_run:
+        print(
+            "kanban: --run-id and --claim-lock must be provided together",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids = list(args.task_ids or [])
     if not ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
+    if not _validate_terminal_fence(args):
+        return 2
     summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
     # Guard: structured handoff fields are per-run, so they'd be
     # copy-pasted identically across N runs — almost always a footgun.
     # Refuse instead of silently doing the wrong thing.
-    if len(ids) > 1 and (summary or raw_meta):
+    if len(ids) > 1 and (
+        summary or raw_meta or getattr(args, "run_id", None) is not None
+        or _explicit_claim_lock_for(args) is not None
+    ):
         print(
-            "kanban: --summary / --metadata are per-task and can't be used "
-            "with multiple ids (would apply the same handoff to every task). "
-            "Complete tasks one at a time, or drop the flags for the bulk close.",
+            "kanban: --summary / --metadata / --run-id are per-task and can't "
+            "be used with multiple ids. Complete tasks one at a time, or drop "
+            "the per-task flags for the bulk close.",
             file=sys.stderr,
         )
         return 2
@@ -1998,7 +2216,8 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 result=args.result,
                 summary=summary,
                 metadata=metadata,
-                expected_run_id=_worker_run_id_for(tid),
+                expected_run_id=_expected_run_id_for(args, tid),
+                expected_claim_lock=_explicit_claim_lock_for(args),
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
@@ -2036,25 +2255,34 @@ def _cmd_edit(args: argparse.Namespace) -> int:
 
 
 def _cmd_block(args: argparse.Namespace) -> int:
+    if not _validate_terminal_fence(args):
+        return 2
     reason = " ".join(args.reason).strip() if args.reason else None
     kind = getattr(args, "kind", None)
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
+    if len(ids) > 1 and (
+        getattr(args, "run_id", None) is not None
+        or _explicit_claim_lock_for(args) is not None
+    ):
+        print("kanban: claim fencing cannot be used with multiple task ids", file=sys.stderr)
+        return 2
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            if reason:
-                kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
             if not kb.block_task(
                 conn,
                 tid,
                 reason=reason,
                 kind=kind,
-                expected_run_id=_worker_run_id_for(tid),
+                expected_run_id=_expected_run_id_for(args, tid),
+                expected_claim_lock=_explicit_claim_lock_for(args),
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
             else:
+                if reason:
+                    kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
                 # Report where the task actually landed — dependency blocks go
                 # to todo, and a tripped unblock-loop breaker routes to triage.
                 landed = kb.get_task(conn, tid)
@@ -2073,23 +2301,32 @@ def _cmd_block(args: argparse.Namespace) -> int:
 
 
 def _cmd_schedule(args: argparse.Namespace) -> int:
+    if not _validate_terminal_fence(args):
+        return 2
     reason = " ".join(args.reason).strip() if args.reason else None
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
+    if len(ids) > 1 and (
+        getattr(args, "run_id", None) is not None
+        or _explicit_claim_lock_for(args) is not None
+    ):
+        print("kanban: claim fencing cannot be used with multiple task ids", file=sys.stderr)
+        return 2
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            if reason:
-                kb.add_comment(conn, tid, author, f"SCHEDULED: {reason}")
             if not kb.schedule_task(
                 conn,
                 tid,
                 reason=reason,
-                expected_run_id=_worker_run_id_for(tid),
+                expected_run_id=_expected_run_id_for(args, tid),
+                expected_claim_lock=_explicit_claim_lock_for(args),
             ):
                 failed.append(tid)
                 print(f"cannot schedule {tid}", file=sys.stderr)
             else:
+                if reason:
+                    kb.add_comment(conn, tid, author, f"SCHEDULED: {reason}")
                 print(f"Scheduled {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1
 

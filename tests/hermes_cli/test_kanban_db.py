@@ -1139,6 +1139,166 @@ def test_heartbeat_uses_env_default_ttl(kanban_home, monkeypatch):
         assert new > int(time.time()) + 3000
 
 
+def test_external_heartbeat_atomically_renews_matching_run(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="x", assignee="external")
+        task = kb.claim_task(
+            conn, task_id, claimer="external:stable", ttl_seconds=60,
+        )
+        run_id = task.current_run_id
+        short_expiry = int(time.time()) + 30
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (short_expiry, task_id),
+        )
+        conn.execute(
+            "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+            (short_expiry, run_id),
+        )
+
+        expires = kb.heartbeat_external_claim(
+            conn,
+            task_id,
+            claim_lock="external:stable",
+            expected_run_id=run_id,
+            ttl_seconds=3600,
+            note="still working",
+        )
+
+        assert expires is not None
+        assert expires > int(time.time()) + 3000
+        task = kb.get_task(conn, task_id)
+        assert task.claim_expires == expires
+        run = kb.list_runs(conn, task_id)[0]
+        assert run.claim_expires == expires
+        assert run.last_heartbeat_at is not None
+
+
+def test_external_heartbeat_rejects_stale_lock_run_or_expired_lease(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="x", assignee="external")
+        task = kb.claim_task(conn, task_id, claimer="external:stable")
+        original_expiry = task.claim_expires
+
+        assert kb.heartbeat_external_claim(
+            conn,
+            task_id,
+            claim_lock="external:stale",
+            expected_run_id=task.current_run_id,
+        ) is None
+        assert kb.heartbeat_external_claim(
+            conn,
+            task_id,
+            claim_lock="external:stable",
+            expected_run_id=task.current_run_id + 1,
+        ) is None
+        assert kb.get_task(conn, task_id).claim_expires == original_expiry
+
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 1, task_id),
+        )
+        conn.execute(
+            "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 1, task.current_run_id),
+        )
+        assert kb.heartbeat_external_claim(
+            conn,
+            task_id,
+            claim_lock="external:stable",
+            expected_run_id=task.current_run_id,
+        ) is None
+
+
+def test_external_terminal_transition_requires_live_claim(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="x", assignee="external")
+        task = kb.claim_task(conn, task_id, claimer="external:stable")
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 1, task_id),
+        )
+        conn.execute(
+            "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 1, task.current_run_id),
+        )
+
+        assert not kb.complete_task(
+            conn,
+            task_id,
+            expected_run_id=task.current_run_id,
+            expected_claim_lock="external:stable",
+        )
+        assert not kb.block_task(
+            conn,
+            task_id,
+            reason="late",
+            expected_run_id=task.current_run_id,
+            expected_claim_lock="external:stable",
+        )
+        assert kb.get_task(conn, task_id).status == "running"
+
+
+def test_workspace_persist_is_fenced_by_live_claim(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="x", assignee="external")
+        task = kb.claim_task(conn, task_id, claimer="external:stable")
+        target = tmp_path / "workspace"
+
+        assert not kb.set_workspace_path_if_claim_owned(
+            conn,
+            task_id,
+            target,
+            claim_lock="external:stale",
+            expected_run_id=task.current_run_id,
+        )
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 1, task_id),
+        )
+        assert not kb.set_workspace_path_if_claim_owned(
+            conn,
+            task_id,
+            target,
+            claim_lock="external:stable",
+            expected_run_id=task.current_run_id,
+        )
+        assert kb.get_task(conn, task_id).workspace_path is None
+
+
+def test_external_lane_lease_is_atomic_and_owner_fenced(kanban_home):
+    with kb.connect() as conn:
+        first = kb.acquire_external_lane_lease(
+            conn, "external-pi", owner="host-a", ttl_seconds=300,
+        )
+        assert first is not None
+        assert kb.acquire_external_lane_lease(
+            conn, "external-pi", owner="host-b", ttl_seconds=300,
+        ) is None
+        renewed = kb.acquire_external_lane_lease(
+            conn, "external-pi", owner="host-a", ttl_seconds=600,
+        )
+        assert renewed > first
+        assert not kb.release_external_lane_lease(
+            conn, "external-pi", owner="host-b",
+        )
+        assert kb.release_external_lane_lease(
+            conn, "external-pi", owner="host-a",
+        )
+
+
+def test_concurrent_external_lane_lease_has_one_winner(kanban_home):
+    def attempt(owner):
+        with kb.connect() as conn:
+            return kb.acquire_external_lane_lease(
+                conn, "external-pi", owner=owner, ttl_seconds=300,
+            )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(attempt, [f"host-{i}" for i in range(8)]))
+    assert sum(result is not None for result in results) == 1
+
+
 def test_concurrent_claims_only_one_wins(kanban_home):
     """Fire N threads claiming the same task; exactly one must win."""
     with kb.connect() as conn:

@@ -1252,6 +1252,13 @@ CREATE TABLE IF NOT EXISTS task_attachments (
 -- task. The gateway's kanban-notifier watcher tails task_events and
 -- pushes ``completed`` / ``blocked`` / ``spawn_auto_blocked`` events to
 -- the original requester so human-in-the-loop workflows close the loop.
+CREATE TABLE IF NOT EXISTS external_lane_leases (
+    lane       TEXT PRIMARY KEY,
+    owner      TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     task_id       TEXT NOT NULL,
     platform      TEXT NOT NULL,
@@ -3209,6 +3216,18 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     return out
 
 
+def _redact_event_claim_credentials(value: Any) -> Any:
+    credential_keys = {"lock", "claim_lock", "prev_lock", "stale_lock", "claimer"}
+    if isinstance(value, dict):
+        return {
+            key: ("[redacted]" if key in credential_keys and item else _redact_event_claim_credentials(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_event_claim_credentials(item) for item in value]
+    return value
+
+
 def _append_event(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3225,7 +3244,8 @@ def _append_event(
     and the row carries NULL.
     """
     now = int(time.time())
-    pl = json.dumps(payload, ensure_ascii=False) if payload else None
+    safe_payload = _redact_event_claim_credentials(payload) if payload else None
+    pl = json.dumps(safe_payload, ensure_ascii=False) if safe_payload else None
     conn.execute(
         "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
         "VALUES (?, ?, ?, ?, ?)",
@@ -3481,6 +3501,50 @@ def recompute_ready(
 # Claim / complete / block
 # ---------------------------------------------------------------------------
 
+def acquire_external_lane_lease(
+    conn: sqlite3.Connection,
+    lane: str,
+    *,
+    owner: str,
+    ttl_seconds: int,
+) -> Optional[int]:
+    """Acquire or renew one board-local external runner lane lease."""
+    lane = lane.strip()
+    owner = owner.strip()
+    if not lane or not owner:
+        raise ValueError("lane and owner are required")
+    if ttl_seconds < 1:
+        raise ValueError("ttl_seconds must be positive")
+    with write_txn(conn):
+        now = int(time.time())
+        expires = now + int(ttl_seconds)
+        cur = conn.execute(
+            "INSERT INTO external_lane_leases(lane, owner, expires_at, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(lane) DO UPDATE SET owner = excluded.owner, "
+            "expires_at = excluded.expires_at, updated_at = excluded.updated_at "
+            "WHERE external_lane_leases.owner = excluded.owner "
+            "OR external_lane_leases.expires_at < ?",
+            (lane, owner, expires, now, now),
+        )
+        return expires if cur.rowcount == 1 else None
+
+
+def release_external_lane_lease(
+    conn: sqlite3.Connection,
+    lane: str,
+    *,
+    owner: str,
+) -> bool:
+    """Release a lane lease only when ``owner`` still holds it."""
+    with write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM external_lane_leases WHERE lane = ? AND owner = ?",
+            (lane.strip(), owner.strip()),
+        )
+        return cur.rowcount == 1
+
+
 def claim_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3707,6 +3771,53 @@ def heartbeat_claim(
                 )
             return True
         return False
+
+
+def heartbeat_external_claim(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    claim_lock: str,
+    expected_run_id: int,
+    ttl_seconds: Optional[int] = None,
+    note: Optional[str] = None,
+) -> Optional[int]:
+    """Atomically renew and heartbeat a claim owned by an external runner.
+
+    The stable ``claim_lock`` and ``expected_run_id`` fence a delayed runner
+    from extending or updating a newer attempt. Returns the new expiry epoch
+    when the caller still owns the claim, otherwise ``None``.
+    """
+    with write_txn(conn):
+        now = int(time.time())
+        expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+        cur = conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ? AND status = 'running' AND claim_lock = ? "
+            "AND current_run_id = ? AND claim_expires >= ?",
+            (expires, now, task_id, claim_lock, int(expected_run_id), now),
+        )
+        if cur.rowcount != 1:
+            return None
+        run_cur = conn.execute(
+            "UPDATE task_runs SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ? AND task_id = ? AND status = 'running' "
+            "AND claim_lock = ? AND ended_at IS NULL AND claim_expires >= ?",
+            (expires, now, int(expected_run_id), task_id, claim_lock, now),
+        )
+        if run_cur.rowcount != 1:
+            raise RuntimeError(
+                f"running task {task_id} has no matching run {expected_run_id}"
+            )
+        _append_event(
+            conn,
+            task_id,
+            "heartbeat",
+            {"note": note, "claim_expires": expires}
+            if note else {"claim_expires": expires},
+            run_id=int(expected_run_id),
+        )
+    return expires
 
 
 def release_stale_claims(
@@ -4091,6 +4202,23 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+def _live_claim_matches(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: Optional[int],
+    expected_claim_lock: str,
+) -> bool:
+    if expected_run_id is None:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM tasks WHERE id = ? AND status = 'running' "
+        "AND current_run_id = ? AND claim_lock = ? AND claim_expires >= ?",
+        (task_id, int(expected_run_id), expected_claim_lock, int(time.time())),
+    ).fetchone()
+    return row is not None
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4100,6 +4228,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    expected_claim_lock: Optional[str] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4162,6 +4291,13 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     with write_txn(conn):
+        if expected_claim_lock is not None and not _live_claim_matches(
+            conn,
+            task_id,
+            expected_run_id=expected_run_id,
+            expected_claim_lock=expected_claim_lock,
+        ):
+            return False
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -4880,6 +5016,7 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    expected_claim_lock: Optional[str] = None,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
 
@@ -4915,6 +5052,13 @@ def block_task(
     routed_to = "blocked"
     recurrences = 0
     with write_txn(conn):
+        if expected_claim_lock is not None and not _live_claim_matches(
+            conn,
+            task_id,
+            expected_run_id=expected_run_id,
+            expected_claim_lock=expected_claim_lock,
+        ):
+            return False
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
             (task_id,),
@@ -5909,6 +6053,26 @@ def set_workspace_path(
         )
 
 
+def set_workspace_path_if_claim_owned(
+    conn: sqlite3.Connection,
+    task_id: str,
+    path: Path | str,
+    *,
+    claim_lock: str,
+    expected_run_id: int,
+) -> bool:
+    """Persist a resolved workspace only while the original claim is live."""
+    with write_txn(conn):
+        now = int(time.time())
+        cur = conn.execute(
+            "UPDATE tasks SET workspace_path = ? WHERE id = ? "
+            "AND status = 'running' AND claim_lock = ? "
+            "AND current_run_id = ? AND claim_expires >= ?",
+            (str(path), task_id, claim_lock, int(expected_run_id), now),
+        )
+        return cur.rowcount == 1
+
+
 def set_branch_name(
     conn: sqlite3.Connection, task_id: str, branch_name: str
 ) -> None:
@@ -5926,6 +6090,7 @@ def schedule_task(
     *,
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    expected_claim_lock: Optional[str] = None,
 ) -> bool:
     """Park a task in ``scheduled`` so it is waiting on time, not human input.
 
@@ -5934,6 +6099,13 @@ def schedule_task(
     to ``ready`` (or ``todo`` if parents are still incomplete).
     """
     with write_txn(conn):
+        if expected_claim_lock is not None and not _live_claim_matches(
+            conn,
+            task_id,
+            expected_run_id=expected_run_id,
+            expected_claim_lock=expected_claim_lock,
+        ):
+            return False
         params: list[Any] = [task_id]
         sql = """
             UPDATE tasks

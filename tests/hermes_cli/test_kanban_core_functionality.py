@@ -1180,6 +1180,192 @@ def test_cli_heartbeat_verb(kanban_home):
         conn.close()
 
 
+def test_cli_reports_external_runner_contract(kanban_home):
+    payload = json.loads(run_slash("external-runner-contract --json"))
+    assert payload["contract_version"] == 1
+    assert "atomic_lane_lease" in payload["capabilities"]
+    assert "fenced_terminal_transitions" in payload["capabilities"]
+
+
+def test_cli_external_lane_lease_contract(kanban_home):
+    acquired = json.loads(run_slash(
+        "lane-lease acquire external-pi --owner host-a --ttl 300 --json"
+    ))
+    assert acquired["acquired"] is True
+    assert acquired["owner"] == "host-a"
+    refused = run_slash(
+        "lane-lease acquire external-pi --owner host-b --ttl 300 --json"
+    )
+    assert "another owner" in refused
+    released = json.loads(run_slash(
+        "lane-lease release external-pi --owner host-a --json"
+    ))
+    assert released["released"] is True
+
+
+def test_failed_cli_claim_does_not_disclose_current_claim_token(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="claimed", assignee="external-pi")
+        kb.claim_task(conn, tid, claimer="secret-current-claim")
+
+    out = run_slash(f"claim {tid} --json")
+    assert "cannot claim" in out
+    assert "secret-current-claim" not in out
+
+
+def test_cli_external_claim_and_heartbeat_json_contract(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="external", assignee="external-pi")
+    finally:
+        conn.close()
+
+    claim = json.loads(run_slash(f"claim {tid} --ttl 60 --json"))
+    assert claim["task_id"] == tid
+    assert claim["run_id"] > 0
+    assert claim["claim_lock"].startswith("external:")
+    assert len(claim["claim_lock"]) > 40
+    assert claim["claim_expires"] > int(time.time())
+    assert Path(claim["workspace"]).is_dir()
+    shown = json.loads(run_slash(f"show {tid} --json"))
+    claimed_event = next(e for e in shown["events"] if e["kind"] == "claimed")
+    assert claimed_event["payload"]["lock"] == "[redacted]"
+    assert claim["claim_lock"] not in json.dumps(shown)
+
+    heartbeat = json.loads(run_slash(
+        f"heartbeat {tid} --claim-lock {claim['claim_lock']} "
+        f"--run-id {claim['run_id']} --ttl 3600 --note working --json"
+    ))
+    assert heartbeat == {
+        "task_id": tid,
+        "run_id": claim["run_id"],
+        "claim_expires": heartbeat["claim_expires"],
+        "renewed": True,
+    }
+    assert heartbeat["claim_expires"] > claim["claim_expires"]
+
+    out = run_slash(
+        f"complete {tid} --run-id {claim['run_id']} "
+        f"--claim-lock {claim['claim_lock']} --summary verified"
+    )
+    assert f"Completed {tid}" in out
+
+
+def test_cli_claim_does_not_return_replacement_credentials_after_workspace_race(
+    kanban_home, monkeypatch, tmp_path,
+):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="workspace race", assignee="external-pi")
+    finally:
+        conn.close()
+
+    target = tmp_path / "resolved-but-superseded"
+
+    def race_during_resolution(_task):
+        target.mkdir()
+        with kb.connect() as race_conn:
+            assert kb.reclaim_task(race_conn, tid, reason="test race")
+            replacement = kb.claim_task(
+                race_conn, tid, claimer="external:replacement",
+            )
+            assert replacement is not None
+        return target
+
+    monkeypatch.setattr(kb, "resolve_workspace", race_during_resolution)
+    out = run_slash(f"claim {tid} --json")
+    assert "superseded" in out
+
+    with kb.connect() as check_conn:
+        task = kb.get_task(check_conn, tid)
+        assert task.status == "running"
+        assert task.claim_lock == "external:replacement"
+        assert task.workspace_path is None
+
+
+def test_cli_claim_json_never_rereads_replacement_credentials(
+    kanban_home, monkeypatch,
+):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="post-persist race", assignee="external-pi")
+    finally:
+        conn.close()
+
+    original_set = kb.set_workspace_path_if_claim_owned
+
+    def replace_after_persist(conn, task_id, path, **kwargs):
+        assert original_set(conn, task_id, path, **kwargs)
+        assert kb.reclaim_task(conn, task_id, reason="post-persist race")
+        replacement = kb.claim_task(conn, task_id, claimer="external:replacement")
+        assert replacement is not None
+        return True
+
+    monkeypatch.setattr(kb, "set_workspace_path_if_claim_owned", replace_after_persist)
+    payload = json.loads(run_slash(f"claim {tid} --json"))
+    assert payload["claim_lock"] != "external:replacement"
+
+    with kb.connect() as check_conn:
+        current = kb.get_task(check_conn, tid)
+        assert current.claim_lock == "external:replacement"
+        assert current.current_run_id != payload["run_id"]
+
+
+def test_cli_terminal_fence_requires_run_and_lock_together(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="paired fence", assignee="external-pi")
+        task = kb.claim_task(conn, tid, claimer="external:stable")
+
+    out = run_slash(f"complete {tid} --run-id {task.current_run_id}")
+    assert "must be provided together" in out
+    out = run_slash(f"block {tid} late --claim-lock external:stable")
+    assert "must be provided together" in out
+
+
+def test_cli_terminal_transition_run_id_fences_stale_external_runner(
+    kanban_home, monkeypatch,
+):
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="guarded", assignee="external-pi")
+        kb.claim_task(conn, tid)
+        stale_run = kb.latest_run(conn, tid)
+        kb._set_worker_pid(conn, tid, 98765)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        assert kb.detect_crashed_workers(conn) == [tid]
+        kb.claim_task(conn, tid)
+        current_run = kb.latest_run(conn, tid)
+    finally:
+        conn.close()
+
+    out = run_slash(
+        f"complete {tid} --run-id {stale_run.id} --claim-lock stale:claim"
+    )
+    assert "cannot complete" in out
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.current_run_id == current_run.id
+    finally:
+        conn.close()
+
+    out = run_slash(
+        f"block {tid} too-late --run-id {stale_run.id} --claim-lock stale:claim"
+    )
+    assert "cannot block" in out
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        comments = kb.list_comments(conn, tid)
+        assert all("too-late" not in comment.body for comment in comments)
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Event vocab rename + spawned event (item 3 from Multica)
 # ---------------------------------------------------------------------------

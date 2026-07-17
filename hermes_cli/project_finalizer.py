@@ -186,23 +186,46 @@ def _evaluate_snapshot(snapshot: dict[str, Any]) -> ProjectEvaluation:
     if graph_error is not None:
         return _malformed(snapshot, generation=finalization.generation, reason=graph_error[0], blocker=graph_error[1], finalization=finalization)
 
-    required = set(closure)
-    required.add(finalization.final_checker_task_id)
+    checker_task_id = finalization.final_checker_task_id
+    checker_task = tasks.get(checker_task_id)
+    checker_members = tuple(member for member in members if member.membership_kind == "checker")
+    checker_authority_current = not checker_members or (
+        len(checker_members) == 1
+        and checker_members[0].task_id == checker_task_id
+        and checker_members[0].required
+    )
+
+    implementation_required = set(closure)
     optional: set[str] = set()
     for member in members:
-        if member.required:
-            required.add(member.task_id)
+        if member.membership_kind == "checker":
+            if member.task_id != checker_task_id:
+                optional.add(member.task_id)
+        elif member.required:
+            implementation_required.add(member.task_id)
         else:
             optional.add(member.task_id)
+    required = set(implementation_required)
+    required.add(checker_task_id)
     optional.difference_update(required)
 
     required_ids = tuple(sorted(required))
     optional_ids = tuple(sorted(optional))
-    task_rows = {task_id: tasks[task_id] for task_id in required_ids}
+    task_rows = {task_id: tasks[task_id] for task_id in required_ids if task_id in tasks}
     successful = tuple(sorted(task_id for task_id, task in task_rows.items() if task["status"] == "done"))
     unfinished = tuple(sorted(task_id for task_id in required_ids if task_id not in successful))
-    blocked = tuple(sorted(task_id for task_id in required_ids if task_rows[task_id]["status"] in {"blocked", "triage"}))
-    failed = _failed_task_ids(required_ids, task_rows, snapshot["task_runs"])
+    blocked = tuple(
+        sorted(
+            task_id
+            for task_id, task in task_rows.items()
+            if task["status"] in {"blocked", "triage"}
+        )
+    )
+    implementation_ids = tuple(sorted(implementation_required))
+    implementation_failed = _failed_task_ids(
+        implementation_ids, task_rows, snapshot["task_runs"]
+    )
+    failed = implementation_failed
     evidence = _evidence_references(required_ids, members, snapshot["task_runs"], snapshot["task_events"])
 
     common = dict(
@@ -235,6 +258,9 @@ def _evaluate_snapshot(snapshot: dict[str, Any]) -> ProjectEvaluation:
             failure_reason="unrecovered_internal_failure",
         )
 
+    implementation_blocked = tuple(
+        task_id for task_id in blocked if task_id in implementation_required
+    )
     human_blocked = any(
         task_rows[task_id]["status"] == "triage"
         or task_rows[task_id].get("block_kind") in _HUMAN_BLOCK_KINDS
@@ -242,7 +268,7 @@ def _evaluate_snapshot(snapshot: dict[str, Any]) -> ProjectEvaluation:
             task_rows[task_id]["status"] == "blocked"
             and task_rows[task_id].get("block_kind") is None
         )
-        for task_id in blocked
+        for task_id in implementation_blocked
     )
     if durable_outcome == "BLOCKED" or human_blocked:
         return ProjectEvaluation(
@@ -255,7 +281,10 @@ def _evaluate_snapshot(snapshot: dict[str, Any]) -> ProjectEvaluation:
             failure_reason="external_or_human_block",
         )
 
-    if unfinished:
+    unfinished_implementation = tuple(
+        task_id for task_id in implementation_ids if task_id not in successful
+    )
+    if unfinished_implementation:
         return ProjectEvaluation(
             **common,
             evaluation_state="WAITING",
@@ -264,6 +293,36 @@ def _evaluate_snapshot(snapshot: dict[str, Any]) -> ProjectEvaluation:
             finalization_eligible=False,
             blocker=None,
             failure_reason=None,
+        )
+
+    if (
+        checker_authority_current
+        and checker_task is not None
+        and checker_task["status"] in {"blocked", "triage"}
+    ):
+        return ProjectEvaluation(
+            **common,
+            evaluation_state="BLOCKED",
+            terminal_outcome="BLOCKED",
+            repair_eligible=False,
+            finalization_eligible=False,
+            blocker=finalization.blocker_json or "current project checker is blocked",
+            failure_reason="checker_blocked",
+        )
+
+    if (
+        not checker_authority_current
+        or checker_task is None
+        or checker_task["status"] != "done"
+    ):
+        return ProjectEvaluation(
+            **common,
+            evaluation_state="WAITING",
+            terminal_outcome=None,
+            repair_eligible=False,
+            finalization_eligible=False,
+            blocker=None,
+            failure_reason="checker_required",
         )
 
     verdict = finalization.checker_verdict
@@ -300,12 +359,12 @@ def _evaluate_snapshot(snapshot: dict[str, Any]) -> ProjectEvaluation:
     if verdict != "PASS":
         return ProjectEvaluation(
             **common,
-            evaluation_state="BLOCKED",
-            terminal_outcome="BLOCKED",
+            evaluation_state="WAITING",
+            terminal_outcome=None,
             repair_eligible=False,
             finalization_eligible=False,
-            blocker=finalization.blocker_json or "designated checker evidence is missing",
-            failure_reason="missing_required_evidence",
+            blocker=None,
+            failure_reason="checker_required",
         )
 
     return ProjectEvaluation(
@@ -336,25 +395,15 @@ def _validate_project_snapshot(
         return "multiple_active_generations", "project identity has zero or multiple active generations"
     if finalization.root_task_id not in tasks:
         return "missing_root_task", "root task is missing from the durable board snapshot"
-    if finalization.final_checker_task_id not in tasks:
-        return "invalid_checker_identity", "designated checker task is missing from the durable board snapshot"
-
-    checker_members: list[ProjectMember] = []
     for member in members:
         if member.membership_kind not in MEMBERSHIP_KINDS:
             return "inconsistent_membership", "member kind is not in the frozen vocabulary"
         if not isinstance(member.required, bool):
             return "inconsistent_membership", "member required flag is not boolean"
         if member.task_id not in tasks:
+            if member.membership_kind == "checker":
+                continue
             return "inconsistent_membership", "explicit member task is missing from the durable board snapshot"
-        if member.membership_kind == "checker":
-            checker_members.append(member)
-    if checker_members and (
-        len(checker_members) != 1
-        or checker_members[0].task_id != finalization.final_checker_task_id
-        or not checker_members[0].required
-    ):
-        return "invalid_checker_identity", "explicit checker membership conflicts with the designated checker"
     return None
 
 

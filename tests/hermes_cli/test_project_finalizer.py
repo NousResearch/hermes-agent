@@ -80,6 +80,75 @@ def test_unfinished_ancestor_graph_waits_deterministically_without_writes(board)
     assert first.snapshot_version.startswith("sha256:")
 
 
+def test_done_implementation_without_checker_pass_waits_for_checker(board):
+    root = _task(board, "root")
+    checker = _task(board, "checker")
+    _project(board, root=root, checker=checker)
+    for task_id in (root, checker):
+        _complete(board, task_id)
+
+    result = evaluate_project(board, board_id="board-a", root_task_id=root, evaluation_time=100)
+
+    assert result.evaluation_state == "WAITING"
+    assert result.terminal_outcome is None
+    assert result.failure_reason == "checker_required"
+    assert result.finalization_eligible is False
+
+
+def test_missing_or_stale_checker_authority_waits_for_current_checker(board):
+    root = _task(board, "root")
+    checker = _task(board, "checker")
+    stale_checker = _task(board, "stale checker")
+    project = _project(board, root=root, checker=checker)
+    register_project_member(
+        board,
+        board_id="board-a",
+        root_task_id=root,
+        generation=project.generation,
+        task_id=stale_checker,
+        membership_kind="checker",
+        required=True,
+    )
+    for task_id in (root, checker, stale_checker):
+        _complete(board, task_id)
+
+    stale = evaluate_project(board, board_id="board-a", root_task_id=root, evaluation_time=100)
+    board.execute("DELETE FROM tasks WHERE id = ?", (checker,))
+    missing = evaluate_project(board, board_id="board-a", root_task_id=root, evaluation_time=101)
+
+    assert stale.evaluation_state == "WAITING"
+    assert stale.failure_reason == "checker_required"
+    assert missing.evaluation_state == "WAITING"
+    assert missing.failure_reason == "checker_required"
+
+
+def test_blocked_current_checker_blocks_with_checker_evidence(board):
+    root = _task(board, "root")
+    checker = _task(board, "checker")
+    project = _project(board, root=root, checker=checker)
+    register_project_member(
+        board,
+        board_id="board-a",
+        root_task_id=root,
+        generation=project.generation,
+        task_id=checker,
+        membership_kind="checker",
+        required=True,
+    )
+    _complete(board, root)
+    board.execute(
+        "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input' WHERE id = ?",
+        (checker,),
+    )
+
+    result = evaluate_project(board, board_id="board-a", root_task_id=root, evaluation_time=100)
+
+    assert result.evaluation_state == "BLOCKED"
+    assert result.terminal_outcome == "BLOCKED"
+    assert result.failure_reason == "checker_blocked"
+    assert f"task:{checker}" in result.evidence_references
+
+
 def test_done_required_graph_and_passed_checker_is_complete_eligible(board):
     parent = _task(board, "parent")
     root = _task(board, "root")

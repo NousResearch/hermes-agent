@@ -3566,10 +3566,16 @@ def _is_session_expired_error(exc: BaseException) -> bool:
         return False
     exc_type = type(exc)
     exc_name = exc_type.__name__
-    exc_module = getattr(exc_type, "__module__", "")
+    # Only the explicit closed/broken/end-of-stream transport types count as a
+    # reconnectable expiry. We must NOT match every AnyIO error whose type name
+    # merely contains "Resource" (e.g. CapacityExceededResourceError or other
+    # unrelated resource exceptions) — that would funnel unrelated errors into
+    # the reconnect-and-retry path and churn the transport. ClosedResourceError
+    # and BrokenResourceError are caught by exact name below; EndOfStream and
+    # the stdlib pipe/EOF errors cover the rest.
     if (
-        exc_name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
-        or (exc_module.startswith("anyio") and "Resource" in exc_name)
+        exc_name
+        in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
         or isinstance(exc, (BrokenPipeError, EOFError))
     ):
         return True

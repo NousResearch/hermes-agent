@@ -69,6 +69,22 @@ def test_broken_pipe_triggers_transport_recovery():
     assert _is_session_expired_error(BrokenPipeError()) is True
 
 
+def test_unrelated_anyio_resource_error_does_not_trigger_recovery():
+    """An AnyIO error whose type name merely contains 'Resource' but is not a
+    closed/broken/end-of-stream failure must NOT enter the reconnect path.
+
+    Matching every AnyIO 'Resource' exception would funnel unrelated errors
+    into transport churn (#65111 review).
+    """
+    # Mimic an unrelated anyio resource exception type name.
+    Unrelated = type(
+        "CapacityExceededResourceError",
+        (Exception,),
+        {"__module__": "anyio.streams.memory"},
+    )
+    assert _is_session_expired_error(Unrelated("no capacity")) is False
+
+
 # ---------------------------------------------------------------------------
 # Integration: error message format in _sanitize_error
 # ---------------------------------------------------------------------------

@@ -25,6 +25,45 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from hermes_constants import VALID_REASONING_EFFORTS
+
+
+def _effective_reasoning_effort(
+    reasoning_config,
+    *,
+    api_mode: str = "",
+    transport=None,
+) -> str | None:
+    """Return the user-visible reasoning effort applied to this agent.
+
+    Gateway session overrides and the global ``agent.reasoning_effort`` setting
+    are both resolved before ``AIAgent`` is constructed, so
+    ``agent.reasoning_config`` is the canonical per-turn value here.  Hermes's
+    Codex Responses can normalize or omit that value based on its actual route,
+    model capabilities, and request overrides.  Read the final payload value
+    captured by the transport instead of duplicating those rules here.  Other
+    transports may delegate the default to the provider, so return ``None``
+    rather than inventing a level for those routes.
+    """
+    normalized_api_mode = str(api_mode or "").strip().lower()
+    if normalized_api_mode == "codex_responses":
+        wire_effort = getattr(transport, "_last_reasoning_effort", None)
+        return (str(wire_effort).strip().lower() if wire_effort is not None else "") or None
+
+    if isinstance(reasoning_config, dict):
+        if reasoning_config.get("enabled") is False:
+            return "none"
+        raw = reasoning_config.get("effort")
+        if raw is not None:
+            effort = str(raw).strip().lower()
+            if effort not in VALID_REASONING_EFFORTS:
+                effort = ""
+        else:
+            effort = ""
+    else:
+        effort = ""
+
+    return effort or None
 
 
 def finalize_turn(
@@ -451,6 +490,16 @@ def finalize_turn(
         "cache_read_tokens": agent.session_cache_read_tokens,
         "cache_write_tokens": agent.session_cache_write_tokens,
         "reasoning_tokens": agent.session_reasoning_tokens,
+        "reasoning_effort": _effective_reasoning_effort(
+            getattr(agent, "reasoning_config", None),
+            api_mode=getattr(agent, "api_mode", ""),
+            transport=(
+                agent._get_transport()
+                if getattr(agent, "api_mode", "") == "codex_responses"
+                and callable(getattr(agent, "_get_transport", None))
+                else None
+            ),
+        ),
         "prompt_tokens": agent.session_prompt_tokens,
         "completion_tokens": agent.session_completion_tokens,
         "total_tokens": agent.session_total_tokens,

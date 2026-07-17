@@ -466,6 +466,9 @@ def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch
     assert kwargs["tool_choice"] == "auto"
     assert kwargs["parallel_tool_calls"] is True
     assert kwargs["reasoning"] == {"effort": "medium"}
+    transport = agent._get_transport()
+    assert transport is not None
+    assert transport._last_reasoning_effort == "medium"
     assert "prompt_cache_key" not in kwargs
     assert "include" not in kwargs
 
@@ -475,8 +478,41 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
     kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
 
     assert "reasoning" not in kwargs
+    transport = agent._get_transport()
+    assert transport is not None
+    assert transport._last_reasoning_effort is None
     assert "include" not in kwargs
     assert "prompt_cache_key" not in kwargs
+
+
+@pytest.mark.parametrize(
+    "provider,base_url",
+    [
+        ("xai", "https://example.invalid/v1"),
+        ("custom", "https://api.x.ai/v1"),
+    ],
+)
+def test_xai_routes_capture_clamped_wire_effort(monkeypatch, provider, base_url):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="grok-4.3",
+        provider=provider,
+        api_mode="codex_responses",
+        base_url=base_url,
+        api_key="test-token",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+        reasoning_config={"enabled": True, "effort": "xhigh"},
+    )
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert kwargs["reasoning"] == {"effort": "high"}
+    transport = agent._get_transport()
+    assert transport is not None
+    assert transport._last_reasoning_effort == "high"
 
 
 # ---------------------------------------------------------------------------

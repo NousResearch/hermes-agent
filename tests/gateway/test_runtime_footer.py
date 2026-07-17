@@ -70,6 +70,42 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
     assert out == "gpt-5.4 · 68% · ~/projects/hermes"
 
 
+def test_format_footer_includes_reasoning_effort():
+    out = format_runtime_footer(
+        model="openai/gpt-5.6-sol",
+        reasoning_effort="low",
+        context_tokens=12_000,
+        context_length=100_000,
+        cwd="",
+        fields=("model", "reasoning_effort", "context_pct"),
+    )
+    assert out == "gpt-5.6-sol · low · 12%"
+
+
+def test_format_footer_skips_missing_reasoning_effort():
+    out = format_runtime_footer(
+        model="openai/gpt-5.6-sol",
+        reasoning_effort=None,
+        context_tokens=12_000,
+        context_length=100_000,
+        cwd="",
+        fields=("model", "reasoning_effort", "context_pct"),
+    )
+    assert out == "gpt-5.6-sol · 12%"
+
+
+def test_format_footer_skips_unknown_reasoning_effort():
+    out = format_runtime_footer(
+        model="openai/gpt-5.6-sol",
+        reasoning_effort="turbo",
+        context_tokens=12_000,
+        context_length=100_000,
+        cwd="",
+        fields=("model", "reasoning_effort", "context_pct"),
+    )
+    assert out == "gpt-5.6-sol · 12%"
+
+
 def test_format_footer_skips_missing_context_length():
     out = format_runtime_footer(
         model="openai/gpt-5.4",
@@ -229,6 +265,26 @@ def test_build_footer_returns_rendered_when_enabled(monkeypatch, tmp_path):
     (tmp_path / "proj").mkdir(exist_ok=True)
     assert "gpt-5.4" in out
     assert "25%" in out
+
+
+def test_build_footer_passes_reasoning_effort():
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["model", "reasoning_effort"],
+                }
+            }
+        },
+        platform_key="telegram",
+        model="openai/gpt-5.6-sol",
+        reasoning_effort="medium",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+    )
+    assert out == "gpt-5.6-sol · medium"
 
 
 def test_build_footer_per_platform_off_suppresses():

@@ -227,6 +227,33 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     # --- init ---
     sub.add_parser("init", help="Create kanban.db if missing (idempotent)")
 
+    # --- project status/presentation (read-only) ---
+    p_project = sub.add_parser(
+        "project",
+        help="Read-only project finalization status and history",
+    )
+    project_sub = p_project.add_subparsers(dest="project_action")
+
+    p_project_list = project_sub.add_parser(
+        "list-active",
+        help="List active projects without terminal clutter",
+    )
+    p_project_list.add_argument("--json", action="store_true")
+
+    for project_action, help_text in (
+        ("status", "Show project evaluator and delivery status"),
+        ("show", "Show concise status, evidence, and safe member summaries"),
+        ("history", "Show terminal members, repairs, verdicts, and append-only history"),
+        ("final-report", "Show final report, manifest, and usage-summary identities"),
+        ("delivery-status", "Show technical outcome separately from delivery state"),
+        ("cleanup-preview", "Preview the mutation-free retention cleanup plan"),
+    ):
+        parser = project_sub.add_parser(project_action, help=help_text)
+        parser.add_argument("root_task_id")
+        if project_action != "history":
+            parser.add_argument("--generation", type=int, default=None)
+        parser.add_argument("--json", action="store_true")
+
     # --- boards (new in v2: multi-project support) ---
     p_boards = sub.add_parser(
         "boards",
@@ -958,6 +985,7 @@ def kanban_command(args: argparse.Namespace) -> int:
 
         handlers = {
             "init":     _cmd_init,
+            "project":  _cmd_project,
             "create":   _cmd_create,
             "swarm":    _cmd_swarm,
             "list":     _cmd_list,
@@ -1025,6 +1053,18 @@ def _profile_author() -> str:
         return get_active_profile_name() or "user"
     except Exception:
         return "user"
+
+
+def _cmd_project(args: argparse.Namespace) -> int:
+    """Dispatch read-only project queries through the shared board connection."""
+    from hermes_cli import project_commands
+
+    with kb.connect_closing() as conn:
+        return project_commands.dispatch_project_command(
+            args,
+            conn,
+            board_id=kb.get_current_board(),
+        )
 
 
 # ---------------------------------------------------------------------------

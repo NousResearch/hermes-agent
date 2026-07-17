@@ -1029,13 +1029,13 @@ class SessionDB:
         try:
             if read_only:
                 # Read-only attach for cross-profile aggregation: SELECT-only,
-                # so we skip schema init entirely (no DDL, no FTS probe, no
-                # column reconcile). Crucially this takes NO write lock, so
-                # polling another profile's live DB on every sidebar refresh
-                # never contends with that profile's running backend. The DB
-                # must already exist + be initialised (callers guard on
-                # db_path.exists()); a SELECT against an empty file raises and
-                # the caller degrades per-profile.
+                # so we skip schema init entirely (no DDL or column reconcile).
+                # Crucially this takes NO write lock, so polling another
+                # profile's live DB on every sidebar refresh never contends
+                # with that profile's running backend. The DB must already
+                # exist + be initialised (callers guard on db_path.exists());
+                # a SELECT against an empty file raises and the caller degrades
+                # per-profile.
                 self._conn = sqlite3.connect(
                     f"file:{self.db_path}?mode=ro",
                     uri=True,
@@ -1044,6 +1044,16 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                fts_tables = {
+                    row["name"]
+                    for row in self._conn.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'table' AND name IN (?, ?)",
+                        ("messages_fts", "messages_fts_trigram"),
+                    )
+                }
+                self._fts_enabled = "messages_fts" in fts_tables
+                self._trigram_available = "messages_fts_trigram" in fts_tables
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)

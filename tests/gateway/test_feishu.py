@@ -4742,11 +4742,12 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         event = adapter._dispatch_inbound_event.call_args.args[0]
         self.assertEqual(event.text, "stop pinging @Hermes please")
 
-    def test_pure_self_mention_message_is_ignored(self):
-        """A message containing only '@Bot' (no body, no media) must not dispatch.
+    def test_pure_self_mention_message_dispatches_now(self):
+        """A message containing only '@Bot' (no body, no media) now dispatches.
 
-        Regression guard: the rendered '@Hermes' slips past the pre-strip empty
-        guard; the post-strip guard must catch it.
+        The bare @-mention guard was relaxed: messages with only @-mentions
+        and no text are no longer dropped, so the bot can process them
+        in a normal session turn.
         """
         adapter = self._build_adapter()
         bot_mention = SimpleNamespace(
@@ -4770,7 +4771,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
                 chat_type="group", message_id="m5",
             )
         )
-        adapter._dispatch_inbound_event.assert_not_called()
+        adapter._dispatch_inbound_event.assert_called_once()
 
 
 class TestFeishuFetchMessageText(unittest.TestCase):

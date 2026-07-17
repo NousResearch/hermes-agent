@@ -8,6 +8,7 @@ from cron.jobs import (
     parse_duration,
     parse_schedule,
     compute_next_run,
+    compute_ticker_wait_seconds,
     create_job,
     load_jobs,
     save_jobs,
@@ -23,6 +24,7 @@ from cron.jobs import (
     heartbeat_run_claim,
     get_due_jobs,
     save_job_output,
+    seconds_until_next_job,
 )
 
 
@@ -53,6 +55,20 @@ class TestParseDuration:
     def test_whitespace_tolerance(self):
         assert parse_duration("  30m  ") == 30
         assert parse_duration("2 h") == 120
+
+    def test_seconds(self):
+        assert parse_duration("30s") == 0.5
+        assert parse_duration("10sec") == pytest.approx(10 / 60)
+        assert parse_duration("45secs") == 0.75
+        assert parse_duration("1second") == pytest.approx(1 / 60)
+        assert parse_duration("90seconds") == 1.5
+        assert parse_duration("0.5s") == pytest.approx(0.5 / 60)
+        assert parse_duration("  15s  ") == 0.25
+
+    def test_decimal_values(self):
+        assert parse_duration("1.5m") == 1.5
+        assert parse_duration("0.5h") == 30
+        assert parse_duration("0.25d") == 360
 
     def test_invalid_raises(self):
         with pytest.raises(ValueError):
@@ -91,6 +107,32 @@ class TestParseSchedule:
         result = parse_schedule("Every 30m")
         assert result["kind"] == "interval"
         assert result["minutes"] == 30
+
+    def test_every_seconds_interval(self):
+        result = parse_schedule("every 30s")
+        assert result["kind"] == "interval"
+        assert result["minutes"] == pytest.approx(0.5)
+        assert result["display"] == "every 30s"
+
+    def test_seconds_one_shot(self):
+        result = parse_schedule("30s")
+        assert result["kind"] == "once"
+        assert "run_at" in result
+        run_at_str = result["run_at"]
+        assert isinstance(run_at_str, str)
+        run_at = datetime.fromisoformat(run_at_str)
+        now = datetime.now().astimezone()
+        assert run_at > now
+        assert run_at < now + timedelta(minutes=1)
+        assert "once in 30s" in result["display"]
+
+    def test_decimal_duration(self):
+        result = parse_schedule("1.5m")
+        assert result["kind"] == "once"
+        run_at = datetime.fromisoformat(result["run_at"])
+        now = datetime.now().astimezone()
+        assert run_at > now
+        assert run_at < now + timedelta(minutes=2)
 
     def test_cron_expression(self):
         pytest.importorskip("croniter")
@@ -237,6 +279,69 @@ def tmp_cron_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
     monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path
+
+
+# =========================================================================
+# Adaptive ticker wait (sub-minute schedules)
+# =========================================================================
+
+class TestTickerWait:
+    def test_no_jobs_uses_max_interval(self, tmp_cron_dir):
+        assert seconds_until_next_job() is None
+        assert compute_ticker_wait_seconds(60) == 60
+        assert compute_ticker_wait_seconds(0) == 0.0
+
+    def test_near_term_job_shortens_wait(self, tmp_cron_dir):
+        create_job(prompt="soon", schedule="10s", name="near-term")
+        until = seconds_until_next_job()
+        assert until is not None
+        assert 0 < until <= 10.5
+        wait = compute_ticker_wait_seconds(60)
+        assert 0 < wait <= 10.5
+
+    def test_overdue_job_returns_near_zero_wait(self, tmp_cron_dir):
+        past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        save_jobs([
+            {
+                "id": "overdue1",
+                "name": "overdue",
+                "prompt": "x",
+                "enabled": True,
+                "state": "scheduled",
+                "schedule": {"kind": "once", "run_at": past},
+                "next_run_at": past,
+            }
+        ])
+        until = seconds_until_next_job()
+        assert until is not None
+        assert until <= 0
+        wait = compute_ticker_wait_seconds(60)
+        assert wait == pytest.approx(0.05)
+
+    def test_paused_and_disabled_jobs_ignored(self, tmp_cron_dir):
+        future = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
+        save_jobs([
+            {
+                "id": "paused1",
+                "name": "paused",
+                "prompt": "x",
+                "enabled": True,
+                "state": "paused",
+                "schedule": {"kind": "once", "run_at": future},
+                "next_run_at": future,
+            },
+            {
+                "id": "disabled1",
+                "name": "disabled",
+                "prompt": "x",
+                "enabled": False,
+                "state": "scheduled",
+                "schedule": {"kind": "once", "run_at": future},
+                "next_run_at": future,
+            },
+        ])
+        assert seconds_until_next_job() is None
+        assert compute_ticker_wait_seconds(60) == 60
 
 
 class TestJobCRUD:

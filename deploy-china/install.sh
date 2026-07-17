@@ -45,7 +45,7 @@ info "=============================================="
 info "  Hermes Agent 中国区一键安装"
 info "=============================================="
 echo ""
-read -p "安装模式 1=全新(默认) 2=已有Docker : " INSTALL_MODE
+read -p "安装模式 1=全新(默认) 2=已有Docker : " INSTALL_MODE </dev/tty
 INSTALL_MODE="${INSTALL_MODE:-1}"
 echo ""
 
@@ -148,14 +148,14 @@ docker ps --filter name=hermes-agent --format '{{.Status}}' 2>/dev/null | grep -
 
 # ===== Step 6: API Key =====
 info "【第6步/共7步】API Key..."
-read -p "输入 API Key（回车跳过）：" AK
+read -p "输入 API Key（回车跳过）：" AK </dev/tty
 [ -n "$AK" ] && docker exec hermes-agent hermes config set api_key "$AK" 2>/dev/null || true
 
 # ===== Step 7: Channels =====
 info "【第7步/共7步】聊天通道..."
-read -p "配置飞书？[y/N]：" FS
+read -p "配置飞书？[y/N]：" FS </dev/tty
 [ "$FS" = "y" ] || [ "$FS" = "Y" ] && docker exec hermes-agent hermes setup gateway feishu 2>&1 | head -10 || true
-read -p "配置钉钉？[y/N]：" DT
+read -p "配置钉钉？[y/N]：" DT </dev/tty
 [ "$DT" = "y" ] || [ "$DT" = "Y" ] && docker exec hermes-agent hermes setup gateway dingtalk 2>&1 | head -10 || true
 
 echo ""

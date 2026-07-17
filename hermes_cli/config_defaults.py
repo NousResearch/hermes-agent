@@ -1553,6 +1553,8 @@ DEFAULT_CONFIG = {
         # require_mention); limit = max messages scanned.
         "history_backfill": True,
         "history_backfill_limit": 50,
+        # Walk the whole thread past prior bot replies (opt-in; duplicates transcript).
+        "history_full_thread": False,
         # Replay messages missed while offline, after reconnect/startup.
         "missed_message_backfill": {
             "enabled": False,

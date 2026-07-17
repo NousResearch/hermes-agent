@@ -5254,14 +5254,16 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         allow_bots_raw = self._get_allow_bots()
         include_other_bots = allow_bots_raw != "none"
         # Narrow via cached last-self-message id (`after`) only if it predates the trigger; miss => full scan.
+        # Full-thread mode skips the cache: `after=` would drop everything before our last reply.
         channel_id = str(getattr(channel, "id", ""))
-        _cached_id = self._last_self_message_id.get(channel_id)
         _after_obj = None
-        try:
-            if _cached_id and int(_cached_id) < int(before.id):
-                _after_obj = discord.Object(id=int(_cached_id))
-        except (ValueError, TypeError):
-            pass  # Malformed cache entry — fall back to cold-start scan
+        if not full_thread:
+            _cached_id = self._last_self_message_id.get(channel_id)
+            try:
+                if _cached_id and int(_cached_id) < int(before.id):
+                    _after_obj = discord.Object(id=int(_cached_id))
+            except (ValueError, TypeError):
+                pass  # Malformed cache entry — fall back to cold-start scan
         is_thread_channel = isinstance(channel, discord.Thread)
         has_unverified = False
         try:
@@ -7372,6 +7374,10 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if hbl is not None:
         seeded_extra["history_backfill_limit"] = hbl
         _env_default("DISCORD_HISTORY_BACKFILL_LIMIT", str(hbl))
+    # history_full_thread: opt-in; walk the whole thread past prior bot replies.
+    if "history_full_thread" in discord_cfg:
+        seeded_extra["history_full_thread"] = discord_cfg["history_full_thread"]
+        _env_default("DISCORD_HISTORY_FULL_THREAD", str(discord_cfg["history_full_thread"]).lower())
     # allow_mentions: safe defaults live in the adapter; these keys only override when set.
     allow_mentions_cfg = discord_cfg.get("allow_mentions")
     if isinstance(allow_mentions_cfg, dict):

@@ -277,7 +277,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim, update_job
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -3674,6 +3674,46 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # below once delivery is done. Defense-in-depth alongside the
         # interpreter-shutdown guard in _deliver_result.
         _deferred_agents: list = []
+
+        # --- Pending delivery redelivery (#63695) ---
+        # If a previous run's output could not be delivered (Slack/network down,
+        # transient DNS failure, model-provider APIConnectionError), attempt a
+        # best-effort redelivery BEFORE running the new job.  This ensures the
+        # blocker report is not silently lost when the next pulse fires — the
+        # output is retried until it lands or the job produces fresh output.
+        # A successful redelivery clears the pending field; a persistent failure
+        # leaves it for the next tick.
+        _pending = job.get("pending_delivery")
+        if _pending and isinstance(_pending, str) and _pending.strip():
+            logger.info(
+                "Job '%s': found pending delivery from previous failed run "
+                "(~%d chars) — attempting redelivery before running next pulse",
+                job.get("name", job["id"]), len(_pending),
+            )
+            try:
+                _pending_err = _deliver_result(
+                    job, _pending, adapters=adapters, loop=loop,
+                )
+                if _pending_err is None:
+                    logger.info(
+                        "Job '%s': pending redelivery succeeded — clearing",
+                        job.get("name", job["id"]),
+                    )
+                    update_job(job["id"], {"pending_delivery": None})
+                    job["pending_delivery"] = None
+                else:
+                    logger.warning(
+                        "Job '%s': pending redelivery failed: %s — "
+                        "keeping for next tick",
+                        job.get("name", job["id"]), _pending_err,
+                    )
+            except Exception as _pe:
+                logger.warning(
+                    "Job '%s': pending redelivery raised: %s — "
+                    "keeping for next tick",
+                    job.get("name", job["id"]), _pe,
+                )
+
         try:
             success, output, final_response, error = run_job(
                 job, defer_agent_teardown=_deferred_agents
@@ -3737,9 +3777,35 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             if should_deliver:
                 try:
                     delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                    # Persist pending delivery for retry on next tick (#63695).
+                    # When delivery fails but the job produced output (whether
+                    # success=True or success=False — the failure summary is
+                    # still valuable), save the content so the next pulse can
+                    # redeliver it.  On success, clear any stale pending state.
+                    if delivery_error:
+                        logger.warning(
+                            "Job '%s': delivery failed (%s) — saving ~%d chars "
+                            "for pending redelivery on next tick",
+                            job.get("name", job["id"]),
+                            delivery_error[:120],
+                            len(deliver_content),
+                        )
+                        update_job(job["id"], {"pending_delivery": deliver_content})
+                    else:
+                        # Delivery succeeded — clear any leftover pending state
+                        # from a prior failure so stale content is never
+                        # redelivered alongside fresh output.
+                        _prev_pending = job.get("pending_delivery")
+                        if _prev_pending:
+                            update_job(job["id"], {"pending_delivery": None})
                 except Exception as de:
                     delivery_error = str(de)
-                    logger.error("Delivery failed for job %s: %s", job["id"], de)
+                    logger.error(
+                        "Delivery failed for job %s: %s — saving ~%d chars "
+                        "for pending redelivery on next tick",
+                        job["id"], de, len(deliver_content),
+                    )
+                    update_job(job["id"], {"pending_delivery": deliver_content})
         finally:
             # Tear down the deferred agent(s) now that save + delivery have run
             # (or raised). Must happen on every path so cron agents never leak

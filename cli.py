@@ -6476,10 +6476,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return
             cfg = cfg[part]
         # Final segment may not exist yet (user setting a new value), but the
-        # parent must be a dict.
+        # parent must be a dict. We do NOT hard-reject unknown leaves because
+        # some sections (custom_providers, plugin-specific keys) accept new
+        # entries at runtime — but typos like ``display.bel_on_complete`` are
+        # common, so emit a yellow warning that makes the new-key write
+        # visible without blocking it. Users who INTENDED the new key see the
+        # warning and proceed; users with a typo get a visible signal.
         if not isinstance(cfg, dict):
             _cprint(f"\033[1;31m  ✗ {'.'.join(parts[:-1])} is not a section (cannot set sub-keys)\033[0m")
             return
+        if parts[-1] not in cfg:
+            _cprint(f"  \033[33m⚠ {key_path}: creating new key (typo? existing keys: {', '.join(sorted(cfg.keys()))})\033[0m")
 
         # Keys that can safely live-apply without restart. ``compression.*``
         # is NOT in this set: the active ContextCompressor is constructed

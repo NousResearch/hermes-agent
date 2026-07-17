@@ -409,3 +409,65 @@ class TestToolProgressActiveAgentSync:
             cli_obj.process_command("/config set display.tool_progress verbose")
         # CLI side still updates
         assert cli_obj.tool_progress_mode == "verbose"
+
+
+class TestLeafKeyWarning:
+    """Regression tests for maintainer review finding 4: the prior
+    parent-only validation accepted any final leaf (e.g.
+    ``/config set display.nonexistent true``) so typos like
+    ``display.bel_on_complete`` silently created new keys with no
+    signal to the user.
+
+    Fix: emit a yellow warning that surfaces the typo without blocking
+    the legitimate "create a new key" case (custom_providers blocks and
+    plugin-specific sections accept runtime keys). Existing keys produce
+    no warning — only NEW keys trigger it.
+    """
+
+    def test_new_leaf_warns(self):
+        # Typo or genuinely new key — yellow warning surfaces either way
+        cli_obj = _make_cli()
+        printed = []
+        with patch("cli._cprint", side_effect=lambda t: printed.append(t)), \
+             patch("cli.save_config_value", return_value=True):
+            cli_obj.process_command("/config set display.nonexistent true")
+        combined = " ".join(printed)
+        assert "creating new key" in combined
+        assert "display.nonexistent" in combined
+        # And the key DID land in config (not blocked)
+        assert cli_obj.config["display"]["nonexistent"] is True
+
+    def test_existing_leaf_no_warning(self):
+        cli_obj = _make_cli()
+        printed = []
+        with patch("cli._cprint", side_effect=lambda t: printed.append(t)), \
+             patch("cli.save_config_value", return_value=True):
+            cli_obj.process_command("/config set display.bell_on_complete true")
+        combined = " ".join(printed)
+        assert "creating new key" not in combined
+
+    def test_typo_warning_lists_existing_keys(self):
+        # The warning's "existing keys:" hint helps the user spot typos —
+        # if they typed ``bel_on_complete`` and see ``bell_on_complete``
+        # in the list, the typo is obvious.
+        cli_obj = _make_cli()
+        printed = []
+        with patch("cli._cprint", side_effect=lambda t: printed.append(t)), \
+             patch("cli.save_config_value", return_value=True):
+            cli_obj.process_command("/config set display.bel_on_complete true")
+        combined = " ".join(printed)
+        assert "creating new key" in combined
+        assert "bell_on_complete" in combined
+        # The typo'd key DID get written (we don't hard-block)
+        assert cli_obj.config["display"]["bel_on_complete"] is True
+
+    def test_unknown_parent_still_rejected(self):
+        # Parent validation must still hard-reject — only the leaf step is
+        # soft-warned. Otherwise typos like ``disploy.bell true`` would
+        # silently create a new top-level section.
+        cli_obj = _make_cli()
+        printed = []
+        with patch("cli._cprint", side_effect=lambda t: printed.append(t)):
+            cli_obj.process_command("/config set disploy.bell true")
+        combined = " ".join(printed)
+        assert "Unknown config section" in combined

@@ -14625,12 +14625,12 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if bound_host in _LOOPBACK_HOSTS:
         try:
             from hermes_cli.dashboard_auth.prefix import resolve_public_url
-            import urllib.parse as _up
+
             _purl = resolve_public_url()
             if _purl:
                 # .hostname (not .netloc) strips any port and unwraps IPv6
                 # brackets, matching what _is_accepted_host expects below.
-                public_host = (_up.urlparse(_purl).hostname or "").lower()
+                public_host = (urllib.parse.urlparse(_purl).hostname or "").lower()
         except Exception:  # noqa: BLE001 — best-effort; never fail-closed on config lookup
             public_host = ""
 

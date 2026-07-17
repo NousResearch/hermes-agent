@@ -228,7 +228,7 @@ class TestWebSocketPublicUrlOrigin:
     def _patch_public_url(monkeypatch, url: str) -> None:
         import hermes_cli.dashboard_auth.prefix as prefix_mod
 
-        monkeypatch.setattr(prefix_mod, "resolve_public_url", lambda: url, raising=False)
+        monkeypatch.setattr(prefix_mod, "resolve_public_url", lambda: url)
 
     def test_public_url_with_explicit_port_is_accepted(self, monkeypatch):
         """Regression test: public_host used to be derived via .netloc

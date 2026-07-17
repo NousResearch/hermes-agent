@@ -630,7 +630,6 @@ export const hu: Translations = {
     allProfiles: "Összes profil",
     showArchived: "Archiváltak megjelenítése",
     lanesByProfile: "Sávok profil szerint",
-    nudgeDispatcher: "Dispatcher noszogatása",
     refresh: "Frissítés",
     selected: "kiválasztva",
     complete: "Befejezés",

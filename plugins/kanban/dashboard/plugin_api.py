@@ -1957,44 +1957,42 @@ def dispatch(
     board: Optional[str] = Query(None),
 ):
     board = _resolve_board(board)
-    lock_handle = None
-    if not dry_run:
-        try:
-            from hermes_cli.config import load_config
+    try:
+        from hermes_cli.config import load_config
 
-            config = load_config()
-            kanban_config = config.get("kanban", {}) if isinstance(config, dict) else {}
-            if not isinstance(kanban_config, dict):
-                kanban_config = {}
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail="kanban dispatcher admission is unavailable",
-            ) from exc
-        if kanban_config.get("dispatch_in_gateway", True):
-            raise HTTPException(
-                status_code=409,
-                detail="kanban dispatch is owned by the gateway",
-            )
-        try:
-            from gateway.kanban_watchers import (
-                _acquire_singleton_lock,
-                _release_singleton_lock,
-            )
+        config = load_config()
+        kanban_config = config.get("kanban", {}) if isinstance(config, dict) else {}
+        if not isinstance(kanban_config, dict):
+            kanban_config = {}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="kanban dispatcher admission is unavailable",
+        ) from exc
+    if kanban_config.get("dispatch_in_gateway", True):
+        raise HTTPException(
+            status_code=409,
+            detail="kanban dispatch is owned by the gateway",
+        )
+    try:
+        from gateway.kanban_watchers import (
+            _acquire_singleton_lock,
+            _release_singleton_lock,
+        )
 
-            lock_handle, lock_state = _acquire_singleton_lock(
-                kanban_db.kanban_home() / "kanban" / ".dispatcher.lock"
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail="kanban dispatcher admission is unavailable",
-            ) from exc
-        if lock_state != "held":
-            raise HTTPException(
-                status_code=409 if lock_state == "contended" else 503,
-                detail="kanban dispatcher singleton lock is unavailable",
-            )
+        lock_handle, lock_state = _acquire_singleton_lock(
+            kanban_db.kanban_home() / "kanban" / ".dispatcher.lock"
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="kanban dispatcher admission is unavailable",
+        ) from exc
+    if lock_state != "held":
+        raise HTTPException(
+            status_code=409 if lock_state == "contended" else 503,
+            detail="kanban dispatcher singleton lock is unavailable",
+        )
     conn = None
     try:
         conn = _conn(board=board)

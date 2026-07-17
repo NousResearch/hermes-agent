@@ -631,7 +631,6 @@ export const uk: Translations = {
     allProfiles: "Усі профілі",
     showArchived: "Показати архівовані",
     lanesByProfile: "Доріжки за профілем",
-    nudgeDispatcher: "Підштовхнути диспетчер",
     refresh: "Оновити",
     selected: "вибрано",
     complete: "Завершити",

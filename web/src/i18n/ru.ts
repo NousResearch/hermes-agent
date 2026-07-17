@@ -630,7 +630,6 @@ export const ru: Translations = {
     allProfiles: "Все профили",
     showArchived: "Показать архив",
     lanesByProfile: "Дорожки по профилю",
-    nudgeDispatcher: "Подтолкнуть диспетчер",
     refresh: "Обновить",
     selected: "выбрано",
     complete: "Завершить",

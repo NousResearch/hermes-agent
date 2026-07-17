@@ -692,7 +692,6 @@ export const en: Translations = {
     allProfiles: "All profiles",
     showArchived: "Show archived",
     lanesByProfile: "Lanes by profile",
-    nudgeDispatcher: "Nudge dispatcher",
     refresh: "Refresh",
     selected: "selected",
     complete: "Complete",

@@ -629,7 +629,6 @@ export const zhHant: Translations = {
     allProfiles: "全部設定檔",
     showArchived: "顯示已封存",
     lanesByProfile: "依設定檔分組",
-    nudgeDispatcher: "觸發排程器",
     refresh: "重新整理",
     selected: "已選取",
     complete: "完成",

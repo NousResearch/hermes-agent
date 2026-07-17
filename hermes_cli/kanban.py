@@ -2230,10 +2230,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
         if not isinstance(_kanban_cfg, dict):
             _kanban_cfg = {}
-        if (
-            not getattr(args, "dry_run", False)
-            and _kanban_cfg.get("dispatch_in_gateway", True)
-        ):
+        if _kanban_cfg.get("dispatch_in_gateway", True):
             print(
                 "kanban: manual dispatch is disabled while "
                 "kanban.dispatch_in_gateway=true; use the singleton gateway "
@@ -2263,28 +2260,44 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             _kanban_cfg.get("max_spawn")
         )
     except Exception:
-        if not getattr(args, "dry_run", False):
-            print(
-                "kanban: manual dispatch is disabled while "
-                "kanban.dispatch_in_gateway=true; use the singleton gateway "
-                "(`hermes gateway start`) or set it to false first.",
-                file=sys.stderr,
-            )
-            return 2
-        default_assignee = None
-        max_in_progress_per_profile = None
-        max_in_progress = None
-        max_spawn = getattr(args, "max", None)
-    with kb.connect_closing() as conn:
-        res = kb.dispatch_once(
-            conn,
-            dry_run=args.dry_run,
-            max_spawn=max_spawn,
-            max_in_progress=max_in_progress,
-            failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
-            default_assignee=default_assignee,
-            max_in_progress_per_profile=max_in_progress_per_profile,
+        print(
+            "kanban: manual dispatch is disabled while "
+            "kanban.dispatch_in_gateway=true; use the singleton gateway "
+            "(`hermes gateway start`) or set it to false first.",
+            file=sys.stderr,
         )
+        return 2
+    try:
+        from gateway.kanban_watchers import (
+            _acquire_singleton_lock,
+            _release_singleton_lock,
+        )
+
+        lock_handle, lock_state = _acquire_singleton_lock(
+            kb.kanban_home() / "kanban" / ".dispatcher.lock"
+        )
+    except Exception:
+        lock_handle, lock_state = None, "unavailable"
+    if lock_state != "held":
+        print(
+            "kanban: dispatcher singleton lock is unavailable; "
+            "refusing standalone dispatch.",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        with kb.connect_closing() as conn:
+            res = kb.dispatch_once(
+                conn,
+                dry_run=args.dry_run,
+                max_spawn=max_spawn,
+                max_in_progress=max_in_progress,
+                failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
+                default_assignee=default_assignee,
+                max_in_progress_per_profile=max_in_progress_per_profile,
+            )
+    finally:
+        _release_singleton_lock(lock_handle)
     if getattr(args, "json", False):
         print(json.dumps({
             "reclaimed": res.reclaimed,

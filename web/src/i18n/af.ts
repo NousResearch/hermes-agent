@@ -630,7 +630,6 @@ export const af: Translations = {
     allProfiles: "Alle profiele",
     showArchived: "Wys gearchiveerde",
     lanesByProfile: "Bane per profiel",
-    nudgeDispatcher: "Por versender aan",
     refresh: "Verfris",
     selected: "gekies",
     complete: "Voltooi",

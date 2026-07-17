@@ -638,7 +638,6 @@ export const ga: Translations = {
     allProfiles: "Gach profile",
     showArchived: "Taispeáin cinn cartlannaithe",
     lanesByProfile: "Lánaí de réir profile",
-    nudgeDispatcher: "Spreag an dispatcher",
     refresh: "Athnuaigh",
     selected: "roghnaithe",
     complete: "Cuir i gcrích",

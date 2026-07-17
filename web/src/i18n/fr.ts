@@ -630,7 +630,6 @@ export const fr: Translations = {
     allProfiles: "Tous les profils",
     showArchived: "Afficher les archivés",
     lanesByProfile: "Couloirs par profil",
-    nudgeDispatcher: "Solliciter le dispatcher",
     refresh: "Rafraîchir",
     selected: "sélectionné(s)",
     complete: "Terminer",

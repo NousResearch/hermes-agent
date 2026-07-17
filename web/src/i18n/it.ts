@@ -629,7 +629,6 @@ export const it: Translations = {
     allProfiles: "Tutti i profili",
     showArchived: "Mostra archiviati",
     lanesByProfile: "Corsie per profilo",
-    nudgeDispatcher: "Sollecita dispatcher",
     refresh: "Aggiorna",
     selected: "selezionato/i",
     complete: "Completa",

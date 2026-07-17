@@ -752,20 +752,8 @@ def test_add_link_cycle_rejected(client):
 # ---------------------------------------------------------------------------
 
 
-def test_dashboard_removes_dispatch_nudge_and_documents_standalone_api():
-    """The dashboard cannot mutate dispatch; its standalone API contract stays visible."""
-    repo_root = Path(__file__).resolve().parents[2]
-    bundle = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
-    docs = (repo_root / "website" / "docs" / "user-guide" / "features" / "kanban.md").read_text()
-
-    assert "Nudge dispatcher" not in bundle
-    assert "onNudgeDispatch" not in bundle
-    assert "`dry_run=true` previews dispatch" in docs
-    assert "`dry_run=false` is standalone-only" in docs
-    assert "returns 409 while `kanban.dispatch_in_gateway: true`" in docs
-
-
-def test_dispatch_refuses_mutation_while_gateway_owns_dispatch(client, monkeypatch):
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_dispatch_refuses_gateway_owned_dispatch_before_db_access(client, monkeypatch, dry_run):
     """Dashboard POST must not bypass the gateway-owned dispatcher."""
     from hermes_cli import config
 
@@ -777,32 +765,40 @@ def test_dispatch_refuses_mutation_while_gateway_owns_dispatch(client, monkeypat
     monkeypatch.setattr(
         kb, "dispatch_once", lambda *args, **kwargs: calls.append((args, kwargs)),
     )
+    monkeypatch.setattr(
+        "hermes_dashboard_plugin_kanban_test._conn",
+        lambda **kwargs: pytest.fail("gateway-owned dispatch must not open the DB"),
+    )
 
-    response = client.post("/api/plugins/kanban/dispatch?max=4")
+    response = client.post(f"/api/plugins/kanban/dispatch?dry_run={str(dry_run).lower()}&max=4")
 
     assert response.status_code == 409
     assert calls == []
 
 
-def test_dispatch_dry_run_remains_available_while_gateway_owns_dispatch(client, monkeypatch):
-    """A dry run is a preview, not a competing dispatcher mutation."""
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_dispatch_refuses_when_config_admission_fails(client, monkeypatch, dry_run):
+    """A failed config read must not make either dispatch mode permissive."""
     from hermes_cli import config
 
     calls = []
     monkeypatch.setattr(
         config, "load_config",
-        lambda: {"kanban": {"dispatch_in_gateway": True}},
+        lambda: (_ for _ in ()).throw(RuntimeError("config unavailable")),
     )
     monkeypatch.setattr(
         kb,
-        "dispatch_once",
-        lambda *args, **kwargs: calls.append((args, kwargs)) or kb.DispatchResult(),
+        "dispatch_once", lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        "hermes_dashboard_plugin_kanban_test._conn",
+        lambda **kwargs: pytest.fail("failed admission must not open the DB"),
     )
 
-    response = client.post("/api/plugins/kanban/dispatch?dry_run=true&max=4")
+    response = client.post(f"/api/plugins/kanban/dispatch?dry_run={str(dry_run).lower()}&max=4")
 
-    assert response.status_code == 200
-    assert calls and calls[0][1]["dry_run"] is True
+    assert response.status_code == 503
+    assert calls == []
 
 
 @pytest.mark.parametrize(
@@ -834,8 +830,9 @@ def test_dispatch_refuses_standalone_mutation_without_singleton_lock(
     assert calls == []
 
 
-def test_dispatch_standalone_mutation_holds_singleton_lock(client, monkeypatch):
-    """The only standalone path shares and releases the gateway lock."""
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_dispatch_standalone_holds_singleton_lock(client, monkeypatch, dry_run):
+    """Every standalone path shares and releases the gateway lock."""
     from gateway import kanban_watchers
     from hermes_cli import config
 
@@ -861,24 +858,12 @@ def test_dispatch_standalone_mutation_holds_singleton_lock(client, monkeypatch):
         lambda *args, **kwargs: calls.append((args, kwargs)) or kb.DispatchResult(),
     )
 
-    response = client.post("/api/plugins/kanban/dispatch?max=4")
+    response = client.post(f"/api/plugins/kanban/dispatch?dry_run={str(dry_run).lower()}&max=4")
 
     assert response.status_code == 200
     assert acquired == [kb.kanban_home() / "kanban" / ".dispatcher.lock"]
-    assert calls
+    assert calls and calls[0][1]["dry_run"] is dry_run
     assert released == [handle]
-
-
-def test_dispatch_dry_run(client):
-    client.post(
-        "/api/plugins/kanban/tasks",
-        json={"title": "work", "assignee": "researcher"},
-    )
-    r = client.post("/api/plugins/kanban/dispatch?dry_run=true&max=4")
-    assert r.status_code == 200
-    body = r.json()
-    # DispatchResult is serialized as a dataclass dict.
-    assert isinstance(body, dict)
 
 
 # ---------------------------------------------------------------------------

@@ -605,7 +605,7 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `PUT` | `/orchestration` | Update one or more of the three orchestration keys in `config.yaml`. Validates that non-empty profile names actually exist. |
 | `POST` | `/links` | Add a dependency (`parent_id` → `child_id`) |
 | `DELETE` | `/links?parent_id=…&child_id=…` | Remove a dependency |
-| `POST` | `/dispatch?max=…&dry_run=…` | Standalone dispatch API. `dry_run=true` previews dispatch even when the gateway owns it; `dry_run=false` is standalone-only and returns 409 while `kanban.dispatch_in_gateway: true`. |
+| `POST` | `/dispatch?max=…&dry_run=…` | Standalone dispatch API. `dry_run=true` and `dry_run=false` are standalone-only: both return 409 while `kanban.dispatch_in_gateway: true`, and both hold the dispatcher singleton lock. `dry_run` suppresses claims and spawns, but scheduler maintenance may write. |
 | `GET` | `/config` | Read `dashboard.kanban` preferences from `config.yaml` — `default_tenant`, `lane_by_profile`, `include_archived_by_default`, `render_markdown` |
 | `WS` | `/events?since=<event_id>` | Live stream of `task_events` rows |
 

@@ -629,7 +629,6 @@ export const ja: Translations = {
     allProfiles: "すべてのプロファイル",
     showArchived: "アーカイブ済みを表示",
     lanesByProfile: "プロファイル別レーン",
-    nudgeDispatcher: "ディスパッチャーを起動",
     refresh: "更新",
     selected: "選択中",
     complete: "完了",

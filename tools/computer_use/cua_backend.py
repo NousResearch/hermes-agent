@@ -233,6 +233,67 @@ def _is_macos() -> bool:
     return sys.platform == "darwin"
 
 
+def _is_linux() -> bool:
+    return sys.platform == "linux"
+
+
+def _is_linux_x11() -> bool:
+    """True on Linux with the X11 (or XWayland) display server."""
+    return _is_linux() and os.environ.get("DISPLAY") is not None
+
+
+def _kde_plasma_detected() -> bool:
+    """Best-effort KDE Plasma detection via known environment variables.
+
+    Returns True when any of the supported KDE session indicators is set,
+    which implies cua-driver's uinput pointer may crash the Plasma/X11
+    session (#66392).  False on non-Linux, when none of the indicators
+    are present, or when the check itself fails (fail safe toward "not
+    detected" so the guard does not block non-KDE environments).
+
+    Checked variables (in priority order):
+      - ``KDE_FULL_SESSION`` — classic KDE indicator (set to ``true``)
+      - ``XDG_CURRENT_DESKTOP`` matching ``"KDE"`` (case-insensitive)
+      - ``DESKTOP_SESSION`` matching ``"plasma"`` or ``"kde-plasma"``
+    """
+    if not _is_linux():
+        return False
+    if os.environ.get("KDE_FULL_SESSION", "").lower() in ("true", "1"):
+        return True
+    xdg = os.environ.get("XDG_CURRENT_DESKTOP", "")
+    if xdg and xdg.lower() == "kde":
+        return True
+    ds = os.environ.get("DESKTOP_SESSION", "")
+    if ds and ("plasma" in ds.lower() or "kde" in ds.lower()):
+        return True
+    return False
+
+
+def _linux_cua_allowed() -> bool:
+    """Return True when computer_use is safe on this Linux host.
+
+    On KDE Plasma / X11, cua-driver 0.8.3's uinput virtual pointer can
+    crash the entire Qt session (#66392).  We require an explicit opt-in
+    via the ``computer_use.linux_opt_in`` config key to proceed.
+
+    Non-Linux, non-KDE, and read-error paths all return True so the
+    guard never blocks production macOS/Windows use or new Linux desktop
+    environments that don't carry the crash vector.
+    """
+    if not _is_linux() or not _kde_plasma_detected():
+        return True
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        cu = cfg.get("computer_use") or {}
+        return bool(cu.get("linux_opt_in", False))
+    except Exception:
+        # Config unreadable — fail open toward available so the doctor
+        # command (which doesn't depend on config) still works.
+        return True
+
+
 def cua_driver_binary_available() -> bool:
     """True if `cua-driver` is on $PATH or HERMES_CUA_DRIVER_CMD resolves."""
     return bool(shutil.which(_CUA_DRIVER_CMD))
@@ -1215,9 +1276,23 @@ class CuaDriverBackend(ComputerUseBackend):
         # degrade to the anonymous / unsynced path documented in the
         # MCP server instructions.
         self._session_id: str = f"hermes-{uuid.uuid4().hex[:12]}"
+        # Whether we've declared the input-capable run session
+        # (start_session) to cua-driver yet. Deferred until the first
+        # real input/cursor action so read-only capture/list flows never
+        # spin up the agent-cursor virtual pointer — on Linux/X11 that
+        # uinput pointer can crash a KDE Plasma/Qt session (#66392).
+        self._run_session_declared: bool = False
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
+        if not _linux_cua_allowed():
+            raise RuntimeError(
+                "computer_use is blocked on this Linux host: KDE Plasma / X11 "
+                "detected. cua-driver 0.8.3's uinput virtual pointer can crash "
+                "the entire KDE Plasma/Qt session (#66392). "
+                "To override, set `computer_use.linux_opt_in: true` in config.yaml "
+                "and ensure cua-driver >= 0.8.4 is installed."
+            )
         _maybe_nudge_update()
         # The MCP client SDK (`mcp`) is an optional dependency (the
         # `computer-use` / `mcp` extras), not part of Hermes' minimal core.
@@ -1234,16 +1309,29 @@ class CuaDriverBackend(ComputerUseBackend):
         import importlib
         importlib.invalidate_caches()
         self._session.start()
+        # NB: we intentionally do NOT declare the run session here. The
+        # agent-cursor session (start_session) is declared lazily on the
+        # first input action via _ensure_run_session_declared(); see #66392
+        # — declaring it eagerly created a uinput virtual pointer even for
+        # read-only captures, which crashes KDE Plasma/Qt on Linux/X11.
 
-        # Declare the run's session identity to cua-driver. From the
-        # cua-driver server instructions: "start_session(session) once
-        # at the start of a run → declares THIS run's identity (a
-        # stable id you choose). Pass that same `session` on every
-        # action below. It owns your agent cursor (a distinct color
-        # per id) and follows the run across apps/windows." Failure
-        # to start the session is non-fatal — cua-driver's tools
-        # accept anonymous calls (the cursor just won't render),
-        # so we degrade rather than abort.
+    def _ensure_run_session_declared(self) -> None:
+        """Declare this run's cua-driver session (agent cursor) exactly once,
+        on the first genuine input/cursor action.
+
+        From the cua-driver server instructions: "start_session(session) once
+        at the start of a run → declares THIS run's identity (a stable id you
+        choose). Pass that same `session` on every action below. It owns your
+        agent cursor (a distinct color per id) and follows the run across
+        apps/windows." Deferring it to the first _action() keeps read-only
+        capture/list flows from spinning up the agent-cursor virtual pointer
+        (#66392). Failure to declare it is non-fatal — cua-driver's tools
+        accept anonymous calls (the cursor just won't render), so we degrade
+        rather than abort.
+        """
+        if self._run_session_declared:
+            return
+        self._run_session_declared = True
         try:
             self._session.call_tool("start_session", {"session": self._session_id})
         except Exception as e:
@@ -1255,7 +1343,7 @@ class CuaDriverBackend(ComputerUseBackend):
         # ownership, config overrides). Best-effort — even if it fails,
         # the connection drop below releases the daemon-side state via
         # the session_end hook cua-driver registers internally.
-        if self._session._started:
+        if self._run_session_declared and self._session._started:
             try:
                 self._session.call_tool("end_session", {"session": self._session_id})
             except Exception as e:
@@ -2311,6 +2399,9 @@ class CuaDriverBackend(ComputerUseBackend):
         args["element_token"] = token
 
     def _action(self, name: str, args: Dict[str, Any]) -> ActionResult:
+        # Declare this run's agent-cursor session on the first input action
+        # (lazily), never for read-only capture/list flows — see #66392.
+        self._ensure_run_session_declared()
         # Attach the snapshot's element_token whenever the call carries
         # an element_index and the target tool advertises support.
         self._maybe_attach_element_token(name, args)

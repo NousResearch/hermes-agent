@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 type BrowserAudioContext = typeof AudioContext
 
@@ -71,6 +71,8 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const streamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const audioContextRef = useRef<AudioContext | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
   const animationRef = useRef<number | null>(null)
   const startedAtRef = useRef(0)
   const heardSpeechRef = useRef(false)
@@ -78,23 +80,48 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const silenceStartedAtRef = useRef<number | null>(null)
   const stopResolverRef = useRef<((recording: MicRecording | null) => void) | null>(null)
 
-  const cleanup = () => {
+  const stopMeter = useCallback(() => {
     if (animationRef.current) {
       window.cancelAnimationFrame(animationRef.current)
       animationRef.current = null
     }
 
+    setLevel(0)
+  }, [])
+
+  // Tear down the per-turn audio graph (meter loop, analyser, AudioContext).
+  // The AudioContext is intentionally NOT kept alive between turns: the browser
+  // can suspend an idle context, after which the analyser reads silence and
+  // speech detection silently stops (the turn then idles out after ~12s). It's
+  // cheap to recreate, so we rebuild it fresh on every re-arm.
+  const teardownAudioGraph = useCallback(() => {
+    stopMeter()
+    sourceRef.current?.disconnect()
+    sourceRef.current = null
+    analyserRef.current = null
     void audioContextRef.current?.close()
     audioContextRef.current = null
-    streamRef.current?.getTracks().forEach(track => track.stop())
-    streamRef.current = null
+  }, [stopMeter])
+
+  // Soft stop between turns: drop the per-turn MediaRecorder + audio graph but
+  // KEEP the mic STREAM alive, so the next turn re-arms without a fresh
+  // getUserMedia (that round-trip was the multi-second post-TTS mic delay).
+  const softCleanup = useCallback(() => {
+    teardownAudioGraph()
     recorderRef.current = null
-    setLevel(0)
     setRecording(false)
     silenceTriggeredRef.current = false
-  }
+  }, [teardownAudioGraph])
 
-  useEffect(() => () => cleanup(), [])
+  // Full release: also stop the mic tracks. Used when the conversation
+  // ends/cancels, on a recorder error, or on unmount.
+  const releaseStream = useCallback(() => {
+    softCleanup()
+    streamRef.current?.getTracks().forEach(track => track.stop())
+    streamRef.current = null
+  }, [softCleanup])
+
+  useEffect(() => () => releaseStream(), [releaseStream])
 
   const startMeter = (stream: MediaStream, options: MicRecorderOptions) => {
     const audioWindow = window as Window & { webkitAudioContext?: BrowserAudioContext }
@@ -105,15 +132,20 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     }
 
     try {
+      // Fresh AudioContext per turn (see teardownAudioGraph) — built on the
+      // kept-alive stream, so this is cheap and always starts in 'running'.
       const audioContext = new AudioContextCtor()
       const analyser = audioContext.createAnalyser()
-      const source = audioContext.createMediaStreamSource(stream)
-
       analyser.fftSize = 256
-      const data = new Uint8Array(analyser.fftSize)
 
+      const source = audioContext.createMediaStreamSource(stream)
       source.connect(analyser)
+
       audioContextRef.current = audioContext
+      analyserRef.current = analyser
+      sourceRef.current = source
+
+      const data = new Uint8Array(analyser.fftSize)
 
       const tick = () => {
         analyser.getByteTimeDomainData(data)
@@ -175,20 +207,33 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       throw new Error(copy.microphoneUnsupported)
     }
 
-    const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()
+    // Reuse a still-live stream from a previous turn so we skip the costly
+    // requestMicrophoneAccess + getUserMedia round-trip — that round-trip was
+    // the seconds-long re-arm delay after the assistant finished speaking.
+    let stream = streamRef.current
 
-    if (permitted === false) {
-      throw new Error(copy.microphoneAccessDenied)
-    }
+    if (!stream || !stream.getTracks().some(track => track.readyState === 'live')) {
+      const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()
 
-    let stream: MediaStream
+      if (permitted === false) {
+        throw new Error(copy.microphoneAccessDenied)
+      }
 
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true }
-      })
-    } catch (error) {
-      throw micError(error, copy)
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true }
+        })
+      } catch (error) {
+        throw micError(error, copy)
+      }
+
+      // A brand-new stream invalidates any analyser graph wired to the old one.
+      sourceRef.current?.disconnect()
+      sourceRef.current = null
+      analyserRef.current = null
+      void audioContextRef.current?.close()
+      audioContextRef.current = null
+      streamRef.current = stream
     }
 
     const mimeType =
@@ -226,7 +271,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       const heardSpeech = heardSpeechRef.current
 
       chunksRef.current = []
-      cleanup()
+      softCleanup()
 
       const resolver = stopResolverRef.current
       stopResolverRef.current = null
@@ -248,7 +293,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       const error = micError((event as Event & { error?: unknown }).error, copy)
       const resolver = stopResolverRef.current
       stopResolverRef.current = null
-      cleanup()
+      releaseStream()
       options.onError?.(error)
       resolver?.(null)
     }
@@ -263,7 +308,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       const recorder = recorderRef.current
 
       if (!recorder || recorder.state === 'inactive') {
-        cleanup()
+        softCleanup()
         resolve(null)
 
         return
@@ -285,7 +330,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       recorder.stop()
     }
 
-    cleanup()
+    releaseStream()
     resolver?.(null)
   }
 

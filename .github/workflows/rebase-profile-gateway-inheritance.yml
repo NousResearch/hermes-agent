@@ -1,0 +1,62 @@
+name: Rebase profile gateway inheritance PR
+
+on:
+  push:
+    branches:
+      - fix/profile-gateway-inheritance-label
+
+permissions:
+  contents: write
+
+jobs:
+  rebase-test-and-push:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out contribution branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: fix/profile-gateway-inheritance-label
+          fetch-depth: 0
+
+      - name: Rebase onto current upstream main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Jaret Bottoms"
+          git config user.email "25535214+jbbottoms@users.noreply.github.com"
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch --no-tags upstream main
+          git rebase upstream/main
+
+      - name: Install JavaScript dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+
+      - name: Run focused Desktop verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run test:ui --workspace apps/desktop -- src/app/settings/gateway-settings.test.tsx
+          npm run typecheck --workspace apps/desktop
+          npm run lint --workspace apps/desktop -- \
+            src/app/settings/gateway-settings.tsx \
+            src/app/settings/gateway-settings.test.tsx \
+            src/i18n/en.ts \
+            src/i18n/ja.ts \
+            src/i18n/types.ts \
+            src/i18n/zh-hant.ts \
+            src/i18n/zh.ts
+          git diff --check upstream/main
+
+      - name: Remove bootstrap and publish refreshed branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/rebase-profile-gateway-inheritance.yml
+          git add -A
+          git commit -m "chore: refresh gateway inheritance fix on current main"
+          git push --force-with-lease origin HEAD:fix/profile-gateway-inheritance-label

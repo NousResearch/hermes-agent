@@ -306,19 +306,9 @@ class BrowserUseBrowserProvider(BrowserProvider):
                 "Emergency cleanup failed for Browser Use session %s: %s", session_id, e
             )
 
-    def get_setup_schema(self) -> Dict[str, Any]:
-        return {
-            "name": "Browser Use",
-            "badge": "paid",
-            "tag": "Cloud browser with remote execution",
-            "env_vars": [
-                {
-                    "key": "BROWSER_USE_API_KEY",
-                    "prompt": "Browser Use API key",
-                    "url": "https://browser-use.com",
-                },
-            ],
-            # Cloud-scoped hook: installs the agent-browser CLI only (no
-            # local Chromium — Browser Use hosts the browser).
-            "post_setup": "browserbase",
-        }
+    def get_setup_schema(self) -> Optional[Dict[str, Any]]:
+        # Hidden from the hermes tools picker: the "Browser Use" row now
+        # activates the CLI-based backend (tools/browser_use_cli.py). This
+        # provider stays registered for the Nous gateway path and un-migrated
+        # legacy cloud_provider configs.
+        return None

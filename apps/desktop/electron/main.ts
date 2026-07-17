@@ -24,7 +24,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } from 'electron'
 import nodePty from 'node-pty'
 
@@ -2194,6 +2195,8 @@ let updateInFlight = false
 // set, window-all-closed calls app.quit() on every platform so the process
 // actually dies and the hand-off script can proceed immediately.
 let isQuittingForHandoff = false
+let tray = null
+let isQuitting = false
 
 // Resolve the staged updater binary. The Tauri installer copies itself to
 // HERMES_HOME/hermes-setup.exe on a successful install (see
@@ -7330,7 +7333,16 @@ function createWindow() {
   mainWindow.on('moved', schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  // Close → hide to tray on Windows/Linux; actually quit when the user
+  // explicitly selects Quit from the tray menu (isQuitting is set in before-quit).
+  mainWindow.on('close', (event) => {
+    schedulePersistWindowState.flush()
+
+    if (!IS_MAC && !isQuitting) {
+      event.preventDefault()
+      mainWindow.hide()
+    }
+  })
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   const createdMainWindow = mainWindow
@@ -9148,6 +9160,67 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
+/**
+ * Create the system tray icon with context menu (Windows/Linux only).
+ * On macOS, tray is unnecessary since the app stays alive in the Dock.
+ */
+function createTray() {
+  if (IS_MAC || tray) {
+    return
+  }
+
+  const iconPath = getAppIconPath()
+
+  if (!iconPath) {
+    return
+  }
+
+  try {
+    const icon = nativeImage.createFromPath(iconPath)
+    tray = new Tray(icon.resize({ width: 32, height: 32 }))
+    tray.setToolTip(APP_NAME)
+
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: `Open ${APP_NAME}`,
+        click: () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.show()
+            mainWindow.focus()
+          } else {
+            createWindow()
+          }
+        }
+      },
+      { type: 'separator' },
+      {
+        label: 'Quit',
+        click: () => {
+          isQuitting = true
+          app.quit()
+        }
+      }
+    ])
+
+    tray.setContextMenu(contextMenu)
+
+    // Left-click restores the window
+    tray.on('click', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isVisible()) {
+          mainWindow.focus()
+        } else {
+          mainWindow.show()
+          mainWindow.focus()
+        }
+      }
+    })
+  } catch (error) {
+    rememberLog(`[tray] Failed to create tray: ${error.message}`)
+    tray = null
+  }
+}
+
 app.whenReady().then(() => {
   if (IS_MAC) {
     Menu.setApplicationMenu(buildApplicationMenu())
@@ -9163,6 +9236,7 @@ app.whenReady().then(() => {
   configureSpellChecker()
   registerPowerResumeListeners()
   createWindow()
+  createTray()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
@@ -9207,6 +9281,8 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  isQuitting = true
+
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
@@ -9245,7 +9321,13 @@ app.on('window-all-closed', () => {
   // the bundle and relaunch — without this the script's PID-wait spins to its
   // full timeout and the user is left with an invisible app (or an uninstall
   // that appears to do nothing).
-  if (process.platform !== 'darwin' || isQuittingForHandoff) {
+  //
+  // On Windows/Linux with the tray feature, the main window hides instead of
+  // closing when the user clicks X. window-all-closed can still fire for
+  // secondary session windows, but the process should stay alive (tray is
+  // still visible). Only quit when the user explicitly chose Quit (isQuitting)
+  // or a hand-off script needs the process gone (isQuittingForHandoff).
+  if (isQuitting || isQuittingForHandoff) {
     app.quit()
   }
 })

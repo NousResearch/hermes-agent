@@ -467,11 +467,25 @@ def _codex_usage_unavailable_reason(status_code: int, body: str) -> str:
 def _build_codex_usage_snapshot(*, creds: dict[str, str], payload: dict[str, Any]) -> AccountUsageSnapshot:
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
-    for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
+    for key, default_label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
         window = rate_limit.get(key) or {}
         used = window.get("used_percent")
         if used is None:
             continue
+        limit_sec = window.get("limit_window_seconds")
+        if limit_sec is not None:
+            try:
+                sec = float(limit_sec)
+                if sec <= 86400:
+                    label = "Session"
+                elif sec <= 604800:
+                    label = "Weekly"
+                else:
+                    label = "Monthly"
+            except (ValueError, TypeError):
+                label = default_label
+        else:
+            label = default_label
         windows.append(
             AccountUsageWindow(
                 label=label,
@@ -573,11 +587,25 @@ def _fetch_codex_account_usage(
     payload = response.json() or {}
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
-    for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
+    for key, default_label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
         window = rate_limit.get(key) or {}
         used = window.get("used_percent")
         if used is None:
             continue
+        limit_sec = window.get("limit_window_seconds")
+        if limit_sec is not None:
+            try:
+                sec = float(limit_sec)
+                if sec <= 86400:
+                    label = "Session"
+                elif sec <= 604800:
+                    label = "Weekly"
+                else:
+                    label = "Monthly"
+            except (ValueError, TypeError):
+                label = default_label
+        else:
+            label = default_label
         windows.append(
             AccountUsageWindow(
                 label=label,

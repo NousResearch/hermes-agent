@@ -23,6 +23,8 @@ import time
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
+from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+
 logger = logging.getLogger(__name__)
 
 
@@ -1190,12 +1192,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         # late deltas are fenced out of the turn; conversely, a newer
         # attempt supersedes us and the interrupt_check below stops our
         # consumption immediately.
-        _writer_token = agent._claim_stream_writer()
+        _writer_token = claim_stream_writer(agent)
 
         def _interrupt_or_superseded(_tok=_writer_token) -> bool:
             if agent._interrupt_requested:
                 return True
-            if not agent._stream_writer_is_current(_tok):
+            if not stream_writer_is_current(agent, _tok):
                 logger.warning(
                     "Codex streaming attempt superseded by a newer stream; "
                     "stopping consumption to preserve the single-writer "

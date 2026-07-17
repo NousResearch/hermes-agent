@@ -70,6 +70,18 @@ class MessageDeduplicator:
                 self._seen = dict(newest)
         return False
 
+    def contains(self, msg_id: str) -> bool:
+        """Return whether *msg_id* is live in the cache without inserting it."""
+        if not msg_id:
+            return False
+        seen_at = self._seen.get(msg_id)
+        if seen_at is None:
+            return False
+        if time.time() - seen_at < self._ttl:
+            return True
+        del self._seen[msg_id]
+        return False
+
     def clear(self):
         """Clear all tracked messages."""
         self._seen.clear()

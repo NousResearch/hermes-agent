@@ -332,6 +332,12 @@ discord:
   no_thread_channels: []          # 机器人不创建线程直接响应的频道 ID
   history_backfill: true          # 在提及时前置最近的频道滚动历史（默认：true）
   history_backfill_limit: 50      # 向后扫描的最大消息数（默认：50）
+  missed_message_backfill:        # 重新处理断线期间遗漏的消息（需主动启用）
+    enabled: false
+    channels: []                  # 留空时使用 free_response_channels
+    window_seconds: 21600         # 最多回溯 6 小时
+    limit: 100                    # 每次重连的全局扫描上限
+    max_dispatches: 10            # 每次重连的恢复分发上限
   channel_prompts: {}             # 每个频道的临时系统 prompt（提示词）
   allow_mentions:                 # 机器人允许 ping 的内容（安全默认值）
     everyone: false               # @everyone / @here ping（默认：false）
@@ -500,6 +506,24 @@ discord:
   history_backfill: true
   history_backfill_limit: 50
 ```
+
+#### `discord.missed_message_backfill`
+
+**类型：** 对象 — **默认值：** 禁用
+
+Discord 的 WebSocket 恢复窗口可能在重启或网络中断时过期。在此期间发送的消息不会作为实时网关事件交付。启用后，Hermes 会在 Discord 重连后扫描一组有界的频道与线程历史记录，并将尚未处理的消息交给与实时事件相同的授权、提及、频道、去重和分发流程。
+
+```yaml
+discord:
+  missed_message_backfill:
+    enabled: true
+    channels: ["123456789012345678"]
+    window_seconds: 3600
+    limit: 100
+    max_dispatches: 10
+```
+
+如果 `channels` 留空，Hermes 会使用 `discord.free_response_channels`。只有当机器人确实需要检查所有可访问的服务器文字频道时才设置为 `"*"`。恢复账本按配置文件存储在 `gateway/discord_message_recovery.db`，避免已成功回复的消息在后续重启时再次执行。
 
 #### `group_sessions_per_user`
 

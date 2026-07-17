@@ -5753,7 +5753,19 @@ def cmd_gui(args: argparse.Namespace):
                 # from the application icon works without a manual
                 # ``sudo chown root:root``.
                 if sys.platform == "linux" and packaged_executable is not None:
-                    _desktop_linux_sandbox_fixup(packaged_executable)
+                    if not _desktop_linux_sandbox_fixup(packaged_executable):
+                        # A failed fixup would otherwise let `--build-only`
+                        # report success on a launch-time-broken install
+                        # (#58593 follow-up). The normal launch path fails
+                        # fatal for the same case; mirror that here so the
+                        # build stamp does not get written on a broken run.
+                        raise SystemExit(
+                            "Linux chrome-sandbox fixup failed after "
+                            "desktop build — see prior failures in the log "
+                            "for chown/chmod context. Aborting before the "
+                            "build stamp is written so the next launch can "
+                            "retry. (#58593)"
+                        )
 
             # Build succeeded — write the stamp so next run can skip
             _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)

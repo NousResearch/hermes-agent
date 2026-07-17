@@ -5949,7 +5949,66 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    def _apply_pre_gateway_dispatch_hook(self, event: MessageEvent) -> tuple[MessageEvent, bool]:
+        """Run the pre-dispatch hook once, including for busy-session messages.
+
+        Busy messages normally bypass ``_handle_message`` until their queued turn.
+        That allowed generic queue acknowledgements to escape plugin silence rules
+        (notably T2B WhatsApp project/site groups).  Mark the event after applying
+        the hook so allowed/re-written queued events are not processed twice when
+        their normal turn begins.
+        """
+        if bool(getattr(event, "internal", False)):
+            return event, False
+
+        metadata = dict(getattr(event, "metadata", None) or {})
+        if metadata.get("_pre_gateway_dispatch_applied"):
+            return event, False
+        metadata["_pre_gateway_dispatch_applied"] = True
+        event = dataclasses.replace(event, metadata=metadata)
+
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            hook_results = _invoke_hook(
+                "pre_gateway_dispatch",
+                event=event,
+                gateway=self,
+                session_store=self.session_store,
+            )
+        except Exception as hook_exc:
+            logger.warning("pre_gateway_dispatch invocation failed: %s", hook_exc)
+            hook_results = []
+
+        source = event.source
+        for result in hook_results:
+            if not isinstance(result, dict):
+                continue
+            action = result.get("action")
+            if action == "skip":
+                logger.info(
+                    "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
+                    result.get("reason"),
+                    source.platform.value if source and source.platform else "unknown",
+                    source.chat_id if source and source.chat_id else "unknown",
+                )
+                return event, True
+            if action == "rewrite":
+                new_text = result.get("text")
+                if isinstance(new_text, str):
+                    event = dataclasses.replace(event, text=new_text)
+                break
+            if action == "allow":
+                break
+        return event, False
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+        # Busy events reach this path before _handle_message. Apply the same
+        # pre-dispatch policy first so a plugin-level silence/skip decision cannot
+        # leak a generic "queued" or "interrupting" acknowledgement into groups.
+        event, hook_skipped = self._apply_pre_gateway_dispatch_hook(event)
+        if hook_skipped:
+            return True
+
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
         # creating a session.  The busy path must enforce the same check;
@@ -10494,46 +10553,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not is_internal:
             self._scale_to_zero_note_real_inbound()
 
-        # Fire pre_gateway_dispatch plugin hook for user-originated messages.
-        # Plugins receive the MessageEvent and may return a dict influencing flow:
-        #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
-        #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
-        #   {"action": "allow"}   /   None          -> normal dispatch
-        # Hook runs BEFORE auth so plugins can handle unauthorized senders
-        # (e.g. customer handover ingest) without triggering the pairing flow.
+        # Fire pre_gateway_dispatch once for user-originated messages. Busy-session
+        # messages may already have passed through this hook before being queued;
+        # the per-event marker prevents duplicate plugin side effects.
         if not is_internal:
-            try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
-                _hook_results = _invoke_hook(
-                    "pre_gateway_dispatch",
-                    event=event,
-                    gateway=self,
-                    session_store=self.session_store,
-                )
-            except Exception as _hook_exc:
-                logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
-                _hook_results = []
-
-            for _result in _hook_results:
-                if not isinstance(_result, dict):
-                    continue
-                _action = _result.get("action")
-                if _action == "skip":
-                    logger.info(
-                        "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
-                        _result.get("reason"),
-                        source.platform.value if source.platform else "unknown",
-                        source.chat_id or "unknown",
-                    )
-                    return None
-                if _action == "rewrite":
-                    _new_text = _result.get("text")
-                    if isinstance(_new_text, str):
-                        event = dataclasses.replace(event, text=_new_text)
-                        source = event.source
-                    break
-                if _action == "allow":
-                    break
+            event, hook_skipped = self._apply_pre_gateway_dispatch_hook(event)
+            source = event.source
+            if hook_skipped:
+                return None
 
         if is_internal:
             pass

@@ -1216,6 +1216,22 @@ def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] 
     return None
 
 
+def _load_config_safe() -> Optional[dict]:
+    """Load config.yaml, returning None on any error.
+
+    Intentionally duplicated from ``agent.credential_pool._load_config_safe``
+    to avoid a circular import — credential_pool imports from this module at
+    multiple call sites. The two copies must be kept identical. If you change
+    one, change the other.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        return load_config()
+    except Exception:
+        return None
+
+
 def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[str, Any]]) -> Optional[str]:
     """Prefer Claude Code creds when a persisted env OAuth token would shadow refresh.
 
@@ -1223,7 +1239,21 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     later refresh impossible because the static env token wins before we ever
     inspect Claude Code's refreshable credential file. If we have a refreshable
     Claude Code credential record, prefer it over the static env OAuth token.
+
+    Escape hatch: ``anthropic.force_env_token: true`` in config.yaml disables
+    this substitution entirely — the user's explicit .env token is always
+    respected, even if a stale Claude Code credential would otherwise win.
     """
+    # Escape hatch: respect a user's explicit .env ANTHROPIC_TOKEN over the
+    # Claude Code credential file. When the persisted cred is orphaned/expired,
+    # every API call fails with HTTP 400 "add funds at claude.ai/settings/usage"
+    # and there is otherwise no way to override it.
+    cfg = _load_config_safe()
+    if isinstance(cfg, dict):
+        anthropic_cfg = cfg.get("anthropic")
+        if isinstance(anthropic_cfg, dict) and anthropic_cfg.get("force_env_token") is True:
+            return None
+
     if not env_token or not _is_oauth_token(env_token) or not isinstance(creds, dict):
         return None
     if not creds.get("refreshToken"):

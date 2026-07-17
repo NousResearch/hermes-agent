@@ -533,6 +533,68 @@ class TestResolveAnthropicToken:
 
         assert resolve_anthropic_token() == "cc-auto-token"
 
+    def test_force_env_token_config_overrides_claude_code_credential_preference(self, monkeypatch, tmp_path):
+        """When ``anthropic.force_env_token`` is true in config.yaml, Hermes
+        must respect the user's explicit ``ANTHROPIC_TOKEN`` from .env even
+        when a refreshable Claude Code credential exists. Otherwise an
+        orphaned/expired Claude Code credential silently wins and every
+        API call fails with HTTP 400 "add funds at claude.ai/settings/usage".
+        """
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-user-env-token")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "cc-auto-token",
+                "refreshToken": "refresh-token",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            }
+        }))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        # Stub config load to simulate the user opting in via config.yaml.
+        # We patch the safe-loader rather than load_config itself so the test
+        # remains insulated from the real ~/.hermes/config.yaml.
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._load_config_safe",
+            lambda: {"anthropic": {"force_env_token": True}},
+        )
+
+        # User's .env token wins; Claude Code credential is NOT substituted.
+        assert resolve_anthropic_token() == "sk-ant-oat01-user-env-token"
+
+    def test_force_env_token_default_false_preserves_refresh_preference(self, monkeypatch, tmp_path):
+        """Invariant: when ``force_env_token`` is absent/false (the default),
+        the existing refresh-prefer behavior is preserved — a refreshable
+        Claude Code credential must still win over a static env OAuth token
+        so refresh can proceed. Regression guard against accidentally flipping
+        the default on/off."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "cc-auto-token",
+                "refreshToken": "refresh-token",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            }
+        }))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        # Config absent → force_env_token defaults to False → existing behavior.
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._load_config_safe",
+            lambda: {},
+        )
+
+        assert resolve_anthropic_token() == "cc-auto-token"
+
     def test_keeps_static_anthropic_token_when_only_non_refreshable_claude_key_exists(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")

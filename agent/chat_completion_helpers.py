@@ -287,10 +287,65 @@ def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     else:
         _timeout = _base
     from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
-    _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
+    # Resolve the model id from BOTH the OpenAI/Anthropic key (``model``) and
+    # the Bedrock key (``modelId``). OpenAI/Anthropic wins first via the ``or``
+    # chain, so those paths are unchanged. Bedrock carries the model as a
+    # dotted, region-prefixed inference-profile id (e.g.
+    # ``us.anthropic.claude-opus-4-6-v1:0``) that the floor's start-of-slug
+    # regex cannot match directly — normalize it to a canonical slug first.
+    _model_id = api_kwargs.get("model") or api_kwargs.get("modelId") or ""
+    _reasoning_floor = get_reasoning_stale_timeout_floor(_model_id)
+    if _reasoning_floor is None and api_kwargs.get("modelId"):
+        _reasoning_floor = _bedrock_reasoning_stale_floor(api_kwargs["modelId"])
     if _reasoning_floor is not None:
         _timeout = max(_timeout, _reasoning_floor)
     return _timeout
+
+
+def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
+    """Map a Bedrock inference-profile id to its reasoning stale-timeout floor.
+
+    Bedrock carries the model as a dotted, region-prefixed id such as
+    ``us.anthropic.claude-opus-4-6-v1:0``, whereas
+    :func:`get_reasoning_stale_timeout_floor` anchors its slug patterns at the
+    start of a bare slug (``claude-opus-4``). Strip the region prefix
+    (``us.``/``eu.``/``apac.``/...) and try two candidate slugs against the
+    floor:
+
+    * the segment after the provider namespace (``claude-opus-4-6-v1:0``) —
+      matches Anthropic-style slugs whose floor key excludes the provider
+      (``claude-opus-4``); and
+    * the region-stripped id with the provider dot rewritten to a dash
+      (``deepseek-r1-v1:0``) — matches provider-qualified floor keys
+      (``deepseek-r1``).
+
+    The floor's right-anchor (``$`` or ``-``/``.``/``_``) tolerates the
+    trailing date-stamp / ``-v1:0`` version suffix, so no suffix stripping is
+    needed. First non-None wins; returns None for unknown models.
+
+    Known limitation: floor keys that embed a dotted version (e.g.
+    ``claude-sonnet-4.5``) will NOT match the Bedrock dashed form
+    (``claude-sonnet-4-5-...``); only floor keys with dashed/base slugs
+    (``claude-opus-4``, ``deepseek-r1``) match the Bedrock id shape.
+    """
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+
+    if not model_id or not isinstance(model_id, str):
+        return None
+    name = model_id.strip().lower()
+    for prefix in ("us.", "eu.", "apac.", "ap.", "global.", "jp."):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    candidates = [name]
+    if "." in name:
+        candidates.append(name.rsplit(".", 1)[1])   # claude-opus-4-6-v1:0
+        candidates.append(name.replace(".", "-", 1))  # deepseek-r1-v1:0
+    for cand in candidates:
+        floor = get_reasoning_stale_timeout_floor(cand)
+        if floor is not None:
+            return floor
+    return None
 
 
 def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):

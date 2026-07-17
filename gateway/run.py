@@ -7697,6 +7697,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return True
 
     _MAX_SUPERVISED_RESTARTS = 5
+    # A task that ran at least this long before crashing is treated as having
+    # been HEALTHY — its crash is a fresh, isolated failure rather than part of
+    # a rapid crash-loop, so the consecutive-restart counter resets to 0. Only
+    # crashes that happen within this window of a (re)spawn accumulate toward
+    # ``_MAX_SUPERVISED_RESTARTS``. Without this, a long-lived launchd daemon
+    # whose watcher crashes a handful of times over days would hit the cap and
+    # be permanently abandoned (NS: silent loss of platform-reconnect / kanban /
+    # handoff for the rest of the process life).
+    _SUPERVISED_HEALTHY_SECS = 300
 
     def _spawn_supervised(self, coro_factory, name, *, restart=True, _attempt=0):
         """Launch a long-lived background task with task-level supervision.
@@ -7708,11 +7717,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``asyncio.create_task`` drops such an exception on the floor — no log,
         no restart, the watcher silently gone. This retains the handle in
         ``self._background_tasks``, logs any crash, and restarts with capped
-        exponential backoff up to ``_MAX_SUPERVISED_RESTARTS`` consecutive
-        failures.
+        exponential backoff up to ``_MAX_SUPERVISED_RESTARTS`` failures in rapid
+        succession (each within ``_SUPERVISED_HEALTHY_SECS`` of its restart).
+        The counter resets after any run that stayed healthy for at least
+        ``_SUPERVISED_HEALTHY_SECS`` — so a long-lived daemon that crashes
+        occasionally over days is never permanently abandoned.
         """
         if getattr(self, "_background_tasks", None) is None:
             self._background_tasks = set()
+
+        # Monotonic spawn timestamp captured per spawn: the ``_done`` callback
+        # uses it to distinguish a rapid crash-loop from a healthy-run-then-crash.
+        _started = time.monotonic()
 
         # Deliberately do NOT pass name= to create_task — some test doubles mock
         # create_task with a signature that rejects the name kwarg.
@@ -7731,20 +7747,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
             logger.error("Supervised task %s died: %r", name, exc, exc_info=exc)
             if restart and self._running:
-                if _attempt >= self._MAX_SUPERVISED_RESTARTS:
+                ran_for = time.monotonic() - _started
+                if ran_for >= self._SUPERVISED_HEALTHY_SECS:
+                    # Ran healthily for a while before crashing — this is a
+                    # FRESH failure, not part of a rapid crash-loop. Reset the
+                    # consecutive counter so a daemon that crashes a handful of
+                    # times over days is never permanently abandoned.
+                    effective_attempt = 0
+                else:
+                    effective_attempt = _attempt
+                if effective_attempt >= self._MAX_SUPERVISED_RESTARTS:
                     logger.error(
-                        "Supervised task %s died %d times consecutively — giving up restarts",
+                        "Supervised task %s died %d times in rapid succession "
+                        "(each within %ds of restart) — giving up restarts",
                         name,
-                        _attempt,
+                        effective_attempt,
+                        self._SUPERVISED_HEALTHY_SECS,
                     )
                     return
-                backoff = min(60, 2 ** min(_attempt, 6))
+                backoff = min(60, 2 ** min(effective_attempt, 6))
 
                 async def _respawn():
                     await asyncio.sleep(backoff)
                     if self._running:
                         self._spawn_supervised(
-                            coro_factory, name, restart=restart, _attempt=_attempt + 1
+                            coro_factory,
+                            name,
+                            restart=restart,
+                            _attempt=effective_attempt + 1,
                         )
 
                 respawn_task = asyncio.create_task(_respawn())

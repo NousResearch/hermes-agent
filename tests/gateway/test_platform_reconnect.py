@@ -901,3 +901,51 @@ class TestSpawnSupervised:
             await real_sleep(0)
 
         assert calls["n"] == expected
+
+    @pytest.mark.asyncio
+    async def test_healthy_run_then_crash_resets_restart_counter(self, monkeypatch):
+        # A watcher that runs HEALTHILY (>= _SUPERVISED_HEALTHY_SECS) before
+        # each crash must NOT be abandoned at the ceiling: every healthy run
+        # resets the consecutive-failure counter, so the daemon keeps
+        # restarting it well past _MAX_SUPERVISED_RESTARTS. This is the
+        # long-lived-launchd-daemon guarantee — a watcher that crashes a
+        # handful of times over days is never permanently dropped.
+        runner = _make_runner()
+
+        # Treat every run as "healthy": with the floor at 0s, any positive
+        # real elapsed (ran_for >= 0.0) counts as a fresh, isolated failure,
+        # so the effective attempt resets to 0 on each crash.
+        monkeypatch.setattr(runner, "_SUPERVISED_HEALTHY_SECS", 0.0)
+
+        real_sleep = asyncio.sleep
+
+        async def _instant_sleep(_delay):
+            await real_sleep(0)
+
+        monkeypatch.setattr("gateway.run.asyncio.sleep", _instant_sleep)
+
+        # Crash more times than the cumulative cap would ever allow, then
+        # return cleanly to terminate the chain.
+        crash_budget = runner._MAX_SUPERVISED_RESTARTS + 3
+        calls = {"n": 0}
+
+        async def _coro():
+            calls["n"] += 1
+            if calls["n"] <= crash_budget:
+                raise RuntimeError("boom")
+            return
+
+        runner._spawn_supervised(lambda: _coro(), "healthy_then_crash")
+
+        target = crash_budget + 1  # crash_budget failures + one final clean run
+        for _ in range(2000):
+            await real_sleep(0)
+            if calls["n"] >= target:
+                break
+        for _ in range(20):
+            await real_sleep(0)
+
+        # Under the OLD cumulative cap this would have stopped at
+        # _MAX_SUPERVISED_RESTARTS + 1; the reset lets it run to completion.
+        assert calls["n"] == target
+        assert calls["n"] > runner._MAX_SUPERVISED_RESTARTS + 1

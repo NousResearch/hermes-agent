@@ -443,7 +443,7 @@ Get a text-based snapshot of the current page's accessibility tree. Returns inte
 - **`full=false`** (default): Compact view showing only interactive elements
 - **`full=true`**: Complete page content
 
-Snapshots over 8000 characters are automatically truncated or summarized by an LLM. When that happens, the complete snapshot is saved to `~/.hermes/cache/web/` and the tool output includes the file path plus a ready-to-use `read_file` call, so the agent can page through the full accessibility tree — including element refs beyond the cut — without re-snapshotting.
+Snapshots over 15,000 characters are automatically truncated or summarized by an LLM (the same per-page budget as `web_extract`). When that happens, the complete snapshot is saved to `~/.hermes/cache/web/` and the tool output includes the file path plus a ready-to-use `read_file` call, so the agent can page through the full accessibility tree — including element refs beyond the cut — without re-snapshotting.
 
 ### `browser_click`
 
@@ -657,7 +657,7 @@ If paid features aren't available on your plan, Hermes automatically falls back 
 ## Limitations
 
 - **Text-based interaction** — relies on accessibility tree, not pixel coordinates
-- **Snapshot size** — large pages may be truncated or LLM-summarized at 8000 characters; the complete snapshot is saved to `~/.hermes/cache/web/` and the output points at it for `read_file` paging
+- **Snapshot size** — large pages may be truncated or LLM-summarized at 15,000 characters (matching `web_extract`); the complete snapshot is saved to `~/.hermes/cache/web/` and the output points at it for `read_file` paging
 - **Session timeout** — cloud sessions expire based on your provider's plan settings
 - **Cost** — cloud sessions consume provider credits; sessions are automatically cleaned up when the conversation ends or after inactivity. Use `/browser connect` for free local browsing.
 - **No file downloads** — cannot download files from the browser

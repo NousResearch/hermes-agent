@@ -225,11 +225,11 @@ class TestTruncateSnapshot:
         assert _truncate_snapshot(short) == short
 
     def test_long_snapshot_truncated_at_line_boundary(self):
-        from tools.browser_tool import _truncate_snapshot
-        # Create a snapshot that exceeds 8000 chars
-        lines = [f'- item "Element {i}" [ref=e{i}]' for i in range(500)]
+        from tools.browser_tool import SNAPSHOT_SUMMARIZE_THRESHOLD, _truncate_snapshot
+        # Create a snapshot that exceeds the summarize threshold
+        lines = [f'- item "Element {i}" [ref=e{i}]' for i in range(1000)]
         snapshot = "\n".join(lines)
-        assert len(snapshot) > 8000
+        assert len(snapshot) > SNAPSHOT_SUMMARIZE_THRESHOLD
 
         result = _truncate_snapshot(snapshot, max_chars=200)
         assert "truncated" in result.lower()
@@ -245,6 +245,13 @@ class TestTruncateSnapshot:
         result = _truncate_snapshot(snapshot, max_chars=200)
         # Should mention how many lines were truncated
         assert "more line" in result.lower()
+
+    def test_threshold_aligned_with_web_extract_budget(self):
+        """Snapshot and web_extract share the truncate-and-store pattern —
+        the per-page budget the model sees must stay aligned between them."""
+        from tools.browser_tool import SNAPSHOT_SUMMARIZE_THRESHOLD
+        from tools.web_tools import DEFAULT_EXTRACT_CHAR_LIMIT
+        assert SNAPSHOT_SUMMARIZE_THRESHOLD == DEFAULT_EXTRACT_CHAR_LIMIT
 
     def test_truncation_stores_full_snapshot_and_points_to_it(self):
         """Truncated snapshots save the complete text to cache/web (like web_extract)."""

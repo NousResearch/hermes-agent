@@ -229,8 +229,11 @@ DEFAULT_COMMAND_TIMEOUT = 30
 MIN_OPEN_TIMEOUT = 60
 MIN_FIRST_OPEN_TIMEOUT = 120
 
-# Max tokens for snapshot content before summarization
-SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
+# Max chars for snapshot content before truncation/summarization. Aligned
+# with web_tools.DEFAULT_EXTRACT_CHAR_LIMIT (15000) — the snapshot and
+# web_extract paths share the same truncate-and-store pattern, so the model
+# gets the same per-page budget from both.
+SNAPSHOT_SUMMARIZE_THRESHOLD = 15000
 
 # Hard ceiling on the full-snapshot file written to cache/web when a snapshot
 # is truncated or LLM-summarized. Mirrors web_tools.MAX_STORED_TEXT_CHARS —
@@ -1839,7 +1842,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_snapshot",
-        "description": "Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: complete page content. Snapshots over 8000 chars are truncated or LLM-summarized; when that happens the complete snapshot is saved to a file and the output includes its path so you can page through the rest with read_file. Requires browser_navigate first. Note: browser_navigate already returns a compact snapshot — use this to refresh after interactions that change the page, or with full=true for complete content.",
+        "description": "Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: complete page content. Snapshots over 15000 chars are truncated or LLM-summarized; when that happens the complete snapshot is saved to a file and the output includes its path so you can page through the rest with read_file. Requires browser_navigate first. Note: browser_navigate already returns a compact snapshot — use this to refresh after interactions that change the page, or with full=true for complete content.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2693,7 +2696,7 @@ def _extract_relevant_content(
         return _truncate_snapshot(snapshot_text)
 
 
-def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
+def _truncate_snapshot(snapshot_text: str, max_chars: int = SNAPSHOT_SUMMARIZE_THRESHOLD) -> str:
     """Structure-aware truncation for snapshots.
 
     Cuts at line boundaries so that accessibility tree elements are never

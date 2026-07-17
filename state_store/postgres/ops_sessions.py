@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional, Sequence
 from state_store.session_api import (
     APISessionMutationAbort,
     APISessionMutationResult,
+    INSIGHTS_MAX_ROWS,
+    InsightsRowLimitError,
     normalize_row,
 )
 
@@ -51,6 +53,10 @@ class PostgresSessionOperations:
                     row = normalize_row(raw_row, columns=columns)
                     if row is not None:
                         rows.append(row)
+                        if len(rows) > INSIGHTS_MAX_ROWS:
+                            raise InsightsRowLimitError(
+                                "Insights report exceeds 100000 rows; narrow the report window."
+                            )
 
         return self._run(operation, read_only=True)
 
@@ -1158,9 +1164,13 @@ class PostgresSessionOperations:
             "actual_cost_usd, cost_status, cost_source, api_call_count FROM sessions "
             "WHERE started_at >= %s"
             + (" AND source = %s" if source else "")
-            + " ORDER BY started_at DESC"
+            + " ORDER BY started_at DESC LIMIT %s"
         )
-        params: Sequence[Any] = (cutoff, source) if source else (cutoff,)
+        params: Sequence[Any] = (
+            (cutoff, source, INSIGHTS_MAX_ROWS + 1)
+            if source
+            else (cutoff, INSIGHTS_MAX_ROWS + 1)
+        )
         return self._read_all_insight_rows(query, params)
 
     def get_insights_tool_name_counts(self, cutoff: float, source: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1210,8 +1220,13 @@ class PostgresSessionOperations:
             "u.cost_source, u.billing_mode, u.task, u.last_seen FROM session_model_usage u JOIN sessions s "
             "ON s.id = u.session_id WHERE s.started_at >= %s"
             + (" AND s.source = %s" if source else "")
+            + " LIMIT %s"
         )
-        params: Sequence[Any] = (cutoff, source) if source else (cutoff,)
+        params: Sequence[Any] = (
+            (cutoff, source, INSIGHTS_MAX_ROWS + 1)
+            if source
+            else (cutoff, INSIGHTS_MAX_ROWS + 1)
+        )
         return self._read_all_insight_rows(query, params)
 
     # ── Async delegation durability ──────────────────────────────────────

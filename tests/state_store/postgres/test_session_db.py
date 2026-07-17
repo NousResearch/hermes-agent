@@ -102,11 +102,13 @@ class FakeLifecycleStore:
         available: bool = True,
         core_schema: bool = True,
         migrate_error: BaseException | None = None,
+        validate_schema_error: BaseException | None = None,
     ) -> None:
         self.spec = spec
         self.available = available
         self.core_schema = core_schema
         self.migrate_error = migrate_error
+        self.validate_schema_error = validate_schema_error
         self.calls: list[str] = []
         self.closed = False
 
@@ -114,6 +116,11 @@ class FakeLifecycleStore:
         self.calls.append("migrate")
         if self.migrate_error is not None:
             raise self.migrate_error
+
+    def validate_schema(self) -> None:
+        self.calls.append("validate_schema")
+        if self.validate_schema_error is not None:
+            raise self.validate_schema_error
 
     def ensure_search_schema(self) -> None:
         self.calls.append("ensure_search_schema")
@@ -295,8 +302,30 @@ def test_postgres_session_db_read_only_validates_without_migration() -> None:
         state_store_factory=lambda *_args, **_kwargs: lifecycle,
     )
 
-    assert lifecycle.calls == ["health_report"]
+    assert lifecycle.calls == ["validate_schema", "health_report"]
     assert db.read_only is True
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ("current-version column contract drift", "wrong durable index definition"),
+)
+def test_postgres_session_db_read_only_open_fails_closed_on_catalog_drift(
+    drift: str,
+) -> None:
+    lifecycle = FakeLifecycleStore(
+        _spec(read_only=True),
+        validate_schema_error=PostgresSchemaValidationError(drift),
+    )
+
+    with pytest.raises(PostgresSchemaValidationError, match=drift):
+        PostgresSessionDB.from_spec(
+            _spec(read_only=True),
+            environ={"HERMES_TEST_POSTGRES_DSN": "postgresql://ignored"},
+            state_store_factory=lambda *_args, **_kwargs: lifecycle,
+        )
+
+    assert lifecycle.calls == ["validate_schema", "close"]
 
 
 @pytest.mark.parametrize(
@@ -320,7 +349,7 @@ def test_postgres_session_db_fails_closed_for_invalid_read_only_schema(
             state_store_factory=lambda *_args, **_kwargs: lifecycle,
         )
 
-    assert lifecycle.calls == ["health_report", "close"]
+    assert lifecycle.calls == ["validate_schema", "health_report", "close"]
 
 
 def test_postgres_session_db_closes_store_when_writable_initialization_fails() -> None:

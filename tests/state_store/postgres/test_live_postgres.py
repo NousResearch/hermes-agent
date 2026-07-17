@@ -351,6 +351,45 @@ def test_sqlite_to_postgres_migration_matches_digests_and_recovers_cutover(
     ]
 
 
+def test_recovery_refuses_executable_objects_in_published_target_schema(
+    postgres_state: LivePostgresState,
+):
+    sqlite_path = _seed_sqlite_source(postgres_state.tmp_path)
+    schema = postgres_state.schema()
+    target = postgres_state.migration_target(schema)
+
+    def fail_cutover(_: Any) -> None:
+        raise RuntimeError("stop after publish")
+
+    first = StatePostgresMigration(
+        SQLiteMigrationSourceAdapter(sqlite_path),
+        target,
+        cutover=fail_cutover,
+    ).run(MigrationRequest(apply=True, run_id="live-namespace-safety", batch_size=2))
+
+    assert first.phase is MigrationPhase.FAILED
+    assert first.published
+    with postgres_state.psycopg.connect(postgres_state.dsn, autocommit=True) as connection:
+        connection.execute(
+            postgres_state.psycopg.sql.SQL(
+                "CREATE FUNCTION {}.migration_shadow() RETURNS integer "
+                "LANGUAGE sql AS 'SELECT 1'"
+            ).format(postgres_state.psycopg.sql.Identifier(schema))
+        )
+
+    cutovers: list[str] = []
+    recovered = StatePostgresMigration(
+        SQLiteMigrationSourceAdapter(sqlite_path),
+        target,
+        cutover=lambda report: cutovers.append(report.run_id),
+    ).run(MigrationRequest(apply=True, run_id="live-namespace-safety", batch_size=2))
+
+    assert recovered.phase is MigrationPhase.FAILED
+    assert not recovered.cutover_complete
+    assert "function or procedure" in (recovered.failure or "")
+    assert cutovers == []
+
+
 def test_missing_postgres_schema_never_falls_back_to_sqlite(
     postgres_state: LivePostgresState,
 ):

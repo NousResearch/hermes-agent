@@ -113,19 +113,9 @@ class PostgresMigrationTargetAdapter:
 
     def publish_schema_is_empty(self) -> bool:
         with self._transaction() as connection:
-            cursor = connection.execute(
-                """
-                SELECT 1
-                FROM pg_catalog.pg_class AS relation
-                JOIN pg_catalog.pg_namespace AS namespace
-                  ON namespace.oid = relation.relnamespace
-                WHERE namespace.nspname = %s
-                  AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
-                LIMIT 1
-                """,
-                (self.schema,),
-            )
-            return cursor.fetchone() is None
+            # An empty pre-existing schema can still contain routines, types,
+            # or ACLs that change how unqualified migration SQL resolves.
+            return not self._namespace_exists(connection, self.schema)
 
     def acquire_advisory_lock(self, run_id: str) -> None:
         if self._lock_connection is not None:
@@ -171,6 +161,7 @@ class PostgresMigrationTargetAdapter:
     def create_or_resume_staging(
         self, run_id: str, manifest: Sequence[TableSpec]
     ) -> str:
+        self._require_advisory_lock(run_id)
         staging_schema = _generated_identifier(
             f"{self.schema[:30]}_stage", run_id
         )
@@ -178,7 +169,12 @@ class PostgresMigrationTargetAdapter:
             table.name in {item.name for item in TELEGRAM_TABLES} for table in manifest
         )
         with self._transaction() as connection:
-            connection.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote_identifier(staging_schema)}")
+            self._ensure_managed_namespace(
+                connection,
+                staging_schema,
+                purpose="staging",
+                require_absent=False,
+            )
             self._set_search_path(connection, staging_schema)
             for statement in schema_statements(include_telegram=include_telegram):
                 connection.execute(statement)
@@ -386,6 +382,7 @@ class PostgresMigrationTargetAdapter:
         run_id: str,
         verified_source: Mapping[str, Any],
     ) -> None:
+        self._require_advisory_lock(run_id)
         manifest = self._staging_manifests.get(staging_schema)
         if manifest is None:
             raise RuntimeError("unknown state-postgres staging schema")
@@ -406,12 +403,23 @@ class PostgresMigrationTargetAdapter:
                         raise RuntimeError(
                             "published state-postgres run has conflicting verified evidence"
                         )
+                    self._assert_namespace_policy(
+                        connection,
+                        self.schema,
+                        purpose="published target",
+                    )
+                    self._reject_namespace_nonrelation_objects(
+                        connection,
+                        self.schema,
+                        purpose="published target",
+                    )
                     return
-            if not self._schema_is_empty_in_transaction(connection):
-                raise RuntimeError(
-                    "target publish schema is not empty; destructive replacement is refused"
-                )
-            connection.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote_identifier(self.schema)}")
+            self._ensure_managed_namespace(
+                connection,
+                self.schema,
+                purpose="target publish",
+                require_absent=True,
+            )
             for table_name in publish_tables:
                 connection.execute(
                     f"ALTER TABLE {_quote_identifier(staging_schema)}."
@@ -446,8 +454,18 @@ class PostgresMigrationTargetAdapter:
                 (run_id,),
             )
             row = cursor.fetchone()
-        if row is None:
-            return None
+            if row is None:
+                return None
+            self._assert_namespace_policy(
+                connection,
+                self.schema,
+                purpose="published target",
+            )
+            self._reject_namespace_nonrelation_objects(
+                connection,
+                self.schema,
+                purpose="published target",
+            )
         return {
             "run_id": self._row_value(row, "run_id", 0),
             "status": self._row_value(row, "status", 1),
@@ -499,8 +517,11 @@ class PostgresMigrationTargetAdapter:
             yield connection
 
     def _ensure_control_table(self, connection: Any) -> None:
-        connection.execute(
-            f"CREATE SCHEMA IF NOT EXISTS {_quote_identifier(self._control_schema)}"
+        self._ensure_managed_namespace(
+            connection,
+            self._control_schema,
+            purpose="migration control",
+            require_absent=False,
         )
         connection.execute(
             f"""
@@ -525,20 +546,219 @@ class PostgresMigrationTargetAdapter:
             f"SET LOCAL search_path TO {_quote_identifier(schema)}, pg_catalog"
         )
 
-    def _schema_is_empty_in_transaction(self, connection: Any) -> bool:
+    def _require_advisory_lock(self, run_id: str) -> None:
+        if self._lock_connection is None or self._locked_run_id != run_id:
+            raise RuntimeError(
+                "state-postgres migration namespace admission requires its advisory lock"
+            )
+
+    @staticmethod
+    def _namespace_exists(connection: Any, schema: str) -> bool:
         cursor = connection.execute(
             """
             SELECT 1
-            FROM pg_catalog.pg_class AS relation
-            JOIN pg_catalog.pg_namespace AS namespace
-              ON namespace.oid = relation.relnamespace
+            FROM pg_catalog.pg_namespace AS namespace
             WHERE namespace.nspname = %s
-              AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
             LIMIT 1
             """,
-            (self.schema,),
+            (schema,),
         )
-        return cursor.fetchone() is None
+        return cursor.fetchone() is not None
+
+    def _ensure_managed_namespace(
+        self,
+        connection: Any,
+        schema: str,
+        *,
+        purpose: str,
+        require_absent: bool,
+    ) -> None:
+        if self._namespace_exists(connection, schema):
+            if require_absent:
+                raise RuntimeError(
+                    f"{purpose} schema already exists; a fresh namespace is required"
+                )
+        else:
+            connection.execute(
+                f"CREATE SCHEMA {_quote_identifier(schema)} AUTHORIZATION CURRENT_USER"
+            )
+        self._assert_namespace_policy(connection, schema, purpose=purpose)
+        self._reject_namespace_nonrelation_objects(connection, schema, purpose=purpose)
+
+    @staticmethod
+    def _assert_namespace_policy(connection: Any, schema: str, *, purpose: str) -> None:
+        cursor = connection.execute(
+            """
+            SELECT
+                namespace.nspowner = (
+                    SELECT role.oid
+                    FROM pg_catalog.pg_roles AS role
+                    WHERE role.rolname = CURRENT_USER
+                ) AS owned_by_current_user,
+                has_schema_privilege(namespace.oid, 'CREATE') AS current_user_can_create,
+                namespace.nspacl IS NULL AS has_default_acl
+            FROM pg_catalog.pg_namespace AS namespace
+            WHERE namespace.nspname = %s
+            """,
+            (schema,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError(f"{purpose} schema is missing after admission")
+        owned_by_current_user = bool(
+            PostgresMigrationTargetAdapter._row_value(row, "owned_by_current_user", 0)
+        )
+        current_user_can_create = bool(
+            PostgresMigrationTargetAdapter._row_value(row, "current_user_can_create", 1)
+        )
+        has_default_acl = bool(
+            PostgresMigrationTargetAdapter._row_value(row, "has_default_acl", 2)
+        )
+        if not owned_by_current_user:
+            raise RuntimeError(
+                f"{purpose} schema must be owned by the current database user"
+            )
+        if not current_user_can_create:
+            raise RuntimeError(
+                f"{purpose} schema must grant CREATE to the current database user"
+            )
+        if not has_default_acl:
+            raise RuntimeError(
+                f"{purpose} schema has explicit ACLs; namespace reuse is refused"
+            )
+
+    @staticmethod
+    def _reject_namespace_nonrelation_objects(
+        connection: Any,
+        schema: str,
+        *,
+        purpose: str,
+    ) -> None:
+        cursor = connection.execute(
+            """
+            WITH namespace AS (
+                SELECT oid
+                FROM pg_catalog.pg_namespace
+                WHERE nspname = %s
+            )
+            SELECT object_kind
+            FROM (
+                SELECT 'relation with unsafe owner or ACL' AS object_kind
+                FROM pg_catalog.pg_class AS relation
+                WHERE relation.relnamespace = (SELECT oid FROM namespace)
+                  AND (
+                    relation.relowner <> (
+                        SELECT role.oid
+                        FROM pg_catalog.pg_roles AS role
+                        WHERE role.rolname = CURRENT_USER
+                    )
+                    OR relation.relacl IS NOT NULL
+                  )
+                UNION ALL
+                SELECT 'function or procedure' AS object_kind
+                FROM pg_catalog.pg_proc
+                WHERE pronamespace = (SELECT oid FROM namespace)
+                UNION ALL
+                SELECT 'type with unsafe owner or ACL'
+                FROM pg_catalog.pg_type AS type_
+                WHERE type_.typnamespace = (SELECT oid FROM namespace)
+                  AND (
+                    type_.typowner <> (
+                        SELECT role.oid
+                        FROM pg_catalog.pg_roles AS role
+                        WHERE role.rolname = CURRENT_USER
+                    )
+                    OR type_.typacl IS NOT NULL
+                  )
+                UNION ALL
+                SELECT CASE WHEN type_.typtype = 'd' THEN 'domain' ELSE 'type' END
+                FROM pg_catalog.pg_type AS type_
+                LEFT JOIN pg_catalog.pg_type AS element
+                  ON element.oid = type_.typelem
+                WHERE type_.typnamespace = (SELECT oid FROM namespace)
+                  AND type_.typrelid = 0
+                  AND (type_.typelem = 0 OR element.typrelid = 0)
+                UNION ALL
+                SELECT 'collation'
+                FROM pg_catalog.pg_collation
+                WHERE collnamespace = (SELECT oid FROM namespace)
+                UNION ALL
+                SELECT 'conversion'
+                FROM pg_catalog.pg_conversion
+                WHERE connamespace = (SELECT oid FROM namespace)
+                UNION ALL
+                SELECT 'operator'
+                FROM pg_catalog.pg_operator
+                WHERE oprnamespace = (SELECT oid FROM namespace)
+                UNION ALL
+                SELECT 'operator class'
+                FROM pg_catalog.pg_opclass
+                WHERE opcnamespace = (SELECT oid FROM namespace)
+                UNION ALL
+                SELECT 'operator family'
+                FROM pg_catalog.pg_opfamily
+                WHERE opfnamespace = (SELECT oid FROM namespace)
+                UNION ALL
+                SELECT 'text search dictionary'
+                FROM pg_catalog.pg_ts_dict
+                WHERE dictnamespace = (SELECT oid FROM namespace)
+                UNION ALL
+                SELECT 'text search configuration'
+                FROM pg_catalog.pg_ts_config
+                WHERE cfgnamespace = (SELECT oid FROM namespace)
+                UNION ALL
+                SELECT 'text search parser'
+                FROM pg_catalog.pg_ts_parser
+                WHERE prsnamespace = (SELECT oid FROM namespace)
+                UNION ALL
+                SELECT 'text search template'
+                FROM pg_catalog.pg_ts_template
+                WHERE tmplnamespace = (SELECT oid FROM namespace)
+                UNION ALL
+                SELECT 'extension'
+                FROM pg_catalog.pg_extension
+                WHERE extnamespace = (SELECT oid FROM namespace)
+                UNION ALL
+                SELECT 'trigger'
+                FROM pg_catalog.pg_trigger AS trigger
+                JOIN pg_catalog.pg_class AS relation
+                  ON relation.oid = trigger.tgrelid
+                WHERE relation.relnamespace = (SELECT oid FROM namespace)
+                  AND NOT trigger.tgisinternal
+                UNION ALL
+                SELECT 'row security policy'
+                FROM pg_catalog.pg_policy AS policy
+                JOIN pg_catalog.pg_class AS relation
+                  ON relation.oid = policy.polrelid
+                WHERE relation.relnamespace = (SELECT oid FROM namespace)
+                UNION ALL
+                SELECT 'rewrite rule'
+                FROM pg_catalog.pg_rewrite AS rewrite
+                JOIN pg_catalog.pg_class AS relation
+                  ON relation.oid = rewrite.ev_class
+                WHERE relation.relnamespace = (SELECT oid FROM namespace)
+                UNION ALL
+                SELECT 'default privilege'
+                FROM pg_catalog.pg_default_acl
+                WHERE defaclrole = (
+                    SELECT role.oid
+                    FROM pg_catalog.pg_roles AS role
+                    WHERE role.rolname = CURRENT_USER
+                )
+                  AND defaclnamespace IN ((SELECT oid FROM namespace), 0)
+            ) AS namespace_objects
+            LIMIT 1
+            """,
+            (schema,),
+        )
+        row = cursor.fetchone()
+        if row is not None:
+            object_kind = PostgresMigrationTargetAdapter._row_value(
+                row, "object_kind", 0
+            )
+            raise RuntimeError(
+                f"{purpose} schema contains a {object_kind}; namespace reuse is refused"
+            )
 
     @staticmethod
     def _cursor_mappings(

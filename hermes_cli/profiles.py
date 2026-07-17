@@ -147,7 +147,7 @@ class _PostgresClonePlan:
 
 
 class _PostgresTargetSchemaOccupiedError(Exception):
-    """Raised internally when a requested clone target already contains state."""
+    """Raised internally when a requested clone target already exists."""
 
 
 def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
@@ -597,8 +597,17 @@ def _local_postgres_schemas() -> set[str]:
     return schemas
 
 
+def _postgres_clone_lock_key(schema: str) -> str:
+    """Return the advisory-lock namespace for one PostgreSQL clone target."""
+    return f"hermes-profile-clone-schema:{schema}"
+
+
 def _provision_empty_postgres_schema(dsn_env: str, schema: str) -> bool:
-    """Create or verify an empty schema, returning whether this call created it."""
+    """Atomically claim a previously absent PostgreSQL schema for a clone.
+
+    A successful call always creates the schema. Existing schemas are rejected,
+    even when empty, because their owner cannot be determined safely.
+    """
     dsn = os.environ.get(dsn_env)
     if not dsn:
         raise ValueError(
@@ -615,6 +624,13 @@ def _provision_empty_postgres_schema(dsn_env: str, schema: str) -> bool:
             application_name="hermes-profile-create",
         ) as connection:
             with connection.transaction():
+                # Serialize clone claims for this schema. The schema itself is
+                # the durable claim after this transaction commits.
+                connection.execute(
+                    "SELECT pg_catalog.pg_advisory_xact_lock("
+                    "pg_catalog.hashtextextended(%s, 0))",
+                    (_postgres_clone_lock_key(schema),),
+                )
                 schema_exists = connection.execute(
                     """
                     SELECT 1
@@ -623,26 +639,13 @@ def _provision_empty_postgres_schema(dsn_env: str, schema: str) -> bool:
                     """,
                     (schema,),
                 ).fetchone() is not None
-                if not schema_exists:
-                    connection.execute(f"CREATE SCHEMA {quoted_schema}")
-                cursor = connection.execute(
-                    """
-                    SELECT 1
-                    FROM pg_catalog.pg_class AS relation
-                    JOIN pg_catalog.pg_namespace AS namespace
-                      ON namespace.oid = relation.relnamespace
-                    WHERE namespace.nspname = %s
-                      AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
-                    LIMIT 1
-                    """,
-                    (schema,),
-                )
-                if cursor.fetchone() is not None:
+                if schema_exists:
                     raise _PostgresTargetSchemaOccupiedError
-                return not schema_exists
+                connection.execute(f"CREATE SCHEMA {quoted_schema}")
+                return True
     except _PostgresTargetSchemaOccupiedError:
         raise ValueError(
-            "PostgreSQL target schema must be empty before cloning."
+            "PostgreSQL target schema already exists and cannot be claimed for cloning."
         ) from None
     except Exception:
         raise ValueError(
@@ -666,6 +669,11 @@ def _cleanup_empty_postgres_schema(dsn_env: str, schema: str) -> None:
             application_name="hermes-profile-create-cleanup",
         ) as connection:
             with connection.transaction():
+                connection.execute(
+                    "SELECT pg_catalog.pg_advisory_xact_lock("
+                    "pg_catalog.hashtextextended(%s, 0))",
+                    (_postgres_clone_lock_key(schema),),
+                )
                 occupied = connection.execute(
                     """
                     SELECT 1

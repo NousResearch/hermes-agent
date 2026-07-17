@@ -30,6 +30,8 @@ from hermes_constants import get_hermes_home
 from state_store.session_api import (
     APISessionMutationAbort as _APISessionMutationAbort,
     APISessionMutationResult,
+    INSIGHTS_MAX_ROWS,
+    InsightsRowLimitError,
 )
 from typing import (
     TYPE_CHECKING,
@@ -3017,12 +3019,20 @@ class SessionDB:
         query = (
             f"SELECT {columns} FROM sessions WHERE started_at >= ?"
             + (" AND source = ?" if source else "")
-            + " ORDER BY started_at DESC"
+            + " ORDER BY started_at DESC LIMIT ?"
         )
-        params: Tuple[Any, ...] = (cutoff, source) if source else (cutoff,)
+        params: Tuple[Any, ...] = (
+            (cutoff, source, INSIGHTS_MAX_ROWS + 1)
+            if source
+            else (cutoff, INSIGHTS_MAX_ROWS + 1)
+        )
         with self._lock:
             cursor = self._conn.execute(query, params)
             rows = self._collect_rows_in_batches(cursor)
+        if len(rows) > INSIGHTS_MAX_ROWS:
+            raise InsightsRowLimitError(
+                "Insights report exceeds 100000 session rows; narrow the report window."
+            )
         return [dict(row) for row in rows]
 
     def get_insights_tool_name_counts(
@@ -3116,14 +3126,23 @@ class SessionDB:
                FROM session_model_usage u JOIN sessions s ON s.id = u.session_id
                WHERE s.started_at >= ?"""
             + (" AND s.source = ?" if source else "")
+            + " LIMIT ?"
         )
-        params: Tuple[Any, ...] = (cutoff, source) if source else (cutoff,)
+        params: Tuple[Any, ...] = (
+            (cutoff, source, INSIGHTS_MAX_ROWS + 1)
+            if source
+            else (cutoff, INSIGHTS_MAX_ROWS + 1)
+        )
         try:
             with self._lock:
                 cursor = self._conn.execute(query, params)
                 rows = self._collect_rows_in_batches(cursor)
         except sqlite3.OperationalError:
             return []
+        if len(rows) > INSIGHTS_MAX_ROWS:
+            raise InsightsRowLimitError(
+                "Insights report exceeds 100000 model-usage rows; narrow the report window."
+            )
         return [dict(row) for row in rows]
 
     def update_session_cwd(

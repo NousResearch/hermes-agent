@@ -368,6 +368,19 @@ class TestAnalyticsAuxRows:
         assert usage["vision"]["reasoning_tokens"] == 4
         assert usage["vision"]["last_seen"] is not None
 
+    def test_insight_rows_fail_explicitly_above_report_budget(self, db, monkeypatch):
+        import hermes_state
+
+        db.create_session("s1", source="cli", model="main-model")
+        db.create_session("s2", source="cli", model="main-model")
+        monkeypatch.setattr(hermes_state, "INSIGHTS_MAX_ROWS", 1)
+
+        with pytest.raises(
+            hermes_state.InsightsRowLimitError,
+            match="narrow the report window",
+        ):
+            db.get_insights_sessions(0)
+
 
 class TestInsightsAuxTotals:
     def test_overview_totals_include_aux_usage(self, db):

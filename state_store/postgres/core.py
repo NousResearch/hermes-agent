@@ -536,6 +536,49 @@ class PostgresStateStore:
                 telegram_enabled=include_telegram,
             )
 
+    def validate_schema(self, *, include_telegram: bool = False) -> None:
+        """Validate an existing durable schema without applying any DDL."""
+
+        with self.transaction(
+            read_only=True,
+            configure_search_path=False,
+        ) as connection:
+            schema_exists, version_table_exists = self._row_fields(
+                connection.execute(
+                    """
+                    SELECT
+                        to_regnamespace(%s) IS NOT NULL AS schema_exists,
+                        to_regclass(%s) IS NOT NULL AS version_table_exists
+                    """,
+                    (self._schema, f"{self._schema}.schema_version"),
+                ).fetchone(),
+                ("schema_exists", "version_table_exists"),
+            )
+            if not schema_exists or not version_table_exists:
+                raise PostgresSchemaValidationError(
+                    "PostgreSQL state schema is missing or not initialized"
+                )
+            self._set_search_path(connection)
+            row = connection.execute(
+                "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
+            ).fetchone()
+            version = self._row_value(row)
+            try:
+                version = int(version) if version is not None else None
+            except (TypeError, ValueError):
+                raise PostgresSchemaValidationError(
+                    "PostgreSQL state schema version is invalid"
+                ) from None
+            if version != SCHEMA_VERSION:
+                if version is not None and version > SCHEMA_VERSION:
+                    raise PostgresSchemaVersionError(
+                        "PostgreSQL state schema is newer than this Hermes build"
+                    )
+                raise PostgresSchemaValidationError(
+                    "PostgreSQL state schema version is not current"
+                )
+            self._validate_schema(connection, include_telegram=include_telegram)
+
     def _apply_schema_upgrade(
         self,
         connection: _ConnectionLike,

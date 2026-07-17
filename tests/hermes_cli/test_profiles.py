@@ -11,6 +11,7 @@ import os
 import shutil
 import sys
 import tarfile
+import threading
 import types
 import argparse
 from pathlib import Path
@@ -384,6 +385,152 @@ class TestCreateProfile:
             )
 
         assert secret_dsn not in str(exc_info.value)
+
+    def test_postgres_clone_rejects_preexisting_empty_schema(
+        self, profile_env, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_STATE_POSTGRES_DSN", "postgresql://example")
+        queries = []
+
+        class _Cursor:
+            def __init__(self, row=None):
+                self.row = row
+
+            def fetchone(self):
+                return self.row
+
+        class _Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def transaction(self):
+                return self
+
+            def execute(self, query, params=None):
+                queries.append((query, params))
+                if "pg_advisory_xact_lock" in query:
+                    return _Cursor()
+                if "FROM pg_catalog.pg_namespace" in query:
+                    return _Cursor((1,))
+                pytest.fail(f"unexpected PostgreSQL query: {query}")
+
+        monkeypatch.setitem(
+            sys.modules,
+            "psycopg",
+            types.SimpleNamespace(connect=lambda *_args, **_kwargs: _Connection()),
+        )
+
+        with pytest.raises(ValueError, match="already exists"):
+            profiles._provision_empty_postgres_schema(
+                "HERMES_STATE_POSTGRES_DSN",
+                "target_state",
+            )
+
+        assert any("pg_advisory_xact_lock" in query for query, _ in queries)
+        assert not any("CREATE SCHEMA" in query for query, _ in queries)
+
+    def test_postgres_clone_schema_claim_serializes_concurrent_creates(
+        self, profile_env, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_STATE_POSTGRES_DSN", "postgresql://example")
+
+        class _Cursor:
+            def __init__(self, row=None):
+                self.row = row
+
+            def fetchone(self):
+                return self.row
+
+        class _Database:
+            def __init__(self):
+                self.schemas = set()
+                self.lock = threading.Lock()
+                self.queries = []
+
+        database = _Database()
+
+        class _Transaction:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                if self.connection.holds_lock:
+                    self.connection.holds_lock = False
+                    database.lock.release()
+                return False
+
+        class _Connection:
+            def __init__(self):
+                self.holds_lock = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def transaction(self):
+                return _Transaction(self)
+
+            def execute(self, query, params=None):
+                database.queries.append((query, params))
+                if "pg_advisory_xact_lock" in query:
+                    database.lock.acquire()
+                    self.holds_lock = True
+                    return _Cursor()
+                if "FROM pg_catalog.pg_namespace" in query:
+                    schema = params[0]
+                    return _Cursor((1,) if schema in database.schemas else None)
+                if "CREATE SCHEMA" in query:
+                    assert "target_state" not in database.schemas
+                    database.schemas.add("target_state")
+                    return _Cursor()
+                pytest.fail(f"unexpected PostgreSQL query: {query}")
+
+        monkeypatch.setitem(
+            sys.modules,
+            "psycopg",
+            types.SimpleNamespace(connect=lambda *_args, **_kwargs: _Connection()),
+        )
+
+        start = threading.Barrier(2)
+        results = []
+        errors = []
+
+        def claim_schema():
+            start.wait()
+            try:
+                results.append(
+                    profiles._provision_empty_postgres_schema(
+                        "HERMES_STATE_POSTGRES_DSN",
+                        "target_state",
+                    )
+                )
+            except ValueError as error:
+                errors.append(error)
+
+        threads = [threading.Thread(target=claim_schema) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        assert all(not thread.is_alive() for thread in threads)
+        assert results == [True]
+        assert len(errors) == 1
+        assert "already exists" in str(errors[0])
+        assert database.schemas == {"target_state"}
+        assert sum(
+            "pg_advisory_xact_lock" in query
+            for query, _ in database.queries
+        ) == 2
+        assert sum("CREATE SCHEMA" in query for query, _ in database.queries) == 1
 
     def test_postgres_clone_copy_failure_cleans_created_schema(
         self, profile_env, monkeypatch

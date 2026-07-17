@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
+import re
 from typing import Any
 
 import pytest
@@ -31,14 +32,33 @@ class Connection:
         self.rows: list[Any] = []
         self.target_occupied = False
         self.success_rowcount = 1
+        self.namespaces: set[str] = set()
+        self.namespace_policy: Any = (True, True, True)
+        self.namespace_objects: dict[str, Any] = {}
 
     def execute(self, statement: str, parameters: Any = None):
         self.calls.append((" ".join(statement.split()), parameters))
         normalized = " ".join(statement.split()).lower()
+        if normalized.startswith("create schema "):
+            match = re.search(r'create schema "([^"]+)"', statement, re.IGNORECASE)
+            assert match is not None
+            self.namespaces.add(match.group(1))
+            return Cursor()
         if "select status, verified_source" in normalized:
             return Cursor(one=self.marker)
-        if "from pg_catalog.pg_class" in normalized:
-            return Cursor(one=("sessions",) if self.target_occupied else None)
+        if (
+            "from pg_catalog.pg_namespace as namespace" in normalized
+            and "select 1" in normalized
+        ):
+            schema = parameters[0]
+            exists = schema in self.namespaces or (
+                schema == "hermes" and self.target_occupied
+            )
+            return Cursor(one=(1,) if exists else None)
+        if "owned_by_current_user" in normalized:
+            return Cursor(one=self.namespace_policy)
+        if "from pg_catalog.pg_proc" in normalized:
+            return Cursor(one=self.namespace_objects.get(parameters[0]))
         if "select run_id, status, verified_source, report" in normalized:
             return Cursor(one=self.marker)
         if normalized.startswith("update"):
@@ -101,6 +121,10 @@ def _statements(connection: Connection) -> list[str]:
     return [statement for statement, _ in connection.calls]
 
 
+def _lock(adapter: PostgresMigrationTargetAdapter, run_id: str) -> None:
+    adapter.acquire_advisory_lock(run_id)
+
+
 def test_staging_uses_authored_schema_and_two_phase_session_parent_fk():
     connection = Connection()
     adapter = _adapter(connection)
@@ -109,6 +133,7 @@ def test_staging_uses_authored_schema_and_two_phase_session_parent_fk():
         TableSpec("messages", ("id",)),
     )
 
+    _lock(adapter, "run-1")
     staging = adapter.create_or_resume_staging("run-1", manifest)
     adapter.begin_session_parent_link_copy(staging)
     adapter.finalize_session_parent_links(staging)
@@ -125,6 +150,7 @@ def test_copy_is_bounded_row_at_a_time_and_identity_is_reset():
     connection = Connection()
     adapter = _adapter(connection)
     table = TableSpec("messages", ("id",))
+    _lock(adapter, "run-copy")
     staging = adapter.create_or_resume_staging("run-copy", (table, TableSpec("sessions", ("id",))))
     rows = [
         {
@@ -190,6 +216,7 @@ def test_target_keyset_reads_use_fetchmany_and_no_fetchall():
     connection = Connection()
     adapter = _adapter(connection)
     table = TableSpec("sessions", ("id",))
+    _lock(adapter, "run-read")
     staging = adapter.create_or_resume_staging("run-read", (table,))
     connection.rows = [{"id": "next", "source": "cli"}]
 
@@ -221,10 +248,71 @@ def test_advisory_lock_lifecycle_and_empty_target_refusal():
     assert not adapter.publish_schema_is_empty()
 
 
+def test_namespace_admission_requires_lock_and_rejects_unsafe_reuse():
+    connection = Connection()
+    adapter = _adapter(connection)
+    manifest = (TableSpec("sessions", ("id",)),)
+
+    with pytest.raises(RuntimeError, match="requires its advisory lock"):
+        adapter.create_or_resume_staging("run-namespace", manifest)
+
+    _lock(adapter, "run-namespace")
+    connection.namespace_policy = (False, True, True)
+    with pytest.raises(RuntimeError, match="owned by the current database user"):
+        adapter.create_or_resume_staging("run-namespace", manifest)
+
+    connection.namespace_policy = (True, False, True)
+    with pytest.raises(RuntimeError, match="grant CREATE"):
+        adapter.create_or_resume_staging("run-namespace", manifest)
+
+    connection.namespace_policy = (True, True, False)
+    with pytest.raises(RuntimeError, match="explicit ACLs"):
+        adapter.create_or_resume_staging("run-namespace", manifest)
+
+    connection.namespace_policy = (True, True, True)
+    staging_schema = next(
+        schema for schema in connection.namespaces if schema.startswith("hermes_stage_")
+    )
+    connection.namespace_objects[staging_schema] = ("function or procedure",)
+    with pytest.raises(RuntimeError, match="function or procedure"):
+        adapter.create_or_resume_staging("run-namespace", manifest)
+
+
+def test_publish_requires_a_fresh_target_schema_under_the_advisory_lock():
+    connection = Connection()
+    adapter = _adapter(connection)
+    manifest = (TableSpec("sessions", ("id",)),)
+    _lock(adapter, "run-publish-existing")
+    staging = adapter.create_or_resume_staging("run-publish-existing", manifest)
+    connection.target_occupied = True
+
+    with pytest.raises(RuntimeError, match="fresh namespace is required"):
+        adapter.atomic_publish(staging, "run-publish-existing", {"run_id": "run-publish-existing"})
+
+    assert not any(" SET SCHEMA " in statement for statement in _statements(connection))
+
+
+def test_published_marker_cannot_bypass_namespace_validation():
+    connection = Connection()
+    adapter = _adapter(connection)
+    connection.namespaces.add("hermes")
+    connection.marker = {
+        "run_id": "published-safety",
+        "status": "published",
+        "verified_source": {"run_id": "published-safety"},
+        "report": None,
+    }
+    connection.namespace_objects["hermes"] = ("domain",)
+
+    with pytest.raises(RuntimeError, match="domain"):
+        adapter.published_run_report("published-safety")
+
+
 def test_atomic_publish_binds_evidence_to_marker_and_is_idempotent():
     connection = Connection()
     adapter = _adapter(connection)
     manifest = (TableSpec("sessions", ("id",)),)
+    _lock(adapter, "run-publish")
     staging = adapter.create_or_resume_staging("run-publish", manifest)
     evidence = {
         "run_id": "run-publish",

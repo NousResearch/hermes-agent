@@ -52,6 +52,7 @@ class PostgresSessionDB(
         state_store = state_store_factory(spec, environ=environment)
         try:
             if spec.read_only:
+                state_store.validate_schema()
                 report = state_store.health_report()
                 if not report.available or not report.capabilities.get(
                     "core_schema",

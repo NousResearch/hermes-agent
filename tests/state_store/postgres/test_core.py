@@ -179,6 +179,8 @@ class FakeConnection:
     def execute(self, query: str, params: Any = None) -> FakeCursor:
         self.queries.append((query, params))
         normalized = " ".join(query.split())
+        if normalized.startswith("SELECT to_regnamespace"):
+            return FakeCursor((True, self.schema_version is not None))
         if normalized.startswith("SELECT version FROM schema_version"):
             return FakeCursor(
                 None if self.schema_version is None else (self.schema_version,)
@@ -717,6 +719,63 @@ def test_read_only_migrations_fail_and_health_reports_capabilities() -> None:
         "read_only": True,
         "full_text_search": False,
     }
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ("current_version_column_contract", "wrong_index_definition"),
+)
+def test_read_only_schema_validation_rejects_catalog_drift_without_ddl(
+    drift: str,
+) -> None:
+    connection = FakeConnection(schema_version=SCHEMA_VERSION)
+    if drift == "current_version_column_contract":
+        _, not_null, identity, default = connection.column_metadata[
+            ("sessions", "source")
+        ]
+        connection.column_metadata[("sessions", "source")] = (
+            "integer",
+            not_null,
+            identity,
+            default,
+        )
+    else:
+        connection.index_overrides["idx_messages_session"] = (
+            "messages",
+            False,
+            (("timestamp", False), ("session_id", False)),
+            None,
+        )
+    store, _ = make_store(connection, read_only=True)
+
+    with pytest.raises(PostgresSchemaValidationError):
+        store.validate_schema()
+
+    queries = query_texts(connection)
+    assert queries[0] == "SET TRANSACTION READ ONLY"
+    assert any("FROM pg_attribute AS attribute" in query for query in queries)
+    assert all(
+        not query.lstrip().upper().startswith(
+            ("ALTER ", "CREATE ", "DELETE ", "DROP ", "INSERT ", "UPDATE ")
+        )
+        for query in queries
+    )
+
+
+def test_read_only_schema_validation_rejects_missing_version_table_without_ddl() -> None:
+    connection = FakeConnection(schema_version=None)
+    store, _ = make_store(connection, read_only=True)
+
+    with pytest.raises(
+        PostgresSchemaValidationError,
+        match="missing or not initialized",
+    ):
+        store.validate_schema()
+
+    queries = query_texts(connection)
+    assert queries[0] == "SET TRANSACTION READ ONLY"
+    assert any("to_regnamespace" in query for query in queries)
+    assert all("SELECT version FROM schema_version" not in query for query in queries)
 
 
 def test_search_schema_is_explicit_and_reported_by_health() -> None:

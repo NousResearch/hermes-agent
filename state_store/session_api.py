@@ -9,6 +9,13 @@ from types import MappingProxyType
 from typing import Any, Dict, Iterable, Literal, Mapping, Optional, Sequence
 
 
+INSIGHTS_MAX_ROWS = 100_000
+
+
+class InsightsRowLimitError(RuntimeError):
+    """Raised when an insights report exceeds its explicit row budget."""
+
+
 @dataclass(frozen=True)
 class APISessionMutationResult:
     """Outcome of one atomic API-facing session mutation."""

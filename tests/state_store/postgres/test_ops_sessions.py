@@ -243,7 +243,8 @@ def test_insights_rows_preserve_dashboard_fields_without_postgres_truncation() -
     ]
     assert max(session_cursor.fetchmany_sizes) <= db._READ_BATCH_SIZE
     assert max(usage_cursor.fetchmany_sizes) <= db._READ_BATCH_SIZE
-    assert all("LIMIT" not in query for query, _ in store.connection.executed)
+    assert all("LIMIT" in query for query, _ in store.connection.executed)
+    assert all(params[-1] == 100_001 for _, params in store.connection.executed)
     assert "reasoning_tokens" in store.connection.executed[0][0]
     assert "u.task" in store.connection.executed[1][0]
     assert "u.last_seen" in store.connection.executed[1][0]

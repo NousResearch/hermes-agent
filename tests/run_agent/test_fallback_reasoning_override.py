@@ -182,8 +182,13 @@ class TestFallbackReasoningOverride:
         assert entry_idx < chokepoint_idx, (
             "per-entry override must be checked BEFORE the chokepoint resolve"
         )
-        # The chokepoint call must live in the else-arm (no per-entry key),
-        # resolving for the FALLBACK model, not the primary.
-        else_arm = src[src.index("else:", entry_idx):chokepoint_idx + 400]
+        # The chokepoint call must live in the OUTER else-arm (no per-entry
+        # key) — anchor by searching BACKWARD from the chokepoint call for the
+        # nearest else:, so the inner unknown-level else can't satisfy this.
+        outer_else_idx = src.rindex("else:", entry_idx, chokepoint_idx)
+        else_arm = src[outer_else_idx:chokepoint_idx + 400]
         assert "resolve_reasoning_config(" in else_arm
         assert "fb_model" in else_arm
+        # And nothing between that else: and the chokepoint call re-enters the
+        # per-entry branch (the else is the one guarding the chokepoint).
+        assert 'fb.get("reasoning_effort")' not in else_arm

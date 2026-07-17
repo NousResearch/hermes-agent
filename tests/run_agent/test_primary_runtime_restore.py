@@ -846,6 +846,23 @@ class TestFallbackReasoningEffort:
 
         assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
 
+    def test_absent_key_none_resolution_keeps_session_override(self):
+        """Chokepoint returning None (nothing configured in the FILE) must NOT
+        clear a session-level reasoning override (/reasoning high) — None is
+        'no directive', not 'disable'. Greptile P1 on #383."""
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        session_cfg = {"enabled": True, "effort": "high"}
+        agent.reasoning_config = session_cfg
+
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)), \
+                patch("hermes_cli.config.load_config", return_value={}):
+            agent._try_activate_fallback()
+
+        assert agent.reasoning_config == session_cfg
+
     def test_absent_key_config_failure_keeps_current(self):
         """Chokepoint resolution failure must never break the swap — keep the
         currently-active reasoning config."""

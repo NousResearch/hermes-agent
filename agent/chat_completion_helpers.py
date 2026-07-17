@@ -2193,13 +2193,19 @@ def try_activate_fallback(
                 from hermes_cli.config import load_config
                 from hermes_constants import resolve_reasoning_config
 
-                agent.reasoning_config = resolve_reasoning_config(
-                    load_config() or {}, fb_model
-                )
-                logger.info(
-                    "Fallback %s/%s: reasoning_config resolved via chokepoint: %s",
-                    fb_provider, fb_model, agent.reasoning_config,
-                )
+                _resolved = resolve_reasoning_config(load_config() or {}, fb_model)
+                # None = nothing configured in the file (no per-model override,
+                # no global reasoning_effort) — NOT a directive to clear. Keep
+                # the current config so a session-level override (/reasoning
+                # high) survives fallback activation. A file-level "disabled"
+                # returns {"enabled": False}, not None, so explicit off still
+                # applies.
+                if _resolved is not None:
+                    agent.reasoning_config = _resolved
+                    logger.info(
+                        "Fallback %s/%s: reasoning_config resolved via chokepoint: %s",
+                        fb_provider, fb_model, _resolved,
+                    )
             except Exception as _reasoning_err:  # noqa: BLE001
                 logger.debug(
                     "Fallback %s/%s: failed to resolve reasoning_config; "

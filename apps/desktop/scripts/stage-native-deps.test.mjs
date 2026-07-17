@@ -345,6 +345,19 @@ test.skipIf(process.platform === 'win32')(
 // This test stages into an accented src/dest tree — twice, so the
 // restage exercises the delete-then-recopy path — to keep it that way.
 
+test('non-ASCII paths: staging never calls fs.cpSync/fs.rmSync', () => {
+  // The Node bug is Windows-only while CI runs on Linux, so the accented
+  // staging test below cannot catch a reintroduction there. Guard at the
+  // source level instead: no cpSync/rmSync call may come back into the
+  // staging path.
+  const source = fs.readFileSync(new URL('./stage-native-deps.mjs', import.meta.url), 'utf8')
+  assert.doesNotMatch(
+    source,
+    /(?:cpSync|rmSync)\(/,
+    'stage-native-deps.mjs must stay on libuv-backed fs primitives (see the banner comment)'
+  )
+})
+
 test('non-ASCII paths: staging into an accented tree works and restages cleanly', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {

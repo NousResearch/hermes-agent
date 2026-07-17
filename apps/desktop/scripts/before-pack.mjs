@@ -59,7 +59,7 @@
  */
 import { existsSync, rmSync } from 'node:fs'
 import { Arch } from 'electron-builder'
-import { stageNodePty } from './stage-native-deps.mjs'
+import { removeDirSync, stageNodePty } from './stage-native-deps.mjs'
 
 export function cleanStaleAppOutDir(appOutDir) {
   if (!appOutDir || typeof appOutDir !== 'string') {
@@ -72,6 +72,13 @@ export function cleanStaleAppOutDir(appOutDir) {
   // can't block the wipe. retry/maxRetries rides out transient EBUSY on
   // Windows where an AV/indexer may briefly hold a handle.
   rmSync(appOutDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  // Node's native rmSync silently deletes nothing on non-ASCII Windows
+  // paths (nodejs/node#56049, fixed in v24.13.1) — without this check the
+  // stale tree survives and the "removed" log below lies. Fall back to
+  // the libuv-backed walk, which handles those paths on every version.
+  if (existsSync(appOutDir)) {
+    removeDirSync(appOutDir)
+  }
   return true
 }
 

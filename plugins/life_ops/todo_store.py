@@ -493,6 +493,25 @@ def get_closed_keys() -> list[str]:
     return [r["key"] for r in rows]
 
 
+def count_todos_closed_today() -> int:
+    """Count todos whose ``closed_at`` timestamp falls on today's UTC date.
+
+    Reads the ``closed_at`` field written by :func:`close_todo` without
+    altering that function's signature or behavior. Returns 0 on a fresh
+    day with no closures.
+    """
+    today = _today_str()
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM todos WHERE closed_at IS NOT NULL AND closed_at LIKE ?",
+            (f"{today}%",),
+        ).fetchone()
+        return rows[0] if rows else 0
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Public API — closing a todo out
 # ---------------------------------------------------------------------------

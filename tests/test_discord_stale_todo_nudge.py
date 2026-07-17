@@ -35,6 +35,7 @@ def _make_adapter():
         adapter._approvals_task = None
         adapter._todo_closure_task = None
         adapter._stale_nudge_task = None
+        adapter._idle_nudge_task = None
         adapter._allowed_user_ids = set()
         adapter._allowed_role_ids = set()
         # name is a property derived from platform; mock it via __dict__

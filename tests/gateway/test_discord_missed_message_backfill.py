@@ -152,10 +152,10 @@ async def test_parent_channel_unreferenced_bot_message_does_not_suppress_backfil
 
 
 @pytest.mark.asyncio
-async def test_thread_unreferenced_bot_message_suppresses_backfill(adapter):
+async def test_thread_unreferenced_bot_message_does_not_mask_request(adapter):
     bot_post = SimpleNamespace(
         id=2,
-        content="Done — captured it.",
+        content="Done — captured a different request.",
         author=SimpleNamespace(id=999, bot=True),
         reference=None,
         created_at=datetime.now(timezone.utc),
@@ -163,7 +163,7 @@ async def test_thread_unreferenced_bot_message_suppresses_backfill(adapter):
     thread = FakeChannel(channel_id=456, parent_id=123, history_messages=[bot_post])
     message = make_message(message_id=1, channel=thread)
 
-    assert await adapter._should_backfill_discord_message(message) is False
+    assert await adapter._should_backfill_discord_message(message) is True
 
 
 @pytest.mark.asyncio

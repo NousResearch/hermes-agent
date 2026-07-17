@@ -250,6 +250,45 @@ def test_merge_pending_text_followups_reply_to_latest_message():
     assert merged.reply_to_is_own_message is False
 
 
+def test_merge_pending_text_followup_clears_stale_reply_context():
+    pending = {}
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+    first = MessageEvent(
+        text="first",
+        source=source,
+        message_id="100",
+        reply_to_message_id="50",
+        reply_to_text="stale quote",
+        reply_to_author_id="old-author",
+        reply_to_author_name="Old Author",
+        reply_to_is_own_message=True,
+    )
+    latest = MessageEvent(text="latest", source=source, message_id="101")
+
+    merge_pending_message_event(pending, "session", first, merge_text=True)
+    merge_pending_message_event(pending, "session", latest, merge_text=True)
+
+    merged = pending["session"]
+    assert merged.message_id == "101"
+    assert merged.reply_to_message_id is None
+    assert merged.reply_to_text is None
+    assert merged.reply_to_author_id is None
+    assert merged.reply_to_author_name is None
+    assert merged.reply_to_is_own_message is False
+
+
+def test_merge_pending_text_followup_without_id_preserves_existing_anchor():
+    pending = {}
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+    first = MessageEvent(text="first", source=source, message_id="100")
+    synthetic = MessageEvent(text="synthetic", source=source, message_id=None)
+
+    merge_pending_message_event(pending, "session", first, merge_text=True)
+    merge_pending_message_event(pending, "session", synthetic, merge_text=True)
+
+    assert pending["session"].message_id == "100"
+
+
 def test_merge_pending_message_event_merges_text_and_photo_followups():
     pending = {}
     source = SessionSource(

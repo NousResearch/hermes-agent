@@ -2164,8 +2164,11 @@ def merge_pending_message_event(
             # The merged event becomes the next turn's trigger. Keep its reply
             # target and injected reply context aligned with the newest user
             # message rather than the first message that occupied the pending
-            # slot; otherwise Telegram visibly quotes a stale follow-up.
-            existing.message_id = event.message_id
+            # slot; otherwise Telegram visibly quotes a stale follow-up. A
+            # synthetic/internal follow-up may not have a platform message id;
+            # preserve the last usable anchor in that case.
+            if event.message_id is not None:
+                existing.message_id = event.message_id
             existing.reply_to_message_id = event.reply_to_message_id
             existing.reply_to_text = event.reply_to_text
             existing.reply_to_author_id = event.reply_to_author_id

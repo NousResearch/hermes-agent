@@ -508,80 +508,44 @@ else
 fi
 
 # ============================================================
-# Nginx 反向代理 + 密码保护
-# 不直接把容器端口暴露到局域网，一律走 Nginx 加密码
+# Dashboard 网页管理界面（带密码）
 # ============================================================
-info "配置 Nginx 反向代理..."
-echo ""
-info "是否配置 Nginx 反代 + 密码登录？（推荐）"
-info "配好后局域网其他电脑输入密码才能访问 Hermes"
-read -p "配置 Nginx 反代？[Y/n]：" SETUP_NGINX </dev/tty
+info "是否配置 Dashboard 网页管理界面？"
+info "配好后局域网其他电脑可以直接在浏览器访问（带密码）"
+read -p "配置 Dashboard？[Y/n]：" SETUP_DASH </dev/tty
 
-if [ "$SETUP_NGINX" != "n" ] && [ "$SETUP_NGINX" != "N" ]; then
-    info "正在安装 Nginx 和密码工具..."
-    $PKG_INSTALL nginx apache2-utils 2>/dev/null || true
-
-    # 创建登录用户名和密码
+DASH_ENV=""
+if [ "$SETUP_DASH" != "n" ] && [ "$SETUP_DASH" != "N" ]; then
     echo ""
-    info "请设置反代登录的用户名和密码"
-    read -p "用户名（默认 hermesadmin）：" NGINX_USER </dev/tty
-    [ -z "$NGINX_USER" ] && NGINX_USER="hermesadmin"
+    read -p "设置登录用户名（默认 hermesadmin）：" DASH_USER </dev/tty
+    [ -z "$DASH_USER" ] && DASH_USER="hermesadmin"
+    read -p "设置登录密码：" DASH_PASS </dev/tty
+    DASH_ENV="-e HERMES_DASHBOARD=1 \
+    -e HERMES_DASHBOARD_PORT=9119 \
+    -e HERMES_DASHBOARD_HOST=0.0.0.0 \
+    -e HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${DASH_USER} \
+    -e HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${DASH_PASS}"
+    ok "Dashboard 已配置，端口 9119，用户名：$DASH_USER"
+fi
 
-    info "请输入密码（输入时不会显示）："
-    htpasswd -c /etc/nginx/.htpasswd "$NGINX_USER"
+info "正在启动容器..."
+docker run -d -it \
+    --name hermes-agent \
+    --restart unless-stopped \
+    -v "$HERMES_DATA_DIR:/opt/data" \
+    -p 9119:9119 \
+    $(echo "$DASH_ENV") \
+    "$IMAGE_NAME" 2>&1
 
-    # 写入 Nginx 配置
-    cat > /etc/nginx/sites-enabled/hermes-proxy << NGINXEOF
-server {
-    listen 8789;
-    server_name _;
-    auth_basic "Hermes Agent - 请输入用户名和密码";
-    auth_basic_user_file /etc/nginx/.htpasswd;
-    location / {
-        proxy_pass http://127.0.0.1:8787;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-    }
-}
-server {
-    listen 9118;
-    server_name _;
-    auth_basic "Hermes Dashboard - 请输入用户名和密码";
-    auth_basic_user_file /etc/nginx/.htpasswd;
-    location / {
-        proxy_pass http://127.0.0.1:9119;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-    }
-}
-NGINXEOF
+sleep 3
 
-    # 移除默认站点（避免冲突）
-    rm -f /etc/nginx/sites-enabled/default 2>/dev/null
-
-    # 检查配置并重载
-    nginx -t 2>/dev/null
-    if [ $? -eq 0 ]; then
-        systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null || true
-        ok "Nginx 反代配置成功！"
-    else
-        warn "Nginx 配置有误，请手动检查 /etc/nginx/sites-enabled/hermes-proxy"
-    fi
-
-    # 放行防火墙（如果有 UFW）
-    if command -v ufw &>/dev/null; then
-        ufw allow 8789/tcp 2>/dev/null || true
-        ufw allow 9118/tcp 2>/dev/null || true
-    fi
+docker ps --filter name=hermes-agent --format '{{.Status}}' 2>/dev/null | grep -q .
+if [ $? -eq 0 ]; then
+    ok "容器已启动！端口 9119（Dashboard）"
 else
-    info "跳过 Nginx 配置，端口直接暴露到局域网（不推荐）"
-    # 不改端口映射，保持默认
+    err "容器启动失败了"
+    docker logs hermes-agent 2>/dev/null | tail -10
+    exit 1
 fi
 
 # ============================================================
@@ -591,9 +555,6 @@ info "添加快捷命令..."
 ALIAS_LINE="alias hermes='docker exec -it hermes-agent hermes'"
 
 if grep -q "$ALIAS_LINE" /root/.bashrc 2>/dev/null; then
-    ok "root 用户的快捷命令已存在，跳过"
-else
-    echo "$ALIAS_LINE" >> /root/.bashrc
     ok "已为 root 用户添加 hermes 快捷命令"
 fi
 
@@ -630,11 +591,7 @@ echo "  hermes             跟她聊天"
 echo "  hermes dashboard   启动网页管理界面（端口 9119）"
 echo "  hermes setup       配置 API Key 和聊天通道"
 echo ""
-info "局域网访问（如果配了 Nginx 反代）："
-echo "  http://你的服务器内网IP:8789    Hermes WebSocket"
-echo "  http://你的服务器内网IP:9118    Dashboard 网页"
-echo ""
-info "如果没配 Nginx，或已在服务器本机操作，直接用："
+info "局域网访问：http://你的服务器内网IP:9119"
 echo ""
 echo "  su - hermes"
 echo ""

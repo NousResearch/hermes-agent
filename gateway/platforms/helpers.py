@@ -11,7 +11,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Dict, Optional
 
 from utils import atomic_json_write
 
@@ -278,6 +278,33 @@ def redact_phone(phone: str) -> str:
     return phone[:4] + "****" + phone[-4:]
 
 
+# ─── Adapter Attribute Reflection ────────────────────────────────────────────
+
+
+def get_adapter_attribute(adapter, attr_name: str, default=None):
+    """Get attribute from adapter instance or class, checking instance first."""
+    adapter_dict = getattr(adapter, "__dict__", {})
+    if attr_name in adapter_dict:
+        return adapter_dict[attr_name]
+    return getattr(type(adapter), attr_name, default)
+
+
+def validate_positive_int(value) -> Optional[int]:
+    """Return value if it's a positive integer, else None. Rejects bools."""
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    return value if value > 0 else None
+
+
+def safe_call_adapter_checker(checker, *args, logger_msg: str = "Adapter checker raised", **kwargs) -> bool:
+    """Safely call an adapter checker function, returning False on error."""
+    if not callable(checker):
+        return False
+    try:
+        return bool(checker(*args, **kwargs))
+    except Exception:
+        logger.debug(logger_msg, exc_info=True)
+        return False
 # ─── GFM Markdown Table → Bullet Conversion ─────────────────────────────────
 # Shared by Discord and Telegram adapters.  Discord calls
 # convert_table_to_bullets() directly; Telegram imports the primitives

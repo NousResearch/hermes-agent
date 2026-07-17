@@ -46,6 +46,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Callable, Dict, Optional, Any, List, Union
 
+from gateway.platforms.helpers import get_adapter_attribute, safe_call_adapter_checker, validate_positive_int
+
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
 # patches (tests/gateway/test_usage_command.py) target
@@ -18226,9 +18228,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
             progress_msg_id = None   # ID of the current progress message to edit
-            can_edit = progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
+            can_edit = progress_grouping != "separate"  # False when edits are disabled or fail
+            progress_edit_count = 0  # Successful edits against the current progress_msg_id
+            progress_last_sent_text = ""
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+
+            def _progress_rotate_threshold() -> int | None:
+                threshold = get_adapter_attribute(adapter, "STREAM_EDIT_ROTATE_BEFORE_LIMIT")
+                return validate_positive_int(threshold)
+
+            def _should_rotate_progress_failure(result) -> bool:
+                checker = get_adapter_attribute(adapter, "should_rotate_stream_edit_failure")
+                return safe_call_adapter_checker(checker, result, logger_msg="Progress edit rotation failure check raised")
 
             _progress_len_fn = (
                 adapter.message_len_fn
@@ -18310,13 +18322,100 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _track_progress_result(result)
                 return result
 
+            async def _rotate_progress_message(full_text: str, *, reason: str) -> bool:
+                nonlocal progress_lines, progress_msg_id, progress_edit_count, progress_last_sent_text, can_edit
+
+                if not progress_msg_id:
+                    return False
+
+                visible_prefix = progress_last_sent_text or ""
+                if visible_prefix and full_text.startswith(visible_prefix):
+                    display_tail = full_text[len(visible_prefix):].lstrip()
+                else:
+                    display_tail = full_text
+                if not display_tail.strip():
+                    return False
+
+                result = await _send_progress_text(display_tail)
+                if not result.success or not result.message_id:
+                    return False
+
+                logger.info(
+                    "[%s] Rotated tool-progress edit target old=%s new=%s edits=%d reason=%s",
+                    adapter.name,
+                    progress_msg_id,
+                    result.message_id,
+                    progress_edit_count,
+                    reason,
+                )
+                progress_lines = display_tail.split("\n")
+                progress_msg_id = result.message_id
+                progress_edit_count = 0
+                progress_last_sent_text = display_tail
+                can_edit = True
+                return True
+
+            async def _edit_or_rotate_progress_message(
+                full_text: str,
+                *,
+                context: str,
+            ) -> tuple[bool, Any]:
+                """Edit the current progress bubble, rotating on adapter limits."""
+                nonlocal progress_edit_count, progress_last_sent_text
+
+                threshold = _progress_rotate_threshold()
+                if (
+                    threshold is not None
+                    and progress_edit_count >= threshold
+                    and await _rotate_progress_message(
+                        full_text,
+                        reason=f"{context}:proactive",
+                    )
+                ):
+                    return True, None
+
+                result = await _edit_progress_message(progress_msg_id, full_text)
+                if result.success:
+                    progress_last_sent_text = full_text
+                    progress_edit_count += 1
+                    return True, result
+
+                if _should_rotate_progress_failure(result) and await _rotate_progress_message(
+                    full_text,
+                    reason=f"{context}:reactive",
+                ):
+                    return True, result
+
+                return False, result
+
+            async def _flush_progress_message(full_text: str, *, context: str) -> bool:
+                """Deliver pending progress during cancellation draining."""
+                nonlocal progress_msg_id, progress_edit_count, progress_last_sent_text
+
+                if not full_text.strip():
+                    return False
+                if progress_msg_id is not None:
+                    delivered, _ = await _edit_or_rotate_progress_message(
+                        full_text,
+                        context=context,
+                    )
+                    return delivered
+
+                result = await _send_progress_text(full_text)
+                if not result.success or not result.message_id:
+                    return False
+                progress_msg_id = result.message_id
+                progress_edit_count = 0
+                progress_last_sent_text = full_text
+                return True
+
             async def _roll_progress_overflow_if_needed() -> bool:
                 """Start fresh editable progress bubbles before a bubble exceeds limit.
 
                 Returns True when it delivered/split the current buffer and the
                 caller should skip the normal send/edit path for this tick.
                 """
-                nonlocal progress_msg_id, progress_lines, can_edit
+                nonlocal progress_msg_id, progress_lines, progress_edit_count, progress_last_sent_text, can_edit
                 if not progress_lines or not can_edit:
                     return False
                 groups = _split_progress_groups(progress_lines)
@@ -18325,8 +18424,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 first_text = _progress_text(groups[0])
                 if progress_msg_id is not None:
-                    result = await _edit_progress_message(progress_msg_id, first_text)
-                    if not result.success:
+                    delivered, _ = await _edit_or_rotate_progress_message(
+                        first_text,
+                        context="overflow",
+                    )
+                    if not delivered:
                         can_edit = False
                         # Fall back to the existing non-edit behavior below.
                         return False
@@ -18336,9 +18438,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         progress_msg_id = result.message_id
 
                 for group in groups[1:]:
-                    result = await _send_progress_text(_progress_text(group))
+                    group_text = _progress_text(group)
+                    result = await _send_progress_text(group_text)
                     if result.success and result.message_id:
                         progress_msg_id = result.message_id
+                        progress_edit_count = 0
+                        progress_last_sent_text = group_text
 
                 # The newest continuation is now the only mutable bubble.  Keep
                 # just its lines so subsequent edits update it instead of
@@ -18424,8 +18529,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
                         full_text = "\n".join(progress_lines)
-                        result = await _edit_progress_message(progress_msg_id, full_text)
-                        if not result.success:
+                        delivered, result = await _edit_or_rotate_progress_message(
+                            full_text,
+                            context="normal",
+                        )
+                        if not delivered:
                             _err = (getattr(result, "error", "") or "").lower()
                             # Transient network errors (ConnectError, timeouts)
                             # must not permanently disable progress-message
@@ -18480,6 +18588,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
+                            progress_edit_count = 0
+                            progress_last_sent_text = full_text if can_edit else msg
                             if _cleanup_progress:
                                 _cleanup_msg_ids.append(str(result.message_id))
 
@@ -18507,10 +18617,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 # the current progress bubble and start a fresh
                                 # one for any tool lines that arrived after.
                                 await _roll_progress_overflow_if_needed()
-                                if can_edit and progress_lines and progress_msg_id:
+                                if can_edit and progress_lines:
                                     _pending_text = _progress_text(progress_lines)
                                     try:
-                                        await _edit_progress_message(progress_msg_id, _pending_text)
+                                        await _flush_progress_message(
+                                            _pending_text,
+                                            context="cancel-reset",
+                                        )
                                     except Exception:
                                         pass
                                 progress_msg_id = None
@@ -18523,12 +18636,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception:
                             break
                     # Final edit with all remaining tools (only if editing works)
-                    if can_edit and progress_lines and progress_msg_id:
+                    if can_edit and progress_lines:
                         await _roll_progress_overflow_if_needed()
-                    if can_edit and progress_lines and progress_msg_id:
+                    if can_edit and progress_lines:
                         full_text = _progress_text(progress_lines)
                         try:
-                            await _edit_progress_message(progress_msg_id, full_text)
+                            await _flush_progress_message(
+                                full_text,
+                                context="cancel-final",
+                            )
                         except Exception:
                             pass
                     return

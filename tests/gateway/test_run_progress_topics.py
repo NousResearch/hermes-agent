@@ -203,6 +203,55 @@ class DelayedProgressAgent:
         }
 
 
+class ReactiveRotationProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "terminal", 'echo "call 1"', {})
+        time.sleep(1.6)
+        self.tool_progress_callback("tool.started", "terminal", 'echo "call 2"', {})
+        time.sleep(1.6)
+        self.tool_progress_callback("tool.started", "terminal", 'echo "call 3"', {})
+        time.sleep(1.6)
+        self.tool_progress_callback("tool.started", "terminal", 'echo "call 4"', {})
+        time.sleep(0.2)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class CancellationFinalRotationProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "terminal", "cancel call 1", {})
+        time.sleep(0.35)
+        self.tool_progress_callback("tool.started", "terminal", "cancel call 2", {})
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class CancellationResetRotationProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "terminal", "reset call 1", {})
+        time.sleep(0.35)
+        self.tool_progress_callback("tool.started", "terminal", "reset call 2", {})
+        self.interim_assistant_callback("content segment", already_streamed=False)
+        time.sleep(0.45)
+        self.tool_progress_callback("tool.started", "terminal", "reset call 3", {})
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 class ManyProgressLinesAgent:
     """Emits enough tool-progress lines to exceed a single platform bubble."""
 
@@ -624,6 +673,60 @@ class CommentaryAgent:
             "messages": [],
             "api_calls": 1,
         }
+
+
+class FeishuProgressRotationAdapter(ProgressCaptureAdapter):
+    SUPPORTS_MESSAGE_EDITING = True
+
+    def __init__(self, platform=Platform.FEISHU, *, fail_edit_numbers=(2,)):
+        super().__init__(platform=platform)
+        self.fail_edit_numbers = set(fail_edit_numbers)
+
+    @staticmethod
+    def should_rotate_stream_edit_failure(result) -> bool:
+        raw_response = getattr(result, "raw_response", None)
+        if getattr(raw_response, "code", None) == 230072:
+            return True
+
+        error_text = str(getattr(raw_response, "msg", "") or "")
+        return "number of times it can be edited" in error_text.lower()
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        message_id = f"progress-{len(self.sent)}"
+        return SendResult(success=True, message_id=message_id)
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        if len(self.edits) in self.fail_edit_numbers:
+            class MockResponse:
+                code = 230072
+                msg = "The message has reached the number of times it can be edited."
+
+            return SendResult(
+                success=False,
+                error="[230072] The message has reached the number of times it can be edited.",
+                raw_response=MockResponse(),
+            )
+        return SendResult(success=True, message_id=message_id)
+
+
+class FeishuCancellationRotationAdapter(FeishuProgressRotationAdapter):
+    def __init__(self, platform=Platform.FEISHU):
+        super().__init__(platform=platform, fail_edit_numbers=(1,))
 
 
 class PreviewedResponseAgent:
@@ -1266,6 +1369,115 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
     assert result["final_response"] == "done"
     assert 'first command' in all_progress_text
     assert 'second command' not in all_progress_text
+
+
+@pytest.mark.asyncio
+async def test_feishu_tool_progress_reactive_rotation_sends_tail(monkeypatch, tmp_path):
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"tool_progress": "all"}}),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = ReactiveRotationProgressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401
+
+    adapter = FeishuProgressRotationAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_test",
+        chat_type="group",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-feishu-progress-rotate",
+        session_key="agent:main:feishu:group:oc_test",
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.sent) == 2
+    assert 'call 1' in adapter.sent[0]["content"]
+    assert 'call 3' in adapter.sent[1]["content"]
+    assert 'call 1' not in adapter.sent[1]["content"]
+    assert [call["message_id"] for call in adapter.edits[:2]] == ["progress-1", "progress-1"]
+
+
+@pytest.mark.asyncio
+async def test_feishu_cancellation_final_edit_rotates_remaining_tail(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CancellationFinalRotationProgressAgent,
+        session_id="sess-feishu-cancel-final-rotate",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.FEISHU,
+        adapter_cls=FeishuCancellationRotationAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.edits[0]["message_id"] == "progress-1"
+    rotated = [
+        call["content"]
+        for call in adapter.sent
+        if "cancel call 2" in call["content"] and "cancel call 1" not in call["content"]
+    ]
+    assert rotated, "cancellation finalization must rotate and preserve the unsent tail"
+
+
+@pytest.mark.asyncio
+async def test_feishu_cancellation_reset_rotates_then_sends_new_tail(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CancellationResetRotationProgressAgent,
+        session_id="sess-feishu-cancel-reset-rotate",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": True,
+            },
+            "streaming": {
+                "enabled": True,
+                "edit_interval": 0.01,
+                "buffer_threshold": 1,
+                "cursor": "",
+            },
+        },
+        platform=Platform.FEISHU,
+        adapter_cls=FeishuCancellationRotationAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    sent_text = [call["content"] for call in adapter.sent]
+    assert any(
+        "reset call 2" in text and "reset call 1" not in text
+        for text in sent_text
+    ), "the pre-reset tail must survive a 230072 edit failure"
+    assert any("reset call 3" in text for text in sent_text), (
+        "progress queued after the reset must start a fresh bubble during cancellation"
+    )
 
 
 @pytest.mark.asyncio

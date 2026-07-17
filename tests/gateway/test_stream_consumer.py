@@ -9,6 +9,27 @@ import pytest
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
+class _BaseRotateAdapter:
+    MAX_MESSAGE_LENGTH = 4096
+    REQUIRES_EDIT_FINALIZE = False
+
+    def __init__(self, send_results, edit_results):
+        self.send = AsyncMock(side_effect=send_results)
+        self.edit_message = AsyncMock(side_effect=edit_results)
+
+
+class _FeishuRotateAdapter(_BaseRotateAdapter):
+    STREAM_EDIT_ROTATE_BEFORE_LIMIT = 2
+
+    @staticmethod
+    def should_rotate_stream_edit_failure(result) -> bool:
+        return "[230072]" in str(getattr(result, "error", "") or "")
+
+
+class _DefaultRotateAdapter(_BaseRotateAdapter):
+    pass
+
+
 # ── _clean_for_display unit tests ────────────────────────────────────────
 
 
@@ -236,6 +257,218 @@ class TestSendOrEditMediaStripping:
         await consumer._send_or_edit(" ▉")
 
         adapter.send.assert_not_called()
+
+
+class TestFeishuStreamEditRotation:
+    @pytest.mark.asyncio
+    async def test_proactive_rotation_sends_only_tail_and_keeps_editing(self):
+        adapter = _FeishuRotateAdapter(
+            send_results=[
+                SimpleNamespace(success=True, message_id="msg_1"),
+                SimpleNamespace(success=True, message_id="msg_2"),
+            ],
+            edit_results=[
+                SimpleNamespace(success=True),
+                SimpleNamespace(success=True),
+                SimpleNamespace(success=True),
+                SimpleNamespace(success=True),
+                SimpleNamespace(success=True),
+                SimpleNamespace(success=True),
+            ],
+        )
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor=" ▉"),
+        )
+
+        assert await consumer._send_or_edit("Hello ▉") is True
+        assert await consumer._send_or_edit("Hello world ▉") is True
+        assert await consumer._send_or_edit("Hello world again ▉") is True
+
+        send_count_before = adapter.send.call_count
+        assert await consumer._send_or_edit("Hello world again ▉") is True
+        assert adapter.send.call_count == send_count_before
+
+        assert await consumer._send_or_edit("Hello world again later ▉") is True
+        assert consumer._message_id == "msg_2"
+        assert consumer._message_edit_count == 0
+        assert consumer._accumulated == " later"
+        assert consumer._last_sent_text == " later ▉"
+
+        rotated_text = adapter.send.call_args_list[1][1]["content"]
+        assert rotated_text == " later ▉"
+
+        assert await consumer._send_or_edit(" later plus ▉") is True
+        assert adapter.edit_message.call_args_list[-1][1]["message_id"] == "msg_2"
+        assert adapter.edit_message.call_args_list[-1][1]["content"] == " later plus ▉"
+        assert consumer._message_edit_count == 1
+
+    @pytest.mark.asyncio
+    async def test_reactive_rotation_preserves_progressive_editing(self):
+        adapter = _FeishuRotateAdapter(
+            send_results=[
+                SimpleNamespace(success=True, message_id="msg_1"),
+                SimpleNamespace(success=True, message_id="msg_2"),
+            ],
+            edit_results=[
+                SimpleNamespace(
+                    success=False,
+                    error="[230072] The message has reached the number of times it can be edited.",
+                ),
+                SimpleNamespace(success=True),
+                SimpleNamespace(success=True),
+            ],
+        )
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor=" ▉"),
+        )
+        consumer._accumulated = "Hello world"
+
+        assert await consumer._send_or_edit("Hello ▉") is True
+        assert await consumer._send_or_edit("Hello world ▉") is True
+
+        assert consumer._edit_supported is True
+        assert consumer._fallback_final_send is False
+        assert consumer._message_id == "msg_2"
+        assert consumer._accumulated == " world"
+        assert consumer._last_sent_text == " world ▉"
+        assert adapter.send.call_args_list[1][1]["content"] == " world ▉"
+        assert consumer._is_flood_error(
+            SimpleNamespace(success=False, error="[230072] limit reached")
+        ) is False
+
+        assert await consumer._send_or_edit(" world continued ▉") is True
+        assert adapter.edit_message.call_args_list[-1][1]["message_id"] == "msg_2"
+        assert adapter.edit_message.call_args_list[-1][1]["content"] == " world continued ▉"
+
+    @pytest.mark.asyncio
+    async def test_default_adapter_still_uses_fallback_after_edit_failure(self):
+        adapter = _DefaultRotateAdapter(
+            send_results=[
+                SimpleNamespace(success=True, message_id="msg_1"),
+                SimpleNamespace(success=True, message_id="msg_2"),
+            ],
+            edit_results=[
+                SimpleNamespace(success=False, error="[230072] limit reached"),
+                SimpleNamespace(success=True),
+            ],
+        )
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor=" ▉"),
+        )
+
+        assert await consumer._send_or_edit("Hello ▉") is True
+        assert await consumer._send_or_edit("Hello world ▉") is False
+        assert consumer._edit_supported is False
+        assert consumer._fallback_final_send is True
+
+        await consumer._send_fallback_final("Hello world")
+        assert consumer._message_id == "msg_2"
+        assert consumer._edit_supported is False
+        assert await consumer._send_or_edit("Hello world again") is False
+
+    @pytest.mark.asyncio
+    async def test_rotation_send_failure_falls_back_without_mutating_state(self):
+        adapter = _FeishuRotateAdapter(
+            send_results=[
+                SimpleNamespace(success=True, message_id="msg_1"),
+                SimpleNamespace(success=False, error="send failed", message_id=None),
+            ],
+            edit_results=[
+                SimpleNamespace(success=False, error="[230072] limit reached"),
+                SimpleNamespace(success=False, error="strip failed"),
+            ],
+        )
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor=" ▉"),
+        )
+
+        assert await consumer._send_or_edit("Hello ▉") is True
+        consumer._accumulated = "Hello world"
+        consumer._message_edit_count = 2
+
+        assert await consumer._send_or_edit("Hello world ▉") is False
+        assert consumer._accumulated == "Hello world"
+        assert consumer._message_id == "msg_1"
+        assert consumer._last_sent_text == "Hello ▉"
+        assert consumer._message_edit_count == 2
+        assert consumer._fallback_final_send is True
+        assert consumer._edit_supported is False
+
+    @pytest.mark.asyncio
+    async def test_rotation_reset_on_segment_break_starts_clean_segment(self):
+        adapter = _FeishuRotateAdapter(
+            send_results=[
+                SimpleNamespace(success=True, message_id="msg_1"),
+                SimpleNamespace(success=True, message_id="msg_2"),
+                SimpleNamespace(success=True, message_id="msg_3"),
+            ],
+            edit_results=[
+                SimpleNamespace(success=True),
+                SimpleNamespace(success=True),
+                SimpleNamespace(success=True),
+            ],
+        )
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor=" ▉"),
+        )
+
+        await consumer._send_or_edit("Hello ▉")
+        await consumer._send_or_edit("Hello world ▉")
+        await consumer._send_or_edit("Hello world again ▉")
+        await consumer._send_or_edit("Hello world again later ▉")
+
+        consumer._reset_segment_state()
+        assert consumer._message_id is None
+        assert consumer._accumulated == ""
+        assert consumer._message_edit_count == 0
+
+        await consumer._send_or_edit("Fresh segment ▉")
+        assert adapter.send.call_args_list[-1][1]["content"] == "Fresh segment ▉"
+
+    @pytest.mark.asyncio
+    async def test_multiple_rotations_keep_each_message_tail_scoped(self):
+        adapter = _FeishuRotateAdapter(
+            send_results=[
+                SimpleNamespace(success=True, message_id="msg_1"),
+                SimpleNamespace(success=True, message_id="msg_2"),
+                SimpleNamespace(success=True, message_id="msg_3"),
+            ],
+            edit_results=[
+                SimpleNamespace(success=True),
+                SimpleNamespace(success=True),
+                SimpleNamespace(success=True),
+                SimpleNamespace(success=True),
+                SimpleNamespace(success=True),
+                SimpleNamespace(success=True),
+            ],
+        )
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor=" ▉"),
+        )
+
+        await consumer._send_or_edit("Alpha ▉")
+        await consumer._send_or_edit("Alpha beta ▉")
+        await consumer._send_or_edit("Alpha beta gamma ▉")
+        await consumer._send_or_edit("Alpha beta gamma delta ▉")
+        await consumer._send_or_edit("delta epsilon ▉")
+        await consumer._send_or_edit("delta epsilon zeta ▉")
+        await consumer._send_or_edit("delta epsilon zeta eta ▉")
+
+        sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
+        assert sent_texts == ["Alpha ▉", " delta ▉", " eta ▉"]
+        assert consumer._message_id == "msg_3"
 
     @pytest.mark.asyncio
     async def test_short_text_with_cursor_skips_new_message(self):

@@ -330,12 +330,44 @@ class GatewaySlashCommandsMixin:
         return EphemeralReply(f"{header}{_tip_line}")
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
-        """Handle /profile — show active profile name and home directory."""
+        """Handle /profile — show the profile serving this source and its home.
+
+        On a multiplexed gateway the process-level active profile is always
+        the multiplexer's own (usually ``default``), so reporting it would
+        answer "default" in every chat regardless of which profile actually
+        serves the room/channel (``source.profile`` — stamped by the
+        ``/p/<profile>/`` URL prefix, a per-credential adapter, or a room→
+        profile map). When ``multiplex_profiles`` is on, report the stamped
+        profile and, like the scoped /reset banner (#59003), resolve the
+        displayed home under that profile's runtime scope. When multiplexing
+        is off (the default) the stamp is ignored — mirroring the gating in
+        ``_run_agent`` and ``_reset_notice_session_info`` — and the command
+        reports the active profile and default home, byte-identical to before.
+        """
         from hermes_constants import display_hermes_home
         from hermes_cli.profiles import get_active_profile_name
 
-        display = display_hermes_home()
-        profile_name = get_active_profile_name()
+        multiplexed = getattr(
+            getattr(self, "config", None), "multiplex_profiles", False
+        )
+        source = getattr(event, "source", None)
+
+        profile_name = ""
+        if multiplexed:
+            profile_name = (getattr(source, "profile", "") or "").strip()
+        profile_name = profile_name or get_active_profile_name()
+
+        if multiplexed:
+            try:
+                from gateway.run import _profile_runtime_scope
+
+                profile_home = self._resolve_profile_home_for_source(source)
+                with _profile_runtime_scope(profile_home):
+                    display = display_hermes_home()
+            except Exception:
+                display = display_hermes_home()
+        else:
+            display = display_hermes_home()
 
         lines = [
             t("gateway.profile.header", profile=profile_name),
@@ -1438,6 +1470,12 @@ class GatewaySlashCommandsMixin:
         from hermes_cli.providers import get_label
 
         raw_args = event.get_command_args().strip()
+        source = event.source
+        _command_profile_home = None
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            _command_profile_home = getattr(
+                self, "_resolve_profile_home_for_source"
+            )(source)
 
         # Parse --provider, --global, --session, and --refresh flags
         (
@@ -1464,7 +1502,7 @@ class GatewaySlashCommandsMixin:
         current_api_key = ""
         user_provs = None
         custom_provs = None
-        config_path = _hermes_home / "config.yaml"
+        config_path = (_command_profile_home or _hermes_home) / "config.yaml"
         try:
             cfg = _load_gateway_config()
             if cfg:
@@ -1482,9 +1520,8 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
-        # Check for session override
-        source = event.source
-        # Normalize the source the same way a normal message turn does
+        # Check for session override. Normalize the source the same way a normal
+        # message turn does
         # (Telegram DM topic recovery) before deriving the override key, so
         # the override is stored under the key the next message turn reads
         # (#30479).
@@ -1500,7 +1537,7 @@ class GatewaySlashCommandsMixin:
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
             # Try interactive picker if the platform supports it
-            adapter = self.adapters.get(source.platform)
+            adapter = getattr(self, "_adapter_for_source")(source)
             has_picker = (
                 adapter is not None
                 and getattr(type(adapter), "send_model_picker", None) is not None
@@ -1533,8 +1570,9 @@ class GatewaySlashCommandsMixin:
                     _cur_provider = current_provider
                     _cur_base_url = current_base_url
                     _cur_api_key = current_api_key
+                    _picker_profile_home = _command_profile_home
 
-                    async def _on_model_selected(
+                    async def _on_model_selected_scoped(
                         _chat_id: str, model_id: str, provider_slug: str
                     ) -> str:
                         """Perform the model switch and return confirmation text."""
@@ -1732,6 +1770,20 @@ class GatewaySlashCommandsMixin:
                         else:
                             lines.append(t("gateway.model.session_only_hint"))
                         return "\n".join(lines)
+
+                    async def _on_model_selected(
+                        _chat_id: str, model_id: str, provider_slug: str
+                    ) -> str:
+                        if _picker_profile_home is None:
+                            return await _on_model_selected_scoped(
+                                _chat_id, model_id, provider_slug
+                            )
+                        from gateway.run import _profile_runtime_scope
+
+                        with _profile_runtime_scope(_picker_profile_home):
+                            return await _on_model_selected_scoped(
+                                _chat_id, model_id, provider_slug
+                            )
 
                     metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     result = await adapter.send_model_picker(
@@ -2652,7 +2704,154 @@ class GatewaySlashCommandsMixin:
         preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
         return t("gateway.background.started", preview=preview, task_id=task_id)
 
-    async def _handle_reasoning_command(self, event: MessageEvent) -> str:
+    def _save_gateway_config_key(self, key_path: str, value) -> bool:
+        """Save a dot-separated key to config.yaml (shared by /reasoning, /fast
+        and their interactive pickers)."""
+        import yaml
+        from gateway.run import _hermes_home
+        config_path = _hermes_home / "config.yaml"
+        try:
+            user_config = {}
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+            keys = key_path.split(".")
+            current = user_config
+            for k in keys[:-1]:
+                if k not in current or not isinstance(current[k], dict):
+                    current[k] = {}
+                current = current[k]
+            current[keys[-1]] = value
+            atomic_config_write(config_path, user_config)
+            return True
+        except Exception as e:
+            logger.error("Failed to save config key %s: %s", key_path, e)
+            return False
+
+    def _apply_reasoning_selection(
+        self,
+        session_key: str,
+        platform_key: str,
+        value: str,
+        persist_global: bool = False,
+    ) -> str:
+        """Apply a /reasoning argument (typed or picked) and return the reply.
+
+        Single application path shared by the typed `/reasoning <arg>` branch
+        and the interactive choice picker, so both surfaces stay in lockstep
+        with the canonical parser.
+        """
+        from hermes_constants import parse_reasoning_effort
+
+        value = (value or "").strip().lower()
+
+        # Display toggle (per-platform)
+        if value in {"show", "on"}:
+            self._show_reasoning = True
+            self._save_gateway_config_key(
+                f"display.platforms.{platform_key}.show_reasoning", True
+            )
+            return t("gateway.reasoning.display_set_on", platform=platform_key)
+        if value in {"hide", "off"}:
+            self._show_reasoning = False
+            self._save_gateway_config_key(
+                f"display.platforms.{platform_key}.show_reasoning", False
+            )
+            return t("gateway.reasoning.display_set_off", platform=platform_key)
+
+        if value == "reset":
+            if persist_global:
+                return t("gateway.reasoning.reset_global_unsupported")
+            self._set_session_reasoning_override(session_key, None)
+            self._reasoning_config = self._load_reasoning_config()
+            self._evict_cached_agent(session_key)
+            return t("gateway.reasoning.reset_done")
+
+        parsed = parse_reasoning_effort(value)
+        if parsed is None:
+            return t("gateway.reasoning.unknown_arg", arg=value)
+
+        self._reasoning_config = parsed
+        if persist_global:
+            if self._save_gateway_config_key("agent.reasoning_effort", value):
+                self._set_session_reasoning_override(session_key, None)
+                self._evict_cached_agent(session_key)
+                return t("gateway.reasoning.set_global", effort=value)
+            self._set_session_reasoning_override(session_key, parsed)
+            self._evict_cached_agent(session_key)
+            return t("gateway.reasoning.set_global_save_failed", effort=value)
+
+        self._set_session_reasoning_override(session_key, parsed)
+        self._evict_cached_agent(session_key)
+        return t("gateway.reasoning.set_session", effort=value)
+
+    def _reasoning_picker_choices(self, current_effort: str) -> list:
+        """Build the choice list for the interactive /reasoning picker."""
+        from hermes_constants import VALID_REASONING_EFFORTS
+
+        choices = [
+            {
+                "value": "none",
+                "label": t("gateway.reasoning.choice_none"),
+                "is_current": current_effort == "none",
+            }
+        ]
+        for level in VALID_REASONING_EFFORTS:
+            choices.append(
+                {
+                    "value": level,
+                    "label": level,
+                    "is_current": level == current_effort,
+                }
+            )
+        choices.extend(
+            [
+                {"value": "reset", "label": t("gateway.reasoning.choice_reset"), "is_current": False},
+                {"value": "show", "label": t("gateway.reasoning.choice_show"), "is_current": False},
+                {"value": "hide", "label": t("gateway.reasoning.choice_hide"), "is_current": False},
+            ]
+        )
+        return choices
+
+    async def _try_send_choice_picker(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        title: str,
+        choices: list,
+        on_choice_selected,
+    ) -> bool:
+        """Send an interactive choice picker when the platform supports it.
+
+        Mirrors the `/model` picker gate: the capability is detected on the
+        adapter *type* (``send_choice_picker``), and a failed send falls back
+        to the text path (returns False) instead of erroring the command.
+        """
+        adapter = getattr(self, "_adapter_for_source")(event.source)
+        has_picker = (
+            adapter is not None
+            and getattr(type(adapter), "send_choice_picker", None) is not None
+        )
+        if not has_picker:
+            return False
+        try:
+            metadata = self._thread_metadata_for_source(
+                event.source, self._reply_anchor_for_event(event)
+            )
+            result = await adapter.send_choice_picker(
+                chat_id=event.source.chat_id,
+                title=title,
+                choices=choices,
+                session_key=session_key,
+                on_choice_selected=on_choice_selected,
+                metadata=metadata,
+            )
+            return bool(getattr(result, "success", False))
+        except Exception as e:
+            logger.warning("send_choice_picker failed, falling back to text: %s", e)
+            return False
+
+    async def _handle_reasoning_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /reasoning command — manage reasoning effort and display toggle.
 
         Usage:
@@ -2663,12 +2862,10 @@ class GatewaySlashCommandsMixin:
             /reasoning show|on               Show model reasoning in responses
             /reasoning hide|off              Hide model reasoning from responses
         """
-        from gateway.run import _hermes_home, _platform_config_key
-        import yaml
+        from gateway.run import _platform_config_key
 
         raw_args = event.get_command_args().strip()
         args, persist_global = self._parse_reasoning_command_args(raw_args)
-        config_path = _hermes_home / "config.yaml"
         # Normalize the source (Telegram DM topic recovery) before deriving
         # the override key so storage matches the key the next message turn
         # reads — same fix as /model (#30479).
@@ -2686,35 +2883,18 @@ class GatewaySlashCommandsMixin:
             model=_session_model,
         )
 
-        def _save_config_key(key_path: str, value):
-            """Save a dot-separated key to config.yaml."""
-            try:
-                user_config = {}
-                if config_path.exists():
-                    with open(config_path, encoding="utf-8") as f:
-                        user_config = yaml.safe_load(f) or {}
-                keys = key_path.split(".")
-                current = user_config
-                for k in keys[:-1]:
-                    if k not in current or not isinstance(current[k], dict):
-                        current[k] = {}
-                    current = current[k]
-                current[keys[-1]] = value
-                atomic_config_write(config_path, user_config)
-                return True
-            except Exception as e:
-                logger.error("Failed to save config key %s: %s", key_path, e)
-                return False
-
         if not raw_args:
             # Show current state
             rc = self._reasoning_config
             if rc is None:
                 level = t("gateway.reasoning.level_default")
+                current_effort = "medium"
             elif rc.get("enabled") is False:
                 level = t("gateway.reasoning.level_disabled")
+                current_effort = "none"
             else:
                 level = rc.get("effort", "medium")
+                current_effort = level
             display_state = (
                 t("gateway.reasoning.display_on")
                 if self._show_reasoning
@@ -2726,6 +2906,31 @@ class GatewaySlashCommandsMixin:
                 if has_session_override
                 else t("gateway.reasoning.scope_global")
             )
+
+            # Interactive picker on platforms that support it (parity with the
+            # /model picker). Falls through to the text status card otherwise.
+            _picker_platform_key = _platform_config_key(event.source.platform)
+
+            async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
+                return self._apply_reasoning_selection(
+                    session_key, _picker_platform_key, value
+                )
+
+            picker_sent = await self._try_send_choice_picker(
+                event,
+                session_key,
+                title=t(
+                    "gateway.reasoning.picker_title",
+                    level=level,
+                    scope=scope,
+                    display=display_state,
+                ),
+                choices=self._reasoning_picker_choices(current_effort),
+                on_choice_selected=_on_reasoning_choice,
+            )
+            if picker_sent:
+                return None  # Picker sent — adapter handles the response
+
             return t(
                 "gateway.reasoning.status",
                 level=level,
@@ -2733,50 +2938,11 @@ class GatewaySlashCommandsMixin:
                 display=display_state,
             )
 
-        # Display toggle (per-platform)
+        # Typed argument path — same applier the picker uses.
         platform_key = _platform_config_key(event.source.platform)
-        if args in {"show", "on"}:
-            self._show_reasoning = True
-            _save_config_key(f"display.platforms.{platform_key}.show_reasoning", True)
-            return t("gateway.reasoning.display_set_on", platform=platform_key)
-
-        if args in {"hide", "off"}:
-            self._show_reasoning = False
-            _save_config_key(f"display.platforms.{platform_key}.show_reasoning", False)
-            return t("gateway.reasoning.display_set_off", platform=platform_key)
-
-        # Effort level change
-        effort = args.strip()
-        if effort == "reset":
-            if persist_global:
-                return t("gateway.reasoning.reset_global_unsupported")
-            self._set_session_reasoning_override(session_key, None)
-            self._reasoning_config = self._load_reasoning_config()
-            self._evict_cached_agent(session_key)
-            return t("gateway.reasoning.reset_done")
-        if effort == "none":
-            parsed = {"enabled": False}
-        elif effort in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
-            parsed = {"enabled": True, "effort": effort}
-        else:
-            return t(
-                "gateway.reasoning.unknown_arg",
-                arg=effort or raw_args.lower(),
-            )
-
-        self._reasoning_config = parsed
-        if persist_global:
-            if _save_config_key("agent.reasoning_effort", effort):
-                self._set_session_reasoning_override(session_key, None)
-                self._evict_cached_agent(session_key)
-                return t("gateway.reasoning.set_global", effort=effort)
-            self._set_session_reasoning_override(session_key, parsed)
-            self._evict_cached_agent(session_key)
-            return t("gateway.reasoning.set_global_save_failed", effort=effort)
-
-        self._set_session_reasoning_override(session_key, parsed)
-        self._evict_cached_agent(session_key)
-        return t("gateway.reasoning.set_session", effort=effort)
+        return self._apply_reasoning_selection(
+            session_key, platform_key, args, persist_global=persist_global
+        )
 
     async def _handle_memory_command(self, event: MessageEvent) -> str:
         """Handle /memory — review pending memory writes + toggle the approval gate.
@@ -2882,14 +3048,12 @@ class GatewaySlashCommandsMixin:
                      f"~/.hermes/pending/skills/{pending_id}.json)")
         return out
 
-    async def _handle_fast_command(self, event: MessageEvent) -> str:
+    async def _handle_fast_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
-        from gateway.run import _hermes_home, _load_gateway_config, _resolve_gateway_model
-        import yaml
+        from gateway.run import _load_gateway_config, _resolve_gateway_model
         from hermes_cli.models import model_supports_fast_mode
 
         args = event.get_command_args().strip().lower()
-        config_path = _hermes_home / "config.yaml"
         self._service_tier = self._load_service_tier()
 
         user_config = _load_gateway_config()
@@ -2897,44 +3061,56 @@ class GatewaySlashCommandsMixin:
         if not model_supports_fast_mode(model):
             return t("gateway.fast.not_supported")
 
-        def _save_config_key(key_path: str, value):
-            """Save a dot-separated key to config.yaml."""
-            try:
-                user_config = {}
-                if config_path.exists():
-                    with open(config_path, encoding="utf-8") as f:
-                        user_config = yaml.safe_load(f) or {}
-                keys = key_path.split(".")
-                current = user_config
-                for k in keys[:-1]:
-                    if k not in current or not isinstance(current[k], dict):
-                        current[k] = {}
-                    current = current[k]
-                current[keys[-1]] = value
-                atomic_config_write(config_path, user_config)
-                return True
-            except Exception as e:
-                logger.error("Failed to save config key %s: %s", key_path, e)
-                return False
+        def _apply_fast_selection(value: str) -> str:
+            """Apply a /fast argument (typed or picked) and return the reply."""
+            if value in {"fast", "on"}:
+                self._service_tier = "priority"
+                saved_value = "fast"
+                label = t("gateway.fast.label_fast")
+            elif value in {"normal", "off"}:
+                self._service_tier = None
+                saved_value = "normal"
+                label = t("gateway.fast.label_normal")
+            else:
+                return t("gateway.fast.unknown_arg", arg=value)
+            if self._save_gateway_config_key("agent.service_tier", saved_value):
+                return t("gateway.fast.saved", label=label)
+            return t("gateway.fast.session_only", label=label)
 
         if not args or args == "status":
-            status = t("gateway.fast.status_fast") if self._service_tier == "priority" else t("gateway.fast.status_normal")
+            is_fast = self._service_tier == "priority"
+            status = t("gateway.fast.status_fast") if is_fast else t("gateway.fast.status_normal")
+
+            # Interactive picker on platforms that support it.
+            session_key = self._session_key_for_source(event.source)
+
+            async def _on_fast_choice(_chat_id: str, value: str) -> str:
+                return _apply_fast_selection(value)
+
+            picker_sent = await self._try_send_choice_picker(
+                event,
+                session_key,
+                title=t("gateway.fast.picker_title", mode=status),
+                choices=[
+                    {
+                        "value": "fast",
+                        "label": t("gateway.fast.choice_fast"),
+                        "is_current": is_fast,
+                    },
+                    {
+                        "value": "normal",
+                        "label": t("gateway.fast.choice_normal"),
+                        "is_current": not is_fast,
+                    },
+                ],
+                on_choice_selected=_on_fast_choice,
+            )
+            if picker_sent:
+                return None  # Picker sent — adapter handles the response
+
             return t("gateway.fast.status", mode=status)
 
-        if args in {"fast", "on"}:
-            self._service_tier = "priority"
-            saved_value = "fast"
-            label = t("gateway.fast.label_fast")
-        elif args in {"normal", "off"}:
-            self._service_tier = None
-            saved_value = "normal"
-            label = t("gateway.fast.label_normal")
-        else:
-            return t("gateway.fast.unknown_arg", arg=args)
-
-        if _save_config_key("agent.service_tier", saved_value):
-            return t("gateway.fast.saved", label=label)
-        return t("gateway.fast.session_only", label=label)
+        return _apply_fast_selection(args)
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""

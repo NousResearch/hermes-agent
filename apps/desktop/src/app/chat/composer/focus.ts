@@ -157,7 +157,14 @@ export const focusComposerInput = (el: HTMLElement | null) => {
     return
   }
 
-  const focus = () => el.focus({ preventScroll: true })
+  // Skip when already focused: focus() runs the full focusing steps (forcing
+  // layout) even on the active element, and during a session switch the DOM is
+  // large and dirty — the redundant retries were measurably expensive there.
+  const focus = () => {
+    if (document.activeElement !== el) {
+      el.focus({ preventScroll: true })
+    }
+  }
 
   focus()
   window.requestAnimationFrame(focus)

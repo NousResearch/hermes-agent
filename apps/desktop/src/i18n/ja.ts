@@ -217,6 +217,7 @@ export const ja = defineLocale({
       providerApiKeys: 'API キー',
       gateway: 'ゲートウェイ',
       apiKeys: 'ツールとキー',
+      keybinds: 'キーボードショートカット',
       keysTools: 'ツール',
       keysSettings: '設定',
       mcp: 'MCP',
@@ -1576,6 +1577,7 @@ export const ja = defineLocale({
       finishedUnread: '完了 — 未読',
       backgroundRunning: 'バックグラウンドタスク実行中',
       handoffOrigin: platform => `${platform} から引き継ぎ`,
+      ownedByProfile: profile => `プロファイル: ${profile}`,
       renamed: '名前を変更しました',
       renameFailed: '名前の変更に失敗しました',
       renameTitle: 'セッションの名前を変更',
@@ -1889,6 +1891,7 @@ export const ja = defineLocale({
     recommended: '推奨',
     connected: '接続済み',
     featuredPitch: '1 つのサブスクリプションで 300 以上の最先端モデル — Hermes を実行するための推奨方法',
+    fireworksPitch: '直接モデル API — Fireworks がホストする最先端モデル',
     openRouterPitch: '1 つのキーで数百のモデル — 堅実なデフォルト',
     apiKeyOptions: {
       fireworks: {
@@ -2091,6 +2094,7 @@ export const ja = defineLocale({
       noModel: 'モデルなし',
       switchModel: 'モデルを切り替え',
       openModelPicker: 'モデルピッカーを開く',
+      modelPinned: '手動で固定中 — 新しいチャットは設定のデフォルトではなくこのモデルを使用します',
       modelTitle: (provider, model) => `モデル · ${provider}: ${model}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }

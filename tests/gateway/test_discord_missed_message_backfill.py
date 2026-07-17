@@ -114,9 +114,33 @@ def make_message(*, message_id=1, author_id=42, content="please ingest", reactio
     )
 
 
+def make_bot_message(*, message_id=1, content="please ingest", channel=None, mentions=None):
+    message = make_message(
+        message_id=message_id,
+        content=content,
+        channel=channel,
+        mentions=mentions,
+    )
+    message.author.bot = True
+    return message
+
+
 @pytest.mark.asyncio
 async def test_backfills_message_with_only_own_success_reaction(adapter):
     message = make_message(reactions=[FakeReaction("✅", me=True)])
+
+    assert await adapter._should_backfill_discord_message(message) is True
+
+
+@pytest.mark.asyncio
+async def test_configured_bot_sender_is_left_for_shared_ingress_policy(adapter, monkeypatch):
+    bot_user = adapter._client.user
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    message = make_bot_message(
+        message_id=98,
+        content=f"<@{bot_user.id}> run this",
+        mentions=[bot_user],
+    )
 
     assert await adapter._should_backfill_discord_message(message) is True
 
@@ -246,6 +270,21 @@ async def test_run_backfill_counts_only_messages_that_reach_dispatch(adapter, mo
     await adapter._run_missed_message_backfill()
 
     assert dispatch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_recovery_aborts_when_durable_ledger_is_unavailable(adapter, monkeypatch):
+    dispatch = AsyncMock()
+    monkeypatch.setattr(adapter, "_dispatch_recovered_message", dispatch)
+    monkeypatch.setattr(
+        adapter,
+        "_with_discord_recovery_db_async",
+        AsyncMock(return_value=False),
+    )
+
+    await adapter._run_missed_message_backfill()
+
+    dispatch.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -562,6 +601,61 @@ def test_empty_successful_turn_is_not_persistently_complete(adapter):
     adapter._record_discord_processing_complete(event, outcome=ProcessingOutcome.SUCCESS)
 
     assert adapter._discord_message_is_persistently_complete("89") is False
+
+
+def test_fresh_processing_claim_suppresses_duplicate_recovery(adapter):
+    message = make_message(message_id=99)
+    event = MessageEvent(
+        text=message.content,
+        message_type=MessageType.TEXT,
+        raw_message=message,
+        message_id=str(message.id),
+    )
+    adapter._record_discord_processing_start(event, emoji_ack=False)
+
+    assert adapter._discord_message_has_active_claim("99") is True
+
+
+def test_stale_processing_claim_is_recoverable(adapter):
+    message = make_message(message_id=100)
+    event = MessageEvent(
+        text=message.content,
+        message_type=MessageType.TEXT,
+        raw_message=message,
+        message_id=str(message.id),
+    )
+    adapter._record_discord_processing_start(event, emoji_ack=False)
+    stale = (datetime.now(timezone.utc) - dt.timedelta(minutes=11)).isoformat()
+    adapter._with_discord_recovery_db(
+        lambda conn: conn.execute(
+            "UPDATE discord_messages SET updated_at=? WHERE message_id='100'",
+            (stale,),
+        )
+    )
+
+    assert adapter._discord_message_has_active_claim("100") is False
+
+
+@pytest.mark.asyncio
+async def test_processing_hook_offloads_contended_ledger(adapter, monkeypatch):
+    message = make_message(message_id=101)
+    event = MessageEvent(
+        text=message.content,
+        message_type=MessageType.TEXT,
+        raw_message=message,
+        message_id=str(message.id),
+    )
+
+    def slow_record(*_args, **_kwargs):
+        import time
+        time.sleep(0.1)
+
+    monkeypatch.setattr(adapter, "_record_discord_processing_start", slow_record)
+    processing = asyncio.create_task(adapter.on_processing_start(event))
+    await asyncio.sleep(0.01)
+
+    assert processing.done() is False
+    await processing
 
 
 def test_final_delivery_remains_complete_after_processing_hook(adapter):

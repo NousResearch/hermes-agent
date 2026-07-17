@@ -2013,6 +2013,16 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return
         channels = self._missed_message_backfill_channels()
+        ledger_ok = await self._with_discord_recovery_db_async(
+            lambda conn: conn.execute("SELECT 1").fetchone() is not None,
+            False,
+        )
+        if not ledger_ok:
+            logger.error(
+                "[%s] Missed-message recovery aborted: durable ledger unavailable",
+                self.name,
+            )
+            return
         scan_id = self._record_recovery_scan_start(channels)
         if not channels:
             logger.info("[%s] Missed-message backfill enabled but no channels configured", self.name)
@@ -2185,9 +2195,9 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         if getattr(getattr(message, "author", None), "id", None) == getattr(self._client.user, "id", None):
             return False
-        if getattr(getattr(message, "author", None), "bot", False):
-            return False
         if self._discord_message_is_persistently_complete(str(getattr(message, "id", ""))):
+            return False
+        if self._discord_message_has_active_claim(str(getattr(message, "id", ""))):
             return False
         # A success reaction alone is only an acknowledgement.  It is not
         # enough evidence that the substantive response/action completed.
@@ -2411,6 +2421,26 @@ class DiscordAdapter(BasePlatformAdapter):
             return status == "responded" and bool(replied) and not bool(outage)
 
         return bool(self._with_discord_recovery_db(_op, default=False))
+
+    def _discord_message_has_active_claim(self, message_id: str) -> bool:
+        if not message_id:
+            return False
+        cutoff = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
+        ).isoformat()
+
+        def _op(conn):
+            row = conn.execute(
+                "SELECT status, updated_at FROM discord_messages WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+            return bool(
+                row
+                and row[0] in {"queued", "processing"}
+                and row[1] >= cutoff
+            )
+
+        return bool(self._with_discord_recovery_db(_op, default=True))
 
     def _record_recovery_scan_start(self, channels: set[str]) -> str:
         scan_id = f"{int(time.time() * 1000)}-{os.getpid()}"

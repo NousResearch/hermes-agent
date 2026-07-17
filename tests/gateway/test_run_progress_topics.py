@@ -443,8 +443,20 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
 
     assert result["final_response"] == "done"
     assert adapter.sent
-    assert adapter.sent[0]["metadata"] == {"thread_id": "1234567890.000001"}
-    assert all(call["metadata"] == {"thread_id": "1234567890.000001"} for call in adapter.typing)
+    # progress_surface marks Slack tool-progress bubbles for the adapter's
+    # muted context-block rendering; threading metadata is unchanged.
+    assert adapter.sent[0]["metadata"] == {
+        "thread_id": "1234567890.000001",
+        "progress_surface": True,
+    }
+    assert all(
+        call["metadata"]
+        in (
+            {"thread_id": "1234567890.000001"},
+            {"thread_id": "1234567890.000001", "progress_surface": True},
+        )
+        for call in adapter.typing
+    )
 
 
 @pytest.mark.asyncio

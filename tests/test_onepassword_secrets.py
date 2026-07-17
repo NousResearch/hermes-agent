@@ -52,6 +52,23 @@ def _err(code: int, stderr: str):
     return mock.Mock(returncode=code, stdout="", stderr=stderr)
 
 
+def test_protected_env_vars_include_interactive_sessions_and_configured_token(
+    monkeypatch,
+):
+    monkeypatch.setenv("OP_SESSION_work", "session")
+    monkeypatch.setenv("OP_SESSION_personal", "session")
+    monkeypatch.setenv("UNRELATED", "value")
+
+    protected = op.OnePasswordSource().protected_env_vars(
+        {"service_account_token_env": "CUSTOM_OP_TOKEN"}
+    )
+
+    assert "CUSTOM_OP_TOKEN" in protected
+    assert "OP_SESSION_work" in protected
+    assert "OP_SESSION_personal" in protected
+    assert "UNRELATED" not in protected
+
+
 # ---------------------------------------------------------------------------
 # Reference validation
 # ---------------------------------------------------------------------------

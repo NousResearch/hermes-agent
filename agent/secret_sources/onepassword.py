@@ -525,7 +525,12 @@ class OnePasswordSource(SecretSource):
         token_env = _DEFAULT_TOKEN_ENV
         if isinstance(cfg, dict):
             token_env = str(cfg.get("service_account_token_env") or token_env)
-        return frozenset({token_env})
+        protected = {token_env}
+        # Interactive `op signin` authentication is exported as
+        # OP_SESSION_<account>. These session credentials are as sensitive as
+        # service-account tokens and must never reach no-agent subprocesses.
+        protected.update(name for name in os.environ if name.startswith("OP_SESSION_"))
+        return frozenset(protected)
 
     def config_schema(self) -> dict:
         return {

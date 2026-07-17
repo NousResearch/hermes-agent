@@ -135,6 +135,39 @@ def test_prepare_strips_environment_expanded_bootstrap_alias(tmp_path, monkeypat
     assert "${BOOTSTRAP_ALIAS_NAME}" not in child_env
 
 
+def test_prepare_strips_onepassword_interactive_session_credentials(
+    tmp_path, monkeypatch
+):
+    import agent.secret_sources.registry as registry
+    import cron.scheduler as scheduler
+    import hermes_cli.env_loader as env_loader
+    from agent.secret_sources.onepassword import OnePasswordSource
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setattr(scheduler, "_hermes_home", home)
+    monkeypatch.setenv("OP_SESSION_work", "interactive-session-secret")
+    monkeypatch.setenv("OP_SESSION_personal", "another-session-secret")
+    monkeypatch.setenv("NON_AUTH_VALUE", "keep-me")
+    config = {"onepassword": {"enabled": True}}
+    monkeypatch.setattr(
+        env_loader,
+        "refresh_hermes_dotenv_strict",
+        lambda **_kwargs: env_loader.StrictDotenvRefresh((), config),
+    )
+    monkeypatch.setattr(
+        registry,
+        "_ordered_enabled_sources",
+        lambda _cfg: [OnePasswordSource()],
+    )
+
+    _pinned_home, child_env = scheduler._prepare_no_agent_child_environment()
+
+    assert "OP_SESSION_work" not in child_env
+    assert "OP_SESSION_personal" not in child_env
+    assert child_env["NON_AUTH_VALUE"] == "keep-me"
+
+
 def test_prepare_no_agent_child_env_loads_exact_canonical_home(
     tmp_path, monkeypatch
 ):

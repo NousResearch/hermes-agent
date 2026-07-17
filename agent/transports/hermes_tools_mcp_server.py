@@ -51,6 +51,13 @@ import os
 import sys
 from typing import Any, Optional
 
+from agent.transports.hermes_tool_exposure import (
+    CURATED_STATELESS_TOOLS,
+    make_error_envelope,
+    resolve_curated_specs,
+    wrap_untrusted,
+)
+
 logger = logging.getLogger(__name__)
 
 # JSON Schema type -> Python type mapping for signature generation
@@ -97,56 +104,11 @@ def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict
     return inspect.Signature(params, return_annotation=str), annots
 
 
-# Tools we expose. Each name MUST match a registered Hermes tool that
-# `model_tools.handle_function_call()` can dispatch.
-#
-# What we deliberately DO NOT expose:
-#   - terminal / shell / read_file / write_file / patch / search_files /
-#     process — codex's built-ins cover these and approval routes through
-#     codex's own UI.
-#   - delegate_task / memory / session_search / todo — these are
-#     `_AGENT_LOOP_TOOLS` in Hermes (model_tools.py:493). They require
-#     the running AIAgent context to dispatch (mid-loop state), so a
-#     stateless MCP callback can't drive them. Hermes' default runtime
-#     keeps these working; the codex_app_server runtime cannot.
-EXPOSED_TOOLS: tuple[str, ...] = (
-    "web_search",
-    "web_extract",
-    "browser_navigate",
-    "browser_click",
-    "browser_type",
-    "browser_press",
-    "browser_snapshot",
-    "browser_scroll",
-    "browser_back",
-    "browser_get_images",
-    "browser_console",
-    "browser_vision",
-    "vision_analyze",
-    "image_generate",
-    "skill_view",
-    "skills_list",
-    "text_to_speech",
-    # Kanban worker handoff tools — gated on HERMES_KANBAN_TASK env var
-    # (set by the kanban dispatcher when spawning a worker). Without these
-    # in the callback, a worker spawned with openai_runtime=codex_app_server
-    # could do the work but couldn't report completion back to the kernel,
-    # making it hang until timeout. Stateless dispatch — they just read
-    # the env var and write to ~/.hermes/kanban.db.
-    "kanban_complete",
-    "kanban_block",
-    "kanban_comment",
-    "kanban_heartbeat",
-    "kanban_show",
-    "kanban_list",
-    # NOTE: kanban_create / kanban_unblock / kanban_link are orchestrator-
-    # only — the kanban tool gates them on HERMES_KANBAN_TASK being unset.
-    # They're exposed here for orchestrator agents running on the codex
-    # runtime that need to dispatch new tasks.
-    "kanban_create",
-    "kanban_unblock",
-    "kanban_link",
-)
+# The curated stateless-safe tool list now lives in the shared
+# agent.transports.hermes_tool_exposure module, so this codex backend and the
+# Claude Agent SDK backend can't drift. Kept as a module-level alias for
+# backward compatibility with existing importers/tests.
+EXPOSED_TOOLS: tuple[str, ...] = CURATED_STATELESS_TOOLS
 
 
 def _build_server() -> Any:
@@ -177,32 +139,30 @@ def _build_server() -> Any:
         ),
     )
 
-    # Pull authoritative Hermes tool schemas for the ones we expose, so
-    # MCP clients see the same parameter docs Hermes gives the model.
-    all_defs = {
-        td["function"]["name"]: td["function"]
-        for td in (get_tool_definitions(quiet_mode=True) or [])
-        if isinstance(td, dict) and td.get("type") == "function"
-    }
+    # Pull authoritative Hermes tool schemas for the ones we expose (shared
+    # curation + normalization), so MCP clients see the same parameter docs
+    # Hermes gives the model.
+    curated = resolve_curated_specs(get_tool_definitions(quiet_mode=True))
 
     exposed_count = 0
 
     for name in EXPOSED_TOOLS:
-        spec = all_defs.get(name)
-        if spec is None:
+        resolved = curated.get(name)
+        if resolved is None:
             logger.debug(
                 "skipping %s — not registered in this Hermes process", name
             )
             continue
 
-        description = spec.get("description") or f"Hermes {name} tool"
-        params_schema = spec.get("parameters") or {"type": "object", "properties": {}}
+        description, params_schema = resolved
 
         # FastMCP wants a Python callable. Build a closure that takes the
-        # arguments dict, dispatches via handle_function_call, and returns
-        # the result string. We use add_tool() for full control over the
-        # input schema (FastMCP's @tool() decorator inspects type hints,
-        # which we can't get from a JSON schema at runtime).
+        # arguments dict, dispatches via handle_function_call (STATELESS — this
+        # subprocess has no live AIAgent, so agent-level tools are excluded by
+        # the curated list), wraps untrusted results in the shared promptware
+        # defense, and returns the result string. We use add_tool() for full
+        # control over the input schema (FastMCP's @tool() decorator inspects
+        # type hints, which we can't get from a JSON schema at runtime).
         def _make_handler(tool_name: str, schema: dict | None):
             sig, annots = _signature_from_schema(schema)
 
@@ -211,10 +171,11 @@ def _build_server() -> Any:
                     # Filter out None values before dispatch so unset optionals
                     # aren't forwarded to the handler.
                     args = {k: v for k, v in kwargs.items() if v is not None}
-                    return handle_function_call(tool_name, args or {})
+                    result = handle_function_call(tool_name, args or {})
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)
-                    return json.dumps({"error": str(exc), "tool": tool_name})
+                    return make_error_envelope(exc, tool_name)
+                return wrap_untrusted(tool_name, result)
 
             _dispatch.__name__ = tool_name
             _dispatch.__doc__ = description

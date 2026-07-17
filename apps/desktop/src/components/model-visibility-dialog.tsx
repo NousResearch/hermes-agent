@@ -14,6 +14,7 @@ import { normalize } from '@/lib/text'
 import {
   $visibleModels,
   collapseModelFamilies,
+  compareModelFamilies,
   effectiveVisibleKeys,
   modelVisibilityKey,
   setVisibleModels,
@@ -97,7 +98,9 @@ export function ModelVisibilityDialog({
             </div>
           ) : (
             providers.map(provider => {
-              const models = collapseModelFamilies(provider.models ?? []).filter(family => matches(provider, family.id))
+              const models = collapseModelFamilies(provider.models ?? [])
+                .filter(family => matches(provider, family.id))
+                .sort(compareModelFamilies)
 
               if (models.length === 0) {
                 return null

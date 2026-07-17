@@ -224,6 +224,23 @@ export interface HermesConfig {
 
 export type HermesConfigRecord = Record<string, unknown>
 
+/** Resolved inference-backend status: whether turns actually route through the
+ *  Claude Agent SDK (`claude` CLI) or the native provider path. */
+export interface InferenceBackendStatus {
+  /** Configured model.claude_agent_sdk mode: off | inference | delegate | hybrid. */
+  mode: string
+  /** True when turns really run through the Claude Agent SDK. */
+  active: boolean
+  /** What actually handles turns: 'native' | 'claude_agent_sdk'. */
+  backend: string
+  /** Human-readable explanation (why active / why not). */
+  reason?: string | null
+  /** Resolved path to the `claude` CLI, or null if not found. */
+  cli_path?: string | null
+  /** Whether the claude-agent-sdk Python package is importable. */
+  sdk_installed?: boolean
+}
+
 export interface ModelInfoResponse {
   auto_context_length?: number
   capabilities?: Record<string, unknown>
@@ -231,6 +248,7 @@ export interface ModelInfoResponse {
   effective_context_length?: number
   model: string
   provider: string
+  inference_backend?: InferenceBackendStatus
 }
 
 export interface ModelPricing {

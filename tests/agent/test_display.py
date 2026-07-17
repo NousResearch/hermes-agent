@@ -65,7 +65,9 @@ class TestBuildToolPreview:
         )
         assert result == "pnpm run lint"
 
-    def test_terminal_preview_compacts_multi_command_probe(self):
+    def test_terminal_preview_lists_multi_command_probe(self):
+        # Plumbing (boundary echoes, pipe tails, redirects) is stripped, but the
+        # real commands are shown — not collapsed to "+ N commands".
         result = build_tool_preview(
             "terminal",
             {
@@ -76,7 +78,13 @@ class TestBuildToolPreview:
                 )
             },
         )
-        assert result == "which node pnpm corepack + 3 commands"
+        assert result == "which node pnpm corepack; node -v; corepack --version; pnpm --version"
+
+    def test_bash_tool_preview_matches_terminal(self):
+        # The Claude Agent SDK's built-in "Bash" tool must surface its command
+        # just like Hermes' "terminal".
+        result = build_tool_preview("Bash", {"command": "git status; git log -1"})
+        assert result == "git status; git log -1"
 
     def test_execute_code_preview_uses_same_shell_summary(self):
         result = build_tool_preview(

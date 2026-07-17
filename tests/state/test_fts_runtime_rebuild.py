@@ -93,6 +93,29 @@ class TestRuntimeFtsRebuild:
         raw.close()
         assert len(hits) == 1
 
+    def test_search_messages_self_heals_after_fts_corruption(self, db, tmp_path):
+        """A read-only session that only SEARCHES (no write after corruption)
+        must self-heal too. The MATCH read raises the corruption class
+        (DatabaseError / 'fts5: corrupt structure record'), NOT the
+        OperationalError that search_messages caught — so before this fix the
+        search crashed until a write or restart rebuilt the index.
+        """
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "a searchable needle here")
+
+        _corrupt_fts(tmp_path / "state.db")
+        # Injected via a raw connection, so no write on THIS instance has
+        # consumed the one-shot rebuild yet.
+        assert db._fts_runtime_rebuild_attempted is False
+
+        results = db.search_messages("needle")
+
+        assert db._fts_runtime_rebuild_attempted is True  # the search rebuilt it
+        assert results  # non-empty: the rebuilt index matched the query
+        assert any("needle" in (r.get("snippet") or "") for r in results)
+
     def test_rebuild_is_one_shot_per_instance(self, db, tmp_path):
         if not db._fts_enabled:
             pytest.skip("FTS5 unavailable in this build")

@@ -296,9 +296,12 @@ class MQTTAdapter(BasePlatformAdapter):
             # delivered on subscription, not live events.
             is_retained = bool(getattr(msg, "retain", False))
 
-            # Cooldown
+            # Suppressed by default — retained are last-known snapshots, not
+            # new events. Set log_retained: true in extra to include them.
             if is_retained and not self._log_retained:
-                return to prevent floods on chatty topics
+                return
+
+            # Cooldown to prevent floods on chatty topics
             if self._cooldown_seconds > 0:
                 now = time.time()
                 last = self._last_event_time.get(topic, 0.0)
@@ -429,6 +432,38 @@ class MQTTAdapter(BasePlatformAdapter):
         }
 
 
+def _env_enablement() -> dict | None:
+    """Seed PlatformConfig.extra from env vars during gateway config load.
+
+    Called by the platform registry's env-enablement hook BEFORE adapter
+    construction, so gateway status and get_connected_platforms() reflect
+    env-only configuration without instantiating the MQTT client.
+    Returns None when MQTT isn't minimally configured; the caller skips
+    auto-enabling.
+    """
+    user = os.getenv("MQTT_USER", "").strip()
+    password = os.getenv("MQTT_PASSWORD", "").strip()
+    if not user or not password:
+        return None
+    seed: dict = {
+        "username": user,
+        "password": password,
+    }
+    broker = os.getenv("MQTT_BROKER", "").strip()
+    if broker:
+        seed["broker_host"] = broker
+    ca_cert = os.getenv("MQTT_CA_CERT", "").strip()
+    if ca_cert:
+        seed["ca_cert"] = ca_cert
+    home = os.getenv("MQTT_HOME_CHANNEL", "").strip()
+    if home:
+        seed["home_channel"] = {
+            "chat_id": home,
+            "name": home,
+        }
+    return seed
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system at startup."""
     ctx.register_platform(
@@ -440,6 +475,10 @@ def register(ctx) -> None:
         is_connected=is_connected,
         required_env=["MQTT_USER", "MQTT_PASSWORD"],
         install_hint="pip install paho-mqtt",
+        env_enablement_fn=_env_enablement,
+        allowed_users_env="MQTT_ALLOWED_USERS",
+        allow_all_env="MQTT_ALLOW_ALL_USERS",
+        cron_deliver_env_var="MQTT_HOME_CHANNEL",
         emoji="📡",
         max_message_length=MQTTAdapter.MAX_MESSAGE_LENGTH,
         platform_hint=(

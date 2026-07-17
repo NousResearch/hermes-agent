@@ -502,6 +502,15 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
+        # Optional slash-command namespace prefix (e.g. "myorg-") so multiple
+        # gateway apps can share one Slack workspace without their global,
+        # non-namespaced slash commands colliding. Resolved once here from
+        # HERMES_SLACK_COMMAND_PREFIX or platforms.slack.extra.command_prefix;
+        # "" (the default) leaves every command name unchanged. It is baked
+        # into the routing regex and stripped again in _handle_slash_command.
+        from hermes_cli.commands import slack_command_prefix
+
+        self._command_prefix = slack_command_prefix(self.config.extra)
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
@@ -1184,13 +1193,22 @@ class SlackAdapter(BasePlatformAdapter):
             from hermes_cli.commands import slack_native_slashes
             import re as _re
 
+            # The optional namespace prefix (e.g. "myorg-") is baked into the
+            # matcher so /myorg-model reaches this handler; _handle_slash_command
+            # strips it again before dispatch. An empty prefix matches the bare
+            # command names unchanged.
+            _prefix = _re.escape(self._command_prefix)
             _slash_names = [name for name, _d, _h in slack_native_slashes()]
             if _slash_names:
                 _slash_pattern = _re.compile(
-                    r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
+                    r"^/"
+                    + _prefix
+                    + r"(?:"
+                    + "|".join(_re.escape(n) for n in _slash_names)
+                    + r")$"
                 )
             else:  # pragma: no cover - registry always non-empty
-                _slash_pattern = _re.compile(r"^/hermes$")
+                _slash_pattern = _re.compile(r"^/" + _prefix + r"hermes$")
 
             @self._app.command(_slash_pattern)
             async def handle_hermes_command(ack, command):
@@ -4525,6 +4543,10 @@ class SlackAdapter(BasePlatformAdapter):
         message).
         """
         slash_name = (command.get("command") or "").lstrip("/").strip()
+        # Strip the optional namespace prefix so /myorg-model -> model and
+        # /myorg-hermes -> hermes before the {"hermes", ""} check and dispatch.
+        if self._command_prefix and slash_name.startswith(self._command_prefix):
+            slash_name = slash_name[len(self._command_prefix) :]
         text = command.get("text", "").strip()
         user_id = command.get("user_id", "")
         channel_id = command.get("channel_id", "")

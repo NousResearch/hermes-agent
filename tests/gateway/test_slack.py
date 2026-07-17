@@ -172,6 +172,138 @@ class TestSlashCommandSessionIsolation:
 
 
 # ---------------------------------------------------------------------------
+# TestSlackCommandPrefix
+# ---------------------------------------------------------------------------
+
+
+class TestSlackCommandPrefix:
+    """Namespace prefix so multiple gateway apps can share one workspace."""
+
+    def _make(self, extra):
+        config = PlatformConfig(enabled=True, token="xoxb-fake", extra=extra or {})
+        a = SlackAdapter(config)
+        a._app = MagicMock()
+        a._app.client = AsyncMock()
+        a._bot_user_id = "U_BOT"
+        a._running = True
+        a.handle_message = AsyncMock()
+        return a
+
+    @pytest.mark.asyncio
+    async def test_prefixed_native_slash_is_stripped_and_routed(self, monkeypatch):
+        monkeypatch.delenv("HERMES_SLACK_COMMAND_PREFIX", raising=False)
+        adapter = self._make({"command_prefix": "myorg-"})
+        assert adapter._command_prefix == "myorg-"
+
+        await adapter._handle_slash_command(
+            {
+                "command": "/myorg-model",
+                "text": "opus",
+                "user_id": "U1",
+                "channel_id": "C1",
+                "team_id": "T1",
+            }
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "/model opus"
+        assert event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_prefixed_hermes_routes_freeform_question(self, monkeypatch):
+        monkeypatch.delenv("HERMES_SLACK_COMMAND_PREFIX", raising=False)
+        adapter = self._make({"command_prefix": "myorg-"})
+
+        await adapter._handle_slash_command(
+            {
+                "command": "/myorg-hermes",
+                "text": "what's up",
+                "user_id": "U1",
+                "channel_id": "C1",
+                "team_id": "T1",
+            }
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "what's up"
+        assert event.message_type == MessageType.TEXT
+
+    @pytest.mark.asyncio
+    async def test_env_prefix_overrides_config(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SLACK_COMMAND_PREFIX", "env-")
+        adapter = self._make({"command_prefix": "cfg-"})
+        assert adapter._command_prefix == "env-"
+
+        await adapter._handle_slash_command(
+            {
+                "command": "/env-new",
+                "text": "",
+                "user_id": "U1",
+                "channel_id": "C1",
+                "team_id": "T1",
+            }
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "/new"
+
+    @pytest.mark.asyncio
+    async def test_no_prefix_default_leaves_commands_unchanged(self, monkeypatch):
+        monkeypatch.delenv("HERMES_SLACK_COMMAND_PREFIX", raising=False)
+        adapter = self._make({})
+        assert adapter._command_prefix == ""
+
+        await adapter._handle_slash_command(
+            {
+                "command": "/model",
+                "text": "opus",
+                "user_id": "U1",
+                "channel_id": "C1",
+                "team_id": "T1",
+            }
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "/model opus"
+
+    def test_manifest_prepends_prefix(self, monkeypatch):
+        from hermes_cli.commands import slack_app_manifest
+
+        monkeypatch.setenv("HERMES_SLACK_COMMAND_PREFIX", "myorg-")
+        slashes = slack_app_manifest()["features"]["slash_commands"]
+
+        assert slashes
+        assert all(s["command"].startswith("/myorg-") for s in slashes)
+        assert any(s["command"] == "/myorg-hermes" for s in slashes)
+
+    def test_manifest_default_has_no_prefix(self, monkeypatch):
+        from hermes_cli.commands import slack_app_manifest
+
+        # Empty env value is authoritative — avoids reading a real config file.
+        monkeypatch.setenv("HERMES_SLACK_COMMAND_PREFIX", "")
+        slashes = slack_app_manifest()["features"]["slash_commands"]
+
+        assert any(s["command"] == "/hermes" for s in slashes)
+        assert all(not s["command"].startswith("/myorg-") for s in slashes)
+
+    def test_manifest_skips_prefixed_name_over_slack_limit(self, monkeypatch):
+        from hermes_cli import commands as cmds
+
+        monkeypatch.setenv("HERMES_SLACK_COMMAND_PREFIX", "myorg-")
+        long_name = "x" * 30  # 30 + len("myorg-") = 35 > 32-char Slack limit
+        monkeypatch.setattr(
+            cmds,
+            "slack_native_slashes",
+            lambda: [("hermes", "d", ""), (long_name, "d", ""), ("model", "d", "")],
+        )
+        names = [s["command"] for s in cmds.slack_app_manifest()["features"]["slash_commands"]]
+
+        assert "/myorg-hermes" in names
+        assert "/myorg-model" in names
+        assert f"/myorg-{long_name}" not in names
+
+
+# ---------------------------------------------------------------------------
 # TestAppMentionHandler
 # ---------------------------------------------------------------------------
 

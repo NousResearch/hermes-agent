@@ -409,6 +409,33 @@ platforms:
 | `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
 | `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |
 | `platforms.slack.extra.cron_continuable_surface` | `"thread"` | Delivery surface for [continuable cron jobs](../features/cron.md#flat-in-channel-continuation-slack). `"thread"` opens a dedicated thread per delivery (default); `"in_channel"` delivers flat into the channel timeline. Pair `in_channel` with `reply_in_thread: false` (and `require_mention: false`) so a plain channel reply continues the job. |
+| `platforms.slack.extra.command_prefix` | `""` | Namespace prefix prepended to every slash command (e.g. `myorg-` → `/myorg-model`) so multiple gateway apps can share one workspace without slash-command collisions. Also settable via the `HERMES_SLACK_COMMAND_PREFIX` environment variable (which takes precedence). Regenerate and reapply the manifest after changing it. See [Namespacing slash commands](#namespacing-slash-commands-multi-app-workspaces). |
+
+### Namespacing slash commands (multi-app workspaces)
+
+Slack slash commands are **workspace-global and not namespaced** — if two apps register the same command name, Slack silently routes it to whichever app was installed most recently. Running two Hermes gateways (or Hermes next to any other app using generic names like `/model`, `/new`, `/help`) in the same workspace therefore causes them to clobber each other's commands.
+
+Set a `command_prefix` to give this app its own namespace:
+
+```yaml
+platforms:
+  slack:
+    extra:
+      command_prefix: "myorg-"   # /model becomes /myorg-model, /hermes becomes /myorg-hermes
+```
+
+or via environment variable (takes precedence over config):
+
+```bash
+export HERMES_SLACK_COMMAND_PREFIX="myorg-"
+```
+
+The prefix is applied on both sides automatically: `hermes slack manifest` emits the prefixed command names, and the gateway strips the prefix on receive before dispatching. After setting it:
+
+1. Regenerate the manifest: `hermes slack manifest --slashes-only`.
+2. Paste the updated `features.slash_commands` array into your Slack app manifest and reinstall.
+
+The default (empty prefix) leaves all command names unchanged.
 
 ### Working-State Status Line
 

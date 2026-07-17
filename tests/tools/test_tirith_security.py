@@ -1543,10 +1543,13 @@ class TestIsUnsupportedPlatform:
                  return_value="unsupported_platform"):
             assert _tirith_mod.is_unsupported_platform() is True
 
-    def test_install_tirith_persists_unsupported_marker(self, tmp_path):
-        """`_install_tirith()` must write `unsupported_platform` to the
-        marker file so subsequent processes can surface the warning
-        without re-running detection."""
+    def test_install_tirith_does_not_persist_unsupported_marker(self, tmp_path):
+        """`_install_tirith()` must NOT write `unsupported_platform` to
+        the disk marker — the platform gap is per-host, and a shared
+        HERMES_HOME between Windows and a later-arriving Linux/macOS
+        host would otherwise skip the real install on the supported
+        host (issue #57207, follow-up review).
+        """
         with patch("tools.tirith_security._get_hermes_home",
                    return_value=str(tmp_path)), \
              patch("tools.tirith_security.platform.system",
@@ -1558,5 +1561,9 @@ class TestIsUnsupportedPlatform:
             assert installed is None
             assert reason == "unsupported_platform"
             marker = tmp_path / ".tirith-install-failed"
-            assert marker.exists()
-            assert marker.read_text().strip() == "unsupported_platform"
+            assert not marker.exists(), (
+                "unsupported_platform must not be persisted to disk; see "
+                "tools/tirith_security.py:652-658 for the intentional "
+                "marker-free contract this test pins "
+                "(issue #57207 follow-up)"
+            )

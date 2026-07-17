@@ -419,10 +419,12 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
     if not target:
         logger.info("tirith auto-install: unsupported platform %s/%s",
                      platform.system(), platform.machine())
-        # Persist this on disk so gateway/CLI startup warnings can still
-        # surface it across process restarts (no transient retry, no
-        # per-process timer — the platform gap is permanent, see #57207).
-        _mark_install_failed("unsupported_platform")
+        # Do NOT persist this on disk: shared HERMES_HOME between a
+        # Windows host (no binary) and a later-arriving Linux/macOS host
+        # would inherit a stale unsupported_platform marker and skip the
+        # real install on the supported host. ``ensure_installed()``
+        # intentionally keeps this case marker-free (see
+        # ``tools/tirith_security.py:652-658``).
         return None, "unsupported_platform"
 
     archive_name = f"tirith-{target}.tar.gz"

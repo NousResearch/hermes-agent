@@ -2910,34 +2910,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ).strip().lower()
             _tirith_on = bool(cfg_get(_appr_cfg, "security", "tirith_enabled", default=True))
             _aux_approval = cfg_get(_appr_cfg, "auxiliary", "approval", default=None)
-            _tirith_unsupported = False
-            if _tirith_on and not _aux_approval:
-                try:
-                    from tools.tirith_security import is_unsupported_platform
-                    _tirith_unsupported = bool(is_unsupported_platform())
-                except Exception:
-                    logger.debug("tirith is_unsupported_platform probe failed", exc_info=True)
-            _no_risk_assessor = (not _tirith_on and not _aux_approval) or _tirith_unsupported
+            _radio = (not _tirith_on and not _aux_approval)
+            _no_risk_assessor = _radio
             if _appr_mode == "manual" and _no_risk_assessor:
-                if _tirith_unsupported:
-                    logger.warning(
-                        "Gateway approvals.mode=manual with no automated risk "
-                        "assessor: security.tirith_enabled is true but tirith has "
-                        "no binary for this platform (Windows / unsupported OS), "
-                        "so tirith_fail_open is permanent here (issue #57207). "
-                        "Dangerous commands and execute_code scripts will BLOCK "
-                        "until a human approves them in chat. Ship a tirith "
-                        "release for this platform or configure auxiliary.approval."
-                    )
-                else:
-                    logger.warning(
-                        "Gateway approvals.mode=manual with no automated risk "
-                        "assessor (security.tirith_enabled is false and "
-                        "auxiliary.approval is unset): dangerous commands and "
-                        "execute_code scripts will BLOCK until a human approves "
-                        "them in chat. Enable security.tirith_enabled or configure "
-                        "auxiliary.approval for unattended operation."
-                    )
+                logger.warning(
+                    "Gateway approvals.mode=manual with no automated risk "
+                    "assessor (security.tirith_enabled is false and "
+                    "auxiliary.approval is unset): dangerous commands and "
+                    "execute_code scripts will BLOCK until a human approves "
+                    "them in chat. Enable security.tirith_enabled or configure "
+                    "auxiliary.approval for unattended operation."
+                )
         except Exception:
             logger.debug("approvals.mode startup check skipped", exc_info=True)
 

@@ -1459,7 +1459,13 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     if isinstance(_model_cfg, str):
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
-                        model = _model_cfg.get("default", model)
+                        # Some auth flows write the model under model.model
+                        # instead of model.default — accept both, like
+                        # fallback_cmd and _read_main_model do. Without this,
+                        # jobs created without an explicit model (e.g. via
+                        # `hermes cron create`) reach the provider with an
+                        # empty model string.
+                        model = _model_cfg.get("default") or _model_cfg.get("model") or model
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 

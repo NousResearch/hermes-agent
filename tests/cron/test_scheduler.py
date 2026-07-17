@@ -1555,6 +1555,77 @@ class TestRunJobConfigEnvVarExpansion:
         assert kwargs["model"] == "${_HERMES_TEST_CRON_UNSET_VAR}"
 
 
+class TestRunJobModelKeyFallback:
+    """Jobs without a stored model must pick up the configured main model.
+
+    ``hermes cron create`` stores jobs without model/provider fields. Some
+    ``hermes auth`` flows write config.yaml with model.model but no
+    model.default, so the scheduler's config fallback must accept both keys
+    (the same ``default or model`` idiom as fallback_cmd/_read_main_model) —
+    otherwise the agent is constructed with model="" and providers like
+    openai-codex reject the request before any turn runs.
+    """
+
+    _RUNTIME = {
+        "api_key": "test-key",
+        "base_url": "https://example.invalid/v1",
+        "provider": "openai-codex",
+        "api_mode": "responses",
+    }
+
+    def _run_job_with_config(self, tmp_path, monkeypatch, config_text, job):
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+        (tmp_path / "config.yaml").write_text(config_text)
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        return mock_agent_cls.call_args.kwargs
+
+    def test_model_model_key_used_when_default_missing(self, tmp_path, monkeypatch):
+        """config model.model (no model.default) reaches the agent for model-less jobs."""
+        kwargs = self._run_job_with_config(
+            tmp_path,
+            monkeypatch,
+            "model:\n  provider: openai-codex\n  model: gpt-5.4\n",
+            {"id": "cli-job", "name": "cli-created", "prompt": "hi"},
+        )
+        assert kwargs["model"] == "gpt-5.4", (
+            f"Expected model='gpt-5.4', got {kwargs['model']!r}. "
+            "A job without a stored model must fall back to config model.model."
+        )
+
+    def test_model_default_key_wins_over_model_key(self, tmp_path, monkeypatch):
+        kwargs = self._run_job_with_config(
+            tmp_path,
+            monkeypatch,
+            "model:\n  default: default-model\n  model: other-model\n",
+            {"id": "cli-job", "name": "cli-created", "prompt": "hi"},
+        )
+        assert kwargs["model"] == "default-model"
+
+    def test_job_model_still_wins_over_config(self, tmp_path, monkeypatch):
+        kwargs = self._run_job_with_config(
+            tmp_path,
+            monkeypatch,
+            "model:\n  provider: openai-codex\n  model: gpt-5.4\n",
+            {"id": "pinned-job", "name": "pinned", "prompt": "hi", "model": "gpt-5.4-mini"},
+        )
+        assert kwargs["model"] == "gpt-5.4-mini"
+
+
 class TestRunJobSkillBacked:
     def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):
         job = {

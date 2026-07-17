@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+from types import MappingProxyType
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -32,7 +33,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Mapping, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -2054,7 +2055,13 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(
+    script_path: str,
+    *,
+    child_env: Optional[Mapping[str, str]] = None,
+    hermes_home: Optional[Path] = None,
+    workdir: Optional[Path] = None,
+) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -2085,7 +2092,15 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
-    scripts_dir = _get_hermes_home() / "scripts"
+    # no_agent callers provide an atomically prepared environment and home.
+    # Keep the legacy fallback for direct/pre-run-script callers, but never
+    # consult process globals when the prepared values are present.
+    effective_home = (
+        hermes_home.expanduser().resolve()
+        if hermes_home is not None
+        else _get_hermes_home().expanduser().resolve()
+    )
+    scripts_dir = effective_home / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
@@ -2123,7 +2138,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         # shutil.which returns None — fall back to a clear error rather
         # than a FileNotFoundError with a confusing "[WinError 2]"
         # traceback.
-        _bash = shutil.which("bash") or (
+        bash_path = child_env.get("PATH", os.defpath) if child_env is not None else None
+        _bash = shutil.which("bash", path=bash_path) or (
             "/bin/bash" if os.path.isfile("/bin/bash") else None
         )
         if _bash is None:
@@ -2139,14 +2155,20 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     try:
         from tools.environments.local import _sanitize_subprocess_env
 
+        effective_env: Mapping[str, str]
+        if child_env is None:
+            effective_env = _sanitize_subprocess_env(os.environ.copy())
+        else:
+            effective_env = child_env
+
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
             timeout=script_timeout,
-            cwd=str(path.parent),
-            env=_sanitize_subprocess_env(os.environ.copy()),
+            cwd=str(workdir or path.parent),
+            env=effective_env,
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()
@@ -2179,7 +2201,12 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
 
 def _run_job_script_with_claim_heartbeat(
-    job: dict, script_path: str
+    job: dict,
+    script_path: str,
+    *,
+    child_env: Optional[Mapping[str, str]] = None,
+    hermes_home: Optional[Path] = None,
+    workdir: Optional[Path] = None,
 ) -> tuple[bool, str]:
     """Run a cron script while keeping its owned one-shot claim fresh.
 
@@ -2193,6 +2220,17 @@ def _run_job_script_with_claim_heartbeat(
     storage.  ``heartbeat_run_claim`` compares that stable owner before every
     refresh, so a stale runner cannot extend a replacement owner's claim.
     """
+
+    def _execute() -> tuple[bool, str]:
+        if child_env is None and hermes_home is None and workdir is None:
+            return _run_job_script(script_path)
+        return _run_job_script(
+            script_path,
+            child_env=child_env,
+            hermes_home=hermes_home,
+            workdir=workdir,
+        )
+
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
@@ -2201,7 +2239,7 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_job_script(script_path)
+        return _execute()
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -2232,10 +2270,10 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_job_script(script_path)
+        return _execute()
 
     try:
-        return _run_job_script(script_path)
+        return _execute()
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -2600,6 +2638,45 @@ def _refresh_cron_runtime_secrets() -> None:
         load_hermes_dotenv(hermes_home=hermes_home)
 
 
+def _prepare_no_agent_child_environment() -> tuple[Path, Mapping[str, str]]:
+    """Atomically refresh and capture one profile's no-agent child environment.
+
+    ``load_hermes_dotenv`` publishes into process-global ``os.environ``. The
+    refresh, copy, sanitization, source-specific bootstrap stripping, and home
+    pin therefore form one critical section. The returned mapping is immutable
+    so later profile refreshes or caller mistakes cannot alter the child view.
+    """
+    from agent.secret_sources.registry import _ordered_enabled_sources
+    from hermes_cli.env_loader import (
+        _load_secrets_config,
+        load_hermes_dotenv,
+        reset_secret_source_cache,
+    )
+    from tools.environments.local import _sanitize_subprocess_env
+
+    with _cron_secret_refresh_lock:
+        pinned_home = _get_hermes_home().expanduser().resolve()
+        reset_secret_source_cache(pinned_home)
+        load_hermes_dotenv(hermes_home=pinned_home)
+
+        child_env = _sanitize_subprocess_env(os.environ.copy())
+        secrets_cfg = _load_secrets_config(pinned_home)
+        for source in _ordered_enabled_sources(secrets_cfg):
+            source_cfg = secrets_cfg.get(source.name)
+            source_cfg = source_cfg if isinstance(source_cfg, dict) else {}
+            # Strip both each source's default bootstrap name and any
+            # configured alias. Sources expose both through the same API.
+            protected_env_vars = set(source.protected_env_vars({}))
+            protected_env_vars.update(source.protected_env_vars(source_cfg))
+            for env_var in protected_env_vars:
+                child_env.pop(env_var, None)
+
+        # The loader and another profile may have changed the process-global
+        # value. Child path resolution always uses this canonical pinned home.
+        child_env["HERMES_HOME"] = str(pinned_home)
+        return pinned_home, MappingProxyType(child_env)
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -2647,30 +2724,36 @@ def run_job(
             logger.error("Job '%s': %s", job_id, err)
             return False, "", "", err
 
-        # no_agent returns before the normal agent bootstrap below. Refresh
-        # external sources now, before _run_job_script constructs child env.
-        _refresh_cron_runtime_secrets()
+        # Refresh and capture under one lock. After this point the no-agent
+        # child uses only these pinned values, never process-global os.environ.
+        try:
+            pinned_home, child_env = _prepare_no_agent_child_environment()
+        except Exception as exc:
+            logger.error(
+                "Job '%s': no-agent secret refresh failed; child not started",
+                job_id,
+                exc_info=True,
+            )
+            err = f"No-agent secret refresh failed: {type(exc).__name__}: {exc}"
+            return False, "", "", err
 
         # Apply workdir if configured — lets scripts use predictable relative
-        # paths. For no_agent jobs this is just the subprocess cwd (not an
-        # agent TERMINAL_CWD bridge).
+        # paths. For no_agent jobs this is the subprocess cwd (not an agent
+        # TERMINAL_CWD bridge). Script lookup remains rooted at pinned_home.
         _job_workdir = (job.get("workdir") or "").strip() or None
-        _prior_cwd = None
-        if _job_workdir and Path(_job_workdir).is_dir():
-            _prior_cwd = os.getcwd()
-            try:
-                os.chdir(_job_workdir)
-            except OSError:
-                _prior_cwd = None
-
-        try:
-            ok, output = _run_job_script_with_claim_heartbeat(job, script_path)
-        finally:
-            if _prior_cwd is not None:
-                try:
-                    os.chdir(_prior_cwd)
-                except OSError:
-                    pass
+        workdir_candidate = Path(_job_workdir).expanduser() if _job_workdir else None
+        child_workdir = (
+            workdir_candidate.resolve()
+            if workdir_candidate is not None and workdir_candidate.is_dir()
+            else None
+        )
+        ok, output = _run_job_script_with_claim_heartbeat(
+            job,
+            script_path,
+            child_env=child_env,
+            hermes_home=pinned_home,
+            workdir=child_workdir,
+        )
 
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 

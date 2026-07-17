@@ -11439,6 +11439,15 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
             status_code=429,
             detail="Too many MCP OAuth flows are already in progress",
         )
+    if any(
+        flow.server_name == name
+        and flow.status in {"starting", "authorization_required"}
+        for flow in _mcp_oauth_flows.values()
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=f"MCP OAuth for '{name}' is already in progress",
+        )
     with _profile_scope(profile):
         servers = _get_mcp_servers()
     if name not in servers:

@@ -23,6 +23,12 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 # tests) don't spam the same warning multiple times.
 _WARNED_KEYS: set[str] = set()
 
+# Paths we've already emitted a UTF-32 refuse-to-mangle warning for.
+# load_hermes_dotenv can call _sanitize_env_file_if_needed multiple times
+# for the same file (user env + project env + hot-reload); once per path
+# is enough.
+_WARNED_UTF32_PATHS: set[str] = set()
+
 # Map of env-var name → source label ("bitwarden", etc.) for credentials
 # that were injected by an external secret source during load_hermes_dotenv().
 # Used by setup / `hermes model` flows to label detected credentials so
@@ -208,13 +214,16 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     if raw.startswith(codecs.BOM_UTF32_LE) or raw.startswith(codecs.BOM_UTF32_BE):
         # Lazy import keeps the module import block identical to #65124's
         # codecs/io additions so the two PRs auto-merge either order.
-        import logging
+        path_key = str(path.resolve())
+        if path_key not in _WARNED_UTF32_PATHS:
+            _WARNED_UTF32_PATHS.add(path_key)
+            import logging
 
-        logging.getLogger(__name__).warning(
-            "Skipping .env sanitize for %s: UTF-32 BOM detected; "
-            "leaving file untouched to avoid corruption",
-            path,
-        )
+            logging.getLogger(__name__).warning(
+                "Skipping .env sanitize for %s: UTF-32 BOM detected; "
+                "leaving file untouched to avoid corruption",
+                path,
+            )
         return
     if raw.startswith(codecs.BOM_UTF16_LE) or raw.startswith(codecs.BOM_UTF16_BE):
         # "utf-16" uses the BOM to select endianness and strips it.

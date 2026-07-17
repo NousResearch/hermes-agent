@@ -18,6 +18,7 @@ import time
 import os
 import re
 import uuid
+import unicodedata
 
 # Cross-process advisory file locking for jobs.json critical sections.
 # fcntl is Unix-only; on Windows fall back to msvcrt. Either may be absent,
@@ -1509,27 +1510,204 @@ def remove_job(job_id: str) -> bool:
     return False
 
 
-def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
-    """
-    Mark a job as having been run.
-    
-    Updates last_run_at, last_status, increments completed count,
-    computes next_run_at, and auto-deletes if repeat limit reached.
+def _safe_status_metadata(value: Any) -> Optional[str]:
+    """Return bounded control-safe status metadata, otherwise ``None``."""
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned or len(cleaned) > 512:
+        return None
+    if any(
+        not char.isprintable() or unicodedata.category(char).startswith("C")
+        for char in cleaned
+    ):
+        return None
+    return cleaned
 
-    ``delivery_error`` is tracked separately from the agent error — a job
-    can succeed (agent produced output) but fail delivery (platform down).
+
+def effective_job_status(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Project a newer execution-ledger attempt over stale job summary fields."""
+    result = {
+        "last_run_at": job.get("last_run_at"),
+        "last_status": job.get("last_status"),
+        "last_run_status": job.get("last_run_status"),
+        "last_error": job.get("last_error"),
+        "last_delivery_status": job.get("last_delivery_status"),
+        "last_delivery_error": job.get("last_delivery_error"),
+        "last_work_status": job.get("last_work_status"),
+        "last_work_status_source": job.get("last_work_status_source"),
+        "last_evidence_id": job.get("last_evidence_id"),
+        "last_evidence_verified": job.get("last_evidence_verified", False),
+        "last_executor_handle": job.get("last_executor_handle"),
+    }
+    execution = job.get("latest_execution")
+    if not isinstance(execution, dict):
+        return result
+    latest_text = execution.get("started_at") or execution.get("claimed_at")
+    prior_text = job.get("last_run_at")
+    if not latest_text:
+        return result
+    try:
+        latest = _ensure_aware(datetime.fromisoformat(str(latest_text).replace("Z", "+00:00")))
+        prior = (
+            _ensure_aware(datetime.fromisoformat(str(prior_text).replace("Z", "+00:00")))
+            if prior_text
+            else None
+        )
+        is_newer = prior is None or latest > prior
+    except (TypeError, ValueError):
+        is_newer = not prior_text or str(latest_text) > str(prior_text)
+    if not is_newer:
+        return result
+
+    execution_status = str(execution.get("status") or "unknown")
+    run_status = {
+        "completed": "ok",
+        "failed": "error",
+        "running": "running",
+        "claimed": "pending",
+    }.get(execution_status, "unknown")
+    result.update(
+        {
+            "last_run_at": latest_text,
+            "last_status": run_status,
+            "last_run_status": run_status,
+            "last_error": execution.get("error"),
+            "last_delivery_status": "unknown",
+            "last_delivery_error": None,
+            "last_work_status": "unknown",
+            "last_work_status_source": "none",
+            "last_evidence_id": None,
+            "last_evidence_verified": False,
+            "last_executor_handle": None,
+        }
+    )
+    return result
+
+
+def mark_job_run(
+    job_id: str,
+    success: bool,
+    error: Optional[str] = None,
+    delivery_error: Optional[str] = None,
+    *,
+    delivery_status: Optional[str] = None,
+    work_status: Optional[str] = None,
+    work_status_source: Optional[str] = None,
+    evidence_id: Optional[str] = None,
+    evidence_verified: bool = False,
+    executor_handle: Optional[str] = None,
+):
+    """Mark a job run while keeping run, delivery, and work status separate.
+
+    ``last_status`` remains the backward-compatible run status.  The explicit
+    ``last_run_status`` alias plus independent delivery/work fields prevent a
+    successful scheduler invocation or delivery from being mistaken for
+    substantive project progress.
+
+    Legacy callers may omit the new keyword-only fields; those dimensions are
+    then recorded as ``unknown`` rather than inferred from run success.
     """
     with _jobs_lock():
         jobs = load_jobs()
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
+                was_paused = job.get("state") == "paused"
                 now = _hermes_now().isoformat()
+                run_status = "ok" if success else "error"
+                allowed_delivery_statuses = {
+                    "unknown", "pending", "ok", "error", "suppressed", "not_requested"
+                }
+                allowed_work_statuses = {
+                    "unknown", "progress", "no_progress", "blocked", "waiting_external"
+                }
+                resolved_delivery_status = delivery_status
+                if resolved_delivery_status is None:
+                    resolved_delivery_status = "error" if delivery_error else "unknown"
+                if resolved_delivery_status not in allowed_delivery_statuses:
+                    resolved_delivery_status = "unknown"
+                resolved_work_status = work_status or "unknown"
+                if resolved_work_status not in allowed_work_statuses:
+                    resolved_work_status = "unknown"
+                allowed_work_status_sources = {"none", "agent_marker", "external_verifier"}
+                resolved_work_status_source = work_status_source or "none"
+                if resolved_work_status_source not in allowed_work_status_sources:
+                    resolved_work_status_source = "none"
+                resolved_evidence_id = _safe_status_metadata(evidence_id)
+                resolved_executor_handle = _safe_status_metadata(executor_handle)
+                evidence_history = []
+                for item in job.get("work_evidence_ids") or []:
+                    normalized_item = _safe_status_metadata(item)
+                    if normalized_item:
+                        evidence_history.append(normalized_item)
+                seen_evidence_ids = set(evidence_history)
+                previous_evidence_id = job.get("last_progress_evidence_id") or job.get("last_evidence_id")
+                normalized_previous_evidence = _safe_status_metadata(previous_evidence_id)
+                if normalized_previous_evidence:
+                    seen_evidence_ids.add(normalized_previous_evidence)
+                if (
+                    resolved_work_status == "progress"
+                    and resolved_evidence_id
+                    and resolved_evidence_id in seen_evidence_ids
+                ):
+                    resolved_work_status = "no_progress"
+                    resolved_evidence_id = None
+                    resolved_executor_handle = None
+                elif (
+                    resolved_work_status == "progress"
+                    and resolved_evidence_id
+                    and len(evidence_history) >= 256
+                ):
+                    resolved_work_status = "unknown"
+                    resolved_work_status_source = "none"
+                    resolved_evidence_id = None
+                    resolved_executor_handle = None
+                if (
+                    resolved_work_status == "progress" and not resolved_evidence_id
+                ) or (
+                    resolved_work_status == "waiting_external" and not resolved_executor_handle
+                ):
+                    resolved_work_status = "unknown"
+                    resolved_work_status_source = "none"
+                    resolved_evidence_id = None
+                    resolved_executor_handle = None
+                resolved_evidence_verified = bool(
+                    evidence_verified
+                    and resolved_evidence_id
+                    and resolved_work_status_source == "external_verifier"
+                )
+                new_progress_evidence_id = (
+                    resolved_evidence_id if resolved_work_status == "progress" else None
+                )
+                if resolved_work_status == "progress" and not resolved_evidence_verified:
+                    resolved_work_status = "reported_progress"
+                elif (
+                    resolved_work_status == "waiting_external"
+                    and resolved_work_status_source != "external_verifier"
+                ):
+                    resolved_work_status = "reported_waiting_external"
+                elif (
+                    resolved_work_status == "blocked"
+                    and resolved_work_status_source == "agent_marker"
+                ):
+                    resolved_work_status = "reported_blocked"
+
                 job["last_run_at"] = now
-                job["last_status"] = "ok" if success else "error"
+                job["last_status"] = run_status
+                job["last_run_status"] = run_status
                 job["last_error"] = error if not success else None
-                # Track delivery failures separately — cleared on successful delivery
+                job["last_delivery_status"] = resolved_delivery_status
                 job["last_delivery_error"] = delivery_error
+                job["last_work_status"] = resolved_work_status
+                job["last_work_status_source"] = resolved_work_status_source
+                job["last_evidence_id"] = resolved_evidence_id
+                if new_progress_evidence_id:
+                    job["last_progress_evidence_id"] = new_progress_evidence_id
+                    if new_progress_evidence_id not in evidence_history:
+                        evidence_history.append(new_progress_evidence_id)
+                    job["work_evidence_ids"] = evidence_history
+                job["last_evidence_verified"] = resolved_evidence_verified
+                job["last_executor_handle"] = resolved_executor_handle
                 # Clear any external-fire claim so a re-armed recurring job can
                 # be claimed again on its next fire (Phase 4C CAS).
                 job["fire_claim"] = None
@@ -1559,10 +1737,15 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         completed += 1
                         repeat["completed"] = completed
 
-                    # Check if we've hit the repeat limit
+                    # Retain terminal jobs so their final run/delivery/work
+                    # dimensions remain inspectable. A late completion may
+                    # update history, but it must never delete or resume a job
+                    # the operator paused while it was running.
                     if times is not None and times > 0 and completed >= times:
-                        # Remove the job (limit reached)
-                        jobs.pop(i)
+                        job["next_run_at"] = None
+                        if not was_paused:
+                            job["enabled"] = False
+                            job["state"] = "completed"
                         save_jobs(jobs)
                         return
                 
@@ -1577,7 +1760,9 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # schedule quietly goes off. See issue #16265.
                 if job["next_run_at"] is None:
                     kind = job.get("schedule", {}).get("kind")
-                    if kind in {"cron", "interval"}:
+                    if was_paused:
+                        pass
+                    elif kind in {"cron", "interval"}:
                         job["state"] = "error"
                         if not job.get("last_error"):
                             job["last_error"] = (
@@ -1604,6 +1789,25 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
 
 
+def _retire_unknown_oneshot(job: Dict[str, Any], reason: str) -> None:
+    """Retain an at-most-once terminal record when run outcome is unknowable."""
+    job["enabled"] = False
+    job["state"] = "completed"
+    job["next_run_at"] = None
+    job["run_claim"] = None
+    job["fire_claim"] = None
+    job["last_status"] = "unknown"
+    job["last_run_status"] = "unknown"
+    job["last_error"] = reason
+    job["last_delivery_status"] = "unknown"
+    job["last_delivery_error"] = None
+    job["last_work_status"] = "unknown"
+    job["last_work_status_source"] = "none"
+    job["last_evidence_id"] = None
+    job["last_evidence_verified"] = False
+    job["last_executor_handle"] = None
+
+
 def claim_dispatch(job_id: str) -> bool:
     """Atomically claim a finite one-shot job dispatch BEFORE execution.
 
@@ -1615,7 +1819,8 @@ def claim_dispatch(job_id: str) -> bool:
     instead of infinitely (issue #38758).
 
     Returns ``True`` if the caller may proceed to run the job, ``False`` if the
-    dispatch limit is already reached (in which case the stale job is removed).
+    dispatch limit is already reached. A maxed preclaim is retained as a
+    disabled terminal record with an explicit unknown run outcome.
 
     Only claims jobs with ``schedule.kind == "once"`` and ``repeat.times > 0``.
     Recurring jobs (they use ``advance_next_run``) and infinite-repeat / no-repeat
@@ -1636,13 +1841,17 @@ def claim_dispatch(job_id: str) -> bool:
                 return True  # infinite — always dispatch
             completed = repeat.get("completed", 0)
             if completed >= times:
-                # Already dispatched the max number of times (e.g. a prior
-                # tick claimed then died before mark_job_run could remove it).
-                # Clean up so it stops appearing as due on every tick.
-                jobs.pop(i)
+                # A prior tick consumed the at-most-once dispatch and died
+                # before persisting a terminal result. Never re-fire it, but
+                # retain an explicit unknown-outcome record for inspection.
+                reason = (
+                    "One-shot dispatch was preclaimed, but no terminal run result "
+                    "was persisted; side effects are unknown and the job will not re-fire."
+                )
+                _retire_unknown_oneshot(job, reason)
                 save_jobs(jobs)
                 logger.info(
-                    "Job '%s': dispatch limit reached (%d/%d) — removing",
+                    "Job '%s': dispatch limit reached (%d/%d) — retaining unknown outcome",
                     job.get("name", job.get("id", "?")),
                     completed,
                     times,
@@ -2073,9 +2282,9 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 
                 # One-shot dispatch-limit guard (issue #38758): a finite one-shot
                 # claimed via claim_dispatch() but whose tick died before
-                # mark_job_run could remove it will have completed >= times while
-                # still looking due (last_run_at was never written, so the
-                # recovery helper re-armed it). Remove it instead of re-firing.
+                # mark_job_run could persist a result will have completed >= times
+                # while still looking due. Retire it with an unknown outcome
+                # instead of re-firing or deleting its status pointer.
                 if kind == "once":
                     repeat = job.get("repeat")
                     if repeat:
@@ -2103,14 +2312,19 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 continue
                             logger.info(
                                 "Job '%s': one-shot dispatch limit reached (%d/%d) "
-                                "— removing stale due entry",
+                                "— retaining stale due entry with unknown outcome",
                                 job.get("name", job.get("id", "?")),
                                 completed,
                                 times,
                             )
+                            reason = (
+                                "One-shot dispatch was preclaimed, but its executor is no "
+                                "longer live and no terminal result was persisted; side "
+                                "effects are unknown and the job will not re-fire."
+                            )
                             for rj in raw_jobs:
                                 if rj["id"] == job["id"]:
-                                    raw_jobs.remove(rj)
+                                    _retire_unknown_oneshot(rj, reason)
                                     needs_save = True
                                     break
                             continue

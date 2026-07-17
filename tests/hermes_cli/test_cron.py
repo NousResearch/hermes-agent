@@ -1,6 +1,7 @@
 """Tests for hermes_cli.cron command handling."""
 
 from argparse import Namespace
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -153,6 +154,178 @@ class TestCronCommandLifecycle:
 
         out = capsys.readouterr().out
         assert "Deliver:   local" in out
+
+    def test_list_displays_run_delivery_and_work_status_separately(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        """A successful scheduler run must not be presented as work progress."""
+        from cron.jobs import mark_job_run
+
+        job = create_job(prompt="Truthful report", schedule="every 1h")
+        mark_job_run(
+            job["id"],
+            True,
+            delivery_error="Slack unavailable",
+            delivery_status="error",
+            work_status="no_progress",
+            work_status_source="agent_marker",
+            evidence_id=None,
+            evidence_verified=False,
+            executor_handle=None,
+        )
+        monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+
+        cron_cli.cron_list()
+
+        out = capsys.readouterr().out
+        assert "Run status: ok" in out
+        assert "Delivery:   error" in out
+        assert "Work status: no_progress" in out
+        assert "Evidence:   none (verified=no)" in out
+        assert "Executor:   none" in out
+
+    def test_slash_list_displays_run_delivery_and_work_status_separately(
+        self, capsys, monkeypatch
+    ):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        monkeypatch.setattr(
+            "tools.cronjob_tools.cronjob",
+            lambda **kwargs: json.dumps(
+                {
+                    "success": True,
+                    "jobs": [
+                        {
+                            "job_id": "job-1",
+                            "name": "Truthful report",
+                            "state": "scheduled",
+                            "schedule": "every 1h",
+                            "repeat": "∞",
+                            "next_run_at": "2026-07-17T17:00:00Z",
+                            "prompt_preview": "do one slice",
+                            "last_run_at": "2026-07-17T16:00:00Z",
+                            "last_status": "ok",
+                            "last_run_status": "ok",
+                            "last_delivery_status": "error",
+                            "last_work_status": "no_progress",
+                            "last_work_status_source": "agent_marker",
+                            "last_evidence_id": None,
+                            "last_evidence_verified": False,
+                            "last_executor_handle": None,
+                        }
+                    ],
+                }
+            ),
+        )
+
+        CLICommandsMixin()._handle_cron_command("/cron list")
+
+        out = capsys.readouterr().out
+        assert "Run status: ok" in out
+        assert "Delivery:   error" in out
+        assert "Work status: no_progress" in out
+        assert "Evidence:   none (verified=no)" in out
+        assert "Executor:   none" in out
+
+    def test_list_projects_newer_recovered_execution_over_stale_progress(
+        self, capsys, monkeypatch
+    ):
+        stale = {
+            "id": "job-crashed",
+            "name": "crashed",
+            "schedule": {"kind": "interval", "seconds": 60},
+            "schedule_display": "every 1m",
+            "enabled": True,
+            "state": "scheduled",
+            "last_run_at": "2026-07-17T16:00:00Z",
+            "last_status": "ok",
+            "last_run_status": "ok",
+            "last_delivery_status": "ok",
+            "last_work_status": "reported_progress",
+            "last_work_status_source": "agent_marker",
+            "last_evidence_id": "stale\x1b[2J",
+            "latest_execution": {
+                "id": "exec-crashed",
+                "status": "unknown",
+                "claimed_at": "2026-07-17T16:05:00Z",
+                "started_at": "2026-07-17T16:05:01Z",
+                "error": "scheduler exited",
+            },
+        }
+        monkeypatch.setattr("cron.jobs.list_jobs", lambda include_disabled=False: [stale])
+        monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+
+        cron_cli.cron_list(show_all=True)
+
+        out = capsys.readouterr().out
+        assert "Run status: unknown" in out
+        assert "Delivery:   unknown" in out
+        assert "Work status: unknown (source=none)" in out
+        assert "stale\x1b[2J" not in out
+
+    def test_manual_run_labels_scheduler_and_work_status_separately(
+        self, capsys, monkeypatch
+    ):
+        monkeypatch.setattr(
+            cron_cli,
+            "_cron_api",
+            lambda **_kwargs: {
+                "success": True,
+                "job": {
+                    "name": "Truthful report",
+                    "executed": True,
+                    "execution_success": True,
+                    "last_run_status": "ok",
+                    "last_delivery_status": "ok",
+                    "last_work_status": "no_progress",
+                    "last_work_status_source": "agent_marker",
+                    "last_evidence_id": None,
+                    "last_evidence_verified": False,
+                    "last_executor_handle": None,
+                },
+            },
+        )
+
+        assert cron_cli._job_action("run", "job-1", "Triggered") == 0
+
+        out = capsys.readouterr().out
+        assert "Scheduler run: succeeded" in out
+        assert "Work status: no_progress" in out
+        assert "Delivery:   ok" in out
+        assert "Ran now: succeeded" not in out
+
+    def test_slash_manual_run_reports_inline_dimensions(self, capsys, monkeypatch):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        monkeypatch.setattr(
+            "tools.cronjob_tools.cronjob",
+            lambda **_kwargs: json.dumps(
+                {
+                    "success": True,
+                    "job": {
+                        "job_id": "job-1",
+                        "name": "Truthful report",
+                        "executed": True,
+                        "execution_success": True,
+                        "last_run_status": "ok",
+                        "last_delivery_status": "ok",
+                        "last_work_status": "no_progress",
+                        "last_work_status_source": "agent_marker",
+                        "last_evidence_id": None,
+                        "last_evidence_verified": False,
+                        "last_executor_handle": None,
+                    },
+                }
+            ),
+        )
+
+        CLICommandsMixin()._handle_cron_command("/cron run job-1")
+
+        out = capsys.readouterr().out
+        assert "Scheduler run: succeeded" in out
+        assert "Work status: no_progress" in out
+        assert "Delivery:   ok" in out
+        assert "next scheduler tick" not in out
 
 
 class TestGatewayNotRunningWarning:

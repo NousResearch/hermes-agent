@@ -2700,6 +2700,12 @@ class TestSilentDelivery:
             False,
             "Agent completed but produced empty response (model error, timeout, or misconfiguration)",
             delivery_error=None,
+            delivery_status="suppressed",
+            work_status="unknown",
+            work_status_source="none",
+            evidence_id=None,
+            evidence_verified=False,
+            executor_handle=None,
         )
 
 

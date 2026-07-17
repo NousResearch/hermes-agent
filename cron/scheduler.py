@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -328,6 +329,103 @@ def _is_cron_silence_response(text: str) -> bool:
     if upper.startswith("[SILENT]"):
         return True
     return False
+
+
+_WORK_RESULT_MARKER = "[HERMES_WORK_RESULT]"
+_WORK_STATUSES = frozenset({"progress", "no_progress", "blocked", "waiting_external"})
+
+
+def _safe_work_metadata(value: Any) -> tuple[bool, Optional[str]]:
+    """Validate untrusted marker metadata without coercion or control bytes."""
+    if value is None:
+        return True, None
+    if not isinstance(value, str):
+        return False, None
+    cleaned = value.strip()
+    if not cleaned:
+        return True, None
+    if len(cleaned) > 512:
+        return False, None
+    if any(
+        not char.isprintable() or unicodedata.category(char).startswith("C")
+        for char in cleaned
+    ):
+        return False, None
+    return True, cleaned
+
+
+def _extract_work_result(text: str) -> tuple[str, dict[str, Any]]:
+    """Strip and parse the final machine-readable work-result marker.
+
+    Missing, malformed, or internally inconsistent metadata fails closed to
+    ``unknown``.  In particular, ``progress`` requires a concrete evidence ID
+    and ``waiting_external`` requires an executor handle.
+    """
+    unknown = {
+        "work_status": "unknown",
+        "work_status_source": "none",
+        "evidence_id": None,
+        "evidence_verified": False,
+        "executor_handle": None,
+    }
+    if not isinstance(text, str) or not text:
+        return text or "", unknown
+
+    lines = text.splitlines()
+    marker_indexes = [
+        index
+        for index, line in enumerate(lines)
+        if line.strip().startswith(_WORK_RESULT_MARKER)
+    ]
+    if not marker_indexes:
+        return text, unknown
+
+    cleaned = "\n".join(
+        line for index, line in enumerate(lines) if index not in marker_indexes
+    ).strip()
+    nonblank_indexes = [index for index, line in enumerate(lines) if line.strip()]
+    marker_index = marker_indexes[0]
+    if (
+        len(marker_indexes) != 1
+        or not nonblank_indexes
+        or marker_index != nonblank_indexes[-1]
+    ):
+        return cleaned, unknown
+
+    marker_line = lines[marker_index].strip()
+    raw_payload = marker_line[len(_WORK_RESULT_MARKER) :].strip()
+    try:
+        payload = json.loads(raw_payload)
+    except (json.JSONDecodeError, TypeError):
+        return cleaned, unknown
+    if not isinstance(payload, dict):
+        return cleaned, unknown
+
+    raw_work_status = payload.get("workStatus")
+    evidence_valid, evidence_id = _safe_work_metadata(payload.get("evidenceId"))
+    executor_valid, executor_handle = _safe_work_metadata(payload.get("executorHandle"))
+    if not isinstance(raw_work_status, str):
+        return cleaned, unknown
+    if not evidence_valid or not executor_valid:
+        return cleaned, unknown
+    if _is_cron_silence_response(cleaned):
+        return cleaned, unknown
+
+    work_status = raw_work_status.strip().lower()
+    if work_status not in _WORK_STATUSES:
+        return cleaned, unknown
+    if work_status == "progress" and evidence_id is None:
+        return cleaned, unknown
+    if work_status == "waiting_external" and executor_handle is None:
+        return cleaned, unknown
+    return cleaned, {
+        "work_status": work_status,
+        "work_status_source": "agent_marker",
+        "evidence_id": evidence_id,
+        "evidence_verified": False,
+        "executor_handle": executor_handle,
+    }
+
 
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
@@ -2052,7 +2150,9 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(
+    script_path: str, *, preserve_stdout: bool = False
+) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -2082,6 +2182,9 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     Returns:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
+
+    ``preserve_stdout`` keeps successful stdout text exact for ``no_agent``
+    delivery. Redaction still applies before the text leaves this boundary.
     """
     scripts_dir = _get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
@@ -2147,8 +2250,16 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             env=_sanitize_subprocess_env(os.environ.copy()),
             **popen_kwargs,
         )
-        stdout = (result.stdout or "").strip()
+        stdout = result.stdout or ""
         stderr = (result.stderr or "").strip()
+
+        # Successful no_agent jobs have a direct-output contract: their text
+        # reaches delivery exactly as written, including leading/trailing
+        # whitespace and final newlines. Other script consumers retain the
+        # historical normalized output, and failures stay normalized for the
+        # structured error wrapper below.
+        if not preserve_stdout or result.returncode != 0:
+            stdout = stdout.strip()
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -2177,7 +2288,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
 
 def _run_job_script_with_claim_heartbeat(
-    job: dict, script_path: str
+    job: dict, script_path: str, *, preserve_stdout: bool = False
 ) -> tuple[bool, str]:
     """Run a cron script while keeping its owned one-shot claim fresh.
 
@@ -2191,6 +2302,12 @@ def _run_job_script_with_claim_heartbeat(
     storage.  ``heartbeat_run_claim`` compares that stable owner before every
     refresh, so a stale runner cannot extend a replacement owner's claim.
     """
+
+    def _execute_script() -> tuple[bool, str]:
+        if preserve_stdout:
+            return _run_job_script(script_path, preserve_stdout=True)
+        return _run_job_script(script_path)
+
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
@@ -2199,7 +2316,7 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_job_script(script_path)
+        return _execute_script()
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -2230,10 +2347,10 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_job_script(script_path)
+        return _execute_script()
 
     try:
-        return _run_job_script(script_path)
+        return _execute_script()
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -2377,7 +2494,16 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "SILENT: If there is genuinely nothing new to report, respond "
         "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
         "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
+        "findings normally, or say [SILENT] and nothing more. "
+        "WORK STATUS: Unless the entire response is [SILENT], append one final "
+        "machine-readable line exactly in this form: "
+        "[HERMES_WORK_RESULT] {\"workStatus\":\"no_progress\",\"evidenceId\":null,\"executorHandle\":null}. "
+        "workStatus must be progress, no_progress, blocked, or waiting_external. "
+        "Progress requires a concrete evidenceId; waiting_external requires a concrete "
+        "executorHandle. The system strips this marker before delivery and records the "
+        "three status dimensions independently. Marker metadata is self-reported: it is "
+        "stored with source=agent_marker and evidenceVerified=false until an external "
+        "verifier independently confirms the evidence.]\n\n"
     )
     prompt = cron_hint + prompt
     if skills is None:
@@ -2648,7 +2774,9 @@ def run_job(
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script_with_claim_heartbeat(job, script_path)
+            ok, output = _run_job_script_with_claim_heartbeat(
+                job, script_path, preserve_stdout=True
+            )
         finally:
             if _prior_cwd is not None:
                 try:
@@ -2690,7 +2818,7 @@ def run_job(
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (wakeAgent=false)\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            return True, silent_doc, "", None
 
         if not output.strip():
             logger.info("Job '%s' (no_agent): empty stdout — silent run", job_id)
@@ -2701,7 +2829,7 @@ def run_job(
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (empty output)\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            return True, silent_doc, "", None
 
         doc = (
             f"# Cron Job: {job_name}\n\n"
@@ -3691,6 +3819,16 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             success, output, final_response, error = run_job(
                 job, defer_agent_teardown=_deferred_agents
             )
+            if job.get("no_agent"):
+                work_result = {
+                    "work_status": "unknown",
+                    "work_status_source": "none",
+                    "evidence_id": None,
+                    "evidence_verified": False,
+                    "executor_handle": None,
+                }
+            else:
+                final_response, work_result = _extract_work_result(final_response)
         except BaseException:
             # run_job's finally still hands back the agent when it raises; tear
             # it down here so a failed run never leaks its async resources
@@ -3710,6 +3848,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # deferred agent is still torn down. Otherwise the outer `except` would
         # swallow the error and leak the agent's subprocesses/clients (#10200).
         delivery_error = None
+        delivery_status = "unknown"
         try:
             output_file = save_job_output(job["id"], output)
             if verbose:
@@ -3733,6 +3872,9 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # If the agent responded with [SILENT], skip delivery (but
             # output is already saved above).  Failed jobs always deliver.
             deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            delivery_targets = _resolve_delivery_targets(job)
+            deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
+            delivery_is_requested = bool(delivery_targets)
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
@@ -3743,7 +3885,12 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
             # #46917).  Keeps the intentional bracketed-prefix / trailing-line
             # tolerance the cron contract relies on.
-            if should_deliver and success and _is_cron_silence_response(deliver_content):
+            if (
+                should_deliver
+                and success
+                and not job.get("no_agent")
+                and _is_cron_silence_response(deliver_content)
+            ):
                 logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                 should_deliver = False
 
@@ -3753,6 +3900,12 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 except Exception as de:
                     delivery_error = str(de)
                     logger.error("Delivery failed for job %s: %s", job["id"], de)
+                if not delivery_is_requested and deliver_value in {"local", "origin"}:
+                    delivery_status = "not_requested"
+                else:
+                    delivery_status = "error" if delivery_error else "ok"
+            else:
+                delivery_status = "suppressed"
         finally:
             # Tear down the deferred agent(s) now that save + delivery have run
             # (or raised). Must happen on every path so cron agents never leak
@@ -3763,12 +3916,31 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # Treat empty final_response as a soft failure so last_status
         # is not "ok" — the agent ran but produced nothing useful.
         # (issue #8585)
-        if success and not final_response.strip():
+        if success and not job.get("no_agent") and not final_response.strip():
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
+        if not success:
+            work_result = {
+                "work_status": "unknown",
+                "work_status_source": "none",
+                "evidence_id": None,
+                "evidence_verified": False,
+                "executor_handle": None,
+            }
         if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+            mark_job_run(
+                job["id"],
+                success,
+                error,
+                delivery_error=delivery_error,
+                delivery_status=delivery_status,
+                work_status=work_result["work_status"],
+                work_status_source=work_result["work_status_source"],
+                evidence_id=work_result["evidence_id"],
+                evidence_verified=work_result["evidence_verified"],
+                executor_handle=work_result["executor_handle"],
+            )
         finish_execution(execution_id, success=success, error=error)
         return True
 

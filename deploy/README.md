@@ -1,28 +1,35 @@
 # Morning-Chain Deploy
 
 Automates the M5 morning workflow (export todo keys → journal → ingest journal
-contract → perf-coach brief → hermes delivery) via a launchd job that fires at
-**05:45 Asia/Bangkok (UTC+7)** = **22:45 UTC** the previous calendar day.
+contract → perf-coach brief → commander export → hermes delivery) via a launchd
+job that fires at **05:45 Asia/Bangkok (UTC+7)** = **22:45 UTC** the previous
+calendar day.
 
 ## Files
 
 | File | Purpose |
 |---|---|
 | `com.hermes.morning-chain.plist` | launchd job definition |
-| `bin/morning-chain.sh` | five-step chain script with flock + kill switch |
+| `bin/morning-chain.sh` | six-step chain script with flock + kill switch |
 
-**Steps:** (1) `todo_store_sync export` — reopen expired snoozes, write
-OPEN_KEYS/CLOSED_KEYS for journal; (2) journal's morning run; (3)
-`todo_store_sync ingest` — reconcile today's journal contract (todos +
-resolved_keys) back into the persistent todo store; (4) perf-coach brief
-export; (5) hermes brief compose/deliver. See
-`plugins/life_ops/todo_store_sync.py` for why the export step runs *before*
+**Steps:**
+
+| # | Command | Purpose |
+|---|---------|---------|
+| 1 | `todo_store_sync export` | Reopen expired snoozes, write OPEN_KEYS/CLOSED_KEYS for journal |
+| 2 | `bin/journal-morning-run.sh` | Journal's morning run |
+| 3 | `todo_store_sync ingest` | Reconcile today's journal contract (todos + resolved_keys) back into the persistent todo store |
+| 4 | `perf-coach/scripts/export_brief.py` | Perf-coach brief export |
+| 5 | `commander/scripts/export_hermes_report.py` | Commander dev-report export (`\|\| true` — failure never blocks delivery) |
+| 6 | `plugins/life_ops/scripts/morning_brief_discord.py` | Hermes brief compose/deliver to Discord |
+
+See `plugins/life_ops/todo_store_sync.py` for why the export step runs *before*
 journal rather than after it.
 
 > All fork functionality (todo store, brief composer, Discord bedtime /
 > approvals / todo-closure UI) lives in the `life_ops` plugin — see
 > [`../plugins/life_ops/README.md`](../plugins/life_ops/README.md). The
-> chain's steps 1/3/5 invoke it directly by module path, but the gateway
+> chain's steps 1/3/6 invoke it directly by module path, but the gateway
 > Discord features additionally require enabling the plugin once:
 > `hermes plugins enable life_ops`.
 

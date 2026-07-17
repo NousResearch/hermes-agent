@@ -406,6 +406,7 @@ class TestEnvLoading:
         env["MORNING_CHAIN_STEP3"] = "true"
         env["MORNING_CHAIN_STEP4"] = "true"
         env["MORNING_CHAIN_STEP5"] = 'sh -c "echo PROBE_IS:$PROBE_VAR"'
+        env["MORNING_CHAIN_STEP6"] = "true"
 
         result = subprocess.run(
             [str(CHAIN_SCRIPT)],
@@ -433,6 +434,7 @@ class TestEnvLoading:
         env["MORNING_CHAIN_STEP3"] = "true"
         env["MORNING_CHAIN_STEP4"] = "true"
         env["MORNING_CHAIN_STEP5"] = "true"
+        env["MORNING_CHAIN_STEP6"] = "true"
 
         result = subprocess.run(
             [str(CHAIN_SCRIPT)],
@@ -441,7 +443,194 @@ class TestEnvLoading:
 
         assert result.returncode == 0, result.stdout + result.stderr
 
-    def test_step5_defaults_to_morning_brief_discord_script(self):
+    def test_step6_defaults_to_morning_brief_discord_script(self):
+        """Discord delivery is now Step 6 (issue #62)."""
         text = CHAIN_SCRIPT.read_text()
         assert "morning_brief_discord.py" in text, \
-            "Step 5 default must run the compose+deliver script directly"
+            "Step 6 default must run the compose+deliver script directly"
+
+
+# ---------------------------------------------------------------------------
+# Issue #62 — Add commander exporter as Step 5, renumber delivery to Step 6
+# ---------------------------------------------------------------------------
+
+class TestSixStepDryRun:
+    """--dry-run must print exactly 6 steps in the correct order, with the
+    new Step 5 commander exporter and Step 6 Discord delivery (AC items from
+    issue #62)."""
+
+    def test_dry_run_prints_exactly_six_steps(self, tmp_path):
+        env = os.environ.copy()
+        env["MORNING_CHAIN_LOG_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_LOCK_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_STEP1"] = "echo STUB_S1"
+        env["MORNING_CHAIN_STEP2"] = "echo STUB_S2"
+        env["MORNING_CHAIN_STEP3"] = "echo STUB_S3"
+        env["MORNING_CHAIN_STEP4"] = "echo STUB_S4"
+        env["MORNING_CHAIN_STEP5"] = "echo STUB_S5"
+        env["MORNING_CHAIN_STEP6"] = "echo STUB_S6"
+
+        result = subprocess.run(
+            [str(CHAIN_SCRIPT), "--dry-run"],
+            capture_output=True, text=True, env=env, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0
+        combined = result.stdout + result.stderr
+
+        for i in range(1, 7):
+            assert f"Step {i}:" in combined, f"missing 'Step {i}:' label:\n{combined}"
+
+        assert "Step 7:" not in combined, f"unexpected Step 7 found:\n{combined}"
+
+    def test_dry_run_six_steps_in_order(self, tmp_path):
+        env = os.environ.copy()
+        env["MORNING_CHAIN_LOG_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_LOCK_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_STEP1"] = "echo STUB_S1"
+        env["MORNING_CHAIN_STEP2"] = "echo STUB_S2"
+        env["MORNING_CHAIN_STEP3"] = "echo STUB_S3"
+        env["MORNING_CHAIN_STEP4"] = "echo STUB_S4"
+        env["MORNING_CHAIN_STEP5"] = "echo STUB_S5"
+        env["MORNING_CHAIN_STEP6"] = "echo STUB_S6"
+
+        result = subprocess.run(
+            [str(CHAIN_SCRIPT), "--dry-run"],
+            capture_output=True, text=True, env=env, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0
+        combined = result.stdout + result.stderr
+
+        markers = ["STUB_S1", "STUB_S2", "STUB_S3", "STUB_S4", "STUB_S5", "STUB_S6"]
+        for marker in markers:
+            assert marker in combined, f"expected {marker!r} in dry-run output:\n{combined}"
+
+        positions = [combined.index(marker) for marker in markers]
+        assert positions == sorted(positions), f"steps did not print in order 1..6:\n{combined}"
+
+    def test_dry_run_step5_default_is_commander_exporter(self, tmp_path):
+        """Default STEP5 command must reference export_hermes_report.py."""
+        env = os.environ.copy()
+        env["MORNING_CHAIN_LOG_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_LOCK_DIR"] = str(tmp_path)
+
+        result = subprocess.run(
+            [str(CHAIN_SCRIPT), "--dry-run"],
+            capture_output=True, text=True, env=env, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0
+        combined = result.stdout + result.stderr
+        step5_lines = [l for l in combined.splitlines() if "Step 5:" in l]
+        assert step5_lines, f"No Step 5 line found:\n{combined}"
+        assert "export_hermes_report.py" in step5_lines[0], \
+            f"Step 5 must reference export_hermes_report.py:\n{step5_lines[0]}"
+
+    def test_dry_run_step6_default_is_discord_delivery(self, tmp_path):
+        """Default STEP6 command must reference morning_brief_discord.py."""
+        env = os.environ.copy()
+        env["MORNING_CHAIN_LOG_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_LOCK_DIR"] = str(tmp_path)
+
+        result = subprocess.run(
+            [str(CHAIN_SCRIPT), "--dry-run"],
+            capture_output=True, text=True, env=env, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0
+        combined = result.stdout + result.stderr
+        step6_lines = [l for l in combined.splitlines() if "Step 6:" in l]
+        assert step6_lines, f"No Step 6 line found:\n{combined}"
+        assert "morning_brief_discord.py" in step6_lines[0], \
+            f"Step 6 must reference morning_brief_discord.py:\n{step6_lines[0]}"
+
+    def test_step5_overridable_via_env_var(self, tmp_path):
+        """MORNING_CHAIN_STEP5 must override the default Step 5 command."""
+        env = os.environ.copy()
+        env["MORNING_CHAIN_LOG_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_LOCK_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_STEP5"] = "echo custom-step-5"
+
+        result = subprocess.run(
+            [str(CHAIN_SCRIPT), "--dry-run"],
+            capture_output=True, text=True, env=env, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0
+        combined = result.stdout + result.stderr
+        step5_lines = [l for l in combined.splitlines() if "Step 5:" in l]
+        assert step5_lines, f"No Step 5 line found:\n{combined}"
+        assert "custom-step-5" in step5_lines[0], \
+            f"MORNING_CHAIN_STEP5 override not respected:\n{step5_lines[0]}"
+
+    def test_header_documents_all_six_step_vars(self):
+        """Script header must document MORNING_CHAIN_STEP1 through STEP6."""
+        text = CHAIN_SCRIPT.read_text()
+        for i in range(1, 7):
+            assert f"MORNING_CHAIN_STEP{i}" in text, \
+                f"Header must document MORNING_CHAIN_STEP{i}"
+
+    def test_step5_uses_step5_lock(self):
+        """Step 5 must use a STEP5_LOCK guard consistent with other steps."""
+        text = CHAIN_SCRIPT.read_text()
+        assert "STEP5_LOCK" in text, "Script must define and use STEP5_LOCK"
+
+    def test_step6_uses_step6_lock(self):
+        """Step 6 must use a STEP6_LOCK guard consistent with other steps."""
+        text = CHAIN_SCRIPT.read_text()
+        assert "STEP6_LOCK" in text, "Script must define and use STEP6_LOCK"
+
+
+class TestStep5FailureDoesNotBlockStep6:
+    """AC: A Step 5 failure must not prevent Step 6 from executing (issue #62)."""
+
+    def test_step5_failure_does_not_abort_chain(self, tmp_path):
+        """When MORNING_CHAIN_STEP5 exits non-zero, Step 6 must still run."""
+        sentinel = tmp_path / "step6_ran"
+        step6_script = tmp_path / "step6.sh"
+        step6_script.write_text(f"#!/bin/sh\ntouch {sentinel}\nexit 0\n")
+        step6_script.chmod(0o755)
+
+        env = os.environ.copy()
+        env["MORNING_CHAIN_LOG_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_LOCK_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_STEP1"] = "true"
+        env["MORNING_CHAIN_STEP2"] = "true"
+        env["MORNING_CHAIN_STEP3"] = "true"
+        env["MORNING_CHAIN_STEP4"] = "true"
+        env["MORNING_CHAIN_STEP5"] = "false"
+        env["MORNING_CHAIN_STEP6"] = str(step6_script)
+
+        result = subprocess.run(
+            [str(CHAIN_SCRIPT)],
+            capture_output=True, text=True, env=env, cwd=str(REPO_ROOT),
+        )
+
+        assert sentinel.exists(), (
+            f"Step 6 must run even when Step 5 fails; "
+            f"chain exit={result.returncode}\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+    def test_step5_failure_chain_exits_zero(self, tmp_path):
+        """Chain must exit 0 when the only failure is Step 5 (|| true guard)."""
+        env = os.environ.copy()
+        env["MORNING_CHAIN_LOG_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_LOCK_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_STEP1"] = "true"
+        env["MORNING_CHAIN_STEP2"] = "true"
+        env["MORNING_CHAIN_STEP3"] = "true"
+        env["MORNING_CHAIN_STEP4"] = "true"
+        env["MORNING_CHAIN_STEP5"] = "false"
+        env["MORNING_CHAIN_STEP6"] = "true"
+
+        result = subprocess.run(
+            [str(CHAIN_SCRIPT)],
+            capture_output=True, text=True, env=env, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0, (
+            f"Chain must exit 0 when Step 5 fails (|| true) but Step 6 succeeds; "
+            f"got exit={result.returncode}\n{result.stdout}\n{result.stderr}"
+        )

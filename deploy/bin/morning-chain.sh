@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # morning-chain.sh — M5 morning workflow:
-#   export todo keys → journal → ingest journal contract → perf-coach brief → hermes deliver
+#   export todo keys → journal → ingest journal contract → perf-coach brief → commander export → hermes deliver
 #
 # Usage:
-#   morning-chain.sh           # run all five steps
+#   morning-chain.sh           # run all six steps
 #   morning-chain.sh --dry-run # print each command without executing
 #
 # Locking: uses flock (Linux / homebrew util-linux) or shlock (macOS /usr/bin/shlock)
 # to ensure at most one invocation of each step runs at a time.
-# Lock files: logs/morning-chain-step{1,2,3,4,5}.lock (in MORNING_CHAIN_LOCK_DIR)
+# Lock files: logs/morning-chain-step{1,2,3,4,5,6}.lock (in MORNING_CHAIN_LOCK_DIR)
 #
 # Step order (see plugins/life_ops/todo_store_sync.py for why export runs
 # before journal rather than after it): the freshest correct OPEN_KEYS/
@@ -24,7 +24,8 @@
 #   MORNING_CHAIN_STEP2      override step-2 command (default: bin/journal-morning-run.sh)
 #   MORNING_CHAIN_STEP3      override step-3 command (default: todo_store_sync ingest)
 #   MORNING_CHAIN_STEP4      override step-4 command (default: python3 .../export_brief.py)
-#   MORNING_CHAIN_STEP5      override step-5 command (default: plugins/life_ops/scripts/morning_brief_discord.py — compose+deliver to Discord)
+#   MORNING_CHAIN_STEP5      override step-5 command (default: commander export_hermes_report.py — || true so failures never block delivery)
+#   MORNING_CHAIN_STEP6      override step-6 command (default: plugins/life_ops/scripts/morning_brief_discord.py — compose+deliver to Discord)
 #   MORNING_CHAIN_LOG_DIR    override log directory   (default: <repo>/logs)
 #   MORNING_CHAIN_LOCK_DIR   override lock directory  (default: <repo>/logs)
 
@@ -72,13 +73,15 @@ STEP1_CMD="${MORNING_CHAIN_STEP1:-cd ${REPO_ROOT} && python3 -m plugins.life_ops
 STEP2_CMD="${MORNING_CHAIN_STEP2:-${REPO_ROOT}/bin/journal-morning-run.sh}"
 STEP3_CMD="${MORNING_CHAIN_STEP3:-cd ${REPO_ROOT} && python3 -m plugins.life_ops.todo_store_sync ingest}"
 STEP4_CMD="${MORNING_CHAIN_STEP4:-python3 ${HOME}/perf-coach/scripts/export_brief.py}"
-STEP5_CMD="${MORNING_CHAIN_STEP5:-python3 ${REPO_ROOT}/plugins/life_ops/scripts/morning_brief_discord.py}"
+STEP5_CMD="${MORNING_CHAIN_STEP5:-cd ${HOME}/dev/commander && venv/bin/python scripts/export_hermes_report.py || true}"
+STEP6_CMD="${MORNING_CHAIN_STEP6:-python3 ${REPO_ROOT}/plugins/life_ops/scripts/morning_brief_discord.py}"
 
 STEP1_LOCK="${LOCK_DIR}/morning-chain-step1.lock"
 STEP2_LOCK="${LOCK_DIR}/morning-chain-step2.lock"
 STEP3_LOCK="${LOCK_DIR}/morning-chain-step3.lock"
 STEP4_LOCK="${LOCK_DIR}/morning-chain-step4.lock"
 STEP5_LOCK="${LOCK_DIR}/morning-chain-step5.lock"
+STEP6_LOCK="${LOCK_DIR}/morning-chain-step6.lock"
 
 # ---------------------------------------------------------------------------
 # Kill-switch check — exits 0 silently when the disable file exists
@@ -96,6 +99,7 @@ if [[ "${DRY_RUN}" == "true" ]]; then
   echo "[dry-run] Step 3: ${STEP3_CMD}"
   echo "[dry-run] Step 4: ${STEP4_CMD}"
   echo "[dry-run] Step 5: ${STEP5_CMD}"
+  echo "[dry-run] Step 6: ${STEP6_CMD}"
   exit 0
 fi
 
@@ -178,12 +182,45 @@ run_step() {
 }
 
 # ---------------------------------------------------------------------------
+# run_optional_step — like run_step but logs failure and continues the chain
+# ---------------------------------------------------------------------------
+run_optional_step() {
+  local step_num="$1"
+  local lock_file="$2"
+  local cmd="$3"
+
+  log "Step ${step_num}: acquiring lock ${lock_file}"
+
+  if ! _try_lock "${lock_file}"; then
+    log "Step ${step_num}: lock busy — another invocation is running; skipping"
+    return 0
+  fi
+
+  log "Step ${step_num}: running (optional): ${cmd}"
+
+  local exit_code=0
+  if command -v flock &>/dev/null; then
+    flock -n "${lock_file}" bash -c "${cmd}" >> "${LOG_FILE}" 2>&1 || exit_code=$?
+  else
+    bash -c "${cmd}" >> "${LOG_FILE}" 2>&1 || exit_code=$?
+    _release_lock "${lock_file}"
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    log "Step ${step_num}: FAILED (exit ${exit_code}) — continuing chain (optional step)"
+  else
+    log "Step ${step_num}: OK"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Execute the chain
 # ---------------------------------------------------------------------------
 run_step 1 "${STEP1_LOCK}" "${STEP1_CMD}"
 run_step 2 "${STEP2_LOCK}" "${STEP2_CMD}"
 run_step 3 "${STEP3_LOCK}" "${STEP3_CMD}"
 run_step 4 "${STEP4_LOCK}" "${STEP4_CMD}"
-run_step 5 "${STEP5_LOCK}" "${STEP5_CMD}"
+run_optional_step 5 "${STEP5_LOCK}" "${STEP5_CMD}"
+run_step 6 "${STEP6_LOCK}" "${STEP6_CMD}"
 
 log "morning-chain complete"

@@ -7774,25 +7774,35 @@ def _minimax_oauth_login(
     return auth_state
 
 
-def _refresh_minimax_oauth_state(
+def refresh_minimax_oauth_pure(
     state: Dict[str, Any], *, timeout_seconds: float = 15.0,
-    force: bool = False,
 ) -> Dict[str, Any]:
-    """Refresh MiniMax OAuth access token if close to expiry (or forced)."""
-    if not state.get("refresh_token"):
+    """Refresh MiniMax OAuth tokens WITHOUT mutating Hermes auth state.
+
+    Mirrors :func:`refresh_codex_oauth_pure` / :func:`refresh_xai_oauth_pure`:
+    performs the single token-endpoint POST and returns a dict of updated
+    fields (``access_token``, ``refresh_token``, ``obtained_at``,
+    ``expires_at``, ``expires_in``). The caller — either the eager-resolve
+    path (:func:`_refresh_minimax_oauth_state`) or the credential-pool refresh
+    path — is responsible for persisting the result under the appropriate
+    lock. Splitting the POST from the save lets the pool path hold the shared
+    cross-process ``_auth_store_lock`` across the whole sync → POST →
+    write-back sequence, so two profiles sharing the same MiniMax OAuth grant
+    cannot both POST the same single-use refresh token (issue #48415, the
+    MiniMax analog of the Codex/xAI hazard).
+    """
+    refresh_token = state.get("refresh_token")
+    if not refresh_token:
         raise AuthError(
             "MiniMax OAuth state has no refresh_token; please re-login.",
             provider="minimax-oauth", code="no_refresh_token", relogin_required=True,
         )
-    try:
-        expires_at = datetime.fromisoformat(state.get("expires_at", "")).timestamp()
-    except Exception:
-        expires_at = 0.0
-    now = time.time()
-    if not force and (expires_at - now) > MINIMAX_OAUTH_REFRESH_SKEW_SECONDS:
-        return state
-
-    portal_base_url = state["portal_base_url"]
+    portal_base_url = state.get("portal_base_url")
+    if not portal_base_url:
+        raise AuthError(
+            "MiniMax OAuth state has no portal_base_url; please re-login.",
+            provider="minimax-oauth", code="no_portal_base_url", relogin_required=True,
+        )
     with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
                       follow_redirects=True) as client:
         response = client.post(
@@ -7800,7 +7810,7 @@ def _refresh_minimax_oauth_state(
             data={
                 "grant_type": "refresh_token",
                 "client_id": state["client_id"],
-                "refresh_token": state["refresh_token"],
+                "refresh_token": refresh_token,
             },
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
@@ -7828,16 +7838,71 @@ def _refresh_minimax_oauth_state(
         int(payload["expired_in"]), now=now_dt,
     )
     expires_in_s = max(0, int(expires_at_unix - now_dt.timestamp()))
-    new_state = dict(state)
-    new_state.update({
+    return {
         "access_token": payload["access_token"],
         "refresh_token": payload.get("refresh_token", state["refresh_token"]),
         "obtained_at": now_dt.isoformat(),
         "expires_at": datetime.fromtimestamp(expires_at_unix, tz=timezone.utc).isoformat(),
         "expires_in": expires_in_s,
-    })
+    }
+
+
+def _refresh_minimax_oauth_state(
+    state: Dict[str, Any], *, timeout_seconds: float = 15.0,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Refresh MiniMax OAuth access token if close to expiry (or forced).
+
+    Thin save-through wrapper over :func:`refresh_minimax_oauth_pure`. The
+    POST-and-save lives here for the eager-resolve path; the credential-pool
+    refresh path calls the pure function directly so it can serialize the
+    whole sequence under ``_auth_store_lock``.
+    """
+    if not state.get("refresh_token"):
+        raise AuthError(
+            "MiniMax OAuth state has no refresh_token; please re-login.",
+            provider="minimax-oauth", code="no_refresh_token", relogin_required=True,
+        )
+    try:
+        expires_at = datetime.fromisoformat(state.get("expires_at", "")).timestamp()
+    except Exception:
+        expires_at = 0.0
+    now = time.time()
+    if not force and (expires_at - now) > MINIMAX_OAUTH_REFRESH_SKEW_SECONDS:
+        return state
+
+    updated_fields = refresh_minimax_oauth_pure(state, timeout_seconds=timeout_seconds)
+    new_state = dict(state)
+    new_state.update(updated_fields)
     _minimax_save_auth_state(new_state)
     return new_state
+
+
+def _is_terminal_minimax_oauth_refresh_error(exc: Exception) -> bool:
+    """True when retrying the same MiniMax OAuth refresh token cannot succeed.
+
+    Mirrors :func:`_is_terminal_xai_oauth_refresh_error` /
+    :func:`_is_terminal_codex_oauth_refresh_error`. ``refresh_failed`` covers
+    HTTP non-200 from the token endpoint with a body indicating
+    ``invalid_grant`` / ``refresh_token_reused`` / ``invalid_refresh_token``
+    (all flagged ``relogin_required=True``); ``no_refresh_token`` and
+    ``no_portal_base_url`` mean the state is structurally unusable.
+    Transient failures (429 / 5xx / network) carry
+    ``relogin_required=False`` and do NOT qualify.
+    """
+    return (
+        isinstance(exc, AuthError)
+        and exc.provider == "minimax-oauth"
+        and exc.code in {
+            "refresh_failed",
+            "no_refresh_token",
+            "no_portal_base_url",
+            "invalid_grant",
+            "invalid_token",
+            "refresh_token_reused",
+        }
+        and bool(exc.relogin_required)
+    )
 
 
 def _minimax_oauth_quarantine_on_terminal_refresh(state: Dict[str, Any], exc: AuthError) -> None:

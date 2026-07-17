@@ -738,10 +738,27 @@ def _resolve_mouse_support() -> bool:
     in isolation. See #58170.
     """
     try:
-        return bool(CLI_CONFIG.get("display", {}).get("mouse_input", False))
+        raw = CLI_CONFIG.get("display", {}).get("mouse_input", False)
     except Exception:
         # A malformed user config must NEVER crash TUI startup.
         return False
+    # Accept only booleans. The previous ``bool(raw)`` form accidentally
+    # treated any non-empty string ("false", "0", "no") as True because
+    # of Python truthiness rules; we now normalize cleanly and reject
+    # string values by falling back to False (a malformed string is the
+    # safe side to fall back on).
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered in {"false", "0", "no", "off", ""}:
+            return False
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        return False
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    return False
 
 
 # Initialize centralized logging early — agent.log + errors.log in ~/.hermes/logs/.

@@ -165,34 +165,38 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       const selectedStoredSessionId = selectedStoredSessionIdRef.current
       const routedStoredSessionId = getRoutedStoredSessionId()
       const routedRuntimeId = routedStoredSessionId ? getRuntimeIdForStoredSession(routedStoredSessionId) : null
+
       const routedSessionNeedsResume = Boolean(
         routedStoredSessionId &&
         (selectedStoredSessionId !== routedStoredSessionId ||
           !startingActiveSessionId ||
           startingActiveSessionId !== routedRuntimeId)
       )
+
       let expectedRuntimeSessionId = startingActiveSessionId
-      let expectedStoredSessionId = routedSessionNeedsResume
-        ? routedStoredSessionId
-        : (selectedStoredSessionId ?? routedStoredSessionId)
+
+      let expectedStoredSessionId =
+        options?.storedSessionId ??
+        (routedSessionNeedsResume ? routedStoredSessionId : (selectedStoredSessionId ?? routedStoredSessionId))
+
       let expectedRouteToken = getRouteToken()
       let pendingCreatedRouteToken: string | null = null
 
       const sessionContextDrifted = (): boolean => {
-        if (
-          pendingCreatedRouteToken &&
-          activeSessionIdRef.current === expectedRuntimeSessionId &&
-          selectedStoredSessionIdRef.current === expectedStoredSessionId &&
-          getRouteToken() === pendingCreatedRouteToken
-        ) {
-          expectedRouteToken = pendingCreatedRouteToken
-          pendingCreatedRouteToken = null
+        if (targetStartedInCurrentView && pendingCreatedRouteToken) {
+          if (
+            activeSessionIdRef.current === expectedRuntimeSessionId &&
+            selectedStoredSessionIdRef.current === expectedStoredSessionId &&
+            getRouteToken() === pendingCreatedRouteToken
+          ) {
+            expectedRouteToken = pendingCreatedRouteToken
+            pendingCreatedRouteToken = null
+          }
         }
 
         return (
-          activeSessionIdRef.current !== expectedRuntimeSessionId ||
-          selectedStoredSessionIdRef.current !== expectedStoredSessionId ||
-          getRouteToken() !== expectedRouteToken
+          targetStartedInCurrentView &&
+          (selectedStoredSessionIdRef.current !== expectedStoredSessionId || getRouteToken() !== expectedRouteToken)
         )
       }
 

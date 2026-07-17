@@ -96,7 +96,7 @@ function Harness({
     state: Record<string, unknown>
   ) => void
   onReady: (handle: HarnessHandle) => void
-  onSeedState?: (state: Record<string, unknown>) => void
+  onSeedState?: (state: Record<string, unknown>, storedSessionId?: string | null) => void
   openMemoryGraph?: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -1445,6 +1445,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // conversation via session.resume — createBackendSessionForSend would
     // silently fork the user's chat in two.
     const calls: { method: string; params?: Record<string, unknown> }[] = []
+
     const createBackendSessionForSend = vi.fn(async () => ({
       routeToken: '/brand-new-stored-WRONG::',
       runtimeSessionId: 'brand-new-session-WRONG',
@@ -1485,7 +1486,12 @@ describe('usePromptActions sleep/wake session recovery', () => {
   it('never replaces a selected stored session when its direct runtime resume fails', async () => {
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
     const busyRef: MutableRefObject<boolean> = { current: false }
-    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
+
+    const createBackendSessionForSend = vi.fn(async () => ({
+      routeToken: '/brand-new-stored-WRONG::',
+      runtimeSessionId: 'brand-new-session-WRONG',
+      storedSessionId: 'brand-new-stored-WRONG'
+    }))
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.resume') {
@@ -1523,7 +1529,13 @@ describe('usePromptActions sleep/wake session recovery', () => {
     const activeSessionIdRef: MutableRefObject<string | null> = { current: 'rt-wrong-profile' }
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
     let boundRuntimeId: string | null = null
-    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
+
+    const createBackendSessionForSend = vi.fn(async () => ({
+      routeToken: '/brand-new-stored-WRONG::',
+      runtimeSessionId: 'brand-new-session-WRONG',
+      storedSessionId: 'brand-new-stored-WRONG'
+    }))
+
     const requestGateway = vi.fn(async () => ({}) as never)
 
     const resumeStoredSession = vi.fn(async (storedSessionId: string) => {
@@ -1635,7 +1647,12 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let recoverySucceeds = false
     let boundRuntimeId: string | null = null
 
-    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
+    const createBackendSessionForSend = vi.fn(async () => ({
+      routeToken: '/brand-new-stored-WRONG::',
+      runtimeSessionId: 'brand-new-session-WRONG',
+      storedSessionId: 'brand-new-stored-WRONG'
+    }))
+
     const requestGateway = vi.fn(async () => ({}) as never)
 
     const resumeStoredSession = vi.fn(async () => {
@@ -1686,12 +1703,14 @@ describe('usePromptActions sleep/wake session recovery', () => {
   })
 
   it('still creates a new session for a genuine new-chat draft (no stored session selected)', async () => {
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
 
     // Mirror the real createBackendSessionForSend: a successful create
-    // re-homes the active runtime ref to the session it minted before returning.
+    // re-homes runtime, stored selection, and route before returning.
     const createBackendSessionForSend = vi.fn(async () => {
       activeSessionIdRef.current = RUNTIME_SESSION_ID
+      selectedStoredSessionIdRef.current = RUNTIME_SESSION_ID
 
       return {
         routeToken: `/${RUNTIME_SESSION_ID}::`,
@@ -1717,6 +1736,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
         storedSessionId={null}
       />
     )
@@ -2049,7 +2069,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
   it('aborts when create returns its own binding but the UI has already selected another stored route', async () => {
     const createdStoredSessionId = 'stored-created-chat'
     const createdRuntimeSessionId = 'rt-created-chat'
-    const activeSessionIdRef: MutableRefObject<string | null> = { current: createdRuntimeSessionId }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
     let routeToken = 'new-chat'
 
@@ -2289,9 +2309,13 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     const createBackendSessionForSend = vi.fn(async () => {
       activeSessionIdRef.current = 'rt-new-chat'
       selectedStoredSessionIdRef.current = 'stored-new-chat'
-      routeToken = '/stored-new-chat'
+      routeToken = '/stored-new-chat::'
 
-      return 'rt-new-chat'
+      return {
+        routeToken: '/stored-new-chat::',
+        runtimeSessionId: 'rt-new-chat',
+        storedSessionId: 'stored-new-chat'
+      }
     })
 
     let handle: HarnessHandle | null = null
@@ -2342,7 +2366,11 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
       selectedStoredSessionIdRef.current = STORED_SESSION_B
       routeToken = `/${STORED_SESSION_B}`
 
-      return 'rt-new-chat'
+      return {
+        routeToken: '/stored-new-chat::',
+        runtimeSessionId: 'rt-new-chat',
+        storedSessionId: 'stored-new-chat'
+      }
     })
 
     let handle: HarnessHandle | null = null

@@ -990,6 +990,21 @@ class TestCapabilitiesEndpoint:
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+            assert "delegation" in data
+            delegation = data["delegation"]
+            assert "description" in delegation
+            assert "blocked_tools" in delegation
+            assert isinstance(delegation["blocked_tools"], list)
+            assert "delegate_task" in delegation["blocked_tools"]
+            assert "clarify" in delegation["blocked_tools"]
+            assert "execute_code" in delegation["blocked_tools"]
+            assert "cronjob" in delegation["blocked_tools"]
+            assert "blocked_toolsets" in delegation
+            assert isinstance(delegation["blocked_toolsets"], list)
+            assert "delegation" in delegation["blocked_toolsets"]
+            assert "code_execution" in delegation["blocked_toolsets"]
+            assert "toolset_inheritance" in delegation
+            assert "orchestrator_role" in delegation
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):

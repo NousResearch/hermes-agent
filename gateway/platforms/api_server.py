@@ -1121,6 +1121,27 @@ class APIServerAdapter(BasePlatformAdapter):
         return max(0, value)
 
     @staticmethod
+    def _delegation_mcp_isolation() -> bool:
+        """Whether delegation children are isolated from the parent's MCP toolsets.
+
+        Returns ``True`` when ``delegation.inherit_mcp_toolsets`` is ``False``,
+        meaning narrowed children do NOT inherit the parent's MCP toolsets.
+        Advertised as ``features.delegation_mcp_isolation`` in
+        ``GET /v1/capabilities`` so orchestrators can probe the actual
+        enforcement level at runtime.
+
+        ``delegation`` is imported lazily inside the function because
+        ``tools/delegate_tool.py`` has module-level imports that may not be
+        resolvable at class-definition time (e.g. when the gateway starts
+        without the full agent module tree).
+        """
+        try:
+            from tools.delegate_tool import _get_inherit_mcp_toolsets
+            return not _get_inherit_mcp_toolsets()
+        except Exception:
+            return False
+
+    @staticmethod
     def _resolve_model_name(explicit: str) -> str:
         """Derive the advertised model name for /v1/models.
 
@@ -1997,6 +2018,41 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
                 "cors": bool(self._cors_origins),
+                "safe_delegation_isolation": True,
+                "delegation_mcp_isolation": self._delegation_mcp_isolation(),
+            },
+            "delegation": {
+                "description": (
+                    "When the parent agent spawns a child subagent via \"delegate_task\", "
+                    "the child receives an isolated context with a restricted toolset. "
+                    "Blocked tools and toolsets are always stripped from child sessions "
+                    "to prevent recursive delegation, user interaction, and side effects."
+                ),
+                "blocked_tools": [
+                    "delegate_task",
+                    "clarify",
+                    "memory",
+                    "send_message",
+                    "execute_code",
+                    "cronjob",
+                ],
+                "blocked_toolsets": [
+                    "delegation",
+                    "code_execution",
+                ],
+                "toolset_inheritance": (
+                    "Children inherit the parent's configured toolsets minus the blocked "
+                    "tools and toolsets above. This means the parent's `web`, `terminal`, "
+                    "`file`, `browser`, `vision`, and similar toolsets pass through "
+                    "to the child automatically. MCP toolsets are preserved by default "
+                    "(configurable via delegation.inherit_mcp_toolsets)."
+                ),
+                "orchestrator_role": (
+                    "When a child is spawned with role='orchestrator', the \"delegation\" "
+                    "toolset is re-added (subject to max_spawn_depth), enabling nested "
+                    "subagent spawning. The default role='leaf' strips the delegation "
+                    "toolset, preventing recursive delegation."
+                ),
             },
             "endpoints": {
                 "health": {"method": "GET", "path": "/health"},

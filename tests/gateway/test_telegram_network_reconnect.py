@@ -326,6 +326,54 @@ async def test_initialize_still_runs_when_shutdown_fails():
 
 
 @pytest.mark.asyncio
+async def test_reconnect_continues_if_drain_hangs(monkeypatch):
+    """If the polling request drain HANGS (wedged httpx pool close on a
+    CLOSE-WAIT socket), the reconnect ladder must still advance rather than
+    freezing the tracked _polling_error_task forever.
+
+    Regression test for #66377: an unbounded ``shutdown()`` /
+    ``initialize()`` in ``_drain_polling_connections`` leaves the handler
+    task pending, which gates every escalation path and silently kills the
+    gateway. The drain awaits are bounded by ``_DRAIN_TIMEOUT``, so the
+    handler must complete and reach ``start_polling`` within a hard bound.
+    """
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 1
+
+    mock_app, mock_polling_req = _make_mock_app()
+
+    async def _hang(*args, **kwargs):
+        await asyncio.Event().wait()  # never returns
+
+    # Both drain awaits wedge indefinitely.
+    mock_polling_req.shutdown = AsyncMock(side_effect=_hang)
+    mock_polling_req.initialize = AsyncMock(side_effect=_hang)
+    adapter._app = mock_app
+
+    # Keep the drain timeout tiny so the test stays fast; the real default
+    # is generous enough not to truncate healthy closes.
+    monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.01, raising=False)
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        # Hard outer bound: on unfixed code the drain hangs forever and this
+        # trips; with the fix the inner wait_for releases well before it.
+        await asyncio.wait_for(
+            adapter._handle_polling_network_error(Exception("Timed out")),
+            timeout=5,
+        )
+
+    # Ladder advanced past the wedged drain despite it never returning.
+    mock_app.updater.start_polling.assert_called_once()
+    assert adapter._polling_network_error_count == 2
+    # The tracked task must not be stuck pending — otherwise every
+    # escalation path stays gated behind an in-flight guard.
+    assert (
+        adapter._polling_error_task is None
+        or adapter._polling_error_task.done()
+    )
+
+
+@pytest.mark.asyncio
 async def test_conflict_retry_also_drains_polling_connections():
     """_handle_polling_conflict must also drain the polling pool on retry."""
     adapter = _make_adapter()

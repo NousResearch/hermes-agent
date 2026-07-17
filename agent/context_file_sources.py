@@ -72,7 +72,7 @@ def list_context_file_sources(
     suppressed = _pb._project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback)
     sources: list[dict[str, Any]] = []
     winner: Optional[str] = None
-    for kind, label, path, content in _pb.discover_context_files(cwd_path):
+    for kind, label, path, content in _pb.discover_context_files(cwd_path, home=home_override):
         if not content:
             status = _empty_status(path)
         elif suppressed:

@@ -75,18 +75,16 @@ def _coerce_fanout(value: Any) -> str:
 
 def _clean_reasoning_effort(value: Any) -> str | None:
     """Return a canonical per-slot reasoning effort, or None when unset/invalid."""
+    from hermes_constants import parse_reasoning_effort
+
     if value is None or value is True:
         return None
-    if value is False:
-        return "none"
-    text = str(value or "").strip().lower()
-    if not text:
+    parsed = parse_reasoning_effort(value)
+    if parsed is None:
         return None
-    if text in {"none", "false", "disabled"}:
+    if parsed.get("enabled") is False:
         return "none"
-    if text in {"minimal", "low", "medium", "high", "xhigh", "max"}:
-        return text
-    return None
+    return parsed.get("effort")
 
 
 def _clean_slot(slot: Any) -> dict[str, Any] | None:

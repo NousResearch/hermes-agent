@@ -1,7 +1,8 @@
+import { stringWidth } from '@hermes/ink'
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { StatusRule } from '../components/appChrome.js'
+import { credentialStatusLabel, StatusRule } from '../components/appChrome.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 type ReactNodeLike = React.ReactNode
@@ -119,6 +120,28 @@ describe('StatusRule active credential label', () => {
 
     expect(textContent(element)).toContain('opus 4.8')
     expect(textContent(element)).not.toContain('opus 4.8 |')
+  })
+
+  it('hides account identity before the compact-context breakpoint', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 44,
+      credentialLabel: 'personal'
+    })
+
+    expect(textContent(element)).not.toContain('personal')
+  })
+
+  it.each([
+    'personal-account-with-an-excessively-long-name',
+    'averylongaddress@example.com',
+    '個人用アカウント非常に長い名前',
+    '🧑🏽‍💻🚀✨ personal account'
+  ])('bounds long and wide labels without splitting graphemes: %s', label => {
+    const rendered = credentialStatusLabel(label)
+
+    expect(rendered).toMatch(/…$/u)
+    expect(stringWidth(rendered)).toBeLessThanOrEqual(20)
   })
 })
 

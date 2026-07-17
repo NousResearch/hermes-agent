@@ -481,7 +481,7 @@ const StatusRulePane = memo(function StatusRulePane({
         indicatorStyle={ui.indicatorStyle}
         lastTurnEndedAt={status.lastTurnEndedAt}
         liveSessionCount={ui.liveSessionCount}
-        model={ui.info?.model ?? ''}
+        model={ui.usage.model ?? ui.info?.model ?? ''}
         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
         modelReasoningEffort={ui.info?.reasoning_effort}
         notice={ui.notice}

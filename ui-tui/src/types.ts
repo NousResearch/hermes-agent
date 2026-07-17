@@ -189,6 +189,7 @@ export interface Usage {
   cost_usd?: number
   dev_credits_spent_micros?: number
   input: number
+  model?: string
   output: number
   reasoning?: number
   total: number

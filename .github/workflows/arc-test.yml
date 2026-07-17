@@ -2,6 +2,9 @@ name: ARC Runner Validation
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/arc-test.yml
 
 jobs:
   validate:

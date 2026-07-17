@@ -2161,6 +2161,16 @@ def merge_pending_message_event(
         ):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            # The merged event becomes the next turn's trigger. Keep its reply
+            # target and injected reply context aligned with the newest user
+            # message rather than the first message that occupied the pending
+            # slot; otherwise Telegram visibly quotes a stale follow-up.
+            existing.message_id = event.message_id
+            existing.reply_to_message_id = event.reply_to_message_id
+            existing.reply_to_text = event.reply_to_text
+            existing.reply_to_author_id = event.reply_to_author_id
+            existing.reply_to_author_name = event.reply_to_author_name
+            existing.reply_to_is_own_message = event.reply_to_is_own_message
             return
 
     pending_messages[session_key] = event

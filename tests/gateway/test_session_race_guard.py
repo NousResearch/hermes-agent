@@ -14,7 +14,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, merge_pending_message_event
+from gateway.platforms.base import (
+    MessageEvent,
+    MessageType,
+    _reply_anchor_for_event,
+    merge_pending_message_event,
+)
 from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from gateway.session import SessionSource, build_session_key
 
@@ -195,6 +200,54 @@ async def test_second_message_during_sentinel_queued_not_duplicate():
         # Let first message complete
         barrier.set()
         await task1
+
+
+def test_merge_pending_text_followups_reply_to_latest_message():
+    """A merged busy-turn reply must quote the newest user message."""
+    pending = {}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="u1",
+        thread_id="34457",
+    )
+    session_key = build_session_key(source)
+    first = MessageEvent(
+        text="first follow-up",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="100",
+        reply_to_message_id="50",
+        reply_to_text="older quoted message",
+        reply_to_author_id="old-author",
+        reply_to_author_name="Old Author",
+        reply_to_is_own_message=True,
+    )
+    latest = MessageEvent(
+        text="latest follow-up",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="101",
+        reply_to_message_id="60",
+        reply_to_text="latest quoted message",
+        reply_to_author_id="new-author",
+        reply_to_author_name="New Author",
+        reply_to_is_own_message=False,
+    )
+
+    merge_pending_message_event(pending, session_key, first, merge_text=True)
+    merge_pending_message_event(pending, session_key, latest, merge_text=True)
+
+    merged = pending[session_key]
+    assert merged.text == "first follow-up\nlatest follow-up"
+    assert merged.message_id == "101"
+    assert _reply_anchor_for_event(merged) == "101"
+    assert merged.reply_to_message_id == "60"
+    assert merged.reply_to_text == "latest quoted message"
+    assert merged.reply_to_author_id == "new-author"
+    assert merged.reply_to_author_name == "New Author"
+    assert merged.reply_to_is_own_message is False
 
 
 def test_merge_pending_message_event_merges_text_and_photo_followups():

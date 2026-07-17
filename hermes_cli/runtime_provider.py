@@ -358,6 +358,56 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     return None
 
 
+def _parse_explicit_runtime_api_mode(raw: Any, provider: str) -> Optional[str]:
+    """Validate a fallback transport override without bypassing runtime gates."""
+    parsed = _parse_api_mode(raw)
+    if not parsed:
+        return None
+
+    # Fallback entries may select wire transports only.  codex_app_server is a
+    # local execution runtime and must remain behind model.openai_runtime plus
+    # the OpenAI-provider gate in _maybe_apply_codex_app_server_runtime().
+    from hermes_cli.providers import TRANSPORT_TO_API_MODE
+
+    if parsed not in set(TRANSPORT_TO_API_MODE.values()):
+        return None
+    if parsed == "bedrock_converse" and provider != "bedrock":
+        return None
+    return parsed
+
+
+def _normalize_explicit_runtime_base_url(
+    runtime: Dict[str, Any], api_mode: str
+) -> Dict[str, Any]:
+    """Normalize a provider endpoint after selecting its authoritative wire mode."""
+    if api_mode != "chat_completions":
+        return runtime
+    if str(runtime.get("provider") or "").strip().lower() != "kimi-coding":
+        return runtime
+
+    raw_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+    try:
+        parsed = urlparse(raw_url)
+        port = parsed.port
+    except (TypeError, ValueError):
+        return runtime
+    if not (
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower().rstrip(".") == "api.kimi.com"
+        and port in {None, 443}
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.path.rstrip("/") == "/coding"
+    ):
+        return runtime
+
+    normalized = dict(runtime)
+    normalized["base_url"] = raw_url + "/v1"
+    return normalized
+
+
 def _nous_inference_base_url_override() -> str:
     """Return the trusted Nous runtime base URL override, if configured.
 
@@ -2116,13 +2166,19 @@ def resolve_runtime_provider(
     if explicit_api_mode is None:
         return runtime
 
-    parsed_mode = _parse_api_mode(explicit_api_mode)
+    runtime_provider = str(runtime.get("provider") or "").strip().lower()
+    parsed_mode = _parse_explicit_runtime_api_mode(
+        explicit_api_mode,
+        runtime_provider,
+    )
     if parsed_mode:
         runtime = dict(runtime)
         runtime["api_mode"] = parsed_mode
+        runtime = _normalize_explicit_runtime_base_url(runtime, parsed_mode)
     elif str(explicit_api_mode or "").strip():
         logger.warning(
-            "Ignoring unknown explicit api_mode %r for provider %s",
+            "Ignoring unknown or provider-incompatible explicit api_mode %r "
+            "for provider %s",
             explicit_api_mode,
             requested or runtime.get("provider"),
         )

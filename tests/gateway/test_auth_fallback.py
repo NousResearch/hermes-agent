@@ -10,38 +10,45 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
 
     def test_auth_error_tries_fallback(self, tmp_path, monkeypatch):
         """When primary provider raises AuthError, fallback is attempted."""
+        from hermes_cli import runtime_provider as rp
         from hermes_cli.auth import AuthError
 
         # Create a config with fallback
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             "model:\n  provider: openai-codex\n"
-            "fallback_model:\n  provider: openrouter\n"
-            "  model: meta-llama/llama-4-maverick\n"
+            "fallback_model:\n  provider: kimi-coding\n"
+            "  model: k3\n"
+            "  base_url: https://api.kimi.com/coding\n"
             "  api_mode: chat_completions\n"
         )
 
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
 
         calls = []
+        real_resolve = rp.resolve_runtime_provider
+        monkeypatch.setattr(
+            rp,
+            "_resolve_runtime_provider_impl",
+            lambda **_kwargs: {
+                "api_key": "fallback-key",
+                "base_url": "https://api.kimi.com/coding",
+                "provider": "kimi-coding",
+                "api_mode": "anthropic_messages",
+                "command": None,
+                "args": None,
+                "credential_pool": None,
+            },
+        )
 
         def _mock_resolve(**kwargs):
             calls.append(kwargs)
             # First call = primary path (gateway reads model.provider from
             # config.yaml internally; we simulate the auth failure here).
-            # Second call = fallback path with explicit_api_key + explicit_base_url
-            # supplied by gateway from fallback_model config.
+            # Second call = fallback path through the real runtime wrapper.
             if len(calls) == 1:
                 raise AuthError("Codex token refresh failed with status 401")
-            return {
-                "api_key": "fallback-key",
-                "base_url": "https://openrouter.ai/api/v1",
-                "provider": "openrouter",
-                "api_mode": "openai_chat",
-                "command": None,
-                "args": None,
-                "credential_pool": None,
-            }
+            return real_resolve(**kwargs)
 
         with patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -50,11 +57,13 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
             from gateway.run import _resolve_runtime_agent_kwargs
             result = _resolve_runtime_agent_kwargs()
 
-        assert result["provider"] == "openrouter"
+        assert result["provider"] == "kimi-coding"
         assert result["api_key"] == "fallback-key"
+        assert result["api_mode"] == "chat_completions"
+        assert result["base_url"] == "https://api.kimi.com/coding/v1"
         assert len(calls) >= 2
         assert calls[1]["explicit_api_mode"] == "chat_completions"
-        assert calls[1]["target_model"] == "meta-llama/llama-4-maverick"
+        assert calls[1]["target_model"] == "k3"
 
     def test_auth_error_no_fallback_raises(self, tmp_path, monkeypatch):
         """When primary fails and no fallback configured, RuntimeError is raised."""

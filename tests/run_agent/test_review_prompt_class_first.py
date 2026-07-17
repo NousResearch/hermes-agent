@@ -1,14 +1,14 @@
-"""Behavior tests for the skill review / combined review prompts.
+"""Behavior tests for background-review information routing.
 
-The review prompts steer the background review agent toward actively updating
-the skill library after most sessions, with a strong bias toward:
+The review prompts must be selective: most turns should not mutate durable
+state. When a durable procedural lesson exists, skill updates use this order:
   1. Patching currently-loaded skills first,
   2. Patching existing umbrellas next,
   3. Adding references/ files under an existing umbrella,
   4. Creating a new class-level umbrella only when nothing else fits.
 
-User-preference corrections (style, format, verbosity, legibility) are
-first-class skill signals, not just memory signals.
+Global user preferences belong in USER memory. Task-class procedures belong in
+skills. Project state and completed work belong outside always-injected memory.
 
 These tests assert behavioral *instructions* are present — they do NOT
 snapshot the full prompt text (change-detector).
@@ -21,34 +21,24 @@ from run_agent import AIAgent
 # _SKILL_REVIEW_PROMPT
 # ---------------------------------------------------------------------------
 
-def test_skill_review_prompt_biases_toward_active_updates():
-    """Prompt must frame updating as the default stance, not something rare."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "ACTIVE" in prompt or "active" in prompt.lower(), (
-        "must tell the reviewer to be active"
-    )
-    # "missed learning opportunity" or equivalent framing for not acting
-    assert "missed" in prompt.lower() or "opportunity" in prompt.lower(), (
-        "must frame inaction as a miss, not a neutral outcome"
-    )
-
-
-def test_skill_review_prompt_treats_user_corrections_as_skill_signal():
-    """Style/format/verbosity complaints must be FIRST-CLASS skill signals, not just memory."""
+def test_skill_review_prompt_is_selective_by_default():
+    """Routine successful sessions must not be treated as learning events."""
     prompt = AIAgent._SKILL_REVIEW_PROMPT
     lower = prompt.lower()
-    # Must mention style/format/verbosity-family corrections
-    assert any(k in lower for k in ("style", "format", "verbos", "legib", "tone")), (
-        "must name style/format/verbosity/legibility as signals"
-    )
-    # Must frame these as first-class skill signals (not memory-only)
-    assert "FIRST-CLASS" in prompt or "first-class" in prompt, (
-        "must explicitly label user-preference corrections as first-class skill signals"
-    )
-    # Must mention the correction-type phrases to tune the model's ear
-    assert "stop doing" in lower or "don't" in lower or "hate" in lower or "frustrat" in lower, (
-        "must give concrete phrasing examples so the model recognizes corrections"
-    )
+    assert "most sessions produce" not in lower
+    assert "missed learning opportunity" not in lower
+    assert "not whether you update" not in lower
+    assert "nothing to save" in lower
+    assert any(k in lower for k in ("selective", "durable signal", "default outcome"))
+
+
+def test_skill_review_prompt_routes_preferences_by_scope():
+    """Global user preferences and task-class procedures have different homes."""
+    prompt = AIAgent._SKILL_REVIEW_PROMPT
+    lower = prompt.lower()
+    assert "global" in lower and "user" in lower and "memory" in lower
+    assert "task-class" in lower or "class of task" in lower
+    assert "not just memory signals" not in lower
 
 
 def test_skill_review_prompt_prefers_loaded_skills_first():
@@ -99,14 +89,12 @@ def test_skill_review_prompt_has_name_veto_for_create():
     )
 
 
-def test_skill_review_prompt_embeds_user_preferences_in_skills():
-    """Must explicitly say user-preference lessons belong in SKILL.md, not only memory."""
+def test_skill_review_prompt_does_not_duplicate_preferences_into_skills():
+    """A preference alone must not be copied into both USER and SKILL.md."""
     prompt = AIAgent._SKILL_REVIEW_PROMPT
     lower = prompt.lower()
-    assert "preference" in lower, "must mention user preferences"
-    assert "memory" in lower and "skill" in lower, (
-        "must contrast memory vs skill responsibilities"
-    )
+    assert "do not duplicate" in lower or "do not copy" in lower
+    assert "preference" in lower and "skill" in lower
 
 
 def test_skill_review_prompt_flags_overlap_and_defers_to_curator():
@@ -133,20 +121,23 @@ def test_combined_review_prompt_has_memory_section():
     assert "memory tool" in prompt
 
 
-def test_combined_review_prompt_skills_biased_toward_active_updates():
-    """Skills half must carry the active-update bias."""
-    prompt = AIAgent._COMBINED_REVIEW_PROMPT
-    assert "**Skills**" in prompt
-    assert "ACTIVE" in prompt or "active" in prompt.lower()
-    assert "missed" in prompt.lower() or "opportunity" in prompt.lower()
-
-
-def test_combined_review_prompt_treats_user_corrections_as_skill_signal():
-    """Combined prompt must carry the same user-preference-is-skill-signal rule."""
+def test_combined_review_prompt_is_selective_by_default():
+    """The combined review must not manufacture writes from routine turns."""
     prompt = AIAgent._COMBINED_REVIEW_PROMPT
     lower = prompt.lower()
-    assert any(k in lower for k in ("style", "format", "verbos", "legib", "tone"))
-    assert "FIRST-CLASS" in prompt or "first-class" in prompt
+    assert "**Skills**" in prompt
+    assert "most sessions produce" not in lower
+    assert "missed learning opportunity" not in lower
+    assert "nothing to save" in lower
+
+
+def test_combined_review_prompt_routes_preferences_by_scope():
+    """Combined review separates global USER preferences from procedures."""
+    prompt = AIAgent._COMBINED_REVIEW_PROMPT
+    lower = prompt.lower()
+    assert "global" in lower and "user" in lower and "memory" in lower
+    assert "task-class" in lower or "class of task" in lower
+    assert "not just memory signals" not in lower
 
 
 def test_combined_review_prompt_prefers_loaded_skills_first():
@@ -223,13 +214,30 @@ def test_combined_review_prompt_has_anti_pattern_guidance():
 
 
 # ---------------------------------------------------------------------------
-# _MEMORY_REVIEW_PROMPT — unchanged, still memory-focused
+# _MEMORY_REVIEW_PROMPT — bounded always-loaded memory only
 # ---------------------------------------------------------------------------
 
 def test_memory_review_prompt_still_focused_on_user_facts():
-    """Memory-only review prompt stays focused on user facts — not touched by this change."""
+    """Memory-only review stays focused on stable user/environment facts."""
     prompt = AIAgent._MEMORY_REVIEW_PROMPT
     # The memory-only prompt should NOT drift into skill territory
     assert "skills_list" not in prompt
     assert "SURVEY" not in prompt
     assert "memory tool" in prompt
+
+
+def test_memory_review_prompt_rejects_operational_history():
+    """Completed work and mutable project state must not enter every prompt."""
+    lower = AIAgent._MEMORY_REVIEW_PROMPT.lower()
+    assert "completed work" in lower
+    assert "project state" in lower
+    assert "do not save" in lower or "never save" in lower
+    assert "session" in lower and "project" in lower
+
+
+def test_combined_review_prompt_has_explicit_information_router():
+    """The combined reviewer must classify information before choosing a tool."""
+    lower = AIAgent._COMBINED_REVIEW_PROMPT.lower()
+    for destination in ("user", "memory", "skill", "project state", "session history"):
+        assert destination in lower
+    assert "classify" in lower or "route" in lower

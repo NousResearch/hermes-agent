@@ -19,6 +19,22 @@ from hermes_state import (
 
 
 class TestIsBackgroundReviewHarnessMessage:
+    def test_matches_all_live_review_prompts(self):
+        """Defense-in-depth must track the actual current harness constants."""
+        from agent.background_review import (
+            _COMBINED_REVIEW_PROMPT,
+            _MEMORY_REVIEW_PROMPT,
+            _SKILL_REVIEW_PROMPT,
+        )
+
+        for prompt in (
+            _MEMORY_REVIEW_PROMPT,
+            _SKILL_REVIEW_PROMPT,
+            _COMBINED_REVIEW_PROMPT,
+        ):
+            msg = {"role": "user", "content": prompt}
+            assert _is_background_review_harness_message(msg) is True
+
     def test_matches_skill_review_prompt(self):
         msg = {"role": "user", "content": "Review the conversation above and update the skill library now."}
         assert _is_background_review_harness_message(msg) is True

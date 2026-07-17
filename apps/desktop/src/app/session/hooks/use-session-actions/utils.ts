@@ -224,6 +224,69 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
   })
 }
 
+/**
+ * Keep the local tail of a turn while a reconnect hydrates an older server
+ * projection. The user's optimistic row exists before prompt.submit persists
+ * it, and the pending assistant row exists before message.complete commits it;
+ * dropping either makes an accepted turn appear to vanish during transport
+ * churn.
+ *
+ * Authoritative rows use different ids, so match by role ordinal. A matching
+ * user row is considered committed only when its visible text also matches;
+ * any authoritative assistant at the same ordinal supersedes the local stream.
+ */
+export function preserveLocalPendingTurnMessages(
+  nextMessages: ChatMessage[],
+  previousMessages: ChatMessage[]
+): ChatMessage[] {
+  if (!previousMessages.length) {
+    return nextMessages
+  }
+
+  const nextByRoleOrdinal = new Map<string, ChatMessage>()
+  const nextRoleCounts = new Map<ChatMessage['role'], number>()
+
+  for (const message of nextMessages) {
+    const ordinal = nextRoleCounts.get(message.role) ?? 0
+    nextRoleCounts.set(message.role, ordinal + 1)
+    nextByRoleOrdinal.set(`${message.role}:${ordinal}`, message)
+  }
+
+  const nextIds = new Set(nextMessages.map(message => message.id))
+  const previousRoleCounts = new Map<ChatMessage['role'], number>()
+  const preserved: ChatMessage[] = []
+
+  for (const message of previousMessages) {
+    const ordinal = previousRoleCounts.get(message.role) ?? 0
+    previousRoleCounts.set(message.role, ordinal + 1)
+
+    const isOptimisticUser = message.role === 'user' && message.id.startsWith('user-')
+
+    const isPendingAssistant =
+      message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
+
+    if ((!isOptimisticUser && !isPendingAssistant) || nextIds.has(message.id)) {
+      continue
+    }
+
+    const authoritative = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
+
+    if (authoritative) {
+      if (isPendingAssistant) {
+        continue
+      }
+
+      if (chatMessageText(authoritative).trim() === chatMessageText(message).trim()) {
+        continue
+      }
+    }
+
+    preserved.push(message)
+  }
+
+  return preserved.length ? [...nextMessages, ...preserved] : nextMessages
+}
+
 export interface BranchMessage {
   content: string
   role: ChatMessage['role']

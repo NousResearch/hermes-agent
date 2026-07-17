@@ -2054,8 +2054,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 self._record_recovery_attempt(message, status="queued")
                 try:
-                    if await self._dispatch_recovered_message(message):
+                    admitted = await self._dispatch_recovered_message(message)
+                    if admitted:
                         dispatched += 1
+                    channel_id = str(
+                        getattr(getattr(message, "channel", None), "id", "")
+                    )
+                    if channel_id and message_id:
+                        await asyncio.to_thread(
+                            self._advance_discord_recovery_cursor,
+                            channel_id,
+                            message_id,
+                        )
                 except asyncio.CancelledError:
                     self._dedup.discard(message_id)
                     self._record_recovery_attempt(message, status="cancelled")
@@ -2141,7 +2151,12 @@ class DiscordAdapter(BasePlatformAdapter):
 
         yielded = 0
         for channel in candidate_channels:
-            async for item in self._iter_channel_and_thread_messages(channel, limit=limit, after=after, seen_channels=seen):
+            async for item in self._iter_channel_and_thread_messages(
+                channel,
+                limit=limit,
+                after=after,
+                seen_channels=seen,
+            ):
                 yield item
                 yielded += 1
                 if yielded >= limit:
@@ -2154,6 +2169,10 @@ class DiscordAdapter(BasePlatformAdapter):
             return
         seen_channels.add(channel_key)
 
+        cursor = self._discord_recovery_cursor(channel_key)
+        if cursor:
+            with suppress(ValueError, TypeError):
+                after = discord.Object(id=int(cursor))
         history = getattr(channel, "history", None)
         if callable(history):
             try:
@@ -2188,6 +2207,38 @@ class DiscordAdapter(BasePlatformAdapter):
                 continue
             async for message in self._iter_channel_and_thread_messages(thread, limit=limit, after=after, seen_channels=seen_channels):
                 yield message
+
+    def _discord_recovery_cursor(self, channel_id: str) -> Optional[str]:
+        if not channel_id:
+            return None
+
+        def _op(conn):
+            row = conn.execute(
+                "SELECT last_message_id FROM discord_recovery_cursors WHERE channel_id=?",
+                (channel_id,),
+            ).fetchone()
+            return str(row[0]) if row else None
+
+        return self._with_discord_recovery_db(_op)
+
+    def _advance_discord_recovery_cursor(self, channel_id: str, message_id: str) -> None:
+        if not channel_id or not message_id:
+            return
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                """
+                INSERT INTO discord_recovery_cursors (channel_id, last_message_id, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(channel_id) DO UPDATE SET
+                    last_message_id=excluded.last_message_id,
+                    updated_at=excluded.updated_at
+                """,
+                (channel_id, message_id, now),
+            )
+
+        self._with_discord_recovery_db(_op)
 
     async def _should_backfill_discord_message(self, message: Any) -> bool:
         """Return True when a recent Discord message still needs Hermes work."""

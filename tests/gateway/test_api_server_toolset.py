@@ -1,6 +1,7 @@
 """Tests for hermes-api-server toolset and API server tool availability."""
 from unittest.mock import patch, MagicMock
 
+import pytest
 
 from toolsets import resolve_toolset, get_toolset, validate_toolset
 
@@ -176,3 +177,147 @@ class TestApiServerAdapterToolset:
             call_kwargs = mock_agent_cls.call_args
             toolsets = call_kwargs.kwargs.get("enabled_toolsets")
             assert sorted(toolsets) == ["terminal", "web"]
+
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    def test_create_agent_applies_request_runtime_controls(self):
+        """Per-request reasoning and Fast settings reach the provider agent."""
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig())
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("gateway.run._resolve_gateway_model", return_value="gpt-5.6-sol"), \
+             patch("gateway.run._load_gateway_config", return_value={}), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_kwargs.return_value = {
+                "api_key": "test-key",
+                "base_url": None,
+                "provider": "openai-codex",
+                "api_mode": None,
+                "command": None,
+                "args": [],
+            }
+            mock_agent_cls.return_value = MagicMock()
+
+            adapter._create_agent(
+                reasoning_effort_override="xhigh",
+                service_tier_override="priority",
+            )
+
+            kwargs = mock_agent_cls.call_args.kwargs
+            assert kwargs["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+            assert kwargs["service_tier"] == "priority"
+            assert kwargs["request_overrides"] == {"service_tier": "priority"}
+
+            mock_agent_cls.reset_mock()
+            adapter._create_agent(service_tier_override="normal")
+            assert mock_agent_cls.call_args.kwargs["service_tier"] is None
+            assert mock_agent_cls.call_args.kwargs["request_overrides"] == {}
+
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    def test_explicit_request_route_wins_over_session_model_override(self):
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig())
+        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("gateway.run._resolve_runtime_agent_kwargs_for_provider") as mock_provider, \
+             patch("gateway.run._resolve_gateway_model", return_value="global-model"), \
+             patch("gateway.run._load_gateway_config", return_value={}), \
+             patch.object(adapter, "_session_model_override_for", return_value={"model": "session-model"}), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_kwargs.return_value = {
+                "api_key": "global-key",
+                "base_url": None,
+                "provider": "global-provider",
+                "api_mode": None,
+                "command": None,
+                "args": [],
+            }
+            mock_provider.return_value = {
+                "api_key": "request-key",
+                "base_url": None,
+                "provider": "openai-codex",
+                "api_mode": None,
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+            }
+            mock_agent_cls.return_value = MagicMock()
+
+            adapter._create_agent(
+                gateway_session_key="webui:session",
+                request_route={"model": "gpt-5.6-sol", "provider": "openai-codex"},
+            )
+
+            kwargs = mock_agent_cls.call_args.kwargs
+            assert kwargs["model"] == "gpt-5.6-sol"
+            assert kwargs["provider"] == "openai-codex"
+            assert kwargs["api_key"] == "request-key"
+
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    def test_session_model_override_wins_over_static_route_and_is_applied(self):
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig())
+        session_override = {"model": "session-model", "provider": "session-provider"}
+        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("gateway.run._resolve_runtime_agent_kwargs_for_provider") as mock_provider, \
+             patch("gateway.run._resolve_gateway_model", return_value="global-model"), \
+             patch("gateway.run._load_gateway_config", return_value={}), \
+             patch.object(adapter, "_session_model_override_for", return_value=session_override), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_kwargs.return_value = {
+                "api_key": "global-key",
+                "base_url": None,
+                "provider": "global-provider",
+                "api_mode": None,
+                "command": None,
+                "args": [],
+            }
+            mock_provider.return_value = {
+                "api_key": "session-key",
+                "base_url": None,
+                "provider": "session-provider",
+                "api_mode": None,
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+            }
+            mock_agent_cls.return_value = MagicMock()
+
+            adapter._create_agent(
+                gateway_session_key="webui:session",
+                route={"model": "static-model", "provider": "static-provider"},
+            )
+
+            kwargs = mock_agent_cls.call_args.kwargs
+            assert kwargs["model"] == "session-model"
+            assert kwargs["provider"] == "session-provider"
+            assert kwargs["api_key"] == "session-key"
+
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    def test_routed_provider_resolution_failure_does_not_reuse_default_credentials(self):
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig())
+        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("gateway.run._resolve_runtime_agent_kwargs_for_provider", side_effect=RuntimeError("provider unavailable")), \
+             patch("gateway.run._resolve_gateway_model", return_value="global-model"), \
+             patch("gateway.run._load_gateway_config", return_value={}):
+            mock_kwargs.return_value = {
+                "api_key": "must-not-leak",
+                "base_url": "https://default.invalid/v1",
+                "provider": "default-provider",
+                "api_mode": None,
+                "command": None,
+                "args": [],
+            }
+
+            with pytest.raises(RuntimeError, match="provider unavailable"):
+                adapter._create_agent(
+                    request_route={"model": "gpt-5.6-sol", "provider": "openai-codex"},
+                )

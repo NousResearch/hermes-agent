@@ -4233,9 +4233,9 @@ class TestModelRoutesAgentCreation:
 
         adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
 
-        # The route must NOT be applied — the session override path (global
-        # runtime here, since the gateway applies /model separately) wins.
-        assert captured["model"] == "global/model"
+        # The session override is applied, while the static route's credential
+        # override is not.
+        assert captured["model"] == "session/override-model"
         assert captured["api_key"] == "sk-global"
 
     def test_session_override_lookup_reads_gateway_runner(self, monkeypatch):

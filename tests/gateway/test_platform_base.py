@@ -16,9 +16,51 @@ from gateway.platforms.base import (
     safe_url_for_log,
     utf16_len,
     validate_inbound_media_size,
+    validate_media_delivery_path,
     _log_safe_path,
     _prefix_within_utf16_limit,
 )
+
+
+class TestContainerWorkspaceMediaRemap:
+    """MEDIA_WORKSPACE_HOST_ROOT remaps container /workspace paths onto the host mount.
+
+    A Docker-backed agent reports the container path of its artifact
+    (/workspace/x.png); the gateway resolves paths on the HOST, so without the
+    remap the file silently never attaches. Opt-in via env; realpath-fenced.
+    """
+
+    def _workspace(self, tmp_path, monkeypatch):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "chart.png").write_bytes(b"\x89PNG")
+        monkeypatch.setenv("MEDIA_WORKSPACE_HOST_ROOT", str(ws))
+        return ws
+
+    def test_media_directive_container_path_resolves_to_host(self, tmp_path, monkeypatch):
+        ws = self._workspace(tmp_path, monkeypatch)
+        assert validate_media_delivery_path("/workspace/chart.png") == str(ws / "chart.png")
+
+    def test_bare_path_extraction_remaps(self, tmp_path, monkeypatch):
+        ws = self._workspace(tmp_path, monkeypatch)
+        paths, _cleaned = BasePlatformAdapter.extract_local_files(
+            "here's your chart: /workspace/chart.png"
+        )
+        assert paths == [str(ws / "chart.png")]
+
+    def test_traversal_out_of_workspace_is_refused(self, tmp_path, monkeypatch):
+        self._workspace(tmp_path, monkeypatch)
+        (tmp_path / "outside.png").write_bytes(b"\x89PNG")
+        assert validate_media_delivery_path("/workspace/../outside.png") is None
+
+    def test_missing_file_is_not_remapped(self, tmp_path, monkeypatch):
+        self._workspace(tmp_path, monkeypatch)
+        assert validate_media_delivery_path("/workspace/nope.png") is None
+
+    def test_env_unset_keeps_default_behaviour(self, tmp_path, monkeypatch):
+        self._workspace(tmp_path, monkeypatch)
+        monkeypatch.delenv("MEDIA_WORKSPACE_HOST_ROOT")
+        assert validate_media_delivery_path("/workspace/chart.png") is None
 
 
 class TestInboundMediaSizeCap:

@@ -1269,6 +1269,34 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return False
 
 
+def _remap_container_workspace_path(candidate: str) -> Optional[str]:
+    """Map a container-local ``/workspace/...`` path onto the host mount backing it.
+
+    A Docker-backed agent writes its artifact inside the container and then
+    naturally reports the path it wrote to (``/workspace/report.png``). MEDIA
+    delivery runs in the gateway process on the HOST, where that path does not
+    exist, so the file silently never attaches and the user sees no error.
+    Instructing the model to translate the path itself is unreliable; the
+    startup warning in ``gateway/run.py`` already documents this failure mode.
+
+    Opt-in via ``MEDIA_WORKSPACE_HOST_ROOT`` (the host directory backing the
+    container's ``/workspace`` mount); unset keeps behaviour unchanged. The
+    remapped path is realpath-fenced INSIDE that mount and must exist; callers
+    still pass the result through the full delivery validation (denylist,
+    strict-mode allowlist, recency), so the remap grants no new reach.
+    """
+    ws_root = os.environ.get("MEDIA_WORKSPACE_HOST_ROOT", "")
+    if not ws_root or not candidate.startswith("/workspace/"):
+        return None
+    root = os.path.realpath(ws_root)
+    mapped = os.path.realpath(
+        os.path.join(root, os.path.relpath(candidate, "/workspace"))
+    )
+    if mapped.startswith(root + os.sep) and os.path.isfile(mapped):
+        return mapped
+    return None
+
+
 def validate_media_delivery_path(path: str) -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
@@ -1298,6 +1326,16 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     candidate = candidate.lstrip("`\"'").rstrip("`\"',.;:)}]")
     if not candidate:
         return None
+
+    # Remap an explicit MEDIA:/workspace/... directive onto the host mount
+    # before resolution; the remapped path still runs the full gate below.
+    remapped = _remap_container_workspace_path(candidate)
+    if remapped:
+        logger.info(
+            "Remapped container media path %s to host workspace",
+            _log_safe_path(candidate),
+        )
+        candidate = remapped
 
     try:
         expanded = Path(os.path.expanduser(candidate))
@@ -3824,7 +3862,16 @@ class BasePlatformAdapter(ABC):
                 continue
             raw = match.group(0)
             expanded = os.path.expanduser(raw)
-            if os.path.isfile(expanded):
+            # Bare container paths get the same host-mount remap as explicit
+            # MEDIA: directives (see _remap_container_workspace_path).
+            remapped = _remap_container_workspace_path(expanded)
+            if remapped:
+                logger.info(
+                    "Remapped container media path %s to host workspace",
+                    _log_safe_path(raw),
+                )
+                found.append((raw, remapped))
+            elif os.path.isfile(expanded):
                 found.append((raw, expanded))
             else:
                 # The reply mentions a deliverable-looking path that does not

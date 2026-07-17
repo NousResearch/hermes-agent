@@ -147,6 +147,11 @@ SCHEMA_VERSION = 22
 # sanitizer/runtime behavior predictable under adversarial input.
 MAX_FTS5_QUERY_CHARS = 2_048
 
+# Observed gateway messages bypass model-generated compression summaries, so
+# retaining them without a bound can rebuild an oversized live context after
+# compaction. Apply one global cap to both in-place and split-session flows.
+MAX_OBSERVED_CONTEXT_MESSAGES = 50
+
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
 # ---------------------------------------------------------------------------
@@ -4403,6 +4408,56 @@ class SessionDB:
         """
 
         def _do(conn):
+            observed_rows = conn.execute(
+                "SELECT role, content, timestamp, platform_message_id FROM ("
+                "  SELECT id AS message_row_id, role, content, timestamp, "
+                "         platform_message_id "
+                "  FROM messages WHERE session_id = ? AND active = 1 "
+                "    AND observed = 1 "
+                "  ORDER BY id DESC LIMIT ?"
+                ") ORDER BY message_row_id",
+                (session_id, MAX_OBSERVED_CONTEXT_MESSAGES),
+            ).fetchall()
+
+            def _same_observed_message(
+                left: Dict[str, Any], right: Dict[str, Any]
+            ) -> bool:
+                if not right.get("observed"):
+                    return False
+                left_id = left.get("message_id") or left.get("platform_message_id")
+                right_id = right.get("message_id") or right.get("platform_message_id")
+                if left_id and right_id:
+                    return left_id == right_id
+                return (
+                    left.get("role") == right.get("role")
+                    and left.get("content") == right.get("content")
+                )
+
+            retained_observed: List[Dict[str, Any]] = []
+            for row in observed_rows:
+                candidate: Dict[str, Any] = {
+                    "role": row["role"],
+                    "content": self._decode_content(row["content"]),
+                    "timestamp": row["timestamp"],
+                    "observed": True,
+                }
+                if row["platform_message_id"]:
+                    candidate["message_id"] = row["platform_message_id"]
+
+                compacted_copy = next(
+                    (
+                        message
+                        for message in compacted_messages
+                        if _same_observed_message(candidate, message)
+                    ),
+                    None,
+                )
+                retained_observed.append(compacted_copy or candidate)
+
+            compacted_without_observed = [
+                message for message in compacted_messages if not message.get("observed")
+            ]
+
             # Soft-archive the live turns: active=0 hides them from the live
             # context load, compacted=1 marks them as "summarized away" (vs
             # rewind/undo's active=0+compacted=0, which means "user took it
@@ -4415,7 +4470,9 @@ class SessionDB:
                 (session_id,),
             )
             inserted, tool_calls_total = self._insert_message_rows(
-                conn, session_id, compacted_messages
+                conn,
+                session_id,
+                [*retained_observed, *compacted_without_observed],
             )
             # message_count / tool_call_count reflect the LIVE (active) set —
             # the archived rows are still on disk but not part of the live count.
@@ -4937,6 +4994,50 @@ class SessionDB:
                     break
                 current = row["parent_session_id"] if hasattr(row, "keys") else row[0]
         return list(reversed(chain)) or [session_id]
+
+    def get_ancestor_observed_messages(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return observed=True messages from compression-split ancestor sessions.
+
+        When context compression creates a new session, observed messages stored
+        in the parent session (e.g. unaddressed media/audio in a Telegram group)
+        are no longer accessible via the new session's transcript. This method
+        fetches those messages so callers can surface them as context.
+
+        Only includes messages from sessions that ended via compression
+        (``end_reason = 'compression'``), avoiding leakage from delegate-subagent
+        parent sessions that happen to share a ``parent_session_id`` link. The
+        newest :data:`MAX_OBSERVED_CONTEXT_MESSAGES` rows are selected globally
+        across those ancestors, then returned in stable chronological order.
+        """
+        lineage = self._session_lineage_root_to_tip(session_id)
+        ancestor_ids = lineage[:-1]
+        if not ancestor_ids:
+            return []
+
+        placeholders = ",".join("?" for _ in ancestor_ids)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT role, content, platform_message_id FROM ("
+                f"  SELECT m.id AS message_row_id, m.role, m.content, "
+                f"         m.platform_message_id "
+                f"  FROM messages m "
+                f"  JOIN sessions s ON s.id = m.session_id "
+                f"  WHERE m.session_id IN ({placeholders}) "
+                f"    AND m.observed = 1 AND m.active = 1 "
+                f"    AND s.end_reason = 'compression' "
+                f"  ORDER BY m.id DESC LIMIT ?"
+                f") ORDER BY message_row_id",
+                (*ancestor_ids, MAX_OBSERVED_CONTEXT_MESSAGES),
+            ).fetchall()
+
+        result = []
+        for row in rows:
+            content = self._decode_content(row["content"])
+            msg: Dict[str, Any] = {"role": row["role"], "content": content, "observed": True}
+            if row["platform_message_id"]:
+                msg["message_id"] = row["platform_message_id"]
+            result.append(msg)
+        return result
 
     @staticmethod
     def _is_duplicate_replayed_user_message(messages: List[Dict[str, Any]], msg: Dict[str, Any]) -> bool:

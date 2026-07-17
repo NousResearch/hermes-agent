@@ -303,6 +303,7 @@ export interface PaginatedSessions {
 
 export interface RpcEvent<T = unknown> {
   payload?: T
+  profile?: string
   session_id?: string
   type: string
 }
@@ -393,6 +394,7 @@ export interface SessionResumeResponse {
 }
 
 export interface SessionRuntimeInfo {
+  approval_mode?: 'manual' | 'off' | 'smart'
   branch?: string
   config_warning?: string
   credential_warning?: string
@@ -556,6 +558,7 @@ export interface CronJob {
   last_run_at?: null | string
   name?: null | string
   next_run_at?: null | string
+  no_agent?: boolean
   prompt?: null | string
   schedule?: CronJobSchedule
   schedule_display?: null | string
@@ -854,6 +857,8 @@ export interface AuxiliaryModelsResponse {
 export interface MoaModelSlot {
   provider: string
   model: string
+  /** Optional per-slot reasoning effort — round-tripped, not edited here. */
+  reasoning_effort?: string
 }
 
 export interface MoaConfigResponse {
@@ -868,6 +873,10 @@ export interface MoaConfigResponse {
       max_tokens: number
       reference_models: MoaModelSlot[]
       reference_temperature: number
+      /** Optional advisor output cap — round-tripped, not edited here. */
+      reference_max_tokens?: number | null
+      /** Fan-out cadence (per_iteration | user_turn) — round-tripped. */
+      fanout?: string
     }
   >
   aggregator: MoaModelSlot

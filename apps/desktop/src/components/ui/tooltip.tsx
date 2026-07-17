@@ -1,6 +1,8 @@
 import { Tooltip as TooltipPrimitive } from 'radix-ui'
 import * as React from 'react'
 
+import { useI18n } from '@/i18n'
+import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 
 function TooltipProvider({
@@ -53,7 +55,11 @@ function TooltipContent({
         {/* bg-foreground/text-background auto-inverts per theme. leading-normal
             keeps lines readable; py-1 makes the cloned line-boxes overlap just
             enough to read as one continuous fill (no gaps between lines). */}
-        <span className="box-decoration-clone inline bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif]">
+        {/* [&>*]:!inline-flex: a block-level label child (e.g. `flex`) collapses
+            this inline decoration's geometry, so Radix measures a zero-size chip
+            and parks an empty rectangle in the corner (#62022). Force any direct
+            child inline-flex so every call site stays safe. */}
+        <span className="box-decoration-clone inline bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif] [&>*]:!inline-flex">
           {children}
         </span>
       </TooltipPrimitive.Content>
@@ -86,4 +92,44 @@ function Tip({ label, children, delayDuration = 0, ...props }: TipProps) {
   )
 }
 
-export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger }
+interface TipHintLabelProps {
+  text: string
+  hint?: string
+}
+
+/** Tooltip label with an optional trailing hotkey hint. Uses `inline-flex` so it
+ *  stays safe inside Tip's decoration wrapper — prefer this over a bespoke
+ *  flex/gap span at the call site (see #62022). */
+function TipHintLabel({ text, hint }: TipHintLabelProps) {
+  if (!hint) {
+    return <>{text}</>
+  }
+
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span>{text}</span>
+      <span className="opacity-55">{hint}</span>
+    </span>
+  )
+}
+
+interface TipKeybindLabelProps {
+  /** Keybind action id — pulls the label from i18n AND the combo from the store. */
+  actionId: string
+  /** Override the i18n label (for context-dependent text like "Show"/"Hide"). */
+  text?: string
+}
+
+/** TipHintLabel that auto-reads both its label and keybind from the action
+ *  registry. Pass only `actionId` for the common case; pass `text` to override
+ *  when the button's tooltip is context-dependent. */
+function TipKeybindLabel({ actionId, text }: TipKeybindLabelProps) {
+  const { t } = useI18n()
+  const hint = useKeybindHint(actionId)
+
+  const label = text ?? t.keybinds.actions[actionId] ?? actionId
+
+  return <TipHintLabel hint={hint ?? undefined} text={label} />
+}
+
+export { Tip, TipHintLabel, TipKeybindLabel, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger }

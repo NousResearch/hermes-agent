@@ -113,6 +113,15 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
 
     usage = getattr(turn, "token_usage_last", None)
     if not isinstance(usage, dict) or not usage:
+        compressor = getattr(agent, "context_compressor", None)
+        if (
+            compressor is not None
+            and getattr(compressor, "awaiting_real_usage_after_compression", False)
+        ):
+            # No usage means this turn cannot adjudicate the pending compaction.
+            # Consume the marker so a later unrelated reading is not charged to
+            # it and preflight deferral cannot stay latched indefinitely.
+            compressor.update_from_response({})
         if agent._session_db and agent.session_id:
             try:
                 if not agent._session_db_created:
@@ -120,6 +129,9 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                 agent._session_db.update_token_counts(
                     agent.session_id,
                     model=agent.model,
+                    billing_provider=agent.provider,
+                    billing_base_url=agent.base_url,
+                    billing_mode="subscription_included",
                     api_call_count=1,
                 )
             except Exception as exc:
@@ -267,6 +279,18 @@ def _record_codex_app_server_compaction(
             compressor, "compression_count", 0
         ) + 1
         compressor.last_compression_rough_tokens = approx_tokens or 0
+        # The app server has already completed a real compaction boundary. Its
+        # usage update (when supplied) is therefore the same real-vs-real
+        # effectiveness verdict used by the normal compression path.
+        record_boundary = getattr(
+            type(compressor), "record_completed_compaction", None
+        )
+        if callable(record_boundary):
+            # Codex owns this summary. A prior Hermes deterministic-fallback
+            # flag must not leak into the native boundary's quality verdict.
+            record_boundary(compressor, used_fallback=False)
+        elif hasattr(compressor, "_verify_compaction_cleared_threshold"):
+            compressor._verify_compaction_cleared_threshold = True
         if not getattr(turn, "token_usage_last", None):
             compressor.last_prompt_tokens = -1
             compressor.last_completion_tokens = 0
@@ -600,6 +624,7 @@ def _consume_codex_event_stream(
     model: str,
     on_text_delta=None,
     on_reasoning_delta=None,
+    on_commentary_message=None,
     on_first_delta=None,
     on_event=None,
     interrupt_check=None,
@@ -631,7 +656,11 @@ def _consume_codex_event_stream(
     * ``on_text_delta(str)`` — fires per ``response.output_text.delta``, suppressed
       once a function_call event is seen (so tool-call turns don't bleed text
       into the chat).
-    * ``on_reasoning_delta(str)`` — fires per ``response.reasoning.*.delta``.
+    * ``on_reasoning_delta(str)`` — fires per ``response.reasoning.*.delta`` and
+      ``phase=analysis`` message deltas. When no dedicated commentary callback
+      is supplied, commentary also uses this legacy fallback.
+    * ``on_commentary_message(str)`` — fires once per completed
+      ``phase=commentary`` message, before any following tool item executes.
     * ``on_first_delta()`` — one-shot, fires on the first text delta only.
     * ``on_event(event)`` — fires for every event before any other processing.
       Used for watchdog activity, debug logging, anything wire-shape-agnostic.
@@ -642,6 +671,7 @@ def _consume_codex_event_stream(
     has_tool_calls = False
     first_delta_fired = False
     active_message_phase: str | None = None
+    commentary_text_deltas: List[str] = []
     terminal_status: str = "completed"
     terminal_usage: Any = None
     terminal_response_id: str = None
@@ -686,6 +716,8 @@ def _consume_codex_event_stream(
             if item_type == "message":
                 phase = _item_field(item, "phase", None)
                 active_message_phase = phase.strip().lower() if isinstance(phase, str) else None
+                if active_message_phase == "commentary":
+                    commentary_text_deltas = []
             else:
                 active_message_phase = None
             if "function_call" in str(item_type):
@@ -694,10 +726,16 @@ def _consume_codex_event_stream(
 
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
             delta_text = _event_field(event, "delta", "")
-            is_commentary_delta = active_message_phase in {"commentary", "analysis"}
-            if delta_text and is_commentary_delta:
-                # Commentary streams through the reasoning channel, not the
-                # visible answer stream (and stays out of output_text).
+            if delta_text and active_message_phase == "commentary":
+                commentary_text_deltas.append(delta_text)
+                # Preserve CLI/backward compatibility when no first-class
+                # commentary consumer is installed.
+                if on_commentary_message is None and on_reasoning_delta is not None:
+                    try:
+                        on_reasoning_delta(delta_text)
+                    except Exception:
+                        logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
+            elif delta_text and active_message_phase == "analysis":
                 if on_reasoning_delta is not None:
                     try:
                         on_reasoning_delta(delta_text)
@@ -737,6 +775,27 @@ def _consume_codex_event_stream(
             done_item = _event_field(event, "item")
             if done_item is not None:
                 collected_output_items.append(done_item)
+                done_phase = _item_field(done_item, "phase", None)
+                done_phase = done_phase.strip().lower() if isinstance(done_phase, str) else None
+                if done_phase == "commentary" and on_commentary_message is not None:
+                    commentary_text = "".join(commentary_text_deltas).strip()
+                    if not commentary_text:
+                        content_parts = _item_field(done_item, "content", [])
+                        if isinstance(content_parts, list):
+                            commentary_text = "".join(
+                                str(_item_field(part, "text", "") or "")
+                                for part in content_parts
+                                if _item_field(part, "type", "") == "output_text"
+                            ).strip()
+                    if commentary_text:
+                        try:
+                            on_commentary_message(commentary_text)
+                        except Exception:
+                            logger.debug(
+                                "Codex stream on_commentary_message raised",
+                                exc_info=True,
+                            )
+                    commentary_text_deltas = []
             continue
 
         if event_type in _TERMINAL_EVENT_TYPES:
@@ -837,6 +896,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     def _on_reasoning_delta(text: str) -> None:
         agent._fire_reasoning_delta(text)
 
+    def _on_commentary_message(text: str) -> None:
+        agent._fire_streamed_codex_commentary(text)
+
     def _on_event(event: Any) -> None:
         # TTFB watchdog and activity touch — runs once per SSE event.
         agent._codex_stream_last_event_ts = time.time()
@@ -876,6 +938,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     model=api_kwargs.get("model"),
                     on_text_delta=_on_text_delta,
                     on_reasoning_delta=_on_reasoning_delta,
+                    on_commentary_message=(
+                        _on_commentary_message
+                        if (
+                            getattr(agent, "interim_assistant_callback", None) is not None
+                            and getattr(agent, "show_commentary", True)
+                        )
+                        else None
+                    ),
                     on_first_delta=on_first_delta,
                     on_event=_on_event,
                     interrupt_check=_interrupt_check,

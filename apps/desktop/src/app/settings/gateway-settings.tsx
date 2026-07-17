@@ -10,7 +10,6 @@ import { ExternalLink } from '@/lib/external-link'
 import { AlertCircle, Check, Cloud, FileText, Globe, HelpCircle, Loader2, LogIn, Monitor, RefreshCw } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
-import { previewGatewaySwitch } from '@/store/gateway-switch'
 import { notify, notifyError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
 
@@ -43,6 +42,10 @@ const EMPTY_STATE: GatewaySettingsState = {
   remoteTokenSet: false,
   remoteUrl: '',
   cloudOrg: ''
+}
+
+export function savedCloudConnectionUrl(config: Pick<GatewaySettingsState, 'mode' | 'remoteUrl'>): string {
+  return config.mode === 'cloud' ? config.remoteUrl.trim().replace(/\/+$/, '').toLowerCase() : ''
 }
 
 function ModeCard({
@@ -111,17 +114,26 @@ function ScopeChip({ active, label, onSelect }: { active: boolean; label: string
   )
 }
 
-export function GatewaySettings() {
+// `embedded` trims the page chrome for reuse inside the boot-failure recovery
+// card: the outer title/intro, the "Save for next restart" action, and the
+// Diagnostics row are redundant there (the card owns its header + a single
+// reconnect action), so only the connection controls render.
+export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {}) {
   const { t } = useI18n()
   const g = t.settings.gateway
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
-  const [previewingSwitch, setPreviewingSwitch] = useState(false)
   const [signingIn, setSigningIn] = useState(false)
   const [state, setState] = useState<GatewaySettingsState>(EMPTY_STATE)
   const [remoteToken, setRemoteToken] = useState('')
   const [lastTest, setLastTest] = useState<null | string>(null)
+  const [connectedCloudUrl, setConnectedCloudUrl] = useState('')
+
+  const acceptSavedConfig = (config: GatewaySettingsState) => {
+    setState(config)
+    setConnectedCloudUrl(savedCloudConnectionUrl(config))
+  }
 
   // --- Hermes Cloud (cloud mode) state ---
   // One portal session powers discovery + the silent per-agent cascade. These
@@ -189,7 +201,7 @@ export function GatewaySettings() {
           return
         }
 
-        setState(config)
+        acceptSavedConfig(config)
       })
       .catch(err => notifyError(err, g.failedLoad))
       .finally(() => {
@@ -218,7 +230,6 @@ export function GatewaySettings() {
   // (trim, drop trailing slash, lowercase) or a host-casing difference would
   // silently break the connected-highlight.
   const normalizeCloudUrl = (url: string) => url.trim().replace(/\/+$/, '').toLowerCase()
-  const connectedCloudUrl = state.mode === 'cloud' ? normalizeCloudUrl(state.remoteUrl) : ''
 
   const isConnectedAgent = (agent: DesktopCloudAgent) =>
     Boolean(connectedCloudUrl && agent.dashboardUrl && normalizeCloudUrl(agent.dashboardUrl) === connectedCloudUrl)
@@ -366,7 +377,7 @@ export function GatewaySettings() {
         ? await window.hermesDesktop.applyConnectionConfig(payload())
         : await window.hermesDesktop.saveConnectionConfig(payload())
 
-      setState(next)
+      acceptSavedConfig(next)
       setRemoteToken('')
       notify({
         kind: 'success',
@@ -402,13 +413,13 @@ export function GatewaySettings() {
         remoteUrl: trimmedUrl
       })
 
-      setState(saved)
+      acceptSavedConfig(saved)
 
       const result = await window.hermesDesktop.oauthLoginConnectionConfig(trimmedUrl)
 
       if (result.connected) {
         const refreshed = await window.hermesDesktop.getConnectionConfig(scope)
-        setState(refreshed)
+        acceptSavedConfig(refreshed)
         notify({ kind: 'success', title: g.signedIn, message: g.connectedTo(providerLabel) })
       } else {
         notify({
@@ -430,7 +441,7 @@ export function GatewaySettings() {
     try {
       await window.hermesDesktop.oauthLogoutConnectionConfig(trimmedUrl || undefined)
       const refreshed = await window.hermesDesktop.getConnectionConfig(scope)
-      setState(refreshed)
+      acceptSavedConfig(refreshed)
       notify({ kind: 'success', title: g.signedOutTitle, message: g.signedOutMessage })
     } catch (err) {
       notifyError(err, g.signOutFailed)
@@ -642,10 +653,10 @@ export function GatewaySettings() {
         return
       }
 
-  // Persist a cloud-mode connection (remote-shaped, oauth) and soft-reconnect.
-  // Include the selected org so Settings reopens into the same org + instance.
-  // Read the REF (not the cloudOrg state) so a just-resolved org from
-  // discovery in this same render tick is captured, not a stale null.
+      // Persist a cloud-mode connection (remote-shaped, oauth) and soft-reconnect.
+      // Include the selected org so Settings reopens into the same org + instance.
+      // Read the REF (not the cloudOrg state) so a just-resolved org from
+      // discovery in this same render tick is captured, not a stale null.
       const next = await desktop.applyConnectionConfig({
         mode: 'cloud',
         profile: scope ?? undefined,
@@ -654,7 +665,7 @@ export function GatewaySettings() {
         cloudOrg: cloudOrgRef.current ?? undefined
       })
 
-      setState(next)
+      acceptSavedConfig(next)
       notify({ kind: 'success', title: g.cloudConnectedTitle, message: g.cloudConnectedTo(agent.name) })
     } catch (err) {
       if (err && typeof err === 'object' && 'needsCloudLogin' in err) {
@@ -709,17 +720,19 @@ export function GatewaySettings() {
   }
 
   return (
-    <SettingsContent>
-      <div className="mb-5">
-        <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
-          <Globe className="size-4 text-muted-foreground" />
-          {g.title}
-          {state.envOverride ? <Pill tone="primary">{g.envOverride}</Pill> : null}
+    <SettingsContent bare={embedded}>
+      {embedded ? null : (
+        <div className="mb-5">
+          <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
+            <Globe className="size-4 text-muted-foreground" />
+            {g.title}
+            {state.envOverride ? <Pill tone="primary">{g.envOverride}</Pill> : null}
+          </div>
+          <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            {g.intro}
+          </p>
         </div>
-        <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-          {g.intro}
-        </p>
-      </div>
+      )}
 
       {namedProfiles.length > 0 ? (
         <div className="mb-5 grid gap-2">
@@ -1039,14 +1052,16 @@ export function GatewaySettings() {
               {g.testRemote}
             </Button>
           ) : null}
-          <Button
-            disabled={state.envOverride || saving}
-            onClick={() => void save(false)}
-            size="sm"
-            variant="textStrong"
-          >
-            {g.saveForRestart}
-          </Button>
+          {embedded ? null : (
+            <Button
+              disabled={state.envOverride || saving}
+              onClick={() => void save(false)}
+              size="sm"
+              variant="textStrong"
+            >
+              {g.saveForRestart}
+            </Button>
+          )}
           <Button disabled={state.envOverride || saving} onClick={() => void save(true)} size="sm">
             {saving ? <Loader2 className="animate-spin" /> : null}
             {g.saveAndReconnect}
@@ -1054,38 +1069,20 @@ export function GatewaySettings() {
         </div>
       ) : null}
 
-      <div className="mt-6 grid gap-1">
-        <ListRow
-          action={
-            <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">
-              <FileText />
-              {g.openLogs}
-            </Button>
-          }
-          description={g.diagnosticsDesc}
-          title={g.diagnostics}
-        />
-        {import.meta.env.DEV ? (
+      {embedded ? null : (
+        <div className="mt-6 grid gap-1">
           <ListRow
             action={
-              <Button
-                disabled={previewingSwitch}
-                onClick={() => {
-                  setPreviewingSwitch(true)
-                  void previewGatewaySwitch().finally(() => setPreviewingSwitch(false))
-                }}
-                size="sm"
-                variant="textStrong"
-              >
-                {previewingSwitch ? <Loader2 className="animate-spin" /> : null}
-                Preview soft switch
+              <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">
+                <FileText />
+                {g.openLogs}
               </Button>
             }
-            description="Wipe session lists so sidebar skeletons retrigger — no real backend teardown."
-            title="Dev · soft switch"
+            description={g.diagnosticsDesc}
+            title={g.diagnostics}
           />
-        ) : null}
-      </div>
+        </div>
+      )}
     </SettingsContent>
   )
 }

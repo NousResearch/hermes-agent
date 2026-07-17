@@ -102,6 +102,8 @@ def test_codex_app_server_manual_compression_routes_to_codex_thread():
     assert agent._codex_session.calls == 1
     assert agent.context_compressor.compression_count == 1
     assert agent.context_compressor.last_compression_rough_tokens == 100000
+    # This minimal fake compressor does not implement update_from_response(),
+    # so the runtime preserves its existing pending-usage bookkeeping here.
     assert agent.context_compressor.last_prompt_tokens == -1
     assert agent.context_compressor.last_completion_tokens == 0
     assert agent.context_compressor.awaiting_real_usage_after_compression is True
@@ -192,3 +194,31 @@ def test_codex_app_server_native_compaction_notice_emits_status_and_event():
             },
         )
     ]
+
+
+def test_codex_native_boundary_clears_stale_hermes_fallback_streak():
+    from unittest.mock import patch
+
+    from agent.context_compressor import ContextCompressor
+
+    with patch(
+        "agent.context_compressor.get_model_context_length",
+        return_value=100_000,
+    ):
+        compressor = ContextCompressor(model="test-model", quiet_mode=True)
+    compressor._fallback_compression_streak = 1
+    compressor._last_summary_fallback_used = True
+
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="normal-turn-1")
+    )
+    agent.context_compressor = compressor
+    turn = TurnResult(
+        thread_id="thread-1",
+        turn_id="normal-turn-1",
+        compacted=True,
+    )
+
+    assert _record_codex_app_server_compaction(agent, turn) is True
+    assert compressor._fallback_compression_streak == 0
+    assert compressor._verify_compaction_cleared_threshold is True

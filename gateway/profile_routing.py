@@ -3,11 +3,13 @@
 Allows a single Hermes instance to route specific Discord guilds/channels/threads
 to different profiles — each with their own model, tools, memory, and persona.
 
-Matching priority (most specific first):
-  1. platform + chat_id + thread_id (exact thread)  — specificity 14
-  2. platform + chat_id (channel route)             — specificity 6
-  3. platform + guild_id (guild/server route)       — specificity 2
-  4. No match                                       → default profile
+Matching priority (most specific first). Specificity is additive over the
+discriminators a route declares — ``guild_id`` +2, ``chat_id`` +4,
+``thread_id`` +8 (``platform`` is required but does not score). Common cases:
+  1. chat_id + thread_id (exact thread)  — specificity 12
+  2. chat_id (channel route)             — specificity 4
+  3. guild_id (guild/server route)       — specificity 2
+  4. No match                            → default profile
 
 Parent-chain matching:
 For Discord threads and forum posts, ``parent_chat_id`` carries the

@@ -290,12 +290,26 @@ capture the viewport, `vision_analyze` it, and art-direct (silhouette,
 exposure, horizon placement, scale against human height). The user is
 non-technical; you are the one with eyes on both the brief and the frame.
 
-### 21b. Editor screenshots show sprite icons that look like content
+### 21b. Editor sprite icons appear in captures — hide them at the source
 
-Viewport captures in the editor include per-component sprite icons (light
-bulbs, speaker/Niagara icons). They are editor overlay, NOT your scene —
-particles especially: an editor screenshot is not proof a Niagara effect is
-emitting. Verify effects via the actor's active state or a PIE capture.
+Viewport captures include per-component editor sprites (light bulbs,
+speaker icons, and the plain grey/blue billboard every empty Actor gets).
+They are editor overlay, NOT scene content — and for video/hero work they
+photobomb every frame. Do NOT try to remove them in post; a sprite
+overlapping scene geometry defeats 2D cleanup (live-verified: three
+inpainting strategies all either smeared letter edges or left outline
+pixels).
+
+Fix at the source, before capturing: sprites are real components on the
+actor. `ActorTools.get_components` → find `Billboard`/`Sprite`/`Arrow`
+components → `ObjectTools.set_properties` with `{"bVisible": false}` on
+each (round-trip verify). `remove_component` fails on construction-time
+default subobjects ("Could not find subobject handle") — hide, don't
+remove. Sweep the whole scene in one ProgrammaticToolset script: iterate
+`find_actors`, hide every matching component (verified: 148 actors
+scanned, 13 sprites hidden, one round-trip). An editor capture is still
+not proof a Niagara effect is emitting — verify effects via actor state or
+a PIE capture.
 
 ### 21c. The viewport axis gizmo survives bShowUI=false — plan a post-crop
 
@@ -305,7 +319,9 @@ bottom-left XYZ axis gizmo is still burned into every frame
 y≈1350, x<300). For video/hero deliverables, compose with spare margin and
 crop it out in post (e.g. a 16:9 punch-in via ffmpeg
 `crop=2027:1140:0:180,scale=1920:1080`) — deterministic across every frame
-of a sequence, no per-frame edits.
+of a sequence, no per-frame edits. Unlike the gizmo, actor sprite icons
+CAN be removed at the source — hide their components before the shoot
+(see 21b); do that instead of post-cleanup.
 
 ### 21d. Frame sequences: one client session, serial captures, resumable loop
 

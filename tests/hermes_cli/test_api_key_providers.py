@@ -15,6 +15,7 @@ from hermes_cli.auth import (
     get_auth_status,
     AuthError,
     KIMI_CODE_BASE_URL,
+    STEPFUN_STD_INTL_BASE_URL,
     STEPFUN_STEP_PLAN_INTL_BASE_URL,
     STEPFUN_STEP_PLAN_CN_BASE_URL,
     _resolve_kimi_base_url,
@@ -37,7 +38,8 @@ class TestProviderRegistry:
         ("xai", "xAI", "api_key"),
         ("nvidia", "NVIDIA NIM", "api_key"),
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
-        ("stepfun", "StepFun Step Plan", "api_key"),
+        ("stepfun", "StepFun", "api_key"),
+        ("stepfun-plan", "StepFun Step Plan", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
@@ -127,7 +129,8 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
-        assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
+        assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STD_INTL_BASE_URL
+        assert PROVIDER_REGISTRY["stepfun-plan"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
@@ -181,6 +184,7 @@ class TestResolveProvider:
 
     def test_explicit_stepfun(self):
         assert resolve_provider("stepfun") == "stepfun"
+        assert resolve_provider("stepfun-plan") == "stepfun-plan"
 
     def test_explicit_minimax(self):
         assert resolve_provider("minimax") == "minimax"
@@ -207,7 +211,7 @@ class TestResolveProvider:
         assert resolve_provider("moonshot") == "kimi-coding"
 
     def test_alias_step(self):
-        assert resolve_provider("step") == "stepfun"
+        assert resolve_provider("step") == "stepfun-plan"
 
     def test_alias_minimax_underscore(self):
         assert resolve_provider("minimax_cn") == "minimax-cn"
@@ -523,7 +527,7 @@ class TestResolveApiKeyProviderCredentials:
         creds = resolve_api_key_provider_credentials("stepfun")
         assert creds["provider"] == "stepfun"
         assert creds["api_key"] == "stepfun-secret-key"
-        assert creds["base_url"] == STEPFUN_STEP_PLAN_INTL_BASE_URL
+        assert creds["base_url"] == STEPFUN_STD_INTL_BASE_URL
 
     def test_resolve_stepfun_custom_base_url(self, monkeypatch):
         monkeypatch.setenv("STEPFUN_API_KEY", "stepfun-secret-key")

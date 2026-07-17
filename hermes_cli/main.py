@@ -1462,6 +1462,99 @@ def _termux_workspace_install_context(
     return ws_root, tuple(workspace_args)
 
 
+def _lockfile_dep_names(entry: dict) -> set[str]:
+    """Package names declared as deps on a lockfile ``packages`` entry."""
+    names: set[str] = set()
+    for field in (
+        "dependencies",
+        "optionalDependencies",
+        "devDependencies",
+        "peerDependencies",
+    ):
+        block = entry.get(field)
+        if isinstance(block, dict):
+            names.update(str(k) for k in block.keys())
+    return names
+
+
+def _resolve_lockfile_package_key(
+    packages: dict, name: str, from_key: str = ""
+) -> str | None:
+    """Resolve *name* to a ``packages`` map key using npm-style node_modules walk.
+
+    Walks outward from *from_key* looking for nested
+    ``.../node_modules/<name>`` entries, then falls back to the workspace-root
+    ``node_modules/<name>``.
+    """
+    candidates: list[str] = []
+    if from_key:
+        base = from_key
+        while True:
+            candidates.append(f"{base}/node_modules/{name}")
+            if "/node_modules/" in base:
+                base = base.rsplit("/node_modules/", 1)[0]
+                continue
+            if "/" in base and not base.startswith("node_modules"):
+                parent = base.rsplit("/", 1)[0]
+                if parent and parent != base:
+                    base = parent
+                    continue
+            break
+    candidates.append(f"node_modules/{name}")
+    for candidate in candidates:
+        if candidate in packages:
+            return candidate
+    return None
+
+
+def _workspace_lockfile_package_closure(
+    packages: dict, root: Path, ws_root: Path
+) -> set[str] | None:
+    """Return lockfile package keys reachable from the *root* workspace only.
+
+    The TUI launch path runs ``npm install --workspace ui-tui`` (see
+    ``_make_tui_argv``) and never materialises other monorepo workspaces
+    (``web``, ``apps/desktop``, …) in ``node_modules/.package-lock.json``.
+    Comparing the entire root lockfile ``packages`` map against that marker
+    therefore treats hundreds of intentionally-uninstalled packages as
+    "missing" and forces a reinstall on every dashboard start (#66084).
+
+    Returns:
+      * a set of package keys to compare against the install marker, or
+      * ``None`` to fall back to full-lockfile comparison (standalone /
+        non-workspace layouts where *root* IS the workspace root).
+    """
+    if ws_root == root:
+        return None
+    try:
+        rel = root.resolve().relative_to(ws_root.resolve()).as_posix()
+    except ValueError:
+        return None
+    if not rel or rel == ".":
+        return None
+
+    seeds: list[str] = []
+    for key in packages:
+        if key == rel or key.startswith(f"{rel}/"):
+            seeds.append(key)
+    if not seeds:
+        return None
+
+    needed: set[str] = set(seeds)
+    queue = list(seeds)
+    while queue:
+        key = queue.pop()
+        entry = packages.get(key)
+        if not isinstance(entry, dict):
+            continue
+        for dep_name in _lockfile_dep_names(entry):
+            resolved = _resolve_lockfile_package_key(packages, dep_name, key)
+            if resolved and resolved not in needed:
+                needed.add(resolved)
+                queue.append(resolved)
+    return needed
+
+
 def _tui_need_npm_install(root: Path) -> bool:
     """True when @hermes/ink is missing or node_modules is behind package-lock.json.
 
@@ -1482,7 +1575,13 @@ def _tui_need_npm_install(root: Path) -> bool:
     already match, which used to trigger a spurious "Installing TUI
     dependencies" on every launch.
 
-    For each entry in the root lock's ``packages`` map:
+    When *root* is a workspace member (``ui-tui`` under a monorepo lockfile),
+    only packages reachable from that workspace's dependency graph are
+    compared.  Other monorepo workspaces (``web``, ``apps/desktop``, …) are
+    not installed by the TUI's ``--workspace ui-tui`` install and must not
+    force a reinstall (#66084).
+
+    For each compared entry in the root lock's ``packages`` map:
       - missing from hidden lock → reinstall (unless the entry is marked
         ``optional`` or ``peer``, which npm may intentionally skip per platform)
       - present but with differing fields (excluding npm-written runtime
@@ -1523,10 +1622,18 @@ def _tui_need_npm_install(root: Path) -> bool:
     def comparable(pkg: dict) -> dict:
         return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
 
-    for name, pkg in wanted.items():
+    scope = _workspace_lockfile_package_closure(wanted, root, ws_root)
+    names_to_check = (
+        (name for name in wanted if name in scope)
+        if scope is not None
+        else (name for name in wanted if name)
+    )
+
+    for name in names_to_check:
         if not name:
             continue
 
+        pkg = wanted.get(name)
         if not isinstance(pkg, dict):
             continue
 

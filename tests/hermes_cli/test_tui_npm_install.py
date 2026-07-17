@@ -604,3 +604,75 @@ def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
     assert install_cmd[:2] == ["/bin/npm", "install"]
     # cwd must be tui_dir (standalone), not parent
     assert calls[0][1]["cwd"] == str(tui_dir)
+
+
+def test_workspace_scoped_lock_ignores_sibling_workspace_packages(
+    tmp_path: Path, main_mod
+) -> None:
+    """Monorepo root lock includes web/apps packages that --workspace ui-tui
+    never installs. Those missing entries must NOT force reinstall (#66084).
+    """
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text(
+        '{"name":"@hermes/tui","dependencies":{"ink":"1.0.0"}}'
+    )
+    (tmp_path / "package-lock.json").write_text(
+        '{"packages":{'
+        '"ui-tui":{"name":"@hermes/tui","dependencies":{"ink":"1.0.0"}},'
+        '"node_modules/ink":{"version":"1.0.0"},'
+        '"web":{"name":"web","dependencies":{"@codemirror/view":"1.0.0"}},'
+        '"node_modules/@codemirror/view":{"version":"1.0.0"},'
+        '"apps/desktop":{"name":"desktop","dependencies":{"electron":"1.0.0"}},'
+        '"node_modules/electron":{"version":"1.0.0"}'
+        "}}"
+    )
+    # Hidden lock only has what a workspace-scoped install would materialize.
+    _touch_ink(tmp_path)
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        '{"packages":{'
+        '"ui-tui":{"name":"@hermes/tui","dependencies":{"ink":"1.0.0"}},'
+        '"node_modules/ink":{"version":"1.0.0"}'
+        "}}"
+    )
+    assert main_mod._tui_need_npm_install(tui_dir) is False
+
+
+def test_workspace_scoped_lock_still_detects_missing_tui_dep(
+    tmp_path: Path, main_mod
+) -> None:
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text(
+        '{"packages":{'
+        '"ui-tui":{"name":"@hermes/tui","dependencies":{"ink":"1.0.0","react":"1.0.0"}},'
+        '"node_modules/ink":{"version":"1.0.0"},'
+        '"node_modules/react":{"version":"1.0.0"},'
+        '"web":{"name":"web","dependencies":{"@codemirror/view":"1.0.0"}},'
+        '"node_modules/@codemirror/view":{"version":"1.0.0"}'
+        "}}"
+    )
+    _touch_ink(tmp_path)
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        '{"packages":{'
+        '"ui-tui":{"name":"@hermes/tui","dependencies":{"ink":"1.0.0","react":"1.0.0"}},'
+        '"node_modules/ink":{"version":"1.0.0"}'
+        "}}"
+    )
+    # react is in the TUI graph and missing from the marker → reinstall.
+    assert main_mod._tui_need_npm_install(tui_dir) is True
+
+
+def test_standalone_lock_compare_unchanged_without_workspace_member(
+    tmp_path: Path, main_mod
+) -> None:
+    """When root IS the workspace root, keep full lockfile comparison."""
+    _touch_ink(tmp_path)
+    (tmp_path / "package-lock.json").write_text(
+        '{"packages":{"node_modules/foo":{"version":"1.0.0"},"node_modules/bar":{"version":"1.0.0"}}}'
+    )
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        '{"packages":{"node_modules/foo":{"version":"1.0.0"}}}'
+    )
+    assert main_mod._tui_need_npm_install(tmp_path) is True

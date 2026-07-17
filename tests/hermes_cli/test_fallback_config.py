@@ -147,3 +147,33 @@ def test_profile_env_expansion_preserves_explicit_empty_value():
         assert fallback_config._expand_profile_env_vars("${EMPTY_KEY}") == ""
     finally:
         reset_secret_scope(token)
+
+
+def test_strict_loader_expands_managed_overlay_from_process_environment(
+    tmp_path, monkeypatch
+):
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_cli import config, managed_scope
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("{}\n", encoding="utf-8")
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    (managed_dir / "config.yaml").write_text(
+        "fallback_providers:\n"
+        "  - provider: custom:managed\n"
+        "    model: managed-model\n"
+        "    api_key: ${MANAGED_KEY}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(managed_scope, "get_managed_dir", lambda: managed_dir)
+    monkeypatch.setenv("MANAGED_KEY", "managed-process-key")
+
+    token = set_secret_scope({"MANAGED_KEY": "profile-key"})
+    try:
+        assert fallback_config.load_fallback_chain_strict()[0]["api_key"] == (
+            "managed-process-key"
+        )
+    finally:
+        reset_secret_scope(token)

@@ -1599,6 +1599,85 @@ class TestExplicitProviderRouting:
         assert mock_openai.call_args.kwargs["api_key"] == "sk-or-env-fallback"
         assert mock_openai.call_args.kwargs["base_url"] == OPENROUTER_BASE_URL
 
+    def test_try_openrouter_uses_active_profile_secret_scope(self, monkeypatch):
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        monkeypatch.setenv(
+            "OPENROUTER_API_KEY", "global-default-openrouter-key"
+        )
+        token = set_secret_scope({"OPENROUTER_API_KEY": "profile-openrouter-key"})
+        try:
+            with patch(
+                "agent.auxiliary_client._select_pool_entry",
+                return_value=(False, None),
+            ), patch("agent.auxiliary_client.OpenAI") as mock_openai:
+                mock_openai.return_value = MagicMock(name="openrouter_client")
+                _try_openrouter()
+        finally:
+            reset_secret_scope(token)
+
+        assert mock_openai.call_args.kwargs["api_key"] == "profile-openrouter-key"
+
+    def test_explicit_custom_endpoint_uses_active_profile_secret_scope(
+        self, monkeypatch
+    ):
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        monkeypatch.setenv("OPENAI_API_KEY", "global-default-openai-key")
+        token = set_secret_scope({"OPENAI_API_KEY": "profile-openai-key"})
+        try:
+            with patch(
+                "agent.auxiliary_client._create_openai_client",
+                return_value=MagicMock(
+                    api_key="profile-openai-key",
+                    base_url="https://custom.example/v1",
+                ),
+            ) as create_client:
+                client, model = resolve_provider_client(
+                    "custom",
+                    model="custom-model",
+                    explicit_base_url="https://custom.example/v1",
+                )
+        finally:
+            reset_secret_scope(token)
+
+        assert client is not None
+        assert model == "custom-model"
+        assert create_client.call_args.kwargs["api_key"] == "profile-openai-key"
+
+    def test_named_custom_key_env_does_not_use_global_under_empty_scope(
+        self, monkeypatch
+    ):
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        monkeypatch.setenv("LEGACY_CUSTOM_KEY", "global-legacy-custom-key")
+        token = set_secret_scope({})
+        try:
+            with patch(
+                "hermes_cli.runtime_provider._get_named_custom_provider",
+                return_value={
+                    "name": "legacy-custom",
+                    "base_url": "https://legacy.example/v1",
+                    "model": "legacy-model",
+                    "key_env": "LEGACY_CUSTOM_KEY",
+                },
+            ), patch(
+                "agent.auxiliary_client._create_openai_client",
+                return_value=MagicMock(
+                    api_key="no-key-required",
+                    base_url="https://legacy.example/v1",
+                ),
+            ) as create_client:
+                client, model = resolve_provider_client(
+                    "legacy-custom", model="legacy-model"
+                )
+        finally:
+            reset_secret_scope(token)
+
+        assert client is not None
+        assert model == "legacy-model"
+        assert create_client.call_args.kwargs["api_key"] == "no-key-required"
+
     def test_try_openrouter_pool_exhausted_no_env_marks_unhealthy(self, monkeypatch):
         """Pool exhausted AND no env var → final failure marks provider unhealthy."""
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -3120,6 +3199,32 @@ class TestAuxiliaryFallbackLayering:
         assert model == "gpt-5.4-mini"
         mock_openai.assert_called_once()
         assert mock_openai.call_args.kwargs["api_key"] == "codex-oauth-token"
+
+    def test_fallback_entry_key_env_uses_active_profile_secret_scope(self, monkeypatch):
+        from agent.auxiliary_client import _resolve_fallback_entry
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        monkeypatch.setenv("FB_KEY", "global-default-profile-key")
+        token = set_secret_scope({"FB_KEY": "profile-key"})
+        try:
+            with patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(MagicMock(), "resolved-model"),
+            ) as resolve_provider_client:
+                _resolve_fallback_entry(
+                    {
+                        "provider": "custom:secondary",
+                        "model": "secondary-model",
+                        "base_url": "https://secondary.example/v1",
+                        "key_env": "FB_KEY",
+                    }
+                )
+        finally:
+            reset_secret_scope(token)
+
+        assert resolve_provider_client.call_args.kwargs["explicit_api_key"] == (
+            "profile-key"
+        )
 
 
 class TestTryMainAgentModelFallback:

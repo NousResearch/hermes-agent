@@ -141,6 +141,7 @@ def load_fallback_chain_strict() -> list[dict[str, Any]]:
     from hermes_cli.config import (
         _CONFIG_LOCK,
         _deep_merge,
+        _expand_env_vars,
         get_config_path,
     )
 
@@ -155,7 +156,7 @@ def load_fallback_chain_strict() -> list[dict[str, Any]]:
             managed = _read_yaml_mapping_strict(managed_dir / "config.yaml")
             if managed:
                 managed_expanded = cast(
-                    dict[str, Any], _expand_profile_env_vars(managed)
+                    dict[str, Any], _expand_env_vars(managed)
                 )
                 effective = _deep_merge(effective, managed_expanded)
 

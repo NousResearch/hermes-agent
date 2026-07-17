@@ -86,6 +86,16 @@ def current_secret_scope() -> Optional[Mapping[str, str]]:
     return _SECRET_SCOPE.get()
 
 
+def is_secret_scope_authoritative() -> bool:
+    """Return whether credential reads must be resolved through ``get_secret``.
+
+    A bound scope is authoritative even when it is empty. In multiplex mode,
+    an unbound read must also enter ``get_secret`` so it fails closed instead
+    of consulting a profile file or the process environment first.
+    """
+    return _SECRET_SCOPE.get() is not None or _MULTIPLEX_ACTIVE
+
+
 # ── genuinely-global env vars (NOT per-profile secrets) ──────────────────
 # These are process/deployment-level settings, not profile credentials. They
 # legitimately live in os.environ and must keep reading from it even in
@@ -212,11 +222,12 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
 
 
 def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
-    """Build a profile's secret mapping from its ``<home>/.env``.
+    """Build a profile's effective secret mapping.
 
-    Returns a fresh dict (safe to install via ``set_secret_scope``). Genuinely
-    global vars are intentionally NOT copied in — ``get_secret`` reads those
-    from ``os.environ`` directly, so the scope holds only profile secrets.
+    Profile ``<home>/.env`` values are isolated per scope. Machine-global
+    managed ``.env`` values are then applied with override precedence, matching
+    the startup environment contract without exposing another profile's process
+    environment.
     """
     home = Path(hermes_home)
     secrets = load_env_file(home / ".env")

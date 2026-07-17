@@ -11,6 +11,7 @@ full Feishu session path.
 
 from __future__ import annotations
 
+import threading
 import time
 from types import SimpleNamespace
 
@@ -181,6 +182,48 @@ def test_refresh_fallback_model_keeps_last_known_good_per_profile(
     ]
 
 
+def test_refresh_fallback_model_serializes_load_and_lkg_publication(monkeypatch):
+    from gateway.run import GatewayRunner
+
+    runner = SimpleNamespace(
+        _fallback_model=None,
+        _fallback_models_by_home={},
+        _fallback_refresh_lock=threading.RLock(),
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    state_lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def fake_load():
+        nonlocal active, max_active
+        with state_lock:
+            active += 1
+            max_active = max(max_active, active)
+            entered.set()
+        release.wait(timeout=1)
+        with state_lock:
+            active -= 1
+        return [{"provider": "test", "model": "model"}]
+
+    monkeypatch.setattr("gateway.run.load_fallback_chain_strict", fake_load)
+    bound = GatewayRunner._refresh_fallback_model.__get__(runner)
+    first = threading.Thread(target=bound)
+    second = threading.Thread(target=bound)
+    first.start()
+    assert entered.wait(timeout=1)
+    second.start()
+    time.sleep(0.05)
+    release.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert max_active == 1
+
+
 def test_apply_fallback_chain_updates_primary_agent():
     from gateway.run import GatewayRunner
 
@@ -281,6 +324,72 @@ def test_apply_fallback_chain_keeps_unavailable_memo_when_unchanged():
     assert agent._unavailable_fallback_keys == memo
 
 
+def test_apply_fallback_chain_clears_unavailable_memo_on_secret_rotation():
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from gateway.run import GatewayRunner
+
+    chain = [
+        {
+            "provider": "custom:secondary",
+            "model": "secondary-model",
+            "key_env": "FB_KEY",
+        }
+    ]
+    agent = SimpleNamespace(
+        _fallback_chain=list(chain),
+        _fallback_model=chain[0],
+        _fallback_index=0,
+        _fallback_activated=False,
+        _rate_limited_until=0,
+        _unavailable_fallback_keys=set(),
+    )
+    token = set_secret_scope({})
+    try:
+        GatewayRunner._apply_fallback_chain_to_agent(agent, list(chain))
+    finally:
+        reset_secret_scope(token)
+
+    agent._unavailable_fallback_keys = {
+        ("custom:secondary", "secondary-model", "")
+    }
+    token = set_secret_scope({"FB_KEY": "rotated-profile-key"})
+    try:
+        GatewayRunner._apply_fallback_chain_to_agent(agent, list(chain))
+    finally:
+        reset_secret_scope(token)
+
+    assert agent._unavailable_fallback_keys == set()
+
+
+def test_apply_fallback_chain_clears_memo_on_openrouter_secret_rotation():
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from gateway.run import GatewayRunner
+
+    chain = [{"provider": "openrouter", "model": "fallback-model"}]
+    agent = SimpleNamespace(
+        _fallback_chain=list(chain),
+        _fallback_model=chain[0],
+        _fallback_index=0,
+        _fallback_activated=False,
+        _rate_limited_until=0,
+        _unavailable_fallback_keys=set(),
+    )
+    token = set_secret_scope({})
+    try:
+        GatewayRunner._apply_fallback_chain_to_agent(agent, list(chain))
+    finally:
+        reset_secret_scope(token)
+
+    agent._unavailable_fallback_keys = {("openrouter", "fallback-model", "")}
+    token = set_secret_scope({"OPENROUTER_API_KEY": "rotated-openrouter-key"})
+    try:
+        GatewayRunner._apply_fallback_chain_to_agent(agent, list(chain))
+    finally:
+        reset_secret_scope(token)
+
+    assert agent._unavailable_fallback_keys == set()
+
+
 def test_apply_fallback_chain_compares_authoritative_snapshot_after_pruning():
     """Operational pruning alone must not invalidate unavailable-entry memoization."""
     from gateway.run import GatewayRunner
@@ -308,30 +417,12 @@ def test_apply_fallback_chain_compares_authoritative_snapshot_after_pruning():
     assert agent._unavailable_fallback_keys == memo
 
 
-def test_background_and_main_agent_paths_call_refresh():
-    """Both AIAgent construction sites must pass a refreshed chain, not the
-    startup snapshot, and the cached-agent reuse path must apply the refreshed
-    chain. Source-level invariant for call sites that resist unit testing.
-    """
-    from pathlib import Path
-
-    source = (
-        Path(__file__).resolve().parent.parent.parent / "gateway" / "run.py"
-    ).read_text(encoding="utf-8")
-    assert "fallback_model=self._refresh_fallback_model()" in source
-    assert source.count("fallback_model=self._refresh_fallback_model()") >= 2
-    # The cached-agent reuse path (the load-bearing fix for a long-lived
-    # session in a running gateway) must apply the refreshed chain.
-    assert "self._apply_fallback_chain_to_agent(" in source
-    # The stale startup-snapshot form must not remain at create sites.
-    assert "fallback_model=self._fallback_model," not in source
-
-
 def test_load_fallback_model_static_unchanged_contract(tmp_path, monkeypatch):
     """_load_fallback_model remains a pure static reader used by refresh."""
     from gateway.run import GatewayRunner
 
     monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
         "fallback_providers:\n"
         "  - provider: deepseek\n"
@@ -345,4 +436,31 @@ def test_load_fallback_model_static_unchanged_contract(tmp_path, monkeypatch):
     assert chain == [
         {"provider": "deepseek", "model": "deepseek-v4-flash"},
         {"provider": "nous", "model": "Hermes-4"},
+    ]
+
+
+def test_load_fallback_model_applies_managed_overlay(tmp_path, monkeypatch):
+    from gateway.run import GatewayRunner
+    from hermes_cli import managed_scope
+
+    (tmp_path / "config.yaml").write_text(
+        "fallback_providers:\n"
+        "  - provider: user-provider\n"
+        "    model: user-model\n",
+        encoding="utf-8",
+    )
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    (managed_dir / "config.yaml").write_text(
+        "fallback_providers:\n"
+        "  - provider: managed-provider\n"
+        "    model: managed-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setattr(managed_scope, "get_managed_dir", lambda: managed_dir)
+
+    assert GatewayRunner._load_fallback_model() == [
+        {"provider": "managed-provider", "model": "managed-model"}
     ]

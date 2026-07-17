@@ -16,7 +16,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
-from agent.secret_scope import get_secret as _get_secret
+from agent.secret_scope import (
+    get_secret as _get_secret,
+    is_secret_scope_authoritative,
+)
 from agent.credential_persistence import (
     is_borrowed_credential_source,
     sanitize_borrowed_credential_payload,
@@ -2464,22 +2467,15 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     # processes (Codex CLI, test scripts, etc.) should not override deliberate
     # changes to the .env file.
     def _get_env_prefer_dotenv(key: str) -> str:
-        env_file = load_env()
-        raw = env_file.get(key, "").strip()
-        scoped_value = (_get_secret(key, "") or "").strip()
-        # If .env contains an unresolved op:// reference, prefer the
-        # already-resolved value supplied by the active secret scope (or by
-        # os.environ in legacy single-profile mode), set by
-        # load_hermes_dotenv() -> apply_onepassword_secrets()).  The raw
-        # "op://Vault/Item/field" string would otherwise win and every
-        # provider auth attempt would receive a URL instead of a key.  This
-        # happens during a partial migration, or when the user wrote op://
-        # references straight into .env rather than the secrets.onepassword
-        # config block.  For every non-op:// value the original
-        # .env-takes-precedence behaviour is preserved unchanged.
-        if raw.startswith("op://") and scoped_value:
-            return scoped_value
-        return raw or scoped_value
+        if not is_secret_scope_authoritative():
+            raw = load_env().get(key, "").strip()
+            if raw and not raw.startswith("op://"):
+                return raw
+
+        # Unresolved op:// references are never credentials. Scoped reads are
+        # authoritative, including an explicitly empty scope.
+        resolved = (_get_secret(key, "") or "").strip()
+        return "" if resolved.startswith("op://") else resolved
 
     # Honour user suppression — `hermes auth remove <provider> <N>` for an
     # env-seeded credential marks the env:<VAR> source as suppressed so it

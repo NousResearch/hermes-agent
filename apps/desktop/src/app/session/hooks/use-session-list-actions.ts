@@ -76,18 +76,28 @@ interface UseSessionListActionsArgs {
  *  wires into the sidebar and refresh effects. */
 export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
   const refreshSessionsRequestRef = useRef(0)
+  // Per-callback request refs guard against late responses overriding
+  // the active profile/closure pair when a profile switch happens
+  // mid-flight. Mirrors the same race in ``refreshSessions`` (#60678
+  // review: stale-response guard).
+  const cronSessionsRequestRef = useRef(0)
+  const messagingSessionsRequestRef = useRef(0)
+  const messagingPageRequestRef = useRef(0)
 
   // Cron-job sessions as their own list (latest N). Independent of the recents
   // page so the two never compete for slots. Cheap + bounded. Kept (even though
   // the sidebar now lists cron *jobs*, not run sessions) so a pinned cron run
   // still resolves into the Pinned section via sessionByAnyId.
   const refreshCronSessions = useCallback(async () => {
+    const requestId = cronSessionsRequestRef.current + 1
+    cronSessionsRequestRef.current = requestId
     try {
       const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
       const { sessions } = await listAllProfileSessions(CRON_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
         source: 'cron'
       })
 
+      if (cronSessionsRequestRef.current !== requestId) return
       setCronSessions(prev => (sameCronSignature(prev, sessions) ? prev : sessions))
     } catch {
       // Non-fatal: the cron section just stays empty/stale.
@@ -99,6 +109,8 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // competes with local chats for the recents page budget. One combined fetch
   // seeds every platform; the sidebar splits the rows per source.
   const refreshMessagingSessions = useCallback(async () => {
+    const requestId = messagingSessionsRequestRef.current + 1
+    messagingSessionsRequestRef.current = requestId
     try {
       const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
       const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
@@ -109,6 +121,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // sources) — those stay in local recents, not a platform section.
       const rows = result.sessions.filter(s => isMessagingSource(s.source))
 
+      if (messagingSessionsRequestRef.current !== requestId) return
       setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
       // Hit the cap → at least one platform may have more on disk than loaded,
       // so platform sections offer their own per-platform "load more".
@@ -122,6 +135,8 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // pager): fetch that source's next window and merge it back in place, leaving
   // every other platform's rows untouched. Resolves the platform's exact total.
   const loadMoreMessagingForPlatform = useCallback(async (platform: string) => {
+    const requestId = messagingPageRequestRef.current + 1
+    messagingPageRequestRef.current = requestId
     const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
     const loaded = $messagingSessions.get().filter(inPlatform).length
 
@@ -129,6 +144,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', sessionProfile, {
       source: platform
     })
+    if (messagingPageRequestRef.current !== requestId) return
 
     const incoming = result.sessions.filter(s => normalizeSessionSource(s.source) === platform)
 

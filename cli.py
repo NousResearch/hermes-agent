@@ -6509,10 +6509,47 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # running session picks up the change immediately.
             self._propagate_config_live(key_path, coerced)
 
+        # Mask credential-shaped leaves before printing so /config set
+        # never echoes raw secrets into terminal scrollback. Falls through
+        # to redact_config_value for dict/list values that may carry nested
+        # api_key/token entries (custom providers, custom_providers blocks).
+        display_value = self._format_config_value_for_display(key_path, coerced)
         if needs_restart:
-            _cprint(f"  ✓ Set {key_path} = {coerced}  \033[33m(requires restart)\033[0m")
+            _cprint(f"  ✓ Set {key_path} = {display_value}  \033[33m(requires restart)\033[0m")
         else:
-            _cprint(f"  ✓ Set {key_path} = {coerced}")
+            _cprint(f"  ✓ Set {key_path} = {display_value}")
+
+    @staticmethod
+    def _format_config_value_for_display(key_path: str, value):
+        """Return ``value`` formatted for terminal display with credentials masked.
+
+        Three cases:
+        1. The leaf key (last segment of ``key_path``) is credential-shaped
+           and the value is a non-empty string — mask via ``mask_secret``
+           so a literal ``api_key`` set never prints the raw token.
+        2. ``value`` is a dict/list — run through ``redact_config_value``
+           so any nested ``api_key`` / ``token`` / ``password`` entries
+           are masked (covers custom_providers blocks set via nested keys).
+        3. Anything else — return unchanged.
+
+        ``redact_config_value`` and ``_SECRET_CONFIG_KEYS`` are the same
+        canonical helpers ``hermes config show`` / ``hermes status`` /
+        ``hermes dump`` use, so the mask format stays consistent across
+        CLI surfaces.
+        """
+        from hermes_cli.config import _SECRET_CONFIG_KEYS, redact_config_value, redact_key
+
+        leaf = key_path.rsplit(".", 1)[-1] if key_path else ""
+        if (
+            isinstance(leaf, str)
+            and leaf.lower() in _SECRET_CONFIG_KEYS
+            and isinstance(value, str)
+            and value
+        ):
+            return redact_key(value)
+        if isinstance(value, (dict, list)):
+            return redact_config_value(value)
+        return value
 
     def _propagate_config_live(self, key_path: str, value) -> None:
         """Push an in-memory config change to live agent/session attributes."""
@@ -6561,10 +6598,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint(f"  {key_path}: (not set)")
         elif isinstance(cfg, dict):
             _cprint(f"  {key_path}:")
-            for k, v in cfg.items():
+            # Run the section through structural redaction so a
+            # `model.api_key` style nested leaf never echoes its raw
+            # token into terminal scrollback. ``_format_config_value_for_display``
+            # handles dict/list values by masking any credential-shaped
+            # keys (api_key, token, password, etc.) and passing scalars
+            # through unchanged.
+            from hermes_cli.config import redact_config_value
+            safe_cfg = redact_config_value(cfg)
+            for k, v in safe_cfg.items():
                 _cprint(f"    {k}: {v}")
         else:
-            _cprint(f"  {key_path}: {cfg}")
+            # Scalar value — mask if the leaf key is credential-shaped so
+            # ``/config get model.api_key`` never prints the raw token.
+            display_value = self._format_config_value_for_display(key_path, cfg)
+            _cprint(f"  {key_path}: {display_value}")
 
     def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
         """Return recent CLI sessions for in-chat browsing/resume affordances."""

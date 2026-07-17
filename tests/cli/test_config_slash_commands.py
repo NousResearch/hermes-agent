@@ -228,3 +228,94 @@ class TestShowConfigDisplay:
         combined = "\n".join(printed)
         assert "/config set" in combined
         assert "/config get" in combined
+
+
+class TestConfigSetCredentialRedaction:
+    """Regression tests for maintainer review #pullrequestreview-4701297956
+    finding 1: ``model.api_key`` and credential-shaped leaves must NOT be
+    echoed in raw form when ``/config set`` or ``/config get`` prints them.
+    Without the redaction wrapper the raw API key lands in terminal
+    scrollback.
+    """
+
+    def test_set_masks_top_level_api_key(self):
+        cli_obj = _make_cli(**{
+            "model": {"default": "test-model", "provider": "auto", "api_key": "sk-supersecret-1234567890abcdef"},
+        })
+        printed = []
+        with patch("cli._cprint", side_effect=lambda t: printed.append(t)), \
+             patch("cli.save_config_value", return_value=True):
+            cli_obj.process_command("/config set model.api_key sk-newsecret-1234567890abcdef")
+        combined = " ".join(printed)
+        assert "sk-newsecret-1234567890abcdef" not in combined, (
+            "Raw api_key value must be masked in /config set output"
+        )
+        # The canonical mask preserves head/tail: 'sk-n...cdef'
+        assert "sk-n" in combined
+        assert "cdef" in combined
+
+    def test_set_masks_top_level_token(self):
+        cli_obj = _make_cli(**{
+            "model": {"default": "test-model", "provider": "auto"},
+        })
+        printed = []
+        with patch("cli._cprint", side_effect=lambda t: printed.append(t)), \
+             patch("cli.save_config_value", return_value=True):
+            cli_obj.process_command("/config set model.token mysecrettoken123456")
+        combined = " ".join(printed)
+        assert "mysecrettoken123456" not in combined
+        # Sanity: a mask shape is still present
+        assert "***" in combined or "..." in combined
+
+    def test_set_does_not_mask_non_credential_leaf(self):
+        # display.bell_on_complete is not credential-shaped — must pass through
+        cli_obj = _make_cli()
+        printed = []
+        with patch("cli._cprint", side_effect=lambda t: printed.append(t)), \
+             patch("cli.save_config_value", return_value=True):
+            cli_obj.process_command("/config set display.bell_on_complete True")
+        combined = " ".join(printed)
+        assert "True" in combined
+
+
+class TestConfigGetCredentialRedaction:
+    """Regression tests for maintainer review finding 1 on /config get:
+    requesting a credential-shaped leaf or a section containing one must
+    print masked values, not the raw secret.
+    """
+
+    def test_get_masks_scalar_api_key(self):
+        cli_obj = _make_cli(**{
+            "model": {"default": "test-model", "provider": "auto", "api_key": "sk-supersecret-1234567890abcdef"},
+        })
+        printed = []
+        with patch("cli._cprint", side_effect=lambda t: printed.append(t)):
+            cli_obj.process_command("/config get model.api_key")
+        combined = " ".join(printed)
+        assert "sk-supersecret-1234567890abcdef" not in combined
+        # Mask head/tail preserved
+        assert "sk-s" in combined
+        assert "cdef" in combined
+
+    def test_get_masks_api_key_inside_section(self):
+        cli_obj = _make_cli(**{
+            "model": {"default": "test-model", "provider": "auto", "api_key": "sk-supersecret-1234567890abcdef"},
+        })
+        printed = []
+        with patch("cli._cprint", side_effect=lambda t: printed.append(t)):
+            cli_obj.process_command("/config get model")
+        combined = " ".join(printed)
+        # The raw value must not appear anywhere in the section dump
+        assert "sk-supersecret-1234567890abcdef" not in combined
+        # But other (non-credential) fields must still appear
+        assert "test-model" in combined
+        assert "auto" in combined
+
+    def test_get_passes_through_non_credential_scalar(self):
+        cli_obj = _make_cli()
+        printed = []
+        with patch("cli._cprint", side_effect=lambda t: printed.append(t)):
+            cli_obj.process_command("/config get compression.threshold")
+        combined = " ".join(printed)
+        # 0.5 is the default and is not a credential
+        assert "0.5" in combined

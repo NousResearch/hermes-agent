@@ -181,6 +181,77 @@ class TestSteerThreadSafety:
         assert set(lines) == {f"note-{i}" for i in range(N)}
 
 
+class TestSteerCascadeToChildren:
+    """steer() should propagate to active child agents (subagent delegation)."""
+
+    def test_steer_cascades_to_active_children(self):
+        parent = _bare_agent()
+        parent._active_children = []
+        parent._active_children_lock = threading.Lock()
+
+        child1 = _bare_agent()
+        child1._active_children = []
+        child1._active_children_lock = threading.Lock()
+        child2 = _bare_agent()
+        child2._active_children = []
+        child2._active_children_lock = threading.Lock()
+
+        parent._active_children = [child1, child2]
+        parent.steer("change direction")
+
+        assert parent._pending_steer == "change direction"
+        assert child1._pending_steer == "change direction"
+        assert child2._pending_steer == "change direction"
+
+    def test_steer_cascades_recursively(self):
+        """steer should propagate through nested children (grandchildren)."""
+        grandparent = _bare_agent()
+        grandparent._active_children = []
+        grandparent._active_children_lock = threading.Lock()
+
+        parent = _bare_agent()
+        parent._active_children = []
+        parent._active_children_lock = threading.Lock()
+
+        child = _bare_agent()
+        child._active_children = []
+        child._active_children_lock = threading.Lock()
+
+        grandparent._active_children = [parent]
+        parent._active_children = [child]
+
+        grandparent.steer("stop everything")
+        assert child._pending_steer == "stop everything"
+
+    def test_steer_cascade_tolerates_broken_child(self):
+        """If a child's steer() raises, other children still get the steer."""
+        parent = _bare_agent()
+        parent._active_children = []
+        parent._active_children_lock = threading.Lock()
+
+        class BrokenAgent:
+            def steer(self, text):
+                raise RuntimeError("boom")
+
+        good_child = _bare_agent()
+        good_child._active_children = []
+        good_child._active_children_lock = threading.Lock()
+
+        parent._active_children = [BrokenAgent(), good_child]
+        parent.steer("keep going")
+
+        assert parent._pending_steer == "keep going"
+        assert good_child._pending_steer == "keep going"
+
+    def test_steer_no_cascade_without_children(self):
+        """steer on an agent with no active children just works normally."""
+        agent = _bare_agent()
+        agent._active_children = []
+        agent._active_children_lock = threading.Lock()
+        agent.steer("solo note")
+        assert agent._pending_steer == "solo note"
+
+
 class TestSteerClearedOnInterrupt:
     def test_clear_interrupt_drops_pending_steer(self):
         """A hard interrupt supersedes any pending steer — the agent's

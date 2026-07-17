@@ -2874,6 +2874,17 @@ class AIAgent:
                 self._pending_steer = self._pending_steer + "\n" + cleaned
             else:
                 self._pending_steer = cleaned
+        # Propagate steer to any running child agents (subagent delegation)
+        # so the user's mid-turn message reaches subagents, not just the parent.
+        _children_lock = getattr(self, "_active_children_lock", None)
+        if _children_lock is not None:
+            with _children_lock:
+                children_copy = list(self._active_children)
+            for child in children_copy:
+                try:
+                    child.steer(cleaned)
+                except Exception:
+                    pass
         return True
 
     def _drain_pending_steer(self) -> Optional[str]:

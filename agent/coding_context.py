@@ -691,16 +691,37 @@ def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
 def _git(cwd: Path, *args: str) -> str:
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
-        out = subprocess.run(
+        proc = subprocess.Popen(
             ["git", "-C", str(cwd), *args],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             text=True,
-            timeout=_GIT_TIMEOUT,
             **_popen_kwargs,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
-    return out.stdout.strip() if out.returncode == 0 else ""
+    try:
+        stdout, _ = proc.communicate(timeout=_GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        # Bounded post-kill cleanup instead of subprocess.run()'s unbounded
+        # communicate(): on Windows, a process spawned CONCURRENTLY by another
+        # thread (an MCP server child, another probe) can inherit duplicates
+        # of this pipe's handles, so the pipe never reaches EOF even though
+        # git is already dead — run()'s cleanup then joins the reader threads
+        # forever and the whole agent turn hangs (observed under an ACP host
+        # with py-spy: _git -> communicate -> reader-thread join). A bounded
+        # second communicate() abandons the pipes after a grace period; the
+        # orphaned reader threads are daemonic and cost nothing.
+        try:
+            proc.communicate(timeout=1)
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            pass
+        return ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return stdout.strip() if proc.returncode == 0 else ""
 
 
 def _parse_status(porcelain: str) -> tuple[dict[str, str], dict[str, int]]:

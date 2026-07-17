@@ -863,6 +863,9 @@ class CLICommandsMixin:
         Copies the full conversation history to a new session so the user can
         explore a different approach without losing the original session state.
         Inspired by Claude Code's /branch command.
+
+        ``--thread`` is gateway-only (Discord/Telegram/Slack). On CLI it is
+        rejected so the flag is never stored as a branch title.
         """
         from cli import _cprint, _sync_process_session_id
         if not self.conversation_history:
@@ -875,7 +878,14 @@ class CLICommandsMixin:
             return
 
         parts = cmd_original.split(None, 1)
-        branch_name = parts[1].strip() if len(parts) > 1 else ""
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        from gateway.slash_commands import _parse_branch_command_args
+        want_thread, branch_name = _parse_branch_command_args(raw_args)
+        if want_thread:
+            # ponytail: CLI has no platform threads; refuse rather than title="--thread"
+            _cprint("  /branch --thread is only available on Discord, Telegram, and Slack.")
+            _cprint("  In CLI use: /branch [name]")
+            return
 
         # Generate the new session ID
         now = datetime.now()

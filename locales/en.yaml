@@ -94,7 +94,7 @@ gateway:
     branched_many:         "⑂ Branched to **{title}** ({count} messages copied)\nOriginal: `{parent}`\nBranch: `{new}`\nUse `/resume` to switch back to the original."
     thread_unsupported:    "This platform does not support branching into a new thread."
     thread_no_parent:      "Cannot create a thread here — need a parent channel (DMs and nested threads are unsupported)."
-    thread_create_failed:  "Branch session created, but thread creation failed: {error}\nBranch: `{new}` — use `/resume {new}` to open it here."
+    thread_create_failed:  "Could not create a thread for the branch: {error}"
     thread_switch_failed:  "Thread created and branch session ready, but binding failed.\nThread: {thread}\nBranch: `{new}` — try messaging in the new thread or `/resume {new}`."
     branched_thread_one:   "⑂ Branched to **{title}** in a new thread ({count} message copied)\nThread: {thread}\nOriginal: `{parent}` (this chat stays on it)\nBranch: `{new}`"
     branched_thread_many:  "⑂ Branched to **{title}** in a new thread ({count} messages copied)\nThread: {thread}\nOriginal: `{parent}` (this chat stays on it)\nBranch: `{new}`"

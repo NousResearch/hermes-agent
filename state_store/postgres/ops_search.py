@@ -485,3 +485,8 @@ class PostgresSearchOperations:
             return len(SEARCH_REINDEX_STATEMENTS)
 
         return self._run(operation, read_only=False)
+
+    def rebuild_fts(self) -> int:
+        """Rebuild derived PostgreSQL search indexes from canonical table data."""
+
+        return self.optimize_fts()

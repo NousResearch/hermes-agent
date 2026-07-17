@@ -101,6 +101,7 @@ def test_search_method_signatures_match_sqlite_session_db() -> None:
         "search_sessions_by_id",
         "search_sessions",
         "optimize_fts",
+        "rebuild_fts",
     ):
         assert inspect.signature(getattr(PostgresSearchOperations, name)) == inspect.signature(
             getattr(SessionDB, name)
@@ -325,6 +326,15 @@ def test_optimize_fts_reindexes_only_ready_writable_stores() -> None:
     unavailable, unavailable_store = _db(rows=[], capabilities={})
     assert unavailable.optimize_fts() == 0
     assert unavailable_store.connection.queries == []
+
+
+def test_rebuild_fts_uses_postgres_reindex_contract() -> None:
+    db, store = _db(rows=[])
+
+    assert db.rebuild_fts() == len(SEARCH_REINDEX_STATEMENTS)
+    assert [query for query, _ in store.connection.queries] == list(
+        SEARCH_REINDEX_STATEMENTS
+    )
 
 
 def test_search_source_has_no_cursor_escape_or_sqlite_translation() -> None:

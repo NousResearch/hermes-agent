@@ -273,6 +273,7 @@ def test_lifecycle_messages_and_search_use_live_postgres(
         "lifecycle",
     ]
     assert {row["role"] for row in search_results} == {"user", "assistant"}
+    assert database.rebuild_fts() == 3
 
     database.end_session("lifecycle", "operator-test")
     assert database.get_session("lifecycle")["end_reason"] == "operator-test"

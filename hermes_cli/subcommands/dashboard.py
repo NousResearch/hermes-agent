@@ -85,7 +85,11 @@ def _add_server_runtime_args(parser) -> None:
 
 
 def build_dashboard_parser(
-    subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable
+    subparsers,
+    *,
+    cmd_dashboard: Callable,
+    cmd_dashboard_register: Callable,
+    cmd_dashboard_proxy: Callable,
 ) -> None:
     """Attach the ``dashboard`` and ``serve`` subcommands.
 
@@ -198,3 +202,59 @@ def build_dashboard_parser(
         ),
     )
     dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
+
+    # `hermes dashboard proxy` — hardened API-only reverse proxy for remote
+    # access. The desktop's remote-gateway mode expects "an already-running
+    # Hermes backend ... behind a trusted proxy"; this IS that proxy: only
+    # /api/* is forwarded (the SPA HTML, which inlines the session token,
+    # never crosses the tunnel), lifecycle routes are denied by default, and
+    # denials are audit-logged. Auth stays enforced by the upstream server.
+    dashboard_proxy_parser = dashboard_subparsers.add_parser(
+        "proxy",
+        help="Run a hardened API-only reverse proxy for remote access",
+        description=(
+            "Expose the local Hermes backend to a tunnel safely: forwards only "
+            "/api/* (HTTP + WebSocket), denies machine-lifecycle routes "
+            "(update, gateway start/stop/restart, backup/import) by default, "
+            "and audit-logs denied requests. The upstream server keeps "
+            "enforcing its own session-token/OAuth auth — this proxy reduces "
+            "surface, it does not replace auth. Point your tunnel (Cloudflare, "
+            "Tailscale, SSH -R) at this listener."
+        ),
+    )
+    dashboard_proxy_parser.add_argument(
+        "--host", default="127.0.0.1", help="Listen host (default 127.0.0.1)"
+    )
+    dashboard_proxy_parser.add_argument(
+        "--port", type=int, default=9123, help="Listen port (default 9123)"
+    )
+    dashboard_proxy_parser.add_argument(
+        "--upstream",
+        default="http://127.0.0.1:9119",
+        help=(
+            "Base URL of the local backend to forward to (default "
+            "http://127.0.0.1:9119 — the `hermes dashboard`/`hermes serve` "
+            "default port)"
+        ),
+    )
+    dashboard_proxy_parser.add_argument(
+        "--allow-route",
+        dest="allow_routes",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Remove an exact path from the default deny-list (repeatable), "
+            "e.g. --allow-route /api/gateway/restart. An explicit operator "
+            "decision to re-enable that route remotely."
+        ),
+    )
+    dashboard_proxy_parser.add_argument(
+        "--deny-route",
+        dest="extra_deny_routes",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Add an exact path to the deny-list (repeatable)",
+    )
+    dashboard_proxy_parser.set_defaults(func=cmd_dashboard_proxy)

@@ -18,9 +18,15 @@ into it via :func:`agent.lsp.manager.LSPService.touch_file`.
 
 Implementation notes:
 
-- Push diagnostics are stored per-URI in :attr:`_push_diagnostics` from
-  ``textDocument/publishDiagnostics`` notifications.  Pull diagnostics
-  go in :attr:`_pull_diagnostics`.  The merged view dedupes by content.
+- All per-document state lives in one :class:`_DocState` keyed by
+  absolute path.  Freshness is tracked with **document versions**,
+  not timestamps: every didChange bumps ``version``, and each stored
+  push/pull result is tagged with the version it describes.  A
+  result is fresh iff its tag >= the version being waited on, so a
+  didChange implicitly invalidates everything older — no clearing,
+  no clock comparisons, no race windows.  This is what prevents
+  "ghost diagnostics": a slow server's leftovers from the previous
+  edit can never masquerade as a verdict on the current content.
 
 - Whole-document sync.  Even when the server advertises incremental
   sync, we send a single ``contentChanges`` entry replacing the
@@ -45,6 +51,7 @@ import asyncio
 import logging
 import os
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
@@ -124,6 +131,40 @@ def _end_position(text: str) -> Dict[str, int]:
     return {"line": last_line, "character": last_col}
 
 
+@dataclass
+class _DocState:
+    """Everything the client tracks for one open document.
+
+    ``version`` is the LSP document version we last sent (didOpen=0,
+    each didChange +1).  It doubles as the freshness token: stored
+    push/pull results are tagged with the version they describe
+    (``push_version`` / ``pull_version``), and a result is *fresh*
+    iff its tag has caught up to ``version``.  Bumping the version on
+    didChange therefore invalidates all older results implicitly —
+    no store-clearing, no timestamps.
+
+    ``push_version``/``pull_version`` start at -1 = "no data yet".
+    Servers that echo a document version in publishDiagnostics get
+    exact tagging; those that don't are credited with the current
+    version at receipt time (a push observed after we sent the
+    change describes the changed content or newer).
+    """
+
+    version: int = 0
+    text: str = ""
+    push: List[Dict[str, Any]] = field(default_factory=list)
+    pull: List[Dict[str, Any]] = field(default_factory=list)
+    push_version: int = -1
+    pull_version: int = -1
+    seed_seen: bool = False
+
+    def fresh_push(self, version: Optional[int] = None) -> bool:
+        return self.push_version >= (self.version if version is None else version)
+
+    def fresh_pull(self, version: Optional[int] = None) -> bool:
+        return self.pull_version >= (self.version if version is None else version)
+
+
 class LSPClient:
     """Async LSP client tied to one server process and one workspace root.
 
@@ -186,29 +227,10 @@ class LSPClient:
             # is silently dropped by default.
         }
 
-        # Tracked file state — required for didChange version bumps.
-        self._files: Dict[str, Dict[str, Any]] = {}
-        # Diagnostic stores, keyed by file path (NOT URI).
-        self._push_diagnostics: Dict[str, List[Dict[str, Any]]] = {}
-        self._pull_diagnostics: Dict[str, List[Dict[str, Any]]] = {}
-        # Per-path "last published" time so wait-for-fresh logic works.
-        self._published: Dict[str, float] = {}
-        # Per-path version of the latest push (matches our didChange
-        # version when the server respects it).
-        self._published_version: Dict[str, int] = {}
-        # First-push seen flag, for typescript-style seed-on-first-push.
-        self._first_push_seen: Set[str] = set()
-        # Per-path loop time of the most recent didOpen/didChange we
-        # sent.  Freshness anchor: pushes/pulls that predate this are
-        # results for OLD content and must never satisfy a waiter or
-        # be reported to the agent (the "ghost diagnostics" bug —
-        # slow servers like tsserver publish long after the edit, so
-        # leftovers from the previous edit look like current errors).
-        self._changed_at: Dict[str, float] = {}
-        # Per-path loop time at which the most recent *stored* pull
-        # request was sent.  Send-time (not receipt) so a didChange
-        # racing a pull in flight correctly invalidates the result.
-        self._pulled_at: Dict[str, float] = {}
+        # Per-document state (version, text, diagnostic stores, and
+        # their freshness tags), keyed by absolute file path (NOT URI).
+        # See _DocState for the version-based freshness model.
+        self._docs: Dict[str, _DocState] = {}
         # Capability registrations — only diagnostic ones are tracked.
         self._diagnostic_registrations: Dict[str, Dict[str, Any]] = {}
 
@@ -658,23 +680,25 @@ class LSPClient:
         if not isinstance(diagnostics, list):
             diagnostics = []
         version = params.get("version")
-        loop_time = asyncio.get_event_loop().time()
 
-        if self._seed_first_push and path not in self._first_push_seen:
-            # First push: seed the store without marking the file as
-            # "published" and without firing the event.  The very first
-            # push arrives before the user-triggered didChange could've
+        doc = self._docs.setdefault(path, _DocState(version=-1))
+        if self._seed_first_push and not doc.seed_seen:
+            # First push: seed the store WITHOUT a freshness tag.  It
+            # arrives before the user-triggered didChange could've
             # produced fresh diagnostics, so it must never satisfy a
             # waiter — it's baseline data only.
-            self._first_push_seen.add(path)
-            self._push_diagnostics[path] = diagnostics
+            doc.seed_seen = True
+            doc.push = diagnostics
             return
 
-        self._push_diagnostics[path] = diagnostics
-        self._published[path] = loop_time
-        if isinstance(version, int):
-            self._published_version[path] = version
-        self._first_push_seen.add(path)
+        doc.seed_seen = True
+        doc.push = diagnostics
+        # Tag with the echoed document version when the server provides
+        # one; otherwise credit the current version — a push observed
+        # after we sent the change describes the changed content (or
+        # newer).  Note doc.version is -1 for never-opened paths
+        # (e.g. relatedDocuments spillover), keeping them unfresh.
+        doc.push_version = version if isinstance(version, int) else doc.version
         # Bump the monotonic push counter and wake every waiter.  We
         # keep the Event sticky-set so any wait already in progress
         # resolves; waiters re-check their predicate after waking and
@@ -703,16 +727,16 @@ class LSPClient:
             raise LSPProtocolError(f"cannot read {abs_path}: {e}") from e
 
         uri = file_uri(abs_path)
-        existing = self._files.get(abs_path)
+        doc = self._docs.get(abs_path)
 
-        if existing is not None:
+        if doc is not None and doc.version >= 0:
             # Re-open: bump version, fire didChangeWatchedFiles + didChange.
             await self._send_notification(
                 "workspace/didChangeWatchedFiles",
                 {"changes": [{"uri": uri, "type": 2}]},  # 2 = CHANGED
             )
-            new_version = existing["version"] + 1
-            old_text = existing["text"]
+            new_version = doc.version + 1
+            old_text = doc.text
             content_changes: List[Dict[str, Any]]
             if self._sync_kind == 2:
                 content_changes = [
@@ -733,13 +757,11 @@ class LSPClient:
                     "contentChanges": content_changes,
                 },
             )
-            self._files[abs_path] = {"version": new_version, "text": text}
-            # Anchor freshness at this change: any pull result stored
-            # before now describes the PREVIOUS content and must not be
-            # reported (it would resurrect just-fixed errors as ghosts).
-            self._changed_at[abs_path] = asyncio.get_event_loop().time()
-            self._pull_diagnostics.pop(abs_path, None)
-            self._pulled_at.pop(abs_path, None)
+            # Bumping the version is the whole invalidation story:
+            # every stored result tagged with an older version is now
+            # stale by definition (see _DocState).
+            doc.version = new_version
+            doc.text = text
             return new_version
 
         # First open: didChangeWatchedFiles CREATED + didOpen.
@@ -747,14 +769,9 @@ class LSPClient:
             "workspace/didChangeWatchedFiles",
             {"changes": [{"uri": uri, "type": 1}]},  # 1 = CREATED
         )
-        # Clear any stale push/pull entries — fresh open should start
-        # from scratch.
-        self._push_diagnostics.pop(abs_path, None)
-        self._pull_diagnostics.pop(abs_path, None)
-        self._published.pop(abs_path, None)
-        self._published_version.pop(abs_path, None)
-        self._pulled_at.pop(abs_path, None)
-        self._changed_at[abs_path] = asyncio.get_event_loop().time()
+        # Fresh doc state — anything stashed under this path by a
+        # pre-open push (relatedDocuments spillover etc.) is discarded.
+        self._docs[abs_path] = _DocState(version=0, text=text)
         await self._send_notification(
             "textDocument/didOpen",
             {
@@ -766,7 +783,6 @@ class LSPClient:
                 }
             },
         )
-        self._files[abs_path] = {"version": 0, "text": text}
         return 0
 
     async def save_file(self, path: str) -> None:
@@ -786,16 +802,16 @@ class LSPClient:
     async def _pull_document_diagnostics(self, path: str) -> None:
         """Send ``textDocument/diagnostic`` for one file.
 
-        Stores results into :attr:`_pull_diagnostics`.  Silently
-        no-ops on errors (server may not support the pull endpoint).
-
-        The request's *send time* is recorded in :attr:`_pulled_at`
-        so freshness checks can compare against :attr:`_changed_at`.
-        A result whose request predates the latest didChange is
-        dropped — it describes content that no longer exists.
+        Stores results into the doc's pull store, tagged with the
+        document version captured at request send time.  If a didChange
+        races past the in-flight request, the version bump makes the
+        stored result stale automatically — no explicit invalidation.
+        Silently no-ops on errors (server may not support the pull
+        endpoint).
         """
         abs_path = os.path.abspath(path)
-        sent_at = asyncio.get_event_loop().time()
+        doc = self._docs.get(abs_path)
+        sent_version = doc.version if doc else -1
         try:
             params: Dict[str, Any] = {
                 "textDocument": {"uri": file_uri(abs_path)}
@@ -810,18 +826,11 @@ class LSPClient:
             return
         if not isinstance(result, dict):
             return
-        if sent_at < self._changed_at.get(abs_path, 0.0):
-            # The document changed while this pull was in flight — the
-            # server answered for the OLD text.  Storing it would
-            # resurrect ghost diagnostics.
-            logger.debug(
-                "[%s] dropping stale pull result for %s", self.server_id, abs_path
-            )
-            return
         items = result.get("items")
         if isinstance(items, list):
-            self._pull_diagnostics[abs_path] = items
-            self._pulled_at[abs_path] = sent_at
+            doc = self._docs.setdefault(abs_path, _DocState(version=-1))
+            doc.pull = items
+            doc.pull_version = sent_version
         related = result.get("relatedDocuments")
         if isinstance(related, dict):
             for uri, sub in related.items():
@@ -829,36 +838,11 @@ class LSPClient:
                     continue
                 sub_items = sub.get("items")
                 if isinstance(sub_items, list):
-                    rel_path = uri_to_path(uri)
-                    if sent_at < self._changed_at.get(rel_path, 0.0):
-                        continue
-                    self._pull_diagnostics[rel_path] = sub_items
-                    self._pulled_at[rel_path] = sent_at
-
-    def _has_fresh_push(self, path: str, version: int) -> bool:
-        """True iff a *fresh* publishDiagnostics has arrived for ``path``.
-
-        Fresh means: published at/after the latest didOpen/didChange we
-        sent, AND (when the server echoes versions) for a version >= the
-        one we're waiting on.  A stale push left over from the previous
-        edit cycle satisfies neither and must not end a wait early —
-        that's exactly the "ghost diagnostics" failure mode with slow
-        servers like tsserver.
-        """
-        published_at = self._published.get(path)
-        if published_at is None:
-            return False
-        if published_at < self._changed_at.get(path, 0.0):
-            return False
-        current_v = self._published_version.get(path)
-        return current_v is None or current_v >= version
-
-    def _has_fresh_pull(self, path: str) -> bool:
-        """True iff the stored pull result postdates the latest change."""
-        pulled_at = self._pulled_at.get(path)
-        if pulled_at is None:
-            return path in self._pull_diagnostics
-        return pulled_at >= self._changed_at.get(path, 0.0)
+                    rel = self._docs.setdefault(uri_to_path(uri), _DocState(version=-1))
+                    rel.pull = sub_items
+                    # Same send-anchored tagging: fresh only if that
+                    # doc hasn't changed since the request went out.
+                    rel.pull_version = rel.version
 
     async def wait_for_diagnostics(
         self,
@@ -914,12 +898,13 @@ class LSPClient:
                     pass
 
             # If we got a fresh push for our version, we're done.
-            if self._has_fresh_push(abs_path, version):
+            doc = self._docs.get(abs_path)
+            if doc and doc.fresh_push(version):
                 return True
 
-            # Pull may have populated _pull_diagnostics with a
-            # post-change answer — that's also success.
-            if self._has_fresh_pull(abs_path):
+            # Pull may have answered for the current version — that's
+            # also success.
+            if doc and doc.fresh_pull(version):
                 return True
 
             # Loop until budget runs out.
@@ -929,7 +914,8 @@ class LSPClient:
         deadline = asyncio.get_event_loop().time() + timeout
         baseline = self._push_counter
         while True:
-            if self._has_fresh_push(path, version):
+            doc = self._docs.get(path)
+            if doc and doc.fresh_push(version):
                 # Debounce — wait a tick in case more diagnostics arrive
                 # immediately after.  TS often emits in pairs.  We
                 # snapshot the counter so we wake on a *new* push, not
@@ -968,23 +954,20 @@ class LSPClient:
         key.  Empty list if the server hasn't published anything.
 
         With ``fresh_only=True``, a store only contributes when its
-        data postdates the latest didOpen/didChange for the file —
+        version tag has caught up to the document's current version —
         stale leftovers from the previous edit cycle are excluded.
         This is what report paths should use: after an edit, "stale
         errors" and "no errors" must not be conflated.
         """
-        abs_path = os.path.abspath(path)
+        doc = self._docs.get(os.path.abspath(path))
+        if doc is None:
+            return []
         if fresh_only:
-            changed_at = self._changed_at.get(abs_path, 0.0)
-            push_fresh = self._published.get(abs_path, -1.0) >= changed_at
-            pulled_at = self._pulled_at.get(abs_path)
-            pull_fresh = pulled_at is not None and pulled_at >= changed_at
-            push = (self._push_diagnostics.get(abs_path) or []) if push_fresh else []
-            pull = (self._pull_diagnostics.get(abs_path) or []) if pull_fresh else []
-            return _dedupe(push, pull)
-        push = self._push_diagnostics.get(abs_path) or []
-        pull = self._pull_diagnostics.get(abs_path) or []
-        return _dedupe(push, pull)
+            return _dedupe(
+                doc.push if doc.fresh_push() else [],
+                doc.pull if doc.fresh_pull() else [],
+            )
+        return _dedupe(doc.push, doc.pull)
 
 
 def _dedupe(*lists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

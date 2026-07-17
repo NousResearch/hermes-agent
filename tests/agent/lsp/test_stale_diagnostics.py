@@ -146,8 +146,8 @@ async def test_wait_timeout_param_overrides_mode_budget(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_stale_pull_result_dropped_when_change_races(tmp_path: Path):
-    """A pull answered for pre-edit content must not be stored after a
-    didChange raced past it (send-time anchoring)."""
+    """A pull answered for pre-edit content must not read as fresh after
+    a didChange raced past it (version-tag anchoring)."""
     f = tmp_path / "x.py"
     f.write_text("bad code\n")
 
@@ -156,13 +156,15 @@ async def test_stale_pull_result_dropped_when_change_races(tmp_path: Path):
     try:
         v0 = await client.open_file(str(f), language_id="python")
         await client.wait_for_diagnostics(str(f), v0, mode="document", timeout=2.0)
-        assert client._has_fresh_pull(os.path.abspath(str(f)))
+        doc = client._docs[os.path.abspath(str(f))]
+        assert doc.fresh_pull()
 
-        # Simulate an edit racing in: the change invalidates the pull.
+        # Simulate an edit racing in: the version bump invalidates the
+        # stored pull without any explicit clearing.
         f.write_text("good code\n")
         await client.open_file(str(f), language_id="python")
-        assert not client._has_fresh_pull(os.path.abspath(str(f)))
-        assert os.path.abspath(str(f)) not in client._pull_diagnostics
+        assert not doc.fresh_pull()
+        assert client.diagnostics_for(str(f), fresh_only=True) == []
     finally:
         await client.shutdown()
 

@@ -124,6 +124,7 @@ describe('PersistentTerminal rect tracking', () => {
   beforeEach(() => {
     ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
     setVisibility(false)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
     installWindowStateBridge()
     resizeObserverCallback = null
     mutationObserverCallback = null
@@ -261,5 +262,29 @@ describe('PersistentTerminal rect tracking', () => {
     })
 
     expect(raf.request).toHaveBeenCalledTimes(2)
+  })
+
+  it('suspends while unfocused and cancels every callback on unmount', () => {
+    const raf = installRaf()
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
+
+    render(<Harness />)
+    expect(raf.pending()).toBe(1)
+
+    act(() => window.dispatchEvent(new Event('blur')))
+    expect(raf.pending()).toBe(0)
+
+    act(() => window.dispatchEvent(new Event('focus')))
+    expect(raf.pending()).toBe(1)
+
+    cleanup()
+    expect(raf.pending()).toBe(0)
+
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+      resizeObserverCallback?.([], {} as ResizeObserver)
+      mutationObserverCallback?.([], {} as MutationObserver)
+    })
+    expect(raf.pending()).toBe(0)
   })
 })

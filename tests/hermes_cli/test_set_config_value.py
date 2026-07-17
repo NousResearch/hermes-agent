@@ -5,6 +5,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from hermes_cli.config import set_config_value, config_command
 
@@ -123,6 +124,20 @@ class TestConfigYamlRouting:
             "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=true" in env_content
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
+
+    def test_structured_pool_routes_are_parsed_from_json(self, _isolated_hermes_home):
+        value = '[{"id":"openai","enabled":true,"capabilities":["coding"]}]'
+
+        set_config_value("task_routing.pools", value)
+
+        config = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert config["task_routing"]["pools"] == [
+            {"id": "openai", "enabled": True, "capabilities": ["coding"]}
+        ]
+
+    def test_structured_pool_routes_reject_non_array_json(self):
+        with pytest.raises(SystemExit):
+            set_config_value("task_routing.pools", '{"id":"openai"}')
 
 
 # ---------------------------------------------------------------------------

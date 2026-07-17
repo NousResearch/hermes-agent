@@ -1169,6 +1169,17 @@ DEFAULT_CONFIG = {
         "reasoning_overrides": {},
     },
 
+    # Subscription-pool policy is opt-in and fail-closed: no configured pool
+    # means the existing runtime route remains unchanged.  Metered billing and
+    # paid overage both require explicit per-call authorization.
+    "task_routing": {
+        "capabilities": ["coding", "research", "verification", "operations", "general"],
+        "task_budget_tokens": 16000,
+        "allow_metered": False,
+        "allow_paid_usage": False,
+        "pools": [],
+    },
+
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
@@ -8415,7 +8426,19 @@ def set_config_value(key: str, value: str):
     # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
     # retain the historical best-effort coercion behavior.
     coerced_value: Any = value
-    if not isinstance(_default_value_for_key(key), str):
+    default_value = _default_value_for_key(key)
+    if isinstance(default_value, (list, dict)):
+        try:
+            structured_value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            print(f"Invalid JSON value for structured setting '{key}': {exc}", file=sys.stderr)
+            sys.exit(1)
+        if not isinstance(structured_value, type(default_value)):
+            expected = "array" if isinstance(default_value, list) else "object"
+            print(f"Configuration setting '{key}' requires a JSON {expected}.", file=sys.stderr)
+            sys.exit(1)
+        coerced_value = structured_value
+    elif not isinstance(default_value, str):
         if value.lower() in {'true', 'yes', 'on'}:
             coerced_value = True
         elif value.lower() in {'false', 'no', 'off'}:

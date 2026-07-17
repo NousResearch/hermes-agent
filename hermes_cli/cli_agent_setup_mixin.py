@@ -211,6 +211,36 @@ class CLIAgentSetupMixin:
             ),
         }
 
+        # CLI turns use the same pure resolver as dashboard/API construction.
+        # General-route failure remains visible in the normal runtime resolver;
+        # specialist delegation is the fail-closed path in delegate_tool.
+        try:
+            from agent.task_routing import resolve_route_runtime, resolve_task_route
+
+            frozen_route = resolve_task_route(str(user_message or ""), role="orchestrator")
+            frozen_runtime = resolve_route_runtime(frozen_route)
+            frozen_route = frozen_runtime.pop("_task_route", frozen_route)
+            runtime.update({
+                "api_key": frozen_runtime.get("api_key"),
+                "base_url": frozen_runtime.get("base_url"),
+                "provider": frozen_runtime.get("provider"),
+                "api_mode": frozen_runtime.get("api_mode"),
+                "command": frozen_runtime.get("command"),
+                "args": list(frozen_runtime.get("args") or []),
+                "credential_pool": frozen_runtime.get("credential_pool"),
+            })
+            route["model"] = frozen_route.model
+            route["task_route"] = frozen_route
+            route["signature"] = (
+                frozen_route.profile, frozen_route.provider, frozen_route.model,
+                runtime["base_url"], runtime["api_mode"], runtime["command"],
+                tuple(runtime["args"]),
+            )
+        except Exception:
+            # Existing unprofiled CLI installs remain usable; the resolver's
+            # specialist path never takes this fallback.
+            route["task_route"] = None
+
         service_tier = getattr(self, "service_tier", None)
         if not service_tier:
             route["request_overrides"] = None

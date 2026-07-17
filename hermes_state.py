@@ -1011,7 +1011,9 @@ class SessionDB:
     _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        # Resolve the default at construction time so a profile-scoped routed
+        # child never writes its receipt into the parent's state database.
+        self.db_path = db_path or (get_hermes_home() / "state.db")
         self.read_only = read_only
 
         self._lock = threading.Lock()
@@ -2685,6 +2687,70 @@ class SessionDB:
             conn.execute(
                 "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
                 (model_config_json, model, session_id),
+            )
+        self._execute_write(_do)
+
+    def persist_routing_receipt(self, session_id: str, receipt: Dict[str, Any]) -> None:
+        """Append a non-secret route receipt before a routed dispatch.
+
+        Receipts deliberately live in the existing session metadata column so
+        routing adds no competing session store.  The caller is responsible for
+        omitting runtime credentials; this method defensively drops common
+        secret-bearing keys as well.
+        """
+        safe = {
+            key: value for key, value in dict(receipt or {}).items()
+            if key not in {"api_key", "access_token", "refresh_token", "credential", "credentials"}
+        }
+
+        def _do(conn):
+            row = conn.execute("SELECT model_config FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            try:
+                meta = json.loads(row[0] or "{}") if row else {}
+            except (TypeError, json.JSONDecodeError):
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            receipts = meta.get("routing_receipts")
+            if not isinstance(receipts, list):
+                receipts = []
+            receipts.append(safe)
+            meta["routing_receipts"] = receipts[-32:]
+            conn.execute(
+                "UPDATE sessions SET model_config = ? WHERE id = ?",
+                (json.dumps(meta, ensure_ascii=False), session_id),
+            )
+        self._execute_write(_do)
+
+    def reconcile_routing_receipt(
+        self,
+        session_id: str,
+        *,
+        task_id: str,
+        status: str,
+        token_usage: Optional[Dict[str, int]] = None,
+        cost_attribution: Optional[str] = None,
+    ) -> None:
+        """Reconcile one persisted route receipt after routed execution."""
+        def _do(conn):
+            row = conn.execute("SELECT model_config FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            try:
+                meta = json.loads(row[0] or "{}") if row else {}
+            except (TypeError, json.JSONDecodeError):
+                meta = {}
+            receipts = meta.get("routing_receipts") if isinstance(meta, dict) else None
+            if not isinstance(receipts, list):
+                return
+            for item in reversed(receipts):
+                if isinstance(item, dict) and item.get("task_id") == task_id:
+                    item["status"] = status
+                    item["token_usage"] = dict(token_usage or {})
+                    if cost_attribution is not None:
+                        item["cost_attribution"] = cost_attribution
+                    break
+            conn.execute(
+                "UPDATE sessions SET model_config = ? WHERE id = ?",
+                (json.dumps(meta, ensure_ascii=False), session_id),
             )
         self._execute_write(_do)
 

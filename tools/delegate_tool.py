@@ -351,6 +351,18 @@ def _normalize_role(r: Optional[str]) -> str:
     return "leaf"
 
 
+def _normalize_task_role(value: Optional[str]) -> Optional[str]:
+    """Return an opt-in specialist role without changing spawn-role semantics."""
+    if value is None or not str(value).strip():
+        return None
+    normalized = str(value).strip().lower()
+    aliases = {"coding": "implementation", "verify": "verification", "verifier": "verification"}
+    normalized = aliases.get(normalized, normalized)
+    if normalized in {"implementation", "research", "verification"}:
+        return normalized
+    raise ValueError("task_role must be implementation, research, or verification")
+
+
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
     DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
@@ -1057,6 +1069,7 @@ def _build_child_agent(
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
     override_max_tokens: Optional[int] = None,
+    override_credential_pool=None,
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -1064,6 +1077,8 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    routing_route=None,
+    routing_session_db=None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1277,7 +1292,9 @@ def _build_child_agent(
     # from rate-limits and credential exhaustion exactly like the top-level
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    parent_fallback = None if routing_route is not None else (
+        getattr(parent_agent, "_fallback_chain", None) or None
+    )
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -1317,6 +1334,22 @@ def _build_child_agent(
     if isinstance(child_max_tokens, int):
         child_optional_kwargs["max_tokens"] = child_max_tokens
 
+    # A specialist route supplies its own already-resolved pool.  Do not look
+    # it up again after the selected profile scope has been left: that could
+    # silently substitute the caller's default-profile pool.
+    child_pool = override_credential_pool
+    if child_pool is None:
+        child_pool = _resolve_child_credential_pool(
+            effective_provider, parent_agent, effective_base_url
+        )
+
+    # Profile-targeted workers use the selected profile's supported
+    # agent.max_turns value. Untyped helpers retain delegation.max_iterations.
+    if routing_route is not None:
+        from agent.task_routing import resolve_profile_governor
+
+        max_iterations = resolve_profile_governor(routing_route).max_turns
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -1330,6 +1363,7 @@ def _build_child_agent(
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         fallback_model=parent_fallback,
+        credential_pool=child_pool,
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
@@ -1339,7 +1373,7 @@ def _build_child_agent(
         skip_memory=True,
         clarify_callback=None,
         thinking_callback=child_thinking_cb,
-        session_db=getattr(parent_agent, "_session_db", None),
+        session_db=routing_session_db or getattr(parent_agent, "_session_db", None),
         parent_session_id=getattr(parent_agent, "session_id", None),
         providers_allowed=child_providers_allowed,
         providers_ignored=child_providers_ignored,
@@ -1357,6 +1391,10 @@ def _build_child_agent(
         iteration_budget=None,  # fresh budget per subagent
         **child_optional_kwargs,
     )
+    # Keep the resolved pool on the child explicitly.  AIAgent normally does
+    # this from its constructor argument, while this assignment also preserves
+    # the established invariant for compatible construction shims and mocks.
+    child._credential_pool = child_pool
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
@@ -1372,6 +1410,8 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
+    child._routing_route = routing_route
+    child._routing_task_id = subagent_id
     # Stable sidebar marker: delegate subagent sessions must stay out of
     # session pickers even when a parent delete orphans them (parent_session_id
     # → NULL). Mirrors /branch's ``_branched_from`` pattern — see
@@ -1380,13 +1420,38 @@ def _build_child_agent(
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
         child._session_init_model_config["_delegate_from"] = parent_sid
 
-    # Share a credential pool with the child when possible so subagents can
-    # rotate credentials on rate limits instead of getting pinned to one key.
-    child_pool = _resolve_child_credential_pool(
-        effective_provider, parent_agent, effective_base_url
-    )
-    if child_pool is not None:
-        child._credential_pool = child_pool
+    # A routed child owns a profile-scoped SessionDB.  Persist the same
+    # non-secret receipt in the parent's existing database for lineage lookup.
+    if routing_route is not None and routing_session_db is not None:
+        try:
+            from agent.task_routing import routing_receipt
+
+            receipt = routing_receipt(
+                routing_route,
+                task_id=subagent_id,
+                parent_session_id=parent_sid,
+                child_session_id=child.session_id,
+            )
+            routing_session_db.create_session(
+                session_id=child.session_id,
+                source="subagent",
+                model=routing_route.model,
+                model_config=getattr(child, "_session_init_model_config", None),
+                parent_session_id=parent_sid,
+                profile_name=routing_route.profile,
+            )
+            routing_session_db.persist_routing_receipt(child.session_id, receipt)
+            parent_routing_session_db = getattr(parent_agent, "_session_db", None)
+            if (
+                parent_sid
+                and parent_routing_session_db is not None
+                and parent_routing_session_db is not routing_session_db
+            ):
+                parent_routing_session_db.persist_routing_receipt(parent_sid, receipt)
+            child._routing_parent_session_db = parent_routing_session_db
+            child._session_db_created = True
+        except Exception as exc:
+            raise ValueError(f"Cannot persist routed child receipt: {exc}") from exc
 
     # Register child for interrupt propagation
     if hasattr(parent_agent, "_active_children"):
@@ -2182,6 +2247,33 @@ def _run_single_child(
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
+        routing_db = getattr(child, "_session_db", None)
+        parent_routing_db = getattr(child, "_routing_parent_session_db", None)
+        routing_task_id = getattr(child, "_routing_task_id", None)
+        if getattr(child, "_routing_route", None) is not None and routing_task_id:
+            token_usage = {
+                "input": int(_input_tokens or 0),
+                "output": int(_output_tokens or 0),
+            }
+            reconciled_dbs = set()
+            for receipt_db, receipt_session_id in (
+                (routing_db, child.session_id),
+                (parent_routing_db, getattr(child, "_parent_session_id", None)),
+            ):
+                if receipt_db is None or not receipt_session_id or id(receipt_db) in reconciled_dbs:
+                    continue
+                reconciled_dbs.add(id(receipt_db))
+                try:
+                    receipt_db.reconcile_routing_receipt(
+                        receipt_session_id,
+                        task_id=routing_task_id,
+                        status=status,
+                        token_usage=token_usage,
+                        cost_attribution=getattr(child, "session_cost_source", None),
+                    )
+                except Exception:
+                    logger.warning("Could not reconcile routed child receipt", exc_info=True)
+
         # Cross-agent file-state reminder.  If this subagent wrote any
         # files the parent had already read, surface it so the parent
         # knows to re-read before editing — the scenario that motivated
@@ -2384,6 +2476,7 @@ def delegate_task(
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
+    task_role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
@@ -2461,8 +2554,9 @@ def delegate_task(
     # bundle (base_url, api_key, api_mode) via the same runtime provider system
     # used by CLI/gateway startup.  When unconfigured, returns None values so
     # children inherit from the parent.
+    creds = None
     try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
+        top_task_role = _normalize_task_role(task_role)
     except ValueError as exc:
         return tool_error(str(exc))
 
@@ -2485,7 +2579,7 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "role": top_role}]
+        task_list = [{"goal": goal, "context": context, "role": top_role, "task_role": top_task_role}]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2500,6 +2594,18 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+        try:
+            task["_task_role"] = _normalize_task_role(task.get("task_role", top_task_role))
+        except ValueError as exc:
+            return tool_error(f"Task {i}: {exc}")
+
+    # Preserve legacy delegation resolution for untyped calls only. Specialist
+    # calls below resolve their selected profile exactly and fail closed.
+    if any(task.get("_task_role") is None for task in task_list):
+        try:
+            creds = _resolve_delegation_credentials(cfg, parent_agent)
+        except ValueError as exc:
+            return tool_error(str(exc))
 
     overall_start = time.monotonic()
     results = []
@@ -2519,12 +2625,50 @@ def delegate_task(
     # Wrapped in try/finally so the global is always restored even if a
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
     children = []
+    verification_children = []
     try:
         for i, t in enumerate(task_list):
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
-            child = _build_child_agent(
+            route = None
+            runtime = None
+            routing_session_db = None
+            if t.get("_task_role") is not None:
+                try:
+                    from agent.task_routing import (
+                        ProfileResolutionError,
+                        profile_runtime_scope,
+                        resolve_route_runtime,
+                        resolve_task_route,
+                    )
+                    from hermes_state import SessionDB
+
+                    route = resolve_task_route(t["goal"], role=t["_task_role"])
+                    runtime = resolve_route_runtime(route)
+                    route = runtime.pop("_task_route", route)
+                    with profile_runtime_scope(route):
+                        routing_session_db = SessionDB()
+                        child = _build_child_agent(
+                            task_index=i, goal=t["goal"], context=t.get("context"),
+                            toolsets=None, model=route.model, max_iterations=effective_max_iter,
+                            task_count=n_tasks, parent_agent=parent_agent,
+                            override_provider=runtime.get("provider"),
+                            override_base_url=runtime.get("base_url"),
+                            override_api_key=runtime.get("api_key"),
+                            override_api_mode=runtime.get("api_mode"),
+                            override_request_overrides=runtime.get("request_overrides"),
+                            override_max_tokens=runtime.get("max_output_tokens"),
+                            override_credential_pool=runtime.get("credential_pool"),
+                            override_acp_command=runtime.get("command"),
+                            override_acp_args=runtime.get("args"), role=effective_role,
+                            routing_route=route, routing_session_db=routing_session_db,
+                        )
+                except (ProfileResolutionError, ValueError, FileNotFoundError) as exc:
+                    return tool_error(f"Specialist route unavailable: {exc}")
+            else:
+                assert creds is not None
+                child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
@@ -2544,10 +2688,47 @@ def delegate_task(
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
-            )
+                )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
             children.append((i, t, child))
+            if t.get("_task_role") == "implementation":
+                try:
+                    from agent.task_routing import profile_runtime_scope, resolve_route_runtime, resolve_task_route
+                    from hermes_state import SessionDB
+
+                    verifier_route = resolve_task_route(
+                        f"Verify implementation: {t['goal']}", role="verification"
+                    )
+                    verifier_runtime = resolve_route_runtime(verifier_route)
+                    verifier_route = verifier_runtime.pop("_task_route", verifier_route)
+                    verifier_goal = (
+                        "Independently verify the implementation task below. Inspect the "
+                        "working tree and run relevant local checks; report failures plainly.\n\n"
+                        f"Implementation task: {t['goal']}"
+                    )
+                    verifier_index = n_tasks + len(verification_children)
+                    with profile_runtime_scope(verifier_route):
+                        verifier = _build_child_agent(
+                            task_index=verifier_index, goal=verifier_goal,
+                            context=t.get("context"), toolsets=None,
+                            model=verifier_route.model, max_iterations=effective_max_iter,
+                            task_count=n_tasks + 1, parent_agent=parent_agent,
+                            override_provider=verifier_runtime.get("provider"),
+                            override_base_url=verifier_runtime.get("base_url"),
+                            override_api_key=verifier_runtime.get("api_key"),
+                            override_api_mode=verifier_runtime.get("api_mode"),
+                            override_request_overrides=verifier_runtime.get("request_overrides"),
+                            override_max_tokens=verifier_runtime.get("max_output_tokens"),
+                            override_credential_pool=verifier_runtime.get("credential_pool"),
+                            override_acp_command=verifier_runtime.get("command"),
+                            override_acp_args=verifier_runtime.get("args"), role="leaf",
+                            routing_route=verifier_route, routing_session_db=SessionDB(),
+                        )
+                    verifier._delegate_saved_tool_names = _parent_tool_names
+                    verification_children.append((i, verifier_index, verifier_goal, verifier))
+                except (ProfileResolutionError, ValueError, FileNotFoundError) as exc:
+                    return tool_error(f"Verification route unavailable: {exc}")
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
@@ -2687,8 +2868,17 @@ def delegate_task(
                             except Exception as e:
                                 logger.debug("Spinner update_text failed: %s", e)
 
-            # Sort by task_index so results match input order
-            results.sort(key=lambda r: r["task_index"])
+        # Verification is a separate child, resolved and receipted before
+        # dispatch, but executes only after its implementation sibling.
+        for implementation_index, verifier_index, verifier_goal, verifier in verification_children:
+            verification = _run_single_child(
+                verifier_index, verifier_goal, verifier, parent_agent
+            )
+            verification["verification_of"] = implementation_index
+            results.append(verification)
+
+        # Sort by task_index so results match input order.
+        results.sort(key=lambda r: r["task_index"])
 
         # Cap subagent summaries against the parent's remaining context
         # headroom (split across the batch) before they enter the parent's
@@ -3448,6 +3638,11 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "task_role": {
+                            "type": "string",
+                            "enum": ["implementation", "research", "verification"],
+                            "description": "Optional specialist execution role.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3460,6 +3655,11 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "task_role": {
+                "type": "string",
+                "enum": ["implementation", "research", "verification"],
+                "description": "Optional specialist execution role. Implementation creates a separately routed verifier child.",
             },
             "background": {
                 "type": "boolean",

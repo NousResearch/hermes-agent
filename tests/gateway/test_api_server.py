@@ -697,8 +697,13 @@ class TestAgentExecution:
         mock_agent.session_prompt_tokens = 1
         mock_agent.session_completion_tokens = 2
         mock_agent.session_total_tokens = 3
+        mock_agent._session_db = None
 
-        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+        with (
+            patch("agent.task_routing.resolve_task_route", return_value=MagicMock(model="route-model")),
+            patch("agent.task_routing.resolve_route_runtime", return_value={}),
+            patch.object(adapter, "_create_agent", return_value=mock_agent),
+        ):
             result, usage = await adapter._run_agent(
                 user_message="hello",
                 conversation_history=[],
@@ -3927,11 +3932,16 @@ class TestSessionKeyHeader:
             mock_agent.session_prompt_tokens = 0
             mock_agent.session_completion_tokens = 0
             mock_agent.session_total_tokens = 0
+            mock_agent._session_db = None
             return mock_agent
 
         app = _create_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
-            with patch.object(auth_adapter, "_create_agent", side_effect=_fake_create_agent):
+            with (
+                patch("agent.task_routing.resolve_task_route", return_value=MagicMock(model="route-model")),
+                patch("agent.task_routing.resolve_route_runtime", return_value={}),
+                patch.object(auth_adapter, "_create_agent", side_effect=_fake_create_agent),
+            ):
                 resp = await cli.post(
                     "/v1/chat/completions",
                     headers={

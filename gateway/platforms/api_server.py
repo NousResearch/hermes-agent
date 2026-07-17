@@ -1712,6 +1712,8 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        task_route=None,
+        task_runtime: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1746,6 +1748,16 @@ class APIServerAdapter(BasePlatformAdapter):
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
+
+        if task_route is not None and task_runtime is not None:
+            # The task resolver freezes profile/provider/model before agent
+            # construction.  Credentials remain execution-only in this dict.
+            model = task_route.model
+            runtime_kwargs.update({
+                key: task_runtime[key]
+                for key in ("api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool")
+                if key in task_runtime
+            })
 
         # When the primary provider's auth fails (expired token / 429 quota
         # cap), _resolve_runtime_agent_kwargs() falls through to the fallback
@@ -4565,6 +4577,17 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id or "",
                 )
                 try:
+                    try:
+                        from agent.task_routing import resolve_route_runtime, resolve_task_route
+
+                        task_route = resolve_task_route(user_message, role="orchestrator")
+                        task_runtime = resolve_route_runtime(task_route)
+                        task_route = task_runtime.pop("_task_route", task_route)
+                    except Exception as exc:
+                        return ({
+                            "final_response": f"Routing unavailable: {exc}", "messages": [],
+                            "api_calls": 0, "completed": False, "failed": True, "error": str(exc),
+                        }, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt,
                         session_id=session_id,
@@ -4574,10 +4597,28 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key,
                         route=route,
+                        task_route=task_route,
+                        task_runtime=task_runtime,
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     effective_task_id = session_id or str(uuid.uuid4())
+                    route_db = getattr(agent, "_session_db", None)
+                    if route_db is not None:
+                        from agent.task_routing import routing_receipt
+
+                        route_db.create_session(
+                            session_id=agent.session_id, source="api_server",
+                            model=task_route.model,
+                            model_config=getattr(agent, "_session_init_model_config", None),
+                            profile_name=task_route.profile,
+                        )
+                        route_db.persist_routing_receipt(
+                            agent.session_id,
+                            routing_receipt(task_route, task_id=effective_task_id,
+                                            child_session_id=agent.session_id),
+                        )
+                        agent._session_db_created = True
                     result = agent.run_conversation(
                         user_message=user_message,
                         conversation_history=conversation_history,
@@ -4588,6 +4629,13 @@ class APIServerAdapter(BasePlatformAdapter):
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                         "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
                     }
+                    if route_db is not None:
+                        route_db.reconcile_routing_receipt(
+                            agent.session_id, task_id=effective_task_id,
+                            status="completed" if result.get("completed") else "failed",
+                            token_usage={"input": usage["input_tokens"], "output": usage["output_tokens"]},
+                            cost_attribution=getattr(agent, "session_cost_source", None),
+                        )
                     # Include the effective session ID in the result so callers
                     # (e.g. X-Hermes-Session-Id header) can track compression-
                     # triggered session rotations. (#16938)

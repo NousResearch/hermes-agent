@@ -4045,6 +4045,42 @@ def fetch_api_models(
     ).get("models")
 
 
+def fetch_api_models_strict(
+    api_key: Optional[str],
+    base_url: Optional[str],
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """Fetch exactly the authenticated ``/v1/models`` endpoint.
+
+    This deliberately does not delegate to merged Ollama discovery, its cache,
+    or registry fallbacks: only this credential's live endpoint can authorize a
+    configured subscription-pool model.
+    """
+    normalized = str(base_url or "").rstrip("/")
+    if not api_key or not normalized.endswith("/v1"):
+        return None
+    request = urllib.request.Request(
+        normalized + "/models",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": _HERMES_USER_AGENT,
+        },
+    )
+    try:
+        with _urlopen_model_catalog_request(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode())
+    except Exception:
+        return None
+    models = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(models, list):
+        return None
+    return [
+        str(model["id"]).strip()
+        for model in models
+        if isinstance(model, dict) and str(model.get("id") or "").strip()
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Ollama Cloud — merged model discovery with disk cache
 # ---------------------------------------------------------------------------

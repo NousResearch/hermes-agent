@@ -1857,6 +1857,70 @@ def get_active_profile_name() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Authoritative profile registry
+# ---------------------------------------------------------------------------
+# Keep profile ingress fail-closed.  Older callers may still use
+# ``get_profile_dir`` for filesystem management, but task execution must use
+# this registry so a typo or broken config cannot become the default profile.
+
+
+@dataclass(frozen=True)
+class ProfileRecord:
+    name: str
+    home: Path
+    config: dict
+
+
+class ProfileRegistry:
+    """Validated view of the on-disk profile registry."""
+
+    def names(self) -> tuple[str, ...]:
+        root = _get_profiles_root()
+        named = []
+        if root.is_dir():
+            for entry in sorted(root.iterdir(), key=lambda item: item.name):
+                if entry.is_dir() and _PROFILE_ID_RE.match(entry.name):
+                    named.append(entry.name)
+        return ("default", *named)
+
+    def resolve(self, name: str) -> ProfileRecord:
+        canon = normalize_profile_name(name)
+        validate_profile_name(canon)
+        home = get_profile_dir(canon)
+        if not home.is_dir():
+            raise FileNotFoundError(
+                f"Profile '{canon}' does not exist. Create it with: hermes profile create {canon}"
+            )
+        config_path = home / "config.yaml"
+        if not config_path.exists():
+            return ProfileRecord(canon, home, {})
+        try:
+            import yaml
+            loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            raise ProfileResolutionError(
+                f"Profile '{canon}' has malformed config.yaml: {exc}"
+            ) from exc
+        if not isinstance(loaded, dict):
+            raise ProfileResolutionError(
+                f"Profile '{canon}' config.yaml must contain a mapping, not {type(loaded).__name__}."
+            )
+        return ProfileRecord(canon, home, loaded)
+
+
+class ProfileResolutionError(ValueError):
+    """A profile cannot safely be used for execution."""
+
+
+_PROFILE_REGISTRY = ProfileRegistry()
+
+
+def get_profile_registry() -> ProfileRegistry:
+    """Return the sole profile registry used by task-routing ingress points."""
+    return _PROFILE_REGISTRY
+
+
+# ---------------------------------------------------------------------------
 # Export / Import
 # ---------------------------------------------------------------------------
 
@@ -2212,14 +2276,4 @@ def resolve_profile_env(profile_name: str) -> str:
     Called early in the CLI entry point, before any hermes modules
     are imported, to set the HERMES_HOME environment variable.
     """
-    canon = normalize_profile_name(profile_name)
-    validate_profile_name(canon)
-    profile_dir = get_profile_dir(canon)
-
-    if canon != "default" and not profile_dir.is_dir():
-        raise FileNotFoundError(
-            f"Profile '{canon}' does not exist. "
-            f"Create it with: hermes profile create {canon}"
-        )
-
-    return str(profile_dir)
+    return str(get_profile_registry().resolve(profile_name).home)

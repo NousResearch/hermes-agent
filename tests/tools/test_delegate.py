@@ -3159,5 +3159,80 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIsNone(kwargs["fallback_model"])
 
 
+class TestSubscriptionPoolDelegationIntegration(unittest.TestCase):
+    """The selected worker pool and profile governor reach child construction."""
+
+    def test_selected_pool_governor_and_receipt_reach_routed_child(self):
+        from types import SimpleNamespace
+
+        from agent.subscription_pool import PoolRouteConfig, PoolVerification
+        from agent.task_routing import ProfileRouteConfig, resolve_task_route
+
+        profile = ProfileRouteConfig(
+            "engineering", "/profiles/engineering", "openai-codex", "profile-model",
+            ("coding",), 16_000, "legacy", "oauth", "included",
+        )
+        pool = PoolRouteConfig(
+            route_id="openai-subscription",
+            provider="openai-codex",
+            model="runtime-model",
+            execution_surface="hermes",
+            subscription_pool="chatgpt-team",
+            billing_mode="subscription",
+            capabilities=("coding",),
+            priority=30,
+            verification=PoolVerification(True, True, True, True, True, True, True, True),
+            quota_state="available",
+            paid_usage_possible=False,
+        )
+        with patch("agent.task_routing._profile_configs", return_value=(profile,)):
+            route = resolve_task_route(
+                "implement fixture", role="implementation", profile="engineering",
+                pool_routes=(pool,),
+            )
+
+        parent = _make_mock_parent(depth=0)
+        parent.session_id = "parent-session"
+        parent._session_db = MagicMock()
+        routed_db = MagicMock()
+        child = MagicMock()
+        child.session_id = "child-session"
+        child._session_init_model_config = {}
+
+        with (
+            patch("run_agent.AIAgent", return_value=child) as MockAgent,
+            patch(
+                "agent.task_routing.resolve_profile_governor",
+                return_value=SimpleNamespace(max_turns=120),
+            ),
+        ):
+            built = _build_child_agent(
+                task_index=0,
+                goal="implement fixture",
+                context=None,
+                toolsets=None,
+                model=route.model,
+                max_iterations=50,
+                parent_agent=parent,
+                task_count=1,
+                override_provider=route.provider,
+                override_base_url="https://chatgpt.com/backend-api/codex",
+                override_api_key="test-token",
+                override_credential_pool=object(),
+                routing_route=route,
+                routing_session_db=routed_db,
+            )
+
+        self.assertIs(built, child)
+        self.assertEqual(MockAgent.call_args.kwargs["max_iterations"], 120)
+        self.assertEqual(MockAgent.call_args.kwargs["provider"], "openai-codex")
+        receipt = routed_db.persist_routing_receipt.call_args.args[1]
+        self.assertEqual(receipt["profile"], "engineering")
+        self.assertEqual(receipt["subscription_pool"], "chatgpt-team")
+        self.assertEqual(receipt["billing_mode"], "subscription")
+        self.assertEqual(receipt["execution_surface"], "hermes")
+        parent._session_db.persist_routing_receipt.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

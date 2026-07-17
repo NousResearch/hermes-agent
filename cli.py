@@ -12260,6 +12260,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if agent is None:
             return None
 
+        # Persist the frozen, non-secret route before this CLI turn dispatches.
+        # Specialist children use their own profile DB in delegate_tool; this
+        # is the primary-turn counterpart in the existing SessionDB.
+        _frozen_route = turn_route.get("task_route")
+        if _frozen_route is not None and getattr(agent, "_session_db", None) is not None:
+            try:
+                from agent.task_routing import routing_receipt
+                agent._session_db.create_session(
+                    session_id=agent.session_id, source="cli", model=_frozen_route.model,
+                    model_config=getattr(agent, "_session_init_model_config", None),
+                    profile_name=_frozen_route.profile,
+                )
+                agent._session_db.persist_routing_receipt(
+                    agent.session_id,
+                    routing_receipt(_frozen_route, task_id=agent.session_id,
+                                    child_session_id=agent.session_id),
+                )
+                agent._session_db_created = True
+            except Exception as exc:
+                logging.warning("Could not persist CLI routing receipt: %s", exc)
+
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
         #            translate for Anthropic/Gemini/Bedrock).
@@ -12926,6 +12947,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
                 print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
                 self._pending_input.put(_leftover_steer)
+
+            if _frozen_route is not None and getattr(agent, "_session_db", None) is not None:
+                try:
+                    agent._session_db.reconcile_routing_receipt(
+                        agent.session_id, task_id=agent.session_id,
+                        status="completed" if result and result.get("completed") else "failed",
+                        token_usage={
+                            "input": int(getattr(agent, "session_prompt_tokens", 0) or 0),
+                            "output": int(getattr(agent, "session_completion_tokens", 0) or 0),
+                        },
+                        cost_attribution=getattr(agent, "session_cost_source", None),
+                    )
+                except Exception as exc:
+                    logging.warning("Could not reconcile CLI routing receipt: %s", exc)
 
             return response
             

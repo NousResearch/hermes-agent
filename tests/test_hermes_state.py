@@ -4,7 +4,7 @@ import sqlite3
 import time
 import pytest
 
-from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
+from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB, get_default_db_path
 
 
 class _NoFtsCursor(sqlite3.Cursor):
@@ -71,6 +71,42 @@ def db(tmp_path):
     session_db = SessionDB(db_path=db_path)
     yield session_db
     session_db.close()
+
+
+
+class TestGetDefaultDbPath:
+    """Regression tests for get_default_db_path() — issue #50681."""
+
+    def test_returns_path_under_hermes_home(self, monkeypatch, tmp_path):
+        """get_default_db_path() should respect HERMES_HOME at call time."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_state import get_hermes_home
+        # Clear the cached value so the env change takes effect
+        get_hermes_home.cache_clear()
+        result = get_default_db_path()
+        assert result == tmp_path / "state.db"
+
+    def test_differs_from_frozen_constant_when_env_changed(self, monkeypatch, tmp_path):
+        """After changing HERMES_HOME, get_default_db_path() should diverge from DEFAULT_DB_PATH."""
+        from hermes_state import DEFAULT_DB_PATH
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_state import get_hermes_home
+        get_hermes_home.cache_clear()
+        dynamic = get_default_db_path()
+        assert dynamic == tmp_path / "state.db"
+        # The frozen constant should NOT change (it was set at import time)
+        assert dynamic != DEFAULT_DB_PATH or str(tmp_path) == str(DEFAULT_DB_PATH.parent)
+
+    def test_session_db_uses_dynamic_path(self, monkeypatch, tmp_path):
+        """SessionDB() should use get_default_db_path(), not the frozen constant."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_state import get_hermes_home
+        get_hermes_home.cache_clear()
+        db = SessionDB()
+        try:
+            assert db.db_path == tmp_path / "state.db"
+        finally:
+            db.close()
 
 
 # =========================================================================

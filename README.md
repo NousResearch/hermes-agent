@@ -32,6 +32,17 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 
 ---
 
+## Axtro AI Fork
+
+This repository is an **Axtro AI fork** of the open-source [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) project. The `axtro/main` branch carries Axtro's own PRs layered on top of the upstream code.
+
+- **origin** (this fork): [`fernandosilvaia/hermes-agent`](https://github.com/fernandosilvaia/hermes-agent)
+- **upstream** (original project): [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent)
+
+Everything below is the original upstream README, unchanged.
+
+---
+
 ## Quick Install
 
 ### Linux, macOS, WSL2, Termux

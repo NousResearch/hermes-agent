@@ -205,7 +205,8 @@
         "CFBundleExecutable": "Hermes",
         "CFBundleName": "Hermes",
         "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
-        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
+        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations.",
+        "NSAppleMusicUsageDescription": "Hermes does not read or write your Apple Music library. This prompt can appear because Hermes uses the system audio stack for voice, TTS, and completion sounds."
       },
       "gatekeeperAssess": false,
       "hardenedRuntime": true,

@@ -5,6 +5,7 @@ import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, pickFallbackLabel, preferLinkDisplayLabel, stripInlineMarkup } from '../components/markdown.js'
+import type * as ExternalLinkModule from '../lib/externalLink.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -359,7 +360,7 @@ describe('explicit Markdown link labels (#64795)', () => {
   it('prefers fetched titles for angle-bracket autolinks (no explicit label)', async () => {
     vi.resetModules()
     vi.doMock('../lib/externalLink.js', async () => {
-      const actual = await vi.importActual<typeof import('../lib/externalLink.js')>('../lib/externalLink.js')
+      const actual = await vi.importActual<typeof ExternalLinkModule>('../lib/externalLink.js')
 
       return { ...actual, useLinkTitle: () => 'Fetched Autolink Title' }
     })

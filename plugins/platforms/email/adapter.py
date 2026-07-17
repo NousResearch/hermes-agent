@@ -29,7 +29,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formatdate, formataddr
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -481,8 +481,25 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
 
-        # Map chat_id (sender email) -> last subject + message-id for threading
+        # Map chat_id (sender email or thread subject) -> last subject + message-id for threading
         self._thread_context: Dict[str, Dict[str, str]] = {}
+
+        # Session routing: "thread" (default) gives each email subject its own
+        # session; "sender" uses one session per sender address (legacy behaviour).
+        self._session_routing = (
+            extra.get("session_routing", "")
+            or os.getenv("EMAIL_SESSION_ROUTING", "")
+            or "thread"
+        ).strip().lower()
+        if self._session_routing not in ("thread", "sender"):
+            self._session_routing = "thread"
+
+        # Display name for the From: header in outgoing emails.
+        self._display_name = (
+            extra.get("display_name", "")
+            or os.getenv("EMAIL_DISPLAY_NAME", "")
+            or ""
+        ).strip()
 
         logger.info("[Email] Adapter initialized for %s", self._address)
 
@@ -864,13 +881,34 @@ class EmailAdapter(BasePlatformAdapter):
                 msg_type = MessageType.DOCUMENT
 
         # Store thread context for reply threading
-        self._thread_context[sender_addr] = {
+        # In "thread" mode, chat_id is a composite key of sender + normalized
+        # subject so each email thread gets its own session AND different
+        # senders with the same subject stay isolated. In "sender" mode,
+        # chat_id is the sender address (one session per sender — legacy).
+        if self._session_routing == "thread":
+            _thread_subject = re.sub(
+                r'^(?:(?:re|fwd|fw):\s*)+', '', subject.strip(), flags=re.IGNORECASE
+            ).strip()
+            _thread_key = (
+                _thread_subject
+                or msg_data.get("in_reply_to")
+                or msg_data["message_id"]
+            )
+            if _thread_key:
+                _chat_id = f"{sender_addr}:{_thread_key}"
+            else:
+                _chat_id = sender_addr
+        else:
+            _chat_id = sender_addr
+
+        self._thread_context[_chat_id] = {
             "subject": subject,
             "message_id": msg_data["message_id"],
+            "sender_addr": sender_addr,
         }
 
         source = self.build_source(
-            chat_id=sender_addr,
+            chat_id=_chat_id,
             chat_name=msg_data["sender_name"] or sender_addr,
             chat_type="dm",
             user_id=sender_addr,
@@ -897,16 +935,52 @@ class EmailAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an email reply to the given address."""
+        """Send an email reply to the given address.
+
+        ``chat_id`` may be a composite key (sender:subject) when per-thread
+        session routing is active. Resolve it to the real recipient via
+        thread context, falling back to EMAIL_HOME_ADDRESS for proactive
+        delivery only.
+        """
+        to_addr, ctx = self._resolve_recipient(chat_id)
+        if not to_addr:
+            logger.error("[Email] Cannot resolve recipient for chat_id=%r and no EMAIL_HOME_ADDRESS set", chat_id)
+            return SendResult(success=False, error=f"Cannot resolve recipient for chat_id={chat_id!r}")
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
+                None, self._send_email, to_addr, content, reply_to, chat_id
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
-            logger.error("[Email] Send failed to %s: %s", chat_id, e)
+            logger.error("[Email] Send failed to %s: %s", to_addr, e)
             return SendResult(success=False, error=str(e))
+
+    def _resolve_recipient(self, chat_id: str) -> tuple:
+        """Resolve a chat_id to (recipient_address, thread_context).
+
+        Single source of truth for all send paths. Never guesses — if the
+        chat_id cannot be resolved to a specific recipient, returns ("", {})
+        so the caller can fail closed or use EMAIL_HOME_ADDRESS explicitly.
+
+        Resolution order:
+        1. Direct lookup: chat_id in _thread_context → sender_addr
+        2. chat_id is itself an email address (sender mode or direct)
+        3. Fall back to EMAIL_HOME_ADDRESS for proactive delivery
+        """
+        ctx = self._thread_context.get(chat_id, {})
+        to_addr = ctx.get("sender_addr", "")
+        if to_addr and "@" in to_addr:
+            return to_addr, ctx
+        # chat_id may be a bare email address (sender mode, or direct address)
+        if "@" in chat_id:
+            ctx = self._thread_context.get(chat_id, {})
+            return chat_id, ctx
+        # Proactive delivery (cron, kanban notifications) — use home address
+        home = os.getenv("EMAIL_HOME_ADDRESS", "")
+        if home:
+            return home, {}
+        return "", {}
 
     def _message_id_domain(self) -> str:
         """Domain part for generated Message-IDs.
@@ -923,15 +997,19 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = formataddr((self._display_name, self._address)) if self._display_name else self._address
         msg["To"] = to_addr
 
-        # Thread context for reply
-        ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
+        # Resolve thread context for subject and threading headers
+        ctx = self._thread_context.get(chat_id, {}) if chat_id else {}
+        subject = ctx.get("subject", "")
+        if not subject:
+            # chat_id may itself be the normalized subject
+            subject = chat_id if chat_id and chat_id != to_addr else "Hermes Agent"
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
@@ -1020,14 +1098,20 @@ class EmailAdapter(BasePlatformAdapter):
 
         body = "\n\n".join(body_parts)
 
+        to_addr, _ctx = self._resolve_recipient(chat_id)
+        if not to_addr:
+            logger.error("[Email] Cannot resolve recipient for multi-image send, chat_id=%r", chat_id)
+            return
+
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None,
                 self._send_email_with_attachments,
-                chat_id,
+                to_addr,
                 body,
                 local_paths,
+                chat_id,
             )
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
@@ -1038,14 +1122,19 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         file_paths: List[str],
+        chat_id: Optional[str] = None,
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = formataddr((self._display_name, self._address)) if self._display_name else self._address
         msg["To"] = to_addr
 
-        ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
+        ctx = self._thread_context.get(chat_id, {}) if chat_id else {}
+        subject = ctx.get("subject", "")
+        if not subject and chat_id and chat_id != to_addr:
+            subject = chat_id
+        if not subject:
+            subject = "Hermes Agent"
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
@@ -1097,15 +1186,20 @@ class EmailAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a file as an email attachment."""
+        to_addr, _ctx = self._resolve_recipient(chat_id)
+        if not to_addr:
+            logger.error("[Email] Cannot resolve recipient for document send, chat_id=%r", chat_id)
+            return SendResult(success=False, error=f"Cannot resolve recipient for chat_id={chat_id!r}")
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
                 None,
                 self._send_email_with_attachment,
-                chat_id,
+                to_addr,
                 caption or "",
                 file_path,
                 file_name,
+                chat_id,
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -1118,14 +1212,19 @@ class EmailAdapter(BasePlatformAdapter):
         body: str,
         file_path: str,
         file_name: Optional[str] = None,
+        chat_id: Optional[str] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = formataddr((self._display_name, self._address)) if self._display_name else self._address
         msg["To"] = to_addr
 
-        ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
+        ctx = self._thread_context.get(chat_id, {}) if chat_id else {}
+        subject = ctx.get("subject", "")
+        if not subject and chat_id and chat_id != to_addr:
+            subject = chat_id
+        if not subject:
+            subject = "Hermes Agent"
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject

@@ -632,7 +632,7 @@ def allowlist_path() -> Path:
 def load_allowlist() -> Dict[str, Any]:
     """Return the parsed allowlist, or an empty skeleton if absent."""
     try:
-        raw = json.loads(allowlist_path().read_text())
+        raw = json.loads(allowlist_path().read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {"approvals": []}
     if not isinstance(raw, dict):
@@ -656,7 +656,7 @@ def save_allowlist(data: Dict[str, Any]) -> None:
             prefix=f"{p.name}.", suffix=".tmp", dir=str(p.parent),
         )
         try:
-            with os.fdopen(fd, "w") as fh:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps(data, indent=2, sort_keys=True))
             atomic_replace(tmp_path, p)
         except Exception:

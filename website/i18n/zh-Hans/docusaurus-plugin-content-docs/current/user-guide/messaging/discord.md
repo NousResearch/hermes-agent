@@ -315,6 +315,7 @@ discord:
   no_thread_channels: []          # 机器人不创建线程直接响应的频道 ID
   history_backfill: true          # 在提及时前置最近的频道滚动历史（默认：true）
   history_backfill_limit: 50      # 向后扫描的最大消息数（默认：50）
+  history_full_thread: false      # 走完整个线程，包括早于机器人上次回复的消息（默认：false）
   channel_prompts: {}             # 每个频道的临时系统 prompt（提示词）
   allow_mentions:                 # 机器人允许 ping 的内容（安全默认值）
     everyone: false               # @everyone / @here ping（默认：false）
@@ -483,6 +484,25 @@ discord:
   history_backfill: true
   history_backfill_limit: 50
 ```
+
+#### `discord.history_full_thread`
+
+**类型：** 布尔值 — **默认值：** `false`
+
+可选开启，覆盖默认的"在机器人最近一条回复处停下"行为，走完整个线程。默认的分区行为在大多数情况下是正确的：只暴露机器人上次回复之后的消息，保持上下文窗口紧凑并与会话记录对齐。当你希望机器人看到完整线程上下文时——例如在长跑调查中机器人已多次回复的线程里恢复工作时——启用 `history_full_thread`。
+
+```yaml
+discord:
+  history_full_thread: true
+```
+
+权衡：
+
+- **token 成本随活动窗口线性增长。** 会话记录中已有的消息会在 prompt 中重复出现，因此开启 `history_full_thread: true` 的长跑线程每轮都要付出更多成本。建议与 `history_backfill_limit` 配合以限制扫描范围——例如 `history_backfill_limit: 100` 可以让冷启动扫描即使在全线程模式下也有界。
+- **绕过热路径缓存。** `history_full_thread` 开启时，会刻意跳过 `_last_self_message_id` 内存缓存，让扫描能够越过机器人此前的回复。缓存本来会在热路径上收窄 Discord API 的窗口；全线程模式用这层优化换取可见性。
+- **默认行为安全。** 不设置这个开关时，保留原有分区行为完全不变。需要更宽的窗口时显式开启。
+
+运维场景下不修改 config 也可通过环境变量覆盖：`DISCORD_HISTORY_FULL_THREAD=true`。环境变量优先级高于 YAML key，与其它 `discord.*` 设置的约定一致。
 
 #### `group_sessions_per_user`
 

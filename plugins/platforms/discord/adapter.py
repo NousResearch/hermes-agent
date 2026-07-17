@@ -4346,14 +4346,22 @@ class DiscordAdapter(BasePlatformAdapter):
         # Guard: only use the cache when it's chronologically before the
         # trigger — Discord snowflake IDs are monotonically increasing, so
         # a simple int comparison suffices.
+        #
+        # full_thread mode bypasses the cache entirely: the user wants the
+        # entire thread context, including messages that preceded prior bot
+        # replies.  Passing `after=_last_self_message_id` here would silently
+        # drop everything before our last response, defeating the feature on
+        # the hot path.  See regression test
+        # `test_fetch_channel_context_full_thread_ignores_last_self_cache`.
         channel_id = str(getattr(channel, "id", ""))
-        _cached_id = self._last_self_message_id.get(channel_id)
         _after_obj = None
-        try:
-            if _cached_id and int(_cached_id) < int(before.id):
-                _after_obj = discord.Object(id=int(_cached_id))
-        except (ValueError, TypeError):
-            pass  # Malformed cache entry — fall back to cold-start scan
+        if not full_thread:
+            _cached_id = self._last_self_message_id.get(channel_id)
+            try:
+                if _cached_id and int(_cached_id) < int(before.id):
+                    _after_obj = discord.Object(id=int(_cached_id))
+            except (ValueError, TypeError):
+                pass  # Malformed cache entry — fall back to cold-start scan
 
         try:
             def _keep(msg) -> Optional[str]:
@@ -7098,6 +7106,12 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     hbl = discord_cfg.get("history_backfill_limit")
     if hbl is not None and not os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT"):
         os.environ["DISCORD_HISTORY_BACKFILL_LIMIT"] = str(hbl)
+    # history_full_thread: opt-in override that walks the entire thread
+    # instead of stopping at the bot's most recent self-message partition.
+    # Default in the adapter is False, so existing deployments see no
+    # behaviour change unless they explicitly set this in config.yaml.
+    if "history_full_thread" in discord_cfg and not os.getenv("DISCORD_HISTORY_FULL_THREAD"):
+        os.environ["DISCORD_HISTORY_FULL_THREAD"] = str(discord_cfg["history_full_thread"]).lower()
     # allow_mentions: granular control over what the bot can ping.
     # Safe defaults (no @everyone/roles) are applied in the adapter;
     # these YAML keys only override when set and let users opt back

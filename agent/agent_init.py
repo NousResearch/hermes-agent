@@ -580,6 +580,11 @@ def init_agent(
     agent._tool_guardrails = ToolCallGuardrailController()
     agent._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
 
+    # Tool call history across turns — used to detect stuck tool loops
+    # where the model's thinking block says "stop" but the action keeps
+    # calling the same tool. Each entry is (tool_name, normalized_args).
+    agent._tool_call_history: list[tuple[str, str]] = []
+
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False
     agent._interrupt_message = None  # Optional message that triggered interrupt

@@ -4794,6 +4794,30 @@ def run_conversation(
                     assistant_message.tool_calls
                 )
 
+                # ── Thinking/action inconsistency detection ────────────
+                # Some models (especially DeepSeek V4) reason correctly in
+                # their thinking block that the task is complete and they
+                # should stop, but the action block keeps generating the
+                # same tool call.  Detect this pattern and force-terminate
+                # instead of burning iteration budget on no-op loops.
+                if agent._detect_stuck_tool_loop(assistant_message):
+                    if not agent.quiet_mode:
+                        agent._vprint(
+                            f"{agent.log_prefix}⛔ Detected stuck tool loop — "
+                            f"model keeps calling the same tool while reasoning suggests stop. "
+                            f"Forcing termination.",
+                            force=True,
+                        )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": None,
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "partial": True,
+                        "error": "Model stuck in tool loop: repeated identical tool calls while reasoning suggests completion",
+                    }
+
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                 
                 turn_content = assistant_message.content or ""

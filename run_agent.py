@@ -3923,6 +3923,110 @@ class AIAgent:
                 logger.warning("Removed duplicate tool call: %s", tc.function.name)
         return unique if len(unique) < len(tool_calls) else tool_calls
 
+    def _detect_stuck_tool_loop(self, assistant_message) -> bool:
+        """Detect if the model is stuck in a tool-calling loop.
+
+        Checks whether the model's reasoning/thinking content indicates the
+        task is complete while it keeps calling the same tool.  This is a
+        known issue with DeepSeek V4 and similar models where the reasoning
+        block says "I should stop" but the action decoder generates another
+        tool call.
+
+        Returns True if a stuck loop is detected and the agent should force-
+        terminate the current turn.
+        """
+        if not assistant_message.tool_calls:
+            return False
+
+        # 1. Extract reasoning/thinking content from the assistant message
+        reasoning_text = self._extract_reasoning(assistant_message) or ""
+        thinking_lower = reasoning_text.lower()
+
+        # 2. Check if reasoning suggests the model wants to stop
+        stop_indicators = [
+            "i need to stop",
+            "i should stop",
+            "going to stop",
+            "i will now stop",
+            "i'm done",
+            "i am done",
+            "i'm finished",
+            "task is complete",
+            "task complete",
+            "completed the task",
+            "finished the task",
+            "no more tools",
+            "calling it done",
+            "wrap this up",
+            "final answer now",
+            "stop calling tools",
+            "just give the final answer",
+            "no further actions",
+        ]
+        has_stop_intent = any(indicator in thinking_lower for indicator in stop_indicators)
+
+        # 3. Normalize current tool calls for comparison
+        def _normalize_args(args: str) -> str:
+            """Normalize tool arguments for cross-turn comparison."""
+            try:
+                parsed = json.loads(args)
+                # Remove non-deterministic fields (IDs, timestamps, etc.)
+                for skip_key in ("call_id", "id", "timestamp", "ts"):
+                    if isinstance(parsed, dict):
+                        parsed.pop(skip_key, None)
+                return json.dumps(parsed, sort_keys=True)
+            except (json.JSONDecodeError, TypeError):
+                return args.strip()
+
+        current_calls = [
+            (tc.function.name, _normalize_args(tc.function.arguments or ""))
+            for tc in assistant_message.tool_calls
+        ]
+
+        # 4. Update history (keep last 20 entries)
+        if not hasattr(self, "_tool_call_history"):
+            self._tool_call_history = []
+        self._tool_call_history.extend(current_calls)
+        if len(self._tool_call_history) > 20:
+            self._tool_call_history = self._tool_call_history[-20:]
+
+        # 5. Detect repetition: same tool, same normalized args, at least 3 times
+        if len(current_calls) != 1:
+            # Only detect loops for single-tool turns (multi-tool is complex)
+            return False
+
+        tc_name, tc_args = current_calls[0]
+
+        # Count consecutive occurrences of this exact (name, args) pair
+        consecutive_count = 0
+        for hist_name, hist_args in reversed(self._tool_call_history):
+            if hist_name == tc_name and hist_args == tc_args:
+                consecutive_count += 1
+            else:
+                break
+
+        # 6. Decision logic:
+        #    - At least 3 consecutive identical tool calls AND
+        #    - Reasoning suggests stopping
+        #    OR
+        #    - At least 5 consecutive identical tool calls (regardless of reasoning)
+        if consecutive_count >= 5:
+            logger.warning(
+                "Stuck tool loop detected: %d consecutive '%s' calls with identical args",
+                consecutive_count, tc_name,
+            )
+            return True
+
+        if consecutive_count >= 3 and has_stop_intent:
+            logger.warning(
+                "Thinking/action inconsistency detected: %d consecutive '%s' "
+                "calls while reasoning suggests stopping",
+                consecutive_count, tc_name,
+            )
+            return True
+
+        return False
+
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Forwarder — see ``agent.agent_runtime_helpers.repair_tool_call``."""
         from agent.agent_runtime_helpers import repair_tool_call

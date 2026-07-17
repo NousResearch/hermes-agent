@@ -268,6 +268,11 @@ class ResponsesApiTransport(ProviderTransport):
         # xAI Responses takes prompt_cache_key in extra_body (set further
         # down); GitHub Models opts out of cache-key routing entirely.
         if not is_github_responses and not is_xai_responses and cache_key:
+            # Codex backend rejects prompt_cache_key > 64 chars with HTTP 400.
+            # Truncate while preserving the pck_ prefix for content-addressed
+            # keys, or just truncate session_id-based fallbacks.
+            if len(cache_key) > 64:
+                cache_key = cache_key[:64]
             kwargs["prompt_cache_key"] = cache_key
 
         if reasoning_enabled and is_xai_responses:

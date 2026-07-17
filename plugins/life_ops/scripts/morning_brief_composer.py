@@ -381,21 +381,78 @@ def render_session_value(value) -> str:
     return ", ".join(parts) if parts else "—"
 
 
+def _render_v3_form_line(form: dict) -> str:
+    """Render the v3 fitness-metrics form dict as a single Form line."""
+    line = f"**Form:** CTL {form.get('ctl')} · ATL {form.get('atl')} · TSB {form.get('tsb')}"
+    acwr = form.get("acwr")
+    if acwr is not None:
+        line += f" · ACWR {acwr} ({form.get('acwr_state')})"
+    line += f" — {form.get('interpretation')}"
+    return line
+
+
+def _render_v3_weight_line(weight: dict) -> str:
+    """Render the v3 weight tracking dict as a single Weight line."""
+    on_track_str = "on track" if weight.get("on_track") else "off pace"
+    return (
+        f"**Weight:** {weight.get('current_kg')}kg"
+        f" · 7d {weight.get('trend_7d')}"
+        f" · target {weight.get('target_kg')} by {weight.get('target_date')}"
+        f" ({on_track_str})"
+    )
+
+
+def _render_v3_week_plan_block(week_plan: list) -> str:
+    """Render the v3 week_plan list as a heading + one row per day."""
+    rows = ["**Week plan:**"]
+    for entry in week_plan:
+        day = entry.get("day", "")
+        if entry.get("planned"):
+            rows.append(f"· {day}  {entry.get('session_type')} {entry.get('duration_min')}min")
+        else:
+            rows.append(f"· {day}  rest")
+    return "\n".join(rows)
+
+
 def render_training_section(data: dict | None, reason: str) -> str:
     lines = ["## Section 3 — Training\n"]
     if data is None:
         lines.append(_unavailable_block(reason))
         return "\n".join(lines)
 
+    # v3 new blocks (AC-1, AC-2, AC-3)
+    v3_blocks: list[str] = []
+
+    form = data.get("form")
+    if isinstance(form, dict):
+        v3_blocks.append(_render_v3_form_line(form))
+
+    weight = data.get("weight")
+    if weight is not None:
+        v3_blocks.append(_render_v3_weight_line(weight))
+
+    week_plan = data.get("week_plan")
+    if isinstance(week_plan, list) and week_plan:
+        v3_blocks.append(_render_v3_week_plan_block(week_plan))
+
+    lines.extend(v3_blocks)
+
     advisories = data.get("advisories")
     if advisories:
+        # AC-4: heading only when at least one new block precedes advisories
+        if v3_blocks:
+            lines.append("**Advisories:**")
         for advisory in advisories:
             lines.append(render_advisory(advisory))
         return "\n".join(lines)
 
-    # Fall back to raw fields
+    # AC-5: Legacy fallback when advisories is absent
+    v3_form_rendered = isinstance(form, dict)
     fallback_parts: list[str] = []
     for field in ("today", "tomorrow", "form", "recent_wrap"):
+        # Skip form when it was already rendered as a v3 fitness-metrics line
+        if field == "form" and v3_form_rendered:
+            continue
         value = data.get(field)
         if not value:
             continue
@@ -403,7 +460,7 @@ def render_training_section(data: dict | None, reason: str) -> str:
 
     if fallback_parts:
         lines.extend(fallback_parts)
-    else:
+    elif not v3_blocks:
         lines.append("> (no training data today)\n")
 
     return "\n".join(lines)

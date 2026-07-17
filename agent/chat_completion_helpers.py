@@ -201,6 +201,7 @@ def _codex_wait_notice_recovery(
     call_start: float,
     idle_enabled: bool,
     idle_timeout: float,
+    elapsed: float,
 ) -> str:
     """Describe the earliest enabled Codex watchdog on the call timeline."""
     deadlines: list[float] = []
@@ -211,7 +212,7 @@ def _codex_wait_notice_recovery(
             deadlines.append(ttfb_timeout)
     elif idle_enabled and math.isfinite(idle_timeout):
         deadlines.append(max(0.0, last_event_ts - call_start) + idle_timeout)
-    if not deadlines:
+    if not deadlines or min(deadlines) <= elapsed:
         return ""
     return f"; auto-reconnect at {int(min(deadlines))}s"
 
@@ -636,20 +637,26 @@ def interruptible_api_call(agent, api_kwargs: dict):
         # usually a slow/overloaded provider, but the UI never said so).
         if _poll_count % 100 == 0:  # 100 × 0.3s = 30s
             _elapsed = time.time() - _call_start
-            _recovery = _codex_wait_notice_recovery(
-                stale_timeout=_stale_timeout,
-                ttfb_enabled=_ttfb_enabled,
-                ttfb_timeout=_ttfb_timeout,
-                last_event_ts=getattr(agent, "_codex_stream_last_event_ts", None),
-                call_start=_call_start,
-                idle_enabled=_codex_idle_enabled,
-                idle_timeout=_codex_idle_timeout,
-            )
-            agent._emit_wait_notice(
-                f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
-                f"{int(_elapsed)}s with no response yet (provider may be slow "
-                f"or overloaded{_recovery})"
-            )
+            try:
+                _recovery = _codex_wait_notice_recovery(
+                    stale_timeout=_stale_timeout,
+                    ttfb_enabled=_ttfb_enabled,
+                    ttfb_timeout=_ttfb_timeout,
+                    last_event_ts=getattr(
+                        agent, "_codex_stream_last_event_ts", None
+                    ),
+                    call_start=_call_start,
+                    idle_enabled=_codex_idle_enabled,
+                    idle_timeout=_codex_idle_timeout,
+                    elapsed=_elapsed,
+                )
+                agent._emit_wait_notice(
+                    f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
+                    f"{int(_elapsed)}s with no response yet (provider may be slow "
+                    f"or overloaded{_recovery})"
+                )
+            except Exception:
+                logger.debug("wait-notice construction failed", exc_info=True)
 
         _elapsed = time.time() - _call_start
 

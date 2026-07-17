@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PetGrid } from '../components/petSprite.js'
 
 import { useGateway } from './gatewayContext.js'
-import { getOverlayState, $overlayState } from './overlayStore.js'
+import { $overlayState, getOverlayState } from './overlayStore.js'
 import { $petFlash } from './petFlashStore.js'
 import { $turnState } from './turnStore.js'
 import { $uiState } from './uiStore.js'

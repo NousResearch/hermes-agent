@@ -2560,3 +2560,98 @@ class TestApprovalPromptRedaction:
         # The script's credential must not appear in the user-facing message.
         assert "sk-proj-abc123xyz4567890abcdef" not in result["message"]
         assert "sk-proj-abc123xyz4567890abcdef" not in result["command"]
+
+
+class TestRuntimeSelfPidKillGuard:
+    def test_kill_own_pid_requires_approval(self):
+        own_pid = os.getpid()
+
+        dangerous, key, desc = detect_dangerous_command(f"kill {own_pid}")
+
+        assert dangerous is True
+        assert key is not None
+        assert "self-termination" in desc
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "kill -9 {pid}",
+            "kill -TERM {pid}",
+            "kill -s TERM {pid}",
+            "kill --signal TERM {pid}",
+            "kill -- {pid}",
+            "kill -n 9 {pid}",
+            "kill -9 -- {pid}",
+            "kill 999999999 {pid}",
+            "/usr/bin/kill -TERM {pid}",
+            "(kill {pid})",
+            "echo ready; kill {pid} >/dev/null",
+        ],
+    )
+    def test_kill_own_pid_with_signal_forms_requires_approval(self, template):
+        own_pid = os.getpid()
+
+        dangerous, key, desc = detect_dangerous_command(template.format(pid=own_pid))
+
+        assert dangerous is True
+        assert key is not None
+        assert "self-termination" in desc
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "kill -0 {pid}",
+            "kill -s 0 {pid}",
+            "kill --signal 0 {pid}",
+            "kill -s0 {pid}",
+            "kill --signal=0 {pid}",
+            "kill -n 0 {pid}",
+            "kill -n0 {pid}",
+            "kill -0 -- {pid}",
+            "/usr/bin/kill -s0 {pid}",
+            "/usr/bin/kill --signal=0 {pid}",
+        ],
+    )
+    def test_kill_own_pid_with_signal_zero_is_not_flagged(self, template):
+        own_pid = os.getpid()
+
+        dangerous, _key, _desc = detect_dangerous_command(template.format(pid=own_pid))
+
+        assert dangerous is False
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            'echo "kill {pid}"',
+            "printf '%s' 'kill -9 {pid}'",
+            "echo 'prefix kill {pid} suffix'",
+        ],
+    )
+    def test_quoted_kill_text_is_not_treated_as_a_command(self, template):
+        own_pid = os.getpid()
+
+        dangerous, _key, _desc = detect_dangerous_command(template.format(pid=own_pid))
+
+        assert dangerous is False
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "kill -l {pid}",
+            "kill --list {pid}",
+            "kill -L {pid}",
+        ],
+    )
+    def test_kill_signal_listing_modes_are_not_flagged(self, template):
+        own_pid = os.getpid()
+
+        dangerous, _key, _desc = detect_dangerous_command(template.format(pid=own_pid))
+
+        assert dangerous is False
+
+    def test_kill_unrelated_pid_is_not_flagged_by_self_pid_guard(self):
+        unrelated_pid = os.getpid() + 1_000_000
+
+        dangerous, _key, _desc = detect_dangerous_command(f"kill {unrelated_pid}")
+
+        assert dangerous is False

@@ -43,12 +43,16 @@ def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
         yaml.safe_dump(
             {
                 # The default mcp_discovery_timeout (1.5s) races the FastMCP
-                # probe's subprocess spawn+connect on slow CI shards: discovery
-                # misses the first tool snapshot and /tools lacks the probe
-                # tool (the recurring shard-8 flake, root-caused 2026-07-16 by
-                # reproducing with timeout=0.01). Production is unaffected
-                # (late-binding refresh), but THIS test requires discovery to
-                # complete before the snapshot — pin a generous bound.
+                # probe's subprocess spawn+connect on loaded CI shards (12
+                # parallel pytest workers): discovery misses the first tool
+                # snapshot and /tools lacks the probe tool (the recurring
+                # shard flake, root-caused 2026-07-16 by reproducing with
+                # timeout=0.01). Production is unaffected (late-binding
+                # refresh), but THIS test requires discovery to complete
+                # before the snapshot — pin a generous bound. The response
+                # read deadline below MUST exceed this bound: the worker
+                # legitimately blocks in wait_for_mcp_discovery for up to
+                # this long before answering /tools.
                 "mcp_discovery_timeout": 30,
                 "mcp_servers": {
                     "profileprobe": {
@@ -98,9 +102,12 @@ def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
         proc.stdin.write(json.dumps({"id": 1, "command": "/tools"}) + "\n")
         proc.stdin.flush()
         try:
-            line = output.get(timeout=10)
+            # Must exceed mcp_discovery_timeout above (30s): the worker waits
+            # for discovery before its first snapshot, so on a loaded shard
+            # the response arrives just after the FastMCP probe connects.
+            line = output.get(timeout=60)
         except queue.Empty:
-            pytest.fail("slash worker produced no /tools response within 10 seconds")
+            pytest.fail("slash worker produced no /tools response within 60 seconds")
         response = json.loads(line)
         assert response["ok"] is True
         assert "mcp__profileprobe__hermes_61922_profile_probe" in response["output"]

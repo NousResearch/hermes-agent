@@ -4146,6 +4146,43 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def get_reduced_authority_turn(
+        self,
+        session_id: str,
+        *,
+        correlation_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return an already-committed reduced-authority turn without rerunning it."""
+        if not isinstance(correlation_id, str) or not re.fullmatch(r"[0-9a-f]{32}", correlation_id):
+            raise ValueError("Invalid reduced-authority turn correlation ID")
+        user_marker = f"workspace-run:{correlation_id}"
+        assistant_marker = f"workspace-reduced-output:{correlation_id}"
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, role, content, platform_message_id
+                FROM messages
+                WHERE session_id = ? AND platform_message_id IN (?, ?)
+                ORDER BY id
+                """,
+                (session_id, user_marker, assistant_marker),
+            ).fetchall()
+        if not rows:
+            return None
+        by_marker = {row["platform_message_id"]: row for row in rows}
+        user_row = by_marker.get(user_marker)
+        assistant_row = by_marker.get(assistant_marker)
+        if user_row is None or assistant_row is None:
+            raise RuntimeError("Reduced-authority turn persistence is incomplete")
+        if user_row["role"] != "user" or assistant_row["role"] != "assistant":
+            raise RuntimeError("Reduced-authority turn persistence has invalid roles")
+        return {
+            "user_id": int(user_row["id"]),
+            "assistant_id": int(assistant_row["id"]),
+            "user_content": self._decode_content(user_row["content"]),
+            "assistant_content": self._decode_content(assistant_row["content"]),
+        }
+
     def append_reduced_authority_turn(
         self,
         session_id: str,
@@ -4816,6 +4853,24 @@ class SessionDB:
         messages = []
         for row in rows:
             content = self._decode_content(row["content"])
+            platform_marker = row["platform_message_id"]
+            if (
+                row["role"] == "assistant"
+                and isinstance(platform_marker, str)
+                and platform_marker.startswith("workspace-reduced-output:")
+            ):
+                content = "[Prior attachment response omitted from tool-enabled context.]"
+            elif (
+                row["role"] == "user"
+                and isinstance(content, str)
+                and isinstance(platform_marker, str)
+                and platform_marker.startswith("workspace-run:")
+            ):
+                content = re.sub(
+                    r"\[Attached text file: [^\r\n\]]{1,240}, [0-9]+ characters\]",
+                    "[Attached text file omitted from durable history]",
+                    content,
+                )
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}

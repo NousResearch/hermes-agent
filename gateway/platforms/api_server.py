@@ -511,9 +511,7 @@ def _session_chat_untrusted_context(
             f"{content}\n"
             f"--- END UNTRUSTED ATTACHMENT: {clean_name} ---"
         )
-        durable_parts.append(
-            f"[Attached text file: {clean_name}, {len(content)} characters]"
-        )
+        durable_parts.append("[Attached text file omitted from durable history]")
 
     return (
         "\n\n".join(live_parts),
@@ -4817,6 +4815,34 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id or "",
                 )
                 try:
+                    if reduced_authority:
+                        if not session_id or not isinstance(turn_correlation_id, str):
+                            raise RuntimeError("Reduced-authority turn is missing persistence metadata")
+                        db = self._ensure_session_db()
+                        replay = db.get_reduced_authority_turn(
+                            session_id,
+                            correlation_id=turn_correlation_id,
+                        )
+                        if replay is not None:
+                            return {
+                                "session_id": session_id,
+                                "final_response": replay["assistant_content"],
+                                "completed": True,
+                                "persisted_user_message_id": str(replay["user_id"]),
+                                "turn_correlation_id": turn_correlation_id,
+                                "messages": [
+                                    {
+                                        "id": str(replay["user_id"]),
+                                        "role": "user",
+                                        "content": replay["user_content"],
+                                    },
+                                    {
+                                        "id": str(replay["assistant_id"]),
+                                        "role": "assistant",
+                                        "content": replay["assistant_content"],
+                                    },
+                                ],
+                            }, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt,
                         session_id=None if reduced_authority else session_id,

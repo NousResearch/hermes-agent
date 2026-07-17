@@ -243,6 +243,24 @@ class TestExtractCacheBustingConfig:
         assert out["compression.protect_last_n"] == 25
         assert out["compression.codex_app_server_auto"] == "hermes"
 
+    def test_reads_skill_catalog_inputs(self):
+        """Skill catalog changes must rebuild the cached agent system prompt."""
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {
+                "skills": {
+                    "disabled": ["ce-debug"],
+                    "platform_disabled": {"telegram": ["ce-work"]},
+                    "external_dirs": ["/tmp/team-skills"],
+                }
+            }
+        )
+
+        assert out["skills.disabled"] == ["ce-debug"]
+        assert out["skills.platform_disabled"] == {"telegram": ["ce-work"]}
+        assert out["skills.external_dirs"] == ["/tmp/team-skills"]
+
     def test_missing_keys_yield_none(self):
         """Absent config keys must produce None values (still contribute to signature)."""
         from gateway.run import GatewayRunner

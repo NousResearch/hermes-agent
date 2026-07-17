@@ -16408,6 +16408,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
+        ("skills", "disabled"),
+        ("skills", "platform_disabled"),
+        ("skills", "external_dirs"),
         ("memory", "provider"),
     )
 

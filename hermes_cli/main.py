@@ -5666,6 +5666,15 @@ def cmd_gui(args: argparse.Namespace):
 
     # with_hermes_node_path() copies os.environ when called with no arg.
     env = with_hermes_node_path()
+    # If HERMES_HOME was pinned to a profile directory (via -p / --profile),
+    # relay the profile name to the Electron app so startHermes() can pass
+    # `--profile <name>` when spawning the backend (the desktop's own
+    # active-profile.json is not written by the CLI invocation).
+    _gui_hermes_home = os.environ.get("HERMES_HOME", "")
+    if _gui_hermes_home:
+        _gui_home_path = Path(_gui_hermes_home)
+        if _gui_home_path.parent.name == "profiles":
+            env["HERMES_DESKTOP_PROFILE"] = _gui_home_path.name
     if getattr(args, "fake_boot", False):
         env["HERMES_DESKTOP_BOOT_FAKE"] = "1"
     if getattr(args, "ignore_existing", False):

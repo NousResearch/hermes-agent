@@ -6796,7 +6796,7 @@ async function startHermes() {
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
     // unset preference keeps the legacy launch so existing installs are
     // unaffected.
-    const activeProfile = readActiveDesktopProfile()
+    const activeProfile = readActiveDesktopProfile() || process.env.HERMES_DESKTOP_PROFILE || null
 
     if (activeProfile) {
       backendArgs.unshift('--profile', activeProfile)

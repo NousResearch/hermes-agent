@@ -809,10 +809,12 @@ class TestToolHandler:
                 _servers.pop("crm_srv", None)
                 _session_context_forwarding_servers.discard(safe_server_name)
 
+    @pytest.mark.parametrize("redact_pii", [False, True])
     def test_forward_redacted_profile_context_crosses_real_mcp_loop_boundary(
         self,
         tmp_path,
         monkeypatch,
+        redact_pii,
     ):
         """A routed profile's pseudonyms reach tools/call on the real loop."""
         from gateway.config import GatewayConfig, Platform
@@ -833,7 +835,7 @@ class TestToolHandler:
         secondary_home = tmp_path / "profiles" / "secondary"
         secondary_home.mkdir(parents=True)
         (secondary_home / "config.yaml").write_text(
-            "privacy:\n  redact_pii: true\n",
+            f"privacy:\n  redact_pii: {str(redact_pii).lower()}\n",
             encoding="utf-8",
         )
 
@@ -895,7 +897,7 @@ class TestToolHandler:
         loop_thread_alive_after_stop = None
         try:
             tokens, policy = runner._bind_session_context_for_turn(context)
-            assert policy is True
+            assert policy is redact_pii
             mcp._ensure_mcp_loop()
             loop_thread = _wait_for_real_mcp_loop(mcp)
 
@@ -913,23 +915,31 @@ class TestToolHandler:
                         "com.nousresearch.hermes/session_id": "20260716_120000_cloud",
                         "com.nousresearch.hermes/session_key": (
                             f"session_{_hash_id(raw_session_key)}"
+                            if redact_pii else raw_session_key
                         ),
-                        "com.nousresearch.hermes/chat_id": _hash_chat_id(phone),
-                        "com.nousresearch.hermes/thread_id": _hash_thread_id(
-                            raw_thread_id
+                        "com.nousresearch.hermes/chat_id": (
+                            _hash_chat_id(phone) if redact_pii else phone
                         ),
-                        "com.nousresearch.hermes/user_id": _hash_sender_id(phone),
-                        "com.nousresearch.hermes/message_id": _hash_message_id(
-                            raw_message_id
+                        "com.nousresearch.hermes/thread_id": (
+                            _hash_thread_id(raw_thread_id)
+                            if redact_pii else raw_thread_id
+                        ),
+                        "com.nousresearch.hermes/user_id": (
+                            _hash_sender_id(phone) if redact_pii else phone
+                        ),
+                        "com.nousresearch.hermes/message_id": (
+                            _hash_message_id(raw_message_id)
+                            if redact_pii else raw_message_id
                         ),
                     },
                 },
             }
             assert observed["thread_ident"] != caller_thread_ident
-            forwarded = json.dumps(observed)
-            assert phone not in forwarded
-            assert raw_thread_id not in forwarded
-            assert raw_message_id not in forwarded
+            if redact_pii:
+                forwarded = json.dumps(observed)
+                assert phone not in forwarded
+                assert raw_thread_id not in forwarded
+                assert raw_message_id not in forwarded
         finally:
             try:
                 if tokens is not None:

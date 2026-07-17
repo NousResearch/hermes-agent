@@ -92,6 +92,13 @@ class TwitterState:
         self._branches[key] = str(anchor_id)
         self._trim()
 
+    def is_bot_post(self, post_id: str) -> bool:
+        return str(post_id) in self._branches
+
+    def bot_posts_for_anchor(self, anchor_id: str) -> set[str]:
+        anchor = str(anchor_id)
+        return {post_id for post_id, value in self._branches.items() if value == anchor}
+
     def resolve_anchor(self, trigger_id: str, ancestor_ids: list[str]) -> str:
         for ancestor_id in ancestor_ids:
             anchor = self._branches.get(str(ancestor_id))

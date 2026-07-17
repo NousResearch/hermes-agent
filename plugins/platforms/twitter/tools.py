@@ -5,7 +5,7 @@ from typing import Any
 from tools.registry import tool_error, tool_result
 
 from .client import XClient
-from .oauth import load_tokens
+from .oauth import load_tokens, refresh_if_needed
 
 
 def twitter_available() -> bool:
@@ -23,6 +23,12 @@ async def handle_bookmarks(args: dict, **kwargs) -> str:
     tokens = load_tokens()
     if tokens is None:
         return tool_error("Twitter OAuth is not configured")
+    try:
+        tokens = await refresh_if_needed(
+            tokens.client_id, "http://127.0.0.1:8765/callback"
+        )
+    except Exception as exc:
+        return tool_error(f"Twitter OAuth refresh failed: {exc}")
     client = XClient(token=tokens.access_token)
     try:
         user_id = tokens.user_id
@@ -50,6 +56,12 @@ async def handle_post_metrics(args: dict, **kwargs) -> str:
     tokens = load_tokens()
     if tokens is None:
         return tool_error("Twitter OAuth is not configured")
+    try:
+        tokens = await refresh_if_needed(
+            tokens.client_id, "http://127.0.0.1:8765/callback"
+        )
+    except Exception as exc:
+        return tool_error(f"Twitter OAuth refresh failed: {exc}")
     client = XClient(token=tokens.access_token)
     try:
         return tool_result(await client.post_metrics(post_ids))

@@ -6,10 +6,11 @@ import hashlib
 import json
 import secrets
 import time
+import webbrowser
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Mapping
-from urllib.parse import urlencode
+from typing import Any, Callable, Mapping
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
@@ -110,6 +111,138 @@ def save_tokens(tokens: OAuthTokens | Mapping[str, Any]) -> OAuthTokens:
     return record
 
 
+def _loopback_redirect(redirect_uri: str) -> tuple[str, int, str]:
+    parsed = urlparse(redirect_uri)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or parsed.port is None
+        or not parsed.path.startswith("/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Twitter redirect_uri must be an HTTP loopback URL with a port")
+    return parsed.hostname, parsed.port, parsed.path
+
+
+async def wait_for_callback(
+    redirect_uri: str,
+    expected_state: str,
+    *,
+    timeout: float = 180,
+    on_ready: Callable[[], Any] | None = None,
+) -> str:
+    host, port, expected_path = _loopback_redirect(redirect_uri)
+    loop = asyncio.get_running_loop()
+    result: asyncio.Future[str] = loop.create_future()
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        status = "400 Bad Request"
+        body = "Authorization failed. You may close this window."
+        try:
+            line = await asyncio.wait_for(reader.readline(), timeout=5)
+            parts = line.decode("ascii", "replace").strip().split()
+            if len(parts) != 3 or parts[0] != "GET":
+                raise ValueError("malformed Twitter OAuth callback")
+            target = urlparse(parts[1])
+            if target.path != expected_path:
+                raise ValueError("unexpected Twitter OAuth callback path")
+            query = parse_qs(target.query)
+            state = (query.get("state") or [""])[0]
+            if not secrets.compare_digest(state, expected_state):
+                raise ValueError("Twitter OAuth callback state mismatch")
+            if query.get("error"):
+                raise RuntimeError("Twitter OAuth authorization was denied")
+            code = (query.get("code") or [""])[0]
+            if not code:
+                raise ValueError("Twitter OAuth callback omitted code")
+            if not result.done():
+                result.set_result(code)
+            status = "200 OK"
+            body = "Twitter authorization completed. You may close this window."
+        except Exception as exc:
+            if not result.done():
+                result.set_exception(exc)
+        finally:
+            response = (
+                f"HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\n"
+                f"Content-Length: {len(body.encode())}\r\nConnection: close\r\n\r\n{body}"
+            )
+            writer.write(response.encode())
+            try:
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+    server = await asyncio.start_server(handle, host, port)
+    try:
+        if on_ready is not None:
+            on_ready()
+        async with asyncio.timeout(timeout):
+            return await result
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def authorize(
+    client_id: str,
+    redirect_uri: str,
+    *,
+    timeout: float = 180,
+    open_url: Callable[[str], Any] = webbrowser.open,
+) -> OAuthTokens:
+    verifier, challenge = create_pkce_pair()
+    state = secrets.token_urlsafe(32)
+    url = build_authorization_url(
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        challenge=challenge,
+        state=state,
+    )
+    code = await wait_for_callback(
+        redirect_uri, state, timeout=timeout, on_ready=lambda: open_url(url)
+    )
+    oauth = OAuthClient(client_id, redirect_uri)
+    try:
+        tokens = await oauth.exchange_code(code, verifier)
+        from .client import XClient
+
+        client = XClient(token=tokens.access_token)
+        try:
+            identity = (await client.identity()).get("data") or {}
+        finally:
+            await client.close()
+        user_id = str(identity.get("id") or "")
+        if not user_id:
+            raise RuntimeError("X did not return the authenticated user ID")
+        return save_tokens(
+            OAuthTokens(
+                **{
+                    **asdict(tokens),
+                    "user_id": user_id,
+                    "username": str(identity.get("username") or ""),
+                }
+            )
+        )
+    finally:
+        await oauth.close()
+
+
+async def refresh_if_needed(client_id: str, redirect_uri: str) -> OAuthTokens:
+    tokens = load_tokens()
+    if tokens is None:
+        raise RuntimeError("Twitter OAuth is not configured")
+    if not tokens.expired():
+        return tokens
+    oauth = OAuthClient(client_id or tokens.client_id, redirect_uri)
+    try:
+        return await oauth.refresh(tokens)
+    finally:
+        await oauth.close()
+
+
 class OAuthClient:
     def __init__(
         self,
@@ -170,6 +303,12 @@ class OAuthClient:
             raise RuntimeError("Twitter OAuth response omitted access_token")
         expires_in = float(payload.get("expires_in") or 0)
         scopes = str(payload.get("scope") or "").split()
+        missing = set(SCOPES) - set(scopes)
+        if missing:
+            raise RuntimeError(
+                "Twitter OAuth response omitted required scopes: "
+                + ", ".join(sorted(missing))
+            )
         tokens = OAuthTokens(
             access_token=access_token,
             refresh_token=str(

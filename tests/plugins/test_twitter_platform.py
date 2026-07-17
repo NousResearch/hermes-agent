@@ -1,6 +1,7 @@
 import inspect
 import asyncio
 import json
+import socket
 import stat
 from unittest.mock import AsyncMock, Mock
 
@@ -75,6 +76,45 @@ def test_tokens_follow_active_hermes_home(monkeypatch, tmp_path):
     stored = second / "twitter" / "oauth2.json"
     assert json.loads(stored.read_text())["access_token"] == "two"
     assert stat.S_IMODE(stored.stat().st_mode) == 0o600
+
+
+@pytest.mark.asyncio
+async def test_loopback_callback_rejects_state_mismatch():
+    from plugins.platforms.twitter.oauth import wait_for_callback
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    waiter = asyncio.create_task(
+        wait_for_callback(
+            f"http://127.0.0.1:{port}/callback", "expected", timeout=1
+        )
+    )
+    await asyncio.sleep(0.01)
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(
+        b"GET /callback?code=secret&state=wrong HTTP/1.1\r\nHost: localhost\r\n\r\n"
+    )
+    await writer.drain()
+    await reader.read()
+    writer.close()
+    await writer.wait_closed()
+
+    with pytest.raises(ValueError, match="state"):
+        await waiter
+
+
+@pytest.mark.asyncio
+async def test_loopback_callback_has_bounded_timeout():
+    from plugins.platforms.twitter.oauth import wait_for_callback
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    with pytest.raises(TimeoutError):
+        await wait_for_callback(
+            f"http://127.0.0.1:{port}/callback", "expected", timeout=0.01
+        )
 
 
 def test_branch_anchor_follows_mapped_bot_ancestor(monkeypatch, tmp_path):
@@ -154,6 +194,29 @@ async def test_client_keeps_large_ids_as_strings():
     client = XClient(token="token", transport=httpx.MockTransport(handler))
     result = await client.create_post("hello", reply_to="9007199254740993")
     assert result == "9007199254740994"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_retries_explicit_rate_limit_response():
+    from plugins.platforms.twitter.client import XClient
+
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                429,
+                headers={"Retry-After": "0"},
+                json={"detail": "rate limited"},
+            )
+        return httpx.Response(200, json={"data": {"id": "7"}})
+
+    client = XClient(token="token", transport=httpx.MockTransport(handler))
+    assert (await client.identity())["data"]["id"] == "7"
+    assert calls == 2
     await client.close()
 
 
@@ -316,3 +379,91 @@ async def test_standalone_sender_uses_fresh_client(monkeypatch, tmp_path):
 
     assert result == {"success": True, "message_id": "901"}
     client.close.assert_awaited_once()
+
+
+def test_conversation_context_is_bounded_and_chronological():
+    from plugins.platforms.twitter.adapter import build_conversation_context
+
+    posts = [
+        {"id": "5", "author_id": "50", "text": "late sibling", "created_at": "2026-01-05", "referenced_tweets": [{"type": "replied_to", "id": "2"}]},
+        {"id": "3", "author_id": "7", "text": "bot", "created_at": "2026-01-03", "referenced_tweets": [{"type": "replied_to", "id": "2"}]},
+        {"id": "1", "author_id": "10", "text": "root", "created_at": "2026-01-01"},
+        {"id": "4", "author_id": "40", "text": "trigger", "created_at": "2026-01-04", "referenced_tweets": [{"type": "replied_to", "id": "3"}]},
+        {"id": "2", "author_id": "20", "text": "summon", "created_at": "2026-01-02", "referenced_tweets": [{"type": "replied_to", "id": "1"}]},
+        {"id": "6", "author_id": "60", "text": "older sibling", "created_at": "2026-01-02T12:00:00Z", "referenced_tweets": [{"type": "replied_to", "id": "2"}]},
+    ]
+    rendered = build_conversation_context(
+        posts,
+        trigger_id="4",
+        bot_post_ids={"3"},
+        max_depth=3,
+        max_posts=5,
+        siblings_per_parent=1,
+    )
+
+    assert rendered.index("root") < rendered.index("summon") < rendered.index("bot")
+    assert rendered.index("bot") < rendered.index("trigger")
+    assert "late sibling" in rendered
+    assert "older sibling" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_denied_mention_does_not_enrich(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(
+        PlatformConfig(extra={"client_id": "client", "allowed_users": ["42"]})
+    )
+    adapter._account_id = "7"
+    adapter._client = Mock()
+    adapter._client.conversation_posts = AsyncMock(side_effect=AssertionError)
+    adapter.handle_message = AsyncMock()
+    await adapter._process_mention(
+        {
+            "id": "201",
+            "author_id": "99",
+            "conversation_id": "200",
+            "text": "@bot denied",
+            "entities": {"mentions": [{"id": "7"}]},
+        },
+        {},
+    )
+
+    adapter._client.conversation_posts.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mention_polling_consumes_all_pages_oldest_first(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(
+        PlatformConfig(extra={"client_id": "client", "allow_all_users": True})
+    )
+    adapter._account_id = "7"
+    adapter._state.mention_since_id = "100"
+    adapter._client = Mock()
+    adapter._client.mentions = AsyncMock(
+        side_effect=[
+            {
+                "data": [{"id": "102", "author_id": "42", "conversation_id": "90", "text": "second", "entities": {"mentions": [{"id": "7"}]}}],
+                "meta": {"next_token": "next"},
+            },
+            {
+                "data": [{"id": "101", "author_id": "42", "conversation_id": "90", "text": "first", "entities": {"mentions": [{"id": "7"}]}}],
+                "meta": {},
+            },
+        ]
+    )
+    adapter._client.conversation_posts = AsyncMock(return_value={})
+    adapter.handle_message = AsyncMock()
+
+    await adapter._poll_mentions_once()
+
+    assert [call.args[0].message_id for call in adapter.handle_message.await_args_list] == [
+        "101",
+        "102",
+    ]
+    assert adapter._state.mention_since_id == "102"

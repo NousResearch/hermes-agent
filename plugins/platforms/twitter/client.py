@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import asyncio
+import time
 from pathlib import Path
 from typing import Any
 
@@ -12,10 +14,13 @@ API_BASE = "https://api.x.com"
 
 
 class XApiError(RuntimeError):
-    def __init__(self, status: int, endpoint: str, detail: str):
+    def __init__(
+        self, status: int, endpoint: str, detail: str, *, retry_after: float = 0
+    ):
         super().__init__(f"X API {status} on {endpoint}: {detail[:200]}")
         self.status = status
         self.endpoint = endpoint
+        self.retry_after = retry_after
 
 
 class AmbiguousWriteError(RuntimeError):
@@ -54,32 +59,50 @@ class XClient:
         **kwargs,
     ) -> dict[str, Any]:
         async def execute() -> dict[str, Any]:
-            try:
-                response = await self._client.request(method, path, **kwargs)
-            except httpx.RequestError as exc:
-                if ambiguous_write:
-                    raise AmbiguousWriteError(
-                        f"X delivery outcome is uncertain for {path}"
-                    ) from exc
-                raise
-            if response.is_error:
-                detail = ""
+            for attempt in range(2):
                 try:
-                    payload = response.json()
-                    error = (payload.get("errors") or [{}])[0]
-                    detail = str(
-                        error.get("detail")
-                        or error.get("title")
-                        or payload.get("detail")
-                        or ""
+                    response = await self._client.request(method, path, **kwargs)
+                except httpx.RequestError as exc:
+                    if ambiguous_write:
+                        raise AmbiguousWriteError(
+                            f"X delivery outcome is uncertain for {path}"
+                        ) from exc
+                    if method.upper() == "GET" and attempt == 0:
+                        await asyncio.sleep(0.1)
+                        continue
+                    raise
+                retry_after = _retry_delay(response)
+                if response.status_code == 429 and attempt == 0:
+                    await asyncio.sleep(retry_after)
+                    continue
+                if response.is_error:
+                    detail = ""
+                    try:
+                        payload = response.json()
+                        error = (payload.get("errors") or [{}])[0]
+                        detail = str(
+                            error.get("detail")
+                            or error.get("title")
+                            or payload.get("detail")
+                            or ""
+                        )
+                    except (TypeError, ValueError):
+                        detail = response.text
+                    if ambiguous_write and response.status_code >= 500:
+                        raise AmbiguousWriteError(
+                            f"X delivery outcome is uncertain for {path}"
+                        )
+                    raise XApiError(
+                        response.status_code,
+                        path,
+                        detail,
+                        retry_after=retry_after,
                     )
-                except (TypeError, ValueError):
-                    detail = response.text
-                raise XApiError(response.status_code, path, detail)
-            if not response.content:
-                return {}
-            payload = response.json()
-            return payload if isinstance(payload, dict) else {}
+                if not response.content:
+                    return {}
+                payload = response.json()
+                return payload if isinstance(payload, dict) else {}
+            raise XApiError(429, path, "rate limit retry exhausted")
 
         return await self._queue.run(bucket, execute)
 
@@ -227,3 +250,19 @@ def _media_type(path: Path) -> str:
         return types[suffix]
     except KeyError as exc:
         raise ValueError("Twitter supports JPG, PNG, and WEBP images") from exc
+
+
+def _retry_delay(response: httpx.Response) -> float:
+    raw_retry = response.headers.get("Retry-After")
+    if raw_retry:
+        try:
+            return max(0.0, min(float(raw_retry), 900.0))
+        except ValueError:
+            pass
+    raw_reset = response.headers.get("x-rate-limit-reset")
+    if raw_reset:
+        try:
+            return max(0.0, min(float(raw_reset) - time.time(), 900.0))
+        except ValueError:
+            pass
+    return 1.0 if response.status_code == 429 else 0.0

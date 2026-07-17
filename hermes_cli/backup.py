@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import zipfile
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -260,11 +261,9 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
     the DB is being written to.  Falls back to raw copy on failure.
     """
     try:
-        conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
-        backup_conn = sqlite3.connect(str(dst))
-        conn.backup(backup_conn)
-        backup_conn.close()
-        conn.close()
+        with closing(sqlite3.connect(f"file:{src}?mode=ro", uri=True)) as conn, \
+                closing(sqlite3.connect(str(dst))) as backup_conn:
+            conn.backup(backup_conn)
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)

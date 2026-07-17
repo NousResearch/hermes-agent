@@ -1233,10 +1233,10 @@ def run_doctor(args):
     if state_db_path.exists():
         try:
             import sqlite3
-            conn = sqlite3.connect(str(state_db_path))
-            cursor = conn.execute("SELECT COUNT(*) FROM sessions")
-            count = cursor.fetchone()[0]
-            conn.close()
+            from contextlib import closing
+            with closing(sqlite3.connect(str(state_db_path))) as conn:
+                cursor = conn.execute("SELECT COUNT(*) FROM sessions")
+                count = cursor.fetchone()[0]
             check_ok(f"{_DHH}/state.db exists ({count} sessions)")
 
             # FTS write-health probe (#50502): `SELECT COUNT(*)` above succeeds
@@ -1341,9 +1341,9 @@ def run_doctor(args):
                 )
                 if should_fix:
                     import sqlite3
-                    conn = sqlite3.connect(str(state_db_path))
-                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                    conn.close()
+                    from contextlib import closing
+                    with closing(sqlite3.connect(str(state_db_path))) as conn:
+                        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                     new_size = wal_path.stat().st_size if wal_path.exists() else 0
                     check_ok(f"WAL checkpoint performed ({wal_size // 1024}K → {new_size // 1024}K)")
                     fixed_count += 1

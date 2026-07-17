@@ -8,6 +8,10 @@ Trigger types
   daily      {"type": "daily", "time": "08:00"}            — local server time
   market     {"type": "market", "symbol": "BTC", "percent": 5}
              fires when |24h change| crosses the threshold (edge-triggered)
+             {"type": "market", "symbol": "BTC", "price": 100000, "direction": "above"}
+             fires when the spot price crosses an absolute level (edge-triggered)
+             {"type": "market", "symbol": "ETH", "rsi": 30, "direction": "below"}
+             fires when RSI(14) crosses a threshold (edge-triggered)
   worldstate {"type": "worldstate", "level": "elevated"}
              fires when the overall index reaches the level or worse
 
@@ -48,11 +52,32 @@ def validate_rule(rule: dict) -> str | None:
     if kind == "market":
         if not trigger.get("symbol"):
             return "market trigger needs a symbol (e.g. BTC)"
-        try:
-            if not 0 < float(trigger.get("percent", 0)) <= 100:
-                return "market trigger percent must be in (0, 100]"
-        except (TypeError, ValueError):
-            return "market trigger percent must be a number"
+        modes = [m for m in ("percent", "price", "rsi") if trigger.get(m) is not None]
+        if len(modes) != 1:
+            return "market trigger needs exactly one of percent, price or rsi"
+        mode = modes[0]
+        if mode == "percent":
+            try:
+                if not 0 < float(trigger.get("percent", 0)) <= 100:
+                    return "market trigger percent must be in (0, 100]"
+            except (TypeError, ValueError):
+                return "market trigger percent must be a number"
+        elif mode == "price":
+            try:
+                if float(trigger.get("price")) <= 0:
+                    return "market trigger price must be a positive number"
+            except (TypeError, ValueError):
+                return "market trigger price must be a number"
+            if trigger.get("direction") not in ("above", "below"):
+                return "price trigger needs direction 'above' or 'below'"
+        elif mode == "rsi":
+            try:
+                if not 0 <= float(trigger.get("rsi")) <= 100:
+                    return "market trigger rsi must be in [0, 100]"
+            except (TypeError, ValueError):
+                return "market trigger rsi must be a number"
+            if trigger.get("direction") not in ("above", "below"):
+                return "rsi trigger needs direction 'above' or 'below'"
     if kind == "worldstate" and trigger.get("level") not in ("watch", "elevated", "critical"):
         return "worldstate trigger level must be watch, elevated or critical"
     if action.get("type") not in VALID_ACTIONS:
@@ -217,6 +242,38 @@ class Automations:
             asset = next((a for a in data["assets"] if a["symbol"].upper() == symbol), None)
             if asset is None:
                 return False
+
+            if trigger.get("price") is not None:  # absolute price crossing
+                level = float(trigger["price"])
+                above = trigger.get("direction") == "above"
+                crossed = asset["price"] >= level if above else asset["price"] <= level
+                was = state.get("crossed", False)
+                state["crossed"] = crossed
+                if crossed and not was:
+                    self._fire(rule, extra=(
+                        f"{asset['name']} ({symbol}) crossed "
+                        f"{'above' if above else 'below'} ${level:,g} — now ${asset['price']:,}"))
+                    return True
+                return False
+
+            if trigger.get("rsi") is not None:  # RSI(14) threshold crossing
+                r = self._rsi_for(asset)
+                if r is None:
+                    return False
+                level = float(trigger["rsi"])
+                above = trigger.get("direction") == "above"
+                crossed = r >= level if above else r <= level
+                was = state.get("rsi_crossed", False)
+                state["rsi_crossed"] = crossed
+                if crossed and not was:
+                    zone = "overbought" if r >= 70 else "oversold" if r <= 30 else ""
+                    tail = f" ({zone})" if zone else ""
+                    self._fire(rule, extra=(
+                        f"{asset['name']} ({symbol}) RSI(14) is {r:.0f}, "
+                        f"{'above' if above else 'below'} {level:g}{tail}"))
+                    return True
+                return False
+
             beyond = abs(asset["change24h"]) >= float(trigger["percent"])
             was_beyond = state.get("beyond", False)
             state["beyond"] = beyond
@@ -245,6 +302,25 @@ class Automations:
             return False
 
         return False
+
+    def _rsi_for(self, asset: dict) -> float | None:
+        """Latest RSI(14) for a market asset. Prefers the daily chart closes;
+        falls back to the 7d sparkline carried on the markets row."""
+        import indicators
+        closes: list[float] = []
+        try:
+            chart = self.api.crypto_chart({"id": [asset["id"]], "days": ["30"]})
+            closes = [c["c"] for c in chart.get("candles", []) if c.get("c") is not None]
+        except Exception:
+            closes = []
+        if len(closes) <= 14:
+            closes = [p for p in (asset.get("spark") or []) if isinstance(p, (int, float))]
+        if len(closes) <= 14:
+            return None
+        for v in reversed(indicators.rsi(closes)):
+            if v is not None:
+                return v
+        return None
 
     def _fire(self, rule: dict, extra: str = "") -> None:
         action = rule["action"]

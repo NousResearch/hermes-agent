@@ -227,7 +227,10 @@ DASHBOARD_TOOLS = [
         "name": "create_automation",
         "description": (
             "Create a standing automation. Triggers: daily (needs time HH:MM), "
-            "market (needs symbol + percent — fires when |24h change| crosses it), "
+            "market (needs a symbol plus exactly one of: percent — fires when "
+            "|24h change| crosses it; price + direction above/below — fires when "
+            "spot price crosses an absolute level; rsi + direction above/below — "
+            "fires when RSI(14) crosses a threshold), "
             "worldstate (needs level — fires when the global index reaches it). "
             "Actions: briefing (auto-generated) or notify (needs message)."
         ),
@@ -239,7 +242,13 @@ DASHBOARD_TOOLS = [
                 "trigger_type": {"type": "string", "enum": ["daily", "market", "worldstate"]},
                 "time": {"type": ["string", "null"], "description": "HH:MM for daily"},
                 "symbol": {"type": ["string", "null"], "description": "e.g. BTC, for market"},
-                "percent": {"type": ["number", "null"], "description": "threshold, for market"},
+                "percent": {"type": ["number", "null"], "description": "24h %% threshold, for market"},
+                "price": {"type": ["number", "null"], "description": "absolute price level, for market"},
+                "rsi": {"type": ["number", "null"], "description": "RSI(14) threshold 0-100, for market"},
+                "direction": {
+                    "type": ["string", "null"], "enum": ["above", "below", None],
+                    "description": "for market price/rsi triggers",
+                },
                 "level": {
                     "type": ["string", "null"],
                     "enum": ["watch", "elevated", "critical", None],
@@ -248,8 +257,8 @@ DASHBOARD_TOOLS = [
                 "action_type": {"type": "string", "enum": ["briefing", "notify"]},
                 "message": {"type": ["string", "null"], "description": "for notify"},
             },
-            "required": ["name", "trigger_type", "time", "symbol", "percent", "level",
-                         "action_type", "message"],
+            "required": ["name", "trigger_type", "time", "symbol", "percent", "price", "rsi",
+                         "direction", "level", "action_type", "message"],
             "additionalProperties": False,
         },
     },
@@ -522,7 +531,14 @@ class Assistant:
             trigger["time"] = args.get("time")
         elif trigger["type"] == "market":
             trigger["symbol"] = (args.get("symbol") or "").upper()
-            trigger["percent"] = args.get("percent")
+            if args.get("price") is not None:
+                trigger["price"] = args.get("price")
+                trigger["direction"] = args.get("direction") or "above"
+            elif args.get("rsi") is not None:
+                trigger["rsi"] = args.get("rsi")
+                trigger["direction"] = args.get("direction") or "below"
+            else:
+                trigger["percent"] = args.get("percent")
         elif trigger["type"] == "worldstate":
             trigger["level"] = args.get("level")
         action = {"type": args.get("action_type")}
@@ -542,7 +558,12 @@ class Assistant:
             if trigger["type"] == "daily":
                 when = f"daily at {trigger['time']}"
             elif trigger["type"] == "market":
-                when = f"{trigger['symbol']} moves ±{trigger['percent']}%"
+                if trigger.get("price") is not None:
+                    when = f"{trigger['symbol']} price {trigger.get('direction', 'above')} ${trigger['price']:,g}"
+                elif trigger.get("rsi") is not None:
+                    when = f"{trigger['symbol']} RSI {trigger.get('direction', 'below')} {trigger['rsi']:g}"
+                else:
+                    when = f"{trigger['symbol']} moves ±{trigger['percent']}%"
             else:
                 when = f"world state reaches {trigger['level'].upper()}"
             what = "auto-briefing" if action["type"] == "briefing" else f"notify: {action.get('message', '')}"
@@ -1108,6 +1129,12 @@ _DAILY_BRIEF_B = re.compile(
 _MARKET_ALERT = re.compile(
     r"^alert me (?:if|when)\s+(\w+)\s+(?:moves|changes|drops|falls|rises|gains)"
     r"(?:\s+(?:by|more than|over))?\s+(\d+(?:\.\d+)?)\s*%\.?$", re.I)
+_PRICE_ALERT = re.compile(
+    r"^alert me (?:if|when)\s+(\w+)\s+(?:goes|is|crosses|rises|climbs|drops|falls)?\s*"
+    r"(above|over|below|under|>|<)\s*\$?\s*([\d,]+(?:\.\d+)?)\.?$", re.I)
+_RSI_ALERT = re.compile(
+    r"^alert me (?:if|when)\s+(\w+)\s+rsi\s+(?:goes|is|crosses)?\s*"
+    r"(above|over|below|under|>|<)\s*(\d+(?:\.\d+)?)\.?$", re.I)
 _WORLD_ALERT = re.compile(
     r"^alert me (?:if|when)\s+(?:the\s+)?world\s?(?:state)?\s*(?:index\s*)?"
     r"(?:reaches|goes(?:\s+to)?|hits|is)\s+(watch|elevated|critical)\.?$", re.I)
@@ -1172,6 +1199,30 @@ def parse_local_command(text: str, context: dict) -> tuple[list, str]:
             "symbol": None, "percent": None, "level": None,
             "action_type": "briefing", "message": None,
         })], f"Standing order: I'll compile your briefing every day at {when}."
+
+    match = _PRICE_ALERT.match(text)
+    if match:
+        symbol = match.group(1).upper()
+        direction = "above" if match.group(2).lower() in ("above", "over", ">") else "below"
+        price = float(match.group(3).replace(",", ""))
+        return [("create_automation", {
+            "name": f"{symbol} {direction} ${price:,g} alert", "trigger_type": "market",
+            "time": None, "symbol": symbol, "percent": None, "price": price, "rsi": None,
+            "direction": direction, "level": None, "action_type": "notify",
+            "message": f"{symbol} crossed {direction} ${price:,g}.",
+        })], f"Watching {symbol}: I'll alert you when it crosses {direction} ${price:,g}."
+
+    match = _RSI_ALERT.match(text)
+    if match:
+        symbol = match.group(1).upper()
+        direction = "above" if match.group(2).lower() in ("above", "over", ">") else "below"
+        level = float(match.group(3))
+        return [("create_automation", {
+            "name": f"{symbol} RSI {direction} {level:g} alert", "trigger_type": "market",
+            "time": None, "symbol": symbol, "percent": None, "price": None, "rsi": level,
+            "direction": direction, "level": None, "action_type": "notify",
+            "message": f"{symbol} RSI(14) crossed {direction} {level:g}.",
+        })], f"Watching {symbol}: I'll alert you when its RSI(14) crosses {direction} {level:g}."
 
     match = _MARKET_ALERT.match(text)
     if match:

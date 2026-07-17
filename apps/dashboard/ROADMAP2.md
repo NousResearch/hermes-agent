@@ -32,7 +32,11 @@ Effort key: **S** < ½ day · **M** ~1 day · **L** multi-day.
   currency converter (Frankfurter) — shipped on a new "Intel" page.
 - ✅ **§1.7 universal converter** — coin↔fiat↔coin on the Intel page (reuses
   cached crypto USD prices + USD-based fiat rates, no new upstream) — shipped.
-- ⬜ Still pending: §0.3 registry, §1.6 smarter alerts,
+- ✅ **§1.6 smarter crypto alerts** — the market trigger now also does absolute
+  price crossings (`BTC > 100000`) and RSI(14) thresholds (`ETH RSI < 30`),
+  taught to the create_automation tool schema and the local command parser —
+  shipped.
+- ⬜ Still pending: §0.3 registry,
   §2.3 follow teams, §3.3 topic detail window, §3.4 podcasts, and the remaining
   §5 widgets (air quality/pollen, weather alerts, space weather, flights,
   RSS-reader folders).

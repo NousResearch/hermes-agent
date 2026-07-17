@@ -392,6 +392,61 @@ class AutomationsTests(unittest.TestCase):
             "action": {"type": "notify", "message": "moved"}})
         self.assertEqual(self.autos.tick(), 0)
 
+    def test_market_price_cross_edge_triggered(self):
+        # sample BTC spot is 112,840
+        self.autos.create_rule({
+            "name": "BTC 100k", "trigger": {
+                "type": "market", "symbol": "BTC", "price": 100000, "direction": "above"},
+            "action": {"type": "notify", "message": "crossed"}})
+        self.assertEqual(self.autos.tick(), 1)   # 112840 >= 100000 → fires
+        self.assertEqual(self.autos.tick(), 0)   # still above → no refire
+        body = self.autos.notifications_after(0)["notifications"][0]["body"]
+        self.assertIn("above", body)
+
+    def test_market_price_cross_not_reached(self):
+        self.autos.create_rule({
+            "name": "BTC 200k", "trigger": {
+                "type": "market", "symbol": "BTC", "price": 200000, "direction": "above"},
+            "action": {"type": "notify", "message": "crossed"}})
+        self.assertEqual(self.autos.tick(), 0)   # 112840 < 200000 → silent
+
+    def test_market_rsi_threshold(self):
+        # sample BTC RSI(14) ≈ 44.7
+        self.autos.create_rule({
+            "name": "BTC oversold-ish", "trigger": {
+                "type": "market", "symbol": "BTC", "rsi": 50, "direction": "below"},
+            "action": {"type": "notify", "message": "rsi"}})
+        self.assertEqual(self.autos.tick(), 1)   # 44.7 <= 50 → fires
+        self.assertEqual(self.autos.tick(), 0)   # still below → no refire
+
+    def test_market_rsi_not_reached(self):
+        self.autos.create_rule({
+            "name": "BTC deep oversold", "trigger": {
+                "type": "market", "symbol": "BTC", "rsi": 30, "direction": "below"},
+            "action": {"type": "notify", "message": "rsi"}})
+        self.assertEqual(self.autos.tick(), 0)   # 44.7 > 30 → silent
+
+    def test_market_trigger_validation_modes(self):
+        import automations as autos_mod
+        # exactly one of percent/price/rsi
+        self.assertIsNotNone(autos_mod.validate_rule({
+            "name": "x", "trigger": {"type": "market", "symbol": "BTC"},
+            "action": {"type": "notify", "message": "m"}}))
+        self.assertIsNotNone(autos_mod.validate_rule({
+            "name": "x", "trigger": {"type": "market", "symbol": "BTC", "price": 1, "percent": 2},
+            "action": {"type": "notify", "message": "m"}}))
+        # price needs a direction
+        self.assertIsNotNone(autos_mod.validate_rule({
+            "name": "x", "trigger": {"type": "market", "symbol": "BTC", "price": 100},
+            "action": {"type": "notify", "message": "m"}}))
+        # well-formed price + rsi
+        self.assertIsNone(autos_mod.validate_rule({
+            "name": "x", "trigger": {"type": "market", "symbol": "BTC", "price": 100, "direction": "above"},
+            "action": {"type": "notify", "message": "m"}}))
+        self.assertIsNone(autos_mod.validate_rule({
+            "name": "x", "trigger": {"type": "market", "symbol": "ETH", "rsi": 30, "direction": "below"},
+            "action": {"type": "notify", "message": "m"}}))
+
     def test_daily_rule_fires_once_per_day(self):
         from datetime import datetime
         rule = self.autos.create_rule({
@@ -820,6 +875,18 @@ class MemoryAndToolsTests(unittest.TestCase):
         self.assertEqual(tools[0]["name"], "create_automation")
         self.assertEqual(tools[0]["input"]["symbol"], "BTC")
         self.assertEqual(tools[0]["input"]["percent"], 5.0)
+
+        r = a._chat_local([{"role": "user", "content": "alert me when BTC goes above $100,000"}], {})
+        inp = [b for b in r["content"] if b["type"] == "tool_use"][0]["input"]
+        self.assertEqual(inp["symbol"], "BTC")
+        self.assertEqual(inp["price"], 100000.0)
+        self.assertEqual(inp["direction"], "above")
+
+        r = a._chat_local([{"role": "user", "content": "alert me if ETH RSI below 30"}], {})
+        inp = [b for b in r["content"] if b["type"] == "tool_use"][0]["input"]
+        self.assertEqual(inp["symbol"], "ETH")
+        self.assertEqual(inp["rsi"], 30.0)
+        self.assertEqual(inp["direction"], "below")
 
         r = a._chat_local([{"role": "user", "content": "every morning at 7 brief me"}], {})
         tools = [b for b in r["content"] if b["type"] == "tool_use"]

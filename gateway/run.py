@@ -434,7 +434,10 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     body = str(text).strip()
     # Provider failure envelopes are short. Assistant answers that happen
     # to mention HTTP status codes ("HTTP 404 means...") tend to be longer.
-    if len(body) > 400 or body.count("\n") > 4:
+    # 520 covers the worst-case envelope: ~343 chars of prefixed summary
+    # (300-char truncation + "API call failed after N retries: ") plus the
+    # "(provider: ..., model: ..., endpoint: ...)" context line.
+    if len(body) > 520 or body.count("\n") > 4:
         return False
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 

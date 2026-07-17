@@ -184,6 +184,23 @@ def test_telegram_final_response_sanitizes_raw_provider_errors():
     assert "req_abc" not in sanitized
 
 
+def test_telegram_final_response_sanitizes_error_with_provider_context():
+    """Worst-case envelope plus the provider/model/endpoint context line must
+    still be rewritten for chat — it may exceed the old 400-char guard."""
+    raw = (
+        f"API call failed after 3 retries: HTTP 400: {'x' * 300}\n"
+        "(provider: openrouter, model: anthropic/claude-sonnet-5, "
+        "endpoint: https://openrouter.ai/api/v1)"
+    )
+    assert 400 < len(raw) <= 520
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "provider failed after retries" in sanitized.lower()
+    assert "HTTP 400" not in sanitized
+    assert "openrouter.ai" not in sanitized
+
+
 def test_telegram_final_response_redacts_auth_secrets():
     """Authentication errors should be useful without leaking key material."""
     raw = (

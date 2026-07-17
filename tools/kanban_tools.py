@@ -1257,6 +1257,9 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             get_session_env("HERMES_SESSION_PROFILE", "")
             or os.environ.get("HERMES_PROFILE")
         )
+        if not notifier_profile:
+            from hermes_cli.profiles import get_active_profile_name
+            notifier_profile = get_active_profile_name()
 
         # Lazy-import to keep the module-level dependency light
         from hermes_cli import kanban_db as _kb

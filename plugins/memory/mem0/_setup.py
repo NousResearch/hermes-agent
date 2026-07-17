@@ -135,15 +135,17 @@ def build_oss_config(flags: dict[str, str]) -> tuple[dict, dict[str, str]]:
     llm_def = LLM_PROVIDERS[llm_id]
     llm_model = flags.get("oss_llm_model") or llm_def["default_model"]
     llm_config: dict[str, Any] = {"model": llm_model}
-    if "default_url" in llm_def:
-        llm_config["ollama_base_url"] = flags.get("oss_llm_url") or llm_def["default_url"]
+    llm_url = flags.get("oss_llm_url") or llm_def.get("default_url")
+    if llm_url and llm_def.get("base_url_key"):
+        llm_config[llm_def["base_url_key"]] = llm_url
 
     embedder_id = flags.get("oss_embedder", "openai")
     embedder_def = EMBEDDER_PROVIDERS[embedder_id]
     embedder_model = flags.get("oss_embedder_model") or embedder_def["default_model"]
     embedder_config: dict[str, Any] = {"model": embedder_model}
-    if "default_url" in embedder_def:
-        embedder_config["ollama_base_url"] = flags.get("oss_embedder_url") or embedder_def["default_url"]
+    embedder_url = flags.get("oss_embedder_url") or embedder_def.get("default_url")
+    if embedder_url and embedder_def.get("base_url_key"):
+        embedder_config[embedder_def["base_url_key"]] = embedder_url
     dims = KNOWN_DIMS.get(embedder_model)
     if dims:
         embedder_config["embedding_dims"] = dims

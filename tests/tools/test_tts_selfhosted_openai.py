@@ -73,6 +73,46 @@ def test_config_api_key_is_read(monkeypatch, tmp_path):
     assert captured["base_url"] == SELF
 
 
+def test_env_key_not_sent_to_private_base_url(monkeypatch, tmp_path):
+    """An env OpenAI key (set for chat) must not travel to a private/LAN
+    base_url — the placeholder is sent instead."""
+    captured: dict = {}
+    from tools import tts_tool
+    from tools.tts_tool import _generate_openai_tts, _PLACEHOLDER_OPENAI_KEY
+
+    with patch.object(tts_tool, "_import_openai_client",
+                      return_value=_fake_client_capturing(captured)), \
+         patch.object(tts_tool, "resolve_openai_audio_api_key",
+                      return_value="sk-real-openai-key"):
+        _generate_openai_tts(
+            "hallo", str(tmp_path / "out.mp3"),
+            {"openai": {"base_url": SELF, "model": "m", "voice": "v"}},
+        )
+
+    assert captured["base_url"] == SELF
+    assert captured["api_key"] == _PLACEHOLDER_OPENAI_KEY
+
+
+def test_env_key_still_used_for_public_https_base_url(monkeypatch, tmp_path):
+    """A public https OpenAI-compatible proxy keeps the env key."""
+    captured: dict = {}
+    public = "https://tts-proxy.example.com/v1"
+    from tools import tts_tool
+    from tools.tts_tool import _generate_openai_tts
+
+    with patch.object(tts_tool, "_import_openai_client",
+                      return_value=_fake_client_capturing(captured)), \
+         patch.object(tts_tool, "resolve_openai_audio_api_key",
+                      return_value="sk-proxy-key"):
+        _generate_openai_tts(
+            "hallo", str(tmp_path / "out.mp3"),
+            {"openai": {"base_url": public, "model": "m", "voice": "v"}},
+        )
+
+    assert captured["base_url"] == public
+    assert captured["api_key"] == "sk-proxy-key"
+
+
 def test_requirements_true_for_self_hosted_without_env_key(monkeypatch):
     """check_tts_requirements() is True for a config base_url even with no env key."""
     from tools import tts_tool

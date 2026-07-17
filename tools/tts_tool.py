@@ -185,6 +185,30 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 # Sent as the Bearer token when a self-hosted ``tts.openai.base_url`` is
 # configured without any key — auth-less OpenAI-compatible servers ignore it.
 _PLACEHOLDER_OPENAI_KEY = "sk-no-key-required"
+
+
+def _tts_base_url_is_private(base_url: str) -> bool:
+    """True when ``base_url`` is plainly self-hosted (any http:// URL, or
+    https:// with a localhost / private / loopback / link-local IP-literal
+    host). Mirrors ``transcription_tools._base_url_is_private``; used to keep
+    env API keys away from LAN targets."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(str(base_url or ""))
+    except ValueError:
+        return False
+    if parts.scheme == "http":
+        return True
+    host = (parts.hostname or "").strip().lower()
+    if host in ("localhost", "127.0.0.1", "::1"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
 DEFAULT_MINIMAX_MODEL = "speech-02-hd"
 DEFAULT_MINIMAX_VOICE_ID = "English_expressive_narrator"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
@@ -1089,7 +1113,16 @@ def _generate_openai_tts(
         cfg_api_key = (oai_config.get("api_key") or "").strip()
         cfg_base_url = (oai_config.get("base_url") or "").strip()
         if cfg_base_url:
-            api_key = cfg_api_key or resolve_openai_audio_api_key() or _PLACEHOLDER_OPENAI_KEY
+            # Env keys are only attached to non-private https targets: a
+            # private/http base_url gets the config key or the placeholder,
+            # never an env key (a real OpenAI key must not travel — in
+            # cleartext, for http — to a LAN server it was not issued for).
+            if cfg_api_key:
+                api_key = cfg_api_key
+            elif _tts_base_url_is_private(cfg_base_url):
+                api_key = _PLACEHOLDER_OPENAI_KEY
+            else:
+                api_key = resolve_openai_audio_api_key() or _PLACEHOLDER_OPENAI_KEY
         elif cfg_api_key:
             api_key = cfg_api_key
         else:

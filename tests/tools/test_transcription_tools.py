@@ -398,16 +398,57 @@ class TestSelfHostedOpenAISTT:
 
     def test_stray_env_key_does_not_redirect_base_url(self, monkeypatch):
         """A stray OPENAI_API_KEY (set for chat) must not send self-hosted
-        STT traffic to api.openai.com — base_url stays authoritative."""
+        STT traffic to api.openai.com — base_url stays authoritative — and
+        must not be forwarded to the private target either (it was not issued
+        for that server, and http would carry it in cleartext)."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-chat-unrelated")
         monkeypatch.setattr(
             "tools.transcription_tools._load_stt_config",
             lambda: self._cfg(base_url=self.SELF),
         )
+        from tools.transcription_tools import (
+            _resolve_openai_audio_client_config,
+            _PLACEHOLDER_OPENAI_KEY,
+        )
+        key, base = _resolve_openai_audio_client_config()
+        assert base == self.SELF
+        assert key == _PLACEHOLDER_OPENAI_KEY
+
+    def test_env_key_still_used_for_public_https_base_url(self, monkeypatch):
+        """A public https OpenAI-compatible proxy keeps the conventional
+        behaviour: the env key is attached."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-proxy-key")
+        public = "https://stt-proxy.example.com/v1"
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: self._cfg(base_url=public),
+        )
+        from tools.transcription_tools import _resolve_openai_audio_client_config
+        key, base = _resolve_openai_audio_client_config()
+        assert base == public
+        assert key == "sk-proxy-key"
+
+    def test_config_key_wins_over_env_for_private_base_url(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-chat-unrelated")
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: self._cfg(base_url=self.SELF, api_key="local-token"),
+        )
         from tools.transcription_tools import _resolve_openai_audio_client_config
         key, base = _resolve_openai_audio_client_config()
         assert base == self.SELF
-        assert key == "sk-chat-unrelated"
+        assert key == "local-token"
+
+    def test_base_url_is_private_classification(self):
+        from tools.transcription_tools import _base_url_is_private
+        assert _base_url_is_private("http://192.168.1.50:8000/v1") is True
+        assert _base_url_is_private("http://example.com/v1") is True  # cleartext
+        assert _base_url_is_private("https://10.0.0.5/v1") is True
+        assert _base_url_is_private("https://[::1]:8443/v1") is True
+        assert _base_url_is_private("https://localhost:8443/v1") is True
+        assert _base_url_is_private("https://api.openai.com/v1") is False
+        assert _base_url_is_private("https://stt-proxy.example.com/v1") is False
+        assert _base_url_is_private("") is False
 
     def test_response_format_and_timeout_override(self, monkeypatch, sample_wav):
         mock_client = MagicMock()

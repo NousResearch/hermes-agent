@@ -100,6 +100,32 @@ OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 # Sent as the Bearer token when a self-hosted ``stt.openai.base_url`` is
 # configured without any key — auth-less OpenAI-compatible servers ignore it.
 _PLACEHOLDER_OPENAI_KEY = "sk-no-key-required"
+
+
+def _base_url_is_private(base_url: str) -> bool:
+    """True when ``base_url`` points at a plainly self-hosted target: any
+    ``http://`` URL, or an ``https://`` one whose host is localhost or a
+    private/loopback/link-local IP literal. Used to decide whether env API
+    keys may be attached — a real OpenAI key must never be sent to a LAN
+    server (cleartext http) it was not issued for. Public https hosts (e.g.
+    a hosted OpenAI-compatible proxy) still receive the env key."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(str(base_url or ""))
+    except ValueError:
+        return False
+    if parts.scheme == "http":
+        return True
+    host = (parts.hostname or "").strip().lower()
+    if host in ("localhost", "127.0.0.1", "::1"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
 # DeepInfra STT base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
@@ -1890,13 +1916,23 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
     ``base_url`` would silently send self-hosted STT traffic to OpenAI with an
     unrelated key. Self-hosted servers frequently need no auth, so a configured
     ``base_url`` also makes the key optional (a placeholder Bearer is sent).
+
+    Env keys are only attached to non-private https targets: a private or
+    http base_url gets the config key or the placeholder, never an env key —
+    otherwise a real OpenAI key would be sent (in cleartext, for http) to a
+    LAN server it was not issued for.
     """
     stt_config = _load_stt_config()
     openai_cfg = stt_config.get("openai") or {}
     cfg_api_key = openai_cfg.get("api_key", "")
     cfg_base_url = openai_cfg.get("base_url", "")
     if cfg_base_url:
-        api_key = cfg_api_key or resolve_openai_audio_api_key() or _PLACEHOLDER_OPENAI_KEY
+        if cfg_api_key:
+            api_key = cfg_api_key
+        elif _base_url_is_private(cfg_base_url):
+            api_key = _PLACEHOLDER_OPENAI_KEY
+        else:
+            api_key = resolve_openai_audio_api_key() or _PLACEHOLDER_OPENAI_KEY
         return api_key, cfg_base_url
     if cfg_api_key:
         return cfg_api_key, OPENAI_BASE_URL

@@ -491,6 +491,32 @@ class TestStripThinkBlocks:
         result = agent._strip_think_blocks("<thought>orphaned reasoning without close")
         assert "<thought>" not in result
 
+    # ─── Multimodal content coverage ─────────────────────────────────────
+    # After a vision/image turn, an assistant message's ``content`` can be a
+    # multimodal list of blocks instead of a plain string. strip_think_blocks
+    # must coerce it (concatenate text blocks, drop non-text) rather than pass
+    # a list to re.sub — which raised
+    # ``TypeError: expected string or bytes-like object, got 'list'`` and
+    # crashed the next turn's interim-visible-text extraction.
+    def test_multimodal_list_extracts_text_blocks(self, agent):
+        content = [
+            {"type": "text", "text": "<think>hidden</think>visible answer"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]
+        result = agent._strip_think_blocks(content)
+        assert "hidden" not in result
+        assert "visible answer" in result
+
+    def test_multimodal_list_no_text_blocks_returns_empty(self, agent):
+        content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
+        assert agent._strip_think_blocks(content) == ""
+
+    def test_multimodal_list_of_plain_strings(self, agent):
+        assert agent._strip_think_blocks(["hello ", "world"]) == "hello world"
+
+    def test_empty_list_returns_empty(self, agent):
+        assert agent._strip_think_blocks([]) == ""
+
     # ─── Unterminated-block coverage (#8878, #9568, #10408) ──────────────
     # Reasoning models served via NIM / MiniMax M2.7 frequently drop the
     # closing tag, leaking raw reasoning into assistant content. The open

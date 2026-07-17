@@ -5515,11 +5515,11 @@ def run_conversation(
                 
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:
-                    agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
+                    agent._safe_print(f"🎉 Conversation completed after {api_call_count} API call(s) (provider={getattr(agent, 'provider', '') or 'unknown'})")
                 break
             
         except Exception as e:
-            error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
+            error_msg = f"Error during API call #{api_call_count} (provider={getattr(agent, 'provider', '') or 'unknown'}): {str(e)}"
             try:
                 print(f"❌ {error_msg}")
             except (OSError, ValueError):

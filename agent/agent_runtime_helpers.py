@@ -672,6 +672,27 @@ def strip_think_blocks(agent, content: str) -> str:
     """
     if not content:
         return ""
+    # Content may arrive as a multimodal list (e.g. after a vision/image turn:
+    # [{"type": "text", "text": ...}, {"type": "image", ...}]) rather than a
+    # plain string. The regex passes below require a str, so coerce first:
+    # concatenate any text blocks and drop non-text parts. Without this, a
+    # follow-up turn after an image is loaded into context crashes with
+    # ``TypeError: expected string or bytes-like object, got 'list'``.
+    if not isinstance(content, str):
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict):
+                    text = block.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+            content = "".join(parts)
+        else:
+            content = str(content)
+        if not content:
+            return ""
     # 1. Closed tag pairs — case-insensitive for all variants so
     #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
     #    the unterminated-tag pass and take trailing content with them.

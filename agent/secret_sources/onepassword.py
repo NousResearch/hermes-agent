@@ -187,13 +187,13 @@ def _auth_fingerprint(token_env: str) -> str:
         if key.startswith("OP_SESSION_"):
             parts.append(f"{key}={os.environ[key]}")
     material = "\n".join(parts)
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(material.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
 
 
 def _refs_fingerprint(references: Dict[str, str]) -> str:
     """SHA-256 prefix over the configured name→reference mapping."""
     material = "\n".join(f"{name}={references[name]}" for name in sorted(references))
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(material.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------

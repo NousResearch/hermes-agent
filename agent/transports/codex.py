@@ -42,7 +42,7 @@ def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]])
     # \x00 separator so instructions ending in the tool JSON can't collide with
     # a request whose instructions contain that JSON and whose tools are empty.
     content = f"{instructions or ''}\x00{tools_part}"
-    digest = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:24]
+    digest = hashlib.sha256(content.encode("utf-8", errors="replace"), usedforsecurity=False).hexdigest()[:24]
     return f"pck_{digest}"
 
 

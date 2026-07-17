@@ -987,7 +987,8 @@ class MoAChatCompletions:
         _sig = hashlib.sha256(
             "\u0000".join(
                 f"{m.get('role')}:{m.get('content')}" for m in sig_messages
-            ).encode("utf-8", "replace")
+            ).encode("utf-8", "replace"),
+            usedforsecurity=False,
         ).hexdigest()
         _cache_key = (self.preset_name, _sig, tuple(_slot_label(s) for s in reference_models))
         _refs_from_cache = _cache_key == self._ref_cache_key and bool(self._ref_cache_outputs)

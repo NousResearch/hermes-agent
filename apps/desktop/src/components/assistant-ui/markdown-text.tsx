@@ -9,18 +9,28 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import { code } from '@streamdown/code'
-import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
+import {
+  type ComponentProps,
+  isValidElement,
+  memo,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useState
+} from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
+import { MediaCarousel } from '@/components/chat/media-carousel'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   downloadGatewayMediaFile,
   filePathFromMediaPath,
+  galleryPayloadFromHref,
   gatewayMediaDataUrl,
   isRemoteGateway,
   mediaExternalUrl,
@@ -96,29 +106,11 @@ function parseMarkdownIntoBlocksCached(markdown: string): string[] {
   return blocks
 }
 
-async function mediaSrc(path: string): Promise<string> {
-  if (/^(?:https?|data):/i.test(path)) {
-    return path
-  }
-
-  // Stream audio/video through the custom protocol: data URLs are capped and
-  // load the whole file into memory, which broke playback for larger videos.
-  if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
-    return mediaStreamUrl(path)
-  }
-
-  // Remote gateway: the image lives on the gateway machine, so read it over the
-  // authenticated API rather than this machine's disk.
-  if (window.hermesDesktop && isRemoteGateway()) {
-    return gatewayMediaDataUrl(path)
-  }
-
-  if (!window.hermesDesktop?.readFileDataUrl) {
-    return mediaExternalUrl(path)
-  }
-
-  return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
-}
+// mediaSrc now lives in @/lib/media to avoid a circular import between this
+// module and the carousel that consumes it. Imported here (not just
+// re-exported) so local callers like MediaAttachment keep working unchanged.
+import { mediaSrc } from '@/lib/media'
+export { mediaSrc }
 
 function useOpenMediaFile(path: string) {
   const [openFailed, setOpenFailed] = useState(false)
@@ -271,7 +263,38 @@ function childrenToText(children: unknown): string {
   return ''
 }
 
+// A `#gallery:` link renders <MediaCarousel> — a <div>. Streamdown wraps link
+// text in a <p>, and a <div> cannot be a child of <p> (React drops/errors on
+// the nesting, so the carousel never paints). Walk the subtree and detect any
+// carousel so the paragraph override can escape the <p> for that case only.
+function subtreeContainsGallery(node: ReactNode): boolean {
+  if (!node) return false
+  if (Array.isArray(node)) return node.some(subtreeContainsGallery)
+  if (typeof node === 'string' || typeof node === 'number' || typeof node === 'boolean') return false
+  if (!isValidElement(node)) return false
+
+  const slot = (node.props as { 'data-slot'?: string })?.[`data-slot`]
+  if (slot === 'aui_media-carousel') return true
+  // Also catch the raw link element whose href is a gallery href.
+  const href = (node.props as { href?: string } | undefined)?.href
+  if (typeof href === 'string' && href.startsWith('#gallery:')) return true
+
+  return subtreeContainsGallery((node.props as { children?: ReactNode }).children)
+}
+
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
+  const galleryPayload = galleryPayloadFromHref(href)
+
+  if (galleryPayload) {
+    return (
+      <MediaCarousel
+        images={galleryPayload.images}
+        intervalMs={galleryPayload.intervalMs}
+        title={galleryPayload.title}
+      />
+    )
+  }
+
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
@@ -414,12 +437,29 @@ function MarkdownTextSurface({ containerClassName, containerProps, defer }: Mark
         h4: ({ className, ...props }: ComponentProps<'h4'>) => (
           <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
         ),
-        p: ({ className, ...props }: ComponentProps<'p'>) => (
+        p: ({ className, children, ...props }: ComponentProps<'p'>) => {
           // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
           // must out-specify Tailwind Typography's `prose` margins — so no
           // `my-*` here on purpose.
-          <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
-        ),
+          //
+          // A `#gallery:` link expands to <MediaCarousel> (a <div>), which is
+          // invalid inside a <p>. When the paragraph's content contains a
+          // carousel, render it in a <div> instead so the block-level carousel
+          // is valid HTML and actually paints.
+          if (subtreeContainsGallery(children)) {
+            return (
+              <div className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props}>
+                {children}
+              </div>
+            )
+          }
+
+          return (
+            <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props}>
+              {children}
+            </p>
+          )
+        },
         a: MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
         // (HTML's algorithm skips descendants that carry their own dir),

@@ -22,6 +22,18 @@ except ImportError:
     _HAS_LARK_OAPI = False
 
 
+def setUpModule():
+    """Bind the lark SDK globals before tests that inject a mock ``_client``.
+
+    The adapter defers the lark import to ``connect()`` (``_load_lark_oapi``),
+    so tests that skip connect() and set ``adapter._client`` directly would
+    otherwise see the request-builder globals still bound to None.
+    """
+    if _HAS_LARK_OAPI:
+        from plugins.platforms.feishu.adapter import _load_lark_oapi
+        _load_lark_oapi()
+
+
 class _FakeRequestContent:
     def __init__(self, body: bytes):
         self.body = body

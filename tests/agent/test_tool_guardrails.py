@@ -137,9 +137,10 @@ def test_success_resets_exact_signature_failure_streak():
 
 class TestClassifyTerminalBenignExits:
     """classify_tool_failure mirrors _detect_tool_failure's benign/failure
-    boolean for nonzero terminal exits. (Suffix text may differ — this
-    fallback classifier has no error-message branch; only the boolean must
-    match, which is what feeds the guardrail counter.)"""
+    boolean for nonzero terminal exits, including error-first precedence: a
+    populated ``error`` is a failure even when ``exit_code_meaning`` is set.
+    (Suffix text may differ; only the boolean must match — it feeds the
+    guardrail counter via after_call's ``failed`` fallback.)"""
 
     @staticmethod
     def _assert_parity(result: str):
@@ -167,7 +168,7 @@ class TestClassifyTerminalBenignExits:
         assert self._assert_parity(result) is False
         assert classify_tool_failure("terminal", result) == (False, "")
 
-    def test_user_interrupt_exit130_is_benign(self):
+    def test_genuine_interrupt_exit130_with_marker_is_benign(self):
         result = json.dumps({
             "output": "partial\n[Command interrupted]",
             "exit_code": 130,
@@ -176,31 +177,33 @@ class TestClassifyTerminalBenignExits:
         assert self._assert_parity(result) is False
         assert classify_tool_failure("terminal", result) == (False, "")
 
-    def test_sigpipe_exit141_is_benign(self):
-        # SIGPIPE under pipefail (`… | head`) — benign, must not feed the
-        # same_tool_failure counter. Regression for the halt reported in #54637.
-        result = json.dumps({
-            "output": "first lines...\n",
-            "exit_code": 141,
-            "error": None,
-        })
-        assert self._assert_parity(result) is False
-        assert classify_tool_failure("terminal", result) == (False, "")
+    def test_natural_exit130_without_marker_is_flagged(self):
+        # `bash -c 'exit 130'` — 130 without the marker stays a failure.
+        result = json.dumps({"output": "just exited 130", "exit_code": 130})
+        assert self._assert_parity(result) is True
 
-    # Inputs the terminal tool actually emits. (exit_code_meaning is only ever
-    # set with error=None — terminal_tool.py:2469,2474 — so error+meaning never
-    # co-occurs; the "error wins" guarantee is a display-only concern and is
-    # covered in test_display_tool_failure. Here we assert boolean parity on
-    # the failure inputs the minimal fallback classifier must agree on.)
+    def test_error_field_wins_over_meaning_parity(self):
+        # Error-first parity: a populated error flags even when a benign
+        # exit_code_meaning is present, matching _detect_tool_failure.
+        result = json.dumps({
+            "output": "",
+            "exit_code": 1,
+            "error": "grep: invalid option",
+            "exit_code_meaning": "No matches found (not an error)",
+        })
+        assert self._assert_parity(result) is True
+
     @pytest.mark.parametrize("payload", [
         {"output": "", "exit_code": 2},                       # grep/diff real error
         {"output": "", "exit_code": 124},                     # timeout stays a failure (D1)
         {"output": "", "exit_code": 127},                     # command not found
         {"output": "curl: (7) ...", "exit_code": 7},          # curl connect fail (no longer tagged)
         {"output": "! [rejected]", "exit_code": 1},           # git push rejected (no longer tagged)
-        {"output": "Segmentation fault", "exit_code": 139},   # SIGSEGV crash — not a benign signal
-        {"output": "", "exit_code": 137},                     # SIGKILL/OOM — not a benign signal
-        {"output": "", "exit_code": -1,                       # exception path: error, no meaning
+        {"output": "first lines...", "exit_code": 141},       # SIGPIPE — benign only with a marker
+        {"output": "just exited 130", "exit_code": 130},      # natural exit 130, no marker
+        {"output": "Segmentation fault", "exit_code": 139},   # SIGSEGV crash
+        {"output": "", "exit_code": 137},                     # SIGKILL/OOM
+        {"output": "", "exit_code": -1,                       # exception path: error field
          "error": "Failed to execute command: boom", "status": "error"},
     ])
     def test_real_failures_and_error_field_still_flagged(self, payload):

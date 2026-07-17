@@ -100,8 +100,9 @@ class TestDetectToolFailureTerminalBenign:
         })
         assert _detect_tool_failure("terminal", result) == (False, "")
 
-    def test_user_interrupt_exit130_is_benign(self):
-        # Interrupt has no exit_code_meaning — handled by the explicit 130 check.
+    def test_genuine_interrupt_exit130_with_marker_is_benign(self):
+        # A real interrupt: rc 130 AND the executor's [Command interrupted]
+        # marker in output. Only then is 130 treated as benign.
         result = json.dumps({
             "output": "partial\n[Command interrupted]",
             "exit_code": 130,
@@ -109,24 +110,20 @@ class TestDetectToolFailureTerminalBenign:
         })
         assert _detect_tool_failure("terminal", result) == (False, "")
 
-    def test_sigpipe_exit141_is_benign(self):
-        # SIGPIPE (128+13): a downstream reader closed the pipe, e.g.
-        # `grep x f | head` under `set -o pipefail`. Carries no meaning —
-        # handled by the explicit benign-signal check. Regression for the
-        # pipefail halt reported in PR #54637.
-        result = json.dumps({
-            "output": "first 5 matching lines...\n",
-            "exit_code": 141,
-            "error": None,
-        })
-        assert _detect_tool_failure("terminal", result) == (False, "")
+    def test_natural_exit130_without_marker_is_flagged(self):
+        # `bash -c 'exit 130'` exits 130 on its own — no [Command interrupted]
+        # marker — and must stay a real failure, not be relabelled an interrupt.
+        result = json.dumps({"output": "not interrupted, just exited 130", "exit_code": 130})
+        is_failure, suffix = _detect_tool_failure("terminal", result)
+        assert is_failure is True
+        assert suffix == " [exit 130]"
 
     def test_real_failure_codes_without_meaning_still_flagged(self):
         # exit 2 (grep/diff real error), 124 (timeout, stays a failure per D1),
-        # 127 (command not found), and crash signals 134/137/139 (SIGABRT/
-        # SIGKILL-OOM/SIGSEGV) have no meaning and are not benign signals →
-        # flagged. (130/141 are the only benign signal exits.)
-        for code in (2, 124, 127, 134, 137, 139):
+        # 127 (command not found), 141 (SIGPIPE — benign only with a marker,
+        # which it never has), and crash signals 134/137/139 (SIGABRT/SIGKILL-
+        # OOM/SIGSEGV) have no meaning and no interrupt marker → flagged.
+        for code in (2, 124, 127, 141, 134, 137, 139):
             result = json.dumps({"output": "", "exit_code": code})
             is_failure, suffix = _detect_tool_failure("terminal", result)
             assert is_failure is True, f"exit {code} should be a failure"

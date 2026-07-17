@@ -84,16 +84,14 @@ describe('buildToolView terminal exit-code status', () => {
     ).toBe('success')
   })
 
-  // A user interrupt returns 130 with no tag — render it neutral, not red.
-  it('treats user interrupt (exit 130) with no output as success', () => {
-    expect(terminal({ exit_code: 130, output: '' }).status).toBe('success')
+  // A genuine interrupt is rc 130 WITH the [Command interrupted] marker — only
+  // then is it neutral. A bare `exit 130` has no marker and stays an error.
+  it('treats a genuine interrupt (130 + marker) as success', () => {
+    expect(terminal({ exit_code: 130, output: 'partial\n[Command interrupted]' }).status).toBe('success')
   })
 
-  // SIGPIPE (141) — a downstream reader closed the pipe (`… | head` under
-  // pipefail). Benign signal death, rendered neutral.
-  it('treats SIGPIPE (exit 141) as success', () => {
-    expect(terminal({ exit_code: 141, output: 'first lines...' }).status).toBe('success')
-    expect(terminal({ exit_code: 141, output: '' }).status).toBe('success')
+  it('treats a natural exit 130 (no marker, no output) as error', () => {
+    expect(terminal({ exit_code: 130, output: '' }).status).toBe('error')
   })
 
   // curl genuine failures (DNS/connect/timeout) no longer carry exit_code_meaning

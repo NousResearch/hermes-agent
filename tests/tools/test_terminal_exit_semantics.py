@@ -156,11 +156,10 @@ class TestInterpretExitCode:
     # ---- interrupt (130) has no command-semantic note ----
 
     def test_signal_exits_have_no_meaning(self):
-        """Benign signal deaths (SIGINT 130, SIGPIPE 141) are not
-        command-semantic codes, so _interpret_exit_code returns None for them.
-        Their benign handling lives in the failure classifiers (explicit
-        BENIGN_SIGNAL_EXIT_CODES check), not here — this locks that contract so
-        the two layers stay split."""
+        """Signal-death exits (130 SIGINT, 141 SIGPIPE) are not command-semantic
+        codes, so _interpret_exit_code returns None. Interrupt handling lives in
+        the failure classifiers (rc 130 gated on the [Command interrupted]
+        marker), not here — this locks that split so the layers stay separate."""
         assert _interpret_exit_code("grep 'foo' bar", 130) is None
         assert _interpret_exit_code("python3 script.py", 130) is None
         assert _interpret_exit_code("grep 'foo' big | head", 141) is None

@@ -510,7 +510,10 @@ def _resolve_codex_usage_credentials(
 def _codex_window_label(key: str, window: dict[str, Any]) -> str:
     """Name Codex quota windows by duration when the API exposes it."""
     duration = window.get("limit_window_seconds")
-    if _is_finite_num(duration) and duration >= 6 * 24 * 60 * 60:
+    if (
+        _is_finite_num(duration)
+        and 6 * 24 * 60 * 60 <= duration <= 8 * 24 * 60 * 60
+    ):
         return "Weekly"
     return "Weekly" if key == "secondary_window" else "Session"
 

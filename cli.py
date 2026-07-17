@@ -31,6 +31,7 @@ import json
 import re
 import concurrent.futures
 import base64
+import hashlib
 import atexit
 import errno
 import tempfile
@@ -4115,6 +4116,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._status_bar_usage_inflight = False
         self._status_bar_usage_last_attempt = 0.0
         self._status_bar_usage_provider = None
+        self._status_bar_usage_identity = None
+        self._status_bar_usage_generation = 0
         self._status_bar_usage_session = None
         self._status_bar_usage_weekly = None
         # When True, the input separator rules and the dynamic status bar are
@@ -4539,6 +4542,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         idle = max(0.0, time.time() - last_finished_at)
         return f"✓ {format_duration_compact(idle)}"
 
+    @staticmethod
+    def _status_bar_account_usage_identity(provider, base_url, api_key) -> bytes:
+        """Return a non-reversible cache key without retaining OAuth secrets."""
+        material = "\0".join(
+            (str(provider or ""), str(base_url or ""), str(api_key or ""))
+        ).encode("utf-8", errors="replace")
+        return hashlib.sha256(material).digest()
+
     def _get_status_bar_account_usage(self, agent):
         """Return cached OAuth quota windows and schedule a non-blocking refresh."""
         display_cfg = getattr(self, "config", {}).get("display") or {}
@@ -4546,6 +4557,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         provider = str(getattr(agent, "provider", "") or "").strip().lower()
         if not usage_cfg.get("enabled") or provider != "openai-codex":
             return None, None
+
+        base_url = getattr(agent, "base_url", None)
+        api_key = getattr(agent, "api_key", None)
+        identity = self._status_bar_account_usage_identity(provider, base_url, api_key)
 
         try:
             refresh_seconds = max(60.0, float(usage_cfg.get("refresh_seconds", 300)))
@@ -4559,11 +4574,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         now = time.monotonic()
         with lock:
-            if getattr(self, "_status_bar_usage_provider", None) != provider:
+            if getattr(self, "_status_bar_usage_identity", None) != identity:
                 self._status_bar_usage_provider = provider
+                self._status_bar_usage_identity = identity
+                self._status_bar_usage_generation = (
+                    int(getattr(self, "_status_bar_usage_generation", 0) or 0) + 1
+                )
                 self._status_bar_usage_last_attempt = 0.0
+                # A worker for the previous credential may still be running.
+                # It is now stale; the generation check below prevents it from
+                # committing or clearing the new credential's cache state.
+                self._status_bar_usage_inflight = False
                 self._status_bar_usage_session = None
                 self._status_bar_usage_weekly = None
+            generation = int(getattr(self, "_status_bar_usage_generation", 0) or 0)
             session_window = getattr(self, "_status_bar_usage_session", None)
             weekly_window = getattr(self, "_status_bar_usage_weekly", None)
             inflight = bool(getattr(self, "_status_bar_usage_inflight", False))
@@ -4574,10 +4598,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._status_bar_usage_last_attempt = now
 
         if should_refresh:
-            base_url = getattr(agent, "base_url", None)
-            api_key = getattr(agent, "api_key", None)
-
             def _refresh() -> None:
+                success = False
+                session = None
+                weekly = None
                 try:
                     from agent.account_usage import fetch_account_usage
 
@@ -4586,16 +4610,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         base_url=base_url,
                         api_key=api_key,
                     )
-                    session = None
-                    weekly = None
-                    for window in getattr(snapshot, "windows", ()) if snapshot else ():
-                        if window.label == "Session":
-                            session = window
-                        elif window.label == "Weekly":
-                            weekly = window
-                    with lock:
-                        self._status_bar_usage_session = session
-                        self._status_bar_usage_weekly = weekly
+                    if snapshot is not None:
+                        success = True
+                        for window in getattr(snapshot, "windows", ()):
+                            if window.label == "Session":
+                                session = window
+                            elif window.label == "Weekly":
+                                weekly = window
                 except Exception:
                     # Footer diagnostics are optional UI. Provider/auth/network
                     # failures must never escape the refresh thread or disrupt
@@ -4603,7 +4624,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     pass
                 finally:
                     with lock:
-                        self._status_bar_usage_inflight = False
+                        current_generation = int(
+                            getattr(self, "_status_bar_usage_generation", 0) or 0
+                        )
+                        current_identity = getattr(self, "_status_bar_usage_identity", None)
+                        if current_generation == generation and current_identity == identity:
+                            # A failed refresh hides the old value rather than
+                            # presenting an indefinitely stale quota.
+                            self._status_bar_usage_session = session if success else None
+                            self._status_bar_usage_weekly = weekly if success else None
+                            self._status_bar_usage_inflight = False
                     app = getattr(self, "_app", None)
                     if app is not None:
                         try:
@@ -4615,7 +4645,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 threading.Thread(target=_refresh, daemon=True).start()
             except Exception:
                 with lock:
-                    self._status_bar_usage_inflight = False
+                    current_generation = int(
+                        getattr(self, "_status_bar_usage_generation", 0) or 0
+                    )
+                    if current_generation == generation:
+                        self._status_bar_usage_session = None
+                        self._status_bar_usage_weekly = None
+                        self._status_bar_usage_inflight = False
 
         return session_window, weekly_window
 

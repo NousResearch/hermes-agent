@@ -108,6 +108,12 @@ class TestCLIStatusBar:
         cli_obj._status_bar_usage_inflight = False
         cli_obj._status_bar_usage_last_attempt = time.monotonic()
         cli_obj._status_bar_usage_provider = "openai-codex"
+        cli_obj._status_bar_usage_identity = cli_obj._status_bar_account_usage_identity(
+            "openai-codex",
+            getattr(cli_obj.agent, "base_url", None),
+            getattr(cli_obj.agent, "api_key", None),
+        )
+        cli_obj._status_bar_usage_generation = 1
         cli_obj._status_bar_usage_session = None
         cli_obj._status_bar_usage_weekly = AccountUsageWindow(
             label="Weekly",
@@ -149,6 +155,12 @@ class TestCLIStatusBar:
         cli_obj._status_bar_usage_inflight = False
         cli_obj._status_bar_usage_last_attempt = time.monotonic()
         cli_obj._status_bar_usage_provider = "openai-codex"
+        cli_obj._status_bar_usage_identity = cli_obj._status_bar_account_usage_identity(
+            "openai-codex",
+            getattr(cli_obj.agent, "base_url", None),
+            getattr(cli_obj.agent, "api_key", None),
+        )
+        cli_obj._status_bar_usage_generation = 1
         cli_obj._status_bar_usage_session = AccountUsageWindow(
             label="Session",
             used_percent=18,
@@ -287,6 +299,131 @@ class TestCLIStatusBar:
         assert snapshot["session_quota_remaining"] is None
         assert snapshot["weekly_quota_remaining"] is None
         assert uncaught == []
+
+    def test_openai_quota_credential_rotation_rejects_stale_worker_result(self, monkeypatch):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.6-luna"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.agent.provider = "openai-codex"
+        cli_obj.agent.base_url = "https://chatgpt.com/backend-api/codex"
+        cli_obj.agent.api_key = "oauth-account-a"
+        cli_obj.config = {
+            "display": {
+                "account_usage_footer": {
+                    "enabled": True,
+                    "refresh_seconds": 300,
+                }
+            }
+        }
+        cli_obj._status_bar_usage_lock = threading.Lock()
+        cli_obj._status_bar_usage_inflight = False
+        cli_obj._status_bar_usage_last_attempt = 0.0
+        cli_obj._status_bar_usage_provider = None
+        cli_obj._status_bar_usage_identity = None
+        cli_obj._status_bar_usage_generation = 0
+        cli_obj._status_bar_usage_session = None
+        cli_obj._status_bar_usage_weekly = None
+
+        account_a_started = threading.Event()
+        release_account_a = threading.Event()
+        account_b_started = threading.Event()
+        both_workers_finished = threading.Event()
+        invalidations = []
+
+        def _fetch(provider, *, base_url=None, api_key=None):
+            if api_key == "oauth-account-a":
+                account_a_started.set()
+                assert release_account_a.wait(timeout=2)
+                used = 90
+            else:
+                account_b_started.set()
+                used = 20
+            return AccountUsageSnapshot(
+                provider=provider,
+                source="usage_api",
+                fetched_at=datetime.now().astimezone(),
+                windows=(AccountUsageWindow(label="Weekly", used_percent=used),),
+            )
+
+        def _invalidate():
+            invalidations.append(None)
+            if len(invalidations) == 2:
+                both_workers_finished.set()
+
+        cli_obj._app = SimpleNamespace(invalidate=_invalidate)
+        monkeypatch.setattr(account_usage, "fetch_account_usage", _fetch)
+
+        cli_obj._get_status_bar_snapshot()
+        assert account_a_started.wait(timeout=1)
+
+        cli_obj.agent.api_key = "oauth-account-b"
+        cli_obj._get_status_bar_snapshot()
+        assert account_b_started.wait(timeout=1)
+
+        release_account_a.set()
+        assert both_workers_finished.wait(timeout=2)
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["weekly_quota_remaining"] == 80
+
+    def test_openai_quota_refresh_failure_hides_cached_value(self, monkeypatch):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.6-luna"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.agent.provider = "openai-codex"
+        cli_obj.agent.api_key = "oauth-token"
+        cli_obj.config = {
+            "display": {
+                "account_usage_footer": {
+                    "enabled": True,
+                    "refresh_seconds": 300,
+                }
+            }
+        }
+        cli_obj._status_bar_usage_lock = threading.Lock()
+        cli_obj._status_bar_usage_inflight = False
+        cli_obj._status_bar_usage_last_attempt = 0.0
+        cli_obj._status_bar_usage_provider = "openai-codex"
+        cli_obj._status_bar_usage_identity = cli_obj._status_bar_account_usage_identity(
+            "openai-codex",
+            getattr(cli_obj.agent, "base_url", None),
+            getattr(cli_obj.agent, "api_key", None),
+        )
+        cli_obj._status_bar_usage_generation = 0
+        cli_obj._status_bar_usage_session = None
+        cli_obj._status_bar_usage_weekly = AccountUsageWindow(
+            label="Weekly",
+            used_percent=27,
+        )
+
+        finished = threading.Event()
+
+        def _fetch(*args, **kwargs):
+            finished.set()
+            raise RuntimeError("usage endpoint unavailable")
+
+        monkeypatch.setattr(account_usage, "fetch_account_usage", _fetch)
+
+        cli_obj._get_status_bar_snapshot()
+        assert finished.wait(timeout=1)
+        deadline = time.monotonic() + 2
+        while cli_obj._status_bar_usage_inflight and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["weekly_quota_remaining"] is None
 
     def test_post_compression_sentinel_does_not_render_negative(self):
         """Right after a compression, last_prompt_tokens is parked at the -1

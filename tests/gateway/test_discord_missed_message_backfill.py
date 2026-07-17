@@ -735,6 +735,25 @@ async def test_send_uses_notify_metadata_as_final_delivery_signal(adapter):
     assert adapter._discord_message_is_persistently_complete("94") is True
 
 
+@pytest.mark.asyncio
+async def test_final_stream_edit_marks_original_request_complete(adapter):
+    channel = FakeChannel(channel_id=123)
+    message = SimpleNamespace(edit=AsyncMock())
+    channel.fetch_message = AsyncMock(return_value=message)
+    adapter._client.get_channel = lambda _channel_id: channel
+
+    result = await adapter.edit_message(
+        "123",
+        "9009",
+        "complete streamed response",
+        finalize=True,
+        metadata={"reply_to_message_id": "102"},
+    )
+
+    assert result.success is True
+    assert adapter._discord_message_is_persistently_complete("102") is True
+
+
 def test_disabled_recovery_does_not_create_hot_path_ledger(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_MISSED_MESSAGE_BACKFILL", "false")
     message = make_message(message_id=90)

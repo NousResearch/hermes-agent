@@ -14,6 +14,7 @@ vi.mock('./workspace', () => ({
 
 let resizeObserverCallback: ResizeObserverCallback | null = null
 let mutationObserverCallback: MutationCallback | null = null
+let mutationObserveCalls: Array<{ options?: MutationObserverInit; target: Node }> = []
 let root: Root | null = null
 let container: HTMLDivElement | null = null
 let windowStateCallback: ((payload: { isMinimized?: boolean; isVisible?: boolean }) => void) | null = null
@@ -128,6 +129,7 @@ describe('PersistentTerminal rect tracking', () => {
     installWindowStateBridge()
     resizeObserverCallback = null
     mutationObserverCallback = null
+    mutationObserveCalls = []
     vi.stubGlobal(
       'ResizeObserver',
       class {
@@ -148,7 +150,9 @@ describe('PersistentTerminal rect tracking', () => {
         }
 
         disconnect = vi.fn()
-        observe = vi.fn()
+        observe = vi.fn((target: Node, options?: MutationObserverInit) => {
+          mutationObserveCalls.push({ options, target })
+        })
         takeRecords = vi.fn(() => [])
       } as unknown as typeof MutationObserver
     )
@@ -205,6 +209,8 @@ describe('PersistentTerminal rect tracking', () => {
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => currentRect)
 
     render(<Harness />)
+
+    expect(mutationObserveCalls.some(call => call.options?.subtree === true)).toBe(true)
 
     act(() => {
       raf.runNext()
@@ -286,5 +292,19 @@ describe('PersistentTerminal rect tracking', () => {
       mutationObserverCallback?.([], {} as MutationObserver)
     })
     expect(raf.pending()).toBe(0)
+  })
+
+  it('does not schedule an initial frame when mounted while unfocused', () => {
+    const raf = installRaf()
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
+
+    render(<Harness />)
+
+    expect(raf.request).not.toHaveBeenCalled()
+
+    act(() => window.dispatchEvent(new Event('focus')))
+
+    expect(raf.pending()).toBe(1)
   })
 })

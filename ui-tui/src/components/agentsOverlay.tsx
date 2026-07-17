@@ -12,7 +12,12 @@ import { patchOverlayState } from '../app/overlayStore.js'
 import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '../app/spawnHistoryStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
+import type {
+  DelegationPauseResponse,
+  DelegationStatusResponse,
+  SubagentInterruptResponse,
+  SubagentSteerResponse
+} from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 import {
   buildSubagentTree,
@@ -33,6 +38,7 @@ import type { Theme } from '../theme.js'
 import type { SubagentNode, SubagentProgress } from '../types.js'
 
 import { OverlayScrollbar } from './overlayScrollbar.js'
+import { TextInput } from './textInput.js'
 
 // ── Types + lookup tables ────────────────────────────────────────────
 
@@ -608,6 +614,8 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const [cursor, setCursor] = useState(0)
   const [flash, setFlash] = useState<string>('')
   const [now, setNow] = useState(() => Date.now())
+  const [steerTarget, setSteerTarget] = useState<SubagentNode | null>(null)
+  const [steerText, setSteerText] = useState('')
   // cc-style view switching: list = full-width row picker, detail = full-width
   // scrollable pane.  Two panes side-by-side in Ink fought Yoga flex.
   const [mode, setMode] = useState<'detail' | 'list'>('list')
@@ -700,6 +708,29 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const interrupt = (id: string) => gw.request<SubagentInterruptResponse>('subagent.interrupt', { subagent_id: id })
 
+  const submitSteer = (instruction: string) => {
+    const target = steerTarget
+    const cleaned = instruction.trim()
+
+    if (!target || !cleaned) {
+      setFlash('steer instruction cannot be empty')
+
+      return
+    }
+
+    setSteerTarget(null)
+    setSteerText('')
+    gw.request<SubagentSteerResponse>('subagent.steer', {
+      instruction: cleaned,
+      subagent_id: target.item.id
+    })
+      .then(raw => {
+        const r = asRpcResult<SubagentSteerResponse>(raw)
+        setFlash(r?.accepted ? `steered ${target.item.id}` : `not running: ${target.item.id}`)
+      })
+      .catch(() => setFlash(`steer failed: ${target.item.id}`))
+  }
+
   const killOne = (id: string) =>
     guardLive(() => {
       interrupt(id)
@@ -752,6 +783,16 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const scrollDetail = (dy: number) => detailScrollRef.current?.scrollBy(dy)
 
   useInput((ch, key) => {
+    if (steerTarget) {
+      if (key.escape) {
+        setSteerTarget(null)
+        setSteerText('')
+        setFlash('steer cancelled')
+      }
+
+      return
+    }
+
     if (ch === 'q') {
       return closeWithCleanup()
     }
@@ -779,6 +820,19 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
     if (ch === 'X' && selected) {
       return killSubtree(selected)
+    }
+
+    if (ch === 'e' && selected) {
+      return guardLive(() => {
+        if (selected.item.status !== 'running') {
+          setFlash(`not running: ${selected.item.id}`)
+
+          return
+        }
+
+        setSteerTarget(selected)
+        setSteerText('')
+      })
     }
 
     if (mode === 'detail') {
@@ -881,7 +935,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const controlsHint = replayMode
     ? ' · controls locked'
-    : ` · x kill · X subtree · p ${delegation.paused ? 'resume' : 'pause'}`
+    : ` · e steer · x kill · X subtree · p ${delegation.paused ? 'resume' : 'pause'}`
 
   // ── Rendering ──────────────────────────────────────────────────────
 
@@ -944,7 +998,22 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       <Box flexDirection="column" marginTop={1}>
         {flash ? <Text color={t.color.accent}>{flash}</Text> : null}
 
-        {mode === 'list' ? (
+        {steerTarget ? (
+          <Box flexDirection="column">
+            <Text color={t.color.label}>Steer {steerTarget.item.id}</Text>
+            <Box>
+              <Text color={t.color.label}>{'> '}</Text>
+              <TextInput
+                columns={Math.max(20, cols - 6)}
+                focus
+                onChange={setSteerText}
+                onSubmit={submitSteer}
+                value={steerText}
+              />
+            </Box>
+            <Text color={t.color.muted}>Enter send · Esc cancel</Text>
+          </Box>
+        ) : mode === 'list' ? (
           <Text color={t.color.muted}>
             ↑↓/jk move · g/G top/bottom · Enter/→ open detail{controlsHint} · s sort:{SORT_LABEL[sort]} · f filter:
             {FILTER_LABEL[filter]}

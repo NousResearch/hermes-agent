@@ -5854,6 +5854,9 @@ class AIAgent:
         # The schema-level `background` param is intentionally ignored here.
         _is_subagent = getattr(self, "_delegate_depth", 0) > 0
         return _delegate_task(
+            action=function_args.get("action", "spawn"),
+            subagent_id=function_args.get("subagent_id"),
+            instruction=function_args.get("instruction"),
             goal=function_args.get("goal"),
             context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),

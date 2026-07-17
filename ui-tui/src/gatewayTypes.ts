@@ -590,6 +590,11 @@ export interface SubagentInterruptResponse {
   subagent_id?: string
 }
 
+export interface SubagentSteerResponse {
+  accepted?: boolean
+  subagent_id?: string
+}
+
 // ── Spawn-tree snapshots ─────────────────────────────────────────────
 
 export interface SpawnTreeListEntry {

@@ -179,39 +179,80 @@ def _unregister_subagent(subagent_id: str) -> None:
         _active_subagents.pop(subagent_id, None)
 
 
-def interrupt_subagent(subagent_id: str) -> bool:
-    """Request that a single running subagent stop at its next iteration boundary.
+def _controller_owns(record: Dict[str, Any], controller: Any) -> bool:
+    """Return whether *controller* owns the delegation tree for *record*.
 
-    Does not hard-kill the worker thread (Python can't); sets the child's
-    interrupt flag which propagates to in-flight tools and recurses into
-    grandchildren via AIAgent.interrupt().  Returns True if a matching
-    subagent was found.
+    Operator-facing callers pass ``None`` and may inspect/control every live
+    child in the process. Model-facing callers pass their AIAgent instance and
+    are restricted to the tree rooted at that top-level agent.
     """
+    if controller is None:
+        return True
+    # Children inherit this exact object reference from their parent. Keep the
+    # identity check strict so an equal-looking value cannot cross tree bounds.
+    controller_root = getattr(controller, "_delegation_root_agent", controller)
+    return record.get("root_agent") is controller_root
+
+
+def interrupt_subagent(subagent_id: str, controller: Any = None) -> bool:
+    """Request that one running subagent stop at its next iteration boundary."""
     with _active_subagents_lock:
         record = _active_subagents.get(subagent_id)
-    if not record:
-        return False
-    agent = record.get("agent")
+        if record is not None and not _controller_owns(record, controller):
+            record = None
+        agent = record.get("agent") if record else None
     if agent is None:
         return False
     try:
-        agent.interrupt(f"Interrupted via TUI ({subagent_id})")
+        reason = (
+            f"Interrupted via TUI ({subagent_id})"
+            if controller is None
+            else f"Interrupted by controller ({subagent_id})"
+        )
+        agent.interrupt(reason)
     except Exception as exc:
         logger.debug("interrupt_subagent(%s) failed: %s", subagent_id, exc)
         return False
     return True
 
 
-def list_active_subagents() -> List[Dict[str, Any]]:
-    """Snapshot of the currently running subagent tree.
+def steer_subagent(subagent_id: str, instruction: str, controller: Any = None) -> bool:
+    """Inject an instruction into one live subagent's next model iteration.
 
-    Each record: {subagent_id, parent_id, depth, goal, model, started_at,
-    tool_count, status}.  Safe to call from any thread — returns a copy.
+    The registry lock protects lookup only. Calling ``AIAgent.steer`` after
+    releasing it avoids deadlocking against concurrent completion and
+    unregistration. The captured agent remains valid if that race occurs.
     """
+    if not instruction or not instruction.strip():
+        return False
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if record is not None and not _controller_owns(record, controller):
+            record = None
+        agent = record.get("agent") if record else None
+    if agent is None:
+        return False
+    steer = getattr(agent, "steer", None)
+    if not callable(steer):
+        return False
+    try:
+        return bool(steer(instruction))
+    except Exception as exc:
+        logger.debug("steer_subagent(%s) failed: %s", subagent_id, exc)
+        return False
+
+
+def list_active_subagents(controller: Any = None) -> List[Dict[str, Any]]:
+    """Snapshot running subagents visible to an optional tree controller."""
     with _active_subagents_lock:
         return [
-            {k: v for k, v in r.items() if k != "agent"}
-            for r in _active_subagents.values()
+            {
+                key: value
+                for key, value in record.items()
+                if key not in {"agent", "root_agent"}
+            }
+            for record in _active_subagents.values()
+            if _controller_owns(record, controller)
         ]
 
 
@@ -1370,6 +1411,11 @@ def _build_child_agent(
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
+    setattr(
+        child,
+        "_delegation_root_agent",
+        getattr(parent_agent, "_delegation_root_agent", parent_agent),
+    )
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
     # Stable sidebar marker: delegate subagent sessions must stay out of
@@ -1887,6 +1933,7 @@ def _run_single_child(
                 "status": "running",
                 "tool_count": 0,
                 "agent": child,
+                "root_agent": getattr(child, "_delegation_root_agent", parent_agent),
             }
         )
 
@@ -2378,6 +2425,55 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _delegate_control(
+    action: str,
+    *,
+    subagent_id: Optional[str],
+    instruction: Optional[str],
+    parent_agent: Any,
+) -> str:
+    """Handle model-facing controls for the caller's delegation tree."""
+    if action == "status":
+        active = list_active_subagents(controller=parent_agent)
+        active.sort(
+            key=lambda item: (
+                item.get("depth", 0),
+                item.get("started_at", 0),
+                item.get("subagent_id", ""),
+            )
+        )
+        return json.dumps({"active": active, "count": len(active)})
+
+    if action not in {"steer", "interrupt"}:
+        return tool_error(
+            "action must be one of: spawn, status, steer, interrupt."
+        )
+    if not subagent_id or not subagent_id.strip():
+        return tool_error(f"subagent_id is required for action={action!r}.")
+
+    if action == "steer":
+        if not instruction or not instruction.strip():
+            return tool_error("instruction is required for action='steer'.")
+        accepted = steer_subagent(
+            subagent_id.strip(), instruction, controller=parent_agent
+        )
+    else:
+        accepted = interrupt_subagent(subagent_id.strip(), controller=parent_agent)
+
+    if not accepted:
+        return tool_error(
+            f"No controllable live subagent found with id {subagent_id!r}. "
+            "Call delegate_task(action='status') to list this session's active children."
+        )
+    return json.dumps(
+        {
+            "action": action,
+            "accepted": True,
+            "subagent_id": subagent_id.strip(),
+        }
+    )
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -2386,6 +2482,9 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
+    action: str = "spawn",
+    subagent_id: Optional[str] = None,
+    instruction: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2403,6 +2502,15 @@ def delegate_task(
     """
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
+
+    action = (action or "spawn").strip().lower()
+    if action != "spawn":
+        return _delegate_control(
+            action,
+            subagent_id=subagent_id,
+            instruction=instruction,
+            parent_agent=parent_agent,
+        )
 
     # Operator-controlled kill switch — lets the TUI freeze new fan-out
     # when a runaway tree is detected, without interrupting already-running
@@ -3267,10 +3375,15 @@ def _build_top_level_description() -> str:
         )
 
     return (
-        "Spawn one or more subagents to work on tasks in isolated contexts. "
+        "Spawn or control subagents working in isolated contexts. "
         "Each subagent gets its own conversation, terminal session, and toolset. "
         "Only the final summary is returned -- intermediate tool results "
         "never enter your context window.\n\n"
+        "LIVE CONTROL: use action='status' to list this session's running "
+        "children and recent tool activity, action='steer' with subagent_id "
+        "and instruction to redirect one child, or action='interrupt' with "
+        "subagent_id to stop one child. Controls are scoped to this session's "
+        "delegation tree.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
         "1. Single task: provide 'goal' (+ optional context, toolsets).\n"
         f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
@@ -3417,6 +3530,23 @@ DELEGATE_TASK_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["spawn", "status", "steer", "interrupt"],
+                "description": (
+                    "Operation to perform. Defaults to 'spawn'. Use 'status' "
+                    "to list active children, 'steer' to inject a new "
+                    "instruction, or 'interrupt' to stop one child."
+                ),
+            },
+            "subagent_id": {
+                "type": "string",
+                "description": "Target id for action='steer' or 'interrupt'.",
+            },
+            "instruction": {
+                "type": "string",
+                "description": "New direction to inject for action='steer'.",
+            },
             "goal": {
                 "type": "string",
                 "description": (
@@ -3526,6 +3656,9 @@ registry.register(
     toolset="delegation",
     schema=DELEGATE_TASK_SCHEMA,
     handler=lambda args, **kw: delegate_task(
+        action=args.get("action", "spawn"),
+        subagent_id=args.get("subagent_id"),
+        instruction=args.get("instruction"),
         goal=args.get("goal"),
         context=args.get("context"),
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),

@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 
 from agent.memory_manager import MemoryManager
 from agent.memory_provider import MemoryProvider
+from agent.turn_provenance import TURN_MEMORY_DISPOSITION_KEY
 
 
 class _RecordingProvider(MemoryProvider):
@@ -115,6 +116,63 @@ def test_boundary_commit_switch_still_fires_when_end_raises():
     assert mm.flush_pending(timeout=5)
 
     assert ("switch", "new-sid", True) in provider.calls
+
+
+def test_boundary_commit_filters_non_retain_turns_before_end_hook():
+    provider = _RecordingProvider()
+    mm = _make_manager(provider)
+
+    mm.commit_session_boundary_async(
+        [
+            {"role": "user", "content": "keep"},
+            {
+                "role": "user",
+                "content": "synthetic",
+                TURN_MEMORY_DISPOSITION_KEY: "do_not_retain",
+            },
+            {"role": "assistant", "content": "skip me"},
+            {"role": "user", "content": "resume"},
+        ],
+        new_session_id="new-sid",
+    )
+    assert mm.flush_pending(timeout=5)
+
+    assert provider.calls[0] == (
+        "end",
+        [
+            {"role": "user", "content": "keep"},
+            {"role": "user", "content": "resume"},
+        ],
+    )
+
+
+def test_boundary_filter_preserves_non_turn_history_and_input():
+    provider = _RecordingProvider()
+    mm = _make_manager(provider)
+    messages = [
+        {"role": "system", "content": "context"},
+        {
+            "role": "user",
+            "content": "synthetic",
+            TURN_MEMORY_DISPOSITION_KEY: "do_not_retain",
+        },
+        {"role": "assistant", "content": "skip"},
+        {"role": "system", "content": "boundary metadata"},
+        {"role": "assistant", "content": "keep"},
+    ]
+
+    mm.commit_session_boundary_async(messages, new_session_id="new-sid")
+    assert mm.flush_pending(timeout=5)
+
+    assert provider.calls[0] == (
+        "end",
+        [
+            {"role": "system", "content": "context"},
+            {"role": "system", "content": "boundary metadata"},
+            {"role": "assistant", "content": "keep"},
+        ],
+    )
+    assert messages[1][TURN_MEMORY_DISPOSITION_KEY] == "do_not_retain"
 
 
 def test_boundary_commit_noop_without_providers():

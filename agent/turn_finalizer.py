@@ -26,6 +26,7 @@ import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.message_content import flatten_message_text
+from agent.turn_provenance import TurnProvenance, should_retain_turn_memory
 
 
 def _is_pure_tool_call_tail(msg: dict) -> bool:
@@ -81,6 +82,7 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
+    turn_provenance: TurnProvenance | None = None,
     _pending_verification_response=None,
     _pending_verification_response_previewed=False,
 ):
@@ -586,15 +588,25 @@ def finalize_turn(
         final_response=final_response,
         interrupted=interrupted,
         messages=messages,
+        turn_provenance=turn_provenance,
     )
 
     # Background memory/skill review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
-    if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+    if (
+        final_response
+        and not interrupted
+        and (
+            (should_retain_turn_memory(turn_provenance) and _should_review_memory)
+            or _should_review_skills
+        )
+    ):
         try:
             agent._spawn_background_review(
                 messages_snapshot=list(messages),
-                review_memory=_should_review_memory,
+                review_memory=(
+                    should_retain_turn_memory(turn_provenance) and _should_review_memory
+                ),
                 review_skills=_should_review_skills,
             )
         except Exception:

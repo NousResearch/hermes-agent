@@ -2,6 +2,7 @@
 
 import queue
 
+from agent.turn_provenance import ASYNC_DELEGATION_COMPLETION_TURN
 from cli import HermesCLI
 
 
@@ -42,7 +43,11 @@ def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
     cli._drain_process_notifications("cli-idle")
 
     assert calls == [("visible-session", True)]
-    assert cli._pending_input.get_nowait() == "completion payload"
+    queued = cli._pending_input.get_nowait()
+    assert queued == {
+        "text": "completion payload",
+        "turn_provenance": ASYNC_DELEGATION_COMPLETION_TURN,
+    }
     assert claimed == [(event, "cli-idle")]
     assert completed == [(event, "claim-token")]
 

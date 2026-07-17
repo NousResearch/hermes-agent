@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.turn_provenance import ASYNC_DELEGATION_COMPLETION_TURN
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
@@ -110,6 +111,9 @@ def test_duplicate_async_queue_replay_injects_once(monkeypatch, isolated_registr
     asyncio.run(runner._async_delegation_watcher(interval=0))
 
     adapter.handle_message.assert_awaited_once()
+    injected_event = adapter.handle_message.await_args.args[0]
+    assert injected_event.internal is True
+    assert injected_event.turn_provenance == ASYNC_DELEGATION_COMPLETION_TURN
 
 
 def test_unroutable_async_event_is_not_requeued_forever(

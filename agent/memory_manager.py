@@ -35,6 +35,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from agent.skill_commands import extract_user_instruction_from_skill_message
+from agent.turn_provenance import (
+    TURN_MEMORY_DISPOSITION_KEY,
+    TurnMemoryDisposition,
+    get_message_turn_memory_disposition,
+)
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -351,6 +356,35 @@ def build_memory_context_block(raw_context: str) -> str:
     )
 
 
+def memory_safe_session_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return a memory-safe transcript view without non-retained turns."""
+
+    filtered: list[Dict[str, Any]] = []
+    skipping_turn = False
+    for msg in list(messages or []):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "user":
+            skipping_turn = (
+                get_message_turn_memory_disposition(msg)
+                == TurnMemoryDisposition.DO_NOT_RETAIN
+            )
+            if skipping_turn:
+                continue
+        elif skipping_turn and role in {"assistant", "tool"}:
+            continue
+        elif skipping_turn:
+            # A malformed/legacy sequence may contain a system or other
+            # non-turn message before the next user turn. Preserve it rather
+            # than extending the excluded turn across unrelated history.
+            skipping_turn = False
+        safe_msg = dict(msg)
+        safe_msg.pop(TURN_MEMORY_DISPOSITION_KEY, None)
+        filtered.append(safe_msg)
+    return filtered
+
+
 class MemoryManager:
     """Orchestrates the built-in provider plus at most one external provider.
 
@@ -654,6 +688,10 @@ class MemoryManager:
         if not providers:
             return
 
+        safe_messages = (
+            memory_safe_session_messages(messages) if messages is not None else None
+        )
+
         clean_user_content = self._strip_skill_scaffolding(user_content)
         if not clean_user_content:
             return
@@ -662,12 +700,12 @@ class MemoryManager:
         def _run() -> None:
             for provider in providers:
                 try:
-                    if messages is not None and self._provider_sync_accepts_messages(provider):
+                    if safe_messages is not None and self._provider_sync_accepts_messages(provider):
                         provider.sync_turn(
                             user_content,
                             assistant_content,
                             session_id=session_id,
-                            messages=messages,
+                            messages=safe_messages,
                         )
                     else:
                         provider.sync_turn(
@@ -854,9 +892,10 @@ class MemoryManager:
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Notify all providers of session end."""
+        safe_messages = memory_safe_session_messages(messages)
         for provider in self._providers:
             try:
-                provider.on_session_end(messages)
+                provider.on_session_end(safe_messages)
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' on_session_end failed: %s",

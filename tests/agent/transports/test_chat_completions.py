@@ -60,6 +60,18 @@ class TestChatCompletionsBasic:
         assert "effect_disposition" not in result[0]
         assert msgs[0]["effect_disposition"] == "unknown"
 
+    def test_convert_messages_strips_internal_turn_memory_disposition(self, transport):
+        msgs = [{
+            "role": "user",
+            "content": "synthetic",
+            "_turn_memory_disposition": "do_not_retain",
+        }]
+
+        result = transport.convert_messages(msgs)
+
+        assert "_turn_memory_disposition" not in result[0]
+        assert msgs[0]["_turn_memory_disposition"] == "do_not_retain"
+
     def test_convert_messages_strips_codex_fields(self, transport):
         msgs = [
             {"role": "assistant", "content": "ok", "codex_reasoning_items": [{"id": "rs_1"}],

@@ -463,6 +463,86 @@ class TestResolveDeliveryTarget:
 
         assert _resolve_delivery_targets({"deliver": []}) == []
 
+    def test_webui_and_hermex_resolve_to_profile_inbox(self):
+        from cron.scheduler import _resolve_delivery_targets
+
+        expected = [
+            {"platform": "webui", "chat_id": "inbox", "thread_id": None}
+        ]
+        assert _resolve_delivery_targets({"deliver": "webui"}) == expected
+        assert _resolve_delivery_targets({"deliver": "hermex"}) == expected
+        assert _resolve_delivery_targets({"deliver": "WEBUI"}) == expected
+
+    def test_webui_delivery_writes_without_gateway_config(
+        self, tmp_path, monkeypatch
+    ):
+        from cron.webui_notifications import list_notifications
+
+        monkeypatch.setattr("cron.scheduler._hermes_home", tmp_path)
+        with patch(
+            "gateway.config.load_gateway_config",
+            side_effect=AssertionError("should not load gateway config"),
+        ):
+            assert _deliver_result(
+                {"id": "webui-job", "name": "WebUI Job", "deliver": "webui"},
+                "Report body",
+                output_file=tmp_path / "cron" / "output" / "webui-job" / "run.md",
+            ) is None
+
+        records = list_notifications(home=tmp_path)
+        assert len(records) == 1
+        assert records[0]["job_id"] == "webui-job"
+        assert records[0]["title"] == "Cronjob Response: WebUI Job"
+        assert "Report body" in records[0]["body"]
+        assert records[0]["output_ref"] == {
+            "job_id": "webui-job",
+            "filename": "run.md",
+        }
+
+    def test_webui_origin_dual_delivery_writes_once_and_sends_origin(
+        self, tmp_path, monkeypatch
+    ):
+        from cron.webui_notifications import list_notifications
+        from gateway.config import Platform
+
+        monkeypatch.setattr("cron.scheduler._hermes_home", tmp_path)
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+            patch(
+                "tools.send_message_tool._send_to_platform",
+                new=AsyncMock(return_value={"success": True}),
+            ) as send_mock,
+        ):
+            error = _deliver_result(
+                {
+                    "id": "dual-job",
+                    "name": "Dual Job",
+                    "deliver": "webui,origin",
+                    "origin": {"platform": "telegram", "chat_id": "123"},
+                },
+                "Dual body",
+            )
+
+        assert error is None
+        assert len(list_notifications(home=tmp_path)) == 1
+        send_mock.assert_called_once()
+
+    def test_webui_delivery_error_is_reported(self):
+        with patch(
+            "cron.scheduler._append_webui_notification",
+            side_effect=RuntimeError("disk full"),
+        ):
+            error = _deliver_result(
+                {"id": "bad-webui", "deliver": "webui"}, "body"
+            )
+
+        assert error == "delivery to webui inbox failed: disk full"
+
 
 class TestRoutingIntents:
     """``all`` routing intent expands at fire time."""
@@ -4905,7 +4985,13 @@ class TestMultiTargetDeliveryContinuesOnFailure:
             fail_future.result.side_effect = ConnectionError("SMTP connection refused")
             ok_future = MagicMock()
             ok_future.result.return_value = {"success": True}
-            mock_pool.submit.side_effect = [fail_future, ok_future]
+            futures = iter((fail_future, ok_future))
+
+            def submit_without_running(_runner, coroutine):
+                coroutine.close()
+                return next(futures)
+
+            mock_pool.submit.side_effect = submit_without_running
 
             result = _deliver_result(job, "Report content")
 
@@ -4934,7 +5020,12 @@ class TestMultiTargetDeliveryContinuesOnFailure:
 
             fail_future = MagicMock()
             fail_future.result.side_effect = ConnectionError("connection refused")
-            mock_pool.submit.return_value = fail_future
+
+            def submit_without_running(_runner, coroutine):
+                coroutine.close()
+                return fail_future
+
+            mock_pool.submit.side_effect = submit_without_running
 
             result = _deliver_result(job, "Report content")
 

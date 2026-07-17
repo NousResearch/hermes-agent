@@ -18769,6 +18769,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         profile_home = self._resolve_profile_home_for_source(source)
         with _profile_runtime_scope(profile_home):
+            # MCP connections and their registered tool handlers are global to
+            # this process, while multiplex routing changes profile per turn.
+            # Reject a turn before agent dispatch when a live source-bound
+            # client-credentials connection does not belong to this profile.
+            from tools.mcp_tool import assert_mcp_profile_compatible
+            assert_mcp_profile_compatible()
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,

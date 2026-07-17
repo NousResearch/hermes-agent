@@ -8,6 +8,8 @@ multiplex mode fails closed instead of leaking.
 import pytest
 
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from agent import secret_scope as ss
 
@@ -156,3 +158,45 @@ class TestProfilePathResolutionUnderMultiplexScope:
             t.join()
 
         assert seen["home"] == str(prof_b)
+
+
+class TestMultiplexMcpRoutingGuard:
+    @pytest.mark.asyncio
+    async def test_profile_mcp_identity_checked_before_agent_dispatch(
+        self, tmp_path, monkeypatch,
+    ):
+        from gateway.config import Platform
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+        from hermes_constants import get_hermes_home
+
+        profile_b = tmp_path / "profile-b"
+        profile_b.mkdir()
+        runner = object.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        runner._resolve_profile_home_for_source = lambda _source: profile_b
+        runner._run_agent_inner = AsyncMock()
+        seen = []
+
+        def reject_inherited_connection():
+            seen.append(Path(get_hermes_home()))
+            raise RuntimeError("profile-bound MCP mismatch")
+
+        monkeypatch.setattr(
+            "tools.mcp_tool.assert_mcp_profile_compatible",
+            reject_inherited_connection,
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="profile-b-chat",
+            chat_type="dm",
+            profile="profile-b",
+        )
+
+        with pytest.raises(RuntimeError, match="profile-bound MCP mismatch"):
+            await runner._run_agent(
+                "message", "context", [], source, "session-b",
+            )
+
+        assert seen == [profile_b]
+        runner._run_agent_inner.assert_not_awaited()

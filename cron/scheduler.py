@@ -1137,11 +1137,19 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     """Resolve one concrete auto-delivery target for a cron job."""
 
     origin = _resolve_origin(job)
+    deliver_key = deliver_value.strip().lower()
 
-    if deliver_value == "local":
+    if deliver_key == "local":
         return None
 
-    if deliver_value == "origin":
+    if deliver_key in _WEBUI_DELIVERY_ALIASES:
+        return {
+            "platform": "webui",
+            "chat_id": "inbox",
+            "thread_id": None,
+        }
+
+    if deliver_key == "origin":
         if origin:
             return {
                 "platform": origin["platform"],
@@ -1244,6 +1252,7 @@ def _normalize_deliver_value(deliver) -> str:
 # comes online.  ``all`` expands into the set of connected platforms
 # (those with a configured home chat_id) in _expand_routing_tokens.
 _ROUTING_TOKENS = frozenset({"all"})
+_WEBUI_DELIVERY_ALIASES = frozenset({"webui", "hermex"})
 
 
 def _expand_routing_tokens(part: str) -> List[str]:
@@ -1442,7 +1451,49 @@ def _is_channel_dm_topic(
     return is_channel
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _append_webui_notification(
+    job: dict,
+    delivery_content: str,
+    cleaned_delivery_content: str,
+    media_files: list,
+    output_file: str | Path | None = None,
+) -> dict:
+    """Append one cron notification to the profile-local WebUI inbox."""
+    from cron.webui_notifications import append_notification
+
+    task_name = job.get("name") or job.get("id") or "Cron job"
+    output_ref = {"job_id": job.get("id")}
+    if output_file:
+        output_ref["filename"] = Path(output_file).name
+    return append_notification(
+        {
+            "job_id": job.get("id"),
+            "job_name": task_name,
+            "severity": "info",
+            "status": "ok",
+            "title": f"Cronjob Response: {task_name}",
+            "body": cleaned_delivery_content or delivery_content,
+            "body_format": "markdown",
+            "media": media_files,
+            "output_ref": output_ref,
+            "delivery": {
+                "target": "webui",
+                "dual_delivery": "," in _normalize_deliver_value(
+                    job.get("deliver", "local")
+                ),
+            },
+        },
+        home=_get_hermes_home(),
+    )
+
+
+def _deliver_result(
+    job: dict,
+    content: str,
+    adapters=None,
+    loop=None,
+    output_file: str | Path | None = None,
+) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -1520,19 +1571,33 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         _, mirror_text = BasePlatformAdapter.extract_media(content)
         mirror_text = (mirror_text or "").strip()
 
-    try:
-        config = load_gateway_config()
-    except Exception as e:
-        msg = f"failed to load gateway config: {e}"
-        logger.error("Job '%s': %s", job["id"], msg)
-        return msg
-
+    config = None
     delivery_errors = []
 
     for target in targets:
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
+
+        if platform_name.lower() == "webui":
+            try:
+                record = _append_webui_notification(
+                    job,
+                    delivery_content,
+                    cleaned_delivery_content,
+                    media_files,
+                    output_file=output_file,
+                )
+                logger.info(
+                    "Job '%s': delivered to WebUI notification inbox as %s",
+                    job["id"],
+                    record.get("id"),
+                )
+            except Exception as e:
+                msg = f"delivery to webui inbox failed: {e}"
+                logger.error("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+            continue
 
         # Diagnostic: log thread_id for topic-aware delivery debugging
         origin = _resolve_origin(job) or {}
@@ -1568,6 +1633,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             logger.warning("Job '%s': %s", job["id"], msg)
             delivery_errors.append(msg)
             continue
+
+        if config is None:
+            try:
+                config = load_gateway_config()
+            except Exception as e:
+                msg = f"failed to load gateway config: {e}"
+                logger.error("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
 
         pconfig = config.platforms.get(platform)
         if not pconfig or not pconfig.enabled:
@@ -3838,7 +3912,13 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
             if should_deliver:
                 try:
-                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                    delivery_error = _deliver_result(
+                        job,
+                        deliver_content,
+                        adapters=adapters,
+                        loop=loop,
+                        output_file=output_file,
+                    )
                 except Exception as de:
                     delivery_error = str(de)
                     logger.error("Delivery failed for job %s: %s", job["id"], de)

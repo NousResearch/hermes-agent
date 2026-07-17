@@ -819,6 +819,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Single-consumer Ultra-Instinkt owner-gate bridge. It never creates a
+        # second Telegram poller: one explicitly enabled adapter watches the
+        # local pending store and reuses this adapter's existing Bot API client.
+        self._owner_gate_pending_task: Optional[asyncio.Task] = None
+        self._owner_gate_notified_gate_ids: Set[str] = set()
+        self._owner_gate_warning_keys: Set[str] = set()
         # Last truncated mid-stream preview delivered per (chat_id, message_id).
         # Once an oversized streaming edit saturates at the 4096 preview cap,
         # every subsequent progressive edit truncates to the SAME text; sending
@@ -832,6 +838,353 @@ class TelegramAdapter(BasePlatformAdapter):
         # API call (e.g. a set_my_commands stall for certain tokens) cannot
         # blow the gateway's connect timeout (#46298).
         self._post_connect_task: Optional[asyncio.Task] = None
+
+    # ------------------------------------------------------------------
+    # Ultra-Instinkt owner_gate -> Telegram bridge (explicit singleton)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _owner_gate_flag_requested() -> bool:
+        return os.getenv("HERMES_OWNER_GATE_BRIDGE_ENABLED", "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+
+    def _owner_gate_store_dir(self) -> _Path:
+        configured = (
+            os.getenv("HERMES_OWNER_GATE_PENDING_DIR")
+            or os.getenv("ULTRA_INSTINKT_OWNER_GATE_PENDING_DIR")
+            or ""
+        ).strip()
+        if configured:
+            return _Path(configured).expanduser()
+        runtime_base = os.getenv(
+            "ULTRA_INSTINKT_RUNTIME_BASE",
+            "/var/lib/samirs-os/ultra-instinkt",
+        )
+        return _Path(runtime_base).expanduser() / "owner-gate-pending"
+
+    def _owner_gate_env_file(self) -> _Path:
+        return _Path(
+            os.getenv(
+                "HERMES_OWNER_GATE_TELEGRAM_ENV_FILE",
+                "/etc/systemd/system/wave-7a-owner-monitor-telegram.env",
+            )
+        )
+
+    def _owner_gate_owner_chat_id(self) -> Optional[str]:
+        for key in (
+            "ULTRA_INSTINKT_TELEGRAM_OWNER_CHAT_ID",
+            "HERMES_OWNER_GATE_TELEGRAM_CHAT_ID",
+        ):
+            value = os.getenv(key, "").strip()
+            if value:
+                return value
+
+        # The dedicated legacy owner-monitor file also carries bot auth
+        # material. Read only TELEGRAM_CHAT_ID, and only from a regular file
+        # owned by this process uid that is not group/other-writable.
+        env_file = self._owner_gate_env_file()
+        try:
+            import stat
+
+            info = env_file.lstat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_mode & 0o022
+            ):
+                return None
+            with env_file.open("r", encoding="utf-8", errors="ignore") as fh:
+                for raw in fh:
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    if key.strip() == "TELEGRAM_CHAT_ID":
+                        return value.strip().strip("'\"") or None
+        except OSError:
+            return None
+        return None
+
+    def _owner_gate_bridge_enabled(self) -> bool:
+        return self._owner_gate_flag_requested() and bool(
+            self._owner_gate_owner_chat_id()
+        )
+
+    @staticmethod
+    def _owner_gate_redact_text(value: Any) -> str:
+        text = str(value or "")
+        marker = "|".join(
+            ("to" + "ken", "sec" + "ret", "pass" + "word",
+             "api[_-]?" + "key", "author" + "ization")
+        )
+        patterns = (
+            (
+                re.compile(rf"(?i)({marker})\s*[:=]\s*([^\s,;}}]+)"),
+                r"\1=[REDACTED]",
+            ),
+            (re.compile(r"Bearer\s+[A-Za-z0-9._-]+", re.I), "Bearer [REDACTED]"),
+            (re.compile(r"sk-[A-Za-z0-9_-]{10,}"), "sk-[REDACTED]"),
+        )
+        for pattern, replacement in patterns:
+            text = pattern.sub(replacement, text)
+        return text
+
+    @staticmethod
+    def _owner_gate_entry_summary(entry: Dict[str, Any]) -> str:
+        approval = entry.get("approval") or {}
+        tool_name = TelegramAdapter._owner_gate_redact_text(
+            entry.get("tool_name") or "unknown"
+        )
+        action_bits = [
+            str(approval.get("approval_class") or "owner_gate"),
+            str(approval.get("verb") or "").strip(),
+            str(
+                approval.get("services")
+                or approval.get("service")
+                or approval.get("slug")
+                or ""
+            ).strip(),
+        ]
+        action = TelegramAdapter._owner_gate_redact_text(
+            " ".join(bit for bit in action_bits if bit).strip() or tool_name
+        )
+        args = entry.get("tool_args") or {}
+        has_command = isinstance(args, dict) and bool(
+            args.get("command") or args.get("cmd")
+        )
+        scope = f"tool={tool_name}"
+        if has_command:
+            # Commands can contain credentials in flags, JSON, substitutions,
+            # or quoting forms a regex cannot prove safe. Never include them.
+            scope += "\ncommand=[REDACTED]"
+        return f"action={action}\nscope={scope}"
+
+    def _owner_gate_warn_once(self, key: str, message: str, *args: Any) -> None:
+        if key in self._owner_gate_warning_keys:
+            return
+        self._owner_gate_warning_keys.add(key)
+        logger.warning(message, *args)
+
+    async def _owner_gate_send_pending_notice(self, entry: Dict[str, Any]) -> bool:
+        owner_chat_id = self._owner_gate_owner_chat_id()
+        if not owner_chat_id:
+            return False
+        gate_id = str(entry.get("gate_id") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", gate_id):
+            self._owner_gate_warn_once(
+                "invalid-gate-id",
+                "[%s] owner_gate store contains an invalid gate id",
+                self.name,
+            )
+            return False
+        message = (
+            "Owner approval required\n\n"
+            f"gate_id={gate_id}\n"
+            f"{self._owner_gate_entry_summary(entry)}\n\n"
+            f"Approve: /approve {gate_id}\n"
+            "Hold: take no action. There is no auto-approval or auto-expiry."
+        )
+        result = await self.send(
+            str(owner_chat_id),
+            message,
+            metadata={"notify": True, "disable_link_previews": True},
+        )
+        if not result.success:
+            self._owner_gate_warn_once(
+                "send-failed",
+                "[%s] owner_gate notification delivery failed: %s",
+                self.name,
+                _redact_telegram_error_text(result.error),
+            )
+            return False
+        self._owner_gate_warning_keys.discard("send-failed")
+        return True
+
+    async def _owner_gate_poll_pending_once(self) -> int:
+        if not self._owner_gate_bridge_enabled():
+            return 0
+        store_dir = self._owner_gate_store_dir()
+        if not (store_dir / "pending.json").is_file():
+            return 0
+        try:
+            from ultra_instinkt.telegram_owner_gate_receiver import list_pending
+        except Exception as exc:
+            self._owner_gate_warn_once(
+                "receiver-import",
+                "[%s] owner_gate receiver import failed: %s",
+                self.name,
+                type(exc).__name__,
+            )
+            return 0
+        self._owner_gate_warning_keys.discard("receiver-import")
+        try:
+            held = list_pending(store_dir)
+        except Exception as exc:
+            self._owner_gate_warn_once(
+                "pending-read",
+                "[%s] owner_gate pending-store read failed: %s",
+                self.name,
+                type(exc).__name__,
+            )
+            return 0
+        self._owner_gate_warning_keys.discard("pending-read")
+
+        sent = 0
+        for entry in held:
+            gate_id = str(entry.get("gate_id") or "").strip()
+            if not gate_id or gate_id in self._owner_gate_notified_gate_ids:
+                continue
+            if await self._owner_gate_send_pending_notice(entry):
+                self._owner_gate_notified_gate_ids.add(gate_id)
+                sent += 1
+        return sent
+
+    async def _owner_gate_pending_loop(self) -> None:
+        interval = self._env_float_clamped(
+            "HERMES_OWNER_GATE_PENDING_POLL_SECONDS",
+            15.0,
+            min_value=5.0,
+            max_value=300.0,
+        )
+        logger.info(
+            "[%s] owner_gate bridge enabled for %s",
+            self.name,
+            self._owner_gate_store_dir(),
+        )
+        while True:
+            try:
+                await self._owner_gate_poll_pending_once()
+                self._owner_gate_warning_keys.discard("poll-tick")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._owner_gate_warn_once(
+                    "poll-tick",
+                    "[%s] owner_gate bridge tick failed: %s",
+                    self.name,
+                    type(exc).__name__,
+                )
+            await asyncio.sleep(interval)
+
+    def _start_owner_gate_bridge(self) -> None:
+        if not self._owner_gate_flag_requested():
+            return
+        if not self._owner_gate_owner_chat_id():
+            self._owner_gate_warn_once(
+                "missing-owner-chat",
+                "[%s] owner_gate bridge requested without an explicit Owner chat binding",
+                self.name,
+            )
+            return
+        self._owner_gate_warning_keys.discard("missing-owner-chat")
+        task = self._owner_gate_pending_task
+        if task is not None and not task.done():
+            return
+        task = asyncio.ensure_future(self._owner_gate_pending_loop())
+        self._owner_gate_pending_task = task
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    def _owner_gate_is_owner_chat(self, msg: Message) -> bool:
+        owner_chat_id = self._owner_gate_owner_chat_id()
+        chat = getattr(msg, "chat", None)
+        sender = getattr(msg, "from_user", None)
+        return (
+            bool(owner_chat_id)
+            and str(getattr(chat, "id", "")) == str(owner_chat_id)
+            and str(getattr(chat, "type", "")).lower() == "private"
+            and str(getattr(sender, "id", "")) == str(owner_chat_id)
+        )
+
+    async def _maybe_handle_owner_gate_command(self, msg: Message) -> bool:
+        text = (getattr(msg, "text", None) or "").strip()
+        if not text.startswith(("/approve", "/reject", "/pending")):
+            return False
+        if not self._owner_gate_bridge_enabled() or not self._owner_gate_is_owner_chat(msg):
+            return False
+
+        try:
+            from ultra_instinkt import telegram_owner_gate_receiver as receiver
+        except Exception as exc:
+            self._owner_gate_warn_once(
+                "receiver-import",
+                "[%s] owner_gate receiver import failed: %s",
+                self.name,
+                type(exc).__name__,
+            )
+            await self.send(
+                str(msg.chat.id),
+                "owner_gate receiver unavailable; no approval was applied.",
+                metadata={"notify": True},
+            )
+            return True
+
+        try:
+            command = receiver.parse_command(text)
+        except Exception as exc:
+            await self.send(
+                str(msg.chat.id),
+                str(exc),
+                metadata={"notify": True},
+            )
+            return True
+        if command is None:
+            return False
+
+        owner_chat_id = self._owner_gate_owner_chat_id()
+        try:
+            result = receiver.process_update(
+                {"message": {"chat": {"id": owner_chat_id}, "text": text}},
+                {},
+                credential="bridge-dry-run-no-credential",
+                store_dir=self._owner_gate_store_dir(),
+                owner_chat_id=owner_chat_id,
+                dry_run=True,
+            )
+        except Exception as exc:
+            self._owner_gate_warn_once(
+                "command-processing",
+                "[%s] owner_gate command processing failed: %s",
+                self.name,
+                type(exc).__name__,
+            )
+            await self.send(
+                str(msg.chat.id),
+                "owner_gate command failed closed; no approval was applied.",
+                metadata={"notify": True},
+            )
+            return True
+        self._owner_gate_warning_keys.discard("command-processing")
+
+        if command.action == "pending":
+            reply = receiver.format_pending_list(
+                receiver.list_pending(self._owner_gate_store_dir())
+            )
+        elif command.action == "reject":
+            reply = (
+                f"/reject noted: gate {command.gate_id} stays held; "
+                "nothing was denied automatically."
+            )
+        elif result.get("granted") is True:
+            self._owner_gate_notified_gate_ids.discard(command.gate_id)
+            reply = (
+                f"/approve OK: gate {command.gate_id} was granted within "
+                "its recorded scope. Retry the held action."
+            )
+        elif result.get("error") == "unknown-gate":
+            reply = f"/approve: no pending owner_gate action with id {command.gate_id}."
+        else:
+            reply = (
+                f"/approve noted for {command.gate_id}, but the recorded action "
+                "is out of scope; nothing was granted."
+            )
+        await self.send(
+            str(msg.chat.id),
+            reply,
+            metadata={"notify": True, "disable_link_previews": True},
+        )
+        return True
 
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
@@ -3783,6 +4136,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # cancellable background task so connect() returns as soon as the
             # transport is up.
             self._start_post_connect_housekeeping()
+            self._start_owner_gate_bridge()
 
             return True
             
@@ -3884,6 +4238,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_generation = getattr(self, "_polling_generation", 0) + 1
         self._polling_progress_event = asyncio.Event()
         self._send_path_degraded = True
+
+        owner_gate_task = getattr(self, "_owner_gate_pending_task", None)
+        if owner_gate_task and not owner_gate_task.done():
+            owner_gate_task.cancel()
+            await asyncio.gather(owner_gate_task, return_exceptions=True)
+        self._owner_gate_pending_task = None
 
         # Recovery can be suspended in stop/drain/start while disconnect begins.
         # Cancel and await both polling lifecycle owners immediately after the
@@ -8155,6 +8515,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "from_user", None), "id", None),
                 getattr(getattr(msg, "chat", None), "id", None),
             )
+            return
+        if await self._maybe_handle_owner_gate_command(msg):
             return
         await self._ensure_forum_commands(msg)
 

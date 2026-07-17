@@ -35,9 +35,12 @@ Design reference:
 from __future__ import annotations
 
 import asyncio
+import copy
+import hashlib
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -78,6 +81,9 @@ class _ProviderEntry:
         server_url: The MCP server URL used to build the provider. Tracked
             so we can discard a cached provider if the URL changes.
         oauth_config: Optional dict from ``mcp_servers.<name>.oauth``.
+        profile_token_dir: Resolved token directory captured for a
+            ``client_credentials`` provider. A different profile or credential
+            identity must never reuse the cached source-bound provider.
         provider: The ``httpx.Auth``-compatible provider wrapping the MCP
             SDK. None until first use.
         last_mtime_ns: Last-seen ``st_mtime_ns`` of the on-disk tokens file.
@@ -92,6 +98,7 @@ class _ProviderEntry:
 
     server_url: str
     oauth_config: Optional[dict]
+    profile_token_dir: Optional[str] = None
     provider: Optional[Any] = None
     last_mtime_ns: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -439,6 +446,248 @@ _HERMES_PROVIDER_CLS: Optional[type] = _make_hermes_provider_class()
 
 
 # ---------------------------------------------------------------------------
+# HermesClientCredentialsProvider -- non-interactive machine OAuth
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _ClientCredentialsContext:
+    """Minimal context exposed to the manager's generic 401 recovery path."""
+
+    storage: Any
+    current_tokens: Optional[Any] = None
+    token_expiry_time: Optional[float] = None
+
+    def can_refresh_token(self) -> bool:
+        # RFC 6749 client_credentials tokens have no refresh token. The client
+        # can always mint a replacement with its registered credentials.
+        return True
+
+
+def _make_client_credentials_provider_class() -> Optional[type]:
+    """Build an httpx.Auth provider without relying on a newer MCP SDK API."""
+    try:
+        import httpx
+        from mcp.shared.auth import OAuthToken
+    except ImportError:  # pragma: no cover -- dependencies required in CI
+        return None
+
+    class HermesClientCredentialsProvider(httpx.Auth):
+        """OAuth client_credentials with profile-local token persistence.
+
+        The client secret remains only in the resolved in-memory config. Token
+        responses use HermesTokenStorage, which writes mode-0600 files below
+        the active HERMES_HOME. Token minting uses a dedicated non-redirecting,
+        proxy-free client so a 307/308 cannot replay the form-encoded secret to
+        another origin. A 401 mints once and retries once.
+        """
+
+        def __init__(
+            self,
+            *,
+            server_name: str,
+            token_url: str,
+            client_id: str,
+            client_secret: str,
+            scope: Optional[str],
+            resource: Optional[str],
+            storage: Any,
+        ) -> None:
+            self._hermes_server_name = server_name
+            self._token_url = token_url
+            self._client_id = client_id
+            self._client_secret = client_secret
+            self._scope = scope
+            self._resource = resource
+            self.context = _ClientCredentialsContext(storage=storage)
+            self._initialized = False
+            self._lock = asyncio.Lock()
+
+        async def _initialize(self) -> None:
+            tokens = await self.context.storage.get_tokens()
+            self.context.current_tokens = tokens
+            self.context.token_expiry_time = self._expiry_from(tokens)
+            self._initialized = True
+
+        @staticmethod
+        def _expiry_from(tokens: Any) -> Optional[float]:
+            if tokens is None or tokens.expires_in is None:
+                return None
+            try:
+                lifetime = int(tokens.expires_in)
+            except (TypeError, ValueError):
+                return None
+            if lifetime <= 0:
+                return None
+            return time.time() + lifetime
+
+        def _token_is_valid(self) -> bool:
+            tokens = self.context.current_tokens
+            expiry = self.context.token_expiry_time
+            return bool(
+                tokens is not None
+                and tokens.access_token
+                and expiry is not None
+                and expiry > time.time() + 30
+            )
+
+        def _token_request(self) -> "httpx.Request":
+            data = {
+                "grant_type": "client_credentials",
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+            }
+            if self._scope:
+                data["scope"] = self._scope
+            if self._resource:
+                data["resource"] = self._resource
+            return httpx.Request(
+                "POST",
+                self._token_url,
+                data=data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+
+        async def _accept_token_response(self, response: "httpx.Response") -> None:
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"MCP OAuth client_credentials token request failed with HTTP {response.status_code}"
+                )
+            try:
+                payload = await response.aread()
+                tokens = OAuthToken.model_validate_json(payload)
+            except Exception as exc:
+                raise RuntimeError(
+                    "MCP OAuth client_credentials token response was invalid"
+                ) from exc
+            expiry = self._expiry_from(tokens)
+            if not tokens.access_token or expiry is None:
+                raise RuntimeError(
+                    "MCP OAuth client_credentials token response lacked a usable expiry"
+                )
+            self.context.current_tokens = tokens
+            self.context.token_expiry_time = expiry
+            await self.context.storage.set_tokens(tokens)
+
+        async def _mint_token(self) -> None:
+            """Mint once without allowing redirects or environment proxies.
+
+            The outer MCP client may follow redirects for normal tool calls.
+            Yielding the token request into that client would allow a 307/308
+            response to replay the form body, including ``client_secret``, to
+            another origin before this provider can inspect the response.
+            Keep credential exchange on a dedicated fail-closed client.
+            """
+            async with httpx.AsyncClient(
+                follow_redirects=False,
+                trust_env=False,
+                timeout=10.0,
+            ) as client:
+                response = await client.send(
+                    self._token_request(),
+                    follow_redirects=False,
+                )
+            if response.is_redirect:
+                raise RuntimeError(
+                    "MCP OAuth client_credentials token endpoint redirect refused"
+                )
+            await self._accept_token_response(response)
+
+        def _authorize(self, request: "httpx.Request") -> None:
+            tokens = self.context.current_tokens
+            if tokens is None or not tokens.access_token:
+                raise RuntimeError("MCP OAuth client_credentials token unavailable")
+            request.headers["Authorization"] = f"Bearer {tokens.access_token}"
+
+        async def async_auth_flow(self, request):  # type: ignore[override]
+            async with self._lock:
+                if not self._initialized:
+                    await self._initialize()
+                if not self._token_is_valid():
+                    await self._mint_token()
+
+                self._authorize(request)
+                response = yield request
+                if response.status_code != 401:
+                    return
+
+                # One bounded replacement attempt. Never enter browser auth.
+                self.context.current_tokens = None
+                self.context.token_expiry_time = None
+                await self._mint_token()
+                self._authorize(request)
+                yield request
+
+    return HermesClientCredentialsProvider
+
+
+_CLIENT_CREDENTIALS_PROVIDER_CLS: Optional[type] = (
+    _make_client_credentials_provider_class()
+)
+
+
+def _validated_client_credentials_config(
+    server_url: str,
+    cfg: dict,
+) -> tuple[str, str, str, Optional[str], Optional[str]]:
+    """Validate non-interactive OAuth config without disclosing credentials."""
+    from urllib.parse import urlsplit
+
+    required: dict[str, str] = {}
+    for key in ("token_url", "client_id", "client_secret"):
+        value = cfg.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"MCP OAuth client_credentials requires non-empty oauth.{key}"
+            )
+        required[key] = value.strip()
+
+    token = urlsplit(required["token_url"])
+    if (
+        not token.hostname
+        or token.username is not None
+        or token.password is not None
+        or token.fragment
+    ):
+        raise ValueError("MCP OAuth client_credentials token_url is unsafe")
+    loopback = token.hostname in {"127.0.0.1", "localhost", "::1"}
+    if token.scheme != "https" and not (token.scheme == "http" and loopback):
+        raise ValueError(
+            "MCP OAuth client_credentials token_url must use HTTPS or loopback HTTP"
+        )
+
+    server = urlsplit(server_url)
+    if (
+        not server.hostname
+        or server.username is not None
+        or server.password is not None
+        or server.fragment
+    ):
+        raise ValueError("MCP OAuth client_credentials MCP URL is unsafe")
+    server_loopback = server.hostname in {"127.0.0.1", "localhost", "::1"}
+    if server.scheme != "https" and not (
+        server.scheme == "http" and server_loopback
+    ):
+        raise ValueError(
+            "MCP OAuth client_credentials MCP URL must use HTTPS or loopback HTTP"
+        )
+
+    scope = cfg.get("scope")
+    resource = cfg.get("resource")
+    if scope is not None and (not isinstance(scope, str) or not scope.strip()):
+        raise ValueError("MCP OAuth client_credentials oauth.scope must be a non-empty string")
+    if resource is not None and (not isinstance(resource, str) or not resource.strip()):
+        raise ValueError("MCP OAuth client_credentials oauth.resource must be a non-empty string")
+    return (
+        required["token_url"],
+        required["client_id"],
+        required["client_secret"],
+        scope.strip() if isinstance(scope, str) else None,
+        resource.strip() if isinstance(resource, str) else None,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Manager
 # ---------------------------------------------------------------------------
 
@@ -461,6 +710,15 @@ class MCPOAuthManager:
 
     # -- Provider construction / caching -------------------------------------
 
+    @staticmethod
+    def _client_credentials_token_dir(oauth_config: Optional[dict]) -> Optional[str]:
+        cfg = dict(oauth_config or {})
+        if cfg.get("grant_type", "authorization_code") != "client_credentials":
+            return None
+        from tools.mcp_oauth import _get_token_dir
+
+        return str(_get_token_dir().expanduser().resolve())
+
     def get_or_build_provider(
         self,
         server_name: str,
@@ -470,14 +728,33 @@ class MCPOAuthManager:
         """Return a cached OAuth provider for ``server_name`` or build one.
 
         Idempotent: repeat calls with the same name return the same instance.
-        If ``server_url`` changes for a given name, the cached entry is
-        discarded and a fresh provider is built.
+        If ``server_url`` changes for a normal authorization-code entry, the
+        cached entry is discarded and a fresh provider is built. A
+        ``client_credentials`` entry is source-bound and fails closed if the
+        same manager/server name is reused with another URL, token directory,
+        or credential config; callers must use profile-scoped managers.
 
         Returns None if the MCP SDK's OAuth support is unavailable.
         """
         key = self._key(server_name)
+        normalized_config = (
+            copy.deepcopy(oauth_config) if oauth_config is not None else None
+        )
+        profile_token_dir = self._client_credentials_token_dir(normalized_config)
         with self._entries_lock:
             entry = self._entries.get(key)
+            if entry is not None and (
+                entry.profile_token_dir is not None or profile_token_dir is not None
+            ) and (
+                entry.server_url != server_url
+                or entry.oauth_config != normalized_config
+                or entry.profile_token_dir != profile_token_dir
+            ):
+                raise RuntimeError(
+                    f"MCP OAuth '{server_name}': client_credentials profile or "
+                    "credential identity changed inside one manager; use a "
+                    "profile-scoped MCP manager"
+                )
             if entry is not None and entry.server_url != server_url:
                 logger.info(
                     "MCP OAuth '%s': URL changed from %s to %s, discarding cache",
@@ -488,7 +765,8 @@ class MCPOAuthManager:
             if entry is None:
                 entry = _ProviderEntry(
                     server_url=server_url,
-                    oauth_config=oauth_config,
+                    oauth_config=normalized_config,
+                    profile_token_dir=profile_token_dir,
                 )
                 self._entries[key] = entry
 
@@ -523,12 +801,6 @@ class MCPOAuthManager:
 
         Returns None if the MCP SDK's OAuth support is unavailable.
         """
-        if _HERMES_PROVIDER_CLS is None:
-            logger.warning(
-                "MCP OAuth '%s': SDK auth module unavailable", server_name,
-            )
-            return None
-
         # Local imports avoid circular deps at module import time.
         from tools.mcp_oauth import (
             HermesTokenStorage,
@@ -542,10 +814,53 @@ class MCPOAuthManager:
             _make_redirect_handler,
         )
 
+        cfg = dict(entry.oauth_config or {})
+        grant_type = cfg.get("grant_type", "authorization_code")
+
         if not _OAUTH_AVAILABLE:
+            if grant_type == "client_credentials":
+                raise RuntimeError(
+                    f"MCP OAuth '{server_name}': client_credentials dependencies unavailable"
+                )
             return None
 
-        cfg = dict(entry.oauth_config or {})
+        if grant_type == "client_credentials":
+            if _CLIENT_CREDENTIALS_PROVIDER_CLS is None:
+                raise RuntimeError(
+                    f"MCP OAuth '{server_name}': client_credentials dependencies unavailable"
+                )
+            token_url, client_id, client_secret, scope, resource = (
+                _validated_client_credentials_config(entry.server_url, cfg)
+            )
+            # A legacy/auth-code token for the same MCP server name must never
+            # be reused under a newly source-scoped machine identity. Namespace
+            # by a one-way client-id digest; the secret is neither hashed nor
+            # persisted. Rotation to a new client id necessarily starts clean.
+            client_namespace = hashlib.sha256(client_id.encode()).hexdigest()[:12]
+            storage = HermesTokenStorage(
+                f"{server_name}-client-credentials-{client_namespace}"
+            )
+            return _CLIENT_CREDENTIALS_PROVIDER_CLS(
+                server_name=server_name,
+                token_url=token_url,
+                client_id=client_id,
+                client_secret=client_secret,
+                scope=scope,
+                resource=resource,
+                storage=storage,
+            )
+
+        if grant_type != "authorization_code":
+            raise ValueError(
+                f"Unsupported MCP OAuth grant_type for '{server_name}': {grant_type}"
+            )
+
+        if _HERMES_PROVIDER_CLS is None:
+            logger.warning(
+                "MCP OAuth '%s': SDK auth module unavailable", server_name,
+            )
+            return None
+
         storage = HermesTokenStorage(server_name)
 
         from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
@@ -596,6 +911,13 @@ class MCPOAuthManager:
         with self._entries_lock:
             entry = self._entries.pop(self._key(server_name, hermes_home), None)
 
+        if entry is not None and entry.provider is not None:
+            context = getattr(entry.provider, "context", None)
+            storage = getattr(context, "storage", None)
+            remove_storage = getattr(storage, "remove", None)
+            if callable(remove_storage):
+                remove_storage()
+
         from tools.mcp_oauth import remove_oauth_tokens
         remove_oauth_tokens(server_name, hermes_home=hermes_home)
         logger.info(
@@ -643,14 +965,17 @@ class MCPOAuthManager:
         fresh tokens to disk, and on the next tool call the running MCP
         session picks them up without a restart.
         """
-        from tools.mcp_oauth import _get_token_dir, _safe_filename
-
         entry = self._entries.get(self._key(server_name, hermes_home))
         if entry is None or entry.provider is None:
             return False
 
         async with entry.lock:
-            tokens_path = _get_token_dir(hermes_home) / f"{_safe_filename(server_name)}.json"
+            context = getattr(entry.provider, "context", None)
+            storage = getattr(context, "storage", None)
+            tokens_path_fn = getattr(storage, "_tokens_path", None)
+            if not callable(tokens_path_fn):
+                return False
+            tokens_path = tokens_path_fn()
             try:
                 mtime_ns = tokens_path.stat().st_mtime_ns
             except (FileNotFoundError, OSError):

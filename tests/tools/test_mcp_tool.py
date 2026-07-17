@@ -5,6 +5,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 
 import asyncio
 import concurrent.futures
+import copy
 import json
 import threading
 import time
@@ -4258,6 +4259,86 @@ class TestRegisterMcpServers:
             assert result == ["mcp__existing__tool"]
         finally:
             _servers.pop("existing", None)
+
+    def test_rejects_cross_profile_reuse_of_live_client_credentials(
+        self, tmp_path, monkeypatch,
+    ):
+        from tools.mcp_tool import (
+            MCPServerTask,
+            _client_credentials_profile_token_dir,
+            _servers,
+            register_mcp_servers,
+        )
+
+        config_a = {
+            "enabled": True,
+            "url": "http://127.0.0.1:7331/mcp",
+            "auth": "oauth",
+            "oauth": {
+                "grant_type": "client_credentials",
+                "token_url": "http://127.0.0.1:7331/token",
+                "client_id": "profile-a-client",
+                "client_secret": "test-a",
+                "scope": "read write",
+            },
+        }
+        config_b = copy.deepcopy(config_a)
+        config_b["oauth"]["client_id"] = "profile-b-client"
+        config_b["oauth"]["client_secret"] = "test-b"
+        server = MCPServerTask("gbrain")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-a"))
+        server._config = copy.deepcopy(config_a)
+        server._oauth_profile_token_dir = _client_credentials_profile_token_dir(
+            server._config
+        )
+        _servers["gbrain"] = server
+
+        try:
+            monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-b"))
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._existing_tool_names", return_value=["mcp_gbrain_probe"]), \
+                 pytest.raises(RuntimeError, match="refusing to reuse"):
+                register_mcp_servers({"gbrain": config_b})
+        finally:
+            _servers.pop("gbrain", None)
+
+    def test_profile_compatibility_rejects_inherited_source_bound_connection(
+        self, tmp_path, monkeypatch,
+    ):
+        from tools.mcp_tool import (
+            MCPServerTask,
+            _client_credentials_profile_token_dir,
+            _servers,
+            assert_mcp_profile_compatible,
+        )
+
+        config_a = {
+            "enabled": True,
+            "url": "http://127.0.0.1:7331/mcp",
+            "auth": "oauth",
+            "oauth": {
+                "grant_type": "client_credentials",
+                "token_url": "http://127.0.0.1:7331/token",
+                "client_id": "profile-a-client",
+                "client_secret": "test-a",
+            },
+        }
+        server = MCPServerTask("gbrain")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-a"))
+        server._config = copy.deepcopy(config_a)
+        server._oauth_profile_token_dir = _client_credentials_profile_token_dir(
+            server._config
+        )
+        _servers["gbrain"] = server
+
+        try:
+            monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-b"))
+            with patch("tools.mcp_tool._load_mcp_config", return_value={}), \
+                 pytest.raises(RuntimeError, match="refusing to reuse"):
+                assert_mcp_profile_compatible()
+        finally:
+            _servers.pop("gbrain", None)
 
     def test_skips_disabled_servers(self):
         from tools.mcp_tool import register_mcp_servers, _servers

@@ -90,6 +90,7 @@ Thread safety:
 """
 
 import asyncio
+import copy
 import contextvars
 import concurrent.futures
 import inspect
@@ -1709,6 +1710,22 @@ class ElicitationHandler:
 # Server task -- each MCP server lives in one long-lived asyncio Task
 # ---------------------------------------------------------------------------
 
+def _uses_client_credentials(config: dict) -> bool:
+    oauth = config.get("oauth")
+    return (
+        str(config.get("auth") or "").lower().strip() == "oauth"
+        and isinstance(oauth, dict)
+        and oauth.get("grant_type", "authorization_code") == "client_credentials"
+    )
+
+
+def _client_credentials_profile_token_dir(config: dict) -> Optional[str]:
+    if not _uses_client_credentials(config):
+        return None
+    from tools.mcp_oauth import _get_token_dir
+
+    return str(_get_token_dir().expanduser().resolve())
+
 class MCPServerTask:
     """Manages a single MCP server connection in a dedicated asyncio Task.
 
@@ -1723,6 +1740,7 @@ class MCPServerTask:
         "name", "session", "tool_timeout",
         "_task", "_ready", "_shutdown_event", "_reconnect_event",
         "_tools", "_error", "_config",
+        "_oauth_profile_token_dir",
         "_sampling", "_elicitation",
         "_registered_tool_names", "_auth_type", "_refresh_lock",
         "_rpc_lock", "_pending_refresh_tasks",
@@ -1749,6 +1767,7 @@ class MCPServerTask:
         self._tools: list = []
         self._error: Optional[Exception] = None
         self._config: dict = {}
+        self._oauth_profile_token_dir: Optional[str] = None
         self._sampling: Optional[SamplingHandler] = None
         self._elicitation: Optional[ElicitationHandler] = None
         self._registered_tool_names: list[str] = []
@@ -2811,7 +2830,13 @@ class MCPServerTask:
         Includes automatic reconnection with exponential backoff if the
         connection drops unexpectedly (unless shutdown was requested).
         """
-        self._config = config
+        # Snapshot source-bound identity state. Config reloaders may reuse and
+        # mutate their dicts; a live connection must retain the exact profile
+        # identity it was created with.
+        self._config = copy.deepcopy(config)
+        self._oauth_profile_token_dir = _client_credentials_profile_token_dir(
+            self._config
+        )
         self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
         self._auth_type = (config.get("auth") or "").lower().strip()
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")
@@ -5159,6 +5184,69 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _source_bound_connection_matches_profile(
+    existing: MCPServerTask,
+    requested_config: dict,
+) -> bool:
+    """Return whether a live client-credentials connection belongs here."""
+    active_config = existing._config
+    return bool(
+        _uses_client_credentials(active_config)
+        and _uses_client_credentials(requested_config)
+        and existing._oauth_profile_token_dir is not None
+        and existing._oauth_profile_token_dir
+        == _client_credentials_profile_token_dir(requested_config)
+        and active_config.get("url") == requested_config.get("url")
+        and dict(active_config.get("oauth") or {})
+        == dict(requested_config.get("oauth") or {})
+    )
+
+
+def _raise_source_bound_profile_mismatch(server_name: str) -> None:
+    raise RuntimeError(
+        f"MCP server '{server_name}': refusing to reuse a live "
+        "client_credentials connection across profile or credential identity"
+    )
+
+
+def assert_mcp_profile_compatible() -> None:
+    """Fail closed before a multiplexed turn can inherit MCP tools.
+
+    MCP connections and registered handlers are process-global. A gateway
+    multiplexer changes profile scope per turn without rediscovering MCP, so a
+    source-bound client-credentials connection is usable only when the current
+    profile declares that same server and its full identity matches the live
+    connection. Missing, disabled, differently authenticated, or not-yet-live
+    source-bound entries are rejected before agent dispatch.
+    """
+    requested_servers = _load_mcp_config()
+    with _lock:
+        live_servers = dict(_servers)
+
+    for server_name in set(live_servers) | set(requested_servers):
+        existing = live_servers.get(server_name)
+        requested = requested_servers.get(server_name)
+        requested_enabled = (
+            isinstance(requested, dict)
+            and _parse_boolish(requested.get("enabled", True), default=True)
+        )
+        active_source_bound = bool(
+            existing is not None
+            and _uses_client_credentials(existing._config)
+        )
+        requested_source_bound = bool(
+            requested_enabled and _uses_client_credentials(requested)
+        )
+        if not active_source_bound and not requested_source_bound:
+            continue
+        if (
+            existing is None
+            or not requested_enabled
+            or not _source_bound_connection_matches_profile(existing, requested)
+        ):
+            _raise_source_bound_profile_mismatch(server_name)
+
+
 def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     """Connect to explicit MCP servers and register their tools.
 
@@ -5179,6 +5267,22 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     if not servers:
         logger.debug("No explicit MCP servers provided")
         return []
+
+    # A source-bound client_credentials connection is not globally reusable by
+    # name. Fail before returning its tools when another profile, URL, or
+    # credential config tries to reuse that live connection.
+    for srv_name, srv_cfg in servers.items():
+        if not _parse_boolish(srv_cfg.get("enabled", True), default=True):
+            continue
+        with _lock:
+            existing = _servers.get(srv_name)
+        if existing is None:
+            continue
+        active_source_bound = _uses_client_credentials(existing._config)
+        requested_source_bound = _uses_client_credentials(srv_cfg)
+        if active_source_bound or requested_source_bound:
+            if not _source_bound_connection_matches_profile(existing, srv_cfg):
+                _raise_source_bound_profile_mismatch(srv_name)
 
     # Only attempt servers that aren't already connected and are enabled
     # (enabled: false skips the server entirely without removing its config)

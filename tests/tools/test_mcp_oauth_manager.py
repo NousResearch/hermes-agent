@@ -362,6 +362,322 @@ def test_manager_fails_fast_noninteractive_without_cached_tokens(tmp_path, monke
     assert mgr._entries[mgr._key("linear")].provider is None
 
 
+def _client_credentials_config(**overrides):
+    cfg = {
+        "grant_type": "client_credentials",
+        "token_url": "http://127.0.0.1:7331/token",
+        "client_id": "profile-client",
+        "client_secret": "profile-secret",
+        "scope": "read write",
+    }
+    cfg.update(overrides)
+    return cfg
+
+
+async def _finish_flow(flow, response):
+    try:
+        return await flow.asend(response)
+    except StopAsyncIteration:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_client_credentials_is_noninteractive_and_profile_local(tmp_path, monkeypatch):
+    """Machine OAuth mints without browser state and persists no client secret."""
+    import httpx
+    from urllib.parse import parse_qs
+    from tools.mcp_oauth_manager import (
+        MCPOAuthManager,
+        _CLIENT_CREDENTIALS_PROVIDER_CLS,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch, is_tty=False)
+    token_requests = []
+
+    async def send_token(_client, request, **kwargs):
+        assert kwargs.get("follow_redirects") is False
+        token_requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "access-one",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "scope": "read write",
+            },
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send_token)
+    provider = MCPOAuthManager().get_or_build_provider(
+        "gbrain", "http://127.0.0.1:7331/mcp", _client_credentials_config()
+    )
+    assert _CLIENT_CREDENTIALS_PROVIDER_CLS is not None
+    assert isinstance(provider, _CLIENT_CREDENTIALS_PROVIDER_CLS)
+
+    request = httpx.Request("POST", "http://127.0.0.1:7331/mcp")
+    flow = provider.async_auth_flow(request)
+    authorized = await anext(flow)
+    assert len(token_requests) == 1
+    token_request = token_requests[0]
+    form = parse_qs(token_request.content.decode())
+    assert token_request.url == "http://127.0.0.1:7331/token"
+    assert form == {
+        "grant_type": ["client_credentials"],
+        "client_id": ["profile-client"],
+        "client_secret": ["profile-secret"],
+        "scope": ["read write"],
+    }
+
+    assert authorized.headers["Authorization"] == "Bearer access-one"
+    assert await _finish_flow(flow, httpx.Response(200, request=authorized)) is None
+
+    token_files = list(
+        (tmp_path / "mcp-tokens").glob("gbrain-client-credentials-*.json")
+    )
+    assert len(token_files) == 1
+    token_file = token_files[0]
+    stored = json.loads(token_file.read_text())
+    assert stored["access_token"] == "access-one"
+    assert "client_secret" not in stored
+    assert "client_id" not in stored
+    assert token_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_client_credentials_cache_isolates_cross_profile_entries(tmp_path, monkeypatch):
+    """One manager keeps each profile's machine identity in a separate entry."""
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    manager = MCPOAuthManager()
+    profile_a = tmp_path / "profile-a"
+    profile_b = tmp_path / "profile-b"
+    config_a = _client_credentials_config(
+        client_id="profile-a-client",
+        client_secret="test-a",
+    )
+    config_b = _client_credentials_config(
+        client_id="profile-b-client",
+        client_secret="test-b",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_a))
+    first = manager.get_or_build_provider(
+        "gbrain", "http://127.0.0.1:7331/mcp", config_a
+    )
+    assert manager.get_or_build_provider(
+        "gbrain", "http://127.0.0.1:7331/mcp", config_a
+    ) is first
+
+    config_a["client_id"] = "mutated-client"
+    with pytest.raises(RuntimeError, match="profile or credential identity changed"):
+        manager.get_or_build_provider(
+            "gbrain", "http://127.0.0.1:7331/mcp", config_a
+        )
+    config_a["client_id"] = "profile-a-client"
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+    second = manager.get_or_build_provider(
+        "gbrain", "http://127.0.0.1:7331/mcp", config_b
+    )
+    assert manager.get_or_build_provider(
+        "gbrain", "http://127.0.0.1:7331/mcp", config_b
+    ) is second
+
+    entry_a = manager._entries[manager._key("gbrain", profile_a)]
+    entry_b = manager._entries[manager._key("gbrain", profile_b)]
+    assert second is not first
+    assert entry_a.provider is first
+    assert entry_b.provider is second
+    assert entry_a.profile_token_dir != entry_b.profile_token_dir
+    assert first._client_id == "profile-a-client"
+    assert second._client_id == "profile-b-client"
+
+
+@pytest.mark.asyncio
+async def test_client_credentials_never_reuses_legacy_server_token(tmp_path, monkeypatch):
+    """A valid legacy token cannot bypass the machine client's source binding."""
+    import httpx
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir(parents=True)
+    (token_dir / "gbrain.json").write_text(json.dumps({
+        "access_token": "legacy-default-source",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "expires_at": time.time() + 3600,
+    }))
+    token_requests = []
+
+    async def send_token(_client, request, **kwargs):
+        assert kwargs.get("follow_redirects") is False
+        token_requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "source-bound",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            },
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send_token)
+
+    provider = MCPOAuthManager().get_or_build_provider(
+        "gbrain", "http://127.0.0.1:7331/mcp", _client_credentials_config()
+    )
+    flow = provider.async_auth_flow(
+        httpx.Request("POST", "http://127.0.0.1:7331/mcp")
+    )
+    first = await anext(flow)
+    assert len(token_requests) == 1
+    assert token_requests[0].url == "http://127.0.0.1:7331/token"
+    assert first.headers["Authorization"] == "Bearer source-bound"
+    await flow.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_credentials_401_remints_once_and_retries(tmp_path, monkeypatch):
+    import httpx
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    minted = iter(("expired", "replacement"))
+    token_requests = []
+
+    async def send_token(_client, request, **kwargs):
+        assert kwargs.get("follow_redirects") is False
+        token_requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "access_token": next(minted),
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            },
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send_token)
+    provider = MCPOAuthManager().get_or_build_provider(
+        "gbrain", "http://127.0.0.1:7331/mcp", _client_credentials_config()
+    )
+    request = httpx.Request("POST", "http://127.0.0.1:7331/mcp")
+    flow = provider.async_auth_flow(request)
+    first_request = await anext(flow)
+    retry = await flow.asend(httpx.Response(401, request=first_request))
+    assert len(token_requests) == 2
+    assert retry.headers["Authorization"] == "Bearer replacement"
+    assert await _finish_flow(flow, httpx.Response(200, request=retry)) is None
+
+
+@pytest.mark.asyncio
+async def test_client_credentials_refuses_token_redirect_without_replaying_secret(
+    tmp_path, monkeypatch,
+):
+    """A 307/308 must never replay the form-encoded secret to another host."""
+    import httpx
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    sent_urls = []
+
+    async def redirect_token(_client, request, **kwargs):
+        assert kwargs.get("follow_redirects") is False
+        sent_urls.append(str(request.url))
+        return httpx.Response(
+            307,
+            headers={"Location": "https://attacker.invalid/collect"},
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", redirect_token)
+    provider = MCPOAuthManager().get_or_build_provider(
+        "gbrain", "http://127.0.0.1:7331/mcp", _client_credentials_config()
+    )
+    flow = provider.async_auth_flow(
+        httpx.Request("POST", "http://127.0.0.1:7331/mcp")
+    )
+
+    with pytest.raises(RuntimeError, match="redirect refused"):
+        await anext(flow)
+    assert sent_urls == ["http://127.0.0.1:7331/token"]
+
+
+def test_client_credentials_fails_closed_when_oauth_dependencies_unavailable(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import tools.mcp_oauth as oauth_module
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setattr(oauth_module, "_OAUTH_AVAILABLE", False)
+    with pytest.raises(RuntimeError, match="dependencies unavailable"):
+        MCPOAuthManager().get_or_build_provider(
+            "gbrain", "http://127.0.0.1:7331/mcp", _client_credentials_config()
+        )
+
+
+def test_client_credentials_fails_closed_when_provider_class_unavailable(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import tools.mcp_oauth_manager as manager_module
+
+    monkeypatch.setattr(manager_module, "_CLIENT_CREDENTIALS_PROVIDER_CLS", None)
+    with pytest.raises(RuntimeError, match="dependencies unavailable"):
+        manager_module.MCPOAuthManager().get_or_build_provider(
+            "gbrain", "http://127.0.0.1:7331/mcp", _client_credentials_config()
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"client_secret": ""}, "oauth.client_secret"),
+        ({"token_url": "http://example.com/token"}, "HTTPS or loopback HTTP"),
+        ({"token_url": "file:///tmp/token"}, "token_url is unsafe"),
+        ({"grant_type": "password"}, "Unsupported MCP OAuth grant_type"),
+    ],
+)
+def test_client_credentials_invalid_config_fails_closed(
+    tmp_path, monkeypatch, overrides, message,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    with pytest.raises(ValueError, match=message):
+        MCPOAuthManager().get_or_build_provider(
+            "gbrain",
+            "http://127.0.0.1:7331/mcp",
+            _client_credentials_config(**overrides),
+        )
+
+
+@pytest.mark.parametrize(
+    ("server_url", "message"),
+    [
+        ("http://example.com/mcp", "HTTPS or loopback HTTP"),
+        ("file:///tmp/gbrain.sock", "MCP URL is unsafe"),
+        ("https://user@example.com/mcp", "MCP URL is unsafe"),
+        ("https://example.com/mcp#fragment", "MCP URL is unsafe"),
+    ],
+)
+def test_client_credentials_unsafe_mcp_url_fails_closed(
+    tmp_path, monkeypatch, server_url, message,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    with pytest.raises(ValueError, match=message):
+        MCPOAuthManager().get_or_build_provider(
+            "gbrain", server_url, _client_credentials_config()
+        )
+
+
 # ---------------------------------------------------------------------------
 # invalid_client auto-heal (GH#36767) — _maybe_flag_poisoned_client
 # ---------------------------------------------------------------------------

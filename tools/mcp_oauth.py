@@ -24,10 +24,12 @@ Configuration in config.yaml::
       my_server:
         url: "https://mcp.example.com/mcp"
         auth: oauth
-        oauth:                                  # all fields optional
+        oauth:
+          grant_type: "authorization_code"      # or client_credentials
           client_id: "pre-registered-id"        # skip dynamic registration
           client_secret: "secret"               # confidential clients only
           scope: "read write"                   # default: server-provided
+          token_url: "https://idp.example.com/token" # required for client_credentials
           redirect_port: 0                      # 0 = auto-pick free port
           redirect_uri: "https://proxy/callback"  # default: loopback callback
           redirect_host: "localhost"            # loopback hostname (WAF-safe)

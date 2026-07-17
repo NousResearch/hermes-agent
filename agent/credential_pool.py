@@ -1331,44 +1331,83 @@ class CredentialPool:
                 "minimax-oauth",
                 timeout_seconds=lock_timeout,
             ) as (_auth_store, source_state, source_path):
-                if isinstance(source_state, dict):
-                    store_access = str(source_state.get("access_token") or "").strip()
-                    store_refresh = str(source_state.get("refresh_token") or "").strip()
-                    entry_access = str(entry.access_token or "").strip()
-                    entry_refresh = str(entry.refresh_token or "").strip()
-                    if store_access and (
-                        store_access != entry_access
-                        or (store_refresh and store_refresh != entry_refresh)
-                    ):
-                        # Another process already rotated the single-use token
-                        # while we waited for the lock.  Adopt the persisted
-                        # pair and return without re-POSTing.
-                        logger.debug(
-                            "Pool entry %s: adopting MiniMax OAuth tokens from "
-                            "source %s (rotated by another process)",
-                            entry.id,
-                            source_path,
-                        )
-                        field_updates: Dict[str, Any] = {
-                            "access_token": store_access,
-                            "refresh_token": store_refresh or entry.refresh_token,
-                            "last_status": STATUS_OK,
-                            "last_status_at": None,
-                            "last_error_code": None,
-                            "last_error_reason": None,
-                            "last_error_message": None,
-                            "last_error_reset_at": None,
-                        }
-                        raw_expires = source_state.get("expires_at")
-                        if raw_expires:
-                            field_updates["expires_at"] = raw_expires
-                        base_url = source_state.get("inference_base_url")
-                        if isinstance(base_url, str) and base_url:
-                            field_updates["base_url"] = base_url.rstrip("/")
-                        updated = replace(entry, **field_updates)
-                        self._replace_entry(entry, updated)
-                        self._persist()
-                        return updated
+                authoritative_state = (
+                    source_state if isinstance(source_state, dict) else {}
+                )
+                store_access = str(
+                    authoritative_state.get("access_token") or ""
+                ).strip()
+                store_refresh = str(
+                    authoritative_state.get("refresh_token") or ""
+                ).strip()
+                entry_access = str(entry.access_token or "").strip()
+                entry_refresh = str(entry.refresh_token or "").strip()
+
+                # The in-lock source re-read is authoritative.  A borrower may
+                # have resolved a root-owned grant before waiting for the root
+                # lock, then find that the owner removed or quarantined it while
+                # the borrower waited.  Never POST the stale in-memory refresh
+                # token or write a successful response back to the old source
+                # path: either action would resurrect a grant the owner removed.
+                # Also reject a partial rotated state whose refresh token no
+                # longer matches but has no access token pair we can adopt.
+                source_grant_missing = not store_refresh
+                source_pair_incomplete = (
+                    store_refresh != entry_refresh and not store_access
+                )
+                if entry.source == "oauth" and (
+                    source_grant_missing or source_pair_incomplete
+                ):
+                    logger.debug(
+                        "Pool entry %s: MiniMax OAuth source %s disappeared or "
+                        "lost its usable refresh grant while waiting; failing closed",
+                        entry.id,
+                        source_path,
+                    )
+                    removed_ids = [
+                        item.id for item in self._entries if item.source == "oauth"
+                    ]
+                    self._entries = [
+                        item for item in self._entries if item.source != "oauth"
+                    ]
+                    if self._current_id in removed_ids:
+                        self._current_id = None
+                    self._persist(removed_ids=removed_ids)
+                    return None
+
+                if store_access and (
+                    store_access != entry_access
+                    or (store_refresh and store_refresh != entry_refresh)
+                ):
+                    # Another process already rotated the single-use token
+                    # while we waited for the lock.  Adopt the persisted
+                    # pair and return without re-POSTing.
+                    logger.debug(
+                        "Pool entry %s: adopting MiniMax OAuth tokens from "
+                        "source %s (rotated by another process)",
+                        entry.id,
+                        source_path,
+                    )
+                    field_updates: Dict[str, Any] = {
+                        "access_token": store_access,
+                        "refresh_token": store_refresh or entry.refresh_token,
+                        "last_status": STATUS_OK,
+                        "last_status_at": None,
+                        "last_error_code": None,
+                        "last_error_reason": None,
+                        "last_error_message": None,
+                        "last_error_reset_at": None,
+                    }
+                    raw_expires = authoritative_state.get("expires_at")
+                    if raw_expires:
+                        field_updates["expires_at"] = raw_expires
+                    base_url = authoritative_state.get("inference_base_url")
+                    if isinstance(base_url, str) and base_url:
+                        field_updates["base_url"] = base_url.rstrip("/")
+                    updated = replace(entry, **field_updates)
+                    self._replace_entry(entry, updated)
+                    self._persist()
+                    return updated
                 updated = self._refresh_entry_impl(entry, force=force)
                 if updated is None:
                     return None

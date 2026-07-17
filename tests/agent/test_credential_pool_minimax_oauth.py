@@ -421,6 +421,10 @@ def test_minimax_oauth_pool_refresh_holds_auth_store_lock_across_post(
     monkeypatch.setattr(A, "_auth_file_path", lambda: profile_path)
     monkeypatch.setattr(A, "_global_auth_file_path", lambda: None)
     monkeypatch.setenv("HOME", str(tmp_path / "not-the-root"))
+    _write_store(
+        profile_path,
+        {"version": 1, "providers": {"minimax-oauth": _minimax_state()}},
+    )
 
     lock_held: dict = {"during_post": None}
     real_lock = A._auth_store_lock
@@ -719,6 +723,145 @@ def test_minimax_oauth_distinct_profiles_sharing_root_serialize_to_one_post(tmp_
     root_mm = root["providers"]["minimax-oauth"]
     assert root_mm["access_token"] == "rotated-access"
     assert root_mm["refresh_token"] == "rotated-refresh"
+
+
+# Subprocess borrower used by the source-disappearance regression below.  The
+# parent test process owns the root lock, lets this profile resolve the root
+# grant, removes that grant while the borrower waits for the same root lock,
+# then releases it.  A fail-closed borrower must observe the in-lock re-read as
+# authoritative and return without calling the token endpoint.
+_SOURCE_DISAPPEARANCE_WORKER = """
+import json, os, sys
+from pathlib import Path
+
+profile_dir = Path(sys.argv[1])
+root_path = Path(sys.argv[2])
+sync_dir = Path(sys.argv[3])
+
+os.environ["HERMES_HOME"] = str(profile_dir)
+os.environ["HOME"] = str(sync_dir / "fake-home")
+os.environ.pop("PYTEST_CURRENT_TEST", None)
+
+from hermes_cli import auth as A
+from agent import credential_pool as CP
+from agent.credential_pool import CredentialPool, PooledCredential, AUTH_TYPE_OAUTH
+
+profile_path = profile_dir / "auth.json"
+A._auth_file_path = lambda: profile_path
+A._global_auth_file_path = lambda: root_path
+
+root_state = json.loads(root_path.read_text())["providers"]["minimax-oauth"]
+A.get_provider_auth_state = lambda _pid: dict(root_state)
+
+resolved = sync_dir / "borrower_resolved_root"
+original_load_with_source = A._load_provider_state_with_source
+
+def traced_load_with_source(auth_store, provider_id):
+    state, source_path = original_load_with_source(auth_store, provider_id)
+    if source_path is not None and A._same_path(source_path, root_path):
+        resolved.touch()
+    return state, source_path
+
+A._load_provider_state_with_source = traced_load_with_source
+
+def fake_refresh(state, **kwargs):
+    (sync_dir / "post_called").touch()
+    return {
+        "access_token": "resurrected-access",
+        "refresh_token": "resurrected-refresh",
+        "expires_at": root_state["expires_at"],
+        "expires_in": 3600,
+    }
+
+A.refresh_minimax_oauth_pure = fake_refresh
+CP.refresh_minimax_oauth_pure = fake_refresh
+
+entry = PooledCredential(
+    id="e1", auth_type=AUTH_TYPE_OAUTH,
+    provider="minimax-oauth", label="minimax-oauth", priority=0,
+    access_token="old-access", refresh_token="old-refresh",
+    source="oauth", base_url="https://api.minimax.io/anthropic",
+    extra={"source_auth_path": str(root_path)},
+)
+pool = CredentialPool("minimax-oauth", [entry])
+result = pool._refresh_entry(pool._entries[0], force=True)
+(sync_dir / "borrower_result.json").write_text(json.dumps({
+    "result_is_none": result is None,
+    "remaining_entries": len(pool.entries()),
+}))
+"""
+
+
+def test_minimax_oauth_borrower_fails_closed_when_root_grant_disappears_while_waiting(
+    tmp_path,
+):
+    """A removed root grant must not be POSTed or resurrected by a waiter."""
+    import subprocess
+    import sys
+
+    sync_dir = tmp_path / "sync"
+    sync_dir.mkdir()
+    profile_dir = tmp_path / "profiles" / "borrower"
+    profile_dir.mkdir(parents=True)
+    profile_path = profile_dir / "auth.json"
+    _write_store(profile_path, {"version": 1, "providers": {}})
+
+    root_path = tmp_path / "root" / "auth.json"
+    _write_store(
+        root_path,
+        {"version": 1, "providers": {"minimax-oauth": dict(_minimax_state())}},
+    )
+
+    worker_script = sync_dir / "source_disappearance_worker.py"
+    worker_script.write_text(_SOURCE_DISAPPEARANCE_WORKER)
+    env = os.environ.copy()
+    repo_root = str(Path(CP.__file__).resolve().parents[1])
+    env["PYTHONPATH"] = repo_root + os.pathsep + env.get("PYTHONPATH", "")
+
+    with A._auth_store_lock(target_path=root_path, timeout_seconds=5):
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(worker_script),
+                str(profile_dir),
+                str(root_path),
+                str(sync_dir),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        resolved = sync_dir / "borrower_resolved_root"
+        deadline = time.monotonic() + 15
+        while not resolved.exists() and proc.poll() is None:
+            if time.monotonic() > deadline:
+                proc.kill()
+                pytest.fail("borrower did not resolve the root grant before timeout")
+            time.sleep(0.02)
+
+        root = _read_store(root_path)
+        root["providers"].pop("minimax-oauth")
+        _write_store(root_path, root)
+
+    stdout, stderr = proc.communicate(timeout=30)
+    assert proc.returncode == 0, (
+        f"borrower exited {proc.returncode}\n"
+        f"stdout: {stdout.decode(errors='replace')}\n"
+        f"stderr: {stderr.decode(errors='replace')}"
+    )
+    result = json.loads((sync_dir / "borrower_result.json").read_text())
+    assert result == {"result_is_none": True, "remaining_entries": 0}
+    assert not (sync_dir / "post_called").exists(), "removed grant was POSTed"
+
+    root = _read_store(root_path)
+    assert "minimax-oauth" not in root.get("providers", {})
+
+    profile = _read_store(profile_path)
+    assert "minimax-oauth" not in profile.get("providers", {})
+    assert profile.get("credential_pool", {}).get("minimax-oauth") == []
+    serialized_profile = json.dumps(profile)
+    assert "old-access" not in serialized_profile
+    assert "old-refresh" not in serialized_profile
 
 
 # ---------------------------------------------------------------------------

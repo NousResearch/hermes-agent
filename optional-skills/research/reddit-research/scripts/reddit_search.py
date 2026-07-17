@@ -109,6 +109,51 @@ def search_comments(params: dict, limit: int = 10) -> list:
     return results
 
 
+def fetch_post_comments(post_id: str, limit: int = 10) -> list:
+    """Fetch the top comments for a single Reddit post.
+
+    Uses the public JSON endpoint ``/comments/<post_id>.json`` and walks only
+    the top-level comments (``depth == 0``) to keep the result compact.
+    Nested replies are not traversed; if a deeper conversation is needed,
+    follow the ``permalink`` field on each comment.
+
+    Returns a list of comment dicts. On API error, returns a list whose only
+    entry is ``{"error": ...}`` so callers can distinguish "empty thread"
+    (``[]``) from "request failed" without an exception.
+    """
+    clean_id = (post_id or "").strip()
+    if not clean_id:
+        return [{"error": "post_id is required"}]
+
+    url = f"{REDDIT_BASE}/comments/{clean_id}.json?limit={int(limit)}&depth=1&raw_json=1"
+    data = api_request(url)
+    if isinstance(data, dict) and data.get("error"):
+        return [{"error": data["error"]}]
+    if not isinstance(data, list) or len(data) < 2:
+        return []
+
+    comments_listing = data[1].get("data", {}).get("children", []) if len(data) > 1 else []
+    results = []
+    for child in comments_listing:
+        kind = child.get("kind", "")
+        if kind and kind != "t1":
+            continue
+        comment = child.get("data", {})
+        if comment.get("depth", 0) != 0:
+            continue
+        results.append({
+            "id": comment.get("id"),
+            "body": (comment.get("body") or "")[:500],
+            "author": comment.get("author"),
+            "score": comment.get("score", 0),
+            "created_utc": comment.get("created_utc"),
+            "permalink": f"https://reddit.com{comment.get('permalink', '')}",
+            "parent_id": comment.get("parent_id"),
+            "link_id": comment.get("link_id"),
+        })
+    return results
+
+
 def cmd_search(args):
     params = {"q": args.query, "sort": "score", "sort_type": "score", "order": "desc"}
     if args.subreddit:
@@ -153,7 +198,7 @@ def cmd_subreddit(args):
 
 
 def cmd_comments(args):
-    results = fetch_post_comments(args.post_id, args.limit)
+    results = fetch_post_comments(args.post_id, getattr(args, "limit", 10))
     output = {"post_id": args.post_id, "results": results}
     print(json.dumps(output, indent=2, ensure_ascii=False))
 
@@ -214,9 +259,7 @@ def main():
         import argparse
 
         p = argparse.ArgumentParser()
-        p.add_argument("query")
-        p.add_argument("--subreddit")
-        p.add_argument("--since", type=int)
+        p.add_argument("post_id", help="Reddit post id (e.g. 'abc123')")
         p.add_argument("--limit", type=int, default=10)
         args = p.parse_args(sys.argv[2:])
         cmd_comments(args)

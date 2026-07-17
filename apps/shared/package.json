@@ -5,7 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./billing": "./src/billing-types.ts"
+    "./billing": "./src/billing-types.ts",
+    "./billing-policy": "./src/billing-policy.ts",
+    "./charge-settlement": "./src/charge-settlement.ts"
   },
   "types": "./src/index.ts",
   "scripts": {

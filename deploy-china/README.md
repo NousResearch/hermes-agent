@@ -6,6 +6,42 @@
 
 以前手动安装经常卡在拉镜像、配环境、配通道上。现在用这个方案，从开始到配好飞书/钉钉/微信/QQ，大概5分钟全网页操作搞定，比以前高效太多。
 
+## 使用方式
+
+### Linux / VPS 用户（一键脚本）
+
+把下面这一整行复制到终端里粘贴回车就行：
+
+```bash
+bash <(curl -sL https://gdibao.com/deploy-china/install.sh)
+```
+
+或者下载到本地运行：
+
+```bash
+# 下载脚本
+wget https://gdibao.com/deploy-china/install.sh
+# 或 curl -O https://gdibao.com/deploy-china/install.sh
+
+# 加上可执行权限（只需要一次）
+chmod +x install.sh
+
+# 用 root 运行
+sudo bash install.sh
+```
+
+脚本会自动完成：换阿里云源 → 安装 Docker → 从魔塔下载镜像 → 启动容器 → 配置 API Key。
+
+### Windows 用户
+
+> ⏳ Windows 一键脚本（install.ps1）正在开发中，敬请期待。
+>
+> 目前 Windows 用户可以先在 WSL2 中使用上面的 Linux 脚本，或者访问 [http://gdibao.com](http://gdibao.com/) 使用网页端部署。
+
+### 手机端 / 网页端
+
+访问 [http://gdibao.com/deploy/v0.1.1/](http://gdibao.com/deploy/v0.1.1/) 即可在线部署，无需安装任何软件。
+
 ## 主要功能
 
 - **自动同步官方镜像**：监控 Docker Hub，Hermes 有新版本时自动 pull → 打包 tar → 上传魔塔（ModelScope），延迟通常不超过10分钟
@@ -16,11 +52,7 @@
   - **手机端 / 网页端**：智能检测，若无 VPS 或 API Key 会友好引导（支持手动输入"我有"继续，或跳转购买）
 - **一键配置**：自动拉取、解压、启动容器、配置 API Key + 聊天通道（飞书、钉钉、微信、QQ 等）
 
-## 使用方式
-
-1. 前往魔塔数据集下载最新打包镜像：👉 [https://modelscope.cn/datasets/aifengheguai/hermes-agent-v0.18.2](https://modelscope.cn/datasets/aifengheguai/hermes-agent-v0.18.2)
-2. 根据你的平台运行对应安装脚本
-3. 按照提示完成配置（支持跳过引导手动输入已有资源）
+## 更多信息
 
 更多详细教程请访问我的网站：[http://gdibao.com](http://gdibao.com/)
 

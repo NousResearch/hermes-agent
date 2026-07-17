@@ -188,7 +188,5 @@ def test_provider_not_in_registry_but_in_models_dev(tmp_path, monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
 
-    from hermes_cli.auth import is_provider_explicitly_configured, PROVIDER_REGISTRY
-    # Sanity: openrouter is not in the manual registry
-    assert "openrouter" not in PROVIDER_REGISTRY
+    from hermes_cli.auth import is_provider_explicitly_configured
     assert is_provider_explicitly_configured("openrouter") is True

@@ -93,6 +93,12 @@ MINIMAX_OAUTH_CN_BASE = "https://api.minimaxi.com"
 MINIMAX_OAUTH_GLOBAL_INFERENCE = "https://api.minimax.io/anthropic"
 MINIMAX_OAUTH_CN_INFERENCE = "https://api.minimaxi.com/anthropic"
 MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
+# Internal default for the MiniMax OAuth token-endpoint POST timeout.  Kept as
+# an internal constant (not a user-facing HERMES_* env var) because it mirrors
+# ``refresh_minimax_oauth_pure``'s default and is not a behavioral setting the
+# user should tune from .env — non-secret behavioral config belongs in
+# config.yaml, and this knob has no user-facing reason to be overridable.
+MINIMAX_OAUTH_REFRESH_TIMEOUT_SECONDS = 15.0
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
@@ -1233,15 +1239,20 @@ def _load_provider_state_with_source(
 
 
 @contextmanager
-def _provider_state_transaction(provider_id: str):
+def _provider_state_transaction(
+    provider_id: str, *, timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS
+):
     """Lock the active auth store and any global fallback source in order.
 
     Profile-backed refresh paths must take the global auth-store lock before
     any provider-specific shared-store lock. Re-reading the source after the
     target lock is acquired prevents both stale refreshes and whole-file lost
     updates without inverting the documented auth -> shared lock order.
+
+    ``timeout_seconds`` is forwarded to both lock acquisitions; callers that
+    need to cover a slow token-endpoint POST can raise it above the default.
     """
-    with _auth_store_lock():
+    with _auth_store_lock(timeout_seconds=timeout_seconds):
         auth_store = _load_auth_store()
         state, source_path = _load_provider_state_with_source(
             auth_store,
@@ -1252,7 +1263,7 @@ def _provider_state_transaction(provider_id: str):
             yield auth_store, state, source_path
             return
 
-        with _auth_store_lock(target_path=source_path):
+        with _auth_store_lock(target_path=source_path, timeout_seconds=timeout_seconds):
             source_store = _load_auth_store(source_path)
             source_providers = source_store.get("providers")
             source_state = None
@@ -7905,12 +7916,22 @@ def _is_terminal_minimax_oauth_refresh_error(exc: Exception) -> bool:
     )
 
 
-def _minimax_oauth_quarantine_on_terminal_refresh(state: Dict[str, Any], exc: AuthError) -> None:
+def _minimax_oauth_quarantine_on_terminal_refresh(
+    state: Dict[str, Any], exc: AuthError, *, persist: bool = True
+) -> None:
     """Wipe dead tokens from auth.json after a terminal refresh failure.
 
     Shared by both the eager-resolve path and the lazy per-request token
     provider. Mirrors the Nous / xAI-OAuth / Codex-OAuth quarantine pattern
     so subsequent calls fail fast without a network retry.
+
+    ``persist=False`` skips the internal ``_minimax_save_auth_state`` call
+    (which uses ``_save_provider_state`` and thereby sets
+    ``active_provider``). Callers that already hold a source-aware lock and
+    need to persist with ``set_active=False`` — e.g. the credential-pool
+    terminal-quarantine path, which must NOT flip ``active_provider`` on a
+    background refresh failure — mutate the state dict in place and then
+    save it themselves via ``_store_provider_state(..., set_active=False)``.
     """
     if not (exc.relogin_required and state.get("refresh_token")):
         return
@@ -7924,6 +7945,8 @@ def _minimax_oauth_quarantine_on_terminal_refresh(state: Dict[str, Any], exc: Au
         "relogin_required": True,
         "at": datetime.now(timezone.utc).isoformat(),
     }
+    if not persist:
+        return
     try:
         _minimax_save_auth_state(state)
     except Exception as _save_exc:

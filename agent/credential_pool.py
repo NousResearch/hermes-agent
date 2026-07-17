@@ -25,6 +25,7 @@ import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     MINIMAX_OAUTH_REFRESH_SKEW_SECONDS,
+    MINIMAX_OAUTH_REFRESH_TIMEOUT_SECONDS,
     PROVIDER_REGISTRY,
     _auth_store_lock,
     _codex_access_token_is_expiring,
@@ -33,6 +34,7 @@ from hermes_cli.auth import (
     _load_auth_store,
     _load_provider_state,
     _minimax_oauth_quarantine_on_terminal_refresh,
+    _provider_state_transaction,
     _resolve_kimi_base_url,
     _resolve_zai_base_url,
     _save_auth_store,
@@ -151,6 +153,7 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
+    "source_auth_path",
 })
 
 
@@ -1175,6 +1178,62 @@ class CredentialPool:
         except Exception as exc:
             logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
 
+    def _sync_minimax_oauth_entry_to_source(
+        self,
+        entry: PooledCredential,
+        auth_store: Dict[str, Any],
+        source_path: Optional[Path],
+    ) -> None:
+        """Persist a rotated MiniMax OAuth entry back to its source store.
+
+        Called from inside ``_provider_state_transaction`` so the source lock
+        is already held.  For borrowed-root grants (``source_path`` points at
+        the global root, not the active profile) this writes directly to root
+        without creating a profile-local ``providers.minimax-oauth`` shadow.
+        A profile that materializes a local shadow after the first refresh
+        would be mistaken for the owner on the next refresh and stop writing
+        to root, stranding every other profile still borrowing the grant
+        (Review A MUST-FIX #2).
+        """
+        source_state, _resolved_path = auth_mod._load_provider_state_with_source(
+            auth_store, "minimax-oauth"
+        )
+        if not isinstance(source_state, dict):
+            source_state = {}
+        state = dict(source_state)
+        # Rotate token fields; pop them when the entry no longer carries them
+        # (quarantine path passes an entry with cleared tokens).
+        for field in ("access_token", "refresh_token", "expires_at"):
+            val = getattr(entry, field, None)
+            if val:
+                state[field] = val
+            else:
+                state.pop(field, None)
+        for extra_key in ("obtained_at", "expires_in"):
+            val = entry.extra.get(extra_key)
+            if val is not None:
+                state[extra_key] = val
+            else:
+                state.pop(extra_key, None)
+        if entry.base_url:
+            state["inference_base_url"] = entry.base_url
+        active_path = auth_mod._auth_file_path()
+        if source_path is not None and not auth_mod._same_path(source_path, active_path):
+            # Borrowed-from-root grant: persist to root directly, never shadow
+            # it locally.
+            try:
+                auth_mod._persist_provider_state_to_store(
+                    "minimax-oauth", state, source_path, set_active=False
+                )
+            except Exception as exc:  # pragma: no cover - best effort
+                logger.debug(
+                    "MiniMax OAuth pool: write-through to source %s failed: %s",
+                    source_path, exc,
+                )
+        else:
+            _store_provider_state(auth_store, "minimax-oauth", state, set_active=False)
+            _save_auth_store(auth_store)
+
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
             if force:
@@ -1190,13 +1249,67 @@ class CredentialPool:
         # resolve_codex_runtime_credentials()).  When a waiter finally acquires
         # the lock, the in-lock re-sync below picks up the rotated token the
         # winner persisted and skips the POST.
-        if self.provider in ("openai-codex", "xai-oauth", "minimax-oauth"):
+        if self.provider == "minimax-oauth":
+            # Source-aware transaction: for borrowed-root grants this holds
+            # both the active profile lock AND the global-root source lock, so
+            # two distinct profiles sharing one root grant cannot both POST the
+            # same single-use refresh token (Review A MUST-FIX #1). The in-lock
+            # re-read of the source store lets the loser adopt the winner's
+            # rotated pair without re-POSTing.
+            lock_timeout = self._single_use_refresh_lock_timeout()
+            with _provider_state_transaction(
+                "minimax-oauth",
+                timeout_seconds=lock_timeout,
+            ) as (_auth_store, source_state, source_path):
+                if isinstance(source_state, dict):
+                    store_access = str(source_state.get("access_token") or "").strip()
+                    store_refresh = str(source_state.get("refresh_token") or "").strip()
+                    entry_access = str(entry.access_token or "").strip()
+                    entry_refresh = str(entry.refresh_token or "").strip()
+                    if store_access and (
+                        store_access != entry_access
+                        or (store_refresh and store_refresh != entry_refresh)
+                    ):
+                        # Another process already rotated the single-use token
+                        # while we waited for the lock.  Adopt the persisted
+                        # pair and return without re-POSTing.
+                        logger.debug(
+                            "Pool entry %s: adopting MiniMax OAuth tokens from "
+                            "source %s (rotated by another process)",
+                            entry.id,
+                            source_path,
+                        )
+                        field_updates: Dict[str, Any] = {
+                            "access_token": store_access,
+                            "refresh_token": store_refresh or entry.refresh_token,
+                            "last_status": STATUS_OK,
+                            "last_status_at": None,
+                            "last_error_code": None,
+                            "last_error_reason": None,
+                            "last_error_message": None,
+                            "last_error_reset_at": None,
+                        }
+                        raw_expires = source_state.get("expires_at")
+                        if raw_expires:
+                            field_updates["expires_at"] = raw_expires
+                        base_url = source_state.get("inference_base_url")
+                        if isinstance(base_url, str) and base_url:
+                            field_updates["base_url"] = base_url.rstrip("/")
+                        updated = replace(entry, **field_updates)
+                        self._replace_entry(entry, updated)
+                        self._persist()
+                        return updated
+                updated = self._refresh_entry_impl(entry, force=force)
+                if updated is None:
+                    return None
+                # Persist back to the source we read from (profile or root).
+                self._sync_minimax_oauth_entry_to_source(updated, _auth_store, source_path)
+                return updated
+        if self.provider in ("openai-codex", "xai-oauth"):
             if self.provider == "openai-codex":
                 sync_entry = self._sync_codex_entry_from_auth_store
-            elif self.provider == "xai-oauth":
-                sync_entry = self._sync_xai_oauth_entry_from_pool_store
             else:
-                sync_entry = self._sync_minimax_oauth_entry_from_auth_store
+                sync_entry = self._sync_xai_oauth_entry_from_pool_store
             with _auth_store_lock(
                 timeout_seconds=self._single_use_refresh_lock_timeout()
             ):
@@ -1207,11 +1320,11 @@ class CredentialPool:
                         if not force and not self._entry_needs_refresh(entry):
                             return entry
                     return self._refresh_entry_impl(entry, force=force)
-                # xai-oauth and minimax-oauth: if another process already
-                # rotated the single-use refresh token while we waited for
-                # the lock, adopt the persisted pair and return WITHOUT
-                # re-POSTing.  This collapses concurrent refreshes to exactly
-                # one token-endpoint exchange (issue #48415).
+                # xai-oauth: if another process already rotated the single-use
+                # refresh token while we waited for the lock, adopt the
+                # persisted pair and return WITHOUT re-POSTing.  This collapses
+                # concurrent refreshes to exactly one token-endpoint exchange
+                # (issue #48415).
                 if (
                     synced.access_token != entry.access_token
                     or synced.refresh_token != entry.refresh_token
@@ -1225,18 +1338,20 @@ class CredentialPool:
 
         Covers the configured refresh POST timeout plus a margin so a slow
         token endpoint cannot make the flock give up before the refresh
-        resolves.  Reads the provider's ``HERMES_*_REFRESH_TIMEOUT_SECONDS``
-        override.
+        resolves.  Codex and xAI read a ``HERMES_*_REFRESH_TIMEOUT_SECONDS``
+        override; MiniMax OAuth uses the internal
+        ``MINIMAX_OAUTH_REFRESH_TIMEOUT_SECONDS`` constant (15s) rather than
+        introducing a new user-facing env var, per the repo policy that
+        non-secret behavioral settings belong in config.yaml, not .env.
         """
         if self.provider == "openai-codex":
             env_var = "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS"
+            refresh_timeout_seconds = auth_mod.env_float(env_var, 20)
         elif self.provider == "xai-oauth":
             env_var = "HERMES_XAI_REFRESH_TIMEOUT_SECONDS"
+            refresh_timeout_seconds = auth_mod.env_float(env_var, 20)
         else:
-            # MiniMax OAuth (and any future single-use provider): default
-            # 15s matches ``_refresh_minimax_oauth_state``.
-            env_var = "HERMES_MINIMAX_REFRESH_TIMEOUT_SECONDS"
-        refresh_timeout_seconds = auth_mod.env_float(env_var, 15 if self.provider == "minimax-oauth" else 20)
+            refresh_timeout_seconds = MINIMAX_OAUTH_REFRESH_TIMEOUT_SECONDS
         return max(
             float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS),
             float(refresh_timeout_seconds) + 5.0,
@@ -1644,72 +1759,82 @@ class CredentialPool:
                     )
                     self._replace_entry(synced, updated)
                     self._persist()
-                    self._sync_device_code_entry_to_auth_store(updated)
+                    # No write-back needed: the adopted tokens already came FROM
+                    # the source store (another process rotated and persisted
+                    # them).  Calling _sync_device_code_entry_to_auth_store here
+                    # would create a profile-local shadow for borrowed-root
+                    # grants, breaking future write-throughs.
                     return updated
                 # Terminal error: auth.json has no newer tokens — the stored
-                # refresh_token is dead.  Reuse the shared quarantine helper so
-                # the pool path and the eager-resolve path stay consistent,
-                # then remove all singleton-seeded MiniMax entries from the
-                # in-memory pool.  Mirrors the Codex/xAI/Nous quarantine paths.
+                # refresh_token is dead.  Quarantine through a source-aware
+                # transaction so borrowed-root grants propagate the quarantine
+                # to root, and persist with set_active=False so a background
+                # pool failure never flips active_provider (Review A MUST-FIX #4).
+                # Mirrors the Codex/xAI/Nous quarantine paths.
                 if _is_terminal_minimax_oauth_refresh_error(exc):
                     logger.debug(
                         "MiniMax OAuth refresh token is terminally invalid; "
                         "clearing local token state"
                     )
                     try:
-                        with _auth_store_lock():
-                            auth_store = _load_auth_store()
-                            # Decide whether this profile owns the grant
-                            # (own providers block) or reads it from the
-                            # global-root fallback.  A profile reading from
-                            # root MUST propagate the quarantine to root —
-                            # otherwise root keeps the dead refresh token
-                            # and every other profile reading root replays
-                            # the same terminal failure.  Mirrors the
-                            # write-through decision in
-                            # _sync_device_code_entry_to_auth_store.
-                            owns_block = (
-                                isinstance(auth_store.get("providers"), dict)
-                                and isinstance(
-                                    auth_store["providers"].get("minimax-oauth"),
-                                    dict,
+                        with _provider_state_transaction(
+                            "minimax-oauth",
+                            timeout_seconds=self._single_use_refresh_lock_timeout(),
+                        ) as (_auth_store, source_state, source_path):
+                            if not isinstance(source_state, dict):
+                                source_state = {}
+                            store_refresh = str(
+                                source_state.get("refresh_token") or ""
+                            ).strip()
+                            entry_refresh = str(
+                                entry.refresh_token or ""
+                            ).strip()
+                            if (
+                                not store_refresh
+                                or store_refresh == entry_refresh
+                            ):
+                                # Reuse the eager-resolve quarantine helper so
+                                # both paths wipe the same fields and write the
+                                # same diagnostic blob — but persist=False so we
+                                # control the save path (source-aware, set_active
+                                # =False) instead of the helper's own
+                                # _minimax_save_auth_state (which would set
+                                # active_provider).
+                                quarantined = dict(source_state)
+                                _minimax_oauth_quarantine_on_terminal_refresh(
+                                    quarantined,
+                                    exc,  # type: ignore[arg-type]
+                                    persist=False,
                                 )
-                            )
-                            state = _load_provider_state(
-                                auth_store, "minimax-oauth"
-                            ) or {}
-                            if isinstance(state, dict):
-                                store_refresh = str(
-                                    state.get("refresh_token") or ""
-                                ).strip()
-                                entry_refresh = str(
-                                    entry.refresh_token or ""
-                                ).strip()
+                                # Persist the quarantined state (tokens removed,
+                                # diagnostic blob added) back to the source store
+                                # with set_active=False.  For borrowed-root
+                                # grants source_path is the root, so this also
+                                # quarantines root — preventing every other
+                                # profile reading root from replaying the dead
+                                # refresh token.
+                                active_path = auth_mod._auth_file_path()
                                 if (
-                                    not store_refresh
-                                    or store_refresh == entry_refresh
+                                    source_path is not None
+                                    and not auth_mod._same_path(source_path, active_path)
                                 ):
-                                    # Reuse the eager-resolve quarantine helper
-                                    # so both paths wipe the same fields and
-                                    # write the same diagnostic blob.
-                                    _minimax_oauth_quarantine_on_terminal_refresh(
-                                        state,
-                                        exc,  # type: ignore[arg-type]
-                                    )
-                                    _store_provider_state(
-                                        auth_store,
-                                        "minimax-oauth",
-                                        state,
-                                        set_active=False,
-                                    )
-                                    _save_auth_store(auth_store)
-                                    # Write-through the quarantine to the
-                                    # global root when this profile borrows
-                                    # the grant from root fallback.
-                                    if not owns_block:
-                                        _write_through_provider_state_to_global_root(
-                                            "minimax-oauth", state
+                                    try:
+                                        auth_mod._persist_provider_state_to_store(
+                                            "minimax-oauth", quarantined,
+                                            source_path, set_active=False,
                                         )
+                                    except Exception as exc2:  # pragma: no cover
+                                        logger.debug(
+                                            "MiniMax OAuth quarantine write-through "
+                                            "to source %s failed: %s",
+                                            source_path, exc2,
+                                        )
+                                else:
+                                    _store_provider_state(
+                                        _auth_store, "minimax-oauth",
+                                        quarantined, set_active=False,
+                                    )
+                                    _save_auth_store(_auth_store)
                     except Exception as clear_exc:
                         logger.debug(
                             "Failed to clear terminal MiniMax OAuth state: %s",
@@ -1743,8 +1868,13 @@ class CredentialPool:
         self._persist()
         # Sync refreshed tokens back to auth.json providers so that
         # _seed_from_singletons() on the next load_pool() sees fresh state
-        # instead of re-seeding stale/consumed tokens.
-        self._sync_device_code_entry_to_auth_store(updated)
+        # instead of re-seeding stale/consumed tokens.  MiniMax OAuth is
+        # handled by the caller (_refresh_entry) via the source-aware
+        # _sync_minimax_oauth_entry_to_source, which writes to the correct
+        # source store (profile or root) without creating a profile-local
+        # shadow for borrowed-root grants.
+        if self.provider != "minimax-oauth":
+            self._sync_device_code_entry_to_auth_store(updated)
         return updated
 
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
@@ -2481,36 +2611,61 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # always refreshes on expiry, so instead read raw state here to avoid
         # surprise network calls during provider discovery.
         try:
-            from hermes_cli.auth import get_provider_auth_state
-            state = get_provider_auth_state("minimax-oauth")
+            state, source_path = auth_mod._load_provider_state_with_source(
+                auth_store, "minimax-oauth"
+            )
             if state and state.get("access_token"):
                 source_name = "oauth"
                 if not _is_suppressed(provider, source_name):
                     active_sources.add(source_name)
                     expires_at_ms = None
-                    try:
-                        from datetime import datetime as _dt
-                        raw = state.get("expires_at", "")
-                        if raw:
-                            expires_at_ms = int(_dt.fromisoformat(raw).timestamp() * 1000)
-                    except Exception:
-                        expires_at_ms = None
+                    raw_expires = state.get("expires_at", "")
+                    if raw_expires:
+                        try:
+                            from datetime import datetime as _dt
+                            expires_at_ms = int(
+                                _dt.fromisoformat(raw_expires).timestamp() * 1000
+                            )
+                        except Exception:
+                            expires_at_ms = None
                     base_url = str(state.get("inference_base_url", "") or "").rstrip("/")
+                    payload = {
+                        "source": source_name,
+                        "auth_type": AUTH_TYPE_OAUTH,
+                        "access_token": state["access_token"],
+                        "refresh_token": state.get("refresh_token"),
+                        # Populate BOTH expires_at (ISO string, consumed by
+                        # _entry_needs_refresh) and expires_at_ms (epoch ms,
+                        # consumed by the anthropic-style check and listing
+                        # display). The previous shape only populated
+                        # expires_at_ms, so proactive refresh never fired for
+                        # normally seeded entries (Review A MUST-FIX #3).
+                        "expires_at": raw_expires or None,
+                        "expires_at_ms": expires_at_ms,
+                        "base_url": base_url,
+                        "label": state.get("label", "") or label_from_token(
+                            state.get("access_token", ""), source_name
+                        ),
+                    }
+                    # Record where the singleton was sourced from.  When the
+                    # entry was read from the global-root fallback (not the
+                    # active profile store), the refresh path uses this to
+                    # write rotated tokens back to root rather than creating a
+                    # profile-local shadow (Review A MUST-FIX #2).
+                    try:
+                        active_path = auth_mod._auth_file_path()
+                        if (
+                            source_path is not None
+                            and not auth_mod._same_path(source_path, active_path)
+                        ):
+                            payload["source_auth_path"] = str(source_path)
+                    except Exception:
+                        pass
                     changed |= _upsert_entry(
                         entries,
                         provider,
                         source_name,
-                        {
-                            "source": source_name,
-                            "auth_type": AUTH_TYPE_OAUTH,
-                            "access_token": state["access_token"],
-                            "refresh_token": state.get("refresh_token"),
-                            "expires_at_ms": expires_at_ms,
-                            "base_url": base_url,
-                            "label": state.get("label", "") or label_from_token(
-                                state.get("access_token", ""), source_name
-                            ),
-                        },
+                        payload,
                     )
         except Exception as exc:
             logger.debug("MiniMax OAuth token seed failed: %s", exc)

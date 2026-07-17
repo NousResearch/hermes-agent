@@ -28,9 +28,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -96,6 +98,7 @@ def _entry(
     refresh_token="old-refresh",
     source="oauth",
     expires_at=None,
+    expires_at_ms=None,
 ):
     """Build a MiniMax OAuth pool entry seeded from the singleton."""
     if expires_at is None:
@@ -110,6 +113,7 @@ def _entry(
         access_token=access_token,
         refresh_token=refresh_token,
         expires_at=expires_at,
+        expires_at_ms=expires_at_ms,
         base_url="https://api.minimax.io/anthropic",
     )
 
@@ -198,18 +202,110 @@ def test_minimax_oauth_pool_refresh_writes_through_to_root(profile_and_root, mon
     assert refreshed.access_token == "rotated-access"
     assert refreshed.refresh_token == "rotated-refresh"
 
-    # Profile store received the rotated state (set_active=False — must NOT
-    # flip active_provider, which the user did not choose).
+    # The profile has no own providers.minimax-oauth block; it borrowed the
+    # grant from root.  Source-aware write-back persists the rotated chain to
+    # root directly and intentionally does NOT create a profile-local shadow
+    # that would break future write-throughs (Review A MUST-FIX #2).
     profile = _read_store(profile_path)
-    mm = profile["providers"]["minimax-oauth"]
-    assert mm["access_token"] == "rotated-access"
-    assert mm["refresh_token"] == "rotated-refresh"
+    assert "minimax-oauth" not in profile.get("providers", {})
     assert profile.get("active_provider") != "minimax-oauth"
 
     # AND the global root no longer holds the revoked refresh token.
     root = _read_store(root_path)
     assert root["providers"]["minimax-oauth"]["access_token"] == "rotated-access"
     assert root["providers"]["minimax-oauth"]["refresh_token"] == "rotated-refresh"
+
+
+# ---------------------------------------------------------------------------
+# 2. Borrowed-root grant stays owned by root across two successive refreshes
+# ---------------------------------------------------------------------------
+
+def test_minimax_oauth_borrowed_root_grant_stays_owned_across_two_refreshes(
+    profile_and_root, monkeypatch
+):
+    """Two successive refreshes of a borrowed-root grant both write back to root.
+
+    A profile that borrows the global-root grant must not create a local
+    ``providers.minimax-oauth`` shadow after the first refresh.  If it did, the
+    second refresh would treat the profile as the owner and stop writing to
+    root, leaving root with a stale (and eventually revoked) refresh token
+    (Review A MUST-FIX #2).
+    """
+    profile_path, root_path = profile_and_root
+    _write_store(profile_path, {"version": 1, "providers": {}, "active_provider": "openrouter"})
+    root_state = _minimax_state()
+    _write_store(
+        root_path,
+        {"version": 1, "providers": {"minimax-oauth": dict(root_state)}},
+    )
+
+    rotations = _patch_refresh_pure(monkeypatch)
+    monkeypatch.setattr(A, "get_provider_auth_state", lambda _pid: dict(root_state))
+
+    pool = CredentialPool("minimax-oauth", [_entry()])
+
+    # First refresh rotates root's grant and must write back to root.
+    first = pool._refresh_entry(pool._entries[0], force=True)
+    assert first is not None
+    assert first.access_token == "rotated-access"
+
+    # No profile-local shadow was created.
+    profile = _read_store(profile_path)
+    assert "minimax-oauth" not in profile.get("providers", {})
+
+    root_after_first = _read_store(root_path)
+    assert (
+        root_after_first["providers"]["minimax-oauth"]["access_token"]
+        == "rotated-access"
+    )
+
+    # Second refresh must again write the newly rotated chain back to root,
+    # not to a now-materialized profile shadow.
+    second = pool._refresh_entry(first, force=True)
+    assert second is not None
+    assert second.access_token == "rotated-access"
+
+    # Root received the second rotation too.
+    root_after_second = _read_store(root_path)
+    assert (
+        root_after_second["providers"]["minimax-oauth"]["access_token"]
+        == "rotated-access"
+    )
+    # Profile still has no shadow.
+    profile = _read_store(profile_path)
+    assert "minimax-oauth" not in profile.get("providers", {})
+
+
+# ---------------------------------------------------------------------------
+# 2b. load_pool seeds MiniMax OAuth expiry from singleton state
+# ---------------------------------------------------------------------------
+
+def test_minimax_oauth_load_pool_seeds_expires_at_from_singleton(profile_and_root, monkeypatch):
+    """A pool entry seeded from the auth-store singleton must carry expires_at.
+
+    Proactive refresh in ``_entry_needs_refresh`` inspects ``entry.expires_at``.
+    If ``_seed_from_singletons`` only populates ``expires_at_ms`` (the previous
+    shape), MiniMax OAuth entries loaded through the normal ``load_pool`` path
+    would never proactively refresh and would lease expired access tokens
+    (Review A MUST-FIX #3).
+    """
+    profile_path, root_path = profile_and_root
+    _write_store(profile_path, {"version": 1, "providers": {}, "active_provider": "openrouter"})
+    root_state = _minimax_state()
+    _write_store(
+        root_path,
+        {"version": 1, "providers": {"minimax-oauth": dict(root_state)}},
+    )
+
+    pool = CP.load_pool("minimax-oauth")
+
+    entry = pool.peek()
+    assert entry is not None
+    assert entry.source == "oauth"
+    # Both expiry representations must be populated so _entry_needs_refresh
+    # (which checks expires_at) actually fires.
+    assert entry.expires_at == root_state["expires_at"]
+    assert entry.expires_at_ms is not None
 
 
 # ---------------------------------------------------------------------------
@@ -361,13 +457,22 @@ def test_minimax_oauth_pool_refresh_holds_auth_store_lock_across_post(monkeypatc
 # ---------------------------------------------------------------------------
 
 def test_minimax_oauth_concurrent_refresh_single_rotation(profile_and_root, monkeypatch):
-    """Two profile pools sharing one root grant refresh concurrently.
+    """Two workers sharing one root grant refresh concurrently.
 
-    Because the POST is serialized through ``_auth_store_lock`` and the
-    in-lock re-sync adopts the rotated token the winner persisted, the loser
-    must NOT re-POST — exactly one token-endpoint exchange occurs.  Without
-    serialization both would POST the same single-use refresh token and the
-    loser would get ``refresh_token_reused``, revoking the whole chain.
+    Because the POST is serialized through the source-aware
+    ``_provider_state_transaction`` (which holds both the active profile lock
+    and the global-root source lock for borrowed grants), the loser must NOT
+    re-POST — exactly one token-endpoint exchange occurs.  Without
+    serialization both workers would read the same root refresh token, both
+    POST it, and the loser would get ``refresh_token_reused``, revoking the
+    whole chain.
+
+    This test exercises the serialization within one process: both workers
+    share the same profile auth path and contend on the same root source lock.
+    The cross-process variant (two distinct profile lock files contending on
+    one root lock) is covered by the lock-mechanism design: the root lock is
+    a kernel flock keyed by the root auth.json path, so distinct processes
+    holding distinct profile locks still serialize on the shared root lock.
     """
     profile_path, root_path = profile_and_root
     root_state = _minimax_state()
@@ -375,8 +480,8 @@ def test_minimax_oauth_concurrent_refresh_single_rotation(profile_and_root, monk
         root_path,
         {"version": 1, "providers": {"minimax-oauth": dict(root_state)}},
     )
-    # Both "profiles" share the same profile_path for this test (the
-    # contention is over the root grant + the auth-store lock).
+    # Both workers share the same profile_path; the contention is over the
+    # root grant + the source lock, which is the real hazard.
     _write_store(profile_path, {"version": 1, "providers": {}})
 
     calls = _patch_refresh_pure(monkeypatch)
@@ -388,7 +493,7 @@ def test_minimax_oauth_concurrent_refresh_single_rotation(profile_and_root, monk
 
     def refresh_worker(key):
         pool = CredentialPool("minimax-oauth", [_entry(id=key)])
-        # Synchronize both threads so they race for the lock.
+        # Synchronize both threads so they race for the source lock.
         barrier.wait(timeout=5)
         try:
             results[key] = pool._refresh_entry(pool._entries[0], force=True)
@@ -419,6 +524,176 @@ def test_minimax_oauth_concurrent_refresh_single_rotation(profile_and_root, monk
     refreshed_any = [r for r in results.values() if r is not None]
     assert refreshed_any, "at least one worker should have a refreshed entry"
 
+    # Root must hold the single rotated chain (not a stale or second-posted
+    # refresh token) so other borrowers see the winner's tokens.
+    root = _read_store(root_path)
+    root_mm = root["providers"]["minimax-oauth"]
+    assert root_mm["access_token"] == "rotated-access"
+    assert root_mm["refresh_token"] == "rotated-refresh"
+
+
+# ---------------------------------------------------------------------------
+# 4b. Two DISTINCT profiles (distinct profile lock files) sharing one root
+#     grant are serialized by the root flock — exactly one POST.
+# ---------------------------------------------------------------------------
+
+# Subprocess worker script: each instance is a distinct "profile" with its own
+# profile auth.json but sharing one global-root auth.json.  The source-aware
+# transaction must serialize both on the root flock so only one POST occurs.
+_CROSS_PROFILE_WORKER = """
+import json, os, sys, time, fcntl
+from pathlib import Path
+
+profile_dir = Path(sys.argv[1])   # distinct per worker
+root_path    = Path(sys.argv[2])   # shared
+sync_dir     = Path(sys.argv[3])   # shared coordination dir
+worker_id    = sys.argv[4]         # "w1" or "w2"
+sibling_id   = "w2" if worker_id == "w1" else "w1"
+
+# Make this subprocess look like a profile process.
+os.environ["HERMES_HOME"] = str(profile_dir)
+os.environ["HOME"] = str(sync_dir / "fake-home")
+os.environ.pop("PYTEST_CURRENT_TEST", None)
+
+from hermes_cli import auth as A
+from agent import credential_pool as CP
+from agent.credential_pool import CredentialPool, PooledCredential, AUTH_TYPE_OAUTH
+
+profile_path = profile_dir / "auth.json"
+A._auth_file_path = lambda: profile_path
+A._global_auth_file_path = lambda: root_path
+
+post_counter = sync_dir / "post_count.json"
+post_lock = sync_dir / "post_count.lock"
+
+def fake_refresh(state, **kwargs):
+    # Atomic increment under a file lock (visible across processes).
+    with open(post_lock, "w") as lf:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        try:
+            n = 0
+            if post_counter.exists():
+                n = json.loads(post_counter.read_text()).get("count", 0)
+            post_counter.write_text(json.dumps({"count": n + 1}))
+        finally:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+    time.sleep(0.15)  # overlap window if unserialized
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    return {
+        "access_token": "rotated-access",
+        "refresh_token": "rotated-refresh",
+        "obtained_at": now.isoformat(),
+        "expires_at": (now + timedelta(seconds=3600)).isoformat(),
+        "expires_in": 3600,
+    }
+
+A.refresh_minimax_oauth_pure = fake_refresh
+CP.refresh_minimax_oauth_pure = fake_refresh
+root_state = json.loads(root_path.read_text())["providers"]["minimax-oauth"]
+A.get_provider_auth_state = lambda _pid: dict(root_state)
+
+# Barrier: signal ready, wait for sibling.
+(sync_dir / f"ready_{worker_id}").touch()
+deadline = time.monotonic() + 15
+while not (sync_dir / f"ready_{sibling_id}").exists():
+    if time.monotonic() > deadline:
+        break
+    time.sleep(0.02)
+
+entry = PooledCredential(
+    id="e1", auth_type=AUTH_TYPE_OAUTH,
+    provider="minimax-oauth", label="minimax-oauth", priority=0,
+    access_token="old-access", refresh_token="old-refresh",
+    source="oauth", base_url="https://api.minimax.io/anthropic",
+)
+pool = CredentialPool("minimax-oauth", [entry])
+result = pool._refresh_entry(pool._entries[0], force=True)
+(sync_dir / f"result_{worker_id}").write_text(json.dumps({
+    "access_token": result.access_token if result else None,
+}))
+"""
+
+
+def test_minimax_oauth_distinct_profiles_sharing_root_serialize_to_one_post(tmp_path):
+    """Two genuinely distinct profiles (distinct profile lock files) must not
+    both POST the same single-use root refresh token.
+
+    Review A MUST-FIX #1: the hazard is that two real profiles each hold a
+    *different* profile lock, both read the same root refresh token, and both
+    POST it before either takes the root lock.  The source-aware
+    ``_provider_state_transaction`` holds both the active profile lock AND the
+    global-root source lock, so distinct profiles serialize on the shared root
+    flock.  This test spawns two subprocesses (distinct HERMES_HOME / profile
+    auth.json paths) sharing one root auth.json and asserts exactly one POST.
+
+    Uses subprocesses (not threads) so each worker has its own
+    ``_auth_file_path`` without a process-global monkeypatch.
+    """
+    import subprocess
+    import sys
+
+    sync_dir = tmp_path / "sync"
+    sync_dir.mkdir()
+
+    # Two distinct profile directories → distinct profile auth.json + .lock.
+    profile1_dir = tmp_path / "profiles" / "w1"
+    profile1_dir.mkdir(parents=True)
+    profile2_dir = tmp_path / "profiles" / "w2"
+    profile2_dir.mkdir(parents=True)
+    _write_store(profile1_dir / "auth.json", {"version": 1, "providers": {}})
+    _write_store(profile2_dir / "auth.json", {"version": 1, "providers": {}})
+
+    # Shared root grant.
+    root_path = tmp_path / "root" / "auth.json"
+    _write_store(
+        root_path,
+        {"version": 1, "providers": {"minimax-oauth": dict(_minimax_state())}},
+    )
+
+    worker_script = sync_dir / "worker.py"
+    worker_script.write_text(_CROSS_PROFILE_WORKER)
+
+    env = os.environ.copy()
+    # Ensure the subprocess can import hermes from the repo root.
+    repo_root = str(Path(CP.__file__).resolve().parents[1])
+    env["PYTHONPATH"] = repo_root + os.pathsep + env.get("PYTHONPATH", "")
+
+    procs = []
+    for wid in ("w1", "w2"):
+        pdir = profile1_dir if wid == "w1" else profile2_dir
+        procs.append(subprocess.Popen(
+            [sys.executable, str(worker_script), str(pdir), str(root_path),
+             str(sync_dir), wid],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+        ))
+
+    # Wait for both with a generous timeout.
+    out = {}
+    for wid, p in zip(("w1", "w2"), procs):
+        stdout, stderr = p.communicate(timeout=30)
+        out[wid] = (p.returncode, stdout, stderr)
+
+    for wid in ("w1", "w2"):
+        rc, stdout, stderr = out[wid]
+        assert rc == 0, (
+            f"worker {wid} exited {rc}\\n"
+            f"stdout: {stdout.decode(errors='replace')}\\n"
+            f"stderr: {stderr.decode(errors='replace')}"
+        )
+
+    post_count = json.loads((sync_dir / "post_count.json").read_text())["count"]
+    assert post_count == 1, (
+        f"expected exactly 1 POST across two distinct profiles sharing root, "
+        f"got {post_count}"
+    )
+
+    # Root holds the single rotated chain.
+    root = _read_store(root_path)
+    root_mm = root["providers"]["minimax-oauth"]
+    assert root_mm["access_token"] == "rotated-access"
+    assert root_mm["refresh_token"] == "rotated-refresh"
+
 
 # ---------------------------------------------------------------------------
 # 5. Terminal refresh failure quarantines profile and root
@@ -431,12 +706,22 @@ def test_minimax_oauth_terminal_refresh_quarantines_root_and_profile(profile_and
     for the eager-resolve path, but exercises the POOL refresh path.  After
     quarantine, the pool entry is removed and a subsequent ``load_pool``
     would not re-seed the dead singleton.
+
+    Critical: a background pool refresh failure must NOT flip
+    ``active_provider`` to ``minimax-oauth`` (Review A MUST-FIX #4).  The
+    quarantine persists with ``set_active=False`` so the user's chosen
+    provider survives a terminal failure they didn't initiate.
     """
     profile_path, root_path = profile_and_root
     root_state = _minimax_state()
     _write_store(
         root_path,
-        {"version": 1, "providers": {"minimax-oauth": dict(root_state)}},
+        {
+            "version": 1,
+            "providers": {"minimax-oauth": dict(root_state)},
+            # Pre-existing active provider that quarantine must NOT change.
+            "active_provider": "openrouter",
+        },
     )
     _write_store(profile_path, {"version": 1, "providers": {}})
 
@@ -474,6 +759,12 @@ def test_minimax_oauth_terminal_refresh_quarantines_root_and_profile(profile_and
     # Routing metadata preserved.
     assert mm["portal_base_url"] == root_state["portal_base_url"]
     assert mm["client_id"] == root_state["client_id"]
+
+    # active_provider must NOT have flipped to minimax-oauth.  A background
+    # pool failure is not a user choosing a provider.
+    assert root.get("active_provider") == "openrouter", (
+        f"active_provider flipped to {root.get('active_provider')} during quarantine"
+    )
 
 
 # ---------------------------------------------------------------------------

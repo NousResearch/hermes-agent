@@ -6,22 +6,42 @@
 
 ## 使用方式
 
-### Linux / VPS 用户（一键脚本）
+### 一键脚本（Linux / VPS）
 
-把下面这行复制到终端里粘贴回车就行：
+把下面任意一行复制到终端里粘贴回车就行：
 
 ```
+# 有 curl 用这个（推荐）
 curl -sL https://gdibao.com/deploy-china/install.sh | sudo bash
+
+# 有 wget 用这个
+wget -qO- https://gdibao.com/deploy-china/install.sh | sudo bash
+
+# 没 curl 也没 wget，先手动装 curl
+apt-get update && apt-get install -y curl
 ```
 
-脚本会自动完成：换国内源 → 安装 Docker → 从魔塔下载镜像 → 启动容器 → 添加快捷命令。
+脚本会引导你完成：
+- 换国内源
+- 安装 Docker
+- 选镜像来源（魔塔下载 / Docker Hub 国内镜像）
+- 选版本
+- 启动容器
+- 配置 Dashboard 密码（可选，配好后局域网直接浏览器访问）
 
-> 脚本同时也已上传到魔塔，可在魔塔数据集页面直接查看：
-> https://modelscope.cn/datasets/aifengheguai/hermes-agent-v0.18.2
+### 安装完成后
+
+浏览器访问：`http://你的服务器内网IP:9119`（需要先配置 Dashboard 密码）
+
+终端输入 `hermes` 即可开始聊天。
+
+### 网页端安装
+
+访问 https://gdibao.com 使用网页端部署（无需命令行）。
 
 ### Windows 用户
 
-Windows 一键脚本（install.ps1）正在开发中。目前可访问 https://gdibao.com 使用网页端部署。
+Windows 一键脚本（install.ps1）正在开发中。
 
 ## 更多信息
 

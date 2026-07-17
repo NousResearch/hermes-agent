@@ -114,8 +114,14 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "stepfun": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("STEPFUN_API_KEY",),
-        base_url_override="https://api.stepfun.ai/step_plan/v1",
+        base_url_override="https://api.stepfun.ai/v1",
         base_url_env_var="STEPFUN_BASE_URL",
+    ),
+    "stepfun-plan": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("STEPFUN_API_KEY",),
+        base_url_override="https://api.stepfun.ai/step_plan/v1",
+        base_url_env_var="STEPFUN_STEP_PLAN_BASE_URL",
     ),
     "minimax": HermesOverlay(
         transport="anthropic_messages",
@@ -280,8 +286,10 @@ ALIASES: Dict[str, str] = {
     "moonshot": "kimi-for-coding",
 
     # stepfun
-    "step": "stepfun",
-    "stepfun-coding-plan": "stepfun",
+    "step": "stepfun-plan",
+    "stepfun-coding-plan": "stepfun-plan",
+    "stepfun-ai": "stepfun",
+    "stepfun-step-plan": "stepfun-plan",
 
     # minimax-cn
     "minimax-china": "minimax-cn",
@@ -382,7 +390,8 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
-    "stepfun": "StepFun Step Plan",
+    "stepfun": "StepFun",
+    "stepfun-plan": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
     "upstage": "Upstage Solar",

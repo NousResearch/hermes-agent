@@ -99,6 +99,8 @@ DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
+STEPFUN_STD_INTL_BASE_URL = "https://api.stepfun.ai/v1"
+STEPFUN_STD_CN_BASE_URL = "https://api.stepfun.com/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 try:  # Version tag for the Codex token-endpoint User-Agent; fall back if unavailable.
@@ -268,11 +270,19 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
     "stepfun": ProviderConfig(
         id="stepfun",
+        name="StepFun",
+        auth_type="api_key",
+        inference_base_url=STEPFUN_STD_INTL_BASE_URL,
+        api_key_env_vars=("STEPFUN_API_KEY",),
+        base_url_env_var="STEPFUN_BASE_URL",
+    ),
+    "stepfun-plan": ProviderConfig(
+        id="stepfun-plan",
         name="StepFun Step Plan",
         auth_type="api_key",
         inference_base_url=STEPFUN_STEP_PLAN_INTL_BASE_URL,
         api_key_env_vars=("STEPFUN_API_KEY",),
-        base_url_env_var="STEPFUN_BASE_URL",
+        base_url_env_var="STEPFUN_STEP_PLAN_BASE_URL",
     ),
     "arcee": ProviderConfig(
         id="arcee",
@@ -1761,7 +1771,7 @@ def resolve_provider(
         "grok-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
-        "step": "stepfun", "stepfun-coding-plan": "stepfun",
+        "step": "stepfun-plan", "stepfun-coding-plan": "stepfun-plan",
         "arcee-ai": "arcee", "arceeai": "arcee",
         "gmi-cloud": "gmi", "gmicloud": "gmi",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",

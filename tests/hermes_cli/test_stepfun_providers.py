@@ -33,3 +33,42 @@ class TestStepfunProfiles:
 
         assert PROVIDER_TO_MODELS_DEV["stepfun"] == "stepfun-ai"
         assert PROVIDER_TO_MODELS_DEV["stepfun-plan"] == "stepfun-ai-step-plan"
+
+
+class TestStepfunIdentity:
+    def test_overlays(self):
+        from hermes_cli.providers import HERMES_OVERLAYS
+
+        std = HERMES_OVERLAYS["stepfun"]
+        assert std.transport == "openai_chat"
+        assert std.base_url_override == "https://api.stepfun.ai/v1"
+        assert std.base_url_env_var == "STEPFUN_BASE_URL"
+
+        plan = HERMES_OVERLAYS["stepfun-plan"]
+        assert plan.transport == "openai_chat"
+        assert plan.base_url_override == "https://api.stepfun.ai/step_plan/v1"
+        assert plan.base_url_env_var == "STEPFUN_STEP_PLAN_BASE_URL"
+
+    def test_aliases(self):
+        from hermes_cli.providers import normalize_provider
+
+        assert normalize_provider("step") == "stepfun-plan"
+        assert normalize_provider("stepfun-coding-plan") == "stepfun-plan"
+
+    def test_labels(self):
+        from hermes_cli.providers import _LABEL_OVERRIDES
+
+        assert _LABEL_OVERRIDES["stepfun"] == "StepFun"
+        assert _LABEL_OVERRIDES["stepfun-plan"] == "StepFun Step Plan"
+
+    def test_registry(self):
+        from hermes_cli.auth import (
+            PROVIDER_REGISTRY,
+            STEPFUN_STEP_PLAN_INTL_BASE_URL,
+        )
+
+        assert PROVIDER_REGISTRY["stepfun"].inference_base_url == "https://api.stepfun.ai/v1"
+        assert (
+            PROVIDER_REGISTRY["stepfun-plan"].inference_base_url
+            == STEPFUN_STEP_PLAN_INTL_BASE_URL
+        )

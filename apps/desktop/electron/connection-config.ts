@@ -243,12 +243,25 @@ function tokenPreview(value) {
 }
 
 /**
- * Classify a gateway's auth mode from its public /api/status body.
- * `auth_required: true` → OAuth gate engaged; otherwise legacy token auth.
+ * Classify a gateway's auth transport from its public /api/status body.
+ * Gated gateways — OAuth and username/password alike — use the shared
+ * session-cookie + WS-ticket path. Current gateways advertise that with
+ * `auth_required: true`; older/mixed-version gateways may only expose a
+ * non-empty `auth_providers` list. An explicit `auth_required: false` still
+ * wins so loopback gateways that happen to register a provider retain legacy
+ * token auth.
  * Returns 'oauth' | 'token'.
  */
 function authModeFromStatus(statusBody) {
-  return statusBody && statusBody.auth_required ? 'oauth' : 'token'
+  if (!statusBody || statusBody.auth_required === false) {
+    return 'token'
+  }
+
+  if (statusBody.auth_required === true) {
+    return 'oauth'
+  }
+
+  return Array.isArray(statusBody.auth_providers) && statusBody.auth_providers.length > 0 ? 'oauth' : 'token'
 }
 
 /**

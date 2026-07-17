@@ -252,8 +252,12 @@ test('authModeFromStatus returns oauth when auth_required is true', () => {
   assert.equal(authModeFromStatus({ auth_required: true, auth_providers: ['nous'] }), 'oauth')
 })
 
-test('authModeFromStatus returns token when auth_required is false/missing', () => {
-  assert.equal(authModeFromStatus({ auth_required: false }), 'token')
+test('authModeFromStatus routes an advertised basic provider into the session-cookie sign-in flow', () => {
+  assert.equal(authModeFromStatus({ auth_providers: ['basic'] }), 'oauth')
+})
+
+test('authModeFromStatus returns token when auth is explicitly disabled or no provider is advertised', () => {
+  assert.equal(authModeFromStatus({ auth_required: false, auth_providers: ['basic'] }), 'token')
   assert.equal(authModeFromStatus({}), 'token')
   assert.equal(authModeFromStatus(null), 'token')
   assert.equal(authModeFromStatus(undefined), 'token')

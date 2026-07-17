@@ -1,5 +1,6 @@
 """Tests for /restart notification — the gateway notifies the requester on comeback."""
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -385,7 +386,7 @@ async def test_send_restart_notification_delivers_and_cleans_up(tmp_path, monkey
     }))
 
     runner, adapter = make_restart_runner()
-    adapter.send = AsyncMock()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="1"))
 
     delivered_target = await runner._send_restart_notification()
 
@@ -413,7 +414,7 @@ async def test_send_restart_notification_with_thread(tmp_path, monkeypatch):
     }))
 
     runner, adapter = make_restart_runner()
-    adapter.send = AsyncMock()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="1"))
 
     delivered_target = await runner._send_restart_notification()
 
@@ -533,6 +534,168 @@ async def test_send_restart_notification_logs_warning_on_sendresult_failure(
         f"got records: {[(r.levelname, r.getMessage()) for r in caplog.records]}"
     )
     # Still cleans up.
+    assert not notify_path.exists()
+
+
+# ── _send_restart_notification — polling readiness regression ─────────────
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_waits_for_polling_on_degraded(
+    tmp_path, monkeypatch,
+):
+    """On send_path_degraded, wait for _polling_progress_event, then retry.
+
+    Models the real-world race: the Telegram adapter returns degraded
+    because getUpdates hasn't completed yet.  A separate asyncio task
+    eventually sets the polling progress event (simulating the asyncio.Event
+    the Telegram adapter sets on its first successful polling round-trip),
+    and the retry succeeds.  The polling wait is scoped to the error that
+    motivated this fix — non-degraded failures are never retried (covered by
+    the existing SendResult failure test above).
+
+    Verification points (per @obssian's review):
+    1. first send returns send_path_degraded → signal that the attempt completed
+    2. a separate coroutine waits for that signal, then sets polling event
+    3. second send happens only after readiness
+    4. exact two sends, successful delivery, marker cleanup
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+
+    # Instrument the adapter with a polling-progress event.
+    _polling_event = asyncio.Event()
+    adapter._polling_progress_event = _polling_event
+
+    # Synchronisation: adapter.send() signals "first-degraded-completed"
+    # so the separate readiness task knows when to proceed.
+    _first_degraded_signal = asyncio.Event()
+    _send_count = 0
+
+    async def _mock_send(*_args, **_kwargs):
+        nonlocal _send_count
+        _send_count += 1
+        if _send_count == 1:
+            _first_degraded_signal.set()
+            return SendResult(success=False, error="send_path_degraded")
+        # Any subsequent send: polling must already be ready.
+        assert _polling_event.is_set(), (
+            "polling should be ready before the second send"
+        )
+        return SendResult(success=True, message_id="restart-1")
+
+    adapter.send = AsyncMock(side_effect=_mock_send)
+
+    # Separate task: waits for the first degraded signal, then sets the
+    # polling event — replicating the production timing where the Telegram
+    # adapter's polling thread independently completes getUpdates.
+    async def _readiness_task():
+        await _first_degraded_signal.wait()
+        await asyncio.sleep(0)       # yield the event loop
+        _polling_event.set()
+
+    task = asyncio.create_task(_readiness_task())
+
+    delivered_target = await runner._send_restart_notification()
+
+    await task  # ensure readiness task settled
+
+    assert delivered_target == ("telegram", "42", None)
+    assert _send_count == 2, (
+        f"expected 2 sends (degraded → retry), got {_send_count}"
+    )
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_retries_when_polling_already_ready(
+    tmp_path, monkeypatch,
+):
+    """When polling event was already set but the first send still returns
+    degraded (transient blip after readiness), the retry loop fires
+    without re-waiting for polling, and the second send succeeds."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+
+    # Polling event is ALREADY set — Telegram came up fast.
+    _polling_event = asyncio.Event()
+    _polling_event.set()
+    adapter._polling_progress_event = _polling_event
+
+    _send_count = 0
+
+    async def _mock_send(*_args, **_kwargs):
+        nonlocal _send_count
+        _send_count += 1
+        if _send_count == 1:
+            # Transient degraded blip even though polling is ready.
+            return SendResult(success=False, error="send_path_degraded")
+        return SendResult(success=True, message_id="restart-1")
+
+    adapter.send = AsyncMock(side_effect=_mock_send)
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "42", None)
+    assert _send_count == 2, (
+        f"expected 2 sends (degraded → retry), got {_send_count}"
+    )
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_no_polling_event_non_telegram(
+    tmp_path, monkeypatch,
+):
+    """Non-Telegram adapters (no _polling_progress_event) retry without wait.
+
+    Platforms like WeChat, Discord, Slack don't expose _polling_progress_event.
+    If they somehow return send_path_degraded, the code falls through to the
+    retry loop immediately — no 90s wait, no AttributeError.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    # adapter does NOT have _polling_progress_event (default RestartTestAdapter)
+
+    _send_count = 0
+
+    async def _mock_send(*_args, **_kwargs):
+        nonlocal _send_count
+        _send_count += 1
+        if _send_count == 1:
+            return SendResult(success=False, error="send_path_degraded")
+        # Second send succeeds.
+        return SendResult(success=True, message_id="ok")
+
+    adapter.send = AsyncMock(side_effect=_mock_send)
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "42", None)
+    assert _send_count == 2, (
+        f"expected 2 sends (degraded → retry), got {_send_count}"
+    )
     assert not notify_path.exists()
 
 

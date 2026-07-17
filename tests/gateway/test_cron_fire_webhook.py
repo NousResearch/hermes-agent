@@ -265,6 +265,119 @@ async def test_fire_task_cancellation_holds_reservation_until_worker_exits(
 
 
 @pytest.mark.asyncio
+async def test_fire_inner_task_cancellation_does_not_spin_or_release_early(
+    adapter, monkeypatch
+):
+    fired = threading.Event()
+    release_fire = threading.Event()
+    reservation_released = threading.Event()
+
+    class BlockingProvider:
+        def fire_due(self, job_id, *, adapters=None, loop=None):
+            fired.set()
+            release_fire.wait(timeout=2)
+            return True
+
+    class TrackingReservation:
+        provider = BlockingProvider()
+
+        def release(self):
+            reservation_released.set()
+
+    monkeypatch.setattr(
+        "cron.scheduler_runtime.reserve_active_scheduler_provider",
+        lambda: TrackingReservation(),
+    )
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/cron/fire",
+            headers={"Authorization": "Bearer good"},
+            json={"job_id": "abc123"},
+        )
+        assert response.status == 202
+        assert await asyncio.to_thread(fired.wait, 2)
+        outer = next(
+            task
+            for task in asyncio.all_tasks()
+            if task.get_name() == "cron-fire-supervisor"
+        )
+        inner = next(
+            task
+            for task in asyncio.all_tasks()
+            if task.get_name() == "cron-fire-worker"
+        )
+
+        outer.cancel()
+        inner.cancel()
+        # This yield would hang if the supervisor busy-spun on the cancelled
+        # inner task.
+        await asyncio.wait_for(asyncio.sleep(0.05), timeout=1)
+        assert outer.done()
+        assert not reservation_released.is_set()
+        assert adapter.active_agent_work_count() == 1
+
+        release_fire.set()
+        assert await asyncio.to_thread(reservation_released.wait, 2)
+        for _ in range(50):
+            if adapter.active_agent_work_count() == 0:
+                break
+            await asyncio.sleep(0.01)
+
+    assert adapter.active_agent_work_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_fire_provider_exception_is_consumed_and_redacted(
+    adapter, monkeypatch, caplog
+):
+    raw_secret = "provider-error-secret-must-not-leak"
+    reservation_released = threading.Event()
+
+    class FailingProvider:
+        def fire_due(self, job_id, *, adapters=None, loop=None):
+            raise RuntimeError(raw_secret)
+
+    class TrackingReservation:
+        provider = FailingProvider()
+
+        def release(self):
+            reservation_released.set()
+
+    monkeypatch.setattr(
+        "cron.scheduler_runtime.reserve_active_scheduler_provider",
+        lambda: TrackingReservation(),
+    )
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/cron/fire",
+            headers={"Authorization": "Bearer good"},
+            json={"job_id": "abc123"},
+        )
+        assert response.status == 202
+        assert await asyncio.to_thread(reservation_released.wait, 2)
+        for _ in range(50):
+            if not adapter._background_tasks:
+                break
+            await asyncio.sleep(0.01)
+
+    assert raw_secret not in caplog.text
+    assert "cron fire: provider worker failed" in caplog.text
+    assert adapter.active_agent_work_count() == 0
+
+
+@pytest.mark.asyncio
 async def test_missing_job_id_400(adapter, monkeypatch):
     """Valid token but no job_id → 400, no fire."""
     spy = _SpyProvider()

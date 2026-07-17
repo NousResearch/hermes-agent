@@ -4326,11 +4326,20 @@ class APIServerAdapter(BasePlatformAdapter):
                         adapters=None,
                         loop=loop,
                     )
+                except BaseException:
+                    # Provider/backend messages can contain credentials. Keep
+                    # diagnostics deliberately generic and consume the error in
+                    # the worker so asyncio cannot print an unredacted
+                    # "Task exception was never retrieved" traceback.
+                    logger.error("cron fire: provider worker failed")
                 finally:
                     _release_fire_reservations()
 
             async def _wait_for_fire_worker() -> None:
-                worker = asyncio.create_task(asyncio.to_thread(_fire_due_worker))
+                worker = asyncio.create_task(
+                    asyncio.to_thread(_fire_due_worker),
+                    name="cron-fire-worker",
+                )
                 cancelled = False
                 while True:
                     try:
@@ -4339,12 +4348,22 @@ class APIServerAdapter(BasePlatformAdapter):
                     except asyncio.CancelledError:
                         # Shield the worker from every shutdown cancellation and
                         # keep this task pending until the worker truly exits.
+                        # Event-loop teardown can also cancel the inner task
+                        # directly; in that case stop awaiting the already
+                        # cancelled wrapper. The real thread still owns release
+                        # through _fire_due_worker()'s finally block (or never
+                        # started, which the outer done callback handles).
                         cancelled = True
+                        if worker.cancelled():
+                            break
                 if cancelled:
                     raise asyncio.CancelledError
 
             try:
-                task = asyncio.create_task(_wait_for_fire_worker())
+                task = asyncio.create_task(
+                    _wait_for_fire_worker(),
+                    name="cron-fire-supervisor",
+                )
             except BaseException:
                 _release_fire_reservations()
                 raise

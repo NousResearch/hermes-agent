@@ -130,3 +130,61 @@ async def test_send_video_failure_redacts_token_in_log(monkeypatch, caplog, tmp_
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert _SECRET_TOKEN not in logged
     assert "Failed to send video" in logged
+
+
+_SECRET_SEND_URL = f"https://api.telegram.org/bot{_SECRET_TOKEN}/sendMessage"
+
+
+@pytest.mark.asyncio
+async def test_send_update_prompt_failure_redacts_token_in_result_and_log(caplog):
+    """A send_update_prompt() transport exception embedding the bot token URL
+    must not reach the warning log or SendResult.error unredacted."""
+    adapter = _make_connected_adapter()
+    adapter._send_message_with_thread_fallback = AsyncMock(
+        side_effect=RuntimeError(f"Timed out requesting {_SECRET_SEND_URL}")
+    )
+
+    with caplog.at_level("WARNING"):
+        result = await adapter.send_update_prompt("123", "restart?")
+
+    assert result.success is False
+    assert _SECRET_TOKEN not in (result.error or "")
+    assert "***" in (result.error or "")
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert _SECRET_TOKEN not in logged
+
+
+@pytest.mark.asyncio
+async def test_send_clarify_failure_redacts_token_in_result_and_log(caplog):
+    """A send_clarify() transport exception embedding the bot token URL must
+    not reach the warning log or SendResult.error unredacted."""
+    adapter = _make_connected_adapter()
+    adapter._send_message_with_thread_fallback = AsyncMock(
+        side_effect=RuntimeError(f"Timed out requesting {_SECRET_SEND_URL}")
+    )
+
+    with caplog.at_level("WARNING"):
+        result = await adapter.send_clarify("123", "q?", ["a", "b"], "cid", "sess")
+
+    assert result.success is False
+    assert _SECRET_TOKEN not in (result.error or "")
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert _SECRET_TOKEN not in logged
+
+
+@pytest.mark.asyncio
+async def test_delete_message_failure_redacts_token_in_log(caplog):
+    """A delete_message() transport exception embedding the bot token URL
+    must not reach the debug log unredacted."""
+    adapter = _make_connected_adapter()
+    adapter._bot.delete_message = AsyncMock(
+        side_effect=RuntimeError(f"Bad Request: {_SECRET_SEND_URL}")
+    )
+
+    with caplog.at_level("DEBUG"):
+        ok = await adapter.delete_message("123", "55")
+
+    assert ok is False
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert _SECRET_TOKEN not in logged
+    assert "***" in logged

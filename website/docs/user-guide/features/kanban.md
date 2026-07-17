@@ -147,6 +147,12 @@ matters.
   open.
 - **+ New board** — opens a modal asking for slug, display name,
   description, and icon. Option to auto-switch to the new board.
+- **Settings** — opens a modal for editing the current board's display
+  name, description, and **project directory** (`default_workdir`). The
+  project directory is the board-level workspace default every new task
+  inherits (git repo → preserved worktree, plain dir → preserved
+  directory); each task can still override it at creation time. Clearing
+  the field reverts new tasks to disposable scratch workspaces.
 - **Archive** — only shown on non-`default` boards. Confirms, then moves
   the board dir to `boards/_archived/`.
 
@@ -369,10 +375,26 @@ Every profile that works kanban tasks automatically gets the worker lifecycle �
 
 That final `kanban_complete` / `kanban_block` call is part of the worker
 protocol. If the worker process exits with status 0 while the task is still
-`running`, the dispatcher treats that as a protocol violation, emits a
-`protocol_violation` event, and auto-blocks the task on the next tick instead
-of respawning it into the same loop. This usually means the model wrote a
-plain-text answer and exited without using the Kanban tool surface.
+`running`, the dispatcher treats that as a protocol violation and emits a
+`protocol_violation` event.
+
+**Agent-side prevention:** Before the worker exits, Hermes injects up to two
+synthetic nudges when it detects the model is about to stop without a terminal
+board tool call. This catches the common case where the model narrates the next
+step ("Let me write the report") and stops with `finish_reason=stop`. The nudge
+reminds the model to call `kanban_complete` or `kanban_block` immediately. This
+guard is active only for dispatcher-spawned workers (`HERMES_KANBAN_TASK` is
+set) and can be disabled with `HERMES_KANBAN_STOP_NUDGE=0`.
+
+**Dispatcher-side recovery:** If the nudges are exhausted or the worker crashes
+before reaching the nudge, the dispatcher gives the violation a **bounded retry**
+(up to `_PROTOCOL_VIOLATION_FAILURE_LIMIT` consecutive violations, default 3)
+before auto-blocking the task instead of respawning it into the same loop. The
+budget counts only *consecutive* clean-exit protocol violations — interleaved
+rate-limited requeues are neutral, and any other failure kind resets the
+streak — and a per-task `max_retries` overrides the bound. This usually means
+the model wrote a plain-text answer and exited without using the Kanban tool
+surface.
 
 The lifecycle plus the load-bearing reference details (workspace kinds, deliverable `artifacts`, claiming created cards) ship in that system-prompt block, so every worker has them regardless of which profile it runs under — no per-profile skill setup required.
 
@@ -409,7 +431,7 @@ hermes kanban create "audit auth flow" \
     --skill github-code-review
 ```
 
-**From the dashboard**, type the skills comma-separated into the **skills** field of the inline create form.
+**From the dashboard**, type the skills comma-separated into the **skills** field of the create-task dialog.
 
 The dispatcher emits one `--skills <name>` flag per skill listed, so the worker spawns with all of them loaded on top of the auto-injected kanban guidance. The skill names must match skills that are actually installed on the assignee's profile (run `hermes skills list` to see what's available); there's no runtime install.
 
@@ -473,7 +495,7 @@ hermes dashboard        # "Kanban" tab appears in the nav, after "Skills"
 - **Per-profile lanes inside Running** — toolbar checkbox toggles sub-grouping of the Running column by assignee.
 - **Live updates via WebSocket** — the plugin tails the append-only `task_events` table on a short poll interval; the board reflects changes the instant any profile (CLI, gateway, or another dashboard tab) acts. Reloads are debounced so a burst of events triggers a single refetch.
 - **Drag-drop** cards between columns to change status. The drop sends `PATCH /api/plugins/kanban/tasks/:id` which routes through the same `kanban_db` code the CLI uses — the three surfaces can never drift. Moves into destructive statuses (`done`, `archived`, `blocked`) prompt for confirmation. Touch devices use a pointer-based fallback so the board is usable from a tablet.
-- **Inline create** — click `+` on any column header to type a title, assignee, priority, and (optionally) a parent task from a dropdown over every existing task. Press Enter to create the task, Shift+Enter to insert a newline in the title field, or Escape to cancel. Creating from the Triage column automatically parks the new task in triage.
+- **Create-task dialog** — click `+` on any column header to open a modal with labeled fields: title, assignee, priority, skills, workspace kind/path (seeded from the board's project directory; per-task override), goal mode, and (optionally) a parent task from a dropdown over every existing task. Press Enter to create the task, Shift+Enter to insert a newline in the title field, or Escape to cancel. Creating from the Triage column automatically parks the new task in triage.
 - **Multi-select with bulk actions** — shift/ctrl-click a card or tick its checkbox to add it to the selection. A bulk action bar appears at the top with batch status transitions, archive, and reassign (by profile dropdown, or "(unassign)"). Destructive batches confirm first. Per-id partial failures are reported without aborting the rest.
 - **Click a card** (without shift/ctrl) to open a side drawer (Escape or click-outside closes) with:
   - **Editable title** — click the heading to rename.
@@ -926,7 +948,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `stale` | `{elapsed_seconds, last_heartbeat_at, heartbeat_age_seconds, timeout_seconds, pid, terminated}` | Task ran longer than `kanban.dispatch_stale_timeout_seconds` (default 4 h) AND no `kanban_heartbeat` arrived in the last hour. Dispatcher SIGTERM'd the host-local worker (if any), reset the task to `ready` for re-dispatch. Does NOT tick the failure counter (stale is dispatcher-side absence detection, not a worker fault). Workers running long operations should call `kanban_heartbeat` at least once an hour to avoid this. |
 | `respawn_guarded` | `{reason}` | Dispatcher refused to re-spawn this ready task this tick. Reasons: `blocker_auth` (last failure was a quota/auth/429 error — wait for the rate window to reset), `recent_success` (a completed run happened in the last hour — wait for review before re-running), `active_pr` (a GitHub PR URL appears in a recent comment — a prior worker already opened a PR). The task stays in `ready`; the next tick gets another chance to spawn. If the underlying condition persists, the normal `consecutive_failures` circuit breaker will auto-block via `gave_up` after `failure_limit` failures. |
 | `spawn_failed` | `{error, failures}` | One spawn attempt failed (missing PATH, workspace unmountable, …). Counter increments; task returns to `ready` for retry. |
-| `protocol_violation` | `{pid, claimer, exit_code}` | Worker exited successfully while the task was still `running`, usually because it answered without calling `kanban_complete` or `kanban_block`. The dispatcher also emits `gave_up` and auto-blocks immediately instead of retrying. |
+| `protocol_violation` | `{pid, claimer, exit_code, protocol_violation}` | Worker exited successfully while the task was still `running`, usually because it answered without calling `kanban_complete` or `kanban_block`. Emitted on every violation (the payload's `protocol_violation: true` marker is copied into the run metadata and feeds the violation-only retry budget). Below the budget — up to `_PROTOCOL_VIOLATION_FAILURE_LIMIT` (default 3) *consecutive* violations, per-task `max_retries` overriding — the task simply returns to `ready` for another attempt; when the streak reaches the bound the dispatcher also emits `gave_up` and auto-blocks. |
 | `gave_up` | `{failures, effective_limit, limit_source, error}` | Circuit breaker fired after N consecutive non-successful attempts. Task auto-blocks with the last error. The effective limit resolves as task `max_retries`, then dispatcher `failure_limit` / `kanban.failure_limit`, then the built-in default. |
 
 `hermes kanban tail <id>` shows these for a single task. `hermes kanban watch` streams them board-wide.

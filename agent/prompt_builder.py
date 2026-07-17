@@ -114,6 +114,7 @@ def _strip_yaml_frontmatter(content: str) -> str:
     strip it so only the human-readable markdown body is injected into the
     system prompt.
     """
+    content = content.lstrip("\ufeff")  # tolerate UTF-8 BOM (Windows editors)
     if content.startswith("---"):
         end = content.find("\n---", 3)
         if end != -1:
@@ -257,6 +258,10 @@ KANBAN_GUIDANCE = (
     "- **Deliverables.** Files a human wants go in "
     "`kanban_complete(artifacts=[<absolute paths>])` (top-level param; paths in "
     "`metadata` are NOT uploaded). Files must exist at completion.\n"
+    "- **Attachments.** Attach real downloadable artifacts instead of pasting "
+    "links in comments: `kanban_attach` (base64) or `kanban_attach_url` "
+    "(server-side public http(s) fetch); 25 MB cap, `kanban_attachments` "
+    "lists them. Workers may only attach to their own task.\n"
     "- **Created cards.** List ids in `kanban_complete(created_cards=[...])` "
     "ONLY when captured from a successful `kanban_create` return — never invent "
     "or paste ids; the kernel rejects the completion on any phantom id.\n"
@@ -659,19 +664,7 @@ PLATFORM_HINTS = {
         "Standard Markdown is automatically converted to Telegram formatting. "
         "Supported: **bold**, *italic*, ~~strikethrough~~, ||spoiler||, "
         "`inline code`, ```code blocks```, [links](url), and ## headers. "
-        "Telegram now supports rich Markdown, so lean into it: whenever it "
-        "makes the answer clearer or easier to scan, actively reach for real "
-        "Markdown tables (pipe `| col | col |` syntax), bullet and numbered "
-        "lists, task lists (`- [ ]` / `- [x]`), headings, nested blockquotes, "
-        "collapsible details, footnotes/references, math/formulas (`$...$`, "
-        "`$$...$$`), underline, subscript/superscript, marked (highlighted) "
-        "text, and anchors. Default to structured formatting over dense "
-        "paragraphs for any comparison, set of steps, key/value summary, or "
-        "tabular data. Prefer real Markdown tables and task lists over "
-        "hand-built bullet substitutes when presenting structured data; these "
-        "degrade gracefully (tables become readable bullet groups) when rich "
-        "rendering is unavailable, but advanced constructs like math and "
-        "collapsible details may render as plain source text in that case. "
+        "Prefer bullet lists and labeled key:value pairs for structured data. "
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
@@ -864,6 +857,27 @@ PLATFORM_HINTS = {
         "Use MEDIA:/absolute/path instead."
     ),
 }
+
+# Telegram rich-messages extension — only injected when the user has opted in
+# to ``platforms.telegram.extra.rich_messages: true``.  The base
+# PLATFORM_HINTS["telegram"] covers MarkdownV2-compatible constructs; this
+# extension adds the Bot API 10.1 rich-Markdown guidance (tables, task lists,
+# collapsible details, math, etc.).
+TELEGRAM_RICH_MESSAGES_HINT = (
+    "Telegram now supports rich Markdown, so lean into it: whenever it "
+    "makes the answer clearer or easier to scan, actively reach for real "
+    "Markdown tables (pipe `| col | col |` syntax), bullet and numbered "
+    "lists, task lists (`- [ ]` / `- [x]`), headings, nested blockquotes, "
+    "collapsible details, footnotes/references, math/formulas (`$...$`, "
+    "`$$...$$`), underline, subscript/superscript, marked (highlighted) "
+    "text, and anchors. Default to structured formatting over dense "
+    "paragraphs for any comparison, set of steps, key/value summary, or "
+    "tabular data. Prefer real Markdown tables and task lists over "
+    "hand-built bullet substitutes when presenting structured data; these "
+    "degrade gracefully (tables become readable bullet groups) when rich "
+    "rendering is unavailable, but advanced constructs like math and "
+    "collapsible details may render as plain source text in that case. "
+)
 
 # ---------------------------------------------------------------------------
 # Environment hints — execution-environment awareness for the agent.
@@ -1948,6 +1962,7 @@ def build_context_files_prompt(
     cwd: Optional[str] = None,
     skip_soul: bool = False,
     context_length: Optional[int] = None,
+    allow_install_tree_fallback: bool = False,
 ) -> str:
     """Discover and load context files for the system prompt.
 
@@ -1969,17 +1984,43 @@ def build_context_files_prompt(
     """
     if cwd is None:
         cwd = os.getcwd()
+        cwd_is_fallback = True
+    else:
+        cwd_is_fallback = False
 
     cwd_path = Path(cwd).resolve()
     sections = []
 
-    # Priority-based project context: first match wins
-    project_context = (
-        _load_hermes_md(cwd_path, context_length)
-        or _load_agents_md(cwd_path, context_length)
-        or _load_claude_md(cwd_path, context_length)
-        or _load_cursorrules(cwd_path, context_length)
-    )
+    # Never let a FALLBACK-picked directory inside the Hermes install/source
+    # tree gain system-prompt authority. A backend that self-spawns into that
+    # tree (the desktop app default) would otherwise load this repo's
+    # contributor AGENTS.md as authoritative project context (#64590). An
+    # explicitly configured cwd is honored verbatim — the Hermes tree is a
+    # legitimate workspace when the user deliberately points a session at it —
+    # and CLI-style surfaces pass allow_install_tree_fallback=True because
+    # their launch dir IS the user's shell cwd (developing Hermes in-tree).
+    from agent.runtime_cwd import _is_install_tree
+
+    if (
+        cwd_is_fallback
+        and not allow_install_tree_fallback
+        and _is_install_tree(cwd_path)
+    ):
+        logger.warning(
+            "skipping project-context discovery: working-directory resolution "
+            "fell back to the Hermes install tree (%s) — set terminal.cwd to "
+            "your project directory",
+            cwd_path,
+        )
+        project_context = ""
+    else:
+        # Priority-based project context: first match wins
+        project_context = (
+            _load_hermes_md(cwd_path, context_length)
+            or _load_agents_md(cwd_path, context_length)
+            or _load_claude_md(cwd_path, context_length)
+            or _load_cursorrules(cwd_path, context_length)
+        )
     if project_context:
         sections.append(project_context)
 

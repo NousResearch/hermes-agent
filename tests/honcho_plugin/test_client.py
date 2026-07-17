@@ -3,6 +3,8 @@
 import importlib.util
 import json
 import os
+import sys
+import types
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -439,7 +441,11 @@ class TestResolveActiveHost:
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("HERMES_HONCHO_HOST", None)
             os.environ.pop("HERMES_HOME", None)
-            assert resolve_active_host() == "hermes"
+            with patch(
+                "plugins.memory.honcho.client.resolve_config_path",
+                return_value=Path("/nonexistent/honcho.json"),
+            ):
+                assert resolve_active_host() == "hermes"
 
     def test_explicit_env_var_wins(self):
         with patch.dict(os.environ, {"HERMES_HONCHO_HOST": "hermes.coder"}):
@@ -451,16 +457,52 @@ class TestResolveActiveHost:
             with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"):
                 assert resolve_active_host() == "hermes_coder"
 
+    def test_default_host_does_not_override_named_profile(self, tmp_path):
+        """defaultHost is not applied before active-profile resolution."""
+        config_file = tmp_path / "honcho.json"
+        config_file.write_text(json.dumps({
+            "defaultHost": "local",
+            "hosts": {"local": {"workspace": "local-ws"}},
+        }))
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_HONCHO_HOST", None)
+            with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"), \
+                 patch("plugins.memory.honcho.client.resolve_config_path", return_value=config_file):
+                assert resolve_active_host() == "hermes_coder"
+
+    def test_default_host_applies_to_default_profile_only(self, tmp_path):
+        """default profile can use setup-generated defaultHost without leaking to other profiles."""
+        config_file = tmp_path / "honcho.json"
+        config_file.write_text(json.dumps({
+            "defaultHost": "local",
+            "hosts": {"local": {"workspace": "local-ws"}},
+        }))
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_HONCHO_HOST", None)
+            with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"), \
+                 patch("plugins.memory.honcho.client.resolve_config_path", return_value=config_file):
+                assert resolve_active_host() == "local"
+
     def test_default_profile_returns_hermes(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HONCHO_HOST", None)
-            with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+            with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"), \
+                 patch(
+                     "plugins.memory.honcho.client.resolve_config_path",
+                     return_value=Path("/nonexistent/honcho.json"),
+                 ):
                 assert resolve_active_host() == "hermes"
 
     def test_custom_profile_returns_hermes(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HONCHO_HOST", None)
-            with patch("hermes_cli.profiles.get_active_profile_name", return_value="custom"):
+            with patch("hermes_cli.profiles.get_active_profile_name", return_value="custom"), \
+                 patch(
+                     "plugins.memory.honcho.client.resolve_config_path",
+                     return_value=Path("/nonexistent/honcho.json"),
+                 ):
                 assert resolve_active_host() == "hermes"
 
     def test_profiles_import_failure_falls_back(self):
@@ -692,6 +734,44 @@ class TestGetHonchoClient:
         assert client is fake_honcho
         mock_honcho.assert_called_once()
         assert mock_honcho.call_args.kwargs["timeout"] == 77.5
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_timeout_change_triggers_client_rebuild(self):
+        """Changing timeout config must rebuild the cached client."""
+        fake_honcho_1 = MagicMock(name="Honcho_v1")
+        fake_honcho_2 = MagicMock(name="Honcho_v2")
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho_1) as mock_h1, \
+             patch("hermes_cli.config.load_config", return_value={"honcho": {"timeout": 30}}):
+            client1 = get_honcho_client(cfg)
+
+        assert client1 is fake_honcho_1
+        assert mock_h1.call_args.kwargs["timeout"] == 30.0
+
+        # Same config — should return cached client (no rebuild)
+        with patch("honcho.Honcho", return_value=fake_honcho_2) as mock_h2, \
+             patch("hermes_cli.config.load_config", return_value={"honcho": {"timeout": 30}}):
+            client2 = get_honcho_client(cfg)
+
+        assert client2 is fake_honcho_1  # still cached
+        mock_h2.assert_not_called()
+
+        # Changed timeout — must rebuild
+        with patch("honcho.Honcho", return_value=fake_honcho_2) as mock_h3, \
+             patch("hermes_cli.config.load_config", return_value={"honcho": {"timeout": 300}}):
+            client3 = get_honcho_client(cfg)
+
+        assert client3 is fake_honcho_2  # rebuilt
+        mock_h3.assert_called_once()
+        assert mock_h3.call_args.kwargs["timeout"] == 300.0
 
 
 class TestResolveSessionNameGatewayKey:
@@ -975,6 +1055,74 @@ class TestGetHonchoClientBaseUrlDoublePrefixFix:
         assert passed_base_url == "http://localhost:38000", (
             f"Expected 'http://localhost:38000', got {passed_base_url!r}"
         )
+
+    def test_lan_default_host_empty_key_uses_local_placeholder(self, tmp_path):
+        """Regression for #61661: setup-style root baseUrl + defaultHost + LAN IP
+        must not pass an empty/None api_key to the SDK for a no-auth local server."""
+        config_file = tmp_path / "honcho.json"
+        config_file.write_text(json.dumps({
+            "defaultHost": "local",
+            "baseUrl": "http://192.168.2.112:8000",
+            "hosts": {
+                "local": {
+                    "workspace": "local-ws",
+                    "aiPeer": "local-ai",
+                    "apiKey": "",
+                },
+            },
+        }))
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("hermes_cli.profiles.get_active_profile_name", return_value="default"), \
+             patch("plugins.memory.honcho.client.resolve_config_path", return_value=config_file):
+            cfg = HonchoClientConfig.from_global_config(config_path=config_file)
+
+        assert cfg.host == "local"
+        assert cfg.workspace_id == "local-ws"
+        assert cfg.ai_peer == "local-ai"
+        assert cfg.api_key is None
+        assert cfg.base_url == "http://192.168.2.112:8000"
+
+        fake_honcho = MagicMock(name="Honcho")
+        mock_honcho = MagicMock(return_value=fake_honcho)
+        fake_honcho_module = types.SimpleNamespace(Honcho=mock_honcho)
+        with patch.dict(sys.modules, {"honcho": fake_honcho_module}), \
+             patch("hermes_cli.config.load_config", return_value={}):
+            get_honcho_client(cfg)
+
+        mock_honcho.assert_called_once()
+        assert mock_honcho.call_args.kwargs["api_key"] == "local"
+        assert mock_honcho.call_args.kwargs["base_url"] == "http://192.168.2.112:8000"
+
+    def test_lan_default_host_explicit_host_key_preserved(self, tmp_path):
+        """A host-block local JWT still wins for LAN/VPN local URLs."""
+        config_file = tmp_path / "honcho.json"
+        config_file.write_text(json.dumps({
+            "defaultHost": "local",
+            "baseUrl": "http://192.168.2.112:8000",
+            "hosts": {
+                "local": {
+                    "workspace": "local-ws",
+                    "aiPeer": "local-ai",
+                    "apiKey": "local-jwt",
+                },
+            },
+        }))
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("hermes_cli.profiles.get_active_profile_name", return_value="default"), \
+             patch("plugins.memory.honcho.client.resolve_config_path", return_value=config_file):
+            cfg = HonchoClientConfig.from_global_config(config_path=config_file)
+
+        fake_honcho = MagicMock(name="Honcho")
+        mock_honcho = MagicMock(return_value=fake_honcho)
+        fake_honcho_module = types.SimpleNamespace(Honcho=mock_honcho)
+        with patch.dict(sys.modules, {"honcho": fake_honcho_module}), \
+             patch("hermes_cli.config.load_config", return_value={}):
+            get_honcho_client(cfg)
+
+        mock_honcho.assert_called_once()
+        assert mock_honcho.call_args.kwargs["api_key"] == "local-jwt"
 
     @pytest.mark.skipif(
         not importlib.util.find_spec("honcho"),

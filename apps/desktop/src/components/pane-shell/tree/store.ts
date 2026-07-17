@@ -453,6 +453,26 @@ export function closeTreePane(paneId: string) {
 }
 
 /**
+ * The tab-CLOSE route shared by every "close this tab" gesture — the header ✕ /
+ * middle-click / ⌘-click AND the zone context menu's "Close". A TOOL PANEL
+ * (terminal/logs — a collapse pane) is REMOVED from the layout (it comes back
+ * via its toggle); everything else routes through its Close (a session tile
+ * closes the session, a store-bound pane collapses). Keeping this in ONE place
+ * is what makes the context-menu "Close" agree with middle-click (#65985): a
+ * collapse pane's registered closer only minimizes, so routing it through
+ * `closeTreePane` would leave the tab behind.
+ */
+export function closePaneTab(paneId: string) {
+  if (isCollapsePane(paneId)) {
+    dismissTreePane(paneId)
+
+    return
+  }
+
+  closeTreePane(paneId)
+}
+
+/**
  * POSITIONAL side collapse — the titlebar's left/right sidebar toggles (and
  * ⌘B / ⌘J). Everything on that side of the MAIN zone in the root row hides
  * together, whatever panes live there (this is what makes the buttons agree

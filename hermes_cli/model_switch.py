@@ -1395,22 +1395,27 @@ _picker_prewarm_done = _threading.Event()
 
 
 def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False) -> bool:
-    """Return whether *provider* has a credential that can be selected now.
+    """Return whether *provider* has credentials configured.
 
     ``auth.json`` historically allowed opaque token-style pool values that do
     not deserialize into ``PooledCredential`` entries. Preserve visibility for
-    those legacy values, but when a real pool exists its availability state is
-    authoritative: an all-exhausted/dead pool is not authenticated.
+    those legacy values.
+
+    A pool with entries — even all temporarily rate-limited — is considered
+    usable so the provider remains visible in the model picker.  Hiding a
+    provider when all keys are in cooldown is incorrect: rate limits are
+    per-model for many providers (e.g. Google Gemini), and switching to a
+    different model under the same provider should work immediately.
     """
     try:
         from agent.credential_pool import load_pool
 
         pool = load_pool(provider)
         if pool.has_credentials():
-            return pool.has_available()
+            return True
     except Exception:
         pass
-    return raw_pool_present
+    return bool(raw_pool_present)
 
 
 def _extra_headers_from_config(entry: Any) -> dict[str, str]:

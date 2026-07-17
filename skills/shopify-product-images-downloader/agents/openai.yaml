@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shopify Product Images Downloader"
+  short_description: "Download product images from a public Shopify store with preview, filters, and optional WebP"
+  default_prompt: "Use $shopify-product-images-downloader to preview and download product images from this Shopify store, with optional collection filtering, WebP conversion, and smart rename."

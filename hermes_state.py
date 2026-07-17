@@ -32,6 +32,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 logger = logging.getLogger(__name__)
 
 
+class DisplayProjectionTooLargeError(RuntimeError):
+    """The durable transcript exceeds the bounded display projection budget."""
+
+
 def workspace_key(row: Dict[str, Any]) -> Optional[str]:
     """A session's workspace grouping key: its git repo root when known, else
     its cwd.
@@ -3141,6 +3145,21 @@ class SessionDB:
             row = cursor.fetchone()
         return dict(row) if row else None
 
+    def get_sessions_by_ids(self, session_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Load an explicit bounded session set with one JSON-backed query."""
+        unique_ids = list(dict.fromkeys(
+            session_id for session_id in session_ids
+            if isinstance(session_id, str) and session_id
+        ))
+        if not unique_ids:
+            return {}
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM sessions WHERE id IN (SELECT value FROM json_each(?))",
+                (json.dumps(unique_ids),),
+            ).fetchall()
+        return {str(row["id"]): dict(row) for row in rows}
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
 
@@ -3633,7 +3652,7 @@ class SessionDB:
         current = session_id
         lineage = [current]
         seen = {current}
-        for _ in range(100):
+        while current:
             row = conn.execute(
                 """
                 SELECT child.id
@@ -4979,7 +4998,10 @@ class SessionDB:
         return (chain[0] if chain and chain[0] else session_id)
 
     def get_messages_for_display(
-        self, session_id: str, include_ancestors: bool = False
+        self,
+        session_id: str,
+        include_ancestors: bool = False,
+        max_rows: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Return the durable user-visible transcript, not the model context.
 
@@ -4991,11 +5013,12 @@ class SessionDB:
         from agent.context_compressor import ContextCompressor
 
         session_ids = (
-            self._session_lineage_root_to_tip(session_id)
+            self._compression_lineage_root_to_tip(session_id)
             if include_ancestors
             else [session_id]
         )
         display: List[Dict[str, Any]] = []
+        scanned_rows = 0
 
         signature_cache: Dict[int, str] = {}
 
@@ -5048,8 +5071,23 @@ class SessionDB:
             return 0
 
         for lineage_id in session_ids:
+            remaining = None if max_rows is None else max_rows - scanned_rows
+            if remaining is not None and remaining < 0:
+                raise DisplayProjectionTooLargeError(
+                    f"Display projection exceeds {max_rows} durable rows"
+                )
+            loaded = self.get_messages(
+                lineage_id,
+                include_inactive=True,
+                limit=None if remaining is None else remaining + 1,
+            )
+            scanned_rows += len(loaded)
+            if max_rows is not None and scanned_rows > max_rows:
+                raise DisplayProjectionTooLargeError(
+                    f"Display projection exceeds {max_rows} durable rows"
+                )
             rows = [
-                row for row in self.get_messages(lineage_id, include_inactive=True)
+                row for row in loaded
                 if (row.get("active", 1) or row.get("compacted", 0))
                 and not row.get("context_snapshot")
             ]
@@ -5111,7 +5149,9 @@ class SessionDB:
         messages = [
             message
             for message in self.get_messages_for_display(
-                session_id, include_ancestors=include_ancestors
+                session_id,
+                include_ancestors=include_ancestors,
+                max_rows=20_000,
             )
             if message.get("role") in {"user", "assistant"}
         ]
@@ -5146,7 +5186,7 @@ class SessionDB:
         current = session_id
         seen = set()
         with self._lock:
-            for _ in range(100):
+            while current:
                 if not current or current in seen:
                     break
                 seen.add(current)

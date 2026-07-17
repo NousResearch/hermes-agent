@@ -3514,7 +3514,5 @@ This compaction should PRIORITISE preserving all information related to the focu
         # future copy site cannot re-leak the marker into the child-session flush.
         _strip_persistence_markers(compressed)
         self._last_compression_made_progress = True
-        for message in compressed:
-            message["_context_snapshot"] = True
 
         return compressed

@@ -1085,6 +1085,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # loop and cap concurrent scans so a burst of browser searches cannot
         # monopolize the gateway process.
         self._session_search_semaphore = asyncio.Semaphore(2)
+        self._session_history_semaphore = asyncio.Semaphore(4)
         # Concurrency cap shared across all agent-serving endpoints
         # (/v1/chat/completions, /v1/responses, /v1/runs). Read from
         # config.yaml gateway.api_server.max_concurrent_runs; 0 disables
@@ -2357,6 +2358,34 @@ class APIServerAdapter(BasePlatformAdapter):
             "has_more": len(sessions) == limit,
         })
 
+    @staticmethod
+    async def _run_blocking_operation_cancellation_safe(operation):
+        """Run blocking work off-loop without releasing admission on cancel.
+
+        Cancelling ``asyncio.to_thread`` only cancels the waiter, not the worker.
+        Drain the shielded task before propagating cancellation so semaphores held
+        by the caller continue to describe the real number of live workers.
+        """
+        worker = asyncio.create_task(asyncio.to_thread(operation))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    if worker.done():
+                        break
+                    continue
+                except Exception:
+                    break
+            if worker.done() and not worker.cancelled():
+                try:
+                    worker.exception()
+                except Exception:
+                    pass
+            raise
+
     async def _handle_search_sessions(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/search, search only an explicit session allowlist."""
         auth_err = self._check_auth(request)
@@ -2431,6 +2460,14 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         session_aliases: Dict[str, str] = {}
         for physical_id, public_id in raw_session_aliases.items():
+            if not isinstance(physical_id, str) or not isinstance(public_id, str):
+                return web.json_response(
+                    _openai_error(
+                        "session_aliases keys and values must be strings",
+                        code="invalid_session_aliases",
+                    ),
+                    status=400,
+                )
             if physical_id not in session_id_set or public_id not in session_id_set:
                 return web.json_response(
                     _openai_error(
@@ -2463,6 +2500,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         def search() -> tuple[List[Dict[str, Any]], bool]:
             allowed = set(session_ids)
+            public_metadata = db.get_sessions_by_ids(
+                list(dict.fromkeys(session_aliases.values()))
+            ) if session_aliases else {}
             matches = db.search_messages(
                 query,
                 role_filter=["user", "assistant"],
@@ -2488,16 +2528,19 @@ class APIServerAdapter(BasePlatformAdapter):
                     truncated = True
                     break
                 seen.add(public_id)
+                canonical = public_metadata.get(public_id) or {}
                 found.append({
                     "id": public_id,
-                    "title": match.get("session_title") or "Untitled",
-                    "started_at": match.get("session_started"),
+                    "title": canonical.get("title") or match.get("session_title") or "Untitled",
+                    "started_at": canonical.get("started_at", match.get("session_started")),
                 })
             return found, truncated
 
         try:
             async with self._session_search_semaphore:
-                sessions, truncated = await asyncio.to_thread(search)
+                sessions, truncated = await self._run_blocking_operation_cancellation_safe(
+                    search
+                )
         except TimeoutError:
             return web.json_response(
                 _openai_error(
@@ -2641,13 +2684,33 @@ class APIServerAdapter(BasePlatformAdapter):
         if err:
             return err
         db = self._ensure_session_db()
-        resolved_id = db.resolve_resume_session_id(session_id)
+        from hermes_state import DisplayProjectionTooLargeError
+
+        resolved_id = session_id
         limit_raw = request.query.get("limit")
         before_raw = request.query.get("before")
         if limit_raw is None and before_raw is None:
-            messages = db.get_messages_for_display(
-                resolved_id, include_ancestors=True
-            )
+            def load_messages():
+                physical_id = db.resolve_resume_session_id(session_id)
+                return physical_id, db.get_messages_for_display(
+                    physical_id, include_ancestors=True, max_rows=20_000
+                )
+
+            try:
+                async with self._session_history_semaphore:
+                    resolved_id, messages = (
+                        await self._run_blocking_operation_cancellation_safe(
+                            load_messages
+                        )
+                    )
+            except DisplayProjectionTooLargeError:
+                return web.json_response(
+                    _openai_error(
+                        "Session history exceeds the bounded display projection; refine or export it",
+                        code="session_history_too_large",
+                    ),
+                    status=422,
+                )
             return web.json_response({
                 "object": "list",
                 "session_id": resolved_id,
@@ -2679,12 +2742,30 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=400,
                 )
 
-        page = db.get_messages_for_display_page(
-            resolved_id,
-            limit=limit,
-            before=before,
-            include_ancestors=True,
-        )
+        def load_page():
+            physical_id = db.resolve_resume_session_id(session_id)
+            return physical_id, db.get_messages_for_display_page(
+                physical_id,
+                limit=limit,
+                before=before,
+                include_ancestors=True,
+            )
+
+        try:
+            async with self._session_history_semaphore:
+                resolved_id, page = (
+                    await self._run_blocking_operation_cancellation_safe(
+                        load_page
+                    )
+                )
+        except DisplayProjectionTooLargeError:
+            return web.json_response(
+                _openai_error(
+                    "Session history exceeds the bounded display projection; refine or export it",
+                    code="session_history_too_large",
+                ),
+                status=422,
+            )
         return web.json_response({
             "object": "list",
             "session_id": resolved_id,

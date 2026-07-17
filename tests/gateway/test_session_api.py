@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sqlite3
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -411,6 +412,75 @@ async def test_session_search_groups_explicit_aliases_before_result_limit(adapte
 
 
 @pytest.mark.asyncio
+async def test_session_search_uses_public_alias_metadata(adapter, session_db):
+    session_db.create_session("metadata-root", "api_server")
+    session_db.set_session_title("metadata-root", "Stale root title")
+    session_db.append_message("metadata-root", "user", "metadata needle")
+    session_db.end_session("metadata-root", "compression")
+    session_db.create_session(
+        "metadata-tip", "api_server", parent_session_id="metadata-root"
+    )
+    session_db.set_session_title("metadata-tip", "Current conversation title")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={
+                "query": "needle",
+                "session_ids": ["metadata-root", "metadata-tip"],
+                "session_aliases": {"metadata-root": "metadata-tip"},
+                "limit": 10,
+            },
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert payload["data"] == [
+        {
+            "id": "metadata-tip",
+            "title": "Current conversation title",
+            "started_at": session_db.get_session("metadata-tip")["started_at"],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_session_search_holds_permit_until_worker_stops(
+    adapter, session_db, monkeypatch
+):
+    session_db.create_session("cancel-search", "api_server")
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_search(*args, **kwargs):
+        started.set()
+        release.wait(timeout=5)
+        return []
+
+    monkeypatch.setattr(session_db, "search_messages", blocked_search)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        request_task = asyncio.create_task(
+            cli.post(
+                "/api/sessions/search",
+                json={
+                    "query": "needle",
+                    "session_ids": ["cancel-search"],
+                    "limit": 10,
+                },
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 2)
+        request_task.cancel()
+        await asyncio.sleep(0.05)
+        assert adapter._session_search_semaphore._value == 1
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+
+
+@pytest.mark.asyncio
 async def test_session_search_accepts_webui_maximum_scope(adapter, session_db):
     session_ids = [f"owned-{index}" for index in range(20_000)]
     app = _create_session_app(adapter)
@@ -479,6 +549,14 @@ async def test_session_search_accepts_bounded_500_result_limit(adapter):
         ({"query": "x", "session_ids": ["../foreign"]}, "invalid_session_ids"),
         ({"query": "x", "session_ids": [], "limit": True}, "invalid_search_limit"),
         ({"query": "x", "session_ids": [], "limit": 501}, "invalid_search_limit"),
+        (
+            {
+                "query": "x",
+                "session_ids": ["owned"],
+                "session_aliases": {"owned": []},
+            },
+            "invalid_session_aliases",
+        ),
         ({"query": "x", "session_ids": [], "extra": 1}, "unsupported_search_field"),
     ],
 )
@@ -768,10 +846,7 @@ async def test_session_messages_do_not_prepend_explicit_branch_parent(
         model_config={"_branched_from": source_id},
     )
     source_history = session_db.get_messages_as_conversation(source_id)
-    session_db.replace_messages(
-        branch_id,
-        [{**message, "_context_snapshot": True} for message in source_history],
-    )
+    session_db.replace_messages(branch_id, source_history)
     session_db.append_message(branch_id, "assistant", "branch-only reply")
 
     app = _create_session_app(adapter)
@@ -785,6 +860,124 @@ async def test_session_messages_do_not_prepend_explicit_branch_parent(
         "one copy only",
         "branch-only reply",
     ]
+
+
+@pytest.mark.asyncio
+async def test_real_api_fork_renders_inherited_history_once(adapter, session_db):
+    source_id = session_db.create_session("api-fork-source", "api_server")
+    session_db.append_message(source_id, "user", "copied request")
+    session_db.append_message(source_id, "assistant", "copied answer")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        fork_response = await cli.post(
+            f"/api/sessions/{source_id}/fork",
+            json={"id": "api-fork-child", "title": "Fork"},
+        )
+        assert fork_response.status == 201
+        session_db.append_message("api-fork-child", "user", "fork-only request")
+        response = await cli.get("/api/sessions/api-fork-child/messages")
+        payload = await response.json()
+
+    assert response.status == 200
+    assert [m["content"] for m in payload["data"]] == [
+        "copied request",
+        "copied answer",
+        "fork-only request",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_delegate_display_does_not_prepend_parent_transcript(adapter, session_db):
+    parent_id = session_db.create_session("display-parent", "api_server")
+    session_db.append_message(parent_id, "user", "PARENT ONLY SECRET")
+    child_id = session_db.create_session(
+        "display-delegate",
+        "tool",
+        parent_session_id=parent_id,
+        model_config={"_delegate_from": parent_id},
+    )
+    session_db.append_message(child_id, "assistant", "delegate-only result")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{child_id}/messages")
+        payload = await response.json()
+
+    assert response.status == 200
+    assert [m["content"] for m in payload["data"]] == ["delegate-only result"]
+
+
+@pytest.mark.asyncio
+async def test_session_messages_do_not_silently_truncate_deep_compression_lineage(
+    adapter, session_db
+):
+    first_id = "deep-000"
+    session_db.create_session(first_id, "api_server")
+    session_db.append_message(first_id, "user", "message 000")
+    previous_id = first_id
+    for index in range(1, 102):
+        session_db.end_session(previous_id, "compression")
+        current_id = f"deep-{index:03d}"
+        session_db.create_session(
+            current_id, "api_server", parent_session_id=previous_id
+        )
+        session_db.append_message(current_id, "user", f"message {index:03d}")
+        previous_id = current_id
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{first_id}/messages?limit=200")
+        payload = await response.json()
+
+    assert response.status == 200
+    assert len(payload["data"]) == 102
+    assert payload["data"][0]["content"] == "message 000"
+
+
+@pytest.mark.asyncio
+async def test_paginated_history_projection_runs_off_event_loop(
+    adapter, session_db, monkeypatch
+):
+    session_id = session_db.create_session("off-loop-history", "api_server")
+    session_db.append_message(session_id, "user", "hello")
+    event_loop_thread = threading.get_ident()
+    observed = {}
+    original = session_db.get_messages_for_display_page
+
+    def checked_page(*args, **kwargs):
+        observed["thread"] = threading.get_ident()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(session_db, "get_messages_for_display_page", checked_page)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{session_id}/messages?limit=1")
+
+    assert response.status == 200
+    assert observed["thread"] != event_loop_thread
+
+
+@pytest.mark.asyncio
+async def test_session_history_reports_bounded_projection_overflow(
+    adapter, session_db, monkeypatch
+):
+    from hermes_state import DisplayProjectionTooLargeError
+
+    session_id = session_db.create_session("bounded-history", "api_server")
+
+    def too_large(*args, **kwargs):
+        raise DisplayProjectionTooLargeError("too many rows")
+
+    monkeypatch.setattr(session_db, "get_messages_for_display_page", too_large)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{session_id}/messages?limit=1")
+        payload = await response.json()
+
+    assert response.status == 422
+    assert payload["error"]["code"] == "session_history_too_large"
+
 
 @pytest.mark.asyncio
 async def test_session_messages_hide_compaction_handoff_and_deduplicate_snapshot(

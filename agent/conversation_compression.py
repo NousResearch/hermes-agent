@@ -811,11 +811,15 @@ def compress_context(
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})
         _ensure_compressed_has_user_turn(messages, compressed)
-        # Everything assembled for the post-compaction model context is a
-        # replay snapshot. Mark after TODO/user continuity additions so none of
-        # that synthetic state is mistaken for a durable chat turn.
-        for message in compressed:
-            message["_context_snapshot"] = True
+        # Snapshot metadata belongs only to the copied post-compaction model
+        # context. Some protected head/tail entries are shared by identity with
+        # ``messages`` and must remain genuine durable transcript rows.
+        compressed = [
+            {**message, "_context_snapshot": True}
+            if isinstance(message, dict)
+            else message
+            for message in compressed
+        ]
 
         agent._invalidate_system_prompt()
         new_system_prompt = agent._build_system_prompt(system_message)
@@ -835,14 +839,17 @@ def compress_context(
                     # renumber, no contextvar/env/logging re-sync. The session's
                     # id, title, cwd, /goal, and gateway routing all stay put.
                     #
-                    # Durable, NON-DESTRUCTIVE replace: soft-archive the
-                    # pre-compaction turns (active=0, kept on disk + FTS-searchable +
-                    # recoverable) and insert `compressed` as the new live (active=1)
-                    # set, atomically. `compressed` already carries the surviving
-                    # tail (current-turn messages the compressor kept via
-                    # protect_last_n), so we DON'T pre-flush here — a flush would
-                    # INSERT current-turn rows that archive_and_compact would then
-                    # archive alongside the rest (harmless but wasted writes). The
+                    # Durable, NON-DESTRUCTIVE replace: first confirm every genuine
+                    # current-turn row has an unmarked durable copy, then archive
+                    # the pre-compaction turns and insert the replay snapshot.
+                    flush_ok = agent._flush_messages_to_session_db(messages)
+                    if flush_ok is False:
+                        agent._emit_warning(
+                            "⚠ Compression cancelled because the current turn could not be "
+                            "saved durably. No transcript rows were archived."
+                        )
+                        return messages, new_system_prompt
+                    # The
                     # live-context load filters active=1, so a resume reloads ONLY
                     # the compacted set; the original turns remain under the SAME id
                     # for search/recovery (Teknium review — keep one durable id
@@ -864,10 +871,13 @@ def compress_context(
                     # Flush any un-persisted current-turn messages to the OLD
                     # session before ending it, so they survive in the preserved
                     # parent transcript (#47202). (In-place skips this — see above.)
-                    try:
-                        agent._flush_messages_to_session_db(messages)
-                    except Exception:
-                        pass  # best-effort — don't block compression on a flush error
+                    flush_ok = agent._flush_messages_to_session_db(messages)
+                    if flush_ok is False:
+                        agent._emit_warning(
+                            "⚠ Compression cancelled because the current turn could not be "
+                            "saved durably. The session was not rotated."
+                        )
+                        return messages, new_system_prompt
                     old_session_id = agent.session_id
                     agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
                     # Ordering contract: the agent thread updates the contextvar here;

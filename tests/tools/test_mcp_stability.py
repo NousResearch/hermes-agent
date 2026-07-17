@@ -736,3 +736,75 @@ class TestMCPInitialConnectionRetry:
                 await task
 
         asyncio.get_event_loop().run_until_complete(_run())
+
+
+# ---------------------------------------------------------------------------
+# Fix: drain pending tasks before closing the MCP loop
+# ---------------------------------------------------------------------------
+
+class TestMCPLoopDrainOnStop:
+    """_stop_mcp_loop reaps pending tasks while the loop is still open."""
+
+    def test_pending_task_cleanup_runs_before_close(self):
+        """A task left on the loop must finish its cleanup before close.
+
+        Regression for #60197: a task still suspended when the loop closes is
+        resumed later by the GC, and its ``finally`` then drives ``cancel()``
+        -> ``call_soon()`` against the closed loop, surfacing as an ignored
+        ``RuntimeError: Event loop is closed``. Servers absent from
+        ``_servers`` (e.g. parked after an initial-connect failure) never get
+        ``shutdown()``, so this drain is their only reaper.
+        """
+        import time
+        import tools.mcp_tool as mcp_mod
+
+        state = {
+            "started": False,
+            "cleanup_ran": False,
+            "cleanup_error": None,
+            "task": None,
+        }
+
+        async def _parked():
+            state["task"] = asyncio.current_task()
+            state["started"] = True
+            try:
+                await asyncio.sleep(3600)
+            finally:
+                # Mirrors _wait_for_reconnect_or_shutdown's finally: cancelling
+                # a helper task needs call_soon(), which a closed loop rejects.
+                try:
+                    helper = asyncio.ensure_future(asyncio.sleep(0))
+                    helper.cancel()
+                    state["cleanup_ran"] = True
+                except BaseException as exc:
+                    state["cleanup_error"] = exc
+
+        with mcp_mod._lock:
+            mcp_mod._servers.clear()
+            mcp_mod._server_connecting.clear()
+        try:
+            mcp_mod._ensure_mcp_loop()
+            with mcp_mod._lock:
+                loop = mcp_mod._mcp_loop
+            assert loop is not None
+            asyncio.run_coroutine_threadsafe(_parked(), loop)
+
+            deadline = time.monotonic() + 5
+            while not state["started"] and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert state["started"], "task never started on the MCP loop"
+
+            mcp_mod._stop_mcp_loop()
+
+            assert state["task"] is not None
+            assert state["task"].done(), "task left pending when the loop closed"
+            assert state["cleanup_error"] is None, (
+                f"cleanup ran against a closed loop: {state['cleanup_error']!r}"
+            )
+            assert state["cleanup_ran"], "task cleanup never ran"
+        finally:
+            with mcp_mod._lock:
+                mcp_mod._servers.clear()
+                mcp_mod._server_connecting.clear()
+            mcp_mod._stop_mcp_loop()

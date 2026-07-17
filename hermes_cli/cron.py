@@ -241,13 +241,18 @@ def cron_runs(job_id: Optional[str] = None, limit: int = 20):
         print("No cron execution attempts recorded.")
         return
     for record in records:
+        execution_id = _surface_safe(record.get("id", "?"))
+        status = _surface_safe(record.get("status", "?"))
+        record_job_id = _surface_safe(record.get("job_id", "?"))
+        source = _surface_safe(record.get("source", "?"))
+        claimed_at = _surface_safe(record.get("claimed_at", "?"))
         print(
-            f"{record.get('id', '?')}  {record.get('status', '?'):<9}  "
-            f"job={record.get('job_id', '?')}  source={record.get('source', '?')}  "
-            f"{record.get('claimed_at', '?')}"
+            f"{execution_id}  {status:<9}  "
+            f"job={record_job_id}  source={source}  "
+            f"{claimed_at}"
         )
         if record.get("error"):
-            print(f"    {record['error']}")
+            print(f"    {_surface_safe(record['error'])}")
 
 
 def cron_status():

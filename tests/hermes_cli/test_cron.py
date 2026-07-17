@@ -263,6 +263,30 @@ class TestCronCommandLifecycle:
         assert "Work status: unknown (source=none)" in out
         assert "stale\x1b[2J" not in out
 
+    def test_runs_sanitizes_terminal_controls_from_persisted_fields(
+        self, capsys, monkeypatch
+    ):
+        hostile = "failure\x1b[2J"
+        monkeypatch.setattr(
+            "cron.executions.list_executions",
+            lambda job_id=None, limit=20: [
+                {
+                    "id": hostile,
+                    "status": hostile,
+                    "job_id": hostile,
+                    "source": hostile,
+                    "claimed_at": hostile,
+                    "error": hostile,
+                }
+            ],
+        )
+
+        cron_cli.cron_runs("job-1", limit=1)
+
+        out = capsys.readouterr().out
+        assert "\x1b" not in out
+        assert "failure\\u001b[2J" in out
+
     def test_manual_run_labels_scheduler_and_work_status_separately(
         self, capsys, monkeypatch
     ):

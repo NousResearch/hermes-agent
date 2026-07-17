@@ -60,6 +60,19 @@ def _model_short(model: Optional[str]) -> str:
     return model.rsplit("/", 1)[-1]
 
 
+def _format_duration(seconds: Optional[float]) -> str:
+    """Render a duration in a human-readable short form.
+
+    ``3.4s`` → ``3.4s``; ``72.1s`` → ``1m12s``; ``125s`` → ``2m5s``.
+    """
+    if seconds is None or seconds < 0:
+        return ""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    mins, secs = divmod(int(seconds), 60)
+    return f"{mins}m{secs}s"
+
+
 def resolve_footer_config(
     user_config: dict[str, Any] | None,
     platform_key: str | None = None,
@@ -109,6 +122,7 @@ def format_runtime_footer(
     provider: Optional[str] = None,
     agent: Optional[str] = None,
     style: Optional[str] = None,
+    duration: Optional[float] = None,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
@@ -145,23 +159,28 @@ def format_runtime_footer(
 
     parts = []
     for field in field_list:
-        if field == "model":
+        key = field.strip().lower()
+        if key == "model":
             m = _model_short(model)
             if m:
                 parts.append(m)
-        elif field == "context_pct":
+        elif key in {"context_pct", "ctx"}:
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
-                parts.append(f"{pct}%")
-        elif field == "cwd":
+                parts.append(f"ctx {pct}%" if key == "ctx" else f"{pct}%")
+        elif key in {"cwd", "cwd_label"}:
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
-                parts.append(rel)
-        elif field == "agent":
+                parts.append(f"cwd {rel}" if key == "cwd_label" else rel)
+        elif key == "duration":
+            d = _format_duration(duration)
+            if d:
+                parts.append(d)
+        elif key == "agent":
             val = (agent or "main").strip()
             if val:
                 parts.append(val)
-        elif field == "provider":
+        elif key == "provider":
             p = (provider or "").strip()
             if p:
                 parts.append(p)
@@ -182,6 +201,7 @@ def build_footer_line(
     cwd: Optional[str] = None,
     provider: Optional[str] = None,
     agent: Optional[str] = None,
+    duration: Optional[float] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -201,4 +221,5 @@ def build_footer_line(
         provider=provider,
         agent=agent,
         style=cfg.get("style"),
+        duration=duration,
     )

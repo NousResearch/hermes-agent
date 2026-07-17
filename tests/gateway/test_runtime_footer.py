@@ -347,3 +347,60 @@ def test_build_footer_openclaw_end_to_end():
         agent="main",
     )
     assert out == "Agent: main | Model: k3 | Provider: kimi"
+
+
+# ---------------------------------------------------------------------------
+# duration field (consolidated from #52443)
+# ---------------------------------------------------------------------------
+
+def test_format_footer_duration_seconds():
+    from gateway.runtime_footer import format_runtime_footer
+
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=100,
+        cwd="", duration=3.4, fields=("duration",),
+    )
+    assert out == "3.4s"
+
+
+def test_format_footer_duration_minutes():
+    from gateway.runtime_footer import format_runtime_footer
+
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=100,
+        cwd="", duration=72.3, fields=("duration",),
+    )
+    assert out == "1m12s"
+
+
+def test_format_footer_duration_none_skipped():
+    from gateway.runtime_footer import format_runtime_footer
+
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=100,
+        cwd="", duration=None, fields=("duration",),
+    )
+    assert out == ""
+
+
+def test_format_footer_ctx_alias():
+    from gateway.runtime_footer import format_runtime_footer
+
+    out = format_runtime_footer(
+        model="", context_tokens=50, context_length=100,
+        cwd="", fields=("ctx",),
+    )
+    assert out == "ctx 50%"
+
+
+def test_format_footer_cwd_label_alias(tmp_path):
+    from gateway.runtime_footer import format_runtime_footer
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    out = format_runtime_footer(
+        model="", context_tokens=0, context_length=None,
+        cwd=str(proj), fields=("cwd_label",),
+    )
+    assert out.startswith("cwd ")
+    assert "proj" in out

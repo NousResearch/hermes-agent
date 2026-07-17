@@ -242,6 +242,7 @@ function FreshDraftHarness({ onReady }: { onReady: (start: () => void) => void }
     selectedStoredSessionIdRef: ref<string | null>('stored-previous'),
     sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
+    resetViewSync: vi.fn(),
     updateSessionState: () => ({}) as ClientSessionState
   })
 

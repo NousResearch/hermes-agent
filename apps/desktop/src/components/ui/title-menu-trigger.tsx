@@ -26,7 +26,7 @@ export function TitleMenuTrigger({
       variant="ghost"
       {...props}
     >
-      <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{children}</span>
+      <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-tight">{children}</span>
       <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.8125rem" />
     </Button>
   )

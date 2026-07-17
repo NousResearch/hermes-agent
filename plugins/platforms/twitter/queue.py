@@ -19,9 +19,14 @@ class RateQueue:
         if self._pending[bucket] >= self.max_pending:
             raise RuntimeError(f"Twitter {bucket} queue is full")
         self._pending[bucket] += 1
+        lock = self._locks[bucket]
+        acquired = False
         try:
             async with asyncio.timeout(self.max_wait_seconds):
-                async with self._locks[bucket]:
-                    return await operation()
+                await lock.acquire()
+            acquired = True
+            return await operation()
         finally:
+            if acquired:
+                lock.release()
             self._pending[bucket] -= 1

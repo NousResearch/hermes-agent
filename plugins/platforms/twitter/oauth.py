@@ -4,9 +4,12 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
+import os
 import secrets
 import time
 import webbrowser
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -19,6 +22,8 @@ from utils import atomic_json_write
 
 AUTHORIZE_URL = "https://x.com/i/oauth2/authorize"
 TOKEN_URL = "https://api.x.com/2/oauth2/token"
+logger = logging.getLogger(__name__)
+_refresh_locks: dict[str, asyncio.Lock] = {}
 SCOPES = (
     "tweet.read",
     "tweet.write",
@@ -66,6 +71,75 @@ class OAuthTokens:
 
 def token_path() -> Path:
     return get_hermes_home() / "twitter" / "oauth2.json"
+
+
+def _lock_refresh_file(path: Path):
+    lock_path = Path(f"{path}.refresh.lock")
+    handle = None
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, "a+b")
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return handle
+    except Exception:
+        logger.debug(
+            "Twitter OAuth cross-process lock unavailable; in-process only",
+            exc_info=True,
+        )
+        if handle is not None:
+            handle.close()
+        return None
+
+
+def _unlock_refresh_file(handle) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except Exception:
+        pass
+    finally:
+        handle.close()
+
+
+@asynccontextmanager
+async def _profile_refresh_lock(path: Path):
+    key = str(path.resolve())
+    lock = _refresh_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        acquire = asyncio.create_task(asyncio.to_thread(_lock_refresh_file, path))
+        try:
+            try:
+                handle = await asyncio.shield(acquire)
+            except asyncio.CancelledError:
+                handle = await acquire
+                if handle is not None:
+                    await asyncio.to_thread(_unlock_refresh_file, handle)
+                raise
+            try:
+                yield
+            finally:
+                if handle is not None:
+                    await asyncio.shield(
+                        asyncio.to_thread(_unlock_refresh_file, handle)
+                    )
+        finally:
+            if not acquire.done():
+                acquire.cancel()
 
 
 def create_s256_challenge(verifier: str) -> str:
@@ -255,7 +329,6 @@ class OAuthClient:
         self.redirect_uri = redirect_uri
         self.client = client or httpx.AsyncClient(timeout=30)
         self._owns_client = client is None
-        self._refresh_lock = asyncio.Lock()
 
     async def close(self) -> None:
         if self._owns_client:
@@ -277,7 +350,7 @@ class OAuthClient:
         return self._persist_response(response.json())
 
     async def refresh(self, tokens: OAuthTokens) -> OAuthTokens:
-        async with self._refresh_lock:
+        async with _profile_refresh_lock(token_path()):
             current = load_tokens() or tokens
             if not current.expired():
                 return current

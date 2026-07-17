@@ -195,6 +195,19 @@ async def test_queue_overflow_fails_before_network():
 
 
 @pytest.mark.asyncio
+async def test_queue_wait_timeout_does_not_cancel_started_operation():
+    from plugins.platforms.twitter.queue import RateQueue
+
+    queue = RateQueue(max_pending=1, max_wait_seconds=0.01)
+
+    async def slow_operation():
+        await asyncio.sleep(0.03)
+        return "completed"
+
+    assert await queue.run("write", slow_operation) == "completed"
+
+
+@pytest.mark.asyncio
 async def test_client_keeps_large_ids_as_strings():
     from plugins.platforms.twitter.client import XClient
 
@@ -235,12 +248,75 @@ async def test_client_retries_explicit_rate_limit_response():
 
 
 @pytest.mark.asyncio
+async def test_client_uses_fresh_token_provider():
+    from plugins.platforms.twitter.client import XClient
+
+    def handler(request):
+        assert request.headers["Authorization"] == "Bearer fresh"
+        return httpx.Response(200, json={"data": {"id": "7"}})
+
+    provider = AsyncMock(return_value="fresh")
+    client = XClient(
+        token="stale",
+        token_provider=provider,
+        transport=httpx.MockTransport(handler),
+    )
+    await client.identity()
+    provider.assert_awaited_once()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_refresh_is_serialized_across_oauth_clients(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.oauth import OAuthClient, SCOPES, save_tokens
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    expired = save_tokens(
+        {
+            "access_token": "expired",
+            "refresh_token": "rotate-once",
+            "expires_at": 1,
+            "scopes": list(SCOPES),
+            "client_id": "client",
+        }
+    )
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "fresh",
+                "refresh_token": "rotated",
+                "expires_in": 3600,
+                "scope": " ".join(SCOPES),
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    first_http = httpx.AsyncClient(transport=transport)
+    second_http = httpx.AsyncClient(transport=transport)
+    first = OAuthClient("client", "http://127.0.0.1:8765/callback", client=first_http)
+    second = OAuthClient("client", "http://127.0.0.1:8765/callback", client=second_http)
+    one, two = await asyncio.gather(first.refresh(expired), second.refresh(expired))
+
+    assert one.access_token == two.access_token == "fresh"
+    assert calls == 1
+    await first_http.aclose()
+    await second_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_mention_requires_structured_trigger_and_authorization(
     monkeypatch, tmp_path
 ):
     from plugins.platforms.twitter.adapter import TwitterAdapter
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("TWITTER_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("TWITTER_ALLOW_ALL_USERS", raising=False)
     adapter = TwitterAdapter(
         PlatformConfig(extra={"client_id": "client", "allowed_users": ["42"]})
     )
@@ -263,6 +339,26 @@ async def test_mention_requires_structured_trigger_and_authorization(
     adapter.handle_message.reset_mock()
     await adapter._process_mention({**post, "id": "102", "author_id": "99"}, {})
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_common_gateway_authorization_precedes_local_fallback(
+    monkeypatch, tmp_path
+):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("TWITTER_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("TWITTER_ALLOW_ALL_USERS", raising=False)
+    adapter = TwitterAdapter(
+        PlatformConfig(extra={"client_id": "client", "allow_all_users": "false"})
+    )
+    adapter._account_id = "7"
+    assert not adapter._authorized("42", chat_type="group", chat_id="tweet:1:2")
+
+    adapter.set_authorization_check(lambda user_id, chat_type, chat_id: user_id == "42")
+    assert adapter._authorized("42", chat_type="group", chat_id="tweet:1:2")
+    assert not adapter._authorized("99", chat_type="group", chat_id="tweet:1:2")
 
 
 @pytest.mark.asyncio
@@ -505,3 +601,31 @@ async def test_mention_polling_consumes_all_pages_oldest_first(monkeypatch, tmp_
         "102",
     ]
     assert adapter._state.mention_since_id == "102"
+
+
+@pytest.mark.asyncio
+async def test_dm_pagination_stops_at_saved_boundary(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(PlatformConfig(extra={"client_id": "client"}))
+    adapter._state.dm_since_id = "100"
+    adapter._client = Mock()
+    adapter._client.dm_events = AsyncMock(
+        side_effect=[
+            {
+                "data": [{"id": "103"}, {"id": "102"}],
+                "meta": {"next_token": "next"},
+            },
+            {
+                "data": [{"id": "101"}, {"id": "100"}],
+                "meta": {},
+            },
+        ]
+    )
+
+    page = await adapter._dm_pages()
+
+    assert [item["id"] for item in page["data"]] == ["103", "102", "101"]
+    assert page["meta"]["complete"] is True
+    assert adapter._client.dm_events.await_count == 2

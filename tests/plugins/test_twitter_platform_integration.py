@@ -109,6 +109,10 @@ async def test_twitter_plugin_end_to_end_with_profile_isolation(monkeypatch, tmp
     restarted = entry.adapter_factory(config)
     assert restarted._state.seen("101")
     assert restarted._state.seen("501")
+    restarted.handle_message = AsyncMock()
+    assert await restarted.connect(is_reconnect=True)
+    restarted.handle_message.assert_not_awaited()
+    await restarted.disconnect()
 
     standalone = await entry.standalone_sender_fn(config, "timeline", "cron post")
     assert standalone == {"success": True, "message_id": "701"}

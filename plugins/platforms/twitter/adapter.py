@@ -47,6 +47,18 @@ def _ancestor_ids(posts: list[dict], trigger_id: str, max_depth: int) -> list[st
     return result
 
 
+def _id_key(value: Any) -> tuple[int, str]:
+    raw = str(value or "")
+    if not raw.isdigit():
+        return (-1, "")
+    normalized = raw.lstrip("0") or "0"
+    return (len(normalized), normalized)
+
+
+def _id_after(value: Any, boundary: Any) -> bool:
+    return _id_key(value) > _id_key(boundary)
+
+
 def build_conversation_context(
     posts: list[dict],
     *,
@@ -189,6 +201,18 @@ class TwitterAdapter(BasePlatformAdapter):
                 retryable=False,
             )
             return False
+        lock_identity = tokens.user_id or tokens.client_id or self.settings.client_id
+        if not lock_identity:
+            self._set_fatal_error(
+                "twitter_oauth_invalid",
+                "Twitter OAuth record does not identify its account or client",
+                retryable=False,
+            )
+            return False
+        if not self._acquire_platform_lock(
+            "twitter-oauth-account", lock_identity, "Twitter account"
+        ):
+            return False
         try:
             tokens = await refresh_if_needed(
                 self.settings.client_id, self.settings.redirect_uri
@@ -199,9 +223,11 @@ class TwitterAdapter(BasePlatformAdapter):
                 f"Twitter OAuth refresh failed: {exc}",
                 retryable=True,
             )
+            self._release_platform_lock()
             return False
         self._client = XClient(
             token=tokens.access_token,
+            token_provider=self._fresh_access_token,
             transport=self._transport,
             max_pending=self.settings.max_pending,
             max_wait_seconds=self.settings.max_wait_seconds,
@@ -224,12 +250,6 @@ class TwitterAdapter(BasePlatformAdapter):
                         username=self._username,
                     )
                 )
-            if not self._acquire_platform_lock(
-                "twitter-oauth-account", self._account_id, "Twitter account"
-            ):
-                await self._client.close()
-                self._client = None
-                return False
             await self._poll_mentions_once(baseline=not is_reconnect)
             await self._poll_dms_once(baseline=not is_reconnect)
         except Exception as exc:
@@ -244,6 +264,12 @@ class TwitterAdapter(BasePlatformAdapter):
         self._start_poller(self._mention_loop(), "mentions")
         self._start_poller(self._dm_loop(), "direct messages")
         return True
+
+    async def _fresh_access_token(self) -> str:
+        tokens = await refresh_if_needed(
+            self.settings.client_id, self.settings.redirect_uri
+        )
+        return tokens.access_token
 
     async def disconnect(self) -> None:
         self._running = False
@@ -424,8 +450,10 @@ class TwitterAdapter(BasePlatformAdapter):
         if self._client is None:
             return
         page = await self._mention_pages()
-        posts = list(page.get("data") or [])
-        posts.sort(key=lambda item: int(str(item.get("id") or 0)))
+        posts = [
+            item for item in page.get("data") or [] if _id_key(item.get("id"))[0] >= 0
+        ]
+        posts.sort(key=lambda item: _id_key(item.get("id")))
         if baseline and not self._state.mention_since_id and not self.settings.initial_backfill:
             if posts:
                 self._state.advance_mentions(str(posts[-1]["id"]))
@@ -441,20 +469,36 @@ class TwitterAdapter(BasePlatformAdapter):
     async def _poll_dms_once(self, *, baseline: bool = False) -> None:
         if self._client is None:
             return
-        page = await self._dm_pages()
-        events = list(page.get("data") or [])
-        events.sort(key=lambda item: int(str(item.get("id") or 0)))
-        if baseline and not self._state.dm_since_id and not self.settings.initial_backfill:
-            if events:
-                self._state.advance_dms(str(events[-1]["id"]))
-                self._state.save()
+        first_run = baseline and not self._state.dm_since_id
+        page = await self._dm_pages(first_run=first_run)
+        events = [
+            item for item in page.get("data") or [] if _id_key(item.get("id"))[0] >= 0
+        ]
+        events.sort(key=lambda item: _id_key(item.get("id")))
+        meta = page.get("meta") or {}
+        candidate = str(meta.get("candidate_since_id") or "")
+        if first_run:
+            if self.settings.initial_backfill:
+                for event in events[-self.settings.initial_backfill :]:
+                    await self._process_dm(event, page.get("includes") or {})
+            if candidate:
+                self._state.advance_dms(candidate)
+            self._state.dm_pagination_token = ""
+            self._state.dm_candidate_since_id = ""
+            self._state.save()
             return
-        if baseline and self.settings.initial_backfill:
-            events = events[-self.settings.initial_backfill :]
         for event in events:
             await self._process_dm(event, page.get("includes") or {})
-            self._state.advance_dms(str(event["id"]))
             self._state.save()
+        if meta.get("complete"):
+            if candidate:
+                self._state.advance_dms(candidate)
+            self._state.dm_pagination_token = ""
+            self._state.dm_candidate_since_id = ""
+        else:
+            self._state.dm_pagination_token = str(meta.get("next_token") or "")
+            self._state.dm_candidate_since_id = candidate
+        self._state.save()
 
     async def _mention_pages(self) -> dict:
         if self._client is None:
@@ -476,36 +520,74 @@ class TwitterAdapter(BasePlatformAdapter):
                 break
         return {"data": data, "includes": includes}
 
-    async def _dm_pages(self) -> dict:
+    async def _dm_pages(self, *, first_run: bool = False) -> dict:
         if self._client is None:
             return {}
         data: list[dict] = []
         includes: dict[str, list] = {"users": [], "media": []}
-        token = ""
-        for _ in range(5):
+        boundary = self._state.dm_since_id
+        token = self._state.dm_pagination_token
+        candidate = self._state.dm_candidate_since_id
+        complete = False
+        page_limit = 1 if first_run and not boundary and not token else 5
+        for _ in range(page_limit):
             page = await self._client.dm_events(pagination_token=token)
-            data.extend(page.get("data") or [])
+            events = [
+                item
+                for item in page.get("data") or []
+                if _id_key(item.get("id"))[0] >= 0
+            ]
+            if not candidate and events:
+                candidate = str(max(events, key=lambda item: _id_key(item["id"]))["id"])
+            for event in events:
+                if boundary and not _id_after(event.get("id"), boundary):
+                    complete = True
+                    continue
+                data.append(event)
             for key in includes:
                 includes[key].extend((page.get("includes") or {}).get(key) or [])
-            token = str((page.get("meta") or {}).get("next_token") or "")
-            if not token:
+            next_token = str((page.get("meta") or {}).get("next_token") or "")
+            if complete or not next_token:
+                complete = True
+                token = ""
                 break
-        return {"data": data, "includes": includes}
+            token = next_token
+        return {
+            "data": data,
+            "includes": includes,
+            "meta": {
+                "complete": complete,
+                "next_token": token,
+                "candidate_since_id": candidate,
+            },
+        }
 
-    def _authorized(self, user_id: str) -> bool:
+    def _authorized(
+        self,
+        user_id: str,
+        *,
+        chat_type: str | None = None,
+        chat_id: str | None = None,
+    ) -> bool:
+        common = self._is_sender_authorized(user_id, chat_type, chat_id)
+        if common is not None:
+            return common
         extra = self.config.extra or {}
         allow_all = extra.get("allow_all_users")
         if allow_all is None:
-            allow_all = os.getenv("TWITTER_ALLOW_ALL_USERS", "").lower() in {
-                "1",
-                "true",
-                "yes",
-            }
-        if allow_all:
+            allow_all = os.getenv("TWITTER_ALLOW_ALL_USERS", "")
+        if allow_all is True or str(allow_all).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
             return True
         configured = extra.get("allowed_users")
         if configured is None:
-            configured = os.getenv("TWITTER_ALLOWED_USERS", "").split(",")
+            configured = os.getenv("TWITTER_ALLOWED_USERS", "")
+        if isinstance(configured, str):
+            configured = configured.split(",")
         return str(user_id) in {str(item).strip() for item in configured if str(item).strip()}
 
     async def _process_mention(self, post: dict, includes: dict) -> None:
@@ -517,10 +599,12 @@ class TwitterAdapter(BasePlatformAdapter):
             or author_id == self._account_id
             or self._state.seen(post_id)
             or not self._is_public_trigger(post, includes)
-            or not self._authorized(author_id)
         ):
             return
         conversation_id = str(post.get("conversation_id") or post_id)
+        chat_id = f"tweet:{conversation_id}:{post_id}"
+        if not self._authorized(author_id, chat_type="group", chat_id=chat_id):
+            return
         posts, merged_includes = await self._conversation_posts(post, includes)
         ancestors = _ancestor_ids(posts, post_id, self.settings.max_depth)
         anchor = self._state.resolve_anchor(post_id, ancestors)
@@ -582,8 +666,10 @@ class TwitterAdapter(BasePlatformAdapter):
             or not conversation_id
             or sender_id == self._account_id
             or self._state.seen(event_id)
-            or not self._authorized(sender_id)
         ):
+            return
+        chat_id = f"dm:{conversation_id}"
+        if not self._authorized(sender_id, chat_type="dm", chat_id=chat_id):
             return
         users = {
             str(user.get("id")): user for user in includes.get("users") or []
@@ -597,7 +683,7 @@ class TwitterAdapter(BasePlatformAdapter):
                 text=str(event_data.get("text") or ""),
                 message_type=MessageType.TEXT,
                 source=self.build_source(
-                    chat_id=f"dm:{conversation_id}",
+                    chat_id=chat_id,
                     chat_name=f"X DM {conversation_id}",
                     chat_type="dm",
                     user_id=sender_id,

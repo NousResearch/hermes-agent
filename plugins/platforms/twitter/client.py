@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -32,6 +34,7 @@ class XClient:
         self,
         *,
         token: str,
+        token_provider: Callable[[], Awaitable[str]] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         max_pending: int = 100,
         max_wait_seconds: float = 900,
@@ -42,6 +45,7 @@ class XClient:
             timeout=30,
             transport=transport,
         )
+        self._token_provider = token_provider
         self._queue = RateQueue(
             max_pending=max_pending, max_wait_seconds=max_wait_seconds
         )
@@ -60,6 +64,9 @@ class XClient:
     ) -> dict[str, Any]:
         async def execute() -> dict[str, Any]:
             for attempt in range(2):
+                if self._token_provider is not None:
+                    token = await self._token_provider()
+                    self._client.headers["Authorization"] = f"Bearer {token}"
                 try:
                     response = await self._client.request(method, path, **kwargs)
                 except httpx.RequestError as exc:
@@ -129,7 +136,9 @@ class XClient:
             params["since_id"] = str(since_id)
         if pagination_token:
             params["pagination_token"] = pagination_token
-        return await self.request("GET", f"/2/users/{user_id}/mentions", params=params)
+        return await self.request(
+            "GET", f"/2/users/{quote(str(user_id), safe='')}/mentions", params=params
+        )
 
     async def dm_events(self, *, pagination_token: str = "") -> dict[str, Any]:
         params = {
@@ -177,7 +186,7 @@ class XClient:
         body: dict[str, Any] = {"text": text}
         if media_id:
             body["attachments"] = [{"media_id": str(media_id)}]
-        path = f"/2/dm_conversations/{conversation_id}/messages"
+        path = f"/2/dm_conversations/{quote(str(conversation_id), safe='')}/messages"
         payload = await self.request(
             "POST", path, bucket="write_dm", ambiguous_write=True, json=body
         )
@@ -208,13 +217,15 @@ class XClient:
     async def bookmarks(
         self, user_id: str, operation: str, *, post_id: str = ""
     ) -> dict[str, Any]:
-        path = f"/2/users/{user_id}/bookmarks"
+        path = f"/2/users/{quote(str(user_id), safe='')}/bookmarks"
         if operation == "list":
             return await self.request("GET", path)
         if operation == "add":
             return await self.request("POST", path, json={"tweet_id": str(post_id)})
         if operation == "remove":
-            return await self.request("DELETE", f"{path}/{post_id}")
+            return await self.request(
+                "DELETE", f"{path}/{quote(str(post_id), safe='')}"
+            )
         raise ValueError("bookmark operation must be list, add, or remove")
 
     async def post_metrics(self, ids: list[str]) -> dict[str, Any]:

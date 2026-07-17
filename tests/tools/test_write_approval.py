@@ -9,6 +9,8 @@ subcommand dispatch.
 
 import json
 import os
+import stat
+import sys
 import tempfile
 import shutil
 
@@ -235,6 +237,42 @@ def test_pending_store_roundtrip(hermes_home):
     assert wa.discard_pending("memory", rec["id"]) is True
     assert wa.pending_count("memory") == 0
     assert wa.get_pending("memory", rec["id"]) is None
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+def test_pending_store_uses_owner_only_permissions(hermes_home):
+    from pathlib import Path
+    from tools import write_approval as wa
+
+    rec = wa.stage_write(
+        "skills", {"action": "create", "name": "private"},
+        summary="private proposal", origin="background_review",
+    )
+    root = Path(hermes_home) / "pending"
+    record = root / "skills" / f"{rec['id']}.json"
+
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(record.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(record.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+def test_pending_store_preserves_group_shared_home(hermes_home):
+    from pathlib import Path
+    from tools import write_approval as wa
+
+    home = Path(hermes_home)
+    home.chmod(0o770)
+    rec = wa.stage_write(
+        "skills", {"action": "create", "name": "shared"},
+        summary="shared proposal", origin="background_review",
+    )
+    root = home / "pending"
+    record = root / "skills" / f"{rec['id']}.json"
+
+    assert stat.S_IMODE(root.stat().st_mode) & 0o070 == 0o070
+    assert stat.S_IMODE(record.parent.stat().st_mode) & 0o070 == 0o070
+    assert stat.S_IMODE(record.stat().st_mode) == 0o660
 
 
 # ---------------------------------------------------------------------------

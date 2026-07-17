@@ -10292,3 +10292,53 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+# -- message.complete turn-exit signal (issue #902 -- Foxy auto-continuation) --
+
+
+class _IterAgent:
+    max_iterations = 25
+
+
+def test_completion_payload_carries_turn_exit_reason_on_iteration_limit():
+    payload = {"text": "summary", "status": "complete"}
+    result = {
+        "final_response": "summary",
+        "turn_exit_reason": "max_iterations_reached(25/25)",
+        "api_calls": 25,
+    }
+    out = server._augment_completion_payload(payload, result, _IterAgent())
+    assert out["turn_exit_reason"] == "max_iterations_reached(25/25)"
+    assert out["iterations_used"] == 25
+    assert out["iterations_max"] == 25
+    # Status semantics untouched -- lenient consumers key off it.
+    assert out["status"] == "complete"
+
+
+def test_completion_payload_carries_turn_exit_reason_on_budget_exhausted():
+    payload = {"text": "summary", "status": "complete"}
+    result = {"final_response": "summary", "turn_exit_reason": "budget_exhausted"}
+    out = server._augment_completion_payload(payload, result, _IterAgent())
+    assert out["turn_exit_reason"] == "budget_exhausted"
+    # api_calls absent -> no iterations_used key fabricated.
+    assert "iterations_used" not in out
+
+
+def test_completion_payload_unchanged_on_normal_text_response_exit():
+    payload = {"text": "answer", "status": "complete"}
+    result = {
+        "final_response": "answer",
+        "turn_exit_reason": "text_response(finish_reason=stop)",
+        "api_calls": 3,
+    }
+    out = server._augment_completion_payload(payload, result, _IterAgent())
+    assert "turn_exit_reason" not in out
+    assert "iterations_used" not in out
+    assert "iterations_max" not in out
+
+
+def test_completion_payload_unchanged_on_non_dict_result():
+    payload = {"text": "answer", "status": "complete"}
+    out = server._augment_completion_payload(payload, "plain string result", _IterAgent())
+    assert out == {"text": "answer", "status": "complete"}

@@ -1778,7 +1778,17 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     summary_request = (
         "You've reached the maximum number of tool-calling iterations allowed. "
         "Please provide a final response summarizing what you've found and accomplished so far, "
-        "without calling any more tools."
+        "without calling any more tools.\n\n"
+        "If the work is NOT finished, end your response with a fenced markdown code block whose "
+        "first line is exactly `CONTINUATION CHECKPOINT` so an automated runner can resume the "
+        "workflow in a later turn. Keep the block under ~40 lines, using short bullet lists:\n"
+        "- Goal: the user's original goal, one line\n"
+        "- Where: the current task / worktree or directory path\n"
+        "- Verified: verification steps already completed\n"
+        "- Pending: the ordered remaining steps, in order\n"
+        "- Artifacts: branch names, PR URLs, task ids, files already created\n"
+        "- Unknown side effects: any side-effecting call (git push, deploy, external API write) "
+        "that was issued but whose completion you could not confirm"
     )
     messages.append({"role": "user", "content": summary_request})
 

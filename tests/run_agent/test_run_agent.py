@@ -3836,6 +3836,22 @@ class TestHandleMaxIterations:
         assert len(result) > 0
         assert "summary" in result.lower()
 
+    def test_summary_requests_continuation_checkpoint_for_unfinished_work(self, agent):
+        resp = _mock_response(content="Work remains.")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Work remains."
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        summary_request = sent_msgs[-1]
+        assert summary_request["role"] == "user"
+        assert "CONTINUATION CHECKPOINT" in summary_request["content"]
+        assert "Unknown side effects" in summary_request["content"]
+        assert "under ~40 lines" in summary_request["content"]
+
     def test_api_failure_returns_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
         agent._cached_system_prompt = "You are helpful."

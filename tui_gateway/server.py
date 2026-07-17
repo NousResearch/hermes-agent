@@ -3465,6 +3465,35 @@ def _sync_session_key_after_compress(
             pass
 
 
+def _augment_completion_payload(payload: dict, result, agent) -> dict:
+    """Additively fold the structured turn-exit signal into a message.complete
+    payload (issue #902 — Foxy auto-continuation).
+
+    The runtime knows exactly why a turn ended (``run_conversation`` returns
+    ``turn_exit_reason``: ``max_iterations_reached(N/M)``, ``budget_exhausted``,
+    …) but the gateway used to drop it, so an iteration-limit exit surfaced to
+    consumers as a normal completed turn. Emit the reason — plus the iteration
+    counters — whenever the turn ended for a NON-text_response reason. Never
+    touches ``status`` (lenient consumers elsewhere key off it).
+    """
+    if not isinstance(result, dict):
+        return payload
+    exit_reason = result.get("turn_exit_reason")
+    if (
+        isinstance(exit_reason, str)
+        and exit_reason
+        and not exit_reason.startswith("text_response")
+    ):
+        payload["turn_exit_reason"] = exit_reason
+        api_calls = result.get("api_calls")
+        if isinstance(api_calls, int):
+            payload["iterations_used"] = api_calls
+        max_iter = getattr(agent, "max_iterations", None)
+        if isinstance(max_iter, int):
+            payload["iterations_max"] = max_iter
+    return payload
+
+
 def _get_usage(agent) -> dict:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
@@ -9604,6 +9633,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 payload["reasoning"] = last_reasoning
             if status_note:
                 payload["warning"] = status_note
+            # Structured turn-exit signal (additive; status semantics untouched).
+            # An iteration-limit exit must not surface as a normal completed turn
+            # — the Foxy dashboard auto-continuation (issue #902) keys off this.
+            _augment_completion_payload(payload, result, agent)
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered

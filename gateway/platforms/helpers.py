@@ -82,6 +82,10 @@ class MessageDeduplicator:
         del self._seen[msg_id]
         return False
 
+    def discard(self, msg_id: str) -> None:
+        """Release a claimed message ID after cancelled/failed handoff."""
+        self._seen.pop(msg_id, None)
+
     def clear(self):
         """Clear all tracked messages."""
         self._seen.clear()

@@ -8355,15 +8355,16 @@ def edit_config():
 def _default_value_for_key(dotted_key: str):
     """Return the leaf value declared for *dotted_key* in ``DEFAULT_CONFIG``.
 
-    Unknown keys and non-leaf paths return ``None`` so they retain the legacy
-    best-effort coercion used by ``config set``.
+    Unknown paths return ``None`` so they retain the legacy best-effort
+    coercion used by ``config set``. Container defaults are returned too so
+    the setter can preserve their declared list or mapping type.
     """
     node = DEFAULT_CONFIG
     for part in dotted_key.split("."):
         if not isinstance(node, dict) or part not in node:
             return None
         node = node[part]
-    return node if not isinstance(node, dict) else None
+    return node
 
 
 def set_config_value(key: str, value: str):
@@ -8415,7 +8416,15 @@ def set_config_value(key: str, value: str):
     # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
     # retain the historical best-effort coercion behavior.
     coerced_value: Any = value
-    if not isinstance(_default_value_for_key(key), str):
+    default_value = _default_value_for_key(key)
+    if isinstance(default_value, (dict, list)):
+        try:
+            parsed_value = yaml.safe_load(value)
+        except yaml.YAMLError:
+            parsed_value = None
+        if isinstance(parsed_value, type(default_value)):
+            coerced_value = parsed_value
+    elif not isinstance(default_value, str):
         if value.lower() in {'true', 'yes', 'on'}:
             coerced_value = True
         elif value.lower() in {'false', 'no', 'off'}:

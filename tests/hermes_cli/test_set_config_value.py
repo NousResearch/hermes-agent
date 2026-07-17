@@ -96,6 +96,26 @@ class TestCatchAllPatterns:
 class TestConfigYamlRouting:
     """Regular config keys should go to config.yaml, NOT .env."""
 
+    def test_list_default_parses_yaml_list_literal(self, _isolated_hermes_home):
+        """A list-valued default accepts a shell-friendly YAML list."""
+        set_config_value("command_allowlist", "['git', 'ollama', 'brew']")
+
+        import yaml
+
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["command_allowlist"] == ["git", "ollama", "brew"]
+        assert isinstance(saved["command_allowlist"], list)
+
+    def test_mapping_default_parses_yaml_mapping_literal(self, _isolated_hermes_home):
+        """A mapping-valued default accepts a shell-friendly YAML mapping."""
+        set_config_value("quick_commands", "{hello: {type: exec}}")
+
+        import yaml
+
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["quick_commands"] == {"hello": {"type": "exec"}}
+        assert isinstance(saved["quick_commands"], dict)
+
     def test_simple_key(self, _isolated_hermes_home):
         set_config_value("model", "gpt-4o")
         config = _read_config(_isolated_hermes_home)

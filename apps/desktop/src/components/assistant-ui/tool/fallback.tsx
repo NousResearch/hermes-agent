@@ -16,6 +16,7 @@ import {
   useState
 } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
@@ -38,7 +39,6 @@ import { normalize } from '@/lib/text'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
-import { $activeSessionId, $currentCwd } from '@/store/session'
 import { $toolInlineDiff } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
@@ -309,25 +309,22 @@ function ToolEntry({ part }: ToolEntryProps) {
   }, [inlineDiff, isPending, result, stablePart])
 
   // Surface a previewable artifact (HTML file / localhost URL) as a compact link
-  // in the composer status stack rather than a bulky inline card. Uses the same
-  // detected target the old inline card did, keyed to the active session the
-  // stack reads from. Idempotent + dedup'd, so re-renders don't churn.
+  // in the composer status stack rather than a bulky inline card. Keyed to the
+  // owning session view (primary or tile), not the global active session — in
+  // multi-session split both panes stay mounted and focus can flip freely.
+  // Idempotent + dedup'd, so re-renders don't churn.
+  const sessionView = useSessionView()
+  const owningSessionId = useStore(sessionView.$runtimeId)
+  const owningCwd = useStore(sessionView.$cwd)
   const previewTarget = view.previewTarget
 
   useEffect(() => {
-    if (isPending || !previewTarget || !isPreviewableTarget(previewTarget)) {
+    if (isPending || !owningSessionId || !previewTarget || !isPreviewableTarget(previewTarget)) {
       return
     }
 
-    // Read (don't subscribe) session/cwd: this only fires when a previewable
-    // target appears, and subscribing re-rendered every tool row on any session
-    // or cwd change.
-    const activeSessionId = $activeSessionId.get()
-
-    if (activeSessionId) {
-      recordPreviewArtifact(activeSessionId, previewTarget, $currentCwd.get() || '')
-    }
-  }, [isPending, previewTarget])
+    recordPreviewArtifact(owningSessionId, previewTarget, owningCwd || '')
+  }, [isPending, owningCwd, owningSessionId, previewTarget])
 
   const detailSections = useMemo(() => {
     if (!view.detail) {

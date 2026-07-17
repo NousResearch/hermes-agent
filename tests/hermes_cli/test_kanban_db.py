@@ -4223,6 +4223,97 @@ def test_init_db_allows_missing_then_healthy(tmp_path):
     assert [t.title for t in tasks] == ["keeps"]
 
 
+def _seed_corrupt_backup(db_path: Path, *, name: str = "seed") -> Path:
+    backup_path = db_path.parent / f"{db_path.name}.corrupt.{name}.bak"
+    backup_path.write_bytes(b"previously-quarantined corrupt bytes\n")
+    return backup_path
+
+
+def test_zero_byte_db_with_corrupt_backup_refuses_fresh_init(tmp_path):
+    """A live DB reduced to zero bytes must not be treated as "just a new
+    board" when a `.corrupt.*.bak` sibling proves it recently held real data
+    (incident 2026-07-17: an isolated kanban board's DB went from corrupt to
+    silently-empty-but-valid with no warning and no trace)."""
+    db_path = tmp_path / "kanban.db"
+    db_path.write_bytes(b"")
+    backup_path = _seed_corrupt_backup(db_path)
+    backup_bytes = backup_path.read_bytes()
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError, match="corrupt backup"):
+        kb.connect(db_path=db_path)
+
+    # No schema written on top; DB left exactly as found.
+    assert db_path.read_bytes() == b""
+    assert not db_path.with_name(db_path.name + "-wal").exists()
+    assert not db_path.with_name(db_path.name + "-shm").exists()
+    # Backup untouched.
+    assert backup_path.exists()
+    assert backup_path.read_bytes() == backup_bytes
+
+
+def test_missing_db_with_corrupt_backup_refuses_fresh_init(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    backup_path = _seed_corrupt_backup(db_path)
+    backup_bytes = backup_path.read_bytes()
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError, match="corrupt backup"):
+        kb.connect(db_path=db_path)
+
+    assert not db_path.exists()
+    assert backup_path.exists()
+    assert backup_path.read_bytes() == backup_bytes
+
+
+def test_zero_byte_db_without_backup_still_initializes_new_board(tmp_path):
+    """No `.corrupt.*.bak` sibling present == a genuinely new board. The
+    pre-existing fresh-init behavior for a zero-byte file must not regress."""
+    db_path = tmp_path / "kanban.db"
+    db_path.write_bytes(b"")
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with kb.connect(db_path=db_path) as conn:
+        kb.create_task(conn, title="new board task")
+    assert db_path.stat().st_size > 0
+    assert list((tmp_path).glob("*.corrupt.*")) == []
+
+
+def test_missing_db_without_backup_still_initializes_new_board(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    assert not db_path.exists()
+
+    kb.init_db(db_path=db_path)
+
+    assert db_path.exists() and db_path.stat().st_size > 0
+    assert list(tmp_path.glob("*.corrupt.*")) == []
+
+
+def test_concurrent_connects_do_not_race_past_reinit_guard(tmp_path):
+    """Multiple concurrent callers hitting a zero-byte DB with a corrupt
+    backup present must all fail closed — none may slip through and
+    initialize a fresh schema before the others' checks run."""
+    db_path = tmp_path / "kanban.db"
+    db_path.write_bytes(b"")
+    backup_path = _seed_corrupt_backup(db_path)
+    backup_bytes = backup_path.read_bytes()
+
+    def attempt_connect() -> bool:
+        kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+        try:
+            kb.connect(db_path=db_path)
+            return False  # did NOT raise — guard failed to hold
+        except kb.KanbanDbCorruptError:
+            return True
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: attempt_connect(), range(8)))
+
+    assert all(results), "every concurrent attempt must fail closed"
+    assert db_path.read_bytes() == b""
+    assert backup_path.read_bytes() == backup_bytes
+
+
 # ---------------------------------------------------------------------------
 # First-use tip for scratch workspaces
 # ---------------------------------------------------------------------------

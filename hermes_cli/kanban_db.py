@@ -1620,6 +1620,23 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     return candidate
 
 
+def _corrupt_backup_siblings(path: Path) -> list[Path]:
+    """Return existing ``<db>.corrupt.*.bak`` siblings for ``path``."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    parent = resolved.parent
+    try:
+        return sorted(
+            p
+            for p in parent.glob(f"{resolved.name}.corrupt.*.bak")
+            if p.parent == parent and p.is_file()
+        )
+    except OSError:
+        return []
+
+
 def _guard_existing_db_is_healthy(path: Path) -> None:
     """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
 
@@ -1634,8 +1651,14 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     treated as corruption; they propagate raw so the caller sees a
     normal lock failure and no spurious ``.corrupt`` backup is made.
 
-    No-op for missing files, zero-byte files (treated as fresh), and
-    paths already proven healthy this process (cache hit).
+    No-op for missing files and zero-byte files, UNLESS a
+    ``<db>.corrupt.*.bak`` sibling already exists next to them — that
+    combination means a live DB recently held real data and was reduced to
+    missing/zero-byte by something other than a normal fresh-install, so
+    treating it as "just a new board" would silently discard that history.
+    In that case this raises :class:`KanbanDbCorruptError` instead of
+    initializing a fresh schema. Also a no-op for paths already proven
+    healthy this process (cache hit).
 
     Path-trust note: ``path`` arrives via :func:`connect`, which itself
     resolves it from an explicit ``db_path`` argument, the
@@ -1652,9 +1675,19 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     except OSError:
         return
     try:
-        if not resolved.exists() or resolved.stat().st_size == 0:
-            return
+        missing_or_empty = not resolved.exists() or resolved.stat().st_size == 0
     except OSError:
+        return
+    if missing_or_empty:
+        backups = _corrupt_backup_siblings(resolved)
+        if backups:
+            state = "missing" if not resolved.exists() else "zero-byte"
+            reason = (
+                f"live DB is {state} while {len(backups)} corrupt backup(s) exist "
+                "next to it; refusing fresh schema initialization pending human "
+                "recovery review"
+            )
+            raise KanbanDbCorruptError(resolved, backups[0], reason)
         return
     if str(resolved) in _INITIALIZED_PATHS:
         return

@@ -854,8 +854,8 @@ platform_toolsets:
 # Gateway Platform Settings
 # =============================================================================
 # Optional per-platform messaging settings.
-# Most adapter-specific knobs live under `extra`; explicitly bridged keys such
-# as `background_locations` live directly under the platform.
+# Common Telegram behavior settings live directly under the platform. Advanced
+# adapter-specific settings remain under `extra`.
 #
 # platforms:
 #   telegram:
@@ -865,7 +865,7 @@ platform_toolsets:
 #     guest_mode: false
 #     # allowed_chats: ["-1001234567890"]
 #     # Persist location/live-location/venue updates as silent profile-local
-#     # context instead of dispatching an agent turn. Default false.
+#     # state instead of dispatching an agent turn. Default false.
 #     background_locations: false
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages

@@ -519,22 +519,43 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
     try:
         tid = kb.create_task(conn, title="render q3 chart", assignee="worker1")
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        # Claim through the production path so the handler call below can
+        # present the full fail-closed scoped-worker capability tuple
+        # (board + task + exact current run + nonempty claim lock).
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert claimed.current_run_id is not None
+        assert claimed.claim_lock
     finally:
         conn.close()
 
     # Use the production handler so we exercise the full path: tool args
-    # → metadata.artifacts → event payload promotion.
+    # → metadata.artifacts → event payload promotion. Any process with
+    # HERMES_KANBAN_TASK set is a scoped worker and must also present the
+    # exact current run id and a nonempty claim lock — a missing capability
+    # makes the handler refuse rather than fall back to operator authority.
     import os
-    os.environ["HERMES_KANBAN_TASK"] = tid
+    scoped_env = {
+        "HERMES_KANBAN_TASK": tid,
+        "HERMES_KANBAN_BOARD": kb.get_current_board(),
+        "HERMES_KANBAN_RUN_ID": str(claimed.current_run_id),
+        "HERMES_KANBAN_CLAIM_LOCK": claimed.claim_lock,
+    }
+    prior_env = {k: os.environ.get(k) for k in scoped_env}
+    os.environ.update(scoped_env)
     try:
         out = kt._handle_complete({
             "summary": "rendered the chart",
             "artifacts": [str(chart_path), str(report_path)],
         })
     finally:
-        os.environ.pop("HERMES_KANBAN_TASK", None)
+        for k, v in prior_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
     import json as _json
-    assert _json.loads(out)["ok"] is True
+    assert _json.loads(out)["ok"] is True, out
 
     runner = object.__new__(GatewayRunner)
     runner._running = True
@@ -607,18 +628,37 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     try:
         tid = kb.create_task(conn, title="t", assignee="worker1")
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        # Claim so the scoped handler call below carries the full
+        # fail-closed worker capability — see the companion test.
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert claimed.current_run_id is not None
+        assert claimed.claim_lock
     finally:
         conn.close()
 
     import os
-    os.environ["HERMES_KANBAN_TASK"] = tid
+    scoped_env = {
+        "HERMES_KANBAN_TASK": tid,
+        "HERMES_KANBAN_BOARD": kb.get_current_board(),
+        "HERMES_KANBAN_RUN_ID": str(claimed.current_run_id),
+        "HERMES_KANBAN_CLAIM_LOCK": claimed.claim_lock,
+    }
+    prior_env = {k: os.environ.get(k) for k in scoped_env}
+    os.environ.update(scoped_env)
     try:
-        kt._handle_complete({
+        out = kt._handle_complete({
             "summary": "one real, one ghost",
             "artifacts": [str(real_pdf), "/tmp/definitely-does-not-exist.pdf"],
         })
     finally:
-        os.environ.pop("HERMES_KANBAN_TASK", None)
+        for k, v in prior_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    import json as _json
+    assert _json.loads(out)["ok"] is True, out
 
     runner = object.__new__(GatewayRunner)
     runner._running = True

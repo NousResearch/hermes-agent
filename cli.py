@@ -15930,9 +15930,24 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
                 pass
 
     def _block(reason: str) -> None:
-        c = _kb.connect()
+        capability = None
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            capability = _kb.resolve_worker_capability(task_id)
+            if capability is None:
+                raise RuntimeError(
+                    "scoped-worker authorization error: stale or missing worker capability"
+                )
+        c = _kb.connect(board=capability.board if capability is not None else None)
         try:
-            _kb.block_task(c, task_id, reason=reason)
+            ok = _kb.block_task(
+                c,
+                task_id,
+                reason=reason,
+                expected_run_id=(capability.run_id if capability is not None else None),
+                expected_claim_lock=(capability.claim_lock if capability is not None else None),
+            )
+            if not ok:
+                raise RuntimeError(f"could not block kanban task {task_id}")
         finally:
             try:
                 c.close()

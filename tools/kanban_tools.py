@@ -105,17 +105,19 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
     return env_tid or None
 
 
-def _worker_run_id(task_id: str) -> Optional[int]:
-    """Return this worker's dispatcher run id when it is scoped to task_id."""
-    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
-        return None
-    raw = os.environ.get("HERMES_KANBAN_RUN_ID")
-    if not raw:
-        return None
+def _worker_capability(task_id: str, *, board: Optional[str] = None):
+    """Resolve this worker's full DB-bound terminal authority tuple."""
     try:
-        return int(raw)
-    except ValueError:
+        from hermes_cli import kanban_db as kb
+        return kb.resolve_worker_capability(task_id, board=board)
+    except Exception:
         return None
+
+
+def _worker_run_id(task_id: str, *, board: Optional[str] = None) -> Optional[int]:
+    """Compatibility accessor for callers that only need the verified run id."""
+    capability = _worker_capability(task_id, board=board)
+    return capability.run_id if capability is not None else None
 
 
 def _stamp_worker_session_metadata(
@@ -237,13 +239,11 @@ def heartbeat_current_worker_from_env() -> bool:
     swallowed exception). The boolean is informational — callers should
     not branch on it.
 
-    Identity comes from:
+    Identity comes from all four dispatcher capabilities:
       * ``HERMES_KANBAN_TASK`` — task id (required; absence means no-op)
-      * ``HERMES_KANBAN_RUN_ID`` — pins the run row so we don't heartbeat
-        a stale run that may have already been reclaimed
-      * ``HERMES_KANBAN_CLAIM_LOCK`` — claim lock for ``heartbeat_claim``;
-        falls back to the default ``_claimer_id()`` for locally-driven
-        workers that never went through the dispatcher path
+      * ``HERMES_KANBAN_BOARD`` — exact board that owns the task/run
+      * ``HERMES_KANBAN_RUN_ID`` — pins the active run row
+      * ``HERMES_KANBAN_CLAIM_LOCK`` — nonempty claim capability for that run
 
     Rate-limited via the module-level ``_auto_heartbeat_last_attempt``
     timestamp (monotonic clock); not thread-safe in the strict sense, but
@@ -259,21 +259,25 @@ def heartbeat_current_worker_from_env() -> bool:
         return False
     _auto_heartbeat_last_attempt = now
     try:
-        kb, conn = _connect()
+        run_id = _worker_run_id(tid)
+        claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK", "").strip()
+        if run_id is None or not claim_lock:
+            return False
+        kb, conn = _connect(board=os.environ.get("HERMES_KANBAN_BOARD"))
         try:
-            claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
+            if not kb.heartbeat_claim(
+                conn,
+                tid,
+                claimer=claim_lock,
+                expected_run_id=run_id,
+                expected_claim_lock=claim_lock,
+            ):
+                return False
             try:
-                kb.heartbeat_claim(conn, tid, claimer=claim_lock)
-            except Exception:
-                logger.debug("auto-heartbeat: heartbeat_claim failed", exc_info=True)
-            run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
-            run_id: Optional[int]
-            try:
-                run_id = int(run_id_raw) if run_id_raw else None
-            except (TypeError, ValueError):
-                run_id = None
-            try:
-                kb.heartbeat_worker(conn, tid, note=None, expected_run_id=run_id)
+                kb.heartbeat_worker(
+                    conn, tid, note=None, expected_run_id=run_id,
+                    expected_claim_lock=claim_lock,
+                )
             except Exception:
                 logger.debug("auto-heartbeat: heartbeat_worker failed", exc_info=True)
         finally:
@@ -589,8 +593,17 @@ def _handle_complete(args: dict, **kw) -> str:
         )
     metadata = _stamp_worker_session_metadata(tid, metadata)
     board = args.get("board")
+    capability = _worker_capability(tid, board=board)
+    if os.environ.get("HERMES_KANBAN_TASK") and capability is None:
+        # A dispatcher-scoped worker must never downgrade an invalid capability
+        # to the operator terminal path.
+        return tool_error(
+            f"scoped-worker authorization error: cannot complete {tid} "
+            "with a stale or missing worker capability"
+        )
+    connection_board = capability.board if capability is not None else board
     try:
-        kb, conn = _connect(board=board)
+        kb, conn = _connect(board=connection_board)
         try:
             # Goal-mode pre-completion judge gate (Issue #38367).
             # Prevent workers from bypassing the auxiliary judge by
@@ -628,7 +641,8 @@ def _handle_complete(args: dict, **kw) -> str:
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
-                    expected_run_id=_worker_run_id(tid),
+                    expected_run_id=(capability.run_id if capability is not None else None),
+                    expected_claim_lock=(capability.claim_lock if capability is not None else None),
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(
@@ -688,8 +702,15 @@ def _handle_block(args: dict, **kw) -> str:
     reason = redact_sensitive_text(str(reason), force=True)
     kind = args.get("kind")
     board = args.get("board")
+    capability = _worker_capability(tid, board=board)
+    if os.environ.get("HERMES_KANBAN_TASK") and capability is None:
+        return tool_error(
+            f"scoped-worker authorization error: cannot block {tid} "
+            "with a stale or missing worker capability"
+        )
+    connection_board = capability.board if capability is not None else board
     try:
-        kb, conn = _connect(board=board)
+        kb, conn = _connect(board=connection_board)
         if kind is not None and kind not in kb.VALID_BLOCK_KINDS:
             conn.close()
             return tool_error(
@@ -724,7 +745,8 @@ def _handle_block(args: dict, **kw) -> str:
                 conn, tid,
                 reason=reason,
                 kind=kind,
-                expected_run_id=_worker_run_id(tid),
+                expected_run_id=(capability.run_id if capability is not None else None),
+                expected_claim_lock=(capability.claim_lock if capability is not None else None),
             )
             if not ok:
                 return tool_error(
@@ -773,19 +795,28 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            # Extend the claim TTL first. The dispatcher pins
-            # HERMES_KANBAN_CLAIM_LOCK in the worker env at spawn time
-            # (see _default_spawn in kanban_db.py); falling back to the
-            # default _claimer_id() covers locally-driven workers that
-            # never went through the dispatcher path.
-            claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
-            kb.heartbeat_claim(conn, tid, claimer=claim_lock)
-
+            run_id = _worker_run_id(tid, board=board)
+            claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK", "").strip()
+            if run_id is None or not claim_lock:
+                return tool_error(
+                    f"could not heartbeat {tid} (worker capability is stale or missing)"
+                )
+            if not kb.heartbeat_claim(
+                conn,
+                tid,
+                claimer=claim_lock,
+                expected_run_id=run_id,
+                expected_claim_lock=claim_lock,
+            ):
+                return tool_error(
+                    f"could not heartbeat {tid} (claim ownership changed)"
+                )
             ok = kb.heartbeat_worker(
                 conn,
                 tid,
                 note=note,
-                expected_run_id=_worker_run_id(tid),
+                expected_run_id=run_id,
+                expected_claim_lock=claim_lock,
             )
             if not ok:
                 return tool_error(

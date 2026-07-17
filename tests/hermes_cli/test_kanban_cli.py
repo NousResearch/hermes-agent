@@ -24,9 +24,96 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def _set_worker_capability(monkeypatch, task_id, claimed, *, board="default", run_id=None, lock=None):
+    """Install the dispatcher capability shape used by CLI worker commands."""
+    assert claimed.current_run_id is not None
+    assert claimed.claim_lock is not None
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", board)
+    monkeypatch.setenv(
+        "HERMES_KANBAN_RUN_ID", str(claimed.current_run_id if run_id is None else run_id),
+    )
+    monkeypatch.setenv(
+        "HERMES_KANBAN_CLAIM_LOCK", claimed.claim_lock if lock is None else lock,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Workspace flag parsing
 # ---------------------------------------------------------------------------
+
+
+def test_worker_run_id_rejects_raw_stale_or_incomplete_capability(kanban_home, monkeypatch):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="capability", assignee="worker")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+
+    _set_worker_capability(monkeypatch, task_id, claimed, run_id=claimed.current_run_id + 1)
+    assert kc._worker_run_id_for(task_id) is None
+
+    monkeypatch.delenv("HERMES_KANBAN_CLAIM_LOCK")
+    assert kc._worker_run_id_for(task_id) is None
+
+    _set_worker_capability(monkeypatch, task_id, claimed, lock="wrong-lock")
+    assert kc._worker_run_id_for(task_id) is None
+
+
+def test_worker_run_id_rejects_board_mismatch_and_later_run(kanban_home, monkeypatch):
+    kb.create_board("other-board")
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="capability", assignee="worker")
+        first = kb.claim_task(conn, task_id)
+        assert first is not None and first.current_run_id is not None
+        # Model a completed old attempt then a fresh dispatcher claim.
+        conn.execute(
+            "UPDATE task_runs SET status='done', ended_at=? WHERE id=?",
+            (1, first.current_run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', claim_lock=NULL, claim_expires=NULL, "
+            "current_run_id=NULL WHERE id=?",
+            (task_id,),
+        )
+        second = kb.claim_task(conn, task_id)
+        assert second is not None
+
+    _set_worker_capability(monkeypatch, task_id, second, board="other-board")
+    assert kc._worker_run_id_for(task_id) is None
+
+    _set_worker_capability(monkeypatch, task_id, second, run_id=first.current_run_id)
+    assert kc._worker_run_id_for(task_id) is None
+
+
+def test_cli_worker_heartbeat_requires_capability_before_lease_extension(kanban_home, monkeypatch):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="heartbeat", assignee="worker")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None and claimed.current_run_id is not None
+        conn.execute(
+            "UPDATE tasks SET claim_expires=? WHERE id=?",
+            (1, task_id),
+        )
+        conn.execute(
+            "UPDATE task_runs SET claim_expires=? WHERE id=?",
+            (1, claimed.current_run_id),
+        )
+
+    _set_worker_capability(monkeypatch, task_id, claimed, run_id=claimed.current_run_id + 100)
+    assert kc._cmd_heartbeat(argparse.Namespace(task_id=task_id, note="stale")) == 1
+    with kb.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        run = kb.get_run(conn, claimed.current_run_id)
+        assert task is not None and task.claim_expires == 1
+        assert run is not None and run.claim_expires == 1
+
+    _set_worker_capability(monkeypatch, task_id, claimed)
+    assert kc._cmd_heartbeat(argparse.Namespace(task_id=task_id, note="valid")) == 0
+    with kb.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        run = kb.get_run(conn, claimed.current_run_id)
+        assert task is not None and task.claim_expires is not None and task.claim_expires > 1
+        assert run is not None and run.claim_expires == task.claim_expires
 
 @pytest.mark.parametrize(
     "value,expected",
@@ -149,14 +236,19 @@ def test_run_slash_comment_max_len_trims_long_body(kanban_home):
     assert "x" * 30 not in show
 
 
-def test_run_slash_block_unblock_cycle(kanban_home):
+def test_run_slash_manual_block_refuses_unregistered_running_task(kanban_home):
     out = kc.run_slash("create 'x' --assignee alice")
     import re
     tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
-    # Claim first so block() finds it running
+    # A slash command is an operator action. It must not clear an active claim
+    # while no registered worker tree can be proven gone.
     kc.run_slash(f"claim {tid}")
-    assert "Blocked" in kc.run_slash(f"block {tid} 'need decision'")
-    assert "Unblocked" in kc.run_slash(f"unblock {tid}")
+    assert "cannot block" in kc.run_slash(f"block {tid} 'need decision'")
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "running"
+        assert task.claim_lock is not None
 
 
 def test_run_slash_json_output(kanban_home):
@@ -368,7 +460,7 @@ def test_kanban_not_gateway_only():
 # reclaim + reassign CLI smoke tests
 # ---------------------------------------------------------------------------
 
-def test_run_slash_reclaim_running_task(kanban_home):
+def test_run_slash_reclaim_refuses_unverifiable_running_task(kanban_home):
     import re
     import time
     import secrets
@@ -400,13 +492,14 @@ def test_run_slash_reclaim_running_task(kanban_home):
         conn.close()
 
     out = kc.run_slash(f"reclaim {tid} --reason 'test'")
-    assert "Reclaimed" in out, out
-    # Status back to ready.
-    out2 = kc.run_slash(f"show {tid}")
-    assert "ready" in out2.lower()
+    assert "cannot reclaim" in out, out
+    # This legacy fixture has no host-local, identity-verifiable detached
+    # supervisor.  Retain it rather than pretending a numeric PID is proof.
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "running"
 
 
-def test_run_slash_reassign_with_reclaim_flag(kanban_home):
+def test_run_slash_reassign_with_reclaim_refuses_unverifiable_running_task(kanban_home):
     import re
     import time
     import secrets
@@ -437,9 +530,11 @@ def test_run_slash_reassign_with_reclaim_flag(kanban_home):
         conn.close()
 
     out = kc.run_slash(f"reassign {tid} newbie --reclaim --reason 'switch'")
-    assert "Reassigned" in out, out
-    out2 = kc.run_slash(f"show {tid}")
-    assert "newbie" in out2
+    assert "cannot reassign" in out, out
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.assignee == "orig"
 
 
 # ---------------------------------------------------------------------------

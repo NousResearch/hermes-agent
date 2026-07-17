@@ -62,10 +62,172 @@ def _write_supervisor_pid(path: Path, pid: int) -> None:
 
 
 _WORKER_TERMINATE_TIMEOUT_SECONDS = 5.0
+_WORKER_TREE_TERMINATE_POLL_SECONDS = 0.05
+_IS_WINDOWS = sys.platform == "win32"
+
+
+def _own_fresh_process_group() -> int | None:
+    """Return our session/group only when it is provably the fresh one.
+
+    The dispatcher starts the supervisor in a new session.  Do not turn a
+    publication error into a broad process-group signal when that invariant is
+    absent (for example, a direct unit invocation in an existing shell group).
+    """
+    if _IS_WINDOWS:
+        return None
+    pid = os.getpid()
+    try:
+        pgid = os.getpgid(pid)
+        sid = os.getsid(pid)
+    except (AttributeError, OSError):
+        return None
+    return pgid if pgid == pid == sid else None
+
+
+def _linux_group_has_live_member(pgid: int, *, exclude_pid: int) -> bool | None:
+    """Return executable-member liveness, treating zombies as already dead.
+
+    The supervisor itself is intentionally excluded: it remains alive long
+    enough to preserve the original publication exception and reap its direct
+    child.  Any inaccessible ``/proc`` state is deliberately unproven.
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        entries = list(os.scandir("/proc"))
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.name.isdecimal() or int(entry.name) == exclude_pid:
+            continue
+        try:
+            with open(entry.path + "/stat", "r", encoding="utf-8") as handle:
+                raw = handle.read()
+            # After the final ')' the fields are state, ppid, pgrp, ... .
+            close = raw.rfind(")")
+            if close < 0:
+                return None
+            fields = raw[close + 2:].split()
+            if len(fields) >= 3 and int(fields[2]) == pgid and fields[0] != "Z":
+                return True
+        except FileNotFoundError:
+            # A process that exited after /proc enumeration is benign.
+            continue
+        except (PermissionError, OSError, ValueError):
+            # A visible unreadable or malformed member makes emptiness
+            # unprovable; do not collapse it into a zombie-only group.
+            return None
+    return False
+
+
+def _wait_for_owned_group_empty(pgid: int, timeout: float) -> bool:
+    """Wait until no executable peer remains in our exact fresh group."""
+    deadline = time.monotonic() + timeout
+    while True:
+        live = _linux_group_has_live_member(pgid, exclude_pid=os.getpid())
+        if live is False:
+            return True
+        if live is None or time.monotonic() >= deadline:
+            return False
+        time.sleep(_WORKER_TREE_TERMINATE_POLL_SECONDS)
+
+
+def _kill_owned_group_peers(pgid: int) -> bool | None:
+    """Escalate only peers in the supervisor's verified fresh group.
+
+    Returns ``True`` only when the /proc scan was complete; ``None`` means an
+    unreadable or malformed visible peer left group emptiness unproven.
+
+    Calling ``killpg(pgid, SIGKILL)`` from the supervisor would kill the
+    supervisor before it can reap its direct child or re-raise the *original*
+    PID-publication failure.  The group was first proven to be our newly-owned
+    session and received a group TERM.  For the required KILL escalation, kill
+    every remaining peer in that exact group while excluding the supervisor.
+    This has the same tree target without permitting a self-kill race.
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        entries = list(os.scandir("/proc"))
+    except OSError:
+        return None
+    me = os.getpid()
+    for entry in entries:
+        if not entry.name.isdecimal():
+            continue
+        peer_pid = int(entry.name)
+        if peer_pid == me:
+            continue
+        try:
+            with open(entry.path + "/stat", "r", encoding="utf-8") as handle:
+                raw = handle.read()
+            close = raw.rfind(")")
+            if close < 0:
+                return None
+            fields = raw[close + 2:].split()
+            if len(fields) >= 3 and int(fields[2]) == pgid and fields[0] != "Z":
+                os.kill(peer_pid, signal.SIGKILL)
+        except FileNotFoundError:
+            continue
+        except ProcessLookupError:
+            # A peer that vanished before its signal is a benign exit race.
+            continue
+        except (PermissionError, OSError, ValueError):
+            return None
+    return True
 
 
 def _terminate_and_reap_worker(worker: subprocess.Popen[bytes]) -> None:
     """Stop a worker that cannot be safely registered, preserving the cause."""
+    if _IS_WINDOWS:
+        try:
+            subprocess.run(  # noqa: S603
+                ["taskkill", "/PID", str(worker.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except OSError:
+            pass
+        try:
+            worker.wait(timeout=_WORKER_TERMINATE_TIMEOUT_SECONDS)
+            return
+        except subprocess.TimeoutExpired:
+            try:
+                worker.kill()
+            except OSError:
+                pass
+        except OSError:
+            return
+        try:
+            worker.wait(timeout=_WORKER_TERMINATE_TIMEOUT_SECONDS)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return
+
+    pgid = _own_fresh_process_group()
+    if pgid is not None:
+        try:
+            # Do not group-signal an arbitrary/fake direct worker just because
+            # this interpreter happens to be a session leader (common in test
+            # runners).  The real worker must actually be in our exact group.
+            if os.getpgid(worker.pid) != pgid:
+                pgid = None
+        except (AttributeError, ProcessLookupError, OSError):
+            pgid = None
+    if pgid is not None:
+        # The worker inherits the supervisor's freshly-owned session.  TERM the
+        # exact group first so grandchildren see the shutdown request too.
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (AttributeError, ProcessLookupError, OSError):
+            pass
+        if not _wait_for_owned_group_empty(pgid, _WORKER_TERMINATE_TIMEOUT_SECONDS):
+            # See _kill_owned_group_peers: self-exclusion is what lets this
+            # function finish the direct-child reap and preserve the original
+            # _write_supervisor_pid exception.
+            _kill_owned_group_peers(pgid)
+            _wait_for_owned_group_empty(pgid, _WORKER_TERMINATE_TIMEOUT_SECONDS)
     try:
         worker.terminate()
     except OSError:

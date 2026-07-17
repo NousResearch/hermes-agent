@@ -1435,6 +1435,7 @@ def test_run_closed_on_complete_with_summary(kanban_home):
             result="shipped",
             summary="implemented rate limiter, tests pass",
             metadata={"changed_files": ["limiter.py"], "tests_run": 12},
+            expected_run_id=kb.latest_run(conn, tid).id, expected_claim_lock=kb.get_task(conn, tid).claim_lock,
         )
         assert ok is True
 
@@ -1461,7 +1462,7 @@ def test_run_summary_falls_back_to_result(kanban_home):
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
         kb.claim_task(conn, tid)
-        kb.complete_task(conn, tid, result="only-arg")
+        kb.complete_task(conn, tid, result="only-arg", expected_run_id=kb.latest_run(conn, tid).id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)
         r = kb.latest_run(conn, tid)
         assert r.summary == "only-arg"
     finally:
@@ -1477,8 +1478,10 @@ def test_multiple_attempts_preserved_as_runs(kanban_home):
         tid = kb.create_task(conn, title="x", assignee="worker")
 
         # Attempt 1: claim then force the claim to be stale by backdating
-        # claim_expires, then let release_stale_claims reclaim it.
+        # claim_expires, then use the deterministic termination seam to
+        # model a positively-proven worker exit before stale release.
         kb.claim_task(conn, tid)
+        kb._set_worker_pid(conn, tid, 98764)
         with kb.write_txn(conn):
             conn.execute(
                 "UPDATE tasks SET claim_expires = ? WHERE id = ?",
@@ -1488,7 +1491,7 @@ def test_multiple_attempts_preserved_as_runs(kanban_home):
                 "UPDATE task_runs SET claim_expires = ? WHERE task_id = ?",
                 (int(time.time()) - 10, tid),
             )
-        kb.release_stale_claims(conn)
+        kb.release_stale_claims(conn, signal_fn=lambda _pid, _sig: None)
 
         # Attempt 2: claim then crash (simulated: pid dead).
         kb.claim_task(conn, tid)
@@ -1502,7 +1505,7 @@ def test_multiple_attempts_preserved_as_runs(kanban_home):
 
         # Attempt 3: claim then complete.
         kb.claim_task(conn, tid)
-        kb.complete_task(conn, tid, result="finally")
+        kb.complete_task(conn, tid, result="finally", expected_run_id=kb.latest_run(conn, tid).id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)
 
         runs = kb.list_runs(conn, tid)
         assert len(runs) == 3
@@ -1535,7 +1538,7 @@ def test_stale_run_cannot_complete_new_attempt(kanban_home, monkeypatch):
             conn,
             tid,
             summary="late stale completion",
-            expected_run_id=run1.id,
+            expected_run_id=run1.id, expected_claim_lock=kb.get_task(conn, tid).claim_lock,
         )
         task = kb.get_task(conn, tid)
         assert task.status == "running"
@@ -1545,7 +1548,7 @@ def test_stale_run_cannot_complete_new_attempt(kanban_home, monkeypatch):
             conn,
             tid,
             summary="current completion",
-            expected_run_id=run2.id,
+            expected_run_id=run2.id, expected_claim_lock=kb.get_task(conn, tid).claim_lock,
         )
         runs = kb.list_runs(conn, tid)
         assert [r.outcome for r in runs] == ["crashed", "completed"]
@@ -1572,16 +1575,89 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
         run2 = kb.latest_run(conn, tid)
         assert run2.id != run1.id
 
-        assert not kb.heartbeat_worker(conn, tid, note="late", expected_run_id=run1.id)
-        assert not kb.block_task(conn, tid, reason="late block", expected_run_id=run1.id)
+        assert not kb.heartbeat_worker(conn, tid, note="late", expected_run_id=run1.id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)
+        assert not kb.block_task(conn, tid, reason="late block", expected_run_id=run1.id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)
         task = kb.get_task(conn, tid)
         assert task.status == "running"
         assert task.current_run_id == run2.id
         assert task.last_heartbeat_at is None
 
-        assert kb.heartbeat_worker(conn, tid, note="current", expected_run_id=run2.id)
-        assert kb.block_task(conn, tid, reason="current block", expected_run_id=run2.id)
+        assert kb.heartbeat_worker(conn, tid, note="current", expected_run_id=run2.id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)
+        assert kb.block_task(conn, tid, reason="current block", expected_run_id=run2.id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)
         assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_heartbeat_worker_scoped_capability_contract(kanban_home, monkeypatch):
+    """A scoped heartbeat needs the full run-id + claim-lock capability.
+
+    Half a capability (run id without lock, or a lock that doesn't match
+    the active claim, or a stale run id) must refuse without touching
+    ``last_heartbeat_at`` on either the task or the run and without
+    appending a heartbeat event. Only the current run + current lock
+    pair heartbeats.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    def _heartbeat_state(conn, tid):
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "heartbeat"]
+        return task.last_heartbeat_at, run.last_heartbeat_at, len(events)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="scoped heartbeat contract", assignee="worker")
+
+        # Build a genuinely stale run id: crash attempt 1, reclaim as
+        # attempt 2 (mirrors test_stale_run_cannot_block_or_heartbeat_new_attempt).
+        kb.claim_task(conn, tid)
+        run1 = kb.latest_run(conn, tid)
+        kb._set_worker_pid(conn, tid, 98765)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
+        assert kb.detect_crashed_workers(conn) == [tid]
+        kb.claim_task(conn, tid)
+        run2 = kb.latest_run(conn, tid)
+        assert run2.id != run1.id
+        lock = kb.get_task(conn, tid).claim_lock
+        assert lock
+
+        before = _heartbeat_state(conn, tid)
+
+        # Run id alone is an identifier, not a capability.
+        assert not kb.heartbeat_worker(conn, tid, expected_run_id=run2.id)
+        assert not kb.heartbeat_worker(
+            conn, tid, expected_run_id=run2.id, expected_claim_lock="",
+        )
+        # A lock alone (no run id) is the other half — also refused.
+        assert not kb.heartbeat_worker(conn, tid, expected_claim_lock=lock)
+        # Wrong lock with the current run id.
+        assert not kb.heartbeat_worker(
+            conn, tid, expected_run_id=run2.id, expected_claim_lock="host:forged",
+        )
+        # Stale run id with the *current* lock: refusal is specifically
+        # a run mismatch, not a lock problem.
+        assert not kb.heartbeat_worker(
+            conn, tid, expected_run_id=run1.id, expected_claim_lock=lock,
+        )
+
+        # Every refusal above left both heartbeat timestamps and the
+        # event log untouched.
+        assert _heartbeat_state(conn, tid) == before
+        assert before[0] is None and before[1] is None and before[2] == 0
+
+        # The full, current capability succeeds and records everywhere.
+        assert kb.heartbeat_worker(
+            conn, tid, note="alive",
+            expected_run_id=run2.id, expected_claim_lock=lock,
+        )
+        task_hb, run_hb, hb_events = _heartbeat_state(conn, tid)
+        assert task_hb is not None
+        assert run_hb is not None
+        assert hb_events == 1
+        hb = [e for e in kb.list_events(conn, tid) if e.kind == "heartbeat"][0]
+        assert hb.run_id == run2.id
     finally:
         conn.close()
 
@@ -1591,7 +1667,7 @@ def test_run_on_block_with_reason(kanban_home):
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
         kb.claim_task(conn, tid)
-        kb.block_task(conn, tid, reason="needs API key")
+        kb.block_task(conn, tid, reason="needs API key", expected_run_id=kb.latest_run(conn, tid).id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)
 
         r = kb.latest_run(conn, tid)
         assert r.outcome == "blocked"
@@ -1634,7 +1710,7 @@ def test_event_rows_carry_run_id(kanban_home):
         # task-scoped: 'created' — no run yet
         # run-scoped: 'claimed' + 'completed'
         kb.claim_task(conn, tid)
-        kb.complete_task(conn, tid, result="ok")
+        kb.complete_task(conn, tid, result="ok", expected_run_id=kb.latest_run(conn, tid).id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)
 
         rows = conn.execute(
             "SELECT kind, run_id FROM task_events WHERE task_id = ? ORDER BY id",
@@ -1659,7 +1735,7 @@ def test_build_worker_context_includes_prior_attempts(kanban_home):
 
         # Attempt 1: blocked with a reason.
         kb.claim_task(conn, tid)
-        kb.block_task(conn, tid, reason="needs clarification on IP vs user_id")
+        kb.block_task(conn, tid, reason="needs clarification on IP vs user_id", expected_run_id=kb.latest_run(conn, tid).id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)
         kb.unblock_task(conn, tid)
 
         # Attempt 2: claim (but don't complete yet) and read the context
@@ -1690,6 +1766,8 @@ def test_build_worker_context_uses_parent_run_summary(kanban_home):
             result="done",
             summary="three angles explored; B looks strongest",
             metadata={"sources": ["paper A", "paper B", "paper C"]},
+            expected_run_id=kb.latest_run(conn, parent).id,
+            expected_claim_lock=kb.get_task(conn, parent).claim_lock,
         )
 
         # child becomes ready via recompute_ready (runs inside complete_task)
@@ -1739,6 +1817,8 @@ def test_build_worker_context_stamps_parent_freshness(kanban_home):
             conn, parent,
             result="done",
             summary="meeting ingest workflow finished; pipeline ready",
+            expected_run_id=kb.latest_run(conn, parent).id,
+            expected_claim_lock=kb.get_task(conn, parent).claim_lock,
         )
         # Backdate the parent's completion to 18h ago — both the task row
         # and its completed run row, which is where build_worker_context
@@ -1796,7 +1876,11 @@ def test_migration_backfills_inflight_run_for_legacy_db(kanban_home):
             assert task.current_run_id == runs[0].id
 
             # Subsequent complete closes the backfilled run cleanly.
-            kb.complete_task(conn2, tid, result="done", summary="ok")
+            kb.complete_task(
+                conn2, tid, result="done", summary="ok",
+                expected_run_id=runs[0].id,
+                expected_claim_lock=kb.get_task(conn2, tid).claim_lock,
+            )
             r = kb.latest_run(conn2, tid)
             assert r.outcome == "completed"
             assert r.summary == "ok"
@@ -1832,7 +1916,7 @@ def test_cli_runs_verb(kanban_home):
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
         kb.claim_task(conn, tid)
-        kb.complete_task(conn, tid, result="ok", summary="shipped")
+        kb.complete_task(conn, tid, result="ok", summary="shipped", expected_run_id=kb.latest_run(conn, tid).id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)
     finally:
         conn.close()
     out = run_slash(f"runs {tid}")
@@ -1849,6 +1933,7 @@ def test_cli_runs_json(kanban_home):
         kb.complete_task(
             conn, tid, result="ok", summary="shipped",
             metadata={"files": 1},
+            expected_run_id=kb.latest_run(conn, tid).id, expected_claim_lock=kb.get_task(conn, tid).claim_lock,
         )
     finally:
         conn.close()
@@ -1859,7 +1944,7 @@ def test_cli_runs_json(kanban_home):
     assert data[0]["metadata"] == {"files": 1}
 
 
-def test_cli_complete_with_summary_and_metadata(kanban_home):
+def test_cli_complete_with_summary_and_metadata_refuses_unregistered_running_launch(kanban_home):
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
@@ -1871,14 +1956,15 @@ def test_cli_complete_with_summary_and_metadata(kanban_home):
     out = run_slash(
         "complete " + tid + " --summary \"done it\" --metadata '" + meta + "'"
     )
-    assert "Completed" in out
+    assert "cannot complete" in out
     conn = kb.connect()
     try:
         r = kb.latest_run(conn, tid)
     finally:
         conn.close()
-    assert r.summary == "done it"
-    assert r.metadata == {"files": 3}
+    assert r.ended_at is None
+    assert r.summary is None
+    assert r.metadata is None
 
 
 def test_cli_edit_backfills_result_on_done_task(kanban_home):
@@ -1938,9 +2024,8 @@ def test_cli_complete_bad_metadata_exits_nonzero(kanban_home):
 # Integration hardening (Apr 2026 audit fixes)
 # -------------------------------------------------------------------------
 
-def test_archive_of_running_task_closes_run(kanban_home):
-    """Archiving a claimed task must close the in-flight run with
-    outcome='reclaimed', not orphan it."""
+def test_archive_of_running_task_without_registered_pid_defers(kanban_home):
+    """An unregistered launch window cannot be archived blind."""
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
@@ -1949,15 +2034,21 @@ def test_archive_of_running_task_closes_run(kanban_home):
         assert run.ended_at is None
         open_run_id = run.id
 
-        assert kb.archive_task(conn, tid) is True
+        assert kb.archive_task(conn, tid) is False
 
         task = kb.get_task(conn, tid)
-        assert task.status == "archived"
-        assert task.current_run_id is None
-        # The previously-active run must now be closed.
+        assert task is not None
+        assert task.status == "running"
+        assert task.current_run_id == open_run_id
+        # The active attempt and ownership remain intact until a worker tree
+        # can be registered and proven gone.
         closed = kb.get_run(conn, open_run_id)
-        assert closed.ended_at is not None
-        assert closed.outcome == "reclaimed"
+        assert closed is not None
+        assert closed.ended_at is None
+        deferred = [e for e in kb.list_events(conn, tid) if e.kind == "reclaim_deferred"]
+        assert len(deferred) == 1
+        assert deferred[0].payload is not None
+        assert deferred[0].payload["identity"] == "worker_pid_missing"
     finally:
         conn.close()
 
@@ -1975,8 +2066,8 @@ def test_archive_of_ready_task_does_not_create_spurious_run(kanban_home):
         conn.close()
 
 
-def test_dashboard_direct_status_change_off_running_closes_run(kanban_home):
-    """Dashboard drag-drop running->ready must close the active run.
+def test_dashboard_direct_status_change_off_unregistered_running_defers(kanban_home):
+    """Dashboard drag-drop preserves an unregistered running launch.
 
     Importing _set_status_direct directly to simulate the PATCH handler
     without spinning up FastAPI.
@@ -1991,15 +2082,13 @@ def test_dashboard_direct_status_change_off_running_closes_run(kanban_home):
         assert open_run.ended_at is None
         prev_run_id = open_run.id
 
-        # Simulate yanking the worker back to the queue.
-        assert _set_status_direct(conn, tid, "ready") is True
+        assert _set_status_direct(conn, tid, "ready") is False
 
         task = kb.get_task(conn, tid)
-        assert task.status == "ready"
-        assert task.current_run_id is None
+        assert task.status == "running"
+        assert task.current_run_id == prev_run_id
         closed = kb.get_run(conn, prev_run_id)
-        assert closed.ended_at is not None
-        assert closed.outcome == "reclaimed"
+        assert closed.ended_at is None
     finally:
         conn.close()
 
@@ -2050,8 +2139,8 @@ def test_cli_bulk_complete_with_summary_rejects(kanban_home):
         conn.close()
 
 
-def test_cli_bulk_complete_without_summary_still_works(kanban_home):
-    """Bulk close with no per-task handoff is allowed — the common case."""
+def test_cli_bulk_complete_refuses_unregistered_running_launches(kanban_home):
+    """Manual bulk close cannot clear launch-window ownership blind."""
     conn = kb.connect()
     try:
         a = kb.create_task(conn, title="a", assignee="worker")
@@ -2060,8 +2149,8 @@ def test_cli_bulk_complete_without_summary_still_works(kanban_home):
     finally:
         conn.close()
     out = run_slash(f"complete {a} {b}")
-    assert f"Completed {a}" in out
-    assert f"Completed {b}" in out
+    assert f"cannot complete {a}" in out
+    assert f"cannot complete {b}" in out
 
 
 def test_completed_event_payload_carries_summary(kanban_home):
@@ -2072,7 +2161,7 @@ def test_completed_event_payload_carries_summary(kanban_home):
         tid = kb.create_task(conn, title="x", assignee="worker")
         kb.claim_task(conn, tid)
         kb.complete_task(conn, tid, summary="handoff line 1\nextra",
-                         metadata={"n": 3})
+                         metadata={"n": 3}, expected_run_id=kb.latest_run(conn, tid).id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)
         events = kb.list_events(conn, tid)
         comp = [e for e in events if e.kind == "completed"]
         assert len(comp) == 1
@@ -2088,7 +2177,7 @@ def test_completed_event_payload_summary_none_when_missing(kanban_home):
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
         kb.claim_task(conn, tid)
-        kb.complete_task(conn, tid)  # no summary, no result
+        kb.complete_task(conn, tid, expected_run_id=kb.latest_run(conn, tid).id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)  # no summary, no result
         events = kb.list_events(conn, tid)
         comp = [e for e in events if e.kind == "completed"][0]
         assert comp.payload.get("summary") is None
@@ -2176,7 +2265,10 @@ def test_event_dataclass_carries_run_id(kanban_home):
         tid = kb.create_task(conn, title="x", assignee="worker")
         kb.claim_task(conn, tid)
         run_id = kb.latest_run(conn, tid).id
-        kb.complete_task(conn, tid, summary="done")
+        kb.complete_task(
+            conn, tid, summary="done", expected_run_id=run_id,
+            expected_claim_lock=kb.get_task(conn, tid).claim_lock,
+        )
 
         events = kb.list_events(conn, tid)
         kinds_with_run = {
@@ -2203,7 +2295,10 @@ def test_unseen_events_for_sub_includes_run_id(kanban_home):
         )
         kb.claim_task(conn, tid)
         run_id = kb.latest_run(conn, tid).id
-        kb.complete_task(conn, tid, summary="notify-ready")
+        kb.complete_task(
+            conn, tid, summary="notify-ready", expected_run_id=run_id,
+            expected_claim_lock=kb.get_task(conn, tid).claim_lock,
+        )
 
         cursor, events = kb.unseen_events_for_sub(
             conn, task_id=tid, platform="telegram",
@@ -2307,7 +2402,7 @@ def test_cli_show_json_carries_runs(kanban_home):
     try:
         tid = kb.create_task(conn, title="show test", assignee="worker")
         kb.claim_task(conn, tid)
-        kb.complete_task(conn, tid, summary="inspected")
+        kb.complete_task(conn, tid, summary="inspected", expected_run_id=kb.latest_run(conn, tid).id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)
     finally:
         conn.close()
 
@@ -2375,7 +2470,7 @@ def test_unblock_normal_path_no_spurious_run(kanban_home):
     try:
         tid = kb.create_task(conn, title="normal unblock", assignee="worker")
         kb.claim_task(conn, tid)
-        kb.block_task(conn, tid, reason="pause")
+        kb.block_task(conn, tid, reason="pause", expected_run_id=kb.latest_run(conn, tid).id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)
         runs_before = len(kb.list_runs(conn, tid))
         assert kb.unblock_task(conn, tid) is True
         runs_after = len(kb.list_runs(conn, tid))
@@ -2440,7 +2535,7 @@ def test_build_worker_context_includes_role_history(kanban_home):
         ]):
             tid = kb.create_task(conn, title=title, assignee="reviewer")
             kb.claim_task(conn, tid)
-            kb.complete_task(conn, tid, summary=summary)
+            kb.complete_task(conn, tid, summary=summary, expected_run_id=kb.latest_run(conn, tid).id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)
 
         # Now a NEW task for reviewer, not yet done
         new_tid = kb.create_task(
@@ -2479,7 +2574,7 @@ def test_build_worker_context_role_history_bounded_to_5(kanban_home):
                 conn, title=f"prior #{i}", assignee="worker",
             )
             kb.claim_task(conn, tid)
-            kb.complete_task(conn, tid, summary=f"done #{i}")
+            kb.complete_task(conn, tid, summary=f"done #{i}", expected_run_id=kb.latest_run(conn, tid).id, expected_claim_lock=kb.get_task(conn, tid).claim_lock)
 
         new_tid = kb.create_task(conn, title="new", assignee="worker")
         ctx = kb.build_worker_context(conn, new_tid)
@@ -3998,6 +4093,8 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
             conn, parent_a,
             summary="retry without claims",
             created_cards=[],
+            expected_run_id=kb.latest_run(conn, parent_a).id,
+            expected_claim_lock=kb.get_task(conn, parent_a).claim_lock,
         )
         assert ok is True
         assert kb.get_task(conn, parent_a).status == "done"
@@ -4016,6 +4113,8 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
             conn, parent_b,
             summary="retry with corrected list",
             created_cards=[real],
+            expected_run_id=kb.latest_run(conn, parent_b).id,
+            expected_claim_lock=kb.get_task(conn, parent_b).claim_lock,
         )
         assert ok is True
         assert kb.get_task(conn, parent_b).status == "done"
@@ -4190,9 +4289,8 @@ def test_reassign_task_refuses_running_without_reclaim_first(kanban_home):
         conn.close()
 
 
-def test_reassign_task_with_reclaim_first_switches_profile(kanban_home):
-    """With ``reclaim_first=True``, a running task is reclaimed and
-    reassigned in one operation."""
+def test_reassign_task_with_reclaim_first_defers_unverifiable_worker(kanban_home):
+    """Synthetic/unverifiable ownership cannot be reclaimed for reassignment."""
     import time
     import secrets
     conn = kb.connect()
@@ -4217,13 +4315,10 @@ def test_reassign_task_with_reclaim_first_switches_profile(kanban_home):
         assert kb.reassign_task(
             conn, t, "new-profile",
             reclaim_first=True, reason="switch model",
-        ) is True
-
-        row = conn.execute(
-            "SELECT assignee, status FROM tasks WHERE id=?", (t,),
-        ).fetchone()
-        assert row["assignee"] == "new-profile"
-        assert row["status"] == "ready"
+        ) is False
+        task = kb.get_task(conn, t)
+        assert task.assignee == "orig"
+        assert task.status == "running"
     finally:
         conn.close()
 
@@ -4666,9 +4761,8 @@ def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
         conn.close()
 
 
-def test_reclaim_task_clears_failure_counter(kanban_home):
-    """Operator reclaim wipes the counter so the next retry gets a fresh
-    budget."""
+def test_reclaim_task_defers_unverifiable_worker_without_clearing_counter(kanban_home):
+    """An unsafe operator reclaim retains ownership and failure accounting."""
     import secrets
     conn = kb.connect()
     try:
@@ -4694,12 +4788,11 @@ def test_reclaim_task_clears_failure_counter(kanban_home):
             )
 
         ok = kb.reclaim_task(conn, tid, reason="operator fixed config")
-        assert ok
-
+        assert not ok
         task = kb.get_task(conn, tid)
-        assert task.consecutive_failures == 0
-        assert task.last_failure_error is None
-        assert task.status == "ready"
+        assert task.status == "running"
+        assert task.consecutive_failures == 4
+        assert task.last_failure_error == "prior issue"
     finally:
         conn.close()
 
@@ -4709,6 +4802,30 @@ def test_dispatch_once_integrates_stale_detection(kanban_home, monkeypatch):
     import hermes_cli.kanban_db as _kb
 
     monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    # The synthetic PID cannot be inspected through /proc. Publish a stable
+    # test incarnation and make the termination seam assert the same binding
+    # reaches reclaim; production still requires a real identity before it can
+    # signal a process tree.
+    monkeypatch.setattr(
+        _kb, "_supervisor_process_identity", lambda _pid: "fixture-incarnation",
+    )
+
+    def _terminated_fixture_worker(
+        _pid,
+        _lock,
+        *,
+        worker_identity=None,
+        run_worker_identity=None,
+        run_worker_pid=None,
+        run_claim_lock=None,
+        signal_fn=None,
+    ):
+        assert worker_identity == run_worker_identity == "fixture-incarnation"
+        assert run_worker_pid == _pid
+        assert run_claim_lock == _lock
+        return {"terminated": True}
+
+    monkeypatch.setattr(_kb, "_terminate_reclaimed_worker", _terminated_fixture_worker)
 
     with kb.connect() as conn:
         t = kb.create_task(conn, title="stale-dispatch", assignee="worker")

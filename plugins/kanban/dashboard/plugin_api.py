@@ -1006,14 +1006,16 @@ def _set_status_direct(
     orphaned. ``running -> ready`` via drag-drop is the common case
     (user yanking a stuck worker back to the queue).
     """
+    # This can be an operator transition off an active detached run. Snapshot
+    # before waiting for TERM/KILL, then carry the exact ownership tuple into
+    # the later CAS.  Holding SQLite's write transaction through the grace
+    # window would block heartbeats; clearing first would orphan work.
+    prev, termination = kanban_db._prepare_operator_active_transition(
+        conn, task_id, operation="dashboard_status",
+    )
+    if prev is None:
+        return False
     with kanban_db.write_txn(conn):
-        # Snapshot current state so we know whether to close a run.
-        prev = conn.execute(
-            "SELECT status, current_run_id FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        if prev is None:
-            return False
 
         # Guard: don't allow promoting to 'ready' unless all parents are done.
         # Prevents the dispatcher from spawning a child whose upstream work
@@ -1030,28 +1032,30 @@ def _set_status_direct(
             ):
                 return False
 
-        was_running = prev["status"] == "running"
         reopening_satisfied_parent = (
             prev["status"] in {"done", "archived"}
             and new_status not in {"done", "archived"}
         )
+        cas_clause, cas_params = kanban_db._operator_transition_cas_clause(prev)
 
         cur = conn.execute(
             "UPDATE tasks SET status = ?, "
             "  claim_lock = CASE WHEN ? = 'running' THEN claim_lock ELSE NULL END, "
             "  claim_expires = CASE WHEN ? = 'running' THEN claim_expires ELSE NULL END, "
-            "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END "
-            "WHERE id = ?",
-            (new_status, new_status, new_status, new_status, task_id),
+            "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END, "
+            "  worker_identity = CASE WHEN ? = 'running' THEN worker_identity ELSE NULL END "
+            "WHERE id = ?" + cas_clause,
+            [new_status, new_status, new_status, new_status, new_status, task_id, *cas_params],
         )
         if cur.rowcount != 1:
             return False
         run_id = None
-        if was_running and new_status != "running" and prev["current_run_id"]:
+        if termination is not None and new_status != "running" and prev["current_run_id"]:
             run_id = kanban_db._end_run(
                 conn, task_id,
                 outcome="reclaimed", status="reclaimed",
                 summary=f"status changed to {new_status} (dashboard/direct)",
+                metadata=termination,
             )
         conn.execute(
             "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "

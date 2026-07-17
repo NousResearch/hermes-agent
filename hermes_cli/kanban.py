@@ -1269,13 +1269,38 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 
 def _cmd_heartbeat(args: argparse.Namespace) -> int:
-    with kb.connect_closing() as conn:
-        ok = kb.heartbeat_worker(
-            conn,
-            args.task_id,
-            note=getattr(args, "note", None),
-            expected_run_id=_worker_run_id_for(args.task_id),
-        )
+    capability = _worker_capability_for(args.task_id)
+    if capability is None:
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            # A dispatcher-scoped process must not downgrade to the generic
+            # operator path after its own capability validation fails.
+            ok = False
+        else:
+            # Truly unscoped CLI/operator use keeps the historical path.
+            with kb.connect_closing() as conn:
+                ok = kb.heartbeat_worker(
+                    conn, args.task_id, note=getattr(args, "note", None),
+                )
+    else:
+        run_id = capability.run_id
+        claim_lock = capability.claim_lock
+        worker_board = capability.board
+        with kb.connect_closing(board=worker_board) as conn:
+            ok = kb.heartbeat_claim(
+                conn,
+                args.task_id,
+                claimer=claim_lock,
+                expected_run_id=run_id,
+                expected_claim_lock=claim_lock,
+            )
+            if ok:
+                ok = kb.heartbeat_worker(
+                    conn,
+                    args.task_id,
+                    note=getattr(args, "note", None),
+                    expected_run_id=run_id,
+                    expected_claim_lock=claim_lock,
+                )
     if not ok:
         print(f"cannot heartbeat {args.task_id} (not running?)", file=sys.stderr)
         return 1
@@ -1851,16 +1876,30 @@ def _cmd_comment(args: argparse.Namespace) -> int:
     return 0
 
 
-def _worker_run_id_for(task_id: str) -> Optional[int]:
-    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
-        return None
-    raw = os.environ.get("HERMES_KANBAN_RUN_ID")
-    if not raw:
-        return None
+def _worker_capability_for(task_id: str):
+    """Return the complete current worker capability or ``None``."""
     try:
-        return int(raw)
-    except ValueError:
+        return kb.resolve_worker_capability(task_id)
+    except Exception:
         return None
+
+
+def _worker_run_id_for(task_id: str) -> Optional[int]:
+    capability = _worker_capability_for(task_id)
+    return capability.run_id if capability is not None else None
+
+
+def _terminal_capabilities(ids: list[str]):
+    """Return scoped capabilities, refusing any invalid worker before writes."""
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return {}
+    capabilities = {}
+    for task_id in ids:
+        capability = _worker_capability_for(task_id)
+        if capability is None:
+            return None
+        capabilities[task_id] = capability
+    return capabilities
 
 
 def _cmd_complete(args: argparse.Namespace) -> int:
@@ -1891,15 +1930,22 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"kanban: --metadata: {exc}", file=sys.stderr)
             return 2
+    capabilities = _terminal_capabilities(ids)
+    if capabilities is None:
+        print("scoped-worker authorization error: stale or missing worker capability", file=sys.stderr)
+        return 1
+    connection_board = next(iter(capabilities.values())).board if capabilities else None
     failed: list[str] = []
-    with kb.connect_closing() as conn:
+    with kb.connect_closing(board=connection_board) as conn:
         for tid in ids:
+            capability = capabilities.get(tid)
             if not kb.complete_task(
                 conn, tid,
                 result=args.result,
                 summary=summary,
                 metadata=metadata,
-                expected_run_id=_worker_run_id_for(tid),
+                expected_run_id=(capability.run_id if capability else None),
+                expected_claim_lock=(capability.claim_lock if capability else None),
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
@@ -1941,9 +1987,15 @@ def _cmd_block(args: argparse.Namespace) -> int:
     kind = getattr(args, "kind", None)
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
+    capabilities = _terminal_capabilities(ids)
+    if capabilities is None:
+        print("scoped-worker authorization error: stale or missing worker capability", file=sys.stderr)
+        return 1
+    connection_board = next(iter(capabilities.values())).board if capabilities else None
     failed: list[str] = []
-    with kb.connect_closing() as conn:
+    with kb.connect_closing(board=connection_board) as conn:
         for tid in ids:
+            capability = capabilities.get(tid)
             if reason:
                 kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
             if not kb.block_task(
@@ -1951,7 +2003,8 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 tid,
                 reason=reason,
                 kind=kind,
-                expected_run_id=_worker_run_id_for(tid),
+                expected_run_id=(capability.run_id if capability else None),
+                expected_claim_lock=(capability.claim_lock if capability else None),
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
@@ -1977,16 +2030,23 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
+    capabilities = _terminal_capabilities(ids)
+    if capabilities is None:
+        print("scoped-worker authorization error: stale or missing worker capability", file=sys.stderr)
+        return 1
+    connection_board = next(iter(capabilities.values())).board if capabilities else None
     failed: list[str] = []
-    with kb.connect_closing() as conn:
+    with kb.connect_closing(board=connection_board) as conn:
         for tid in ids:
+            capability = capabilities.get(tid)
             if reason:
                 kb.add_comment(conn, tid, author, f"SCHEDULED: {reason}")
             if not kb.schedule_task(
                 conn,
                 tid,
                 reason=reason,
-                expected_run_id=_worker_run_id_for(tid),
+                expected_run_id=(capability.run_id if capability else None),
+                expected_claim_lock=(capability.claim_lock if capability else None),
             ):
                 failed.append(tid)
                 print(f"cannot schedule {tid}", file=sys.stderr)

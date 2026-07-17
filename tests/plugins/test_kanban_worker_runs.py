@@ -306,26 +306,33 @@ def test_inspect_run_live_pid(client, monkeypatch):
 # POST /runs/{run_id}/terminate
 # ---------------------------------------------------------------------------
 
-def _setup_running_task_with_run(conn, *, title, assignee, worker_pid):
+def _setup_running_task_with_run(
+    conn,
+    *,
+    title,
+    assignee,
+    worker_pid,
+    worker_identity="fixture-worker-identity",
+):
     """Create a task in 'running' state with a matching open task_runs row.
 
     Mirrors what dispatcher_claim does: stamps tasks.status='running',
-    tasks.claim_lock, tasks.worker_pid; inserts task_runs row with the
-    same claim_lock so reclaim_task's preconditions are satisfied.
+    tasks.claim_lock, worker PID and incarnation; inserts task_runs row with
+    the same identity binding so reclaim_task's preconditions are satisfied.
     """
     task_id = kb.create_task(conn, title=title, assignee=assignee)
     lock = secrets.token_hex(8)
     future = int(time.time()) + 3600
     conn.execute(
-        "UPDATE tasks SET status='running', claim_lock=?, "
-        "claim_expires=?, worker_pid=? WHERE id=?",
-        (lock, future, worker_pid, task_id),
+        "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+        "worker_pid=?, worker_identity=? WHERE id=?",
+        (lock, future, worker_pid, worker_identity, task_id),
     )
     cur = conn.execute(
         "INSERT INTO task_runs "
-        "(task_id, status, claim_lock, claim_expires, worker_pid, started_at) "
-        "VALUES (?, 'running', ?, ?, ?, ?)",
-        (task_id, lock, future, worker_pid, int(time.time())),
+        "(task_id, status, claim_lock, claim_expires, worker_pid, "
+        "worker_identity, started_at) VALUES (?, 'running', ?, ?, ?, ?, ?)",
+        (task_id, lock, future, worker_pid, worker_identity, int(time.time())),
     )
     conn.commit()
     return task_id, cur.lastrowid
@@ -373,9 +380,18 @@ def test_terminate_run_ok(client, monkeypatch):
     # Capture signal calls so we don't actually SIGTERM a random PID.
     sent = []
 
-    def _fake_terminate(pid, prev_lock, *, signal_fn=None):
-        sent.append((pid, prev_lock))
-        return {"signal": "SIGTERM", "delivered": True}
+    def _fake_terminate(
+        pid,
+        prev_lock,
+        *,
+        worker_identity=None,
+        run_worker_identity=None,
+        run_worker_pid=None,
+        run_claim_lock=None,
+        signal_fn=None,
+    ):
+        sent.append((pid, prev_lock, worker_identity, run_worker_identity, run_worker_pid, run_claim_lock))
+        return {"signal": "SIGTERM", "delivered": True, "terminated": True}
 
     monkeypatch.setattr(kb, "_terminate_reclaimed_worker", _fake_terminate)
 
@@ -386,7 +402,9 @@ def test_terminate_run_ok(client, monkeypatch):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body == {"ok": True, "run_id": run_id, "task_id": task_id}
-    assert sent == [(33333, sent[0][1])]
+    assert sent == [
+        (33333, sent[0][1], "fixture-worker-identity", "fixture-worker-identity", 33333, sent[0][1])
+    ]
     assert sent[0][1] is not None  # claim_lock was non-null
 
     # Task is back to ready, claim cleared.

@@ -148,8 +148,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
 
 @pytest.fixture
 def worker_env(monkeypatch, tmp_path):
-    """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK set
-    after we've created the task."""
+    """Simulate a dispatcher worker with its task/run/claim capabilities."""
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -164,10 +163,16 @@ def worker_env(monkeypatch, tmp_path):
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="worker-test", assignee="test-worker")
-        kb.claim_task(conn, tid)
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert claimed.current_run_id is not None
+        assert claimed.claim_lock is not None
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", claimed.claim_lock)
     return tid
 
 
@@ -311,6 +316,60 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_missing_scoped_run_capability_refuses_without_mutating_open_run(
+    monkeypatch, worker_env,
+):
+    """A scoped worker without its run capability cannot infer DB authority."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        run = kb.latest_run(conn, worker_env)
+        assert task is not None and run is not None
+        before_task = (
+            task.status, task.current_run_id, task.claim_lock, task.claim_expires,
+        )
+        before_run = (
+            run.id, run.status, run.ended_at, run.claim_lock, run.claim_expires,
+        )
+
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    payload = json.loads(kt._handle_complete({"summary": "missing capability"}))
+    assert payload.get("ok") is not True
+    assert payload["error"].startswith("scoped-worker authorization error:")
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        run = kb.latest_run(conn, worker_env)
+        assert task is not None and run is not None
+        assert (
+            task.status, task.current_run_id, task.claim_lock, task.claim_expires,
+        ) == before_task
+        assert (
+            run.id, run.status, run.ended_at, run.claim_lock, run.claim_expires,
+        ) == before_run
+
+
+def test_complete_scoped_task_without_claim_capability_fails_closed(
+    monkeypatch, worker_env
+):
+    """Task scope alone must not turn an arbitrary caller into the worker."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_CLAIM_LOCK", raising=False)
+    out = kt._handle_complete({"summary": "manual scope spoof"})
+    error = json.loads(out)["error"]
+    assert error.startswith("scoped-worker authorization error:")
+    with kb.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        run = kb.latest_run(conn, worker_env)
+        assert task is not None and task.status == "running"
+        assert run is not None and run.ended_at is None
+
+
 def test_complete_metadata_round_trips_through_show(worker_env):
     """Structured completion metadata should be visible to downstream agents."""
     from tools import kanban_tools as kt
@@ -362,7 +421,7 @@ def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
         conn.close()
 
 
-def test_complete_does_not_stamp_worker_session_id_without_scoped_task(
+def test_complete_refuses_running_task_without_scoped_worker_identity(
     monkeypatch, worker_env
 ):
     from tools import kanban_tools as kt
@@ -375,16 +434,14 @@ def test_complete_does_not_stamp_worker_session_id_without_scoped_task(
         "summary": "done outside worker scope",
         "metadata": {"files": 2, "worker_session_id": "user-provided"},
     })
-    assert json.loads(out)["ok"] is True
+    assert "could not complete" in json.loads(out)["error"]
 
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
-        assert run.metadata == {
-            "files": 2,
-            "worker_session_id": "user-provided",
-        }
+        assert run.ended_at is None
+        assert run.metadata is None
     finally:
         conn.close()
 
@@ -638,10 +695,16 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
             conn, title="goal-mode-test", assignee="test-worker",
             body="Must achieve X with verified evidence.", goal_mode=True
         )
-        kb.claim_task(conn, goal_task_id)
+        claimed = kb.claim_task(conn, goal_task_id)
+        assert claimed is not None
+        assert claimed.current_run_id is not None
+        assert claimed.claim_lock is not None
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", claimed.claim_lock)
 
     # Mock the judge to reject the completion. The gate only runs when a
     # judge is reachable, so force the availability probe True as well.
@@ -694,10 +757,16 @@ def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path)
             conn, title="goal-mode-test", assignee="test-worker",
             body="Must achieve X with verified evidence.", goal_mode=True
         )
-        kb.claim_task(conn, goal_task_id)
+        claimed = kb.claim_task(conn, goal_task_id)
+        assert claimed is not None
+        assert claimed.current_run_id is not None
+        assert claimed.claim_lock is not None
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", claimed.claim_lock)
 
     # No judge reachable. judge_goal must not even be consulted; if it were,
     # this stub would reject — so reaching "done" proves the probe short-circuit.
@@ -759,10 +828,16 @@ def _make_goal_mode_worker_env(monkeypatch, tmp_path):
             conn, title="goal-mode-block-test", assignee="test-worker",
             body="Must achieve X.", goal_mode=True,
         )
-        kb.claim_task(conn, goal_task_id)
+        claimed = kb.claim_task(conn, goal_task_id)
+        assert claimed is not None
+        assert claimed.current_run_id is not None
+        assert claimed.claim_lock is not None
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", claimed.claim_lock)
     return goal_task_id
 
 
@@ -920,6 +995,89 @@ def test_heartbeat_extends_claim_expires(worker_env):
         f"claim_expires={after} is suspiciously close to now={now}; "
         f"expected at least now + {kb.DEFAULT_CLAIM_TTL_SECONDS // 2}"
     )
+
+
+def test_heartbeat_rejects_raw_stale_run_id_before_extending_lease(worker_env, monkeypatch):
+    """A raw environment run id is not authority without the active binding."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None and task.current_run_id is not None
+        conn.execute("UPDATE tasks SET claim_expires = 1 WHERE id = ?", (worker_env,))
+        conn.commit()
+        stale_run_id = task.current_run_id - 1
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(stale_run_id))
+
+    out = kt._handle_heartbeat({"note": "stale raw capability"})
+    assert json.loads(out).get("ok") is not True
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.claim_expires == 1
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("claim_lock", [None, "wrong-claim-lock"])
+def test_heartbeat_rejects_missing_or_mismatched_claim_lock_before_extending_lease(
+    worker_env, monkeypatch, claim_lock,
+):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute("UPDATE tasks SET claim_expires = 1 WHERE id = ?", (worker_env,))
+        conn.commit()
+    finally:
+        conn.close()
+    if claim_lock is None:
+        monkeypatch.delenv("HERMES_KANBAN_CLAIM_LOCK", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", claim_lock)
+
+    out = kt._handle_heartbeat({"note": "unbound capability"})
+    assert json.loads(out).get("ok") is not True
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.claim_expires == 1
+    finally:
+        conn.close()
+
+
+def test_heartbeat_rejects_worker_board_mismatch_before_extending_lease(
+    worker_env,
+):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute("UPDATE tasks SET claim_expires = 1 WHERE id = ?", (worker_env,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_heartbeat({"board": "other", "note": "wrong board"})
+    assert json.loads(out).get("ok") is not True
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.claim_expires == 1
+    finally:
+        conn.close()
 
 
 def test_comment_happy_path(worker_env):
@@ -1642,6 +1800,46 @@ def test_worker_complete_own_task_still_works(worker_env):
     assert d.get("ok") is True and d.get("task_id") == worker_env
 
 
+def test_heartbeat_later_run_rejects_stale_run_and_claim_without_extending(
+    worker_env, monkeypatch,
+):
+    """An old worker cannot renew the lease after a later claim wins."""
+    from hermes_cli import kanban_db as kb
+    import hermes_cli.kanban_db as _kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    conn = kb.connect()
+    try:
+        run1 = kb.latest_run(conn, worker_env)
+        assert run1 is not None
+        kb._set_worker_pid(conn, worker_env, 98765)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        assert kb.detect_crashed_workers(conn) == [worker_env]
+        claimed2 = kb.claim_task(conn, worker_env)
+        assert claimed2 is not None and claimed2.current_run_id != run1.id
+        conn.execute("UPDATE tasks SET claim_expires = 1 WHERE id = ?", (worker_env,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run1.id))
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", run1.claim_lock or "old-lock")
+    out = kt._handle_heartbeat({"note": "late worker"})
+    assert json.loads(out).get("ok") is not True
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        run2 = kb.latest_run(conn, worker_env)
+        assert task is not None and task.claim_expires == 1
+        assert run2 is not None and run2.id == claimed2.current_run_id
+        assert run2.ended_at is None
+    finally:
+        conn.close()
+
+
+
 def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
     """A retried worker cannot complete the task using an old run token."""
     from hermes_cli import kanban_db as kb
@@ -1878,14 +2076,12 @@ def test_board_param_routes_comment_to_alt_board(multi_board_env):
         assert kb.get_task(conn, alt_seed) is None
 
 
-def test_board_param_routes_complete_to_alt_board(multi_board_env):
-    """kanban_complete on the alt board closes the alt task, leaving
-    the default seed untouched."""
+def test_board_param_complete_refuses_unscoped_running_alt_task(multi_board_env):
+    """An unscoped tool call cannot clear an alt-board running claim."""
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
     alt_seed = multi_board_env["alt_seed"]
-    # Make alt task running so complete is valid.
     with kb.connect(board="alt") as conn:
         kb.claim_task(conn, alt_seed)
 
@@ -1895,18 +2091,17 @@ def test_board_param_routes_complete_to_alt_board(multi_board_env):
         "board": "alt",
     })
     d = json.loads(out)
-    assert d["ok"] is True
+    assert "could not complete" in d["error"]
 
     with kb.connect(board="alt") as conn:
-        assert kb.get_task(conn, alt_seed).status == "done"
-    # Default seed is unchanged.
+        assert kb.get_task(conn, alt_seed).status == "running"
     with kb.connect() as conn:
         default_seed = multi_board_env["default_seed"]
         assert kb.get_task(conn, default_seed).status == "ready"
 
 
-def test_board_param_routes_block_to_alt_board(multi_board_env):
-    """kanban_block targets the alt board's DB."""
+def test_board_param_block_refuses_unscoped_running_alt_task(multi_board_env):
+    """An unscoped tool call cannot clear an alt-board running claim."""
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
@@ -1920,10 +2115,10 @@ def test_board_param_routes_block_to_alt_board(multi_board_env):
         "board": "alt",
     })
     d = json.loads(out)
-    assert d["ok"] is True
+    assert "could not block" in d["error"]
 
     with kb.connect(board="alt") as conn:
-        assert kb.get_task(conn, alt_seed).status == "blocked"
+        assert kb.get_task(conn, alt_seed).status == "running"
 
 
 def test_board_param_routes_unblock_to_alt_board(multi_board_env):
@@ -1963,8 +2158,14 @@ def test_board_param_routes_heartbeat_to_alt_board(monkeypatch, tmp_path):
     # Seed the alt board with a claimed task.
     with kb.connect(board="alt") as conn:
         tid = kb.create_task(conn, title="alt hb", assignee="alt-worker")
-        kb.claim_task(conn, tid)
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert claimed.current_run_id is not None
+        assert claimed.claim_lock is not None
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "alt")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", claimed.claim_lock)
 
     from tools import kanban_tools as kt
     out = kt._handle_heartbeat({"note": "alive on alt", "board": "alt"})

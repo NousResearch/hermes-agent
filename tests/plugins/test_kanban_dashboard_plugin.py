@@ -8,7 +8,9 @@ REST surface without spinning up the whole dashboard.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -1319,6 +1321,8 @@ def test_task_detail_includes_runs(client):
             result="done",
             summary="tested on rate limiter",
             metadata={"changed_files": ["limiter.py"]},
+            expected_run_id=_kb.latest_run(conn, tid).id,
+            expected_claim_lock=_kb.get_task(conn, tid).claim_lock,
         )
     finally:
         conn.close()
@@ -1345,15 +1349,10 @@ def test_task_detail_runs_empty_before_claim(client):
 def test_patch_status_done_with_summary_and_metadata(client):
     """PATCH /tasks/:id with status=done + summary + metadata must
     reach complete_task, so the dashboard has CLI parity."""
-    # Create + claim.
+    # A normal dashboard completion of unclaimed work remains supported.
     r = client.post("/api/plugins/kanban/tasks", json={"title": "x", "assignee": "worker"})
     tid = r.json()["task"]["id"]
     from hermes_cli import kanban_db as kb
-    conn = kb.connect()
-    try:
-        kb.claim_task(conn, tid)
-    finally:
-        conn.close()
 
     r = client.patch(
         f"/api/plugins/kanban/tasks/{tid}",
@@ -1381,11 +1380,6 @@ def test_patch_status_done_without_summary_still_works(client):
     r = client.post("/api/plugins/kanban/tasks", json={"title": "y", "assignee": "worker"})
     tid = r.json()["task"]["id"]
     from hermes_cli import kanban_db as kb
-    conn = kb.connect()
-    try:
-        kb.claim_task(conn, tid)
-    finally:
-        conn.close()
     r = client.patch(
         f"/api/plugins/kanban/tasks/{tid}",
         json={"status": "done", "result": "legacy shape"},
@@ -1400,8 +1394,8 @@ def test_patch_status_done_without_summary_still_works(client):
         conn.close()
 
 
-def test_patch_status_archive_closes_running_run(client):
-    """PATCH to archived while running must close the in-flight run."""
+def test_patch_status_archive_defers_unregistered_running_launch(client):
+    """Dashboard preserves a running launch whose tree cannot be proven gone."""
     r = client.post("/api/plugins/kanban/tasks", json={"title": "z", "assignee": "worker"})
     tid = r.json()["task"]["id"]
     from hermes_cli import kanban_db as kb
@@ -1409,6 +1403,7 @@ def test_patch_status_archive_closes_running_run(client):
     try:
         kb.claim_task(conn, tid)
         open_run = kb.latest_run(conn, tid)
+        assert open_run is not None
         assert open_run.ended_at is None
     finally:
         conn.close()
@@ -1416,15 +1411,148 @@ def test_patch_status_archive_closes_running_run(client):
         f"/api/plugins/kanban/tasks/{tid}",
         json={"status": "archived"},
     )
-    assert r.status_code == 200, r.text
+    assert r.status_code == 409, r.text
     conn = kb.connect()
     try:
         task = kb.get_task(conn, tid)
-        assert task.status == "archived"
-        assert task.current_run_id is None
-        assert kb.latest_run(conn, tid).outcome == "reclaimed"
+        assert task is not None
+        assert task.status == "running"
+        assert task.current_run_id == open_run.id
+        current_run = kb.latest_run(conn, tid)
+        assert current_run is not None
+        assert current_run.ended_at is None
+        deferred = [e for e in kb.list_events(conn, tid) if e.kind == "reclaim_deferred"]
+        assert len(deferred) == 1
+        assert deferred[0].payload is not None
+        assert deferred[0].payload["identity"] == "worker_pid_missing"
     finally:
         conn.close()
+
+
+def _wait_until_gone(pid: int, *, timeout: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics only")
+def _start_dashboard_frozen_worker(tmp_path, monkeypatch, task_id, run_id, claim_lock):
+    """Start the production detached supervisor with a stubborn child."""
+    child_pid_path = tmp_path / "dashboard-child.pid"
+    spec_path = tmp_path / "dashboard-worker-spec.json"
+    handshake_path = tmp_path / "dashboard-supervisor.pid"
+    child_code = (
+        "import os, signal, sys, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(60)"
+    )
+    spec_path.write_text(
+        json.dumps({
+            "command": [sys.executable, "-c", child_code, str(child_pid_path)],
+            "cwd": None,
+            "log_path": str(tmp_path / "dashboard-worker.log"),
+            "handshake_path": str(handshake_path),
+            "task_id": task_id,
+            "run_id": run_id,
+            "claim_lock": claim_lock,
+            "board": "default",
+        }),
+        encoding="utf-8",
+    )
+    repo_root = Path(__file__).resolve().parents[2]
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "hermes_cli.kanban_worker_supervisor", str(spec_path)],
+        cwd=repo_root,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not handshake_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert int(handshake_path.read_text(encoding="utf-8")) == proc.pid
+        deadline = time.monotonic() + 5
+        while not child_pid_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+        os.kill(proc.pid, signal.SIGSTOP)
+        monkeypatch.setattr(kb, "_WORKER_TREE_TERMINATE_GRACE_SECONDS", 0.12)
+        monkeypatch.setattr(kb, "_WORKER_TREE_TERMINATE_POLL_SECONDS", 0.01)
+        return proc, child_pid
+    except BaseException:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+        raise
+
+
+def _cleanup_dashboard_process_group(proc):
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics only")
+@pytest.mark.parametrize(
+    ("route", "payload", "expected_status"),
+    [
+        ("single", {"status": "ready"}, "ready"),
+        ("bulk", {"status": "done"}, "done"),
+        ("bulk", {"status": "todo"}, "todo"),
+    ],
+)
+def test_dashboard_operator_transition_reaps_detached_worker_before_releasing_claim(
+    client, tmp_path, monkeypatch, route, payload, expected_status,
+):
+    """PATCH and bulk status routes must not orphan a stopped worker tree."""
+    created = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "dashboard operator", "assignee": "worker"},
+    )
+    task_id = created.json()["task"]["id"]
+    with kb.connect() as conn:
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        assert claimed.current_run_id is not None
+        assert claimed.claim_lock is not None
+        proc, child_pid = _start_dashboard_frozen_worker(
+            tmp_path, monkeypatch, task_id, claimed.current_run_id, claimed.claim_lock,
+        )
+        assert kb._set_worker_pid(conn, task_id, proc.pid)
+    try:
+        if route == "single":
+            response = client.patch(f"/api/plugins/kanban/tasks/{task_id}", json=payload)
+            assert response.status_code == 200, response.text
+        else:
+            response = client.post(
+                "/api/plugins/kanban/tasks/bulk",
+                json={"ids": [task_id], **payload},
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["results"] == [{"id": task_id, "ok": True}]
+        assert _wait_until_gone(child_pid), f"dashboard {route} transition orphaned child"
+        with kb.connect() as conn:
+            task = kb.get_task(conn, task_id)
+            run = kb.latest_run(conn, task_id)
+        assert task is not None
+        assert task.status == expected_status
+        assert task.claim_lock is None
+        assert task.worker_pid is None
+        assert task.worker_identity is None
+        assert task.current_run_id is None
+        assert run is not None and run.ended_at is not None
+        assert run.worker_pid is None
+        assert run.worker_identity is None
+    finally:
+        _cleanup_dashboard_process_group(proc)
 
 
 def test_event_dict_includes_run_id(client):
@@ -1436,7 +1564,10 @@ def test_event_dict_includes_run_id(client):
     try:
         kb.claim_task(conn, tid)
         run_id = kb.latest_run(conn, tid).id
-        kb.complete_task(conn, tid, summary="wss")
+        kb.complete_task(
+            conn, tid, summary="wss", expected_run_id=run_id,
+            expected_claim_lock=kb.get_task(conn, tid).claim_lock,
+        )
     finally:
         conn.close()
 
@@ -1919,9 +2050,8 @@ def test_board_warnings_cleared_after_clean_completion(client):
     assert parent_dict.get("warnings") is None
 
 
-def test_reclaim_endpoint_releases_running_claim(client):
-    """POST /tasks/<id>/reclaim drops the claim, returns ok, and emits
-    a manual reclaimed event."""
+def test_reclaim_endpoint_defers_unverifiable_running_claim(client):
+    """Dashboard reclaim cannot clear synthetic/unverifiable ownership."""
     import secrets
     conn = kb.connect()
     try:
@@ -1948,19 +2078,16 @@ def test_reclaim_endpoint_releases_running_claim(client):
         f"/api/plugins/kanban/tasks/{t}/reclaim",
         json={"reason": "browser recovery"},
     )
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["ok"] is True
-    assert body["task_id"] == t
+    assert r.status_code == 409, r.text
 
-    # Confirm the task is back to ready.
+    # Confirm the task ownership remains bound for a later safe retry.
     conn2 = kb.connect()
     try:
         row = conn2.execute(
             "SELECT status, claim_lock FROM tasks WHERE id=?", (t,),
         ).fetchone()
-        assert row["status"] == "ready"
-        assert row["claim_lock"] is None
+        assert row["status"] == "running"
+        assert row["claim_lock"] == lock
     finally:
         conn2.close()
 
@@ -2026,9 +2153,8 @@ def test_reassign_endpoint_409_on_running_without_reclaim(client):
     assert r.status_code == 409
 
 
-def test_reassign_endpoint_with_reclaim_first_succeeds_on_running(client):
-    """With reclaim_first=true, a running task is reclaimed+reassigned in
-    one call."""
+def test_reassign_endpoint_with_reclaim_first_defers_unverifiable_running(client):
+    """Dashboard reassign cannot bypass failed closed tree ownership."""
     import secrets
     conn = kb.connect()
     try:
@@ -2054,16 +2180,15 @@ def test_reassign_endpoint_with_reclaim_first_succeeds_on_running(client):
         f"/api/plugins/kanban/tasks/{t}/reassign",
         json={"profile": "new", "reclaim_first": True, "reason": "switch"},
     )
-    assert r.status_code == 200, r.text
-    assert r.json()["assignee"] == "new"
+    assert r.status_code == 409, r.text
 
     conn2 = kb.connect()
     try:
         row = conn2.execute(
             "SELECT status, assignee FROM tasks WHERE id=?", (t,),
         ).fetchone()
-        assert row["status"] == "ready"
-        assert row["assignee"] == "new"
+        assert row["status"] == "running"
+        assert row["assignee"] == "orig"
     finally:
         conn2.close()
 
@@ -2392,7 +2517,10 @@ def test_task_detail_exposes_latest_summary_when_result_is_empty(client):
     conn = kb.connect()
     task_id = kb.create_task(conn, title="Task with only run summary")
     kb.claim_task(conn, task_id)
-    kb.complete_task(conn, task_id, summary="Report written to /output/report.md")
+    kb.complete_task(
+        conn, task_id, summary="Report written to /output/report.md",
+        expected_run_id=kb.latest_run(conn, task_id).id,
+        expected_claim_lock=kb.get_task(conn, task_id).claim_lock,    )
     conn.close()
 
     r = client.get(f"/api/plugins/kanban/tasks/{task_id}")
@@ -2420,7 +2548,10 @@ def test_board_tasks_include_latest_summary(client):
     conn = kb.connect()
     task_id = kb.create_task(conn, title="Board card with summary only")
     kb.claim_task(conn, task_id)
-    kb.complete_task(conn, task_id, summary="Done: see attachment")
+    kb.complete_task(
+        conn, task_id, summary="Done: see attachment",
+        expected_run_id=kb.latest_run(conn, task_id).id,
+        expected_claim_lock=kb.get_task(conn, task_id).claim_lock,    )
     conn.close()
 
     r = client.get("/api/plugins/kanban/board")

@@ -65,6 +65,7 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             conn, tid,
             reason="review-required: please verify ACL change",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
+            expected_claim_lock=kb.get_task(conn, tid).claim_lock,
         )
         assert kb.get_task(conn, tid).status == "blocked"
 
@@ -91,6 +92,7 @@ def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Pa
             conn, child,
             reason="review-required: child needs sign-off",
             expected_run_id=kb.get_task(conn, child).current_run_id,
+            expected_claim_lock=kb.get_task(conn, child).claim_lock,
         )
         assert kb.get_task(conn, child).status == "blocked"
 
@@ -187,6 +189,7 @@ def test_unblock_clears_sticky_state_and_lets_block_recover(kanban_home: Path) -
             conn, tid,
             reason="review-required: ...",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
+            expected_claim_lock=kb.get_task(conn, tid).claim_lock,
         )
         assert kb.unblock_task(conn, tid)
         # After unblock the task is no longer blocked at all.
@@ -238,6 +241,7 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
             conn, tid,
             reason="review-required: human eyes please",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
+            expected_claim_lock=kb.get_task(conn, tid).claim_lock,
         )
         assert kb.get_task(conn, tid).status == "blocked"
 

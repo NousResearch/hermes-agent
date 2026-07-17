@@ -333,9 +333,12 @@ def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
         child = kb.create_task(
             conn, title="child", assignee="a", parents=[parent],
         )
-        # Complete the parent
-        kb.claim_task(conn, parent)
-        kb.complete_task(conn, parent, result="ok")
+        # Complete the parent as the active worker.
+        claimed_parent = kb.claim_task(conn, parent)
+        assert claimed_parent is not None and claimed_parent.current_run_id is not None
+        assert kb.complete_task(
+            conn, parent, result="ok", expected_run_id=claimed_parent.current_run_id, expected_claim_lock=claimed_parent.claim_lock,
+        )
         # Manually block the child with zero failures (simulates a
         # dependency block, not a circuit-breaker block).
         conn.execute(
@@ -469,8 +472,21 @@ def test_stale_claim_with_live_pid_extends_instead_of_reclaiming(
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
         host = _kb._claimer_id().split(":", 1)[0]
-        kb.claim_task(conn, t, claimer=f"{host}:worker")
-        kb._set_worker_pid(conn, t, 12345)
+        monkeypatch.setattr(
+            _kb, "_supervisor_process_identity", lambda _pid: "test-incarnation",
+        )
+        monkeypatch.setattr(_kb.os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(_kb.os, "getsid", lambda pid: pid)
+        monkeypatch.setattr(
+            _kb, "_linux_process_group_has_live_member", lambda _pid: True,
+        )
+        claimed = kb.claim_task(conn, t, claimer=f"{host}:worker")
+        assert claimed is not None and claimed.current_run_id is not None
+        assert kb._set_worker_pid(conn, t, 12345)
+        task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
+        assert task is not None and run is not None
+        assert task.worker_identity == run.worker_identity == "test-incarnation"
 
         old_expires = int(time.time()) - 60
         conn.execute(
@@ -505,12 +521,25 @@ def test_stale_claim_with_live_pid_uses_env_ttl_override(
     import hermes_cli.kanban_db as _kb
 
     monkeypatch.setenv("HERMES_KANBAN_CLAIM_TTL_SECONDS", "3600")
+    monkeypatch.setattr(
+        _kb, "_supervisor_process_identity", lambda _pid: "test-incarnation",
+    )
+    monkeypatch.setattr(_kb.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(_kb.os, "getsid", lambda pid: pid)
+    monkeypatch.setattr(
+        _kb, "_linux_process_group_has_live_member", lambda _pid: True,
+    )
 
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
         host = _kb._claimer_id().split(":", 1)[0]
-        kb.claim_task(conn, t, claimer=f"{host}:worker")
-        kb._set_worker_pid(conn, t, 12345)
+        claimed = kb.claim_task(conn, t, claimer=f"{host}:worker")
+        assert claimed is not None and claimed.current_run_id is not None
+        assert kb._set_worker_pid(conn, t, 12345)
+        task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
+        assert task is not None and run is not None
+        assert task.worker_identity == run.worker_identity == "test-incarnation"
         conn.execute(
             "UPDATE tasks SET claim_expires = ? WHERE id = ?",
             (int(time.time()) - 60, t),
@@ -524,6 +553,90 @@ def test_stale_claim_with_live_pid_uses_env_ttl_override(
         assert task is not None
         assert task.claim_expires is not None
         assert task.claim_expires > int(time.time()) + 3000
+
+
+@pytest.mark.parametrize(
+    ("registered_identity", "observed_identity"),
+    [
+        (None, "replacement-incarnation"),
+        ("registered-incarnation", "replacement-incarnation"),
+    ],
+    ids=["identity-absent", "identity-mismatched"],
+)
+@pytest.mark.parametrize(
+    "sweeper",
+    ["release_stale_claims", "detect_stale_running"],
+)
+def test_live_unverified_identity_defers_without_extending_task_or_run_lease(
+    kanban_home, monkeypatch, registered_identity, observed_identity, sweeper,
+):
+    """Live PIDs without incarnation proof keep ownership but cannot renew it."""
+    import hermes_cli.kanban_db as _kb
+
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        _kb, "_supervisor_process_identity", lambda _pid: registered_identity,
+    )
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(
+        _kb.os, "killpg", lambda pid, sig: signals.append((pid, sig)),
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="unverified live worker", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        claimed = kb.claim_task(conn, task_id, claimer=f"{host}:worker")
+        assert claimed is not None
+        assert claimed.current_run_id is not None
+        assert claimed.claim_lock is not None
+        assert kb._set_worker_pid(conn, task_id, 12345)
+
+        old_expires = int(time.time()) - 60
+        old_started = int(time.time()) - (5 * 3600)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET claim_expires = ?, started_at = ?, "
+                "last_heartbeat_at = NULL WHERE id = ?",
+                (old_expires, old_started, task_id),
+            )
+            conn.execute(
+                "UPDATE task_runs SET claim_expires = ?, started_at = ? WHERE id = ?",
+                (old_expires, old_started, claimed.current_run_id),
+            )
+
+        monkeypatch.setattr(
+            _kb, "_supervisor_process_identity", lambda _pid: observed_identity,
+        )
+        if sweeper == "release_stale_claims":
+            assert kb.release_stale_claims(conn) == 0
+        else:
+            assert kb.detect_stale_running(
+                conn, stale_timeout_seconds=14400,
+            ) == []
+
+        task = kb.get_task(conn, task_id)
+        run = kb.latest_run(conn, task_id)
+        assert task is not None and run is not None
+        assert task.status == "running"
+        assert task.current_run_id == claimed.current_run_id
+        assert task.claim_lock == claimed.claim_lock
+        assert task.worker_pid == 12345
+        assert task.worker_identity == registered_identity
+        assert task.claim_expires == old_expires
+        assert run.id == claimed.current_run_id
+        assert run.status == "running"
+        assert run.ended_at is None
+        assert run.claim_lock == claimed.claim_lock
+        assert run.worker_pid == 12345
+        assert run.worker_identity == registered_identity
+        assert run.claim_expires == old_expires
+        assert signals == []
+
+        event_kinds = [event.kind for event in kb.list_events(conn, task_id)]
+        assert "reclaim_deferred" in event_kinds
+        assert "claim_extended" not in event_kinds
+        assert "reclaimed" not in event_kinds
+        assert "stale" not in event_kinds
 
 
 def test_stale_claim_deferred_when_live_worker_survives_termination(
@@ -613,14 +726,10 @@ def test_stale_claim_reclaimed_when_termination_succeeds(
         assert kb.get_task(conn, t).status == "ready"
 
 
-def test_stale_claim_released_when_worker_not_host_local(
+def test_stale_claim_defers_when_worker_not_host_local(
     kanban_home, monkeypatch,
 ):
-    """The defer guard only holds OUR own surviving workers.
-
-    A claim we cannot manage (different host, or no kill attempted) must still
-    be released, otherwise a foreign-host claim could strand a task forever.
-    """
+    """A foreign/unmanaged claim is active ownership, never release proof."""
     import hermes_cli.kanban_db as _kb
 
     with kb.connect() as conn:
@@ -643,8 +752,14 @@ def test_stale_claim_released_when_worker_not_host_local(
             },
         )
         reclaimed = kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
-        assert reclaimed == 1
-        assert kb.get_task(conn, t).status == "ready"
+        assert reclaimed == 0
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.status == "running"
+        assert task.claim_lock == f"{host}:worker"
+        assert task.worker_pid == 12345
+        events = kb.list_events(conn, t)
+        assert any(event.kind == "reclaim_deferred" for event in events)
 
 
 def test_detect_stale_defers_when_live_worker_survives(kanban_home, monkeypatch):
@@ -1062,7 +1177,7 @@ def test_pid_registration_cas_rejects_terminal_run_without_late_spawn_event(kanb
         assert claimed is not None
         assert claimed.claim_lock is not None
         assert claimed.current_run_id is not None
-        assert kb.complete_task(conn, task_id, expected_run_id=claimed.current_run_id)
+        assert kb.complete_task(conn, task_id, expected_run_id=claimed.current_run_id, expected_claim_lock=claimed.claim_lock)
 
         assert not kb._set_worker_pid(
             conn,
@@ -1420,8 +1535,11 @@ def test_complete_records_result(kanban_home):
 def test_block_then_unblock(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
-        kb.claim_task(conn, t)
-        assert kb.block_task(conn, t, reason="need input")
+        claimed = kb.claim_task(conn, t)
+        assert claimed is not None and claimed.current_run_id is not None
+        assert kb.block_task(
+            conn, t, reason="need input", expected_run_id=claimed.current_run_id, expected_claim_lock=claimed.claim_lock,
+        )
         assert kb.get_task(conn, t).status == "blocked"
         assert kb.unblock_task(conn, t)
         assert kb.get_task(conn, t).status == "ready"
@@ -1431,8 +1549,11 @@ def test_unblock_resets_failure_counters(kanban_home):
     """unblock_task must reset consecutive_failures and last_failure_error."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
-        kb.claim_task(conn, t)
-        assert kb.block_task(conn, t, reason="need input")
+        claimed = kb.claim_task(conn, t)
+        assert claimed is not None and claimed.current_run_id is not None
+        assert kb.block_task(
+            conn, t, reason="need input", expected_run_id=claimed.current_run_id, expected_claim_lock=claimed.claim_lock,
+        )
         # Simulate accumulated failures from the circuit breaker
         conn.execute(
             "UPDATE tasks SET consecutive_failures = 5, "
@@ -1459,9 +1580,13 @@ def test_recompute_ready_skips_tasks_at_failure_limit(kanban_home):
         parent = kb.create_task(conn, title="parent", assignee="a")
         child = kb.create_task(conn, title="child", assignee="a",
                                parents=[parent])
-        # Complete the parent so the child's dependencies are satisfied.
-        kb.claim_task(conn, parent)
-        kb.complete_task(conn, parent, summary="done")
+        # Complete the parent as the active worker so the child's dependencies
+        # are satisfied.
+        claimed_parent = kb.claim_task(conn, parent)
+        assert claimed_parent is not None and claimed_parent.current_run_id is not None
+        assert kb.complete_task(
+            conn, parent, summary="done", expected_run_id=claimed_parent.current_run_id, expected_claim_lock=claimed_parent.claim_lock,
+        )
 
         # Simulate the child having exhausted its budget twice,
         # hitting the default failure limit (2).
@@ -1640,8 +1765,11 @@ def test_claim_succeeds_once_parents_done(kanban_home):
         child = kb.create_task(
             conn, title="child", assignee="a", parents=[parent],
         )
-        kb.claim_task(conn, parent)
-        assert kb.complete_task(conn, parent, result="ok")
+        claimed_parent = kb.claim_task(conn, parent)
+        assert claimed_parent is not None and claimed_parent.current_run_id is not None
+        assert kb.complete_task(
+            conn, parent, result="ok", expected_run_id=claimed_parent.current_run_id, expected_claim_lock=claimed_parent.claim_lock,
+        )
         kb.recompute_ready(conn)
         assert kb.get_task(conn, child).status == "ready"
         claimed = kb.claim_task(conn, child, claimer="host:1")
@@ -1662,10 +1790,13 @@ def test_create_with_parents_stays_todo_until_parents_done(kanban_home):
         promoted = kb.recompute_ready(conn)
         assert promoted == 0
         assert kb.get_task(conn, child).status == "todo"
-        # Complete parent; complete_task internally runs recompute_ready,
-        # which promotes the child to 'ready'.
-        kb.claim_task(conn, parent)
-        kb.complete_task(conn, parent, result="ok")
+        # Complete parent as its active worker; complete_task internally runs
+        # recompute_ready, which promotes the child to 'ready'.
+        claimed_parent = kb.claim_task(conn, parent)
+        assert claimed_parent is not None and claimed_parent.current_run_id is not None
+        assert kb.complete_task(
+            conn, parent, result="ok", expected_run_id=claimed_parent.current_run_id, expected_claim_lock=claimed_parent.claim_lock,
+        )
         assert kb.get_task(conn, child).status == "ready"
 
 
@@ -1690,8 +1821,11 @@ def test_unblock_with_pending_parents_goes_to_todo(kanban_home):
         assert kb.unblock_task(conn, child)
         assert kb.get_task(conn, child).status == "todo"
         # After parent completes + recompute, the child is ready.
-        kb.claim_task(conn, parent)
-        kb.complete_task(conn, parent, result="ok")
+        claimed_parent = kb.claim_task(conn, parent)
+        assert claimed_parent is not None and claimed_parent.current_run_id is not None
+        assert kb.complete_task(
+            conn, parent, result="ok", expected_run_id=claimed_parent.current_run_id, expected_claim_lock=claimed_parent.claim_lock,
+        )
         kb.recompute_ready(conn)
         assert kb.get_task(conn, child).status == "ready"
 
@@ -1700,8 +1834,11 @@ def test_unblock_without_parents_goes_to_ready(kanban_home):
     """Parent-free unblock still produces 'ready' (behavior preserved)."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="lone", assignee="a")
-        kb.claim_task(conn, t)
-        assert kb.block_task(conn, t, reason="need input")
+        claimed = kb.claim_task(conn, t)
+        assert claimed is not None and claimed.current_run_id is not None
+        assert kb.block_task(
+            conn, t, reason="need input", expected_run_id=claimed.current_run_id, expected_claim_lock=claimed.claim_lock,
+        )
         assert kb.unblock_task(conn, t)
         assert kb.get_task(conn, t).status == "ready"
 
@@ -1862,8 +1999,11 @@ def test_empty_comment_rejected(kanban_home):
 def test_events_capture_lifecycle(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
-        kb.claim_task(conn, t)
-        kb.complete_task(conn, t, result="ok")
+        claimed = kb.claim_task(conn, t)
+        assert claimed is not None and claimed.current_run_id is not None
+        assert kb.complete_task(
+            conn, t, result="ok", expected_run_id=claimed.current_run_id, expected_claim_lock=claimed.claim_lock,
+        )
         events = kb.list_events(conn, t)
     kinds = [e.kind for e in events]
     assert "created" in kinds
@@ -2040,7 +2180,7 @@ def test_dispatch_max_spawn_fills_remaining_capacity(
         assert kb.get_task(conn, ready_b).status == "ready"
 
 
-def test_dispatch_reclaims_stale_before_spawning(kanban_home):
+def test_dispatch_defers_stale_unregistered_claim_before_spawning(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="alice")
         kb.claim_task(conn, t)
@@ -2049,7 +2189,8 @@ def test_dispatch_reclaims_stale_before_spawning(kanban_home):
             (int(time.time()) - 1, t),
         )
         res = kb.dispatch_once(conn, dry_run=True)
-    assert res.reclaimed == 1
+    assert res.reclaimed == 0
+    assert kb.get_task(conn, t).status == "running"
 
 
 # ---------------------------------------------------------------------------
@@ -4445,8 +4586,8 @@ def test_detect_stale_skips_blocked_tasks(kanban_home, monkeypatch):
 
     with kb.connect() as conn:
         t = kb.create_task(conn, title="blocked-task", assignee="worker")
-        kb.claim_task(conn, t)
-        kb._set_worker_pid(conn, t, os.getpid())
+        claimed = kb.claim_task(conn, t)
+        assert claimed is not None and claimed.current_run_id is not None
 
         five_hours_ago = int(time.time()) - (5 * 3600)
         with kb.write_txn(conn):
@@ -4458,8 +4599,10 @@ def test_detect_stale_skips_blocked_tasks(kanban_home, monkeypatch):
                 "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
                 (five_hours_ago, t),
             )
-        # Block the task explicitly.
-        kb.block_task(conn, t, reason="human requested block")
+        # Block the task as its active worker.
+        assert kb.block_task(
+            conn, t, reason="human requested block", expected_run_id=claimed.current_run_id, expected_claim_lock=claimed.claim_lock,
+        )
 
         monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
         stale = kb.detect_stale_running(

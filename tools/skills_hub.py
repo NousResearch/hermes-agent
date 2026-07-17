@@ -986,9 +986,9 @@ class GitSource(SkillSource):
             return None
 
         try:
-            revision = self._git_repo(repo, "rev-parse", "HEAD").strip()
+            revision = self._git_repo(repo_url, "rev-parse", "HEAD").strip()
         except subprocess.CalledProcessError as exc:
-            logger.warning("Unable to resolve git revision for %s: %s", repo, exc)
+            logger.warning("Unable to resolve git revision for %s: %s", repo_url, exc)
             return None
         
         tap = self._find_tap(repo_url)

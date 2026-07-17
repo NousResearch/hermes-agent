@@ -336,16 +336,16 @@ class TestGitSource:
     # fetch
     # ------------------------------------------------------------------
 
+    @patch.object(GitSource, "_git_repo")
     @patch.object(GitSource, "_download_directory")
-    def test_fetch_returns_bundle_with_skill_md(self, mock_download):
+    def test_fetch_returns_bundle_with_skill_md(self, mock_download, mock_git_repo):
+        mock_git_repo.return_value = "abc123\n"
         mock_download.return_value = {
             "SKILL.md": "---\nname: my-skill\n---\n\n# Body\n",
             "README.md": "# Readme",
         }
         src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
-
         bundle = src.fetch("https://github.com/x/y.git:skills/my-skill")
-
         assert bundle is not None
         assert bundle.name == "my-skill"
         assert bundle.source == "git"

@@ -41,6 +41,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Discord defaults to "subtext"; everywhere else defaults to "code".
     "reasoning_style": "code",
     "tool_preview_length": 0,
+    "interim_assistant_spacing": "dense",
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter controls. These default on for
     # back-compat, but mobile platforms can opt down to final-answer-first.
@@ -274,4 +275,7 @@ def _normalise(setting: str, value: Any) -> Any:
             return int(value)
         except (TypeError, ValueError):
             return 0
+    if setting == "interim_assistant_spacing":
+        value = str(value or "dense").lower()
+        return value if value in {"dense", "spaced"} else "dense"
     return value

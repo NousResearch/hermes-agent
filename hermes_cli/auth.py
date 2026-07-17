@@ -984,7 +984,25 @@ def _auth_lock_path() -> Path:
     return _auth_file_path().with_suffix(".lock")
 
 
-_auth_lock_holder = threading.local()
+_auth_target_lock_holders: Dict[str, threading.local] = {}
+_auth_target_lock_holders_guard = threading.Lock()
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve(strict=False) == right.resolve(strict=False)
+    except Exception:
+        return left == right
+
+
+def _auth_lock_holder_for(target_path: Path) -> threading.local:
+    """Return a reentrancy tracker keyed to one canonical auth-store path."""
+    try:
+        key = str(target_path.resolve(strict=False))
+    except Exception:
+        key = str(target_path)
+    with _auth_target_lock_holders_guard:
+        return _auth_target_lock_holders.setdefault(key, threading.local())
 
 
 @contextmanager
@@ -1060,8 +1078,16 @@ def _file_lock(
 
 
 @contextmanager
-def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
-    """Cross-process advisory lock for auth.json reads+writes.  Reentrant.
+def _auth_store_lock(
+    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
+    *,
+    target_path: Optional[Path] = None,
+):
+    """Cross-process advisory lock for one auth.json read/write transaction.
+
+    ``target_path`` is required for profile-to-global write-throughs. A profile
+    lock does not protect the distinct global auth store; each path therefore
+    uses its own reentrancy tracker and kernel lock.
 
     Lock ordering invariant: when this lock is held together with
     ``_nous_shared_store_lock``, acquire ``_auth_store_lock`` FIRST
@@ -1069,9 +1095,11 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
     refresh paths follow this order; violating it risks deadlock
     against a concurrent import on the shared store.
     """
+    auth_path = target_path if target_path is not None else _auth_file_path()
+    lock_path = auth_path.with_suffix(".lock") if target_path is not None else _auth_lock_path()
     with _file_lock(
-        _auth_lock_path(),
-        _auth_lock_holder,
+        lock_path,
+        _auth_lock_holder_for(auth_path),
         timeout_seconds,
         "Timed out waiting for auth store lock",
     ):
@@ -1204,6 +1232,37 @@ def _load_provider_state_with_source(
     return None, None
 
 
+@contextmanager
+def _provider_state_transaction(provider_id: str):
+    """Lock the active auth store and any global fallback source in order.
+
+    Profile-backed refresh paths must take the global auth-store lock before
+    any provider-specific shared-store lock. Re-reading the source after the
+    target lock is acquired prevents both stale refreshes and whole-file lost
+    updates without inverting the documented auth -> shared lock order.
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state, source_path = _load_provider_state_with_source(
+            auth_store,
+            provider_id,
+        )
+        active_path = _auth_file_path()
+        if source_path is None or _same_path(source_path, active_path):
+            yield auth_store, state, source_path
+            return
+
+        with _auth_store_lock(target_path=source_path):
+            source_store = _load_auth_store(source_path)
+            source_providers = source_store.get("providers")
+            source_state = None
+            if isinstance(source_providers, dict):
+                raw_state = source_providers.get(provider_id)
+                if isinstance(raw_state, dict):
+                    source_state = dict(raw_state)
+            yield auth_store, source_state, source_path
+
+
 def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Optional[Dict[str, Any]]:
     """Return a provider's persisted state.
 
@@ -1247,9 +1306,12 @@ def _save_provider_state_to_source(
         _save_auth_store(auth_store)
         return
 
-    source_store = _load_auth_store(source_path)
-    _save_provider_state(source_store, provider_id, state)
-    _save_auth_store(source_store, target_path=source_path)
+    _persist_provider_state_to_store(
+        provider_id,
+        state,
+        source_path,
+        set_active=True,
+    )
 
 
 def _store_provider_state(
@@ -1266,6 +1328,25 @@ def _store_provider_state(
     providers[provider_id] = state
     if set_active:
         auth_store["active_provider"] = provider_id
+
+
+def _persist_provider_state_to_store(
+    provider_id: str,
+    state: Dict[str, Any],
+    target_path: Path,
+    *,
+    set_active: bool = False,
+) -> Path:
+    """Merge one provider into a specific auth store under that store's lock."""
+    with _auth_store_lock(target_path=target_path):
+        auth_store = _load_auth_store(target_path)
+        _store_provider_state(
+            auth_store,
+            provider_id,
+            dict(state),
+            set_active=set_active,
+        )
+        return _save_auth_store(auth_store, target_path=target_path)
 
 
 def mark_provider_active_if_unset(provider_id: str) -> None:
@@ -1296,6 +1377,27 @@ def get_auth_provider_display_name(provider_id: str) -> str:
     if normalized in PROVIDER_REGISTRY:
         return PROVIDER_REGISTRY[normalized].name
     return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
+
+
+def is_runtime_provider_routable(provider_id: str) -> bool:
+    """Return whether runtime resolution recognizes a provider identity.
+
+    This is a capability check, not a credential check. It follows the same
+    alias/plugin-aware normalization as ``resolve_provider`` while preserving
+    special runtime identities that intentionally live outside the registry.
+    """
+    normalized = (provider_id or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized in {"auto", "openrouter", "custom", "moa"}:
+        return True
+    if normalized.startswith("custom:"):
+        return True
+    try:
+        resolve_provider(normalized)
+    except AuthError:
+        return False
+    return True
 
 
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1503,6 +1605,12 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     # not by the user explicitly configuring anthropic in Hermes.
     _IMPLICIT_ENV_VARS = {"CLAUDE_CODE_OAUTH_TOKEN"}
     pconfig = PROVIDER_REGISTRY.get(normalized)
+    # Fallback to ProviderDef from models.dev catalog when the provider
+    # isn't in the manually-maintained PROVIDER_REGISTRY (e.g. openrouter).
+    # Both expose .auth_type and .api_key_env_vars with the same shape.
+    if pconfig is None:
+        from hermes_cli.providers import get_provider
+        pconfig = get_provider(normalized)
     if pconfig and pconfig.auth_type == "api_key":
         for env_var in pconfig.api_key_env_vars:
             if env_var in _IMPLICIT_ENV_VARS:
@@ -3988,14 +4096,12 @@ def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
             except Exception:
                 return
     try:
-        if global_path.exists():
-            global_store = _load_auth_store(global_path)
-        else:
-            global_store = {}
-        if not isinstance(global_store, dict):
-            return
-        _store_provider_state(global_store, "xai-oauth", dict(state), set_active=False)
-        _save_auth_store(global_store, global_path)
+        _persist_provider_state_to_store(
+            "xai-oauth",
+            state,
+            global_path,
+            set_active=False,
+        )
     except Exception as exc:  # pragma: no cover - best effort
         logger.debug("xAI OAuth: write-through to global root failed: %s", exc)
 
@@ -4902,11 +5008,11 @@ def _quarantine_nous_oauth_state(
     reason: str,
 ) -> None:
     """Keep routing metadata but remove dead OAuth material so it is not replayed."""
-    # Forensic logging BEFORE we clear the token material. A NAS-hosted Fly agent
+    # Forensic logging BEFORE we clear the token material. A hosted agent
     # can take a terminal invalid_grant and get quarantined here silently: the
     # only downstream signal is a "No access token found" WARNING once the pool
-    # is already empty, which is too late to root-cause. The Fly log drain is
-    # WARNING-only, so this MUST be logger.warning (INFO never reaches the drain).
+    # is already empty, which is too late to root-cause. A managed log drain may
+    # be WARNING-only, so this MUST be logger.warning (INFO never reaches it).
     #
     # Redaction safety: emit ONLY the 12-char SHA-256 hex prefix of the refresh
     # token (correlates to NAS's refreshTokenHash without leaking the secret) plus
@@ -5219,9 +5325,11 @@ def resolve_nous_access_token(
     refresh_skew_seconds: int = ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> str:
     """Resolve a refresh-aware Nous Portal access token for managed tool gateways."""
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        state, state_source_path = _load_provider_state_with_source(auth_store, "nous")
+    with _provider_state_transaction("nous") as (
+        auth_store,
+        state,
+        state_source_path,
+    ):
 
         if not state:
             raise AuthError(
@@ -5550,9 +5658,11 @@ def resolve_nous_runtime_credentials(
     """
     sequence_id = uuid.uuid4().hex[:12]
 
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        state, state_source_path = _load_provider_state_with_source(auth_store, "nous")
+    with _provider_state_transaction("nous") as (
+        auth_store,
+        state,
+        state_source_path,
+    ):
 
         if not state:
             raise AuthError("Hermes is not logged into Nous Portal.",
@@ -5561,52 +5671,72 @@ def resolve_nous_runtime_credentials(
         persisted_state = dict(state)
         state_persisted = False
 
-        portal_base_url = (
-            _optional_base_url(state.get("portal_base_url"))
-            or os.getenv("HERMES_PORTAL_BASE_URL")
-            or os.getenv("NOUS_PORTAL_BASE_URL")
-            or DEFAULT_NOUS_PORTAL_URL
-        ).rstrip("/")
+        def _resolve_effective_routing_metadata() -> tuple[str, str, str, str]:
+            """Resolve every routing value that shared OAuth state can replace."""
+            portal_url = (
+                _optional_base_url(state.get("portal_base_url"))
+                or os.getenv("HERMES_PORTAL_BASE_URL")
+                or os.getenv("NOUS_PORTAL_BASE_URL")
+                or DEFAULT_NOUS_PORTAL_URL
+            ).rstrip("/")
 
-        # A persisted/stale portal_base_url is where the refresh token gets
-        # POSTed on refresh — reject any host outside the allowlist so a
-        # poisoned value can't exfiltrate the bearer, healing to the default.
-        # The trusted operator/deployment env override (HERMES_PORTAL_BASE_URL /
-        # NOUS_PORTAL_BASE_URL) bypasses this gate entirely — mirrors
-        # NOUS_INFERENCE_BASE_URL's treatment below; the allowlist exists to
-        # reject an untrusted NETWORK-provided value, not one the operator
-        # explicitly configured.
-        env_portal_override = _nous_portal_env_override()
-        if env_portal_override:
-            portal_base_url = env_portal_override.rstrip("/")
-        else:
-            parsed_portal_url = urlparse(portal_base_url)
-            if parsed_portal_url.hostname and parsed_portal_url.hostname not in _NOUS_PORTAL_ALLOWED_HOSTS:
-                logger.warning(
-                    "auth: ignoring invalid portal_base_url %r (host %r not in allowlist), using default",
-                    portal_base_url, parsed_portal_url.hostname,
+            # A persisted/stale portal_base_url is where the refresh token gets
+            # POSTed on refresh — reject any host outside the allowlist so a
+            # poisoned value can't exfiltrate the bearer, healing to the default.
+            # Trusted operator env overrides bypass this network-value gate.
+            env_portal_override = _nous_portal_env_override()
+            if env_portal_override:
+                portal_url = env_portal_override.rstrip("/")
+            else:
+                parsed_portal_url = urlparse(portal_url)
+                portal_host = parsed_portal_url.hostname
+                loopback_http = (
+                    parsed_portal_url.scheme == "http"
+                    and portal_host in {"localhost", "127.0.0.1"}
                 )
-                portal_base_url = DEFAULT_NOUS_PORTAL_URL
+                trusted_scheme = (
+                    parsed_portal_url.scheme == "https" or loopback_http
+                )
+                if (
+                    not portal_host
+                    or portal_host not in _NOUS_PORTAL_ALLOWED_HOSTS
+                    or not trusted_scheme
+                ):
+                    logger.warning(
+                        "auth: ignoring invalid portal_base_url %r "
+                        "(host %r or scheme not allowed), using default",
+                        portal_url,
+                        portal_host,
+                    )
+                    portal_url = DEFAULT_NOUS_PORTAL_URL
 
-        # Persisted value: validated network-provenance only. The stored
-        # inference_base_url is re-validated on read so a poisoned/stale
-        # staging host (persisted before the allowlist existed) heals to the
-        # production default on the no-refresh read path — this is what gets
-        # written back to auth.json. The env override is deliberately NOT
-        # folded in here: it must never be persisted (it's a runtime overlay).
-        stored_inference_base_url = (
-            _validate_nous_inference_url_from_network(
-                _optional_base_url(state.get("inference_base_url"))
+            # Re-validate persisted network-provenance on every shared merge.
+            # The env override is runtime-only and must never be persisted.
+            stored_inference_url = (
+                _validate_nous_inference_url_from_network(
+                    _optional_base_url(state.get("inference_base_url"))
+                )
+                or DEFAULT_NOUS_INFERENCE_URL
             )
-            or DEFAULT_NOUS_INFERENCE_URL
-        )
-        # Effective value used to build the client / returned to callers:
-        # the NOUS_INFERENCE_BASE_URL env override wins (documented dev/staging
-        # escape hatch), else the validated stored value.
-        inference_base_url = (
-            _nous_inference_env_override() or stored_inference_base_url
-        )
-        client_id = str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID)
+            effective_inference_url = (
+                _nous_inference_env_override() or stored_inference_url
+            )
+            effective_client_id = str(
+                state.get("client_id") or DEFAULT_NOUS_CLIENT_ID
+            )
+            return (
+                portal_url,
+                stored_inference_url,
+                effective_inference_url,
+                effective_client_id,
+            )
+
+        (
+            portal_base_url,
+            stored_inference_base_url,
+            inference_base_url,
+            client_id,
+        ) = _resolve_effective_routing_metadata()
 
         def _persist_state(reason: str) -> None:
             nonlocal persisted_state, state_persisted
@@ -5660,6 +5790,21 @@ def resolve_nous_runtime_credentials(
             refresh_token = state.get("refresh_token")
 
             if not isinstance(access_token, str) or not access_token:
+                with _nous_shared_store_lock(
+                    timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)
+                ):
+                    if _merge_shared_nous_oauth_state(state):
+                        access_token = state.get("access_token")
+                        refresh_token = state.get("refresh_token")
+                        (
+                            portal_base_url,
+                            stored_inference_base_url,
+                            inference_base_url,
+                            client_id,
+                        ) = _resolve_effective_routing_metadata()
+                        _persist_state("runtime_shared_merge_missing_access_token")
+
+            if not isinstance(access_token, str) or not access_token:
                 raise AuthError("No access token found for Nous Portal login.",
                                 provider="nous", relogin_required=True)
 
@@ -5673,6 +5818,12 @@ def resolve_nous_runtime_credentials(
                     if _merge_shared_nous_oauth_state(state):
                         access_token = state.get("access_token")
                         refresh_token = state.get("refresh_token")
+                        (
+                            portal_base_url,
+                            stored_inference_base_url,
+                            inference_base_url,
+                            client_id,
+                        ) = _resolve_effective_routing_metadata()
                         invoke_jwt_status = _nous_invoke_jwt_status(
                             access_token,
                             scope=state.get("scope"),
@@ -5737,6 +5888,11 @@ def resolve_nous_runtime_credentials(
                         inference_base_url = (
                             _nous_inference_env_override() or stored_inference_base_url
                         )
+                        # Persist network-derived routing with rotated tokens so
+                        # a later JWT validation failure cannot leave the profile
+                        # and shared stores on stale metadata. Never persist the
+                        # operator-only env overlay.
+                        state["inference_base_url"] = stored_inference_base_url
                         state["obtained_at"] = now.isoformat()
                         state["expires_in"] = access_ttl
                         state["expires_at"] = datetime.fromtimestamp(

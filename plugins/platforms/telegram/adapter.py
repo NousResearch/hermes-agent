@@ -269,6 +269,19 @@ from gateway.platforms.base import (
     _TEXT_INJECT_EXTENSIONS,
     utf16_len,
 )
+from gateway.topic_hooks import (
+    HookDecision,
+    MediaDescriptor,
+    TopicHookRegistry,
+    TopicPluginHook,
+)
+from gateway.topic_routing import (
+    GENERAL_TOPIC_THREAD_ID,
+    RouteDenied,
+    RouteOrigin,
+    TopicRoute,
+    TopicRouteRegistry,
+)
 from plugins.platforms.telegram.telegram_ids import (
     normalize_telegram_chat_id,
 )
@@ -695,6 +708,26 @@ class TelegramAdapter(BasePlatformAdapter):
         self._status_offline_text: str = str(
             self.config.extra.get("status_offline", "Offline")
         )
+        # ── Strict topic routing (generic seam; gateway/topic_routing.py) ──
+        # Opt-in via gateway config:
+        #   extra.topic_routing:
+        #     mode: strict
+        #     routes: [{chat_id: <owner>, thread_id: 1, profile: sol}, ...]
+        # When enabled, EVERY inbound text/command/media/callback update is
+        # resolved against the exact (owner_chat_id, message_thread_id)
+        # registry BEFORE session lookup, media download, or callback
+        # dispatch; unregistered/foreign/missing keys fail closed. Outbound
+        # sends refuse thread fallback. Off (None) preserves existing
+        # behavior byte-for-byte.
+        self._topic_route_registry: Optional[TopicRouteRegistry] = None
+        self._topic_hooks: TopicHookRegistry = TopicHookRegistry()
+        _topic_routing_cfg = self.config.extra.get("topic_routing") or None
+        if _topic_routing_cfg:
+            if str(_topic_routing_cfg.get("mode", "")) != "strict":
+                raise ValueError("topic_routing.mode must be 'strict'")
+            self._topic_route_registry = TopicRouteRegistry.from_config(
+                _topic_routing_cfg.get("routes", [])
+            )
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
         # Precomputed chat_ids that have DM topics configured (for O(1) root-DM ignore check)
@@ -973,6 +1006,160 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or user_id in allowed_ids
+
+    # ── Strict topic routing helpers ────────────────────────────────────
+    def register_topic_hook(self, hook: TopicPluginHook) -> None:
+        """Register an authenticated post-route plugin hook.
+
+        Requires strict topic mode and a registry entry for the hook's
+        profile: a hook can never attach to an unrouted namespace.
+        """
+        if self._topic_route_registry is None:
+            raise ValueError("topic hooks require extra.topic_routing (strict mode)")
+        if self._topic_route_registry.route_for_profile(hook.profile) is None:
+            raise ValueError("topic hook profile has no registered route")
+        self._topic_hooks.register(hook)
+
+    @staticmethod
+    def _strict_thread_key(msg: Any) -> Any:
+        """Thread key for strict routing, with ONE deterministic
+        platform normalization: in a *private* chat, a message that
+        carries no ``message_thread_id`` and is not a topic message IS
+        the non-deletable General lane, which Telegram encodes
+        implicitly — its canonical id is 1. Explicit thread ids are
+        never rewritten, group/supergroup messages are never
+        normalized, and nothing here consults history or "last active"
+        state; unregistered keys still fail closed in the registry."""
+        raw = getattr(msg, "message_thread_id", None)
+        if raw is not None:
+            return raw
+        chat = getattr(msg, "chat", None)
+        chat_type = getattr(chat, "type", None)
+        if str(chat_type) == "private" and not getattr(msg, "is_topic_message", False):
+            return GENERAL_TOPIC_THREAD_ID
+        return None
+
+    #: Sentinel: strict topic mode is off; proceed with legacy behavior.
+    _TOPIC_GATE_OFF = object()
+
+    def _resolve_topic_route(
+        self,
+        chat_id: Any,
+        thread_key: Any,
+        update_id: Any,
+        message_id: Any,
+    ) -> Any:
+        """Resolve one inbound update against the strict registry.
+
+        Returns ``_TOPIC_GATE_OFF`` when strict mode is disabled,
+        ``None`` when the update was denied (fail closed — caller must
+        drop it), or a ``(TopicRoute, RouteOrigin)`` tuple.
+        Only the stable reason code is ever logged.
+        """
+        registry = getattr(self, "_topic_route_registry", None)
+        if registry is None:
+            return self._TOPIC_GATE_OFF
+        try:
+            route = registry.resolve(chat_id, thread_key)
+        except RouteDenied as denied:
+            logger.warning("[%s] %s", self.name, denied.reason_code)
+            return None
+        bot_id = getattr(self._bot, "id", None)
+        origin = RouteOrigin(
+            bot_id=str(bot_id) if bot_id is not None else "",
+            owner_chat_id=route.owner_chat_id,
+            thread_id=route.thread_id,
+            update_id=int(update_id) if update_id is not None else 0,
+            message_id=int(message_id) if message_id is not None else 0,
+        )
+        return route, origin
+
+    def _origin_reply(self, origin: RouteOrigin):
+        """Build the origin-bound reply callable handed to topic hooks.
+
+        Destination is pinned to the origin (owner chat + registered
+        thread); hooks cannot select any other destination. General (1)
+        omits ``message_thread_id`` per Telegram's send semantics."""
+
+        async def _reply(text: str) -> None:
+            bot = self._bot
+            if bot is None:
+                return
+            kwargs: Dict[str, Any] = {}
+            if str(origin.thread_id) != self._GENERAL_TOPIC_THREAD_ID:
+                kwargs["message_thread_id"] = origin.thread_id
+            await bot.send_message(chat_id=origin.owner_chat_id, text=text, **kwargs)
+
+        return _reply
+
+    @staticmethod
+    def _topic_media_descriptor(msg: Any) -> MediaDescriptor:
+        """Pre-download media metadata from the update object only."""
+        kind = "document"
+        file_size = None
+        width = None
+        height = None
+        mime_type = None
+        photo_sizes = getattr(msg, "photo", None)
+        if photo_sizes:
+            kind = "photo"
+            largest = photo_sizes[-1]
+            file_size = getattr(largest, "file_size", None)
+            width = getattr(largest, "width", None)
+            height = getattr(largest, "height", None)
+        elif getattr(msg, "video", None) is not None:
+            kind = "video"
+            file_size = getattr(msg.video, "file_size", None)
+        elif getattr(msg, "sticker", None) is not None:
+            kind = "sticker"
+            file_size = getattr(msg.sticker, "file_size", None)
+        elif getattr(msg, "voice", None) is not None:
+            kind = "audio"
+            file_size = getattr(msg.voice, "file_size", None)
+        elif getattr(msg, "audio", None) is not None:
+            kind = "audio"
+            file_size = getattr(msg.audio, "file_size", None)
+        elif getattr(msg, "document", None) is not None:
+            document = msg.document
+            file_size = getattr(document, "file_size", None)
+            mime_type = getattr(document, "mime_type", None)
+        caption = getattr(msg, "caption", None)
+        return MediaDescriptor(
+            kind=kind,
+            file_size=file_size,
+            width=width,
+            height=height,
+            media_group_id=getattr(msg, "media_group_id", None),
+            mime_type=mime_type,
+            caption_length=len(caption) if caption else 0,
+        )
+
+    def _strict_outbound_denied(
+        self,
+        chat_id: Any,
+        thread_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Outbound gate for strict mode. Returns a stable error string
+        when the send must be refused, else None.
+
+        Refuses (a) any DM-topic fallback/creation marker — no send may
+        fall back outside its registered thread — and (b) any
+        destination that does not resolve to a registered route."""
+        registry = getattr(self, "_topic_route_registry", None)
+        if registry is None:
+            return None
+        if metadata and (
+            metadata.get("telegram_dm_topic_reply_fallback")
+            or metadata.get("telegram_dm_topic_created_for_send")
+        ):
+            return "topic_route_send_fallback_denied"
+        thread_key: Any = thread_id if thread_id else GENERAL_TOPIC_THREAD_ID
+        try:
+            registry.resolve(chat_id, thread_key)
+        except RouteDenied as denied:
+            return denied.reason_code
+        return None
 
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -3875,6 +4062,15 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        # Strict topic routing: outbound is origin-bound. Refuse fallback
+        # markers and unregistered destinations before anything sends.
+        _strict_denied = self._strict_outbound_denied(
+            chat_id, self._metadata_thread_id(metadata), metadata
+        )
+        if _strict_denied is not None:
+            logger.warning("[%s] %s", self.name, _strict_denied)
+            return SendResult(success=False, error=_strict_denied, retryable=False)
+
         # getattr() — tests build adapters via object.__new__() (no __init__).
         if getattr(self, "_send_path_degraded", False):
             return SendResult(success=False, error="send_path_degraded", retryable=True)
@@ -4048,6 +4244,18 @@ class TelegramAdapter(BasePlatformAdapter):
                                         self.name, effective_thread_id,
                                     )
                                     continue
+                                # Strict topic mode: a routed send NEVER falls
+                                # back outside its registered thread — fail
+                                # closed instead of degrading to a plain send.
+                                if getattr(self, "_topic_route_registry", None) is not None:
+                                    logger.warning(
+                                        "[%s] topic_route_thread_gone", self.name
+                                    )
+                                    return SendResult(
+                                        success=False,
+                                        error="topic_route_thread_gone",
+                                        retryable=False,
+                                    )
                                 # Second failure: the thread is genuinely gone.
                                 # Retry without ``message_thread_id`` so the
                                 # message still reaches the chat, and prune
@@ -4758,6 +4966,14 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="not_connected")
 
+        # Strict topic routing: drafts are origin-bound like real sends.
+        _strict_denied = self._strict_outbound_denied(
+            chat_id, self._metadata_thread_id(metadata), metadata
+        )
+        if _strict_denied is not None:
+            logger.warning("[%s] %s", self.name, _strict_denied)
+            return SendResult(success=False, error=_strict_denied, retryable=False)
+
         # Rich draft fast-path (Bot API 10.1 sendRichMessageDraft): render the
         # streaming preview with the same raw markdown the final
         # sendRichMessage will persist, so the animated draft matches the final
@@ -4847,6 +5063,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 and self._is_bad_request_error(send_err)
                 and self._is_thread_not_found_error(send_err)
             ):
+                # Strict topic mode: control sends never fall back outside
+                # their registered thread either — fail closed.
+                if getattr(self, "_topic_route_registry", None) is not None:
+                    logger.warning("[%s] topic_route_thread_gone", self.name)
+                    raise
                 logger.warning(
                     "[%s] Thread %s not found for control message, retrying without message_thread_id",
                     self.name,
@@ -4876,6 +5097,12 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        _strict_denied = self._strict_outbound_denied(
+            chat_id, self._metadata_thread_id(metadata), metadata
+        )
+        if _strict_denied is not None:
+            logger.warning("[%s] %s", self.name, _strict_denied)
+            return SendResult(success=False, error=_strict_denied, retryable=False)
         try:
             default_hint = f" (default: {default})" if default else ""
             text = self.format_message(f"⚕ *Update needs your input:*\n\n{prompt}{default_hint}")
@@ -5677,6 +5904,37 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # Strict topic routing: validate the callback's origin BEFORE any
+        # callback state lookup; unroutable callbacks fail closed with a
+        # value-free acknowledgement. Topic-hook prefixes (e.g. sf1:) are
+        # dispatched to their owning hook and never fall through.
+        strict_gate = self._resolve_topic_route(
+            getattr(query_chat, "id", None) if query_chat is not None else query_chat_id,
+            self._strict_thread_key(query_message) if query_message is not None else None,
+            getattr(update, "update_id", None),
+            getattr(query_message, "message_id", None),
+        )
+        if strict_gate is None:
+            try:
+                await query.answer()
+            except Exception:
+                pass
+            return
+        if strict_gate is not self._TOPIC_GATE_OFF:
+            strict_route, strict_origin = strict_gate
+            if self._topic_hooks.owns_callback(data):
+                try:
+                    await query.answer()
+                except Exception:
+                    pass
+                await self._topic_hooks.dispatch_callback(
+                    strict_route,
+                    strict_origin,
+                    data,
+                    self._origin_reply(strict_origin),
+                )
+                return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):
@@ -7871,6 +8129,23 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "chat", None), "id", None),
             )
             return
+        # Strict topic routing: exact-match the origin BEFORE any session,
+        # batching, or tool work; unroutable updates fail closed.
+        gate = self._resolve_topic_route(
+            getattr(getattr(msg, "chat", None), "id", None),
+            self._strict_thread_key(msg),
+            update.update_id,
+            getattr(msg, "message_id", None),
+        )
+        if gate is None:
+            return
+        if gate is not self._TOPIC_GATE_OFF:
+            route, origin = gate
+            decision = await self._topic_hooks.dispatch_message(
+                route, origin, msg.text or "", self._origin_reply(origin)
+            )
+            if decision is not HookDecision.CONTINUE:
+                return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
@@ -7897,6 +8172,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "chat", None), "id", None),
             )
             return
+        # Strict topic routing: commands fail closed off-registry too.
+        gate = self._resolve_topic_route(
+            getattr(getattr(msg, "chat", None), "id", None),
+            self._strict_thread_key(msg),
+            update.update_id,
+            getattr(msg, "message_id", None),
+        )
+        if gate is None:
+            return
         await self._ensure_forum_commands(msg)
 
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
@@ -7916,6 +8200,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "from_user", None), "id", None),
                 getattr(getattr(msg, "chat", None), "id", None),
             )
+            return
+        # Strict topic routing: locations fail closed off-registry too.
+        if (
+            self._resolve_topic_route(
+                getattr(getattr(msg, "chat", None), "id", None),
+                self._strict_thread_key(msg),
+                getattr(update, "update_id", None),
+                getattr(msg, "message_id", None),
+            )
+            is None
+        ):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
@@ -8121,6 +8416,26 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(update.message, "chat", None), "id", None),
             )
             return
+        # Strict topic routing: route + owner auth resolve BEFORE any
+        # media download; hooks get a pre-download veto (fail closed).
+        gate = self._resolve_topic_route(
+            getattr(getattr(update.message, "chat", None), "id", None),
+            self._strict_thread_key(update.message),
+            update.update_id,
+            getattr(update.message, "message_id", None),
+        )
+        if gate is None:
+            return
+        if gate is not self._TOPIC_GATE_OFF:
+            route, origin = gate
+            decision = await self._topic_hooks.dispatch_media_pre_download(
+                route,
+                origin,
+                self._topic_media_descriptor(update.message),
+                self._origin_reply(origin),
+            )
+            if decision is not HookDecision.CONTINUE:
+                return
         if not self._should_process_message(update.message):
             if self._should_observe_unmentioned_group_message(update.message):
                 _m = update.message

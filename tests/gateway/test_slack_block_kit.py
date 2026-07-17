@@ -19,12 +19,14 @@ class TestRenderBlocksBasics:
         assert render_blocks("") is None
         assert render_blocks("   \n  ") is None
 
-    def test_plain_paragraph_is_section(self):
+    def test_plain_paragraph_is_rich_text(self):
         blocks = render_blocks("just a plain sentence")
         assert blocks is not None
         assert len(blocks) == 1
-        assert blocks[0]["type"] == "section"
-        assert blocks[0]["text"]["type"] == "mrkdwn"
+        assert blocks[0]["type"] == "rich_text"
+        section = blocks[0]["elements"][0]
+        assert section["type"] == "rich_text_section"
+        assert section["elements"][0] == {"type": "text", "text": "just a plain sentence"}
 
     def test_header_becomes_header_block(self):
         blocks = render_blocks("# Title")
@@ -91,6 +93,48 @@ class TestInlineFormatting:
             if el.get("style", {}).get("bold")
         ]
         assert styled, "expected a bold-styled text element in the list item"
+
+    def test_cjk_adjacent_bold_gets_explicit_style(self):
+        """Regression: mrkdwn refuses ``*bold*`` glued to CJK punctuation
+        (no word boundary), so ``**7.39 GB**，`` showed literal asterisks.
+        rich_text style objects don't depend on boundary parsing.
+        """
+        blocks = render_blocks("预计扫描 **7.39 GB**，仍在 10 GB 限制内")
+        section = blocks[0]["elements"][0]
+        bold = [
+            el for el in section["elements"]
+            if el.get("style", {}).get("bold")
+        ]
+        assert bold and bold[0]["text"] == "7.39 GB"
+        assert "**" not in str(blocks)
+
+    def test_user_mention_becomes_user_element(self):
+        blocks = render_blocks("ping <@U012AB3CD> about this")
+        section = blocks[0]["elements"][0]
+        users = [el for el in section["elements"] if el["type"] == "user"]
+        assert users == [{"type": "user", "user_id": "U012AB3CD"}]
+
+    def test_broadcast_and_channel_entities(self):
+        blocks = render_blocks("<!here> see <#C024BE7LR|general>")
+        section = blocks[0]["elements"][0]
+        types = {el["type"] for el in section["elements"]}
+        assert "broadcast" in types
+        assert {"type": "channel", "channel_id": "C024BE7LR"} in section["elements"]
+
+    def test_bare_url_becomes_link_element(self):
+        blocks = render_blocks("详见 https://example.com/x。")
+        section = blocks[0]["elements"][0]
+        links = [el for el in section["elements"] if el["type"] == "link"]
+        # trailing CJK full stop is prose, not part of the URL
+        assert links == [{"type": "link", "url": "https://example.com/x"}]
+        tail = section["elements"][-1]
+        assert tail == {"type": "text", "text": "。"}
+
+    def test_manual_slack_link_with_label(self):
+        blocks = render_blocks("open <https://e.io/a|the dashboard> now")
+        section = blocks[0]["elements"][0]
+        links = [el for el in section["elements"] if el["type"] == "link"]
+        assert links == [{"type": "link", "url": "https://e.io/a", "text": "the dashboard"}]
 
     def test_blank_line_separated_ordered_items_stay_in_one_list(self):
         """Regression: blank lines between ordered items must not reset numbering.
@@ -237,13 +281,19 @@ class TestTables:
 
 
 class TestLimits:
-    def test_oversized_section_is_split_under_limit(self):
+    def test_oversized_paragraph_is_split_under_limit(self):
         big = "word " * 2000  # ~10000 chars, single paragraph
         blocks = render_blocks(big)
         assert blocks is not None
+        assert len(blocks) > 1  # split across multiple paragraph blocks
         for b in blocks:
-            if b["type"] == "section":
-                assert len(b["text"]["text"]) <= MAX_SECTION_TEXT
+            assert b["type"] == "rich_text"
+            total = sum(
+                len(el.get("text", ""))
+                for sec in b["elements"]
+                for el in sec["elements"]
+            )
+            assert total <= MAX_SECTION_TEXT
 
     def test_too_many_blocks_returns_none(self):
         # 60 dividers => 60 blocks > MAX_BLOCKS => decline (caller uses text)

@@ -73,12 +73,29 @@ def _indent_level(spaces: str) -> int:
 # Inline markdown → rich_text elements
 # ----------------------------------------------------------------------------
 
-# Order matters: code first (opaque), then links, then emphasis.
+# Order matters: code first (opaque), then Slack entities, then markdown
+# links, then bare URLs, then emphasis.
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^()\s]+(?:\([^()]*\)[^()\s]*)*)\)")
 _BOLD_RE = re.compile(r"(?:\*\*|__)(.+?)(?:\*\*|__)")
 _ITALIC_RE = re.compile(r"(?<![\*_])(?:\*|_)(?![\*_\s])(.+?)(?<![\*_\s])(?:\*|_)(?![\*_])")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
+# Manual Slack entities the agent (or upstream text) may already contain:
+# user/channel/usergroup mentions, broadcasts, and <url|label> links.  In
+# mrkdwn these render natively; inside rich_text ``text`` elements they would
+# show up literally, so they must map to their dedicated element types.
+_SLACK_ENTITY_RE = re.compile(
+    r"<("
+    r"@[UW][A-Z0-9]+"
+    r"|#C[A-Z0-9]+(?:\|[^>]*)?"
+    r"|!(?:here|channel|everyone)"
+    r"|!subteam\^[A-Z0-9]+(?:\|[^>]*)?"
+    r"|(?:https?|mailto|tel):[^>|]+(?:\|[^>]+)?"
+    r")>"
+)
+_BARE_URL_RE = re.compile(r"https?://[^\s<>|]+")
+# Prose punctuation commonly glued to the end of a bare URL (incl. CJK).
+_URL_TRAILING_PUNCT = ").,;:!?。，；：！？）】」』\"'”’"
 
 
 def _inline_elements(text: str) -> List[Dict[str, Any]]:
@@ -99,28 +116,73 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
         elements.append(el)
 
     # Tokenize by the highest-priority markers first using a single scan.
-    # We recursively split on code, then links, then emphasis to keep spans
-    # from overlapping incorrectly.
+    # We recursively split on code, then Slack entities, then markdown links,
+    # then bare URLs, then emphasis to keep spans from overlapping incorrectly.
     def walk(s: str, style: Dict[str, bool]) -> None:
         pos = 0
         # inline code is opaque — no nested styling
         for m in _INLINE_CODE_RE.finditer(s):
-            _walk_links(s[pos:m.start()], style)
+            _walk_entities(s[pos:m.start()], style)
             code_style = dict(style)
             code_style["code"] = True
             emit_text(m.group(1), code_style or None)
             pos = m.end()
+        _walk_entities(s[pos:], style)
+
+    def _walk_entities(s: str, style: Dict[str, bool]) -> None:
+        pos = 0
+        for m in _SLACK_ENTITY_RE.finditer(s):
+            _walk_links(s[pos:m.start()], style)
+            elements.append(_entity_element(m.group(1), style))
+            pos = m.end()
         _walk_links(s[pos:], style)
+
+    def _entity_element(body: str, style: Dict[str, bool]) -> Dict[str, Any]:
+        el: Dict[str, Any]
+        if body.startswith("@"):
+            el = {"type": "user", "user_id": body[1:]}
+        elif body.startswith("#"):
+            el = {"type": "channel", "channel_id": body[1:].split("|", 1)[0]}
+        elif body.startswith("!subteam^"):
+            el = {
+                "type": "usergroup",
+                "usergroup_id": body[len("!subteam^"):].split("|", 1)[0],
+            }
+        elif body.startswith("!"):
+            # broadcast takes no style property
+            return {"type": "broadcast", "range": body[1:]}
+        else:
+            url, _, label = body.partition("|")
+            el = {"type": "link", "url": url}
+            if label:
+                el["text"] = label
+        if style and el["type"] == "link":
+            el["style"] = dict(style)
+        return el
 
     def _walk_links(s: str, style: Dict[str, bool]) -> None:
         pos = 0
         for m in _LINK_RE.finditer(s):
-            _walk_emphasis(s[pos:m.start()], style)
+            _walk_bare_urls(s[pos:m.start()], style)
             link_el: Dict[str, Any] = {"type": "link", "url": m.group(2), "text": m.group(1)}
             if style:
                 link_el["style"] = dict(style)
             elements.append(link_el)
             pos = m.end()
+        _walk_bare_urls(s[pos:], style)
+
+    def _walk_bare_urls(s: str, style: Dict[str, bool]) -> None:
+        pos = 0
+        for m in _BARE_URL_RE.finditer(s):
+            url = m.group(0).rstrip(_URL_TRAILING_PUNCT)
+            if not url:
+                continue
+            _walk_emphasis(s[pos:m.start()], style)
+            link_el: Dict[str, Any] = {"type": "link", "url": url}
+            if style:
+                link_el["style"] = dict(style)
+            elements.append(link_el)
+            pos = m.start() + len(url)
         _walk_emphasis(s[pos:], style)
 
     def _walk_emphasis(s: str, style: Dict[str, bool]) -> None:
@@ -215,6 +277,21 @@ def _list_block(items: List[Tuple[int, bool, str]]) -> Block:
 
 def _section_block(text: str) -> Block:
     return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
+
+
+def _rich_para_block(text: str) -> Block:
+    """Paragraph as a rich_text block.
+
+    Explicit style objects render reliably where mrkdwn's word-boundary
+    emphasis parsing fails — e.g. ``*bold*`` glued to CJK punctuation shows
+    literal asterisks in a mrkdwn section but renders bold here.
+    """
+    return {
+        "type": "rich_text",
+        "elements": [
+            {"type": "rich_text_section", "elements": _inline_elements(text)}
+        ],
+    }
 
 
 # ----------------------------------------------------------------------------
@@ -351,9 +428,10 @@ def render_blocks(
 
     Args:
         markdown: The agent's response text (standard markdown).
-        mrkdwn_fn: Optional callable converting a markdown paragraph to Slack
-            mrkdwn for ``section`` blocks (the adapter passes
-            ``format_message``).  When ``None``, the raw paragraph text is used.
+        mrkdwn_fn: Accepted for backwards compatibility; unused. Paragraphs
+            are rendered as ``rich_text`` (explicit style objects) instead of
+            mrkdwn sections, so emphasis adjacent to CJK punctuation — which
+            mrkdwn's word-boundary parser refuses to style — renders reliably.
 
     Returns:
         A list of Block Kit block dicts, or ``None`` when the content is empty,
@@ -363,7 +441,7 @@ def render_blocks(
     if not markdown or not markdown.strip():
         return None
 
-    fmt = mrkdwn_fn or (lambda s: s)
+    del mrkdwn_fn  # kept in the signature for callers; no longer used
 
     try:
         blocks: List[Block] = []
@@ -379,10 +457,11 @@ def render_blocks(
             para.clear()
             if not text:
                 return
-            rendered = fmt(text)
-            # Split oversized sections on the 3000-char limit.
-            for chunk in _split_text(rendered, MAX_SECTION_TEXT):
-                blocks.append(_section_block(chunk))
+            # rich_text (not mrkdwn section): explicit style objects survive
+            # CJK-adjacent emphasis that mrkdwn's word-boundary parser drops.
+            # Split oversized paragraphs on the 3000-char text-object limit.
+            for chunk in _split_text(text, MAX_SECTION_TEXT):
+                blocks.append(_rich_para_block(chunk))
 
         while i < n:
             line = lines[i]

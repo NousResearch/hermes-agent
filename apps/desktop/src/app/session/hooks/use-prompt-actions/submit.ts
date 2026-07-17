@@ -462,10 +462,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         } catch (firstErr) {
           const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
 
-          if (
-            (isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) &&
-            recoverStoredSessionId
-          ) {
+          if ((isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) && recoverStoredSessionId) {
             // Re-register the session in the gateway and get a fresh live ID.
             // Timeouts recover the same way as "session not found": a starved
             // backend loop (#55578 symptom d) rejects the submit even though

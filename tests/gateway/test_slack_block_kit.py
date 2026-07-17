@@ -6,7 +6,9 @@ from plugins.platforms.slack.block_kit import (
     MAX_SECTION_TEXT,
     _display_width,
     _render_table,
+    blocks_fallback_text,
     render_blocks,
+    segment_blocks,
 )
 
 
@@ -295,12 +297,64 @@ class TestLimits:
             )
             assert total <= MAX_SECTION_TEXT
 
-    def test_too_many_blocks_returns_none(self):
-        # 60 dividers => 60 blocks > MAX_BLOCKS => decline (caller uses text)
+    def test_over_max_blocks_returns_full_list_for_segmentation(self):
+        # 60 dividers => 60 blocks. The renderer no longer declines; callers
+        # segment the list into multiple messages via segment_blocks().
         md = "\n\n".join(["---"] * (MAX_BLOCKS + 10))
-        assert render_blocks(md) is None
+        blocks = render_blocks(md)
+        assert blocks is not None
+        assert len(blocks) == MAX_BLOCKS + 10
 
     def test_never_raises_on_garbage(self):
         for junk in ["```unterminated\ncode", "| broken | table", "> ", "#" * 10]:
             # must not raise; either blocks or None
             render_blocks(junk)
+
+
+def _section(i):
+    return {"type": "section", "text": {"type": "mrkdwn", "text": f"s{i}"}}
+
+
+class TestSegmentBlocks:
+    def test_under_cap_single_segment(self):
+        blocks = [_section(i) for i in range(10)]
+        assert segment_blocks(blocks) == [blocks]
+
+    def test_hard_cut_at_cap_without_boundary(self):
+        blocks = [_section(i) for i in range(120)]
+        segments = segment_blocks(blocks)
+        assert all(len(s) <= MAX_BLOCKS for s in segments)
+        # nothing lost, order preserved
+        flat = [b for s in segments for b in s]
+        assert flat == blocks
+
+    def test_prefers_header_boundary(self):
+        header = {"type": "header", "text": {"type": "plain_text", "text": "h"}}
+        blocks = [_section(i) for i in range(40)] + [header] + [
+            _section(i) for i in range(19)
+        ]  # 60 blocks, header at index 40 (inside the trailing-third window)
+        segments = segment_blocks(blocks)
+        assert len(segments[0]) == 40
+        assert segments[1][0]["type"] == "header"
+
+    def test_leading_divider_dropped_after_cut(self):
+        divider = {"type": "divider"}
+        blocks = [_section(i) for i in range(50)] + [divider] + [_section(99)]
+        segments = segment_blocks(blocks)
+        # cut lands on the divider; the next segment must not open with it —
+        # the message break itself is the separator
+        assert len(segments) == 2
+        assert segments[1] == [_section(99)]
+
+    def test_fallback_text_extracts_content(self):
+        md = "# 标题\n\n预计扫描 **7.39 GB**，详见 https://e.io/x"
+        segments = segment_blocks(render_blocks(md))
+        text = blocks_fallback_text(segments[0])
+        assert "标题" in text
+        assert "7.39 GB" in text
+        assert "**" not in text  # plain projection, no markup
+
+    def test_fallback_text_never_empty(self):
+        assert blocks_fallback_text([{"type": "divider"}]).strip() != "" or (
+            blocks_fallback_text([{"type": "divider"}]) == " "
+        )

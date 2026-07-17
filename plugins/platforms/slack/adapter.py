@@ -56,9 +56,13 @@ from gateway.platforms.base import (
 )
 
 try:  # sibling module; support both package and flat plugin-dir import
-    from .block_kit import render_blocks
+    from .block_kit import blocks_fallback_text, render_blocks, segment_blocks
 except ImportError:  # pragma: no cover - plugin loaded outside package context
-    from block_kit import render_blocks  # type: ignore
+    from block_kit import (  # type: ignore
+        blocks_fallback_text,
+        render_blocks,
+        segment_blocks,
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -1437,21 +1441,36 @@ class SlackAdapter(BasePlatformAdapter):
             # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
 
-            # Block Kit (opt-in): render the primary message as structured
-            # blocks. Only applied to a single-chunk message — a >39k response
-            # that had to be split is pathological for Block Kit's 50-block /
-            # 3000-char limits, so those fall back to plain text. The ``text``
-            # field is always kept as the notification/accessibility fallback.
-            blocks = self._maybe_blocks(content) if len(chunks) == 1 else None
+            # Block Kit (opt-in): render the message as structured blocks.
+            # Content too structured for one message (50-block cap) is sent
+            # as several block messages split at header/divider boundaries —
+            # NOT flattened back to plain mrkdwn. Only a >39k response that
+            # truncate_message had to split stays on the plain-text path (its
+            # text chunks and block segments couldn't be paired coherently).
+            # The ``text`` field is always kept as the notification/
+            # accessibility fallback.
+            segments = self._maybe_block_segments(content) if len(chunks) == 1 else None
 
-            for i, chunk in enumerate(chunks):
+            if segments:
+                # (fallback text, blocks) per outgoing message. A single
+                # segment keeps the full mrkdwn as fallback (legacy shape);
+                # multi-segment messages each carry their own slice.
+                outgoing = (
+                    [(chunks[0], segments[0])]
+                    if len(segments) == 1
+                    else [(blocks_fallback_text(seg), seg) for seg in segments]
+                )
+            else:
+                outgoing = [(chunk, None) for chunk in chunks]
+
+            for i, (chunk, seg) in enumerate(outgoing):
                 kwargs = {
                     "channel": chat_id,
                     "text": chunk,
                     "mrkdwn": True,
                 }
-                if blocks and i == 0:
-                    kwargs["blocks"] = blocks
+                if seg:
+                    kwargs["blocks"] = seg
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
                     # Only broadcast the first chunk of the first reply
@@ -2066,22 +2085,43 @@ class SlackAdapter(BasePlatformAdapter):
             return blocks
         return [*blocks, self._feedback_block()]
 
-    def _maybe_blocks(self, content: str) -> Optional[list]:
-        """Render ``content`` to Block Kit blocks when the feature is enabled.
+    def _maybe_block_segments(self, content: str) -> Optional[list]:
+        """Render ``content`` to a list of message-sized Block Kit segments.
 
-        Returns ``None`` when rich blocks are disabled, or when the renderer
-        declines (empty / too complex / unexpected shape) — the caller then
-        falls back to the plain ``text`` payload. A ``text`` fallback is ALWAYS
-        sent alongside blocks, so this can safely return ``None`` at any time.
+        Each segment holds <= 50 blocks (Slack's per-message cap); content too
+        structured for one message is split at header/divider boundaries and
+        sent as several messages instead of flattening back to plain mrkdwn.
+        Returns ``None`` when rich blocks are disabled or the renderer
+        declines — the caller then falls back to the plain ``text`` payload.
+        A ``text`` fallback is ALWAYS sent alongside blocks, so this can
+        safely return ``None`` at any time.
         """
         if not self._rich_blocks_enabled():
             return None
         try:
             blocks = render_blocks(content, mrkdwn_fn=self.format_message)
-            return self._append_feedback_block(blocks)
+            if not blocks:
+                return None
+            segments = segment_blocks(blocks)
+            appended = self._append_feedback_block(segments[-1])
+            if appended:
+                segments[-1] = appended
+            return segments
         except Exception:  # pragma: no cover - renderer already guards itself
             logger.debug("[Slack] block render failed; using plain text", exc_info=True)
             return None
+
+    def _maybe_blocks(self, content: str) -> Optional[list]:
+        """Single-message variant of :meth:`_maybe_block_segments`.
+
+        Used by ``edit_message`` — an edit can only restyle the one message it
+        targets, so content that segments into multiple messages declines
+        (returns ``None``) and the edit keeps its plain-text payload.
+        """
+        segments = self._maybe_block_segments(content)
+        if segments and len(segments) == 1:
+            return segments[0]
+        return None
 
     def format_message(self, content: str) -> str:
         """Convert standard markdown to Slack mrkdwn format.

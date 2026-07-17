@@ -580,10 +580,10 @@ def render_blocks(
 
         if not blocks:
             return None
-        if len(blocks) > MAX_BLOCKS:
-            # Too structurally complex to express safely — let the caller fall
-            # back to plain text rather than truncating and losing content.
-            return None
+        # NOTE: the list may exceed MAX_BLOCKS. Callers that put blocks on a
+        # single message must run the list through segment_blocks() — bailing
+        # out here used to flatten every long structured answer (raw pipe
+        # tables, unstyled headers) back to plain mrkdwn.
         return blocks
     except Exception:
         # Never let a rendering bug drop a message.
@@ -605,3 +605,92 @@ def _split_text(text: str, limit: int) -> List[str]:
     if remaining:
         out.append(remaining)
     return out
+
+
+# ----------------------------------------------------------------------------
+# Multi-message segmentation — Slack caps a message at MAX_BLOCKS blocks
+# ----------------------------------------------------------------------------
+
+
+def segment_blocks(
+    blocks: List[Block], max_blocks: int = MAX_BLOCKS
+) -> List[List[Block]]:
+    """Split a block list into message-sized segments of <= ``max_blocks``.
+
+    Prefers cutting before a ``header`` or ``divider`` (boundaries a reader
+    already perceives as section breaks) within the trailing third of the
+    window; hard-cuts at the cap when no such boundary exists.  A divider
+    that would open the next segment is dropped — the message break itself
+    is the visual separator.
+    """
+    if len(blocks) <= max_blocks:
+        return [blocks]
+    segments: List[List[Block]] = []
+    rest = blocks
+    while len(rest) > max_blocks:
+        cut = max_blocks
+        for i in range(max_blocks, max(1, max_blocks * 2 // 3) - 1, -1):
+            if rest[i].get("type") in ("header", "divider"):
+                cut = i
+                break
+        segments.append(rest[:cut])
+        rest = rest[cut:]
+        if rest and rest[0].get("type") == "divider":
+            rest = rest[1:]
+    if rest:
+        segments.append(rest)
+    return segments
+
+
+def _rich_text_plain(block: Block) -> str:
+    """Plain-text projection of a rich_text block (for the ``text`` fallback)."""
+    parts: List[str] = []
+
+    def walk(elements: List[Dict[str, Any]]) -> None:
+        for el in elements:
+            t = el.get("type")
+            if t == "text":
+                parts.append(el.get("text", ""))
+            elif t == "link":
+                parts.append(el.get("text") or el.get("url", ""))
+            elif t == "user":
+                parts.append(f"<@{el.get('user_id', '')}>")
+            elif t == "channel":
+                parts.append(f"<#{el.get('channel_id', '')}>")
+            elif t == "broadcast":
+                parts.append(f"@{el.get('range', '')}")
+            elif t == "emoji":
+                parts.append(f":{el.get('name', '')}:")
+            elif isinstance(el.get("elements"), list):
+                walk(el["elements"])
+                if t in ("rich_text_section", "rich_text_preformatted", "rich_text_quote"):
+                    parts.append("\n")
+
+    walk(block.get("elements", []))
+    return "".join(parts).strip()
+
+
+def blocks_fallback_text(segment: List[Block], limit: int = 39000) -> str:
+    """Derive the notification/accessibility ``text`` fallback for a segment.
+
+    Slack requires a non-empty ``text`` alongside ``blocks``; mobile
+    notifications read ONLY this field, so it should carry the segment's
+    actual content, not a placeholder.
+    """
+    parts: List[str] = []
+    for b in segment:
+        t = b.get("type")
+        if t == "header":
+            parts.append(b.get("text", {}).get("text", ""))
+        elif t == "section":
+            parts.append(b.get("text", {}).get("text", ""))
+        elif t == "rich_text":
+            parts.append(_rich_text_plain(b))
+        elif t == "table":
+            rows = b.get("rows", [])
+            ncols = len(rows[0]) if rows else 0
+            parts.append(f"[table {len(rows)}x{ncols}]")
+    out = "\n".join(p for p in parts if p).strip()
+    if len(out) > limit:
+        out = out[: limit - 1] + "…"
+    return out or " "

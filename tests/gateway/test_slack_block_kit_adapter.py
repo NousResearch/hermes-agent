@@ -53,13 +53,18 @@ class TestSendMessageBlocks:
         assert "divider" in types
 
     @pytest.mark.asyncio
-    async def test_enabled_but_unrenderable_falls_back_to_text(self):
-        # 60 dividers -> renderer returns None -> no blocks kwarg, text stands
+    async def test_over_block_cap_sends_multiple_block_messages(self):
+        # 60 headed sections -> >50 blocks -> split into several messages,
+        # each <= 50 blocks with its own text fallback (never flat mrkdwn)
         adapter, client = _make_adapter({"rich_blocks": True})
-        await adapter.send("C1", "\n\n".join(["---"] * 60))
-        kwargs = client.chat_postMessage.await_args.kwargs
-        assert "blocks" not in kwargs
-        assert kwargs["text"]
+        md = "\n\n".join(f"# t{i}\n\npara {i}" for i in range(35))  # 70 blocks
+        await adapter.send("C1", md)
+        calls = client.chat_postMessage.await_args_list
+        assert len(calls) >= 2
+        for c in calls:
+            assert c.kwargs["blocks"]
+            assert len(c.kwargs["blocks"]) <= 50
+            assert c.kwargs["text"].strip()
 
     @pytest.mark.asyncio
     async def test_string_true_coerced(self):

@@ -108,3 +108,95 @@ class TestStepfunMetadata:
         from hermes_cli.model_normalize import _VENDOR_PREFIXES
 
         assert _VENDOR_PREFIXES["step"] == "stepfun"
+
+
+class TestStepfunEnvAndDoctor:
+    def test_step_plan_base_url_env_registered(self):
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        assert "STEPFUN_STEP_PLAN_BASE_URL" in OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["STEPFUN_STEP_PLAN_BASE_URL"]["category"] == "provider"
+
+    def test_doctor_probes_both_stepfun_endpoints(self, monkeypatch, tmp_path):
+        import contextlib
+        import io
+        from argparse import Namespace
+
+        from hermes_cli import doctor as doctor_mod
+
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        (home / ".env").write_text("STEPFUN_API_KEY=***\n", encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.setenv("STEPFUN_API_KEY", "stepfun-test-key")
+
+        for env_name in (
+            "OPENROUTER_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN",
+            "GLM_API_KEY",
+            "ZAI_API_KEY",
+            "Z_AI_API_KEY",
+            "KIMI_API_KEY",
+            "KIMI_CN_API_KEY",
+            "ARCEEAI_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "HF_TOKEN",
+            "DASHSCOPE_API_KEY",
+            "MINIMAX_API_KEY",
+            "MINIMAX_CN_API_KEY",
+            "KILOCODE_API_KEY",
+            "OPENCODE_ZEN_API_KEY",
+            "OPENCODE_GO_API_KEY",
+            "XIAOMI_API_KEY",
+            "GMI_API_KEY",
+            "STEPFUN_BASE_URL",
+            "STEPFUN_STEP_PLAN_BASE_URL",
+        ):
+            monkeypatch.delenv(env_name, raising=False)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        try:
+            from hermes_cli import auth as _auth_mod
+
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        calls = []
+
+        def fake_get(url, headers=None, timeout=None):
+            calls.append((url, headers, timeout))
+            return types.SimpleNamespace(status_code=200)
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "get", fake_get)
+
+        # Rebuild the cached apikey-provider list so the new StepFun rows are
+        # picked up even if a prior test populated the module-level cache.
+        monkeypatch.setattr(doctor_mod, "_APIKEY_PROVIDERS_CACHE", None)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        assert "StepFun" in out
+        assert any(url == "https://api.stepfun.ai/v1/models" for url, _, _ in calls)
+        assert any(
+            url == "https://api.stepfun.ai/step_plan/v1/models" for url, _, _ in calls
+        )

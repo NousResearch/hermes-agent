@@ -390,6 +390,10 @@ def _run_agent(
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
 
+    from hermes_cli.mcp_startup import wait_for_mcp_discovery
+
+    wait_for_mcp_discovery()
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -422,8 +426,13 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    result = agent.run_conversation(prompt)
-    return (result.get("final_response") or "", result)
+    try:
+        result = agent.run_conversation(prompt)
+        return (result.get("final_response") or "", result)
+    finally:
+        from tools.mcp_tool import shutdown_mcp_servers
+
+        shutdown_mcp_servers()
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

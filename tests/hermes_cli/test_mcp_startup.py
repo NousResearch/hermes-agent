@@ -14,6 +14,7 @@ import pytest
 import cli as cli_mod
 from hermes_cli import main as main_mod
 from hermes_cli import mcp_startup
+from hermes_cli import oneshot as oneshot_mod
 
 
 @pytest.fixture(autouse=True)
@@ -222,3 +223,57 @@ def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
     monkeypatch.setattr(cli_mod, "AIAgent", _fake_agent)
 
     assert cli._init_agent() is True
+
+
+def test_oneshot_keeps_discovered_mcp_resource_open_until_tool_call_finishes(monkeypatch):
+    events = []
+    resource = {"open": False}
+
+    def _wait_for_discovery(timeout=None):
+        events.append("discovery_complete")
+        resource["open"] = True
+
+    def _shutdown_mcp_servers():
+        events.append("shutdown")
+        resource["open"] = False
+
+    class FakeAgent:
+        def __init__(self, **_kwargs):
+            events.append("agent_built")
+            assert resource["open"] is True
+
+        def run_conversation(self, prompt):
+            events.append("tool_call")
+            assert prompt == "call the MCP tool"
+            assert resource["open"] is True
+            return {"final_response": "tool result", "completed": True}
+
+    monkeypatch.setattr(mcp_startup, "wait_for_mcp_discovery", _wait_for_discovery)
+    monkeypatch.setattr("tools.mcp_tool.shutdown_mcp_servers", _shutdown_mcp_servers)
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "test-model"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": None,
+            "base_url": None,
+            "provider": "test",
+            "api_mode": None,
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: None)
+
+    response, result = oneshot_mod._run_agent(
+        "call the MCP tool",
+        toolsets=["demo"],
+        use_config_toolsets=False,
+    )
+
+    assert response == "tool result"
+    assert result["completed"] is True
+    assert events == ["discovery_complete", "agent_built", "tool_call", "shutdown"]
+    assert resource["open"] is False

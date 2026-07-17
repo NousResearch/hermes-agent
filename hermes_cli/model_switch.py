@@ -1395,27 +1395,22 @@ _picker_prewarm_done = _threading.Event()
 
 
 def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False) -> bool:
-    """Return whether *provider* has credentials configured.
+    """Return whether *provider* has a credential that can be selected now.
 
     ``auth.json`` historically allowed opaque token-style pool values that do
     not deserialize into ``PooledCredential`` entries. Preserve visibility for
-    those legacy values.
-
-    A pool with entries — even all temporarily rate-limited — is considered
-    usable so the provider remains visible in the model picker.  Hiding a
-    provider when all keys are in cooldown is incorrect: rate limits are
-    per-model for many providers (e.g. Google Gemini), and switching to a
-    different model under the same provider should work immediately.
+    those legacy values, but when a real pool exists its availability state is
+    authoritative: an all-exhausted/dead pool is not authenticated.
     """
     try:
         from agent.credential_pool import load_pool
 
         pool = load_pool(provider)
         if pool.has_credentials():
-            return True
+            return pool.has_available()
     except Exception:
         pass
-    return bool(raw_pool_present)
+    return raw_pool_present
 
 
 def _extra_headers_from_config(entry: Any) -> dict[str, str]:
@@ -1485,6 +1480,7 @@ def list_authenticated_providers(
     refresh: bool = False,
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
+    for_picker: bool = False,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1832,6 +1828,20 @@ def list_authenticated_providers(
             try:
                 if _credential_pool_is_usable(hermes_slug):
                     has_creds = True
+                elif for_picker:
+                    # For the interactive /model picker, also show providers
+                    # whose credential pool has entries but all are temporarily
+                    # rate-limited.  Rate limits are per-model for many
+                    # providers (e.g. Google Gemini) — switching to a different
+                    # model under the same provider may work even when all keys
+                    # are in cooldown.
+                    try:
+                        from agent.credential_pool import load_pool
+                        _pool = load_pool(hermes_slug)
+                        if _pool.has_credentials():
+                            has_creds = True
+                    except Exception:
+                        pass
             except Exception as exc:
                 logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
         # Fallback: check external credential files directly.
@@ -2477,6 +2487,7 @@ def list_picker_providers(
         custom_providers=custom_providers,
         max_models=max_models,
         current_model=current_model,
+        for_picker=True,
     )
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)

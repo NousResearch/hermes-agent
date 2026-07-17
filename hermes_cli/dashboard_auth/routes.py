@@ -618,7 +618,7 @@ async def api_auth_ws_ticket(request: Request):
 
     Browsers cannot set ``Authorization`` on a WebSocket upgrade, so in
     gated mode the SPA POSTs this endpoint to get a ``?ticket=`` value to
-    append to ``/api/pty``, ``/api/console``, ``/api/ws``, ``/api/pub``, or
+    append to ``/api/pty``, ``/api/ws``, ``/api/pub``, or
     ``/api/events``.
 
     The ticket has a 30-second TTL and is single-use. Calling this endpoint

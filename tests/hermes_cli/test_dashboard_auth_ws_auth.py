@@ -1,6 +1,6 @@
 """Tests for the WS-upgrade auth helper (Phase 5 task 5.2).
 
-The dashboard's WS endpoints (``/api/pty``, ``/api/console``, ``/api/ws``,
+The dashboard's WS endpoints (``/api/pty``, ``/api/ws``,
 ``/api/pub``, ``/api/events``) share an auth gate: ``_ws_auth_ok``. In
 loopback mode it accepts ``?token=<_SESSION_TOKEN>``; in gated mode it accepts
 a single-use ``?ticket=`` minted by ``POST /api/auth/ws-ticket``.
@@ -315,7 +315,7 @@ class TestWsRequestIsAllowedGated:
     (intended only for unauthenticated loopback dev) must not also reject
     those upgrades: the OAuth gate + single-use ticket is the auth.
 
-    Regression coverage: every WS endpoint (``/api/pty``, ``/api/console``,
+    Regression coverage: every WS endpoint (``/api/pty``,
     ``/api/ws``, ``/api/pub``, ``/api/events``) calls
     ``_ws_request_is_allowed`` after ``_ws_auth_ok``. If the peer-IP check
     rejects gated mode, the chat

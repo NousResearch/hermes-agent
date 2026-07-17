@@ -204,9 +204,21 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
-        a = kb.create_task(conn, title="alpha", assignee="factory", priority=5)
+        a = kb.create_task(
+            conn,
+            title="alpha",
+            assignee="factory",
+            priority=5,
+            labels=["qa", "frontend"],
+        )
         b = kb.create_task(conn, title="beta", assignee="reviewer")
-        c = kb.create_task(conn, title="gamma", assignee="factory", tenant="other")
+        c = kb.create_task(
+            conn,
+            title="gamma",
+            assignee="factory",
+            tenant="other",
+            labels=["qa"],
+        )
     finally:
         conn.close()
 
@@ -217,8 +229,13 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     assert ids == [a, c]
     assert d["count"] == 2
     assert d["tasks"][0]["title"] == "alpha"
+    assert d["tasks"][0]["labels"] == ["frontend", "qa"]
     assert d["tasks"][0]["parent_count"] == 0
     assert b not in ids
+
+    qa_out = kt._handle_list({"labels": ["qa", "frontend"], "limit": 10})
+    qa = json.loads(qa_out)
+    assert [t["id"] for t in qa["tasks"]] == [a]
 
     tenant_out = kt._handle_list({
         "assignee": "factory",

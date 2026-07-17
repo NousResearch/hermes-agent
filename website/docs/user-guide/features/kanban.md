@@ -249,6 +249,7 @@ a gateway-embedded dispatcher AND a standalone daemon against the same
 # returns the existing task id instead of duplicating.
 hermes kanban create "nightly ops review" \
     --assignee ops \
+    --label ops --label nightly \
     --idempotency-key "nightly-ops-$(date -u +%Y-%m-%d)" \
     --json
 ```
@@ -291,12 +292,12 @@ parent, missing input, unmet capability) before unblocking, or raise
 | Tool | Purpose | Required params |
 |---|---|---|
 | `kanban_show` | Read the current task (title, body, prior attempts, parent handoffs, comments, full pre-formatted `worker_context`). Defaults to the env's task id. | — |
-| `kanban_list` | List task summaries with filters for `assignee`, `status`, `tenant`, archived visibility, and limit. Intended for orchestrators discovering board work. | — |
+| `kanban_list` | List task summaries with filters for `assignee`, `status`, `tenant`, `labels`, archived visibility, and limit. Label filters use AND semantics. Intended for orchestrators discovering board work. | — |
 | `kanban_complete` | Finish with `summary` + `metadata` structured handoff. | at least one of `summary` / `result` |
 | `kanban_block` | Stop work and route by why: `kind=dependency` (waits in `todo`, auto-resumes), `needs_input`/`capability`/`transient` (surface to a human). Repeated same-kind re-blocks auto-escalate to `triage`. | `reason` |
 | `kanban_heartbeat` | Signal liveness during long operations. Pure side-effect. | — |
 | `kanban_comment` | Append a durable note to the task thread. | `task_id`, `body` |
-| `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. | `title`, `assignee` |
+| `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, `labels`, etc. | `title`, `assignee` |
 | `kanban_link` | (Orchestrators) add a `parent_id → child_id` dependency edge after the fact. | `parent_id`, `child_id` |
 | `kanban_unblock` | (Orchestrators) move a blocked task to `ready` when all parents are done, or `todo` while any parent remains open. | `task_id` |
 
@@ -510,20 +511,21 @@ hermes dashboard        # "Kanban" tab appears in the nav, after "Skills"
 
 - A **Kanban** tab showing one column per status: `triage`, `todo`, `ready`, `running`, `blocked`, `done` (plus `archived` when the toggle is on).
   - `triage` is the parking column for rough ideas. By default (`kanban.auto_decompose: true`), the dispatcher auto-runs the **decomposer** on tasks that land here. The built-in decomposer uses the `auxiliary.kanban_decomposer` model path, reads your profile roster (with descriptions), and fans the task out into a small graph of child tasks routed to the best-fit specialists. The original task stays alive as the parent of every child so its assignee (`kanban.orchestrator_profile`, or the active default profile when unset) wakes back up to judge completion when everything finishes. Flip the **Orchestration: Auto/Manual** pill at the top of the page (emerald = Auto, muted gray = Manual), or by editing `config.yaml` directly. Both modes coexist with `hermes kanban specify` - that's still available as a single-task spec rewrite when you don't want fan-out.
-- Cards show the task id, title, priority badge, tenant tag, assigned profile, comment/link counts, a **progress pill** (`N/M` children done when the task has dependents), and "created N ago". A per-card checkbox enables multi-select.
+- Cards show the task id, title, priority badge, tenant tag, labels, assigned profile, comment/link counts, a **progress pill** (`N/M` children done when the task has dependents), and "created N ago". A per-card checkbox enables multi-select.
 - **Per-profile lanes inside Running** — toolbar checkbox toggles sub-grouping of the Running column by assignee.
 - **Live updates via WebSocket** — the plugin tails the append-only `task_events` table on a short poll interval; the board reflects changes the instant any profile (CLI, gateway, or another dashboard tab) acts. Reloads are debounced so a burst of events triggers a single refetch.
 - **Drag-drop** cards between columns to change status. The drop sends `PATCH /api/plugins/kanban/tasks/:id` which routes through the same `kanban_db` code the CLI uses — the three surfaces can never drift. Moves into destructive statuses (`done`, `archived`, `blocked`) prompt for confirmation. Touch devices use a pointer-based fallback so the board is usable from a tablet.
-- **Create-task dialog** — click `+` on any column header to open a modal with labeled fields: title, assignee, priority, skills, workspace kind/path (seeded from the board's project directory; per-task override), goal mode, and (optionally) a parent task from a dropdown over every existing task. Press Enter to create the task, Shift+Enter to insert a newline in the title field, or Escape to cancel. Creating from the Triage column automatically parks the new task in triage.
+- **Create-task dialog** — click `+` on any column header to open a modal with labeled fields: title, assignee, priority, skills, labels, workspace kind/path (seeded from the board's project directory; per-task override), goal mode, and (optionally) a parent task from a dropdown over every existing task. Enter labels as a comma- or space-separated list; they are normalized the same way as CLI labels. Press Enter to create the task, Shift+Enter to insert a newline in the title field, or Escape to cancel. Creating from the Triage column automatically parks the new task in triage.
 - **Multi-select with bulk actions** — shift/ctrl-click a card or tick its checkbox to add it to the selection. A bulk action bar appears at the top with batch status transitions, archive, and reassign (by profile dropdown, or "(unassign)"). Destructive batches confirm first. Per-id partial failures are reported without aborting the rest.
 - **Click a card** (without shift/ctrl) to open a side drawer (Escape or click-outside closes) with:
   - **Editable title** — click the heading to rename.
   - **Editable assignee / priority** — click the meta row to rewrite.
   - **Editable description** — markdown-rendered by default (headings, bold, italic, inline code, fenced code, `http(s)` / `mailto:` links, bullet lists), with an "edit" button that swaps in a textarea. Markdown rendering is a tiny, XSS-safe renderer — every substitution runs on HTML-escaped input, only `http(s)` / `mailto:` links pass through, and `target="_blank"` + `rel="noopener noreferrer"` are always set.
   - **Dependency editor** — chip list of parents and children, each with an `×` to unlink, plus dropdowns over every other task to add a new parent or child. Cycle attempts are rejected server-side with a clear message.
+  - **Labels** displayed as chips in the drawer, matching the labels stored on the task.
   - **Status action row** (→ triage / → ready / → running / block / unblock / complete / archive) with confirm prompts for destructive transitions. For cards in the **Triage** column the row also exposes two LLM-driven actions: **⚗ Decompose** fans the task out into a graph of child tasks routed to specialist profiles by description, and **✨ Specify** does a single-task spec rewrite. Decompose falls back to specify-style promotion when the LLM decides the task doesn't benefit from fan-out, so it's a strict superset. Both are reachable from the CLI (`hermes kanban decompose <id>` / `specify <id>` / `--all`), from any gateway platform (`/kanban decompose <id>`), and programmatically via `POST /api/plugins/kanban/tasks/:id/decompose` and `…/specify`. Configure the models under `auxiliary.kanban_decomposer` and `auxiliary.triage_specifier` in `config.yaml`.
   - Result section (also markdown-rendered), comment thread with Enter-to-submit, the last 20 events.
-- **Toolbar filters** — free-text search, tenant dropdown (defaults to `dashboard.kanban.default_tenant` from `config.yaml`), assignee dropdown, "show archived" toggle, "lanes by profile" toggle, and a **Nudge dispatcher** button so you don't have to wait for the next 60 s tick.
+- **Toolbar filters** — free-text search (including labels), tenant dropdown (defaults to `dashboard.kanban.default_tenant` from `config.yaml`), assignee dropdown, label filter, "show archived" toggle, "lanes by profile" toggle, and a **Nudge dispatcher** button so you don't have to wait for the next 60 s tick.
 
 Visually the target is the familiar Linear / Fusion layout: dark theme, column headers with counts, coloured status dots, pill chips for priority and tenant. The plugin reads only theme CSS vars (`--color-*`, `--radius`, `--font-mono`, ...), so it reskins automatically with whichever dashboard theme is active.
 
@@ -590,9 +592,9 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/board?tenant=<name>&include_archived=…` | Full board grouped by status column, plus tenants + assignees for filter dropdowns |
+| `GET` | `/board?tenant=<name>&include_archived=…&label=<label>` | Full board grouped by status column, plus tenants + assignees for filter dropdowns. Repeat `label` to require multiple labels (AND semantics). |
 | `GET` | `/tasks/:id` | Task + comments + events + links |
-| `POST` | `/tasks` | Create (wraps `kanban_db.create_task`, accepts `triage: bool` and `parents: [id, …]`) |
+| `POST` | `/tasks` | Create (wraps `kanban_db.create_task`, accepts `triage: bool`, `parents: [id, …]`, and `labels: [label, …]`) |
 | `PATCH` | `/tasks/:id` | Status / assignee / priority / title / body / result |
 | `POST` | `/tasks/bulk` | Apply the same patch (status / archive / assignee / priority) to every id in `ids`. Per-id failures reported without aborting siblings |
 | `POST` | `/tasks/:id/comments` | Append a comment |
@@ -657,7 +659,7 @@ This is the surface **you** (or scripts, cron, the dashboard) use to drive the b
 ```
 hermes kanban init                                     # create kanban.db + print daemon hint
 hermes kanban create "<title>" [--body ...] [--assignee <profile>]
-                                [--parent <id>]... [--tenant <name>]
+                                [--parent <id>]... [--tenant <name>] [--label <label>]...
                                 [--workspace scratch|worktree|worktree:<path>|dir:<path>]
                                 [--branch <name>]
                                 [--priority N] [--triage] [--idempotency-key KEY]
@@ -666,11 +668,15 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--goal] [--goal-max-turns N]
                                 [--skill <name>]...
                                 [--json]
-hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived]
+hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--label L]... [--archived]
         [--workflow-template-id <id>] [--current-step-key <key>]
         [--sort created|created-desc|priority|priority-desc|status|assignee|title|updated]
         [--json]
 hermes kanban show <id> [--json]
+hermes kanban label list <id> [--json]
+hermes kanban label add <id> <label>... [--json]
+hermes kanban label remove <id> <label>... [--json]    # alias: rm
+hermes kanban label set <id> [<label>...] [--json]     # replace all labels
 hermes kanban assign <id> <profile>                    # or 'none' to unassign
 hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to a profile
 hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place
@@ -712,6 +718,8 @@ hermes kanban specify [<id> | --all] [--tenant T]      # flesh out a triage-colu
 hermes kanban gc [--event-retention-days N]            # workspaces + old events + old logs
         [--log-retention-days N]
 ```
+
+Labels are normalized to lowercase, spaces become dashes, duplicates are removed, and valid characters are letters, numbers, `-`, and `_`. Repeat `--label` when creating or listing tasks; list filters require every supplied label. Use `hermes kanban label add/remove/set/list` to manage labels after creation.
 
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
 
@@ -782,7 +790,9 @@ Every `hermes kanban <action>` verb is also reachable as `/kanban <action>` — 
 ```
 /kanban list
 /kanban show t_abcd
-/kanban create "write launch post" --assignee writer --parent t_research
+/kanban create "write launch post" --assignee writer --parent t_research --label launch --label writing
+/kanban label add t_abcd urgent frontend
+/kanban list --label launch
 /kanban comment t_abcd "looks good, ship it"
 /kanban unblock t_abcd
 /kanban dispatch --max 3
@@ -794,13 +804,13 @@ Quote multi-word arguments the same way you would on a shell — `run_slash` par
 
 ### Mid-run usage: `/kanban` bypasses the running-agent guard
 
-The gateway normally queues slash commands and user messages while an agent is still thinking — that's what stops you from accidentally starting a second turn while the first is in flight. **`/kanban` is explicitly exempted from this guard.** The board lives in `~/.hermes/kanban.db`, not in the running agent's state, so reads (`list`, `show`, `context`, `tail`, `watch`, `stats`, `runs`) and writes (`comment`, `unblock`, `block`, `assign`, `archive`, `create`, `link`, …) all go through immediately, even mid-turn.
+The gateway normally queues slash commands and user messages while an agent is still thinking — that's what stops you from accidentally starting a second turn while the first is in flight. **`/kanban` is explicitly exempted from this guard.** The board lives in `~/.hermes/kanban.db`, not in the running agent's state, so reads (`list`, `show`, `context`, `tail`, `watch`, `stats`, `runs`, `label list`) and writes (`comment`, `unblock`, `block`, `assign`, `archive`, `create`, `label add/remove/set`, `link`, …) all go through immediately, even mid-turn.
 
 This is the whole point of the separation:
 
 - A worker blocks waiting on a peer → you send `/kanban unblock t_abcd` from your phone and the dispatcher picks the peer up on its next tick. The blocked worker isn't interrupted — it just stops being blocked.
 - You spot a card that needs human context → `/kanban comment t_xyz "use the 2026 schema, not 2025"` lands on the task thread and the *next* run of that task will read it in `kanban_show()`.
-- You want to know what your fleet is doing without stopping the orchestrator → `/kanban list --mine` or `/kanban stats` inspects the board without touching your main conversation.
+- You want to know what your fleet is doing without stopping the orchestrator → `/kanban list --mine`, `/kanban list --label launch`, or `/kanban stats` inspects the board without touching your main conversation.
 
 ### Auto-subscribe on `/kanban create` (gateway only)
 
@@ -825,7 +835,7 @@ Gateway platforms have practical message-length caps. If `/kanban list`, `/kanba
 
 ### Autocomplete
 
-In the interactive CLI, typing `/kanban ` and hitting Tab cycles through the built-in subcommand list (`list`, `ls`, `show`, `create`, `assign`, `link`, `unlink`, `claim`, `comment`, `complete`, `block`, `unblock`, `archive`, `tail`, `dispatch`, `context`, `init`, `gc`). The remaining verbs listed in the CLI reference above (`watch`, `stats`, `runs`, `log`, `assignees`, `heartbeat`, `notify-subscribe`, `notify-list`, `notify-unsubscribe`, `daemon`) also work — they're just not in the autocomplete hint list yet.
+In the interactive CLI, typing `/kanban ` and hitting Tab cycles through the built-in subcommand list (`list`, `ls`, `show`, `create`, `label`, `assign`, `link`, `unlink`, `claim`, `comment`, `complete`, `block`, `unblock`, `archive`, `tail`, `dispatch`, `context`, `init`, `gc`). The remaining verbs listed in the CLI reference above (`watch`, `stats`, `runs`, `log`, `assignees`, `heartbeat`, `notify-subscribe`, `notify-list`, `notify-unsubscribe`, `daemon`) also work — they're just not in the autocomplete hint list yet.
 
 ## Collaboration patterns
 

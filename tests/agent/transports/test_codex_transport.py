@@ -320,6 +320,42 @@ class TestCodexBuildKwargs:
         assert headers.get("session_id") == "conv-codex-1"
         assert headers.get("x-client-request-id") == "conv-codex-1"
 
+    def test_codex_backend_hashes_overlength_cache_routing_headers(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        long_session_id = "paperclip:company:" + "a" * 80
+
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            session_id=long_session_id,
+            is_codex_backend=True,
+        )
+
+        headers = kw["extra_headers"]
+        cache_scope = headers["session_id"]
+        assert cache_scope == headers["x-client-request-id"]
+        assert cache_scope.startswith("pck_")
+        assert len(cache_scope) <= 64
+        assert cache_scope != long_session_id
+        assert kw["prompt_cache_key"].startswith("pck_")
+        assert len(kw["prompt_cache_key"]) <= 64
+
+    def test_codex_backend_overlength_cache_scope_is_stable(self, transport):
+        session_id = "paperclip:company:" + "a" * 80
+        kwargs = {
+            "model": "gpt-5.4",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "tools": [],
+            "session_id": session_id,
+            "is_codex_backend": True,
+        }
+
+        first = transport.build_kwargs(**kwargs)["extra_headers"]["session_id"]
+        second = transport.build_kwargs(**kwargs)["extra_headers"]["session_id"]
+
+        assert first == second
+
     def test_codex_backend_no_headers_without_session_id(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
 

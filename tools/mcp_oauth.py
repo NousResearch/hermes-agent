@@ -522,8 +522,17 @@ class HermesTokenStorage:
                 pass
         return snap
 
-    def restore(self, snapshot: dict[str, bytes]) -> None:
-        """Revert to a ``snapshot()`` capture (dropping any newer partial state)."""
+    def restore(self, snapshot: dict[str, bytes], *, only_if_absent: bool = False) -> None:
+        """Revert to a snapshot without overwriting a concurrent successful write."""
+        if only_if_absent and any(
+            path.exists()
+            for path in (self._tokens_path(), self._client_info_path(), self._meta_path())
+        ):
+            logger.info(
+                "Skipping OAuth rollback for %s because newer state exists",
+                self._server_name,
+            )
+            return
         self.remove()
         if not snapshot:
             return

@@ -74,6 +74,20 @@ def test_manager_explicit_home_removes_only_that_profiles_tokens(tmp_path):
     assert paths[0].exists()
     assert not paths[1].exists()
 
+
+def test_manager_can_restore_removed_entry_after_failed_reauth(tmp_path, monkeypatch):
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    manager = MCPOAuthManager()
+    provider = manager.get_or_build_provider("shared", "https://mcp.example", {})
+
+    entry = manager.remove("shared")
+    manager.restore_entry("shared", entry)
+
+    assert manager.get_or_build_provider("shared", "https://mcp.example", {}) is provider
+
 pytest.importorskip(
     "mcp.client.auth.oauth2",
     reason="MCP SDK 1.26.0+ required for OAuth support",

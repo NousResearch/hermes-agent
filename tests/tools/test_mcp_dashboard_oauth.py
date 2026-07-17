@@ -246,3 +246,46 @@ def test_reconnect_mcp_server_signals_live_task(monkeypatch):
 
     assert mcp_tool.reconnect_mcp_server("reports") is True
     assert server._reconnect_event.called is True
+
+
+def test_reconnect_mcp_server_keeps_manager_entry_until_live_task_rebuilds(
+    tmp_path, monkeypatch
+):
+    from tools import mcp_tool
+    from tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
+
+    class Event:
+        called = False
+
+        def set(self):
+            self.called = True
+
+    class Server:
+        _reconnect_event = Event()
+
+    server = Server()
+    manager = MCPOAuthManager()
+    manager._entries[manager._key("reports", tmp_path)] = _ProviderEntry(
+        server_url="https://mcp.example/mcp", oauth_config={}
+    )
+    monkeypatch.setitem(mcp_tool._servers, "reports", server)
+    monkeypatch.setattr(mcp_tool, "_mcp_loop", None)
+
+    assert mcp_tool.reconnect_mcp_server("reports") is True
+    assert manager._key("reports", tmp_path) in manager._entries
+
+
+def test_failed_reauth_rollback_preserves_newer_oauth_state(tmp_path, monkeypatch):
+    from tools.mcp_oauth import HermesTokenStorage
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    storage = HermesTokenStorage("reports")
+    storage._tokens_path().parent.mkdir(parents=True)
+    storage._tokens_path().write_text("OLD")
+    backup = storage.snapshot()
+    storage.remove()
+
+    storage._tokens_path().write_text("FRESH")
+    storage.restore(backup, only_if_absent=True)
+
+    assert storage._tokens_path().read_text() == "FRESH"

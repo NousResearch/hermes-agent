@@ -11398,10 +11398,15 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
         try:
             transaction = _mcp_oauth_transaction(flow)
             with transaction, force_interactive_oauth(), dashboard_oauth_flow(flow):
+                manager = get_manager()
                 storage = HermesTokenStorage(flow.server_name)
                 backup = storage.snapshot()
+                previous_entry = None
                 try:
-                    get_manager().remove(flow.server_name, hermes_home=flow.hermes_home)
+                    previous_entry = manager.remove(
+                        flow.server_name,
+                        hermes_home=flow.hermes_home,
+                    )
                     tools = _probe_single_server(
                         flow.server_name,
                         cfg,
@@ -11415,8 +11420,18 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                     _save_mcp_server(flow.server_name, cfg)
                     flow.tools = [{"name": t, "description": d} for t, d in tools]
                     flow.mark_approved()
+                    if flow.reconnect_live:
+                        from tools.mcp_tool import reconnect_mcp_server
+
+                        reconnect_mcp_server(flow.server_name)
                 except Exception:
-                    storage.restore(backup)
+                    manager.evict(flow.server_name, hermes_home=flow.hermes_home)
+                    storage.restore(backup, only_if_absent=True)
+                    manager.restore_entry(
+                        flow.server_name,
+                        previous_entry,
+                        hermes_home=flow.hermes_home,
+                    )
                     raise
         finally:
             reset_secret_scope(secret_token)
@@ -11438,15 +11453,6 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
             )
         flow.mark_error(msg)
     finally:
-        # Dashboard auth builds a provider with a public callback URI and bridge
-        # handlers. Evict that one-shot provider after completion; persisted
-        # tokens/client registration remain for the normal runtime rebuild.
-        try:
-            from tools.mcp_oauth_manager import get_manager
-
-            get_manager().evict(flow.server_name, hermes_home=flow.hermes_home)
-        except Exception:
-            pass
         flow.mark_worker_done()
 
 
@@ -11458,10 +11464,11 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
 
     _require_token(request)
     _gc_mcp_oauth_flows()
+    from hermes_constants import get_hermes_home
+
+    process_home = str(get_hermes_home().expanduser().resolve(strict=False))
     with _profile_scope(profile):
         servers = _get_mcp_servers()
-        from hermes_constants import get_hermes_home
-
         flow_home = str(get_hermes_home().expanduser().resolve(strict=False))
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
@@ -11480,6 +11487,7 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
         hermes_home=flow_home,
         redirect_uri=(cfg.get("oauth") or {}).get("redirect_uri")
         or _mcp_oauth_callback_url(request, name),
+        reconnect_live=flow_home == process_home,
     )
     with _mcp_oauth_flows_lock:
         pending = sum(

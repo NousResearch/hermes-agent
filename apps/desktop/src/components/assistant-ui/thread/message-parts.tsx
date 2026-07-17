@@ -46,6 +46,10 @@ const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
 
 const ThinkingDisclosure: FC<{
   children: ReactNode
+  /** When true, the disclosure rests OPEN before any explicit user toggle. The
+   *  Working lane sets this so an opt-in narration lane shows its text
+   *  immediately instead of collapsed; the user's toggle still wins. */
+  defaultOpen?: boolean
   /** Header label; defaults to the "Thinking" string. The commentary lane
    *  passes "Working" to keep narration visually distinct from reasoning. */
   label?: ReactNode
@@ -59,6 +63,7 @@ const ThinkingDisclosure: FC<{
   timerKey?: string
 }> = ({
   children,
+  defaultOpen = false,
   label,
   messageRunning = false,
   pending = false,
@@ -77,7 +82,7 @@ const ThinkingDisclosure: FC<{
   const contentRef = useRef<HTMLDivElement | null>(null)
   const enterRef = useEnterAnimation(messageRunning, timerKey)
 
-  const open = userOpen ?? pending
+  const open = userOpen ?? (defaultOpen || pending)
   const isPreview = pending && userOpen === null
 
   // While the preview is live, pin the scroll container to the bottom on
@@ -217,6 +222,7 @@ const CommentaryDataPart: FC<{ data?: { text?: unknown }; status?: { type: strin
 
   return (
     <ThinkingDisclosure
+      defaultOpen
       label={t.assistant.thread.working}
       messageRunning={messageRunning}
       pending={pending}

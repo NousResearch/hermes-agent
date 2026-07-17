@@ -600,13 +600,13 @@ describe('assistant-ui streaming renderer', () => {
     expect(thinkingDisclosures.length).toBe(1)
     expect(commentaryDisclosures.length).toBe(1)
 
-    // Working lane opens to the narration text.
-    fireEvent.click(ui.getByRole('button', { name: /working/i }))
+    // Working lane is OPEN by default (opt-in feature → show narration
+    // immediately), so its text is visible without any interaction.
     expect(container.querySelector('[data-slot="aui_commentary-text"]')?.textContent).toBe(
       'Reading the screenshot first.'
     )
 
-    // Thinking lane holds only the genuine reasoning.
+    // Thinking lane holds only the genuine reasoning (collapsed by default).
     fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
     const reasoningText = container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent ?? ''
     expect(reasoningText).toBe('Planning the analysis.')

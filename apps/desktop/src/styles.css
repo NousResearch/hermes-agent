@@ -1333,15 +1333,16 @@ text-* variant utilities. */ .btn-arc {
   opacity: 1;
 }
 
-/* Local preference: the Working (commentary) lane is user-facing narration,
-   not scaffolding — render it as a subtle grey panel at full opacity so it
-   stands out from the faded Thinking/tool rows. Overrides the shared
-   transparent+faded treatment above. */
+/* The Working (commentary) lane is user-facing narration, not scaffolding —
+   render it as a soft grey-blue panel at full opacity so it stands out from the
+   faded Thinking/tool rows, with a thin left accent for a bit of presence. The
+   rgba tints blend over both light and dark themes. */
 [data-slot='aui_commentary-disclosure'] {
-  background: rgba(148, 158, 175, 0.1) !important;
-  border: 1px solid rgba(148, 158, 175, 0.18);
+  background: rgba(120, 148, 210, 0.14) !important;
+  border: 1px solid rgba(128, 158, 216, 0.24);
+  border-left: 3px solid rgba(122, 160, 230, 0.6);
   border-radius: 10px;
-  padding: 6px 10px;
+  padding: 6px 10px 6px 11px;
 }
 [data-slot='aui_assistant-message-content'] > [data-slot='aui_commentary-disclosure'] {
   opacity: 1;

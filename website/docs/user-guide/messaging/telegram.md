@@ -104,6 +104,44 @@ platforms:
 
 Telegram allows up to 100 BotCommands, but large command payloads can fail. Hermes defaults to 60 for reliability and clamps configured values to `1..100`; use `/commands` for the full command list.
 
+### Background live locations (Optional)
+
+Telegram delivers a live location as an initial location message followed by
+edited-message updates. By default, Hermes keeps its existing conversational
+behavior for location pins. To treat location, live-location, and venue updates
+as passive context instead, enable `background_locations` in
+`~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  telegram:
+    background_locations: true
+```
+
+With this option enabled:
+
+- accepted location and venue updates never start an agent turn or trigger a
+  reply;
+- only the latest location for each Telegram sender/chat pair is retained;
+- the state is stored profile-locally at
+  `$HERMES_HOME/state/telegram_background_locations.json` with timestamp and
+  freshness metadata;
+- a later explicit message from the same sender receives the latest location as
+  per-turn context, so questions such as "Where am I?" or "What's nearby?"
+  can use it without putting every live-location tick in the transcript.
+
+The state file is written with owner-only permissions on POSIX systems because
+it contains exact coordinates. Normal Telegram authorization and chat/topic
+gates still apply, and the option defaults to `false` for compatibility. Remove
+the state file if you want to clear all live Telegram location state.
+
+This option intentionally sends the latest coordinates with each later accepted
+message from that sender, including messages unrelated to location. The
+coordinates can therefore be retained in that explicit conversation turn and
+sent to your configured model provider. Hermes snapshots or other backups may
+also retain the state file after you delete the live copy. Enable this only when
+that privacy tradeoff matches your deployment and retention policy.
+
 ## Step 3: Privacy Mode (Critical for Groups)
 
 Telegram bots have a **privacy mode** that is **enabled by default**. This is the single most common source of confusion when using bots in groups.

@@ -267,6 +267,13 @@ def _skip(seen: set, excluded: set, *keys: str) -> bool:
     return any(k in seen for k in lowered) or any(k in excluded for k in lowered)
 
 
+def _provider_enabled(provider_id: str, user_providers: Any) -> bool:
+    """Profile-aware config gate shared by picker discovery and prefetch."""
+    from hermes_cli.config import is_provider_id_enabled
+
+    return is_provider_id_enabled(provider_id, user_providers)
+
+
 def _iter_builtin_candidates(models_dev_data: dict, excluded: set, seen: set):
     """Yield ``(hermes_id, mdev_id, pconfig, env_vars)`` for section-1 rows.
 
@@ -621,7 +628,8 @@ def _discover_endpoint_models(
 
 
 def _collect_authed_provider_slugs(
-    models_dev_data: dict, curated: dict[str, list[str]], excluded: list[str]) -> list[str]:
+    models_dev_data: dict, curated: dict[str, list[str]], excluded: list[str],
+    user_providers: Optional[dict] = None) -> list[str]:
     """Quick-scan which providers have credentials, without fetching model lists.
 
     Mirrors the credential checks of sections 1, 2 and 2b of :func:`list_authenticated_providers`
@@ -642,13 +650,16 @@ def _collect_authed_provider_slugs(
         seen.update(k.lower() for k in keys)
 
     for hermes_id, _mdev_id, _pconfig, env_vars in _iter_builtin_candidates(models_dev_data, excluded_set, seen):
+        if not _provider_enabled(hermes_id, user_providers):
+            continue
         if _any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id):
             _emit(hermes_id, hermes_id)
 
     mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
     for pid, overlay in HERMES_OVERLAYS.items():
         hermes_slug = mdev_to_hermes.get(pid, pid)
-        if _skip(seen, excluded_set, pid, hermes_slug) or overlay.auth_type == "aws_sdk":
+        if (_skip(seen, excluded_set, pid, hermes_slug) or overlay.auth_type == "aws_sdk"
+                or not _provider_enabled(hermes_slug, user_providers)):
             continue
         if (
             _overlay_has_env_creds(pid, hermes_slug, overlay, _scoped_key_env)
@@ -656,7 +667,7 @@ def _collect_authed_provider_slugs(
             _emit(hermes_slug, pid, hermes_slug)
 
     for cp in CANONICAL_PROVIDERS:
-        if _skip(seen, excluded_set, cp.slug):
+        if _skip(seen, excluded_set, cp.slug) or not _provider_enabled(cp.slug, user_providers):
             continue
         cp_config = PROVIDER_REGISTRY.get(cp.slug)
         has_creds = bool(
@@ -789,7 +800,8 @@ def _lap_lmstudio_row(b: _PickerBuild, user_providers: dict) -> None:
     discover anything and rendered a one-model ``user-config`` row — discarding the catalog
     ``_build_curated_lists`` had already live-probed into ``b.curated["lmstudio"]``. A block that
     points the slug at an endpoint of its own stays with section 3's custom-endpoint handling."""
-    if "lmstudio" in b.excluded or "lmstudio" in b.seen_slugs:
+    if ("lmstudio" in b.excluded or "lmstudio" in b.seen_slugs
+            or not _provider_enabled("lmstudio", user_providers)):
         return
     configured = user_providers.get("lmstudio")
     if isinstance(configured, dict) and _entry_base_url(configured, ("base_url", "api", "url")):
@@ -808,6 +820,8 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
     from hermes_cli.model_switch import _declared_model_ids, _scoped_key_env
     from agent.models_dev import get_provider_info
     for hermes_id, mdev_id, pconfig, env_vars in _iter_builtin_candidates(data, b.excluded, b.seen_slugs):
+        if not _provider_enabled(hermes_id, user_providers):
+            continue
         # Per-profile scope, never raw os.environ: a secondary profile's picker otherwise listed the
         # LAUNCH profile's env-keyed providers and hid its own .env-keyed ones.
         if not (_any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id)):
@@ -890,6 +904,8 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
         hermes_slug = mdev_to_hermes.get(pid, pid)
         if _skip(b.seen_slugs, b.excluded, pid, hermes_slug):
             continue
+        if not _provider_enabled(hermes_slug, user_providers):
+            continue
         if not _overlay_has_creds(b, pid, hermes_slug, overlay):
             continue
         if hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
@@ -919,12 +935,13 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
         b.seen_slugs.add(pid.lower())
 
 
-def _lap_canonical_rows(b: _PickerBuild) -> None:
+def _lap_canonical_rows(b: _PickerBuild, user_providers: dict) -> None:
     """Section 2b: CANONICAL_PROVIDERS missed by sections 1/2."""
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import CANONICAL_PROVIDERS
     for cp in CANONICAL_PROVIDERS:
-        if _skip(b.seen_slugs, b.excluded, cp.slug):
+        if (_skip(b.seen_slugs, b.excluded, cp.slug)
+                or not _provider_enabled(cp.slug, user_providers)):
             continue
         cp_config = PROVIDER_REGISTRY.get(cp.slug)
         has_creds = False
@@ -1128,7 +1145,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
 
 
 def _build_curated_lists(current_provider: str, current_base_url: str, current_model: str,
-                        non_blocking: bool = False) -> dict[str, list[str]]:
+                        non_blocking: bool = False, user_providers: Optional[dict] = None) -> dict[str, list[str]]:
     """Curated model lists keyed by hermes provider id, plus the dynamic ones (nous manifest,
     Ollama Cloud, LM Studio live probe). ``non_blocking`` (GUI read path) takes cached Ollama Cloud
     ids and warms them in the background rather than waiting on an 8s probe (#114215)."""
@@ -1139,11 +1156,13 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
     # non-blocking GUI read (cold catalog cache) lists them instead of an empty provider row.
     from providers import list_providers
     for _pp in list_providers():
-        if _pp.fallback_models and not curated.get(_pp.name):
+        if (_provider_enabled(_pp.name, user_providers)
+                and _pp.fallback_models and not curated.get(_pp.name)):
             curated[_pp.name] = list(_pp.fallback_models)
     # Remote manifest so new Portal models surface without a release; in-repo snapshot fallback.
-    curated["nous"] = get_curated_nous_model_ids()
-    if "ollama-cloud" not in curated:
+    if _provider_enabled("nous", user_providers):
+        curated["nous"] = get_curated_nous_model_ids()
+    if _provider_enabled("ollama-cloud", user_providers) and "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models
         # Read path: cache only; the row's own SWR refresh (cached_provider_model_ids) warms it.
         curated["ollama-cloud"] = fetch_ollama_cloud_models(cache_only=non_blocking)
@@ -1153,7 +1172,8 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
     # Left live even on the non-blocking path: it is a loopback endpoint with a 1.5s timeout, so it
     # cannot be the degraded remote provider this path must never wait on.
     is_current_lmstudio = current_provider.strip().lower() == "lmstudio"
-    if "lmstudio" not in curated and (os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL") or is_current_lmstudio):
+    if (_provider_enabled("lmstudio", user_providers) and "lmstudio" not in curated
+            and (os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL") or is_current_lmstudio)):
         from hermes_cli.models_local import fetch_lmstudio_models
         from hermes_cli.auth import AuthError
         lm_base = (
@@ -1223,7 +1243,7 @@ def list_authenticated_providers(
         refresh=refresh, excluded={str(p).strip().lower() for p in (excluded_providers or []) if p},
         non_blocking_catalogs=non_blocking_catalogs,
         curated=_build_curated_lists(current_provider, current_base_url, current_model,
-                                     non_blocking=non_blocking_catalogs))
+                                     non_blocking=non_blocking_catalogs, user_providers=user_providers))
 
     # Warm the disk cache in parallel before the serial section loops (otherwise 15-30s of live
     # round-trips on a cold cache). Skipped when refresh=True (serial path force-refreshes) and
@@ -1231,7 +1251,8 @@ def list_authenticated_providers(
     # collects nothing either: every cache-only row read spawns its own deduped background refresh,
     # so no thread pool is joined and no probe can hold up the response.
     prefetch_slugs = ([] if (refresh or non_blocking_catalogs)
-                      else _collect_authed_provider_slugs(data, b.curated, excluded_providers or []))
+                      else _collect_authed_provider_slugs(
+                          data, b.curated, excluded_providers or [], user_providers))
     if len(prefetch_slugs) > 3:
         try:
             _prefetch_provider_models_parallel(prefetch_slugs)
@@ -1241,7 +1262,7 @@ def list_authenticated_providers(
     _lap_lmstudio_row(b, user_providers if isinstance(user_providers, dict) else {})
     _lap_builtin_rows(b, data, user_providers)
     _lap_overlay_rows(b, data, user_providers)
-    _lap_canonical_rows(b)
+    _lap_canonical_rows(b, user_providers)
     if user_providers and isinstance(user_providers, dict):
         _lap_user_provider_rows(b, user_providers)
     _lap_bare_custom_row(b, custom_providers)
@@ -1253,21 +1274,14 @@ def list_authenticated_providers(
 
 def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
     """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model, sort."""
-    # The enabled post-filter covers built-in rows (sections 1-2) that bypass the per-section
-    # gate; matched by slug and ``provider_id``.
-    try:
-        from hermes_cli.config import is_provider_enabled
-        if isinstance(user_providers, dict):
-            disabled = {
-                str(name).strip().lower() for name, cfg in user_providers.items()
-                if isinstance(cfg, dict) and not is_provider_enabled(cfg)}
-            if disabled:
-                results = [
-                    r for r in results
-                    if str(r.get("provider_id", "")).strip().lower() not in disabled
-                    and str(r.get("slug", "")).strip().lower() not in disabled]
-    except Exception:
-        pass
+    # Defense in depth for rows assembled by custom/plugin paths. Earlier gates
+    # prevent credential and catalog probes; this one prevents a future row path
+    # from accidentally re-offering a disabled profile.
+    results = [
+        row for row in results
+        if _provider_enabled(str(row.get("slug", "")), user_providers)
+        and _provider_enabled(str(row.get("provider_id", "")), user_providers)
+    ]
 
     # A custom/uncurated model set via `/model <provider>/<name>` would be invisible in every
     # picker (main and MoA slot pickers read these rows); inject it at the front of the current

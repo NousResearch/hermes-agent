@@ -1065,7 +1065,7 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     make it appear ready. Unscoped callers keep the legacy behavior.
     """
     from hermes_cli.config import DEFAULT_CONFIG, get_env_path, get_hermes_home, load_config
-    from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
+    from hermes_cli.auth import PROVIDER_REGISTRY, _is_provider_enabled, get_auth_status
 
     cfg = load_config()
     model_cfg = cfg.get("model")
@@ -1082,15 +1082,16 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
 
     # Env vars (.env or shell). OPENAI_BASE_URL alone counts — local models
     # (vLLM, llama.cpp) often need no API key.
-    provider_env_vars = {
-        "OPENROUTER_API_KEY",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_TOKEN",
-        "OPENAI_BASE_URL",
-    }
-    for pconfig in PROVIDER_REGISTRY.values():
-        if pconfig.auth_type == "api_key":
+    provider_env_vars = set()
+    if _is_provider_enabled("openrouter"):
+        provider_env_vars.add("OPENROUTER_API_KEY")
+    if _is_provider_enabled("openrouter") or _is_provider_enabled("custom"):
+        # OPENAI_API_KEY is the legacy shared credential for both routes.
+        provider_env_vars.add("OPENAI_API_KEY")
+    if _is_provider_enabled("custom"):
+        provider_env_vars.add("OPENAI_BASE_URL")
+    for pid, pconfig in PROVIDER_REGISTRY.items():
+        if pconfig.auth_type == "api_key" and _is_provider_enabled(pid):
             provider_env_vars.update(pconfig.api_key_env_vars)
     if strict_profile_scope:
         from agent.secret_scope import current_secret_scope
@@ -1114,7 +1115,9 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     if isinstance(model_cfg, dict) and any(
         (model_cfg.get(k) or "").strip() for k in ("provider", "base_url", "api_key")
     ):
-        return True
+        selected = str(model_cfg.get("provider") or "custom").strip().lower()
+        if _is_provider_enabled(selected):
+            return True
 
     # Provider-specific auth fallbacks (e.g. Copilot via gh auth).
     if not strict_profile_scope:
@@ -1130,7 +1133,7 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
 
     # Claude Code OAuth credentials count only once Hermes is explicitly
     # configured — having Claude Code installed isn't consent to use its tokens.
-    if _has_hermes_config and not strict_profile_scope:
+    if _has_hermes_config and not strict_profile_scope and _is_provider_enabled("anthropic"):
         try:
             from agent.anthropic_credentials import read_claude_code_credentials, is_claude_code_token_valid
 
@@ -1145,7 +1148,7 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     # Nothing explicit anywhere: an existing Nous free-tier identity counts while the tier is on.
     try:
         from hermes_cli.anon_auth import guest_enabled, has_guest
-        return guest_enabled() and has_guest()
+        return _is_provider_enabled("nous") and guest_enabled() and has_guest()
     except Exception as exc:
         logger.debug("free tier check on first run skipped: %s", exc)
     return False

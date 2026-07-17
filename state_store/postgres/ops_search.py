@@ -267,9 +267,9 @@ class PostgresSearchOperations:
                     s.model,
                     s.started_at AS session_started,
                     GREATEST(
-                        similarity(COALESCE(m.content, ''), %s),
-                        similarity(COALESCE(m.tool_name, ''), %s),
-                        similarity(COALESCE(m.tool_calls, ''), %s)
+                        public.similarity(COALESCE(m.content, ''), %s),
+                        public.similarity(COALESCE(m.tool_name, ''), %s),
+                        public.similarity(COALESCE(m.tool_calls, ''), %s)
                     ) AS rank
                 FROM messages AS m
                 JOIN sessions AS s ON s.id = m.session_id

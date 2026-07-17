@@ -274,11 +274,39 @@ def test_lifecycle_messages_and_search_use_live_postgres(
     ]
     assert {row["role"] for row in search_results} == {"user", "assistant"}
     assert database.rebuild_fts() == 3
+    assert [row["session_id"] for row in database.search_messages("durable", limit=10)] == [
+        "lifecycle",
+        "lifecycle",
+    ]
 
     database.end_session("lifecycle", "operator-test")
     assert database.get_session("lifecycle")["end_reason"] == "operator-test"
     database.reopen_session("lifecycle")
     assert database.get_session("lifecycle")["ended_at"] is None
+
+
+def test_cjk_search_uses_public_trigram_function_with_hardened_search_path(
+    postgres_state: LivePostgresState,
+):
+    database = postgres_state.open(postgres_state.schema())
+    database.create_session("cjk-search", "cli", model="test-model")
+    database.append_message(
+        "cjk-search",
+        "user",
+        "Deploy the 大别山项目 configuration.",
+    )
+    database.append_message(
+        "cjk-search",
+        "assistant",
+        "This unrelated answer must not match.",
+    )
+
+    results = database.search_messages("大别山项目", limit=10)
+
+    assert len(results) == 1
+    assert results[0]["session_id"] == "cjk-search"
+    assert results[0]["role"] == "user"
+    assert "大别山项目" in results[0]["snippet"]
 
 
 def test_concurrent_title_assignment_keeps_sqlite_contract(

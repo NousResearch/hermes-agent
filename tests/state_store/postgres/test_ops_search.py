@@ -213,7 +213,7 @@ def test_cjk_search_uses_escaped_ilike_and_trigram_similarity() -> None:
     sql, params = store.connection.queries[0]
     assert query not in sql
     assert "ILIKE %s ESCAPE E'\\\\'" in sql
-    assert "similarity(" in sql
+    assert sql.count("public.similarity(") == 3
     assert "websearch_to_tsquery" not in sql
     assert "ORDER BY m.timestamp ASC, rank DESC, m.id ASC" in sql
     assert params == (

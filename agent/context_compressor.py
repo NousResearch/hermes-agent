@@ -1181,9 +1181,20 @@ class ContextCompressor(ContextEngine):
         e.g. Codex gpt-5.5's 85%) always wins; only lower values are raised.
         Large-context models keep the configured value — at 512K+ the default
         50% trigger already leaves ample post-compaction headroom.
+
+        The floor is a safety net for the *default* threshold (0.50), not a
+        hard override of explicit user configuration.  When a user sets
+        ``threshold: 0.3`` to stay within TPM rate limits (e.g. 100K TPM on
+        a 160K-ctx reasoning model), forcing 75% prevents compression from
+        ever firing and causes cascading 429s.  Respect the user's value when
+        it is below the default — they chose it deliberately.
         """
         if context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
-            return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
+            # Only apply the floor when the configured value looks like the
+            # default (>= 0.50).  A value below 0.50 signals deliberate user
+            # configuration — raising it would defeat the purpose.
+            if threshold_percent >= 0.50:
+                return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
         return threshold_percent
 
     @staticmethod

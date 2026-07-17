@@ -526,6 +526,44 @@ def _get_inherit_mcp_toolsets() -> bool:
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
 
 
+def _get_child_toolsets() -> Optional[List[str]]:
+    """Operator-configured toolsets for delegated children (delegation.child_toolsets).
+
+    Returns a cleaned list of toolset names, or None when unset/empty — None
+    preserves the historical behavior (children inherit the parent's toolsets).
+    A configured list re-enters the narrowing path in _build_child_agent:
+    intersection with the parent's expanded toolsets, optional MCP-toolset
+    preservation (inherit_mcp_toolsets), and the unconditional blocked-tool
+    strip. The model still has no toolsets argument — this is operator config,
+    not a model-facing choice.
+    """
+    cfg = _load_config()
+    raw = cfg.get("child_toolsets")
+    if not isinstance(raw, list):
+        return None
+    cleaned = [str(t).strip() for t in raw if str(t).strip()]
+    return cleaned or None
+
+
+def delegation_isolation_state() -> Dict[str, bool]:
+    """Live delegation-isolation facts, advertised via GET /v1/capabilities.
+
+    safe_delegation_isolation — server-side child-toolset narrowing is active
+    (delegation.child_toolsets configured): children run with a restricted,
+    server-enforced toolset instead of inheriting everything the parent holds.
+    delegation_mcp_isolation — additionally, narrowed children do not keep the
+    parent's MCP toolsets (delegation.inherit_mcp_toolsets: false).
+
+    Orchestrators use these to decide whether permitting delegate_task is safe
+    for untrusted-content workloads; keep them truthful to live config.
+    """
+    narrowed = bool(_get_child_toolsets())
+    return {
+        "safe_delegation_isolation": narrowed,
+        "delegation_mcp_isolation": narrowed and not _get_inherit_mcp_toolsets(),
+    }
+
+
 def _is_mcp_toolset_name(name: str) -> bool:
     """Return True for canonical MCP toolsets and their registered aliases."""
     if not name:
@@ -2528,9 +2566,11 @@ def delegate_task(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
+                # The model cannot choose or narrow toolsets (no model-facing
+                # toolsets arg). The OPERATOR can: delegation.child_toolsets
+                # narrows every child server-side; unset, children inherit the
+                # parent's toolsets as before.
+                toolsets=_get_child_toolsets(),
                 model=creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
@@ -2905,9 +2945,9 @@ def delegate_task(
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
-            # Metadata for the completion block only; subagents inherit the
-            # parent's toolsets (no model-facing toolsets arg).
-            toolsets=None,
+            # Metadata for the completion block only; mirrors the operator's
+            # delegation.child_toolsets narrowing (None = parent inheritance).
+            toolsets=_get_child_toolsets(),
             role=top_role,
             model=creds["model"],
             session_key=_session_key,

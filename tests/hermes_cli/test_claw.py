@@ -588,6 +588,26 @@ class TestCmdCleanup:
         assert "Skipped" in captured.out
         assert openclaw.is_dir()
 
+    def test_interactive_prompt_defaults_to_no_and_warns(self, tmp_path):
+        openclaw = tmp_path / ".openclaw"
+        openclaw.mkdir()
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
+        args = Namespace(source=None, dry_run=False, yes=False)
+        with (
+            patch.object(claw_mod, "_find_openclaw_dirs", return_value=[openclaw]),
+            patch.object(claw_mod, "prompt_yes_no", return_value=False) as mock_prompt,
+            patch("sys.stdin", mock_stdin),
+        ):
+            claw_mod._cmd_cleanup(args)
+
+        assert mock_prompt.call_count == 1
+        question = mock_prompt.call_args[0][0]
+        assert "stop working" in question
+        assert mock_prompt.call_args.kwargs.get("default") is False
+
     def test_explicit_source(self, tmp_path, capsys):
         custom_dir = tmp_path / "my-openclaw"
         custom_dir.mkdir()

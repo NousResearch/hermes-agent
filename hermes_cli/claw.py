@@ -670,7 +670,13 @@ def _cmd_cleanup(args):
         elif not auto_yes and not sys.stdin.isatty():
             print_info(f"Non-interactive session — would archive: {source_dir}")
             print_info("To execute, re-run with: hermes claw cleanup --yes")
-        elif auto_yes or prompt_yes_no(f"Archive {source_dir}?", default=True):
+        # Archiving renames the directory, which leaves any remaining OpenClaw
+        # install unable to start until it is renamed back — default to No.
+        elif auto_yes or prompt_yes_no(
+            f"Archive {source_dir}? (OpenClaw will stop working until the "
+            "directory is renamed back)",
+            default=False,
+        ):
             try:
                 archive_path = _archive_directory(source_dir)
                 print_success(f"Archived: {source_dir} → {archive_path}")

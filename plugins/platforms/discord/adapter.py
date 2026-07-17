@@ -10,6 +10,7 @@ Uses discord.py library for:
 """
 
 import asyncio
+import datetime as dt
 import hashlib
 import inspect
 import json
@@ -52,6 +53,7 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
 _DISCORD_RECOVERY_DB_FILENAME = "discord_message_recovery.db"
+_DISCORD_RECOVERY_RETENTION_DAYS = 30
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # Discord enforces a hard cap of 100 global application (slash) commands per
@@ -1176,113 +1178,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             @self._client.event
             async def on_message(message: DiscordMessage):
-                # Block until _resolve_allowed_usernames has swapped
-                # any raw usernames in DISCORD_ALLOWED_USERS for numeric
-                # IDs (otherwise on_message's author.id lookup can miss).
-                if not adapter_self._ready_event.is_set():
-                    try:
-                        await asyncio.wait_for(adapter_self._ready_event.wait(), timeout=30.0)
-                    except asyncio.TimeoutError:
-                        pass
-
-                # Dedup: Discord RESUME replays events after reconnects (#4777)
-                if adapter_self._dedup.is_duplicate(str(message.id)):
-                    return
-
-                # Always ignore our own messages
-                if message.author == self._client.user:
-                    return
-
-                # Ignore Discord system messages (thread renames, pins, member joins, etc.)
-                # Allow both default and reply types — replies have a distinct MessageType.
-                if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
-                    return
-
-                # Bot message filtering (DISCORD_ALLOW_BOTS):
-                #   "none"     — ignore all other bots (default)
-                #   "mentions" — accept bot messages only when they @mention us
-                #   "all"      — accept all bot messages
-                # Must run BEFORE the user allowlist check so that bots
-                # permitted by DISCORD_ALLOW_BOTS are not rejected for
-                # not being in DISCORD_ALLOWED_USERS (fixes #4466).
-                _role_authorized = False
-                if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-                    if allow_bots == "none":
-                        return
-                    elif allow_bots == "mentions":
-                        if not self._self_is_explicitly_mentioned(message):
-                            return
-                    if (
-                        self._discord_bots_require_inline_mention()
-                        and not self._self_is_raw_mentioned(message)
-                    ):
-                        return
-                    # "all" falls through; bot is permitted — skip the
-                    # human-user allowlist below (bots aren't in it).
-                else:
-                    # Non-bot: enforce the configured user/role allowlists.
-                    # Pass guild + is_dm so role checks are scoped to the
-                    # originating guild (prevents cross-guild DM bypass, see
-                    # _is_allowed_user docstring).
-                    _msg_guild = getattr(message, "guild", None)
-                    _is_dm = isinstance(message.channel, discord.DMChannel) or _msg_guild is None
-                    _msg_channel_ids = None
-                    if not _is_dm:
-                        _msg_channel_ids = {str(message.channel.id)}
-                        _parent_id = adapter_self._get_parent_channel_id(message.channel)
-                        if _parent_id:
-                            _msg_channel_ids.add(_parent_id)
-                    if not self._is_allowed_user(
-                        str(message.author.id),
-                        message.author,
-                        guild=_msg_guild,
-                        is_dm=_is_dm,
-                        channel_ids=_msg_channel_ids,
-                    ):
-                        self._warn_if_fail_closed_default()
-                        return
-                    _role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
-                
-                # Multi-agent filtering: if the message mentions specific bots
-                # but NOT this bot, the sender is talking to another agent —
-                # stay silent.  Messages with no bot mentions (general chat)
-                # still fall through to _handle_message for the existing
-                # DISCORD_REQUIRE_MENTION check.
-                #
-                # This replaces the older DISCORD_IGNORE_NO_MENTION logic
-                # with bot-aware filtering that works correctly when multiple
-                # agents share a channel.
-                _raw_self_mention = self._self_is_explicitly_mentioned(message)
-                if not isinstance(message.channel, discord.DMChannel) and (
-                    message.mentions or _raw_self_mention
-                ):
-                    _self_mentioned = _raw_self_mention
-                    _other_bots_mentioned = any(
-                        m.bot and m != self._client.user
-                        for m in message.mentions
-                    )
-                    # If other bots are mentioned but we're not → not for us
-                    if _other_bots_mentioned and not _self_mentioned:
-                        return
-                    # If humans are mentioned but we're not → not for us
-                    # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior)
-                    # EXCEPT in free-response channels where the bot should
-                    # answer regardless of who is mentioned.
-                    _ignore_no_mention = os.getenv(
-                        "DISCORD_IGNORE_NO_MENTION", "true"
-                    ).lower() in {"true", "1", "yes"}
-                    if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
-                        _channel_id = str(message.channel.id)
-                        _parent_id = None
-                        if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                            _parent_id = str(message.channel.parent_id)
-                        _free_channels = adapter_self._discord_free_response_channels()
-                        _channel_keys = adapter_self._discord_channel_keys(message, _parent_id)
-                        if "*" not in _free_channels and not (_channel_keys & _free_channels):
-                            return
-
-                await self._handle_message(message, role_authorized=_role_authorized)
+                await adapter_self._dispatch_discord_message(message)
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
@@ -1356,6 +1252,78 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._cancel_bot_task()
             self._release_platform_lock()
             return False
+
+    async def _dispatch_discord_message(self, message: DiscordMessage) -> bool:
+        """Apply Discord ingress policy and dispatch one live or recovered event."""
+        if not self._ready_event.is_set():
+            try:
+                await asyncio.wait_for(self._ready_event.wait(), timeout=30.0)
+            except asyncio.TimeoutError:
+                pass
+
+        if self._dedup.is_duplicate(str(message.id)):
+            return False
+        if message.author == self._client.user:
+            return False
+        if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
+            return False
+
+        role_authorized = False
+        if getattr(message.author, "bot", False):
+            allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+            if allow_bots == "none":
+                return False
+            if allow_bots == "mentions" and not self._self_is_explicitly_mentioned(message):
+                return False
+            if (
+                self._discord_bots_require_inline_mention()
+                and not self._self_is_raw_mentioned(message)
+            ):
+                return False
+        else:
+            msg_guild = getattr(message, "guild", None)
+            is_dm = isinstance(message.channel, discord.DMChannel) or msg_guild is None
+            msg_channel_ids = None
+            if not is_dm:
+                msg_channel_ids = {str(message.channel.id)}
+                parent_id = self._get_parent_channel_id(message.channel)
+                if parent_id:
+                    msg_channel_ids.add(parent_id)
+            if not self._is_allowed_user(
+                str(message.author.id),
+                message.author,
+                guild=msg_guild,
+                is_dm=is_dm,
+                channel_ids=msg_channel_ids,
+            ):
+                self._warn_if_fail_closed_default()
+                return False
+            role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
+
+        raw_self_mention = self._self_is_explicitly_mentioned(message)
+        if not isinstance(message.channel, discord.DMChannel) and (
+            message.mentions or raw_self_mention
+        ):
+            other_bots_mentioned = any(
+                mentioned.bot and mentioned != self._client.user
+                for mentioned in message.mentions
+            )
+            if other_bots_mentioned and not raw_self_mention:
+                return False
+            ignore_no_mention = os.getenv(
+                "DISCORD_IGNORE_NO_MENTION", "true"
+            ).lower() in {"true", "1", "yes"}
+            if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
+                parent_id = None
+                if hasattr(message.channel, "parent_id") and message.channel.parent_id:
+                    parent_id = str(message.channel.parent_id)
+                free_channels = self._discord_free_response_channels()
+                channel_keys = self._discord_channel_keys(message, parent_id)
+                if "*" not in free_channels and not (channel_keys & free_channels):
+                    return False
+
+        await self._handle_message(message, role_authorized=role_authorized)
+        return True
 
     async def _cancel_bot_task(self) -> None:
         """Cancel and await the background client.start() task, if running."""
@@ -1999,7 +1967,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 scanned += 1
                 message_id = str(getattr(message, "id", ""))
                 self._record_discord_message_seen(message, status="discovered")
-                if self._dedup.is_duplicate(message_id):
+                # A live gateway event may race this REST scan. Check without
+                # claiming the ID; the shared ingress helper owns the dedup
+                # write immediately before normal auth/filter dispatch.
+                if self._dedup.contains(message_id):
                     continue
                 if not await self._should_backfill_discord_message(message):
                     continue
@@ -2012,8 +1983,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 self._record_recovery_attempt(message, status="queued")
                 try:
-                    await self._handle_message(message)
-                    dispatched += 1
+                    if await self._dispatch_recovered_message(message):
+                        dispatched += 1
                 except Exception as exc:
                     self._record_recovery_attempt(message, status="failed", error=str(exc))
                     raise
@@ -2033,6 +2004,10 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as exc:  # pragma: no cover - defensive logging
             self._record_recovery_scan_complete(scan_id, status="failed", scanned=scanned, missed=missed, dispatched=dispatched, error=str(exc))
             logger.warning("[%s] Missed-message backfill failed: %s", self.name, exc, exc_info=True)
+
+    async def _dispatch_recovered_message(self, message: Any) -> bool:
+        """Run one recovered message through the live Discord ingress gates."""
+        return await self._dispatch_discord_message(message)
 
     async def _iter_missed_message_backfill_candidates(self, channel_ids: set[str]):
         if not self._client:
@@ -2064,9 +2039,13 @@ class DiscordAdapter(BasePlatformAdapter):
                         continue
                 candidate_channels.append(channel)
 
+        yielded = 0
         for channel in candidate_channels:
             async for item in self._iter_channel_and_thread_messages(channel, limit=limit, after=after, seen_channels=seen):
                 yield item
+                yielded += 1
+                if yielded >= limit:
+                    return
 
     async def _iter_channel_and_thread_messages(self, channel: Any, *, limit: int, after: Any, seen_channels: set[str]):
         """Yield history from a channel plus active/recent archived child threads."""
@@ -2245,6 +2224,19 @@ class DiscordAdapter(BasePlatformAdapter):
                             error TEXT
                         )
                     """)
+                    cutoff = (
+                        dt.datetime.now(dt.timezone.utc)
+                        - dt.timedelta(days=_DISCORD_RECOVERY_RETENTION_DAYS)
+                    ).isoformat()
+                    conn.execute(
+                        "DELETE FROM discord_messages WHERE updated_at < ?",
+                        (cutoff,),
+                    )
+                    conn.execute(
+                        "DELETE FROM discord_recovery_scans "
+                        "WHERE COALESCE(completed_at, started_at) < ?",
+                        (cutoff,),
+                    )
                     result = fn(conn)
                     conn.commit()
                     return result
@@ -2336,13 +2328,13 @@ class DiscordAdapter(BasePlatformAdapter):
         message_id = str(getattr(getattr(event, "raw_message", None), "id", "") or getattr(event, "message_id", "") or "")
         if not message_id:
             return
-        status = "responded" if outcome == ProcessingOutcome.SUCCESS else ("cancelled" if outcome == ProcessingOutcome.CANCELLED else "failed")
+        status = "processed" if outcome == ProcessingOutcome.SUCCESS else ("cancelled" if outcome == ProcessingOutcome.CANCELLED else "failed")
         now = self._utc_now_iso()
 
         def _op(conn):
             conn.execute(
-                "UPDATE discord_messages SET status=?, replied=CASE WHEN ? THEN 1 ELSE replied END, updated_at=? WHERE message_id=?",
-                (status, 1 if outcome == ProcessingOutcome.SUCCESS else 0, now, message_id),
+                "UPDATE discord_messages SET status=?, updated_at=? WHERE message_id=?",
+                (status, now, message_id),
             )
 
         self._with_discord_recovery_db(_op)

@@ -1,5 +1,6 @@
 """Tests for Discord missed-message startup backfill."""
 
+import datetime as dt
 import os
 import sys
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 
 
 def _ensure_discord_mock():
@@ -45,6 +47,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+import discord  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
@@ -81,13 +84,16 @@ def adapter(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
-    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999), get_channel=lambda _id: None)
+    bot_user = SimpleNamespace(id=999, bot=True, display_name="Hermes", name="hermes")
+    adapter._client = SimpleNamespace(user=bot_user, get_channel=lambda _id: None)
+    adapter._ready_event.set()
     adapter._handle_message = AsyncMock()
     monkeypatch.setenv("DISCORD_MISSED_MESSAGE_BACKFILL", "true")
+    monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
     return adapter
 
 
-def make_message(*, message_id=1, author_id=42, content="please ingest", reactions=None, channel=None):
+def make_message(*, message_id=1, author_id=42, content="please ingest", reactions=None, channel=None, mentions=None):
     channel = channel or FakeChannel()
     return SimpleNamespace(
         id=message_id,
@@ -95,11 +101,12 @@ def make_message(*, message_id=1, author_id=42, content="please ingest", reactio
         reactions=list(reactions or []),
         author=SimpleNamespace(id=author_id, bot=False, display_name="Emo", name="emo"),
         channel=channel,
+        guild=getattr(channel, "guild", None),
         created_at=datetime.now(timezone.utc),
         attachments=[],
-        mentions=[],
+        mentions=list(mentions or []),
         reference=None,
-        type=None,
+        type=discord.MessageType.default,
     )
 
 
@@ -186,7 +193,58 @@ async def test_run_backfill_dispatches_unaddressed_messages(adapter, monkeypatch
 
     await adapter._run_missed_message_backfill()
 
-    adapter._handle_message.assert_awaited_once_with(message)
+    adapter._handle_message.assert_awaited_once_with(message, role_authorized=False)
+
+
+@pytest.mark.asyncio
+async def test_run_backfill_counts_only_messages_that_reach_dispatch(adapter, monkeypatch):
+    dropped = make_message(message_id=1)
+    accepted = make_message(message_id=2)
+
+    async def fake_candidates(_channels):
+        yield dropped
+        yield accepted
+
+    async def fake_dispatch(message):
+        return message is accepted
+
+    monkeypatch.setattr(adapter, "_iter_missed_message_backfill_candidates", fake_candidates)
+    monkeypatch.setattr(adapter, "_should_backfill_discord_message", AsyncMock(return_value=True))
+    dispatch = AsyncMock(side_effect=fake_dispatch)
+    monkeypatch.setattr(adapter, "_dispatch_recovered_message", dispatch)
+    monkeypatch.setattr(adapter, "_missed_message_backfill_max_dispatches", lambda: 1)
+    monkeypatch.setattr(adapter, "_missed_message_backfill_channels", lambda: {"123"})
+
+    await adapter._run_missed_message_backfill()
+
+    assert dispatch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_recovered_mention_reuses_live_auth_and_mention_gates(adapter, monkeypatch):
+    bot_user = adapter._client.user
+    monkeypatch.delenv("DISCORD_ALLOW_ALL_USERS", raising=False)
+    denied = make_message(
+        message_id=1,
+        author_id=41,
+        content=f"<@{bot_user.id}> denied",
+        mentions=[bot_user],
+    )
+    allowed = make_message(
+        message_id=2,
+        content=f"<@{bot_user.id}> allowed",
+        mentions=[bot_user],
+    )
+
+    monkeypatch.setattr(
+        adapter,
+        "_is_allowed_user",
+        lambda user_id, *_a, **_kw: user_id == str(allowed.author.id),
+    )
+
+    assert await adapter._dispatch_recovered_message(denied) is False
+    assert await adapter._dispatch_recovered_message(allowed) is True
+    adapter._handle_message.assert_awaited_once_with(allowed, role_authorized=False)
 
 
 def test_missed_message_backfill_config_bridge(monkeypatch, tmp_path):
@@ -224,6 +282,18 @@ def test_missed_message_backfill_config_bridge(monkeypatch, tmp_path):
     assert os.environ["DISCORD_MISSED_MESSAGE_BACKFILL_MAX_DISPATCHES"] == "3"
 
 
+def test_default_config_exposes_missed_message_backfill_settings():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["discord"]["missed_message_backfill"] == {
+        "enabled": False,
+        "channels": "",
+        "window_seconds": 21600,
+        "limit": 100,
+        "max_dispatches": 10,
+    }
+
+
 @pytest.mark.asyncio
 async def test_persistent_responded_record_suppresses_backfill(adapter):
     message = make_message(message_id=77)
@@ -245,6 +315,51 @@ def test_down_notice_response_does_not_mark_message_complete(adapter):
     )
 
     assert adapter._discord_message_is_persistently_complete("88") is False
+
+
+def test_recovery_ledger_prunes_expired_rows(adapter):
+    old = (datetime.now(timezone.utc) - dt.timedelta(days=31)).isoformat()
+
+    def insert_old_rows(conn):
+        conn.execute(
+            "INSERT INTO discord_messages "
+            "(message_id, status, updated_at) VALUES ('old-message', 'responded', ?)",
+            (old,),
+        )
+        conn.execute(
+            "INSERT INTO discord_recovery_scans "
+            "(scan_id, started_at, completed_at, status, channels, window_seconds, limit_count) "
+            "VALUES ('old-scan', ?, ?, 'success', '[]', 3600, 10)",
+            (old, old),
+        )
+
+    adapter._with_discord_recovery_db(insert_old_rows)
+    adapter._with_discord_recovery_db(lambda _conn: None)
+
+    def count_old(conn):
+        messages = conn.execute(
+            "SELECT COUNT(*) FROM discord_messages WHERE message_id='old-message'"
+        ).fetchone()[0]
+        scans = conn.execute(
+            "SELECT COUNT(*) FROM discord_recovery_scans WHERE scan_id='old-scan'"
+        ).fetchone()[0]
+        return messages, scans
+
+    assert adapter._with_discord_recovery_db(count_old) == (0, 0)
+
+
+def test_empty_successful_turn_is_not_persistently_complete(adapter):
+    message = make_message(message_id=89)
+    event = MessageEvent(
+        text=message.content,
+        message_type=MessageType.TEXT,
+        raw_message=message,
+        message_id=str(message.id),
+    )
+    adapter._record_discord_processing_start(event, emoji_ack=False)
+    adapter._record_discord_processing_complete(event, outcome=ProcessingOutcome.SUCCESS)
+
+    assert adapter._discord_message_is_persistently_complete("89") is False
 
 
 @pytest.mark.asyncio
@@ -270,3 +385,23 @@ async def test_iter_candidates_includes_active_and_archived_threads(adapter):
         got.append(msg.id)
 
     assert got == [201, 202]
+
+
+@pytest.mark.asyncio
+async def test_iter_candidates_applies_one_global_scan_limit(adapter, monkeypatch):
+    first = FakeChannel(
+        channel_id=123,
+        history_messages=[make_message(message_id=1), make_message(message_id=2)],
+    )
+    second = FakeChannel(
+        channel_id=456,
+        history_messages=[make_message(message_id=3), make_message(message_id=4)],
+    )
+    adapter._client.get_channel = lambda channel_id: {123: first, 456: second}[channel_id]
+    monkeypatch.setattr(adapter, "_missed_message_backfill_limit", lambda: 3)
+
+    got = []
+    async for msg in adapter._iter_missed_message_backfill_candidates({"123", "456"}):
+        got.append(msg.id)
+
+    assert got == [1, 2, 3]

@@ -211,25 +211,27 @@ class TestUpdateCommandGatewayFlag:
 
     @pytest.mark.asyncio
     async def test_spawns_with_gateway_flag(self, tmp_path):
-        """The spawned update command includes --gateway and PYTHONUNBUFFERED."""
+        """The spawned update command includes --gateway and PYTHONUNBUFFERED.
+
+        ``/update`` now ALWAYS routes through the slash-confirm primitive
+        before spawning (see ``_handle_update_command`` in
+        ``gateway/slash_commands.py``) — the actual detached spawn only
+        happens in ``_execute_update``, called by the confirm handler on
+        approval. This test exercises ``_execute_update`` directly (the
+        post-approval unit), mirroring the pattern already used by the
+        spawn-mechanics tests in ``tests/gateway/test_update_command.py``.
+        """
         runner = _make_runner()
         event = _make_event()
 
-        fake_root = tmp_path / "project"
-        fake_root.mkdir()
-        (fake_root / ".git").mkdir()
-        (fake_root / "gateway").mkdir()
-        (fake_root / "gateway" / "run.py").touch()
-        fake_file = str(fake_root / "gateway" / "run.py")
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
         mock_popen = MagicMock()
         with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.run.__file__", fake_file), \
              patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
              patch("subprocess.Popen", mock_popen):
-            result = await runner._handle_update_command(event)
+            result = await runner._execute_update(event, ["/usr/bin/hermes"])
 
         # Check the bash command string contains --gateway and PYTHONUNBUFFERED
         call_args = mock_popen.call_args[0][0]
@@ -238,7 +240,7 @@ class TestUpdateCommandGatewayFlag:
         assert "PYTHONUNBUFFERED" in cmd_string
         assert "rc=$?" in cmd_string
         assert "status=$?" not in cmd_string
-        assert "stream progress" in result
+        assert "Starting Hermes update" in result
 
 
 # ---------------------------------------------------------------------------

@@ -99,7 +99,7 @@ def _drive_health_report(
         [binary, "mcp"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -115,10 +115,8 @@ def _drive_health_report(
         proc.stdin.flush()
         init_line = proc.stdout.readline()
         if not init_line:
-            stderr_tail = (proc.stderr.read() or "").strip().splitlines()[-3:]
             raise RuntimeError(
-                f"cua-driver mcp produced no initialize response. "
-                f"stderr tail: {stderr_tail or '(empty)'}"
+                "cua-driver mcp produced no initialize response."
             )
 
         # 2. tools/call health_report

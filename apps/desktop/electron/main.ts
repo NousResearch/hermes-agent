@@ -145,7 +145,7 @@ import {
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
-import { resolvePickerDefaultPath } from './wsl-path-bridge'
+import { resolvePickerDefaultPath, setWslBridgeActive } from './wsl-path-bridge'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -6757,6 +6757,12 @@ async function startHermes() {
     attemptedRemote = primaryBackendIsRemote()
     const remote = await resolveRemoteBackend(primaryProfileKey())
 
+    // Gate WSL path bridging: only meaningful for a LOCAL backend (desktop on
+    // Windows + gateway in WSL). A remote gateway's POSIX paths belong to a
+    // host the Windows desktop can't open via wsl.exe — bridging them would
+    // spawn the interactive "Install WSL" prompt on WSL-less machines. (#66433)
+    setWslBridgeActive(!remote)
+
     if (remote) {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
       await waitForHermes(remote.baseUrl, remote.token)
@@ -9162,6 +9168,10 @@ app.whenReady().then(() => {
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()
+  // Seed the WSL bridge state from the saved connection mode so the flag is
+  // correct before startHermes() resolves the backend (covers the window
+  // where a picker/dialog could open during boot). (#66433)
+  setWslBridgeActive(!primaryBackendIsRemote())
   createWindow()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.

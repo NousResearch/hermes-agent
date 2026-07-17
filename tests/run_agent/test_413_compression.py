@@ -173,6 +173,12 @@ class TestHTTP413Compression:
         mock_compress.assert_called_once()
         assert result["completed"] is True
         assert result["final_response"] == "Success after compression"
+        # #38445: the compression restart refunds its discarded attempt, so the
+        # single successful post-compression call is counted exactly once (not 2)
+        # — and the iteration-budget slot is likewise returned then re-consumed,
+        # so exactly one slot is used (a leaked slot would show used == 2).
+        assert result["api_calls"] == 1, result["api_calls"]
+        assert agent.iteration_budget.used == 1, agent.iteration_budget.used
 
     def test_413_not_treated_as_generic_4xx(self, agent):
         """413 must NOT hit the generic 4xx abort path; it should attempt compression."""

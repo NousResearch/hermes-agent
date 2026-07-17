@@ -650,6 +650,51 @@ def run_conversation(
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
+    # Per-iteration bookkeeping for _refund_api_call() (#38445). Reset at the top
+    # of each loop iteration: whether this iteration's optimistic api_call_count
+    # increment is still outstanding (so a refund fires at most once per
+    # iteration), and whether this iteration actually consumed an iteration-budget
+    # slot (so refund_budget never returns a slot a grace call never took).
+    _iter_api_counted = False
+    _iter_budget_consumed = False
+
+    def _refund_api_call(*, refund_budget: bool = False):
+        """Undo this iteration's optimistic ``api_call_count`` increment (#38445).
+
+        The counter is bumped at the top of each loop iteration so attempt
+        numbering is available to hooks/logs during retries; any terminal path
+        that exits without a successful response calls this once — before the
+        count is persisted/returned (or before a ``break`` into ``finalize_turn``)
+        — so the reported successful-call count reflects only successful calls.
+        Keeps ``agent._api_call_count`` in sync and is idempotent within an
+        iteration (a prior banked success can never be erased by a double call).
+
+        ``refund_budget=True`` also returns the iteration-budget slot — used when
+        the iteration's work is discarded and retried from scratch (compression /
+        rebuild restarts) or was never actually sent (Ollama/Nous preflight
+        skips). It refunds only a slot this iteration truly consumed, so a grace
+        iteration (which never consumes) cannot over-refund a prior slot.
+        """
+        nonlocal api_call_count, _iter_api_counted, _iter_budget_consumed
+        if not _iter_api_counted:
+            return
+        _iter_api_counted = False
+        if api_call_count > 0:
+            api_call_count -= 1
+            agent._api_call_count = api_call_count
+        if refund_budget and _iter_budget_consumed:
+            _iter_budget_consumed = False
+            try:
+                agent.iteration_budget.refund()
+            except Exception as _refund_err:
+                # IterationBudget.refund() is a local in-process call; a failure
+                # here is an invariant violation, not a transient hiccup. Log it
+                # (was a bare statement at the restart sites pre-#38445) but never
+                # let it abort the turn.
+                logger.warning(
+                    "iteration_budget.refund() failed: %s", _refund_err, exc_info=True
+                )
+
     final_response = None
     interrupted = False
     failed = False
@@ -700,6 +745,10 @@ def run_conversation(
         
         api_call_count += 1
         agent._api_call_count = api_call_count
+        # This iteration's increment is now outstanding; no budget slot consumed
+        # yet. _refund_api_call() reads both flags (#38445).
+        _iter_api_counted = True
+        _iter_budget_consumed = False
         agent._touch_activity(f"starting API call #{api_call_count}")
 
         # Grace call: the budget is exhausted but we gave the model one
@@ -707,10 +756,15 @@ def run_conversation(
         # this iteration regardless of outcome.
         if agent._budget_grace_call:
             agent._budget_grace_call = False
-        elif not agent.iteration_budget.consume():
+        elif agent.iteration_budget.consume():
+            _iter_budget_consumed = True
+        else:
             _turn_exit_reason = "budget_exhausted"
             if not agent.quiet_mode:
                 agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
+            # No API call is made this iteration — refund the optimistic
+            # increment before the break falls through to finalize_turn (#38445).
+            _refund_api_call()
             break
 
         # Fire step_callback for gateway hooks (agent:step event)
@@ -1040,12 +1094,7 @@ def run_conversation(
             _turn_exit_reason = "ollama_runtime_context_too_small"
             messages.append({"role": "assistant", "content": final_response})
             agent._emit_status("❌ Ollama runtime context is too small for Hermes tool use")
-            api_call_count -= 1
-            agent._api_call_count = api_call_count
-            try:
-                agent.iteration_budget.refund()
-            except Exception:
-                pass
+            _refund_api_call(refund_budget=True)
             break
 
         # Pre-API pressure check. The turn-prologue preflight only saw the
@@ -1120,9 +1169,9 @@ def run_conversation(
             conversation_history = conversation_history_after_compression(
                 agent, messages
             )
-            api_call_count -= 1
-            agent._api_call_count = api_call_count
-            agent.iteration_budget.refund()
+            # Compression discarded this iteration before dispatch, so refund
+            # both the optimistic call count and its consumed budget slot.
+            _refund_api_call(refund_budget=True)
             continue
         
         # Thinking spinner for quiet mode (animated during API call)
@@ -1197,6 +1246,9 @@ def run_conversation(
                         # No fallback available — surface buffered context
                         # so user sees the rate-limit message that led here.
                         agent._flush_status_buffer()
+                        # Request was skipped (rate-guard) — no API call
+                        # this iteration; refund count + budget (#38445).
+                        _refund_api_call(refund_budget=True)
                         agent._persist_session(messages, conversation_history)
                         return {
                             "final_response": (
@@ -1627,6 +1679,8 @@ def run_conversation(
                         agent._flush_status_buffer()
                         agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                         logger.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
+                        # Retries exhausted, no successful call this iteration (#38445).
+                        _refund_api_call()
                         agent._persist_session(messages, conversation_history)
                         _final_response = f"Invalid API response after {max_retries} retries: {_failure_hint}"
                         return {
@@ -1651,6 +1705,9 @@ def run_conversation(
                             agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                             _interrupt_text = f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries})."
                             close_interrupted_tool_sequence(messages, _interrupt_text)
+                            # Interrupted before any successful response this iteration;
+                            # refund the optimistic count (#38445).
+                            _refund_api_call()
                             agent._persist_session(messages, conversation_history)
                             agent.clear_interrupt()
                             return {
@@ -2364,6 +2421,11 @@ def run_conversation(
                     except Exception:
                         pass
                 agent._touch_activity(f"API call #{api_call_count} completed")
+                # NOTE: this iteration's api_call_count increment is now a REAL
+                # successful call. `_iter_api_counted` intentionally stays True
+                # through the rest of the post-retry-loop body (response
+                # processing, tool execution) — do NOT add a _refund_api_call()
+                # there; it would erase this banked success (#38445).
                 break  # Success, exit retry loop
 
             except InterruptedError:
@@ -2388,6 +2450,12 @@ def run_conversation(
                     final_response = _partial
                 else:
                     final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
+                    # No text was delivered before the stop landed: this
+                    # iteration produced no usable response, so refund the
+                    # optimistic count (#38445). When _partial IS present the
+                    # call delivered real assistant text (like a truncated
+                    # response) and counts as a successful call — do NOT refund.
+                    _refund_api_call()
                 agent._persist_session(messages, conversation_history)
                 break
 
@@ -3124,6 +3192,9 @@ def run_conversation(
                     agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during error handling, aborting retries.", force=True)
                     _interrupt_text = f"Operation interrupted: handling API error ({error_type}: {agent._clean_error_message(str(api_error))})."
                     close_interrupted_tool_sequence(messages, _interrupt_text)
+                    # Interrupted before any successful response this iteration;
+                    # refund the optimistic count (#38445).
+                    _refund_api_call()
                     agent._persist_session(messages, conversation_history)
                     agent.clear_interrupt()
                     return {
@@ -3189,6 +3260,9 @@ def run_conversation(
                         f"{agent.log_prefix}Context overflow ({classified.reason.value}) with "
                         f"auto-compaction disabled — not compressing."
                     )
+                    # No successful API call this iteration (request raised):
+                    # refund the optimistic increment before persist (#38445).
+                    _refund_api_call()
                     agent._persist_session(messages, conversation_history)
                     _final_response = (
                         "Context overflow and auto-compaction is disabled "
@@ -3483,6 +3557,9 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached for payload-too-large error.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
+                        # No successful API call this iteration (request raised):
+                        # refund the optimistic increment before persist (#38445).
+                        _refund_api_call()
                         agent._persist_session(messages, conversation_history)
                         _final_response = f"Request payload too large: max compression attempts ({max_compression_attempts}) reached."
                         return {
@@ -3539,6 +3616,9 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}❌ Payload too large and cannot compress further.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}413 payload too large. Cannot compress further.")
+                        # No successful API call this iteration (request raised):
+                        # refund the optimistic increment before persist (#38445).
+                        _refund_api_call()
                         agent._persist_session(messages, conversation_history)
                         _final_response = "Request payload too large (413). Cannot compress further."
                         return {
@@ -3612,6 +3692,9 @@ def run_conversation(
                             agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
                             agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
+                            # No successful API call this iteration (request
+                            # raised): refund the optimistic increment (#38445).
+                            _refund_api_call()
                             agent._persist_session(messages, conversation_history)
                             _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
                             return {
@@ -3653,6 +3736,9 @@ def run_conversation(
                             f"{agent.log_prefix}Output-cap error not routed into compression "
                             f"(max_tokens over provider cap): {error_msg[:200]}"
                         )
+                        # Output-cap 400: request failed, no successful
+                        # call this iteration; refund the count (#38445).
+                        _refund_api_call()
                         agent._persist_session(messages, conversation_history)
                         _final_response = (
                             "max_tokens exceeds the provider's output cap for this model. "
@@ -3724,6 +3810,9 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
+                        # No successful API call this iteration (request raised):
+                        # refund the optimistic increment before persist (#38445).
+                        _refund_api_call()
                         agent._persist_session(messages, conversation_history)
                         _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
                         return {
@@ -3769,6 +3858,9 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
                         logger.error(f"{agent.log_prefix}Context length exceeded: {new_tokens:,} tokens. Cannot compress further.")
+                        # No successful API call this iteration (request raised):
+                        # refund the optimistic increment before persist (#38445).
+                        _refund_api_call()
                         agent._persist_session(messages, conversation_history)
                         _final_response = f"Context length exceeded ({new_tokens:,} tokens). Cannot compress further."
                         return {
@@ -4009,6 +4101,10 @@ def run_conversation(
                             force=True,
                         )
                     logger.error(f"{agent.log_prefix}Non-retryable client error: {api_error}")
+                    # No successful call this iteration (#38445). Refund before
+                    # the conditional-persistence block so both the content-policy
+                    # and generic terminal returns below carry the corrected count.
+                    _refund_api_call()
                     # Skip session persistence when the error is likely
                     # context-overflow related (status 400 + large session).
                     # Persisting the failed user message would make the
@@ -4194,6 +4290,8 @@ def run_conversation(
                         agent._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
+                    # Retries exhausted, no successful call this iteration (#38445).
+                    _refund_api_call()
                     agent._persist_session(messages, conversation_history)
                     if classified.reason == FailoverReason.billing:
                         _final_response = f"Billing or credits exhausted: {_final_summary}"
@@ -4301,6 +4399,9 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                         _interrupt_text = f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries})."
                         close_interrupted_tool_sequence(messages, _interrupt_text)
+                        # Interrupted before any successful response this iteration;
+                        # refund the optimistic count (#38445).
+                        _refund_api_call()
                         agent._persist_session(messages, conversation_history)
                         agent.clear_interrupt()
                         return {
@@ -4326,8 +4427,7 @@ def run_conversation(
             break
 
         if _retry.restart_with_compressed_messages:
-            api_call_count -= 1
-            agent.iteration_budget.refund()
+            _refund_api_call(refund_budget=True)
             # Count compression restarts toward the retry limit to prevent
             # infinite loops when compression reduces messages but not enough
             # to fit the context window.
@@ -4341,12 +4441,16 @@ def run_conversation(
             # the API call against the now-active fallback provider.  Refund
             # the budget/count for the stalled attempt so the fallback gets a
             # fair turn.
-            api_call_count -= 1
-            agent.iteration_budget.refund()
+            _refund_api_call(refund_budget=True)
             _retry.restart_with_rebuilt_messages = False
             continue
 
         if _retry.restart_with_length_continuation:
+            # NOTE: intentionally does NOT _refund_api_call() (unlike the
+            # compression/rebuild restarts above). A length continuation is a
+            # genuine additional API request that contributes to a successful
+            # response, not a discarded/failed attempt — refunding here would
+            # undercount real calls (#38445).
             # Progressively boost the output token budget on each retry.
             # Retry 1 → 2× base, retry 2 → 4× base, retry 3 → 8× base,
             # retry 4 → 16× base, then cap at 32 768.
@@ -4369,6 +4473,9 @@ def run_conversation(
         if response is None:
             _turn_exit_reason = "all_retries_exhausted_no_response"
             print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
+            # No successful API call this iteration: refund the optimistic
+            # increment so finalize_turn reports only successful calls (#38445).
+            _refund_api_call()
             agent._persist_session(messages, conversation_history)
             break
 
@@ -5597,6 +5704,11 @@ def run_conversation(
                 break
             
         except Exception as e:
+            # NOTE: no _refund_api_call() here (#38445). This outer handler wraps
+            # the post-retry-loop body (response normalization + tool execution),
+            # which is only reached after a successful API call produced a
+            # response — so this iteration's count reflects a real call and must
+            # NOT be refunded.
             error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
             try:
                 print(f"❌ {error_msg}")

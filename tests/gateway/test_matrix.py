@@ -5309,3 +5309,73 @@ class TestMatrixDispatchSyncIsolation:
 
         assert ran["ok"] is True  # the sibling handler still ran
         assert "event handler failed" in caplog.text  # failure surfaced, not swallowed
+
+
+# ---------------------------------------------------------------------------
+# Progressive streaming (Matrix should use edit-based streaming, not buffer-only)
+# ---------------------------------------------------------------------------
+
+class TestMatrixProgressiveStreaming:
+    """Matrix streaming should use progressive edits, not buffer-only."""
+
+    @pytest.mark.asyncio
+    async def test_progressive_streaming_not_buffer_only(self):
+        """Regression: buffer_only=True was hardcoded for Matrix in gateway/run.py.
+
+        With buffer_only=False, the consumer sends the initial message then
+        progressively calls edit_message() as new tokens arrive.
+        """
+        from types import SimpleNamespace
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+        adapter = MagicMock()
+        send_result = SimpleNamespace(success=True, message_id="m1")
+        edit_result = SimpleNamespace(success=True, message_id="m1")
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.edit_message = AsyncMock(return_value=edit_result)
+        adapter.SUPPORTS_MESSAGE_EDITING = True
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        cfg = StreamConsumerConfig(
+            edit_interval=0.01,
+            buffer_threshold=5,
+            cursor="",           # Matrix: no cursor (tofu)
+            buffer_only=False,   # Matrix: progressive edits enabled
+        )
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="!test:matrix.local",
+            config=cfg,
+        )
+
+        # Feed the first batch of tokens — enough to cross buffer_threshold
+        # so the consumer sends the initial message.
+        consumer.on_delta("Ciao")
+        consumer.on_delta(" mondo")
+
+        # Start the consumer in background so we can feed more tokens
+        # while it runs its edit loop.
+        run_task = asyncio.create_task(consumer.run())
+
+        # Wait for the initial send to fire
+        await asyncio.sleep(0.15)
+
+        # Feed more tokens — this should trigger progressive edits
+        consumer.on_delta("! Come")
+        consumer.on_delta(" stai?")
+
+        # Wait for edits to fire
+        await asyncio.sleep(0.15)
+
+        # Finish the stream
+        consumer.finish()
+
+        # Wait for the consumer to complete
+        await asyncio.wait_for(run_task, timeout=2.0)
+
+        # Must have sent initial message then edited
+        assert adapter.send.called, "initial send() should have fired"
+        assert adapter.edit_message.called, (
+            "edit_message() must be called for progressive streaming; "
+            "buffer_only=True would suppress this"
+        )

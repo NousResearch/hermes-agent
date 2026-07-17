@@ -674,10 +674,37 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
     return True
 
 
+def _is_provider_enabled(provider_id: str) -> bool:
+    """Return False when config.yaml has ``providers.<id>.enabled`` set to false.
+
+    Lets users suppress a built-in provider's credential probe entirely
+    (and the startup warnings that come with it) without removing it from
+    the registry.  For example::
+
+        providers:
+          copilot:
+            enabled: false
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        config = read_raw_config()
+        providers_cfg = config.get("providers")
+        if isinstance(providers_cfg, dict):
+            entry = providers_cfg.get(provider_id)
+            if isinstance(entry, dict) and entry.get("enabled") is False:
+                return False
+    except Exception:
+        pass
+    return True
+
+
 def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
+    if not _is_provider_enabled(provider_id):
+        return "", ""
+
     if provider_id == "copilot":
         # Use the dedicated copilot auth module for proper token validation
         try:

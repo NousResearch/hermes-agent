@@ -160,14 +160,14 @@ gateway:
     truncated_suffix:      "…（已截斷；如需完整輸出請在終端機執行 `hermes kanban …`）"
     no_output:             "（無輸出）"
     wake:
-      completed:           "completed"
-      gave_up:             "gave up (retries exhausted)"
-      crashed:             "crashed (worker exited); dispatcher will retry"
-      timed_out:           "timed out; dispatcher will retry"
-      blocked:             "blocked; needs attention"
-      status_default:      "status changed"
-      status_joiner:       ", "
-      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
+      completed:           "已完成"
+      gave_up:             "已放棄（重試次數用盡）"
+      crashed:             "崩潰（worker 異常結束），dispatcher 將重試"
+      timed_out:           "逾時，dispatcher 將重試"
+      blocked:             "受阻，需要處理"
+      status_default:      "狀態變更"
+      status_joiner:       "，"
+      message:             "[kanban] 任務 {task_id} {status}。\n標題：{title}\n負責人：@{assignee}\n看板：{board}\n\n請檢查結果或決定下一步。"
 
   personality:
     none_configured:       "`{path}/config.yaml` 中未設定人格"

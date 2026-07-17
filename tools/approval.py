@@ -511,6 +511,176 @@ def detect_hardline_command(command: str) -> tuple:
     return (False, None)
 
 
+# =========================================================================
+# Self-host kill guard — block killing the process hosting this agent
+# =========================================================================
+# An agent session runs inside a host process: the desktop dashboard /
+# gateway (in-process tui_gateway), the CLI, or a launcher's child. A
+# terminal() kill aimed at that host can never complete usefully — the turn
+# dies mid-flight, the session is orphaned (blank indicator, failed stop,
+# session-not-found on the next prompt) and in-progress work is lost.
+# Reproduced 2026-06-09 when a session cleared "stale bytecode" by killing
+# its own dashboard PID. Restarts belong to the supervisor (desktop app,
+# launchd, `hermes gateway restart`), not the hosted agent.
+#
+# Static patterns can't express "our PID", so this is a function guard like
+# the sudo-stdin one: it extracts numeric ``kill`` targets and the shell
+# self-tokens ``$$`` / ``$PPID`` and compares them against this process and
+# its parent. Three spelling classes reach the same ``kill``:
+#   1. Command-position wrappers — ``command kill``, ``builtin kill``,
+#      ``sudo``/``env``/``exec``/``nohup``/``setsid``/``time`` prefixes with
+#      optional ``--``, and chains of those — anchored via _KILL_CMDPOS.
+#   2. Shell-interpreter forms — ``bash -c "kill $$"`` hides the kill inside
+#      a quoted ``-c`` payload with no command-position separator in front of
+#      it, so the payload is pulled out and re-scanned as a standalone
+#      command (see _iter_kill_scan_targets).
+#   3. Deobfuscation variants (subshell ``(kill $$)``, split spellings) are
+#      supplied by the shared _command_detection_variants().
+# Process-group kills (negative PIDs) are intentionally out of scope here —
+# ``kill -1`` is already hardline-blocked above.
+
+# Command-position anchor for the kill guard. Broader than the shared
+# _CMDPOS: it also consumes ``--`` argument separators and the ``builtin`` /
+# ``command [-p]`` execution wrappers, because those are valid agent-reachable
+# spellings of "run kill" that the base _CMDPOS (tuned for the rm/shutdown
+# floor) does not. Kept separate so widening the kill anchor never changes the
+# blast radius of the rm/shutdown hardline patterns. ``command -v``/``-V``
+# resolve a name without running it, so only bare ``command`` and
+# ``command -p`` count as executing wrappers.
+_KILL_CMDPOS = (
+    r'(?:^|[;&|\n`]|\$\()'                      # start position
+    r'\s*'
+    r'(?:sudo\s+(?:(?:-[^\s]+|--)\s+)*)?'       # optional sudo + flags / --
+    r'(?:env\s+(?:--\s+)?(?:\w+=\S*\s+)*)?'     # optional env + VAR=VAL / --
+    r'(?:(?:exec|nohup|setsid|time|builtin|command(?:\s+-p)?)\s+(?:--\s+)?)*'  # wrapper chains
+    r'\s*'
+)
+_KILL_CMD_RE = re.compile(
+    _KILL_CMDPOS + r'kill\s+(?P<args>[^;&|`\n]*)',
+    re.IGNORECASE)
+_KILL_SELF_TOKEN_RE = re.compile(r'\$\$|\$\{?PPID\}?\b')
+
+# Shell interpreters whose ``-c <script>`` argument runs the script as a fresh
+# command. Every name here contains the substring "sh", which _extract_shell_c_scripts
+# uses as a cheap pre-filter before paying for shlex.
+_SHELL_INTERPRETERS = frozenset({
+    "sh", "bash", "dash", "ash", "ksh", "mksh", "zsh",
+})
+_KILL_SCAN_MAX_DEPTH = 4
+
+
+def _self_host_pids() -> set:
+    """PIDs whose death takes this agent session down with them."""
+    pids = {os.getpid()}
+    try:
+        parent = os.getppid()
+        if parent > 1:
+            pids.add(parent)
+    except Exception:
+        pass
+    return pids
+
+
+def _extract_shell_c_scripts(command: str) -> list:
+    """Return inner scripts from ``<shell> -c <script>`` wrappers in *command*.
+
+    Uses a POSIX tokenizer so quoting is removed (``bash -c "kill $$"`` yields
+    ``kill $$``). Handles path-qualified interpreters (``/bin/sh``), bundled
+    flags (``-lc`` / ``-xc``), and interpreters nested behind other wrappers
+    (``sudo bash -c ...``). Malformed quoting yields nothing rather than a
+    partial, misleading extraction.
+    """
+    if "sh" not in command:
+        # Every _SHELL_INTERPRETERS name contains "sh", so no interpreter token
+        # can be present without it. Skips the shlex cost for the vast majority
+        # of commands.
+        return []
+    try:
+        tokens = shlex.split(command, comments=False, posix=True)
+    except ValueError:
+        return []
+    scripts: list = []
+    for idx, tok in enumerate(tokens):
+        if tok.rsplit("/", 1)[-1] not in _SHELL_INTERPRETERS:
+            continue
+        # ``-c``'s command string is the first non-option argument (per the
+        # bash/sh contract: "commands are read from the first non-option
+        # argument"), whenever any preceding flag bundle carries a ``c``.
+        saw_c = False
+        k = idx + 1
+        while k < len(tokens):
+            arg = tokens[k]
+            if arg == "--":
+                k += 1
+                break
+            if arg.startswith("-") and arg != "-":
+                if "c" in arg.lstrip("-"):
+                    saw_c = True
+                k += 1
+                continue
+            break
+        if saw_c and k < len(tokens):
+            scripts.append(tokens[k])
+    return scripts
+
+
+def _iter_kill_scan_targets(text: str, _depth: int = 0):
+    """Yield *text* plus any recursively-extracted shell ``-c`` payloads."""
+    yield text
+    if _depth >= _KILL_SCAN_MAX_DEPTH:
+        return
+    for script in _extract_shell_c_scripts(text):
+        yield from _iter_kill_scan_targets(script, _depth + 1)
+
+
+def _check_self_host_kill(command: str) -> tuple:
+    """Detect kill commands aimed at this agent's own host process.
+
+    Returns:
+        (is_blocked: bool, description: str | None)
+    """
+    self_token_hit = False
+    target_pids: set = set()
+    # Reuse the same deobfuscation variants the hardline/dangerous detectors
+    # use (quote-aware command-start marking, per-word de-obfuscation) so
+    # subshell forms like ``(kill $$)`` and split spellings anchor too, then
+    # expand any shell ``-c`` payloads on top of each.
+    for variant in _command_detection_variants(command):
+        for text in _iter_kill_scan_targets(variant):
+            for match in _KILL_CMD_RE.finditer(text):
+                args = match.group("args") or ""
+                if _KILL_SELF_TOKEN_RE.search(args):
+                    self_token_hit = True
+                for token in args.split():
+                    if token.startswith("-"):
+                        continue  # signal flags and negative pgids — out of scope
+                    if token.isdigit():
+                        target_pids.add(int(token))
+    if not self_token_hit and not target_pids:
+        return (False, None)
+    hits = sorted(target_pids & _self_host_pids())
+    if self_token_hit or hits:
+        which = ", ".join(str(p) for p in hits) if hits else "$$/$PPID"
+        return (True, f"kill targets this agent's own host process ({which})")
+    return (False, None)
+
+
+def _self_host_kill_block_result(description: str) -> dict:
+    """Build the standard block result for the self-host kill guard."""
+    return {
+        "approved": False,
+        "hardline": True,
+        "message": (
+            f"BLOCKED: {description}. Killing the process that hosts this "
+            "agent session orphans the session mid-turn — the turn dies, "
+            "stop fails, and the next prompt returns session-not-found. "
+            "Restart the gateway from its supervisor instead (desktop "
+            "Gateway menu, `hermes gateway restart`, launchd), or run the "
+            "kill yourself in a terminal outside the agent."
+        ),
+    }
+
+
 def _match_user_deny_rule(command: str) -> str | None:
     """Return the matching ``approvals.deny`` glob, or None.
 
@@ -2670,6 +2840,19 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    # == Self-host kill guard ==
+    # Unconditional, like the hardline floor and sudo-stdin guard above:
+    # killing the process that hosts this agent session orphans the turn
+    # (stop fails, next prompt returns session-not-found). Fires BEFORE the
+    # yolo / mode=off / cron bypass so no session-level setting can leak it.
+    # Isolated container backends already returned above — their PIDs are in a
+    # separate namespace, not the host gateway's.
+    is_self_kill, self_kill_desc = _check_self_host_kill(command)
+    if is_self_kill:
+        logger.warning("Self-host kill guard block: %s (command: %s)",
+                       self_kill_desc, command[:200])
+        return _self_host_kill_block_result(self_kill_desc)
 
     # User-defined deny rules (approvals.deny in config.yaml): like the
     # hardline floor, these fire BEFORE the yolo / mode=off bypass — a deny

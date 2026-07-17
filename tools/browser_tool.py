@@ -609,6 +609,11 @@ _agent_browser_resolved = False
 _cached_browser_engine: Optional[str] = None
 _browser_engine_resolved = False
 
+# External CDP fallback support.  When enabled, a user-supplied CDP endpoint
+# (for example Obscura) can fail over to the configured local engine chain.
+_cached_cdp_fallback_to_local: Optional[bool] = None
+_cdp_fallback_to_local_resolved = False
+
 
 def _is_legacy_provider_registry_overridden() -> bool:
     """Return True when a test has patched ``_PROVIDER_REGISTRY`` to a custom value.
@@ -894,6 +899,444 @@ def _using_lightpanda_engine() -> bool:
     return _get_browser_engine() == "lightpanda"
 
 
+def _cdp_fallback_to_local() -> bool:
+    """Return whether external CDP override failures should retry locally.
+
+    This is intentionally opt-in. A configured CDP endpoint usually means the
+    operator wants that specific browser (visible Chrome, Obscura, remote
+    Playwright, etc.); silently hiding a dead endpoint would make stale config
+    harder to notice.  When enabled, Hermes retries eligible failed CDP commands
+    through the normal local engine path, so ``browser.engine=lightpanda`` still
+    gets the existing Lightpanda→Chrome fallback chain.
+    """
+    global _cached_cdp_fallback_to_local, _cdp_fallback_to_local_resolved
+    if _cdp_fallback_to_local_resolved:
+        return bool(_cached_cdp_fallback_to_local)
+
+    _cdp_fallback_to_local_resolved = True
+    _cached_cdp_fallback_to_local = False
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict):
+            _cached_cdp_fallback_to_local = is_truthy_value(
+                browser_cfg.get("cdp_fallback_to_local"), default=False
+            )
+    except Exception as e:
+        logger.debug("Could not read browser.cdp_fallback_to_local from config: %s", e)
+    return bool(_cached_cdp_fallback_to_local)
+
+
+_CDP_FALLBACK_ELIGIBLE: frozenset[str] = frozenset({
+    "open", "snapshot", "screenshot", "eval", "click", "fill",
+    "scroll", "back", "press", "console", "errors",
+})
+
+_CDP_BACKEND_FAILURE_KINDS: frozenset[str] = frozenset({
+    "cdp_discovery",
+    "cdp_connect",
+    "cdp_transport",
+    "cdp_disconnect",
+})
+_CDP_BACKEND_FAILURE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"^(?:error:\s*)?all cdp discovery methods failed(?:\s*[:.-]\s*.*)?$",
+        r"^(?:error:\s*)?failed to resolve cdp(?: endpoint)?(?:\s*[:.-]\s*.*)?$",
+        r"^(?:error:\s*)?failed to connect to cdp(?: endpoint)?(?:\s*[:.-]\s*.*)?$",
+        r"^(?:error:\s*)?(?:cdp )?websocket connect failed(?:\s*[:.-]\s*.*)?$",
+        r"^(?:error:\s*)?cdp (?:socket|connection) (?:closed|reset|refused)(?:\s*[:.-]\s*.*)?$",
+        r"^(?:error:\s*)?(?:browser has disconnected|browser closed|target closed)(?:\s*[:.-]\s*.*)?$",
+    )
+)
+
+
+def _is_cdp_backend_failure(result: Dict[str, Any]) -> bool:
+    """Return True for explicit CDP discovery/transport backend failures only.
+
+    Error strings produced by page JavaScript and application semantics can
+    contain words such as ``WebSocket`` or ``connection refused``.  Those must
+    not move the command into another browser.  Prefer an internal typed kind;
+    legacy agent-browser output is accepted only when the whole message matches
+    a known CDP discovery/connect/disconnect shape.
+    """
+    if result.get("success"):
+        return False
+    if result.get("_browser_failure_kind") in _CDP_BACKEND_FAILURE_KINDS:
+        return True
+    error = str(result.get("error") or "").strip()
+    if not error:
+        return False
+    return any(pattern.fullmatch(error) for pattern in _CDP_BACKEND_FAILURE_PATTERNS)
+
+
+def _cdp_fallback_reason(
+    session_info: Dict[str, Any],
+    command: str,
+    result: Dict[str, Any],
+) -> Optional[str]:
+    """Return why a CDP command should fall back to local, or ``None``.
+
+    Only user-supplied CDP overrides participate. Cloud providers also expose
+    CDP URLs internally, but their fallback semantics are provider-specific and
+    should not be conflated with an operator-provided Obscura/Chrome endpoint.
+    """
+    if not session_info.get("cdp_url"):
+        return None
+    features = session_info.get("features") or {}
+    if not isinstance(features, dict) or not features.get("cdp_override"):
+        return None
+    if not _cdp_fallback_to_local():
+        return None
+    if command not in _CDP_FALLBACK_ELIGIBLE:
+        return None
+
+    if not result.get("success"):
+        if not _is_cdp_backend_failure(result):
+            return None
+        error = str(result.get("error") or "command failed").strip()
+        return f"CDP backend {command!r} failed ({error}); retried with local browser."
+
+    return None
+
+
+def _append_fallback_warning(result: Dict[str, Any], warning: str) -> Dict[str, Any]:
+    """Append a fallback warning without clobbering an inner fallback warning."""
+    current = result.get("fallback_warning")
+    if current:
+        result["fallback_warning"] = f"{warning}\n{current}"
+    else:
+        result["fallback_warning"] = warning
+    return result
+
+
+def _annotate_cdp_fallback(
+    result: Dict[str, Any],
+    reason: str,
+    local_session_key: str,
+) -> Dict[str, Any]:
+    """Add user-visible CDP→local fallback metadata to a browser result."""
+    warning = f"⚠ CDP fallback: local browser was used. {reason}"
+    annotated = dict(result)
+    _append_fallback_warning(annotated, warning)
+    annotated["browser_session_key"] = local_session_key
+    annotated["browser_backend_fallback"] = {
+        "from": "cdp",
+        "to": "local",
+        "reason": reason,
+    }
+    data = annotated.get("data")
+    if isinstance(data, dict):
+        data = dict(data)
+        existing_data_warning = data.get("fallback_warning")
+        if existing_data_warning:
+            data["fallback_warning"] = f"{warning}\n{existing_data_warning}"
+        else:
+            data["fallback_warning"] = annotated["fallback_warning"]
+        data["browser_session_key"] = local_session_key
+        data["browser_backend_fallback"] = annotated["browser_backend_fallback"]
+        annotated["data"] = data
+    return annotated
+
+
+def _cdp_fallback_warmup_url_safe(url: str) -> bool:
+    """Return whether a cached URL may be reopened during CDP→local fallback."""
+    if not url:
+        return False
+    if _is_always_blocked_url(url):
+        return False
+    if not _allow_private_urls() and not _is_safe_url(url):
+        return False
+    return True
+
+
+def _quarantine_browser_session(
+    task_id: str,
+    session_key: str,
+    *,
+    source_session_key: Optional[str] = None,
+) -> None:
+    """Blank, close, and forget a failed fallback session in every tracker."""
+    owner, generation = _last_active_session_state(task_id)
+    try:
+        _run_browser_command(
+            session_key,
+            "open",
+            ["about:blank"],
+            timeout=10,
+            _engine_override="auto",
+            _allow_fallback=False,
+        )
+    except Exception as exc:
+        logger.debug("Browser quarantine blank failed for %s: %s", session_key, exc)
+
+    try:
+        _cleanup_single_browser_session(session_key)
+    except Exception as exc:
+        logger.warning("Browser quarantine cleanup failed for %s: %s", session_key, exc)
+    finally:
+        with _cleanup_lock:
+            _active_sessions.pop(session_key, None)
+            _session_last_activity.pop(session_key, None)
+            _recording_sessions.discard(session_key)
+            _cdp_fallback_local_session_keys.discard(session_key)
+            _last_browser_url_by_session_key.pop(session_key, None)
+            if source_session_key:
+                _last_browser_url_by_session_key.pop(source_session_key, None)
+        if owner == session_key:
+            _compare_clear_last_active_session_key(
+                task_id,
+                session_key,
+                generation,
+            )
+
+
+def _result_has_serving_metadata(result: Dict[str, Any]) -> bool:
+    return bool(
+        result.get("browser_session_key")
+        or result.get("_browser_session_key")
+        or result.get("browser_backend_fallback")
+    )
+
+
+def _served_url_guard_active(
+    requested_session_key: str,
+    served_session_key: str,
+    result: Dict[str, Any],
+) -> bool:
+    """Return whether content from this serving context requires exact proof."""
+    if _allow_private_urls():
+        return False
+    if (
+        served_session_key != requested_session_key
+        or result.get("browser_backend_fallback")
+        or _is_cdp_fallback_local_session_key(served_session_key)
+    ):
+        return True
+    # An unmarked local sidecar is an intentional hybrid route and stays exempt.
+    if _is_local_backend() or _is_local_sidecar_key(served_session_key):
+        return False
+    # Non-local/cloud/CDP sessions always require an exact URL proof before any
+    # content is released. Missing serving metadata is not a fail-open signal.
+    return True
+
+
+def _actual_served_url_guard(
+    task_id: str,
+    requested_session_key: str,
+    result: Dict[str, Any],
+    content_kind: str,
+    *,
+    force: bool = False,
+    quarantine_on_failure: bool = False,
+    intentional_hybrid_local: bool = False,
+) -> tuple[str, Optional[str], Optional[Dict[str, Any]]]:
+    """Prove the exact serving session is on a non-empty safe URL.
+
+    The probe itself never falls back.  Any mismatch or fallback metadata means
+    it did not prove the session that produced the bytes about to be returned.
+    """
+    served_session_key = (
+        result.get("browser_session_key")
+        or result.get("_browser_session_key")
+        or requested_session_key
+    )
+    if intentional_hybrid_local and not result.get("browser_backend_fallback"):
+        return served_session_key, None, None
+    if not force and not _served_url_guard_active(
+        requested_session_key,
+        served_session_key,
+        result,
+    ):
+        return served_session_key, None, None
+
+    current_url: Optional[str] = None
+    probe_error: Optional[str] = None
+    try:
+        probe = _run_browser_command(
+            served_session_key,
+            "eval",
+            ["window.location.href"],
+            timeout=5,
+            _engine_override="auto",
+            _allow_fallback=False,
+        )
+        probe_session_key = (
+            probe.get("browser_session_key")
+            or probe.get("_browser_session_key")
+            or served_session_key
+        )
+        if not probe.get("success"):
+            probe_error = str(probe.get("error") or "URL probe failed")
+        elif probe_session_key != served_session_key:
+            probe_error = "URL probe ran on a different browser session"
+        elif probe.get("browser_backend_fallback") or probe.get("browser_engine_fallback"):
+            probe_error = "URL probe used browser fallback metadata"
+        else:
+            raw_url = probe.get("data", {}).get("result", "")
+            current_url = str(raw_url or "").strip().strip('\"').strip("'")
+            if not current_url:
+                probe_error = "URL probe returned an empty URL"
+    except Exception as exc:
+        probe_error = str(exc) or type(exc).__name__
+
+    unsafe_url = bool(
+        current_url
+        and (
+            _is_always_blocked_url(current_url)
+            or not _is_safe_url(current_url)
+        )
+    )
+    if not probe_error and not unsafe_url:
+        return served_session_key, current_url, None
+
+    if quarantine_on_failure:
+        _quarantine_browser_session(
+            task_id,
+            served_session_key,
+            source_session_key=requested_session_key,
+        )
+    else:
+        _neutralize_blocked_redirect(
+            task_id,
+            requested_session_key,
+            served_session_key,
+        )
+
+    if probe_error:
+        error = (
+            "Blocked: unable to verify the URL of the browser session that "
+            f"served this {content_kind} ({probe_error})."
+        )
+    elif current_url and _is_always_blocked_url(current_url):
+        error = (
+            "Blocked: page URL targets a cloud metadata endpoint "
+            f"({current_url})."
+        )
+    else:
+        error = (
+            "Blocked: page URL targets a private or internal address "
+            f"({current_url})."
+        )
+    return served_session_key, current_url, {"success": False, "error": error}
+
+
+def _run_cdp_local_fallback_command(
+    task_id: str,
+    command: str,
+    args: List[str],
+    timeout: int,
+    reason: str,
+    expected_owner_generation: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Retry a failed external-CDP command through the configured local engine."""
+    local_session_key = task_id if _is_local_sidecar_key(task_id) else f"{task_id}{_LOCAL_SUFFIX}"
+    owner_task_id = _bare_task_id_for_session_key(task_id)
+    if expected_owner_generation is None:
+        _, expected_owner_generation = _last_active_session_state(owner_task_id)
+    logger.info(
+        "CDP fallback: retrying '%s' with local browser (task=%s local=%s): %s",
+        command,
+        task_id,
+        local_session_key,
+        reason,
+    )
+
+    if command != "open":
+        current_url = _last_browser_url_by_session_key.get(task_id)
+        if current_url and _cdp_fallback_warmup_url_safe(current_url):
+            warmup = _run_browser_command(
+                local_session_key,
+                "open",
+                [current_url],
+                timeout=_get_open_command_timeout(first_open=True),
+                _allow_fallback=False,
+            )
+            if not warmup.get("success"):
+                logger.warning(
+                    "CDP fallback: local warm-up navigation to %s failed before %s: %s",
+                    _sanitize_url_for_logs(current_url),
+                    command,
+                    warmup.get("error"),
+                )
+                _quarantine_browser_session(
+                    owner_task_id,
+                    local_session_key,
+                    source_session_key=task_id,
+                )
+                warmup_failure = dict(warmup)
+                warmup_failure["error"] = (
+                    "CDP fallback local warm-up failed before "
+                    f"{command}: {warmup.get('error', 'unknown error')}"
+                )
+                return _annotate_cdp_fallback(
+                    warmup_failure,
+                    reason,
+                    local_session_key,
+                )
+            _, _, warmup_guard_failure = _actual_served_url_guard(
+                owner_task_id,
+                local_session_key,
+                warmup,
+                "CDP fallback warm-up",
+                force=True,
+                quarantine_on_failure=True,
+            )
+            if warmup_guard_failure:
+                return _annotate_cdp_fallback(
+                    warmup_guard_failure,
+                    reason,
+                    local_session_key,
+                )
+        elif current_url:
+            logger.warning(
+                "CDP fallback: blocked unsafe cached warm-up URL before %s: %s",
+                command,
+                _sanitize_url_for_logs(current_url),
+            )
+            _quarantine_browser_session(
+                owner_task_id,
+                local_session_key,
+                source_session_key=task_id,
+            )
+            return _annotate_cdp_fallback(
+                {
+                    "success": False,
+                    "error": (
+                        "CDP fallback refused an unsafe cached warm-up URL "
+                        f"before {command}."
+                    ),
+                },
+                reason,
+                local_session_key,
+            )
+
+    fallback_result = _run_browser_command(local_session_key, command, args, timeout)
+    if not fallback_result.get("success"):
+        _quarantine_browser_session(
+            owner_task_id,
+            local_session_key,
+            source_session_key=task_id,
+        )
+    # The original CDP command captured this token before it started.  A local
+    # retry may publish only against that immutable generation.  Navigation is
+    # deferred to browser_navigate so redirect validation happens first.
+    if fallback_result.get("success"):
+        if command == "open":
+            fallback_result = dict(fallback_result)
+            fallback_result["_cdp_fallback_owner_generation"] = (
+                expected_owner_generation
+            )
+        else:
+            _compare_publish_cdp_fallback_owner(
+                owner_task_id,
+                expected_owner_generation,
+                local_session_key,
+            )
+    return _annotate_cdp_fallback(fallback_result, reason, local_session_key)
+
+
 def _lightpanda_fallback_reason(engine: str, command: str, result: Dict[str, Any]) -> Optional[str]:
     """Return the user-visible reason a Lightpanda result needs Chrome fallback.
 
@@ -982,8 +1425,14 @@ def _copy_fallback_warning(target: Dict[str, Any], result: Dict[str, Any]) -> Di
     """Copy browser fallback metadata from an internal result into a tool response."""
     if result.get("fallback_warning"):
         target["fallback_warning"] = result["fallback_warning"]
+    if result.get("browser_engine"):
         target["browser_engine"] = result.get("browser_engine")
+    if result.get("browser_engine_fallback"):
         target["browser_engine_fallback"] = result.get("browser_engine_fallback")
+    if result.get("browser_backend_fallback"):
+        target["browser_backend_fallback"] = result.get("browser_backend_fallback")
+    if result.get("browser_session_key"):
+        target["browser_session_key"] = result.get("browser_session_key")
     return target
 
 
@@ -1312,6 +1761,95 @@ def _session_info_owned_by_task(session_info: Dict[str, Any], task_id: str, sess
     return True
 
 
+def _last_active_session_state(task_id: str) -> tuple[Optional[str], int]:
+    """Read a task's owner and generation under the ownership lock."""
+    with _cleanup_lock:
+        return (
+            _last_active_session_key.get(task_id),
+            _last_active_session_generation.get(task_id, 0),
+        )
+
+
+def _is_cdp_fallback_local_session_key(session_key: str) -> bool:
+    """Return whether ``session_key`` is a local recovery for external CDP."""
+    with _cleanup_lock:
+        return session_key in _cdp_fallback_local_session_keys
+
+
+def _set_last_active_session_key(task_id: str, session_key: str) -> int:
+    """Publish a new task owner and advance its generation atomically."""
+    with _cleanup_lock:
+        generation = _last_active_session_generation.get(task_id, 0) + 1
+        _last_active_session_key[task_id] = session_key
+        _last_active_session_generation[task_id] = generation
+        return generation
+
+
+def _compare_set_last_active_session_key(
+    task_id: str,
+    expected_generation: int,
+    session_key: str,
+) -> bool:
+    """Publish ``session_key`` only if no newer owner decision was made."""
+    with _cleanup_lock:
+        if _last_active_session_generation.get(task_id, 0) != expected_generation:
+            return False
+        generation = expected_generation + 1
+        _last_active_session_key[task_id] = session_key
+        _last_active_session_generation[task_id] = generation
+        return True
+
+
+def _compare_publish_cdp_fallback_owner(
+    task_id: str,
+    expected_generation: int,
+    session_key: str,
+) -> bool:
+    """Atomically publish a CDP fallback owner and its guarded provenance."""
+    with _cleanup_lock:
+        if _last_active_session_generation.get(task_id, 0) != expected_generation:
+            return False
+        _last_active_session_key[task_id] = session_key
+        _last_active_session_generation[task_id] = expected_generation + 1
+        _cdp_fallback_local_session_keys.add(session_key)
+        return True
+
+
+def _compare_publish_navigation_owner(
+    task_id: str,
+    expected_generation: int,
+    session_key: str,
+    *,
+    explicit_hybrid_local: bool = False,
+) -> bool:
+    """Publish a normal navigation owner and commit hybrid repurpose atomically."""
+    with _cleanup_lock:
+        if _last_active_session_generation.get(task_id, 0) != expected_generation:
+            return False
+        _last_active_session_key[task_id] = session_key
+        _last_active_session_generation[task_id] = expected_generation + 1
+        if explicit_hybrid_local:
+            _cdp_fallback_local_session_keys.discard(session_key)
+        return True
+
+
+def _compare_clear_last_active_session_key(
+    task_id: str,
+    expected_session_key: str,
+    expected_generation: int,
+) -> bool:
+    """Clear an owner only when both its session key and generation are stale."""
+    with _cleanup_lock:
+        if (
+            _last_active_session_key.get(task_id) != expected_session_key
+            or _last_active_session_generation.get(task_id, 0) != expected_generation
+        ):
+            return False
+        _last_active_session_key.pop(task_id, None)
+        _last_active_session_generation[task_id] = expected_generation + 1
+        return True
+
+
 def _last_session_key(task_id: str) -> str:
     """Return the live session key to use for a non-nav browser tool call.
 
@@ -1324,14 +1862,17 @@ def _last_session_key(task_id: str) -> str:
     """
     if task_id is None:
         task_id = "default"
-    recorded_key = _last_active_session_key.get(task_id)
-    if not recorded_key:
-        return task_id
     with _cleanup_lock:
+        recorded_key = _last_active_session_key.get(task_id)
+        if not recorded_key:
+            return task_id
         session_info = _active_sessions.get(recorded_key)
         if session_info and _session_info_owned_by_task(session_info, task_id, recorded_key):
             return recorded_key
         _last_active_session_key.pop(task_id, None)
+        _last_active_session_generation[task_id] = (
+            _last_active_session_generation.get(task_id, 0) + 1
+        )
     logger.debug(
         "browser session ownership: dropping stale/mismatched last-active binding %s -> %s",
         task_id,
@@ -1400,6 +1941,15 @@ _recording_sessions: set = set()  # session_keys with active recordings
 # navigation.  Without this, a task that navigated to localhost on the local
 # sidecar would fall back to the cloud session on its next snapshot call.
 _last_active_session_key: Dict[str, str] = {}  # task_id -> session_key
+# Monotonic per-task generation used for compare-and-set ownership updates.
+# A slower fallback may only publish its local sidecar while the generation it
+# observed at start is still current.
+_last_active_session_generation: Dict[str, int] = {}
+# Local sidecars created as recovery for an external CDP session must retain the
+# external backend's SSRF policy. Plain hybrid sidecars intentionally used for
+# private URLs are not added here.
+_cdp_fallback_local_session_keys: set[str] = set()
+_last_browser_url_by_session_key: Dict[str, str] = {}  # session_key -> last successful URL
 _LOCAL_SUFFIX = "::local"
 
 # Flag to track if cleanup has been done
@@ -2260,6 +2810,7 @@ def _run_browser_command(
     args: List[str] = None,
     timeout: Optional[int] = None,
     _engine_override: Optional[str] = None,
+    _allow_fallback: bool = True,
 ) -> Dict[str, Any]:
     """
     Run an agent-browser CLI command using our pre-created Browserbase session.
@@ -2273,6 +2824,10 @@ def _run_browser_command(
         _engine_override: Force a specific engine for this call only.  Used
                           internally by the Lightpanda fallback to retry with
                           Chrome without touching global state.
+        _allow_fallback: Allow backend/engine fallback for this call. Internal
+                         safety probes and cleanup commands disable it so a
+                         different browser cannot mask failure of the session
+                         being checked or neutralized.
 
     Returns:
         Parsed JSON response from agent-browser
@@ -2327,6 +2882,19 @@ def _run_browser_command(
     except Exception as e:
         logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
+
+    # Capture fallback ownership before the original external command starts.
+    # A newer navigation completed while CDP is blocked must invalidate the
+    # local retry rather than become the retry's fresh publication token.
+    cdp_expected_owner_generation: Optional[int] = None
+    features = session_info.get("features") or {}
+    if (
+        session_info.get("cdp_url")
+        and isinstance(features, dict)
+        and features.get("cdp_override")
+    ):
+        owner_task_id = _bare_task_id_for_session_key(task_id)
+        _, cdp_expected_owner_generation = _last_active_session_state(owner_task_id)
 
     # Build the command with the appropriate backend flag.
     # Cloud mode: --cdp <websocket_url> connects to Browserbase.
@@ -2557,11 +3125,37 @@ def _run_browser_command(
         logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
         result = {"success": False, "error": str(e)}
 
+    # Internal only: downstream guards use the concrete dispatcher session even
+    # when a backend result does not expose public provenance. Tool responses
+    # selectively copy user-facing fields and never leak this marker.
+    result = dict(result)
+    result.setdefault("_browser_session_key", task_id)
+
+    # --- External CDP automatic local fallback ---
+    # CDP overrides (e.g. Obscura) are backend selections, not local engines. If
+    # they fail and the user opted in, retry through the normal local engine
+    # chain. This deliberately runs before Lightpanda fallback so a CDP failure
+    # is not misclassified as a Lightpanda failure when browser.engine=lightpanda.
+    cdp_fallback_reason = _cdp_fallback_reason(session_info, command, result)
+    if _allow_fallback and cdp_fallback_reason:
+        return _run_cdp_local_fallback_command(
+            task_id,
+            command,
+            args,
+            timeout,
+            cdp_fallback_reason,
+            cdp_expected_owner_generation,
+        )
+
     # --- Lightpanda automatic Chrome fallback ---
-    # If engine is lightpanda and the result looks broken, retry with Chrome.
+    # If engine is lightpanda and the local result looks broken, retry with Chrome.
     # This runs for ALL exit paths (timeout, empty, non-JSON, nonzero rc, parsed).
-    fallback_reason = _lightpanda_fallback_reason(engine, command, result)
-    if fallback_reason:
+    # Do not apply it to external CDP sessions — CDP failures are backend failures
+    # and may opt into the CDP→local fallback above.
+    fallback_reason = None
+    if not session_info.get("cdp_url"):
+        fallback_reason = _lightpanda_fallback_reason(engine, command, result)
+    if _allow_fallback and fallback_reason:
         logger.info(
             "Lightpanda fallback: retrying '%s' with Chrome (task=%s): %s",
             command,
@@ -2691,6 +3285,61 @@ def _redact_browser_output(value: Any) -> Any:
 # Browser Tool Functions
 # ============================================================================
 
+def _neutralize_blocked_redirect(
+    task_id: str,
+    nav_session_key: str,
+    served_session_key: str,
+) -> None:
+    """Blank a blocked redirect on its serving session and drop unsafe ownership."""
+    _, neutralize_generation = _last_active_session_state(task_id)
+    _last_browser_url_by_session_key.pop(served_session_key, None)
+    _last_browser_url_by_session_key.pop(nav_session_key, None)
+    try:
+        blank_result = _run_browser_command(
+            served_session_key,
+            "open",
+            ["about:blank"],
+            timeout=10,
+            _engine_override="auto",
+            _allow_fallback=False,
+        )
+    except Exception as exc:
+        blank_result = {"success": False, "error": str(exc)}
+
+    _compare_clear_last_active_session_key(
+        task_id,
+        served_session_key,
+        neutralize_generation,
+    )
+
+    blanked_serving_session = (
+        blank_result.get("success")
+        and blank_result.get("browser_session_key", served_session_key)
+        == served_session_key
+        and not blank_result.get("browser_backend_fallback")
+        and not blank_result.get("browser_engine_fallback")
+    )
+    if blanked_serving_session:
+        return
+
+    try:
+        _cleanup_single_browser_session(served_session_key)
+    finally:
+        # Quarantine the session even if its close command or daemon teardown
+        # raises: no later browser tool may resolve back to unsafe page state.
+        with _cleanup_lock:
+            _active_sessions.pop(served_session_key, None)
+            _session_last_activity.pop(served_session_key, None)
+            _recording_sessions.discard(served_session_key)
+            _cdp_fallback_local_session_keys.discard(served_session_key)
+            _last_browser_url_by_session_key.pop(served_session_key, None)
+    logger.warning(
+        "Blocked redirect cleanup failed for serving session %s: %s",
+        served_session_key,
+        blank_result.get("error", "unknown error"),
+    )
+
+
 def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     """
     Navigate to a URL in the browser.
@@ -2789,6 +3438,9 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         return camofox_navigate(url, task_id)
 
     if auto_local_this_nav:
+        # Repurpose is committed only with the successful navigation's owner
+        # publication below.  Removing fallback provenance here would create a
+        # fail-open window when this open fails or loses a generation race.
         logger.info(
             "browser_navigate: auto-routing %s to local Chromium sidecar "
             "(cloud provider %s stays on cloud for public URLs; "
@@ -2796,6 +3448,10 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             url,
             type(_get_cloud_provider()).__name__ if _get_cloud_provider() else "none",
         )
+
+    # Capture before starting/opening the concrete session.  The command result
+    # may be stale by the time it returns if another navigation wins meanwhile.
+    _, navigation_generation = _last_active_session_state(effective_task_id)
 
     # Get session info to check if this is a new session
     # (will create one with features logged if not exists)
@@ -2814,10 +3470,27 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         timeout=_get_open_command_timeout(first_open=is_first_nav),
     )
 
+    # Remember which session served this nav so snapshot/click/fill/...
+    # on the same task_id hit it (critical when hybrid routing has both a
+    # cloud session and a local sidecar alive concurrently). Backend fallback
+    # can change the serving session inside _run_browser_command.
+    served_session_key = result.get("browser_session_key") or nav_session_key
     if result.get("success"):
+        served_session_key, actual_served_url, guard_failure = (
+            _actual_served_url_guard(
+                effective_task_id,
+                nav_session_key,
+                result,
+                "navigation",
+                intentional_hybrid_local=auto_local_this_nav,
+            )
+        )
+        if guard_failure:
+            return json.dumps(guard_failure, ensure_ascii=False)
+
         data = result.get("data", {})
         title = data.get("title", "")
-        final_url = data.get("url", url)
+        final_url = actual_served_url or data.get("url", url)
 
         # Post-redirect SSRF check — if the browser followed a redirect to a
         # private/internal address, block the result so the model can't read
@@ -2833,7 +3506,11 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             and final_url != url
             and _is_always_blocked_url(final_url)
         ):
-            _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
+            _neutralize_blocked_redirect(
+                effective_task_id,
+                nav_session_key,
+                served_session_key,
+            )
             return json.dumps({
                 "success": False,
                 "error": "Blocked: redirect landed on a cloud metadata endpoint",
@@ -2846,21 +3523,52 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             and final_url and final_url != url and not _is_safe_url(final_url)
         ):
             # Navigate away to a blank page to prevent snapshot leaks
-            _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
+            _neutralize_blocked_redirect(
+                effective_task_id,
+                nav_session_key,
+                served_session_key,
+            )
             return json.dumps({
                 "success": False,
                 "error": "Blocked: redirect landed on a private/internal address",
             })
+
+        fallback_owner_generation = result.get(
+            "_cdp_fallback_owner_generation",
+            navigation_generation,
+        )
+        if result.get("browser_backend_fallback"):
+            owner_published = _compare_publish_cdp_fallback_owner(
+                effective_task_id,
+                fallback_owner_generation,
+                served_session_key,
+            )
+        else:
+            owner_published = _compare_publish_navigation_owner(
+                effective_task_id,
+                navigation_generation,
+                served_session_key,
+                explicit_hybrid_local=auto_local_this_nav,
+            )
+        if not owner_published:
+            return json.dumps({
+                "success": False,
+                "error": "Navigation result was superseded by a newer browser navigation.",
+            }, ensure_ascii=False)
+
+        if final_url:
+            _last_browser_url_by_session_key[served_session_key] = final_url
+            # If a backend fallback served this navigation, keep the original
+            # session key's last URL too so a later fallback can warm up local
+            # state even before _last_active_session_key is consulted.
+            if served_session_key != nav_session_key:
+                _last_browser_url_by_session_key[nav_session_key] = final_url
 
         response = {
             "success": True,
             "url": final_url,
             "title": title
         }
-        # Remember only a successful, non-blocked navigation as the task owner.
-        # Failed opens and blocked redirects must not retarget follow-up clicks
-        # or snapshots to a newly-created but irrelevant session.
-        _last_active_session_key[effective_task_id] = nav_session_key
         _copy_fallback_warning(response, result)
 
         # Detect common "blocked" page patterns from title/url
@@ -2895,8 +3603,16 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # Auto-take a compact snapshot so the model can act immediately
         # without a separate browser_snapshot call.
         try:
-            snap_result = _run_browser_command(nav_session_key, "snapshot", ["-c"])
+            snap_result = _run_browser_command(served_session_key, "snapshot", ["-c"])
             if snap_result.get("success"):
+                _, _, snapshot_guard_failure = _actual_served_url_guard(
+                    effective_task_id,
+                    served_session_key,
+                    snap_result,
+                    "navigation snapshot",
+                )
+                if snapshot_guard_failure:
+                    return json.dumps(snapshot_guard_failure, ensure_ascii=False)
                 snap_data = snap_result.get("data", {})
                 snapshot_text = snap_data.get("snapshot", "")
                 refs = snap_data.get("refs", {})
@@ -2951,36 +3667,14 @@ def browser_snapshot(
         snapshot_text = data.get("snapshot", "")
         refs = data.get("refs", {})
 
-        # ── Private-network guard: block snapshots from eval-navigated private pages ──
-        # After any eval (browser_console) that may have changed location.href to a
-        # private/internal address, the snapshot would expose private page content.
-        # Re-check the current URL before returning the snapshot.
-        if (
-            not _is_local_backend()
-            and not _is_local_sidecar_key(effective_task_id)
-            and not _allow_private_urls()
-        ):
-            try:
-                _url_result = _run_browser_command(
-                    effective_task_id, "eval", ["window.location.href"],
-                    timeout=5, _engine_override="auto",
-                )
-                if _url_result.get("success"):
-                    _current_url = (
-                        _url_result.get("data", {}).get("result", "")
-                        .strip().strip('"').strip("'")
-                    )
-                    if _current_url and not _is_safe_url(_current_url):
-                        return json.dumps({
-                            "success": False,
-                            "error": (
-                                "Blocked: page URL targets a private or internal address "
-                                f"({_current_url}). This may have been caused by a "
-                                "JavaScript navigation via browser_console."
-                            ),
-                        }, ensure_ascii=False)
-            except Exception as _url_exc:
-                logger.debug("browser_snapshot: URL safety check failed (%s)", _url_exc)
+        _, _, guard_failure = _actual_served_url_guard(
+            task_id or "default",
+            effective_task_id,
+            result,
+            "snapshot",
+        )
+        if guard_failure:
+            return json.dumps(guard_failure, ensure_ascii=False)
 
         # Check if snapshot needs summarization
         if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
@@ -3314,6 +4008,21 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     console_result = _run_browser_command(effective_task_id, "console", console_args)
     errors_result = _run_browser_command(effective_task_id, "errors", error_args)
 
+    for content_kind, content_result in (
+        ("console output", console_result),
+        ("JavaScript errors", errors_result),
+    ):
+        if not content_result.get("success"):
+            continue
+        _, _, guard_failure = _actual_served_url_guard(
+            task_id or "default",
+            effective_task_id,
+            content_result,
+            content_kind,
+        )
+        if guard_failure:
+            return json.dumps(guard_failure, ensure_ascii=False)
+
     messages = []
     if console_result.get("success"):
         for msg in console_result.get("data", {}).get("messages", []):
@@ -3347,16 +4056,19 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
 def _eval_ssrf_guard_active(effective_task_id: str) -> bool:
     """Return True when eval-driven private-network access must be guarded.
 
-    Matches the gating used by ``browser_navigate`` / ``browser_snapshot`` /
-    ``browser_vision``: the SSRF guard is only meaningful for non-local
-    backends (cloud browser, or a containerized terminal whose browser-on-host
-    can reach internal networks the terminal can't), and is skipped for local
-    sidecar sessions and when ``allow_private_urls`` is set.
+    Sidecars created intentionally for hybrid private-URL routing remain exempt,
+    but sidecars created as external-CDP recovery retain the external backend's
+    guard policy.
     """
     return (
-        not _is_local_backend()
-        and not _is_local_sidecar_key(effective_task_id)
-        and not _allow_private_urls()
+        not _allow_private_urls()
+        and (
+            _is_cdp_fallback_local_session_key(effective_task_id)
+            or (
+                not _is_local_backend()
+                and not _is_local_sidecar_key(effective_task_id)
+            )
+        )
     )
 
 
@@ -3576,6 +4288,17 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         if supervisor is not None:
             sup_result = supervisor.evaluate_runtime(expression)
             if sup_result.get("ok"):
+                _, _, guard_failure = _actual_served_url_guard(
+                    task_id or "default",
+                    effective_task_id,
+                    {
+                        "success": True,
+                        "browser_session_key": effective_task_id,
+                    },
+                    "evaluation",
+                )
+                if guard_failure:
+                    return json.dumps(guard_failure, ensure_ascii=False)
                 raw_result = sup_result.get("result")
                 # Match the agent-browser path: if the value is a JSON string,
                 # parse it so the model gets structured data.
@@ -3585,20 +4308,6 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                         parsed = json.loads(raw_result)
                     except (json.JSONDecodeError, ValueError):
                         pass  # keep as string
-                # Post-eval page-URL recheck: if this (or a prior) eval
-                # navigated the page to a private address, withhold the result.
-                if _eval_ssrf_guard_active(effective_task_id):
-                    _blocked_url = _current_page_private_url(effective_task_id)
-                    if _blocked_url:
-                        return json.dumps({
-                            "success": False,
-                            "error": (
-                                "Blocked: page URL targets a private or internal "
-                                f"address ({_blocked_url}). This may have been "
-                                "caused by a JavaScript navigation via "
-                                "browser_console."
-                            ),
-                        }, ensure_ascii=False)
                 response = {
                     "success": True,
                     "result": _redact_browser_output(parsed),
@@ -3657,6 +4366,33 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         }
         return json.dumps(_copy_fallback_warning(response, result))
 
+    _, _, guard_failure = _actual_served_url_guard(
+        task_id or "default",
+        effective_task_id,
+        result,
+        "evaluation",
+    )
+    if guard_failure:
+        return json.dumps(guard_failure, ensure_ascii=False)
+
+    # Compatibility path for legacy/custom command adapters that do not yet
+    # identify their serving session. Real dispatcher results take the strict
+    # fail-closed path above.
+    if (
+        not _result_has_serving_metadata(result)
+        and _eval_ssrf_guard_active(effective_task_id)
+    ):
+        blocked_url = _current_page_private_url(effective_task_id)
+        if blocked_url:
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Blocked: page URL targets a private or internal address "
+                    f"({blocked_url}). This may have been caused by a "
+                    "JavaScript navigation via browser_console."
+                ),
+            }, ensure_ascii=False)
+
     data = result.get("data", {})
     raw_result = data.get("result")
 
@@ -3674,19 +4410,6 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         "result": _redact_browser_output(parsed),
         "result_type": type(parsed).__name__,
     }
-    # Post-eval page-URL recheck: if this (or a prior) eval navigated the page
-    # to a private address, withhold the result (mirrors the supervisor path).
-    if _eval_ssrf_guard_active(effective_task_id):
-        _blocked_url = _current_page_private_url(effective_task_id)
-        if _blocked_url:
-            return json.dumps({
-                "success": False,
-                "error": (
-                    "Blocked: page URL targets a private or internal address "
-                    f"({_blocked_url}). This may have been caused by a "
-                    "JavaScript navigation via browser_console."
-                ),
-            }, ensure_ascii=False)
     return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False, default=str)
 
 
@@ -3840,15 +4563,26 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "eval", [js_code])
 
     if result.get("success"):
-        # ── Private-network guard (sibling of snapshot/vision/eval guards) ──
-        if _eval_ssrf_guard_active(effective_task_id):
-            _blocked_url = _current_page_private_url(effective_task_id)
-            if _blocked_url:
+        _, _, guard_failure = _actual_served_url_guard(
+            task_id or "default",
+            effective_task_id,
+            result,
+            "image list",
+        )
+        if guard_failure:
+            return json.dumps(guard_failure, ensure_ascii=False)
+
+        if (
+            not _result_has_serving_metadata(result)
+            and _eval_ssrf_guard_active(effective_task_id)
+        ):
+            blocked_url = _current_page_private_url(effective_task_id)
+            if blocked_url:
                 return json.dumps({
                     "success": False,
                     "error": (
                         "Blocked: page URL targets a private or internal address "
-                        f"({_blocked_url}). This may have been caused by a "
+                        f"({blocked_url}). This may have been caused by a "
                         "JavaScript navigation via browser_console."
                     ),
                 }, ensure_ascii=False)
@@ -3923,11 +4657,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     # After any eval (browser_console) that may have changed location.href to a
     # private/internal address, the screenshot would expose private page content
     # to the vision model.  Re-check the current URL before capturing anything.
-    if (
-        not _is_local_backend()
-        and not _is_local_sidecar_key(effective_task_id)
-        and not _allow_private_urls()
-    ):
+    if _eval_ssrf_guard_active(effective_task_id):
         try:
             _url_result = _run_browser_command(
                 effective_task_id, "eval", ["window.location.href"],
@@ -4038,6 +4768,21 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 "error": f"Failed to take screenshot ({mode} mode): {error_detail}"
             }
             return json.dumps(_copy_fallback_warning(error_response, result), ensure_ascii=False)
+
+        _, _, guard_failure = _actual_served_url_guard(
+            task_id or "default",
+            effective_task_id,
+            result,
+            "screenshot",
+        )
+        if guard_failure:
+            captured_path = result.get("data", {}).get("path")
+            path_to_discard = Path(captured_path) if captured_path else screenshot_path
+            try:
+                path_to_discard.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("Unable to remove blocked browser screenshot %s", path_to_discard)
+            return json.dumps(guard_failure, ensure_ascii=False)
 
         actual_screenshot_path = result.get("data", {}).get("path")
         if actual_screenshot_path:
@@ -4268,18 +5013,19 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
                 session_keys.append(sidecar_key)
         bare_task_id = task_id
 
+    cleanup_owner, cleanup_generation = _last_active_session_state(bare_task_id)
+
     for session_key in session_keys:
         _cleanup_single_browser_session(session_key)
 
-    # Drop stale last-active ownership. Cleaning a bare task drops its binding;
-    # cleaning a sidecar drops the binding only if that sidecar was still the
-    # recorded owner. This prevents a later click/snapshot from resurrecting a
-    # cleaned sidecar on about:blank while preserving a primary-session binding.
-    if _is_local_sidecar_key(task_id):
-        if _last_active_session_key.get(bare_task_id) == task_id:
-            _last_active_session_key.pop(bare_task_id, None)
-    else:
-        _last_active_session_key.pop(bare_task_id, None)
+    # Session keys may be reused.  A same-key navigation that advanced the
+    # generation while cleanup ran is a new owner and must survive.
+    if cleanup_owner in session_keys:
+        _compare_clear_last_active_session_key(
+            bare_task_id,
+            cleanup_owner,
+            cleanup_generation,
+        )
 
 
 def _cleanup_single_browser_session(task_id: str) -> None:
@@ -4326,6 +5072,8 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         with _cleanup_lock:
             _active_sessions.pop(task_id, None)
             _session_last_activity.pop(task_id, None)
+            _cdp_fallback_local_session_keys.discard(task_id)
+            _last_browser_url_by_session_key.pop(task_id, None)
 
         # Cloud mode: close the cloud browser session via provider API.
         # Local sidecars have bb_session_id=None so this no-ops for them.
@@ -4382,6 +5130,7 @@ def cleanup_all_browsers() -> None:
     global _cached_command_timeout, _command_timeout_resolved
     global _cached_chromium_installed
     global _cached_browser_engine, _browser_engine_resolved
+    global _cached_cdp_fallback_to_local, _cdp_fallback_to_local_resolved
     _cached_agent_browser = None
     _agent_browser_resolved = False
     _discover_homebrew_node_dirs.cache_clear()
@@ -4394,6 +5143,8 @@ def cleanup_all_browsers() -> None:
     _chromium_autoinstall_attempted = False
     _cached_browser_engine = None
     _browser_engine_resolved = False
+    _cached_cdp_fallback_to_local = None
+    _cdp_fallback_to_local_resolved = False
 
 # ============================================================================
 # Requirements Check

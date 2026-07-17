@@ -54,6 +54,12 @@ import yaml
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
+from hermes_cli.local_model_status import (
+    LocalModelStatusMonitor,
+    build_local_model_display,
+    build_local_model_route,
+    canonicalize_route_url,
+)
 
 # prompt_toolkit for fixed input area TUI
 from prompt_toolkit.history import FileHistory
@@ -466,6 +472,11 @@ def load_cli_config() -> Dict[str, Any]:
             # Print a one-line summary of resolved modal prompts (approval /
             # clarify) into scrollback so the decision survives the repaint.
             "persist_prompts": True,
+
+            "local_model_status": {
+                "enabled": True,
+                "idle_timeout_seconds": None,
+            },
 
             "skin": "default",
         },
@@ -4105,6 +4116,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        local_status_config = CLI_CONFIG.get("display", {}).get("local_model_status", {})
+        if not isinstance(local_status_config, dict):
+            local_status_config = {}
+        local_status_enabled = local_status_config.get("enabled", True) is not False
+        idle_timeout = local_status_config.get("idle_timeout_seconds")
+        try:
+            idle_timeout = float(idle_timeout) if idle_timeout is not None else None
+            if idle_timeout is not None and idle_timeout <= 0:
+                idle_timeout = None
+        except (TypeError, ValueError):
+            idle_timeout = None
+        self._local_model_idle_timeout_seconds = idle_timeout
+        self._last_local_model_activity_at = None
+        self._last_local_model_activity_route = None
+        self._local_model_status_monitor = (
+            LocalModelStatusMonitor(auto_poll=True) if local_status_enabled else None
+        )
+        if self._local_model_status_monitor is not None:
+            atexit.register(self._local_model_status_monitor.close)
         # When True, the input separator rules and the dynamic status bar are
         # hidden until the next user input. Set by _recover_after_resize() so a
         # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that
@@ -4527,6 +4557,69 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         idle = max(0.0, time.time() - last_finished_at)
         return f"✓ {format_duration_compact(idle)}"
 
+    def _get_active_local_model_route(self):
+        agent = getattr(self, "agent", None)
+        if agent is None:
+            return None
+        client = getattr(agent, "client", None)
+        client_kwargs = getattr(agent, "_client_kwargs", None)
+        if client is None or not isinstance(client_kwargs, dict):
+            return None
+
+        # The client reference is published only after its kwargs are fully
+        # built. Require all three endpoint views to agree so a concurrent
+        # provider/fallback transition can never form a hybrid route carrying
+        # credentials from the previous host.
+        agent_base_url = canonicalize_route_url(getattr(agent, "base_url", None))
+        client_base_url = canonicalize_route_url(getattr(client, "base_url", None))
+        kwargs_base_url = canonicalize_route_url(client_kwargs.get("base_url"))
+        if not agent_base_url or not (
+            agent_base_url == client_base_url == kwargs_base_url
+        ):
+            return None
+
+        api_key = client_kwargs.get("api_key")
+        if not isinstance(api_key, str):
+            api_key = ""
+        return build_local_model_route(
+            provider=getattr(agent, "provider", None) or "",
+            base_url=kwargs_base_url,
+            model=getattr(agent, "model", None) or "",
+            api_key=api_key,
+            extra_headers=client_kwargs.get("default_headers"),
+            ssl_ca_cert=client_kwargs.get("ssl_ca_cert") or "",
+            ssl_verify=client_kwargs.get("ssl_verify"),
+        )
+
+    def _record_local_model_activity(self) -> None:
+        route = self._get_active_local_model_route()
+        if route is not None:
+            self._last_local_model_activity_route = route.key
+            self._last_local_model_activity_at = time.monotonic()
+
+    def _get_local_model_status_display(self):
+        """Return the cached active-route residency display without blocking."""
+
+        monitor = getattr(self, "_local_model_status_monitor", None)
+        if monitor is None:
+            return None
+
+        route = self._get_active_local_model_route()
+        result = monitor.observe(route)
+        if route is None or result is None:
+            return None
+
+        last_activity_at = None
+        if getattr(self, "_last_local_model_activity_route", None) == route.key:
+            last_activity_at = getattr(self, "_last_local_model_activity_at", None)
+        return build_local_model_display(
+            result,
+            idle_timeout_seconds=getattr(self, "_local_model_idle_timeout_seconds", None),
+            last_activity_at=last_activity_at,
+            now=time.monotonic(),
+            turn_live=getattr(self, "_prompt_start_time", None) is not None,
+        )
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -4569,6 +4662,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "active_background_tasks": 0,
             "active_background_processes": 0,
             "active_background_subagents": 0,
+            "local_model_status": self._get_local_model_status_display(),
         }
 
         # Count live /background tasks. The dict entry is removed in the
@@ -5103,6 +5197,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             idle_since = snapshot.get("idle_since")
             if idle_since:
                 parts.append(idle_since)
+            local_model_status = snapshot.get("local_model_status")
+            if local_model_status:
+                parts.append(local_model_status.text)
             if yolo_active:
                 parts.append("⚠ YOLO")
             return self._trim_status_bar_text(" │ ".join(parts), width)
@@ -5122,6 +5219,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
             yolo_active = self._is_session_yolo_active()
+            local_model_fragment_range = None
 
             if width < 52:
                 frags = [
@@ -5217,12 +5315,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if idle_since:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-dim", idle_since))
+                    local_model_status = snapshot.get("local_model_status")
+                    if local_model_status:
+                        local_model_fragment_start = len(frags)
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append((
+                            f"class:status-bar-local-{local_model_status.style}",
+                            local_model_status.bar,
+                        ))
+                        frags.append(("class:status-bar-local-label", f" {local_model_status.label}"))
+                        local_model_fragment_range = (local_model_fragment_start, len(frags))
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
                     frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
+            if total_width > width and local_model_fragment_range is not None:
+                start, end = local_model_fragment_range
+                del frags[start:end]
+                total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
                 plain_text = "".join(text for _, text in frags)
                 trimmed = self._trim_status_bar_text(plain_text, width)
@@ -12627,6 +12739,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Record when this agent loop finished so the status bar can show
             # idle time since the last final response.
             self._last_turn_finished_at = time.time()
+            self._record_local_model_activity()
 
             # Proactively clean up async clients whose event loop is dead.
             # The agent thread may have created AsyncOpenAI clients bound
@@ -15161,6 +15274,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',
             'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
             'status-bar-yolo': 'bg:#1a1a2e #FF4444 bold',
+            'status-bar-local-loaded': 'bg:#1a1a2e #8FBC8F bold',
+            'status-bar-local-loading': 'bg:#1a1a2e #FFD700 bold',
+            'status-bar-local-sleeping': 'bg:#1a1a2e #8B8682',
+            'status-bar-local-unknown': 'bg:#1a1a2e #8B8682',
+            'status-bar-local-label': 'bg:#1a1a2e #8B8682',
             # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',
             # Clipboard image attachment badges

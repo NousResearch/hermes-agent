@@ -1884,6 +1884,13 @@ DEFAULT_CONFIG = {
         # failure isn't silent from the UI's perspective.  Set false to suppress.
         "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
+        # Classic CLI: asynchronously show llama.cpp model residency for local
+        # routes. The timeout is only an estimated countdown; /props remains
+        # authoritative for loaded vs sleeping state.
+        "local_model_status": {
+            "enabled": True,
+            "idle_timeout_seconds": None,
+        },
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
         # handful of gateway slash-command replies).  Does NOT affect agent

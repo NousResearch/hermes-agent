@@ -1482,6 +1482,9 @@ display:
   show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
+  local_model_status:     # Classic CLI: llama.cpp residency bar for local routes
+    enabled: true
+    idle_timeout_seconds: null  # Set to the server's --sleep-idle-seconds for an estimated countdown
   timestamps: false       # When true, prefixes user and assistant labels with [HH:MM] timestamps in the CLI / TUI transcript
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
@@ -1491,6 +1494,18 @@ display:
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
+
+### Local llama.cpp residency status
+
+For an active local HTTP(S) route, the classic CLI probes llama.cpp's read-only `/props` endpoint on a background thread and can show model residency in the status bar:
+
+- `[██████████] on` — llama.cpp reports the model loaded.
+- `[██████████] ~4m43s` — loaded, with an estimated idle countdown.
+- `[▒▒▒▒▒▒▒▒▒▒] load` — the runtime is temporarily unavailable while loading.
+- `[░░░░░░░░░░] off` — llama.cpp explicitly reports `is_sleeping: true`.
+- `[░░░░░░░░░░] ?` — the local runtime cannot be confirmed.
+
+Set `idle_timeout_seconds` to the same value passed to llama.cpp as `--sleep-idle-seconds`. The `~` prefix is intentional: the countdown is an estimate based on the last completed Hermes turn. The runtime's `is_sleeping` value remains authoritative, so reaching zero never makes Hermes claim that the model has unloaded. Cloud routes and non-HTTP local transports are not probed, and the entire widget is omitted when the terminal is too narrow.
 
 ### File-mutation verifier
 

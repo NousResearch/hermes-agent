@@ -743,6 +743,19 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
             except Exception:
                 pass
             if result is None:
+                # llama.cpp exposes /v1/props (older builds used /props without the /v1 prefix)
+                # Probe this before /api/tags: modern llama.cpp builds expose
+                # that Ollama-compatible endpoint too and would otherwise be
+                # misclassified as Ollama.
+                try:
+                    r = client.get(f"{server_url}/v1/props")
+                    if r.status_code != 200:
+                        r = client.get(f"{server_url}/props")  # fallback for older builds
+                    if r.status_code == 200 and "default_generation_settings" in r.text:
+                        result = "llamacpp"
+                except Exception:
+                    pass
+            if result is None:
                 # Ollama exposes /api/tags and responds with {"models": [...]}
                 # LM Studio returns {"error": "Unexpected endpoint"} with status 200
                 # on this path, so we must verify the response contains "models".
@@ -755,16 +768,6 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                                 result = "ollama"
                         except Exception:
                             pass
-                except Exception:
-                    pass
-            if result is None:
-                # llama.cpp exposes /v1/props (older builds used /props without the /v1 prefix)
-                try:
-                    r = client.get(f"{server_url}/v1/props")
-                    if r.status_code != 200:
-                        r = client.get(f"{server_url}/props")  # fallback for older builds
-                    if r.status_code == 200 and "default_generation_settings" in r.text:
-                        result = "llamacpp"
                 except Exception:
                     pass
             if result is None:

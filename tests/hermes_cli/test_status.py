@@ -5,13 +5,26 @@ from hermes_cli.status import show_status
 
 def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-1234567890abcdef")
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-" + "1234567890abcdef")
 
     show_status(SimpleNamespace(all=False, deep=False))
 
     output = capsys.readouterr().out
     assert "Tavily" in output
     assert "tvly...cdef" in output
+
+
+def test_show_status_all_keeps_api_keys_masked(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    secret = "AQ." + "regression-test-secret-that-must-not-be-printed"
+    monkeypatch.setenv("GOOGLE_API_KEY", secret)
+
+    show_status(SimpleNamespace(all=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Google / Gemini" in output
+    assert secret not in output
+    assert "..." in output.split("Google / Gemini", 1)[1].splitlines()[0]
 
 
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):

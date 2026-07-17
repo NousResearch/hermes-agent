@@ -1,6 +1,8 @@
 import { Tooltip as TooltipPrimitive } from 'radix-ui'
 import * as React from 'react'
 
+import { useI18n } from '@/i18n'
+import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 
 function TooltipProvider({
@@ -111,4 +113,23 @@ function TipHintLabel({ text, hint }: TipHintLabelProps) {
   )
 }
 
-export { Tip, TipHintLabel, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger }
+interface TipKeybindLabelProps {
+  /** Keybind action id — pulls the label from i18n AND the combo from the store. */
+  actionId: string
+  /** Override the i18n label (for context-dependent text like "Show"/"Hide"). */
+  text?: string
+}
+
+/** TipHintLabel that auto-reads both its label and keybind from the action
+ *  registry. Pass only `actionId` for the common case; pass `text` to override
+ *  when the button's tooltip is context-dependent. */
+function TipKeybindLabel({ actionId, text }: TipKeybindLabelProps) {
+  const { t } = useI18n()
+  const hint = useKeybindHint(actionId)
+
+  const label = text ?? t.keybinds.actions[actionId] ?? actionId
+
+  return <TipHintLabel hint={hint ?? undefined} text={label} />
+}
+
+export { Tip, TipHintLabel, TipKeybindLabel, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger }

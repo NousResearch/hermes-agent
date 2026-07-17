@@ -945,6 +945,7 @@ export function ChatBar({
                 onOpen={toggleReview}
                 onOpenWorktree={openInWorktree}
                 onSwitchBranch={handleSwitchBranch}
+                repoPath={cwd}
               />
               <div
                 className={cn(

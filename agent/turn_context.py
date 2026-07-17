@@ -218,6 +218,11 @@ def build_turn_context(
     turn_id = f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
     agent._current_turn_id = turn_id
     agent._current_api_request_id = ""
+    # Tripwire: warn (with both turn ids) when this turn starts before the
+    # previous turn's turn-end persist — concurrent turns on one session
+    # interleave transcript writes. Cleared in _persist_session.
+    from agent.agent_runtime_helpers import note_turn_start
+    note_turn_start(agent, turn_id)
 
     # Reset retry counters and iteration budget at the start of each turn.
     agent._invalid_tool_retries = 0

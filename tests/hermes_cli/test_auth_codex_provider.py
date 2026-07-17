@@ -1065,6 +1065,96 @@ def test_device_code_login_retries_on_429_then_succeeds(monkeypatch):
     assert 1 in sleeps
 
 
+def test_device_code_login_emits_token_free_verification_prompt(monkeypatch, capsys):
+    """Non-terminal callers receive URL/code/expiry without console disclosure."""
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+    _patch_httpx_post(
+        monkeypatch,
+        [
+            _FakeResp(
+                200,
+                {
+                    "user_code": "ABCD-EFGH",
+                    "device_auth_id": "dev-1",
+                    "interval": "5",
+                    "expires_in": 900,
+                },
+            ),
+            _FakeResp(
+                200,
+                {"authorization_code": "auth-code", "code_verifier": "verifier"},
+            ),
+            _FakeResp(
+                200,
+                {"access_token": "at", "refresh_token": "rt", "expires_in": 3600},
+            ),
+        ],
+    )
+    prompts = []
+
+    creds = auth_mod._codex_device_code_login(on_verification=prompts.append)
+
+    assert creds["tokens"]["access_token"] == "at"
+    assert prompts == [
+        auth_mod.CodexDeviceCodePrompt(
+            verification_url="https://auth.openai.com/codex/device",
+            user_code="ABCD-EFGH",
+            expires_in_seconds=900,
+        )
+    ]
+    assert "ABCD-EFGH" not in capsys.readouterr().out
+
+
+def test_non_terminal_device_login_persists_and_selects_codex(monkeypatch):
+    """The service wrapper stores the grant and activates the Codex provider."""
+    from hermes_cli import auth as auth_mod
+
+    prompt_callback = object()
+    creds = {
+        "tokens": {"access_token": "at", "refresh_token": "rt"},
+        "last_refresh": "2026-07-17T00:00:00Z",
+        "base_url": DEFAULT_CODEX_BASE_URL,
+    }
+    calls = []
+    monkeypatch.setattr(
+        auth_mod,
+        "_codex_device_code_login",
+        lambda on_verification: (
+            calls.append(("login", on_verification)),
+            creds,
+        )[1],
+    )
+    monkeypatch.setattr(
+        auth_mod,
+        "_save_codex_tokens",
+        lambda tokens, last_refresh=None: calls.append(
+            ("save", tokens, last_refresh)
+        ),
+    )
+    monkeypatch.setattr(
+        auth_mod,
+        "_update_config_for_provider",
+        lambda provider, base_url: calls.append(("select", provider, base_url)),
+    )
+    monkeypatch.setattr(
+        auth_mod,
+        "unsuppress_credential_source",
+        lambda provider, source: calls.append(("unsuppress", provider, source)),
+    )
+
+    result = auth_mod.login_openai_codex_device(prompt_callback)
+
+    assert result is None
+    assert calls == [
+        ("login", prompt_callback),
+        ("save", creds["tokens"], creds["last_refresh"]),
+        ("select", "openai-codex", DEFAULT_CODEX_BASE_URL),
+        ("unsuppress", "openai-codex", "device_code"),
+    ]
+
+
 def test_device_code_login_persistent_429_raises_rate_limited(monkeypatch):
     """A persistent 429 surfaces a clear rate-limit error, not a bare status."""
     from hermes_cli import auth as auth_mod

@@ -152,6 +152,15 @@ SERVICE_PROVIDER_NAMES: Dict[str, str] = {
 LMSTUDIO_NOAUTH_PLACEHOLDER = "dummy-lm-api-key"
 
 
+@dataclass(frozen=True)
+class CodexDeviceCodePrompt:
+    """Safe, token-free device-code details for non-terminal auth surfaces."""
+
+    verification_url: str
+    user_code: str
+    expires_in_seconds: int
+
+
 # =============================================================================
 # Provider Registry
 # =============================================================================
@@ -7354,7 +7363,9 @@ def _xai_oauth_device_code_login(
     }
 
 
-def _codex_device_code_login() -> Dict[str, Any]:
+def _codex_device_code_login(
+    on_verification: Optional[Callable[[CodexDeviceCodePrompt], None]] = None,
+) -> Dict[str, Any]:
     """Run the OpenAI device code login flow and return credentials dict."""
     import time as _time
 
@@ -7423,6 +7434,10 @@ def _codex_device_code_login() -> Dict[str, Any]:
     user_code = device_data.get("user_code", "")
     device_auth_id = device_data.get("device_auth_id", "")
     poll_interval = max(3, int(device_data.get("interval", "5")))
+    try:
+        expires_in_seconds = max(1, int(device_data.get("expires_in") or 15 * 60))
+    except (TypeError, ValueError):
+        expires_in_seconds = 15 * 60
 
     if not user_code or not device_auth_id:
         raise AuthError(
@@ -7430,13 +7445,22 @@ def _codex_device_code_login() -> Dict[str, Any]:
             provider="openai-codex", code="device_code_incomplete",
         )
 
-    # Step 2: Show user the code
-    print("To continue, follow these steps:\n")
-    print("  1. Open this URL in your browser:")
-    print(f"     \033[94m{issuer}/codex/device\033[0m\n")
-    print("  2. Enter this code:")
-    print(f"     \033[94m{user_code}\033[0m\n")
-    print("Waiting for sign-in... (press Ctrl+C to cancel)")
+    # Step 2: Show the user the code. Non-terminal callers receive only this
+    # token-free prompt and are responsible for delivering it privately.
+    prompt = CodexDeviceCodePrompt(
+        verification_url=f"{issuer}/codex/device",
+        user_code=user_code,
+        expires_in_seconds=expires_in_seconds,
+    )
+    if on_verification is not None:
+        on_verification(prompt)
+    else:
+        print("To continue, follow these steps:\n")
+        print("  1. Open this URL in your browser:")
+        print(f"     \033[94m{prompt.verification_url}\033[0m\n")
+        print("  2. Enter this code:")
+        print(f"     \033[94m{prompt.user_code}\033[0m\n")
+        print("Waiting for sign-in... (press Ctrl+C to cancel)")
 
     # Step 3: Poll for authorization code
     max_wait = 15 * 60  # 15 minutes
@@ -7551,6 +7575,19 @@ def _codex_device_code_login() -> Dict[str, Any]:
         "auth_mode": "chatgpt",
         "source": "device-code",
     }
+
+
+def login_openai_codex_device(
+    on_verification: Callable[[CodexDeviceCodePrompt], None],
+) -> None:
+    """Run and persist a Codex device-code login for a non-terminal caller."""
+    creds = _codex_device_code_login(on_verification=on_verification)
+    _save_codex_tokens(creds["tokens"], creds.get("last_refresh"))
+    _update_config_for_provider(
+        "openai-codex",
+        creds.get("base_url", DEFAULT_CODEX_BASE_URL),
+    )
+    unsuppress_credential_source("openai-codex", "device_code")
 
 
 # ==================== MiniMax Portal OAuth ====================

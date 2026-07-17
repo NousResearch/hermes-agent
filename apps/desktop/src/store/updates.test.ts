@@ -311,14 +311,35 @@ describe('applyUpdates terminal state', () => {
   })
 
   it('keeps the manual command state for CLI installs with no staged updater', async () => {
-    applyMock.mockResolvedValue({ ok: true, manual: true, command: 'hermes update' })
+    applyMock.mockResolvedValue({ ok: true, manual: true, command: 'hermes update', installKind: 'cli' })
 
     await applyUpdates()
 
     expect($updateApply.get().stage).toBe('manual')
     expect($updateApply.get().command).toBe('hermes update')
+    expect($updateApply.get().installKind).toBe('cli')
     expect($updateOverlayOpen.get()).toBe(true)
     expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('carries the installer kind so the manual dialog does not claim a CLI install (#66095)', async () => {
+    // Installer-deployed desktop (NSIS/MSI shell, or a Tauri install whose
+    // best-effort updater self-copy failed): same manual command, but the
+    // overlay must show the missing-updater explanation, not the CLI one.
+    applyMock.mockResolvedValue({ ok: true, manual: true, command: 'hermes update', installKind: 'installer' })
+
+    await applyUpdates()
+
+    expect($updateApply.get().stage).toBe('manual')
+    expect($updateApply.get().installKind).toBe('installer')
+  })
+
+  it('defaults installKind to null when an older main process omits it', async () => {
+    applyMock.mockResolvedValue({ ok: true, manual: true, command: 'hermes update' })
+
+    await applyUpdates()
+
+    expect($updateApply.get().installKind).toBeNull()
   })
 
   it('lands on the guiSkew terminal state for a GUI/backend skew (AppImage/.deb/.rpm), without claiming a GUI update', async () => {
@@ -380,6 +401,7 @@ describe('applyBackendUpdate recovery', () => {
       percent: null,
       error: null,
       command: null,
+      installKind: null,
       log: []
     })
     vi.useFakeTimers()

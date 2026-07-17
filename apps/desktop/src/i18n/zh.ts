@@ -2187,6 +2187,7 @@ export const zh: Translations = {
     moreChanges: count => `另有 ${count} 项更改。`,
     manualTitle: '从终端更新',
     manualBody: '你是从命令行安装的 Hermes，因此更新也需要在那里运行。请将此命令粘贴到终端：',
+    manualBodyMissingUpdater: '此 Hermes 安装缺少更新助手，应用暂时无法自行更新。请将此命令粘贴到终端来完成更新：',
     manualPickedUp: '下次启动 Hermes 时会使用新版本。',
     guiSkewTitle: '请更新桌面应用',
     guiSkewBody:

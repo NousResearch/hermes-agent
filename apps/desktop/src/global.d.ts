@@ -344,6 +344,10 @@ export interface DesktopUpdateApplyResult {
   manual?: boolean
   command?: string
   hermesRoot?: string
+  /** With `manual`: how this desktop was deployed. 'installer' means an
+   *  installer-deployed app whose staged updater is missing (#66095) — the
+   *  dialog must not claim the user installed from the command line. */
+  installKind?: DesktopInstallKind
   /** True when the backend was updated but the GUI couldn't be relaunched in
    *  place (AppImage / dev run): the new version loads on next launch. */
   backendUpdated?: boolean
@@ -384,12 +388,16 @@ export type DesktopUpdateStage =
   | 'guiSkew'
   | 'error'
 
+export type DesktopInstallKind = 'installer' | 'cli'
+
 export interface DesktopUpdateProgress {
   stage: DesktopUpdateStage
   message: string
   percent: number | null
   error: string | null
   at: number
+  /** With stage 'manual': see DesktopUpdateApplyResult.installKind. */
+  installKind?: DesktopInstallKind
 }
 
 export interface HermesConnection {

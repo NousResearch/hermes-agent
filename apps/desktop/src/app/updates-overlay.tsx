@@ -14,7 +14,7 @@ import {
 import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { Progress } from '@/components/ui/progress'
-import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
+import type { DesktopInstallKind, DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
@@ -111,7 +111,12 @@ export function UpdatesOverlay() {
         {phase === 'applying' && <ApplyingView apply={apply} isBackend={isBackend} />}
 
         {phase === 'manual' && (
-          <ManualView command={apply.command ?? null} message={apply.message} onDone={() => handleClose(false)} />
+          <ManualView
+            command={apply.command ?? null}
+            installKind={apply.installKind}
+            message={apply.message}
+            onDone={() => handleClose(false)}
+          />
         )}
 
         {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
@@ -225,7 +230,7 @@ function IdleView({
   const remaining = Math.max(0, behind - shownItems)
 
   // Name what's being updated. In remote mode the overlay acts on the connected
-  // backend, not the local client — say so. When there are no commit rows to
+  // backend, not the local client ??say so. When there are no commit rows to
   // show (e.g. pip/non-git backend), degrade to honest "no release notes" copy
   // instead of generic filler.
   const { title, body } = resolveUpdateCopy({ target, shownItems, copy: u })
@@ -269,10 +274,24 @@ function IdleView({
   )
 }
 
-function ManualView({ command, message, onDone }: { command: string | null; message?: string; onDone: () => void }) {
+function ManualView({
+  command,
+  installKind,
+  message,
+  onDone
+}: {
+  command: string | null
+  installKind?: DesktopInstallKind | null
+  message?: string
+  onDone: () => void
+}) {
   const { t } = useI18n()
   const u = t.updates
   const [copied, setCopied] = useState(false)
+  // Installer-deployed desktops missing their staged updater helper must not
+  // be told "you installed from the command line" (#66095) ??the terminal
+  // command is the same recovery path, only the explanation differs.
+  const body = installKind === 'installer' ? u.manualBodyMissingUpdater : u.manualBody
 
   const handleCopy = () => {
     if (!command) {
@@ -310,7 +329,7 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
         <Terminal className="size-8 text-primary" />
 
         <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
-        <DialogDescription className="text-center text-sm">{u.manualBody}</DialogDescription>
+        <DialogDescription className="text-center text-sm">{body}</DialogDescription>
       </div>
 
       <button
@@ -347,7 +366,7 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
 
 // Linux GUI/backend skew (#45205): backend updated, but the running desktop app
 // package (AppImage/.deb/.rpm) was NOT changed. Closeable terminal state that
-// tells the user to update/reinstall the desktop app — never claims the GUI was
+// tells the user to update/reinstall the desktop app ??never claims the GUI was
 // updated.
 function GuiSkewView({ message, onDone }: { message?: string; onDone: () => void }) {
   const { t } = useI18n()

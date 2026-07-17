@@ -1876,6 +1876,7 @@ export const zhHant = defineLocale({
     moreChanges: count => `另有 ${count} 項變更。`,
     manualTitle: '從終端機更新',
     manualBody: '您是從命令列安裝的 Hermes，因此更新也需要在那裡執行。請將此指令貼到終端機：',
+    manualBodyMissingUpdater: '此 Hermes 安裝缺少更新助手，應用程式暫時無法自行更新。請將此指令貼到終端機來完成更新：',
     manualPickedUp: '下次啟動 Hermes 時會使用新版本。',
     guiSkewTitle: '請更新桌面應用程式',
     guiSkewBody:

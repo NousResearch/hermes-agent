@@ -6,6 +6,7 @@
 import { atom } from 'nanostores'
 
 import type {
+  DesktopInstallKind,
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
   DesktopUpdateProgress,
@@ -27,8 +28,12 @@ export interface UpdateApplyState {
   percent: number | null
   error: string | null
   /** When the stage is 'manual': the exact command the user should run
-   *  (CLI install with no staged updater). */
+   *  (no staged updater). */
   command: string | null
+  /** When the stage is 'manual': whether this desktop is a CLI install or an
+   *  installer deployment missing its updater helper (#66095). Drives which
+   *  explanation the manual dialog shows. */
+  installKind: DesktopInstallKind | null
   log: readonly { stage: DesktopUpdateStage; message: string; at: number }[]
 }
 
@@ -39,6 +44,7 @@ const IDLE: UpdateApplyState = {
   percent: null,
   error: null,
   command: null,
+  installKind: null,
   log: []
 }
 
@@ -385,7 +391,8 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
         applying: false,
         stage: 'manual',
         message: result.command ?? 'hermes update',
-        command: result.command ?? 'hermes update'
+        command: result.command ?? 'hermes update',
+        installKind: result.installKind ?? null
       })
 
       return result
@@ -634,6 +641,7 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
     error: payload.error,
     // 'manual' carries the command to run in its message field.
     command: payload.stage === 'manual' ? payload.message : current.command,
+    installKind: payload.stage === 'manual' ? (payload.installKind ?? null) : current.installKind,
     log
   })
 }

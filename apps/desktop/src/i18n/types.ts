@@ -1649,6 +1649,10 @@ export interface Translations {
     moreChanges: (count: number) => string
     manualTitle: string
     manualBody: string
+    /** Manual-update body for installer-deployed desktops whose staged
+     *  updater helper is missing (#66095): same terminal command, but must
+     *  not claim the user installed from the command line. */
+    manualBodyMissingUpdater: string
     manualPickedUp: string
     /** GUI/backend skew (#45205): backend updated but the running desktop app
      *  package (AppImage/.deb/.rpm) was not changed and must be reinstalled. */

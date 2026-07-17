@@ -1934,6 +1934,8 @@ export const ja = defineLocale({
     manualTitle: 'ターミナルから更新',
     manualBody:
       'Hermes をコマンドラインからインストールしたため、更新もそこで実行されます。これをターミナルに貼り付けてください:',
+    manualBodyMissingUpdater:
+      'この Hermes インストールには更新ヘルパーが見つからないため、アプリは今のところ自動で更新できません。更新するには、これをターミナルに貼り付けてください:',
     manualPickedUp: 'Hermes は次回起動時に新しいバージョンを読み込みます。',
     guiSkewTitle: 'デスクトップアプリを更新してください',
     guiSkewBody:

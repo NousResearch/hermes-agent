@@ -43,15 +43,23 @@ def _cleanup_real_oneshot_fixture(state: dict) -> None:
 
     resources = state.get("resources")
     if resources is not None:
-        attempt(resources.close)
+        if not state.get("resources_handled"):
+            attempt(resources.close)
+            state["resources_handled"] = True
+    else:
+        agent = state.get("agent")
+        if agent is not None and not state.get("agent_handled"):
+            attempt(agent.close)
+            state["agent_handled"] = True
 
-    agent = state.get("agent")
-    if agent is not None:
-        attempt(agent.close)
+        db = state.get("db")
+        if db is not None and not state.get("db_handled"):
+            attempt(db.close)
+            state["db_handled"] = True
 
     task_id = state.get("task_id")
     terminal_tool = state.get("terminal_tool")
-    if terminal_tool is not None and task_id:
+    if terminal_tool is not None and task_id and not state.get("terminal_handled"):
         def cleanup_terminal():
             try:
                 terminal_tool.cleanup_vm(task_id)
@@ -61,9 +69,10 @@ def _cleanup_real_oneshot_fixture(state: dict) -> None:
                 terminal_tool._creation_locks.pop(task_id, None)
 
         attempt(cleanup_terminal)
+        state["terminal_handled"] = True
 
     browser_tool = state.get("browser_tool")
-    if browser_tool is not None and task_id:
+    if browser_tool is not None and task_id and not state.get("browser_handled"):
         def cleanup_browser():
             try:
                 browser_tool.cleanup_browser(task_id)
@@ -73,13 +82,15 @@ def _cleanup_real_oneshot_fixture(state: dict) -> None:
                 browser_tool._last_active_session_key.pop(task_id, None)
 
         attempt(cleanup_browser)
+        state["browser_handled"] = True
 
-    db = state.get("db")
-    if db is not None:
-        attempt(db.close)
+    verification_db = state.get("verification_db")
+    if verification_db is not None and not state.get("verification_db_handled"):
+        attempt(verification_db.close)
+        state["verification_db_handled"] = True
 
     process = state.get("process")
-    if process is not None:
+    if process is not None and not state.get("process_handled"):
         def reap_process():
             if process.poll() is not None:
                 return
@@ -91,6 +102,7 @@ def _cleanup_real_oneshot_fixture(state: dict) -> None:
                 process.wait(timeout=5)
 
         attempt(reap_process)
+        state["process_handled"] = True
 
 
 def test_delivery_orders_write_flush_and_callback_and_is_idempotent():
@@ -1179,15 +1191,30 @@ def test_real_fixture_cleanup_survives_failures_and_force_kills_stuck_process():
     )
 
     resources.close.assert_called_once_with()
-    agent.close.assert_called_once_with()
-    db.close.assert_called_once_with()
+    agent.close.assert_not_called()
+    db.close.assert_not_called()
     assert task_id not in terminal._active_environments
     assert task_id not in terminal._last_activity
     assert task_id not in terminal._creation_locks
     assert task_id not in browser._active_sessions
     assert task_id not in browser._session_last_activity
     assert task_id not in browser._last_active_session_key
-    assert events == ["agent", "db", "terminate", ("wait", 5), "kill", ("wait", 5)]
+    assert events == ["terminate", ("wait", 5), "kill", ("wait", 5)]
+
+
+def test_real_fixture_cleanup_owns_agent_and_db_only_before_resources_exist():
+    events: list[str] = []
+    task_id = str(uuid.uuid4())
+    agent = types.SimpleNamespace(close=Mock(side_effect=lambda: events.append("agent")))
+    db = types.SimpleNamespace(close=Mock(side_effect=lambda: events.append("db")))
+    state = {"task_id": task_id, "agent": agent, "db": db}
+
+    _cleanup_real_oneshot_fixture(state)
+    _cleanup_real_oneshot_fixture(state)
+
+    agent.close.assert_called_once_with()
+    db.close.assert_called_once_with()
+    assert events == ["agent", "db"]
 
 
 def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
@@ -1210,13 +1237,20 @@ def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
     parent = "oneshot-parent"
     db.create_session(parent, source="cli", model="test/model")
     end_calls: list[tuple[str, str]] = []
+    db_close_calls: list[str] = []
     real_end_session = db.end_session
+    real_db_close = db.close
 
     def tracked_end_session(session_id, reason):
         end_calls.append((session_id, reason))
         return real_end_session(session_id, reason)
 
+    def tracked_db_close():
+        db_close_calls.append("db")
+        return real_db_close()
+
     monkeypatch.setattr(db, "end_session", tracked_end_session)
+    monkeypatch.setattr(db, "close", tracked_db_close)
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         agent = AIAgent(
             api_key="test-key",
@@ -1230,6 +1264,14 @@ def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
             skip_memory=True,
         )
     cleanup_state["agent"] = agent
+    agent_close_calls: list[str] = []
+    real_agent_close = agent.close
+
+    def tracked_agent_close():
+        agent_close_calls.append("agent")
+        return real_agent_close()
+
+    monkeypatch.setattr(agent, "close", tracked_agent_close)
     compressor = MagicMock()
     compressor.compress.return_value = [
         {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
@@ -1351,9 +1393,26 @@ def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
         )
     usage_path = tmp_path / "usage.json"
     oneshot._write_usage_file(str(usage_path), result)
-    _cleanup_real_oneshot_fixture(cleanup_state)
+    resources.close()
+    cleanup_state["resources_handled"] = True
+
+    assert agent_close_calls == ["agent"]
+    assert db_close_calls == ["db"]
+    assert registry.has_active_processes(task_id) is False
+    assert process_session.id not in registry._running
+    assert process.poll() is not None
+    assert task_id not in terminal_tool._active_environments
+    assert task_id not in browser_tool._active_sessions
+    assert terminal_cleaned == [task_id]
+    assert agent._end_session_on_close is False
+    cleanup_state.update(
+        terminal_handled=True,
+        browser_handled=True,
+        process_handled=True,
+    )
 
     reopened = SessionDB(db_path=tmp_path / "state.db")
+    cleanup_state["verification_db"] = reopened
     parent_row = reopened.get_session(parent)
     child_row = reopened.get_session(child)
     assert parent_row["end_reason"] == "compression"
@@ -1368,11 +1427,5 @@ def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
     ]
     assert hook_task_ids == [task_id, task_id]
     assert resources.task_id == task_id
-    assert registry.has_active_processes(task_id) is False
-    assert process_session.id not in registry._running
-    assert process.poll() is not None
-    assert task_id not in terminal_tool._active_environments
-    assert task_id not in browser_tool._active_sessions
-    assert terminal_cleaned == [task_id]
-    assert agent._end_session_on_close is False
     reopened.close()
+    cleanup_state["verification_db_handled"] = True

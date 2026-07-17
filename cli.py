@@ -90,6 +90,8 @@ except Exception:
 import threading
 import queue
 
+from hermes_cli.exit_watchdog import arm_exit_watchdog as _arm_exit_watchdog
+
 def CanonicalUsage(*args, **kwargs):
     from agent.usage_pricing import CanonicalUsage as _CanonicalUsage
 
@@ -991,71 +993,6 @@ def _prepare_deferred_agent_startup() -> None:
             exc_info=True,
         )
 
-def _arm_exit_watchdog(timeout_s: float | None = None) -> None:
-    """Guarantee the process actually exits once shutdown has begun.
-
-    Two hang classes have kept "dead" CLI processes alive for minutes:
-
-      1. A cleanup step wedged on network I/O (memory provider
-         ``on_session_end``, MCP teardown, remote terminal cleanup).
-      2. Interpreter teardown blocked joining non-daemon threads —
-         stdlib ``ThreadPoolExecutor`` workers are joined unconditionally
-         by ``concurrent.futures``' atexit hook even after
-         ``shutdown(wait=False)``, so one tool thread wedged on a socket
-         held the process open forever (#27563 class).
-
-    The shared daemon pool (``tools.daemon_pool``) removes the main cause
-    of (2); this watchdog is the backstop for both. It arms a daemon
-    timer when ``_run_cleanup`` starts; if the process is still alive
-    after ``timeout_s`` it flushes logging/stdio and calls ``os._exit(0)``.
-    Daemon threads keep running through ``Py_FinalizeEx``'s thread joins,
-    so the timer fires even when the main thread is stuck in teardown.
-
-    Tune with ``HERMES_EXIT_WATCHDOG_S`` (seconds); ``0`` disables.
-    """
-    if timeout_s is None:
-        try:
-            timeout_s = float(os.getenv("HERMES_EXIT_WATCHDOG_S", "30"))
-        except (TypeError, ValueError):
-            timeout_s = 30.0
-    if timeout_s <= 0:
-        return
-    # Never arm under pytest: tests invoke _run_cleanup() directly and a
-    # 30s-delayed os._exit(0) would silently kill the test worker.
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        return
-
-    def _watchdog():
-        time.sleep(timeout_s)
-        # Still alive — cleanup or interpreter teardown is wedged.
-        try:
-            logger.warning(
-                "Exit watchdog fired after %.0fs — forcing process exit "
-                "(a cleanup step or non-daemon thread is wedged).",
-                timeout_s,
-            )
-        except Exception:
-            pass
-        try:
-            import logging as _lg
-            _lg.shutdown()
-        except Exception:
-            pass
-        for _stream in (sys.stdout, sys.stderr):
-            try:
-                _stream.flush()
-            except Exception:
-                pass
-        os._exit(0)
-
-    try:
-        threading.Thread(
-            target=_watchdog, daemon=True, name="exit-watchdog"
-        ).start()
-    except Exception:
-        pass  # best-effort — never block shutdown on watchdog setup
-
-
 _signal_watchdog_armed = False
 
 
@@ -1098,8 +1035,6 @@ def _arm_exit_watchdog_on_shutdown_signal() -> None:
         _arm_exit_watchdog(timeout_s=base * 2)
     except Exception:
         pass  # never let the backstop break signal handling
-
-
 def _run_cleanup(*, notify_session_finalize: bool = True):
     """Run resource cleanup exactly once."""
     global _cleanup_done

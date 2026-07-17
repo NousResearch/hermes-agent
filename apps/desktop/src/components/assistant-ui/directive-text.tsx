@@ -113,7 +113,7 @@ const SLASH_CHIP_VARIANT: Record<SlashChipKind, string> = {
 }
 
 export const SLASH_CHIP_BASE_CLASS =
-  'mx-0.5 inline-flex max-w-64 items-center gap-1 rounded px-1.5 py-0.5 align-middle text-[0.86em] font-medium leading-none'
+  'mx-0.5 inline-flex max-w-64 items-center gap-1 rounded px-1.5 py-0.5 align-middle text-[0.86em] font-medium leading-tight'
 
 export function slashChipClass(kind: SlashChipKind): string {
   return `${SLASH_CHIP_BASE_CLASS} ${SLASH_CHIP_VARIANT[kind]}`
@@ -144,7 +144,7 @@ const DirectiveIcon: FC<{ type: string }> = ({ type }) => (
  * raw HTML composer chips in `rich-editor.ts`. Neutral subtle wash + plain
  * muted-foreground text so chips read as quiet tags on any bubble color. */
 export const DIRECTIVE_CHIP_CLASS =
-  'mx-0.5 inline-flex max-w-56 items-center gap-1 rounded px-1.5 py-0.5 align-middle text-[0.86em] font-normal leading-none bg-[color-mix(in_srgb,currentColor_8%,transparent)] text-muted-foreground'
+  'mx-0.5 inline-flex max-w-56 items-center gap-1 rounded px-1.5 py-0.5 align-middle text-[0.86em] font-normal leading-tight bg-[color-mix(in_srgb,currentColor_8%,transparent)] text-muted-foreground'
 
 /**
  * Parses our composer's `@type:value` references into directive segments

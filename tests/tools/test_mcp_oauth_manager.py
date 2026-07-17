@@ -88,6 +88,22 @@ def test_manager_can_restore_removed_entry_after_failed_reauth(tmp_path, monkeyp
 
     assert manager.get_or_build_provider("shared", "https://mcp.example", {}) is provider
 
+
+def test_manager_restore_entry_preserves_newer_concurrent_entry(tmp_path, monkeypatch):
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    manager = MCPOAuthManager()
+    old_provider = manager.get_or_build_provider("shared", "https://old.example", {})
+    old_entry = manager.remove("shared")
+    new_provider = manager.get_or_build_provider("shared", "https://new.example", {})
+
+    manager.restore_entry("shared", old_entry)
+
+    assert manager.get_or_build_provider("shared", "https://new.example", {}) is new_provider
+    assert new_provider is not old_provider
+
 pytest.importorskip(
     "mcp.client.auth.oauth2",
     reason="MCP SDK 1.26.0+ required for OAuth support",

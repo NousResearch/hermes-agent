@@ -5120,3 +5120,86 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+        asyncio.run(_run())
+
+
+class TestFeishuTopicCommand(unittest.TestCase):
+    """Tests for /topic command on Feishu (PR #54660)."""
+
+    def _make_feishu_topic_event(self, text: str = "/topic"):
+        from gateway.platforms.base import MessageEvent
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            user_id="ou_test_user",
+            chat_id="oc_test_chat",
+            user_name="Tester",
+            chat_type="dm",
+        )
+        return MessageEvent(text=text, source=source, message_id="msg_feishu_topic")
+
+    def _make_runner(self):
+        from unittest.mock import MagicMock
+        from gateway.run import GatewayRunner
+        from gateway.config import GatewayConfig, PlatformConfig
+        from gateway.config import Platform
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={Platform.FEISHU: PlatformConfig()}
+        )
+        runner.session_store = MagicMock()
+        runner._session_db = None
+        runner.hooks = SimpleNamespace(
+            emit=AsyncMock(),
+            emit_collect=AsyncMock(return_value=[]),
+            loaded_hooks=False,
+        )
+        runner._agent_cache = {}
+        runner._delegation_tasks = {}
+        runner._model_overrides = {}
+        runner._credential_overrides = {}
+        runner._env_overrides = {}
+        return runner
+
+    def test_feishu_topic_delegates_to_reset_command(self):
+        """Feishu /topic should delegate to _handle_reset_command."""
+        import asyncio
+
+        runner = self._make_runner()
+        runner._handle_reset_command = AsyncMock(return_value="session reset ok")
+        event = self._make_feishu_topic_event("/topic")
+
+        result = asyncio.run(runner._handle_topic_command(event))
+        runner._handle_reset_command.assert_awaited_once()
+        self.assertIn("session reset ok", result)
+
+    def test_feishu_topic_does_not_affect_telegram_group(self):
+        """Telegram group /topic should still return the expected error."""
+        import asyncio
+        from gateway.platforms.base import MessageEvent
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+
+        runner = self._make_runner()
+        runner._handle_reset_command = AsyncMock()
+
+        group_event = MessageEvent(
+            text="/topic",
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                user_id="123",
+                chat_id="-100456",
+                user_name="tg_user",
+                chat_type="group",
+            ),
+            message_id="tg_group_msg",
+        )
+
+        result = asyncio.run(runner._handle_topic_command(group_event))
+        # Should NOT delegate to reset, only Feishu does
+        runner._handle_reset_command.assert_not_awaited()
+        # Should return the "not telegram dm" error
+        self.assertIn("topic", result.lower())

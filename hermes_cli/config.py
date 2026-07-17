@@ -2505,6 +2505,14 @@ DEFAULT_CONFIG = {
         "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
         "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
+        # Discord Gateway transport health. These settings inspect the active
+        # WebSocket's ready/open/heartbeat state; they never use Discord REST as
+        # proof that Gateway events are still arriving. Set any value to 0 to
+        # disable this compatibility-safe probe during a rollback.
+        "websocket_liveness_interval_seconds": 20,
+        "websocket_liveness_failure_threshold": 3,
+        "websocket_heartbeat_ack_max_age_seconds": 75,
+        "websocket_max_latency_seconds": 30,
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
         # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES
         # authorizes only guild messages in the role's own guild — DMs require
@@ -2918,9 +2926,12 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
-    # Gateway settings — control how messaging platforms (Telegram, Discord,
-    # Slack, etc.) deliver agent-produced files as native attachments.
+    # Gateway settings — control messaging-platform service behavior and file delivery.
     "gateway": {
+        # Opt-in systemd event-loop watchdog. A positive value changes generated
+        # systemd units from Type=simple to Type=notify; zero preserves existing
+        # service behavior on all platforms.
+        "systemd_watchdog_seconds": 0,
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash

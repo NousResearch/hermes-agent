@@ -7,6 +7,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 import asyncio
 import json
 import logging
+import math
 import os
 import shlex
 import shutil
@@ -2624,8 +2625,17 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
       /root/.hermes/profiles/coder     → /home/alice/.hermes/profiles/coder
       /opt/custom-hermes               → /opt/custom-hermes  (kept as-is)
     """
-    current_hermes = get_hermes_home().resolve()
-    current_default = (Path.home() / ".hermes").resolve()
+    current_hermes_raw = os.environ.get("HERMES_HOME", "").strip()
+    current_hermes = (
+        Path(current_hermes_raw).expanduser()
+        if current_hermes_raw
+        else get_hermes_home()
+    )
+    # Keep explicit custom paths lexical.  Resolving a non-existent custom
+    # path can rewrite it through host-specific symlinks (for example
+    # /opt -> /data00 in test/development images), which would bake a different
+    # HERMES_HOME into the generated service unit.
+    current_default = Path.home() / ".hermes"
     target_default = Path(target_home_dir) / ".hermes"
 
     # Default ~/.hermes → remap to target user's default
@@ -2703,6 +2713,24 @@ def _stable_service_working_dir() -> str:
     return str(PROJECT_ROOT)
 
 
+def _systemd_watchdog_seconds() -> int:
+    """Resolve the config.yaml-only opt-in systemd watchdog setting."""
+    cfg = read_raw_config()
+    gateway_cfg = cfg.get("gateway", {}) if isinstance(cfg, dict) else {}
+    raw = gateway_cfg.get("systemd_watchdog_seconds", 0) if isinstance(gateway_cfg, dict) else 0
+    if isinstance(raw, bool):
+        return 0
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(seconds) or seconds <= 0:
+        return 0
+    if not seconds.is_integer():
+        return 0
+    return int(seconds)
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
@@ -2740,6 +2768,13 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     # (#8202). 30s of headroom covers the worst case we've observed.
     _drain_timeout = int(_get_restart_drain_timeout() or 0)
     restart_timeout = max(60, _drain_timeout) + 30
+    _watchdog_seconds = _systemd_watchdog_seconds()
+    _systemd_type = "notify" if _watchdog_seconds > 0 else "simple"
+    _systemd_watchdog_directives = (
+        f"NotifyAccess=main\nWatchdogSec={_watchdog_seconds}s\n"
+        if _watchdog_seconds > 0
+        else ""
+    )
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -2766,8 +2801,8 @@ Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
-Type=simple
-User={username}
+Type={_systemd_type}
+{_systemd_watchdog_directives}User={username}
 Group={group_name}
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
@@ -2806,8 +2841,8 @@ Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
-Type=simple
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
+Type={_systemd_type}
+{_systemd_watchdog_directives}ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
@@ -5247,19 +5282,49 @@ def _runtime_health_lines() -> list[str]:
         return []
 
     lines: list[str] = []
+
+    def _safe_runtime_text(value: object, *, limit: int = 240) -> str:
+        """Render persisted diagnostics as one bounded, force-redacted line."""
+        try:
+            from agent.redact import redact_sensitive_text
+
+            text = redact_sensitive_text(str(value or ""), force=True)
+        except Exception:
+            text = str(value or "")
+        text = " ".join(text.split())
+        return text[:limit] if text else "unknown error"
+
     gateway_state = state.get("gateway_state")
     exit_reason = state.get("exit_reason")
     active_agents = state.get("active_agents")
     restart_requested = state.get("restart_requested")
     platforms = state.get("platforms", {}) or {}
 
+    # Surface retrying/degraded states without dumping raw exception text.
     for platform, pdata in platforms.items():
-        if pdata.get("state") == "fatal":
-            message = pdata.get("error_message") or "unknown error"
-            lines.append(f"⚠ {platform}: {message}")
+        if not isinstance(pdata, dict):
+            continue
+        state = pdata.get("state")
+        health = pdata.get("health") if isinstance(pdata.get("health"), dict) else {}
+        if state in {"fatal", "retrying", "degraded"}:
+            reason = _safe_runtime_text(
+                health.get("last_health_reason") or pdata.get("error_message")
+            )
+            if platform == "discord" and health.get("transport") == "websocket":
+                ack_age = health.get("heartbeat_ack_age_seconds")
+                latency = health.get("latency_ms")
+                details = []
+                if isinstance(ack_age, (int, float)) and math.isfinite(ack_age):
+                    details.append(f"ACK age {ack_age:.1f}s")
+                if isinstance(latency, (int, float)) and math.isfinite(latency):
+                    details.append(f"latency {latency:.0f}ms")
+                suffix = f" ({', '.join(details)})" if details else ""
+                lines.append(f"⚠ {platform}: WebSocket {state}: {reason}{suffix}")
+            elif state == "fatal":
+                lines.append(f"⚠ {platform}: {reason}")
 
     if gateway_state == "startup_failed" and exit_reason:
-        lines.append(f"⚠ Last startup issue: {exit_reason}")
+        lines.append(f"⚠ Last startup issue: {_safe_runtime_text(exit_reason)}")
     elif gateway_state == "draining":
         action = "restart" if restart_requested else "shutdown"
         from gateway.status import parse_active_agents
@@ -5267,7 +5332,7 @@ def _runtime_health_lines() -> list[str]:
         count = parse_active_agents(active_agents)
         lines.append(f"⏳ Gateway draining for {action} ({count} active agent(s))")
     elif gateway_state == "stopped" and exit_reason:
-        lines.append(f"⚠ Last shutdown reason: {exit_reason}")
+        lines.append(f"⚠ Last shutdown reason: {_safe_runtime_text(exit_reason)}")
 
     return lines
 

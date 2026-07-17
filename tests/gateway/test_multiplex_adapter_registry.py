@@ -1,8 +1,11 @@
 """Phase 3: secondary-profile adapter registry + same-token conflict detection."""
 import logging
+from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
+import gateway.run as gateway_run
 from gateway.run import GatewayRunner
 
 
@@ -142,6 +145,214 @@ class TestProfileMessageHandler:
 
         await handler(_Evt())
         assert seen["profile"] == "writer"
+
+
+
+
+class TestSecondaryProfileFatalRecovery:
+    @pytest.mark.asyncio
+    async def test_retryable_secondary_fatal_reconnects_with_its_profile_scope(self, monkeypatch):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        class _Adapter:
+            platform = Platform.DISCORD
+
+            def __init__(self, *, retryable=True):
+                self.fatal_error_retryable = retryable
+                self.fatal_error_code = "transport_stale"
+                self.fatal_error_message = "Gateway transport stale"
+                self.connected = False
+                self.disconnected = False
+
+            async def disconnect(self):
+                self.disconnected = True
+
+            def set_message_handler(self, handler):
+                self.message_handler = handler
+
+            def set_fatal_error_handler(self, handler):
+                self.fatal_error_handler = handler
+
+            def set_session_store(self, store):
+                self.session_store = store
+
+            def set_busy_session_handler(self, handler):
+                self.busy_session_handler = handler
+
+            def set_topic_recovery_fn(self, handler):
+                self.topic_recovery_fn = handler
+
+            def set_authorization_check(self, handler):
+                self.authorization_check = handler
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+        runner._profile_failed_platforms = {}
+        runner._background_tasks = set()
+        runner._running = True
+        runner.session_store = object()
+        runner._handle_active_session_busy_message = object()
+        runner._recover_telegram_topic_thread_id = object()
+        runner._busy_text_mode = "queue"
+        runner._make_adapter_auth_check = lambda platform, profile_name=None: object()
+        runner._adapter_disconnect_timeout_secs = lambda: 0
+        stale = _Adapter()
+        replacement = _Adapter()
+        runner._profile_adapters["reviewer"] = {Platform.DISCORD: stale}
+
+        scoped_homes: list[Path] = []
+
+        @contextmanager
+        def fake_scope(profile_home):
+            scoped_homes.append(Path(profile_home))
+            yield
+
+        monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir", lambda name: Path("/profiles") / name
+        )
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config",
+            lambda: GatewayConfig(
+                multiplex_profiles=True,
+                platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="profile-token")},
+            ),
+        )
+        monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: replacement)
+
+        async def connect(adapter, platform, *, is_reconnect=False):
+            assert adapter is replacement
+            assert platform is Platform.DISCORD
+            assert is_reconnect is True
+            replacement.connected = True
+            return True
+
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
+        runner._sync_voice_mode_state_to_adapter = lambda adapter: None
+
+        await runner._handle_profile_adapter_fatal_error(
+            "reviewer", Platform.DISCORD, stale
+        )
+        assert stale.disconnected is True
+        assert Platform.DISCORD not in runner._profile_adapters["reviewer"]
+
+        tasks = list(runner._background_tasks)
+        assert len(tasks) == 1
+        await tasks[0]
+
+        assert runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
+        assert scoped_homes
+        assert all(path == Path("/profiles/reviewer") for path in scoped_homes)
+
+    @pytest.mark.asyncio
+    async def test_secondary_reconnect_cancellation_disposes_partial_adapter(self, monkeypatch):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        class _Adapter:
+            platform = Platform.DISCORD
+
+            def __init__(self):
+                self.disconnected = False
+
+            async def disconnect(self):
+                self.disconnected = True
+
+            def set_message_handler(self, handler):
+                pass
+
+            def set_fatal_error_handler(self, handler):
+                pass
+
+            def set_session_store(self, store):
+                pass
+
+            def set_busy_session_handler(self, handler):
+                pass
+
+            def set_topic_recovery_fn(self, handler):
+                pass
+
+            def set_authorization_check(self, handler):
+                pass
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._running = True
+        runner._profile_adapters = {}
+        runner._profile_failed_platforms = {"reviewer": {}}
+        runner._background_tasks = set()
+        runner.session_store = object()
+        runner._handle_active_session_busy_message = object()
+        runner._recover_telegram_topic_thread_id = object()
+        runner._busy_text_mode = "queue"
+        runner._make_adapter_auth_check = lambda platform, profile_name=None: object()
+        runner._adapter_disconnect_timeout_secs = lambda: 0
+        runner._sync_voice_mode_state_to_adapter = lambda adapter: None
+        partial = _Adapter()
+        connect_started = __import__("asyncio").Event()
+
+        @contextmanager
+        def fake_scope(_profile_home):
+            yield
+
+        monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir", lambda name: Path("/profiles") / name
+        )
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config",
+            lambda: GatewayConfig(
+                multiplex_profiles=True,
+                platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="profile-token")},
+            ),
+        )
+        monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: partial)
+
+        async def connect(adapter, platform, *, is_reconnect=False):
+            connect_started.set()
+            await __import__("asyncio").Event().wait()
+
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
+        task = __import__("asyncio").create_task(
+            runner._run_secondary_profile_reconnect("reviewer", Platform.DISCORD)
+        )
+        runner._profile_failed_platforms["reviewer"][Platform.DISCORD] = {"task": task}
+        await connect_started.wait()
+        task.cancel()
+        with pytest.raises(__import__("asyncio").CancelledError):
+            await task
+
+        assert partial.disconnected is True
+        assert runner._profile_failed_platforms == {}
+
+    @pytest.mark.asyncio
+    async def test_nonretryable_secondary_fatal_is_not_restarted(self):
+        from gateway.config import GatewayConfig, Platform
+
+        class _Adapter:
+            platform = Platform.DISCORD
+            fatal_error_retryable = False
+            fatal_error_code = "auth_failed"
+            fatal_error_message = "authentication failed"
+
+            async def disconnect(self):
+                return None
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {"reviewer": {Platform.DISCORD: _Adapter()}}
+        runner._profile_failed_platforms = {}
+        runner._background_tasks = set()
+        runner._running = True
+        runner._adapter_disconnect_timeout_secs = lambda: 0
+        runner._sync_voice_mode_state_to_adapter = lambda adapter: None
+
+        await runner._handle_profile_adapter_fatal_error(
+            "reviewer", Platform.DISCORD, runner._profile_adapters["reviewer"][Platform.DISCORD]
+        )
+
+        assert runner._background_tasks == set()
 
 
 class TestSecondaryProfileConfigHandling:

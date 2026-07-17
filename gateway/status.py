@@ -23,6 +23,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home, _get_platform_default_hermes_home
+from agent.redact import redact_sensitive_text
 from typing import Any, Optional
 from utils import atomic_json_write
 
@@ -794,6 +795,19 @@ def write_pid_file() -> None:
         raise
 
 
+def _redact_runtime_value(value: Any) -> Any:
+    """Redact strings in persisted runtime diagnostics without changing shape."""
+    if isinstance(value, str):
+        return redact_sensitive_text(value, force=True)
+    if isinstance(value, dict):
+        return {key: _redact_runtime_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_runtime_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_runtime_value(item) for item in value)
+    return value
+
+
 def write_runtime_status(
     *,
     gateway_state: Any = _UNSET,
@@ -804,6 +818,7 @@ def write_runtime_status(
     platform_state: Any = _UNSET,
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
+    health: Any = _UNSET,
     served_profiles: Any = _UNSET,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
@@ -820,7 +835,11 @@ def write_runtime_status(
     if gateway_state is not _UNSET:
         payload["gateway_state"] = gateway_state
     if exit_reason is not _UNSET:
-        payload["exit_reason"] = exit_reason
+        payload["exit_reason"] = (
+            redact_sensitive_text(str(exit_reason), force=True)
+            if exit_reason is not None
+            else None
+        )
     if restart_requested is not _UNSET:
         payload["restart_requested"] = bool(restart_requested)
     if active_agents is not _UNSET:
@@ -838,7 +857,11 @@ def write_runtime_status(
         if error_code is not _UNSET:
             platform_payload["error_code"] = error_code
         if error_message is not _UNSET:
-            platform_payload["error_message"] = error_message
+            platform_payload["error_message"] = redact_sensitive_text(
+                str(error_message), force=True
+            ) if error_message is not None else None
+        if health is not _UNSET:
+            platform_payload["health"] = _redact_runtime_value(health) if isinstance(health, dict) else None
         platform_payload["updated_at"] = _utc_now_iso()
         payload["platforms"][platform] = platform_payload
 

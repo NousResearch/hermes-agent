@@ -668,6 +668,64 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["state"] == "connected"
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
+    def test_write_runtime_status_records_discord_websocket_health(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        health = {
+            "transport": "websocket",
+            "ready": True,
+            "socket_open": True,
+            "last_heartbeat_ack_at": "2026-07-17T12:00:00+00:00",
+            "heartbeat_ack_age_seconds": 2.5,
+            "latency_ms": 42.0,
+            "consecutive_failures": 0,
+            "last_health_reason": "healthy",
+        }
+
+        status.write_runtime_status(
+            platform="discord",
+            platform_state="connected",
+            health=health,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["platforms"]["discord"]["health"] == health
+
+    def test_write_runtime_status_redacts_nested_health_text(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            platform="discord",
+            health={"diagnostic": "Authorization: Bearer " + ("x" * 32)},
+        )
+
+        payload = status.read_runtime_status()
+        assert "x" * 32 not in payload["platforms"]["discord"]["health"]["diagnostic"]
+
+    def test_write_runtime_status_preserves_or_clears_health_explicitly(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        health = {"transport": "websocket", "last_health_reason": "ack_stale"}
+        status.write_runtime_status(platform="discord", health=health)
+        status.write_runtime_status(platform="discord", platform_state="retrying")
+
+        payload = status.read_runtime_status()
+        assert payload["platforms"]["discord"]["health"] == health
+
+        status.write_runtime_status(platform="discord", health=None)
+        payload = status.read_runtime_status()
+        assert payload["platforms"]["discord"]["health"] is None
+
+    def test_write_runtime_status_redacts_platform_error_text(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            platform="discord",
+            platform_state="fatal",
+            error_message="Authorization: Bearer " + ("x" * 32),
+        )
+
+        payload = status.read_runtime_status()
+        error = payload["platforms"]["discord"]["error_message"]
+        assert "x" * 32 not in error
 
 
 class TestGetProcessStartTime:

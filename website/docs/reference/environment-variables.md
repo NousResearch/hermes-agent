@@ -203,7 +203,22 @@ These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) 
 | `TOOL_GATEWAY_USER_TOKEN` | Auth token for the Tool Gateway (normally auto-populated from Nous auth) |
 | `FIRECRAWL_GATEWAY_URL` | Override URL for the Firecrawl gateway endpoint specifically |
 
-## Terminal Backend
+## Gateway and Discord WebSocket health
+
+The Discord Gateway WebSocket health settings are non-secret and belong in `config.yaml`, not `.env`:
+
+| Config key | Default | Meaning |
+|------------|---------|---------|
+| `discord.websocket_liveness_interval_seconds` | `20` | Seconds between Gateway samples |
+| `discord.websocket_liveness_failure_threshold` | `3` | Consecutive unhealthy samples before retryable reconnect |
+| `discord.websocket_heartbeat_ack_max_age_seconds` | `75` | Maximum heartbeat ACK age |
+| `discord.websocket_max_latency_seconds` | `30` | Maximum finite heartbeat latency |
+| `gateway.systemd_watchdog_seconds` | `0` | Opt-in systemd event-loop watchdog; `0` keeps `Type=simple` |
+
+REST HTTP 200 is not a Gateway WebSocket health signal. Runtime status and `hermes gateway status --full` report redacted WebSocket evidence only; they do not include bot tokens, raw Gateway frames, or Discord user/channel/Guild identifiers. The legacy `discord.liveness_interval_seconds` and `discord.liveness_failure_threshold` names are compatibility aliases and no longer describe a REST probe.
+
+When `gateway.systemd_watchdog_seconds` is positive, regenerate the systemd unit. The generated unit uses `Type=notify`, `NotifyAccess=main`, and `WatchdogSec`; this only monitors asyncio event-loop progress. Discord transport recovery remains application-level and does not trigger the watchdog by itself. The default remains disabled, and launchd/Windows/other supervisors are unchanged.
+
 
 | Variable | Description |
 |----------|-------------|

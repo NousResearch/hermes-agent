@@ -82,6 +82,33 @@ Hermes 按会话键跟踪正在运行的 agent。
 
 本指南将引导你完成完整的设置流程——从在 Discord 开发者门户创建机器人到发送第一条消息。
 
+### Discord Gateway WebSocket 健康
+
+Discord REST 与 Gateway WebSocket 是独立传输。REST 请求成功不代表机器人仍能接收 Gateway 事件。Hermes 会组合检查 ready 状态、client/socket 关闭状态、socket 是否打开、heartbeat ACK 年龄和有限 heartbeat latency。
+
+连续异常达到阈值后，适配器只上报一次可重试失败；现有 Gateway 重连器创建新适配器，不会启动第二个无限重连循环。`hermes gateway status --full` 只显示脱敏后的原因、ACK 年龄和 latency，不写入 token、原始 Gateway 帧、用户、频道或 Guild 标识。
+
+```yaml
+discord:
+  websocket_liveness_interval_seconds: 20
+  websocket_liveness_failure_threshold: 3
+  websocket_heartbeat_ack_max_age_seconds: 75
+  websocket_max_latency_seconds: 30
+```
+
+`hermes gateway status --full` 会显示 WebSocket 的 ACK age、latency 和最近失败原因。旧的 `liveness_interval_seconds` / `liveness_failure_threshold` 仅作为迁移别名保留，不再表示 REST probe。状态记录不包含 token、Gateway 原始帧、用户、频道或 Guild 标识。
+
+### systemd 事件循环 watchdog
+
+systemd watchdog 默认关闭。需要时在 `config.yaml` 中显式启用并刷新 service unit：
+
+```yaml
+gateway:
+  systemd_watchdog_seconds: 120
+```
+
+启用后 unit 使用 `Type=notify`、`NotifyAccess=main` 和 `WatchdogSec=120s`；它只监控 Hermes asyncio event loop 是否仍能调度，不会因 Discord 普通网络波动单独触发重启。`0` 保持 `Type=simple`，launchd、Windows 和其他 supervisor 不使用该 systemd 协议。
+
 ## 第一步：创建 Discord 应用
 
 1. 前往 [Discord 开发者门户](https://discord.com/developers/applications) 并使用你的 Discord 账号登录。

@@ -102,6 +102,34 @@ async def test_runner_queues_retryable_runtime_fatal_for_reconnection(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_retryable_fatal_preserves_existing_platform_health(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _RuntimeRetryableAdapter()
+    adapter._write_runtime_status_safe(
+        "health",
+        platform_state="degraded",
+        health={"transport": "websocket", "last_health_reason": "ack_stale"},
+    )
+    adapter._set_fatal_error("transport_stale", "transport stale", retryable=True)
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    runner.delivery_router.adapters = runner.adapters
+    runner.stop = AsyncMock()
+
+    await runner._handle_adapter_fatal_error(adapter)
+
+    from gateway.status import read_runtime_status
+
+    payload = read_runtime_status()
+    assert payload["platforms"]["whatsapp"]["state"] == "retrying"
+    assert payload["platforms"]["whatsapp"]["health"]["last_health_reason"] == "ack_stale"
+
+
+@pytest.mark.asyncio
 async def test_concurrent_fatal_notifications_disconnect_same_adapter_once(monkeypatch, tmp_path):
     """
     Two fatal-error notifications for the same still-installed adapter (e.g.

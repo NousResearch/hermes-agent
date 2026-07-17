@@ -44,7 +44,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Callable, Dict, Optional, Any, List, Union
+from typing import Awaitable, Callable, Dict, Optional, Any, List, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -2899,6 +2899,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _restart_command_source: Optional[SessionSource] = None
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
+    _systemd_watchdog: Optional[Any] = None
+    _profile_failed_platforms: Optional[Dict[str, Dict[Platform, Dict[str, Any]]]] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     _startup_restore_in_progress: bool = False
@@ -2973,6 +2975,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._exit_reason: Optional[str] = None
         self._exit_code: Optional[int] = None
         self._draining = False
+        self._systemd_watchdog = None
+        self._profile_failed_platforms: Dict[str, Dict[Platform, Dict[str, Any]]] = {}
         # External (NAS-driven) drain state — distinct from the shutdown
         # ``_draining`` flag above. Set by ``_drain_control_watcher`` when the
         # ``.drain_request.json`` marker is present: the gateway flips
@@ -4150,7 +4154,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the same object twice.
             self.adapters.pop(adapter.platform, None)
             self.delivery_router.adapters = self.adapters
-            await adapter.disconnect()
+            # A half-closed transport can wedge an adapter's native close()
+            # indefinitely. Reuse the shutdown-path timeout so this runtime
+            # fatal handler always reaches the reconnect queue.
+            await self._safe_adapter_disconnect(adapter, adapter.platform)
 
         # Queue retryable failures for background reconnection
         if adapter.fatal_error_retryable:
@@ -4749,6 +4756,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         platform_state: Optional[str] = None,
         error_code: Optional[str] = None,
         error_message: Optional[str] = None,
+        health: Optional[dict] = None,
     ) -> None:
         try:
             from gateway.status import write_runtime_status
@@ -4757,6 +4765,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 platform_state=platform_state,
                 error_code=error_code,
                 error_message=error_message,
+                **({"health": health} if health is not None else {}),
             )
         except Exception:
             pass
@@ -8255,6 +8264,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
                 await asyncio.sleep(1)
 
+    def _start_systemd_watchdog(self) -> bool:
+        """Start sd_notify only after a configured gateway is truly running."""
+        if not self._running or self.config.systemd_watchdog_seconds <= 0:
+            return False
+        if self._systemd_watchdog is not None:
+            return True
+
+        from gateway.systemd_notify import SystemdWatchdog
+
+        watchdog = SystemdWatchdog(config_enabled=True)
+        if not watchdog.start():
+            return False
+        self._systemd_watchdog = watchdog
+        watchdog.ready("Hermes Gateway running")
+        return True
+
+    async def _stop_systemd_watchdog(self) -> None:
+        """Stop heartbeats before any potentially long shutdown drain."""
+        watchdog = self._systemd_watchdog
+        if watchdog is None:
+            return
+        self._systemd_watchdog = None
+        await watchdog.stop()
+
     async def stop(
         self,
         *,
@@ -8348,6 +8381,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             self._running = False
             self._draining = True
+
+            await self._stop_systemd_watchdog()
 
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.
@@ -8863,10 +8898,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Stamp every inbound event from this adapter with its profile so
             # the agent turn (and session key) resolve to the right home.
-            adapter.set_message_handler(
-                self._make_profile_message_handler(profile_name)
+            adapter.set_message_handler(self._make_profile_message_handler(profile_name))
+            adapter.set_fatal_error_handler(
+                self._make_profile_fatal_error_handler(profile_name, adapter.platform)
             )
-            adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
@@ -8889,6 +8924,181 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e)
                 await self._safe_adapter_disconnect(adapter, platform)
         return connected
+
+    async def _run_secondary_profile_reconnect(
+        self, profile_name: str, platform: Platform
+    ) -> None:
+        """Reconnect a retryable secondary adapter under its own profile scope."""
+        attempts = 0
+        current_task = asyncio.current_task()
+        try:
+            while self._running:
+                adapter = None
+                try:
+                    from hermes_cli.profiles import get_profile_dir
+                    from gateway.config import load_gateway_config
+
+                    profile_home = get_profile_dir(profile_name)
+                    with _profile_runtime_scope(profile_home):
+                        profile_config = load_gateway_config().platforms.get(platform)
+                        if profile_config is None or not profile_config.enabled:
+                            return
+                        adapter = self._create_adapter(platform, profile_config)
+                        if adapter is None:
+                            logger.warning(
+                                "Secondary %s reconnect skipped: adapter unavailable (profile: %s)",
+                                platform.value,
+                                profile_name,
+                            )
+                            return
+                        adapter.set_message_handler(
+                            self._make_profile_message_handler(profile_name)
+                        )
+                        adapter.set_fatal_error_handler(
+                            self._make_profile_fatal_error_handler(profile_name, platform)
+                        )
+                        adapter.set_session_store(self.session_store)
+                        adapter.set_busy_session_handler(
+                            self._handle_active_session_busy_message
+                        )
+                        adapter.set_topic_recovery_fn(
+                            self._recover_telegram_topic_thread_id
+                        )
+                        adapter.set_authorization_check(
+                            self._make_adapter_auth_check(
+                                platform, profile_name=profile_name
+                            )
+                        )
+                        adapter._busy_text_mode = self._busy_text_mode
+                        success = await self._connect_adapter_with_timeout(
+                            adapter, platform, is_reconnect=True
+                        )
+
+                    if success:
+                        profile_map = self._profile_adapters.setdefault(profile_name, {})
+                        if platform not in profile_map:
+                            profile_map[platform] = adapter
+                            self._sync_voice_mode_state_to_adapter(adapter)
+                            logger.info(
+                                "✓ %s reconnected (profile: %s)",
+                                platform.value,
+                                profile_name,
+                            )
+                            return
+                        # A newer reconnect already won the slot while this
+                        # attempt was awaiting connect; do not replace it.
+                        await self._safe_adapter_disconnect(adapter, platform)
+                        return
+
+                    await self._safe_adapter_disconnect(adapter, platform)
+                    if (
+                        getattr(adapter, "has_fatal_error", False)
+                        and not getattr(adapter, "fatal_error_retryable", True)
+                    ):
+                        return
+                except asyncio.CancelledError:
+                    if adapter is not None:
+                        await self._safe_adapter_disconnect(adapter, platform)
+                    raise
+                except Exception:
+                    if adapter is not None:
+                        await self._safe_adapter_disconnect(adapter, platform)
+                    logger.debug(
+                        "Secondary %s reconnect attempt failed (profile: %s)",
+                        platform.value,
+                        profile_name,
+                        exc_info=True,
+                    )
+
+                attempts += 1
+                backoff = min(30 * (2 ** (attempts - 1)), 300)
+                logger.info(
+                    "Secondary %s reconnect retry in %ds (profile: %s)",
+                    platform.value,
+                    backoff,
+                    profile_name,
+                )
+                await asyncio.sleep(backoff)
+        finally:
+            pending = getattr(self, "_profile_failed_platforms", None)
+            if isinstance(pending, dict):
+                profile_pending = pending.get(profile_name)
+                entry = profile_pending.get(platform) if isinstance(profile_pending, dict) else None
+                if not isinstance(entry, dict) or entry.get("task") is current_task:
+                    if isinstance(profile_pending, dict):
+                        profile_pending.pop(platform, None)
+                        if not profile_pending:
+                            pending.pop(profile_name, None)
+
+    def _schedule_secondary_profile_reconnect(
+        self, profile_name: str, platform: Platform, adapter: BasePlatformAdapter
+    ) -> None:
+        """Schedule one runner-owned reconnect without sharing primary secrets."""
+        if not adapter.fatal_error_retryable:
+            return
+        pending = getattr(self, "_profile_failed_platforms", None)
+        if not isinstance(pending, dict):
+            pending = {}
+            self._profile_failed_platforms = pending
+        profile_pending = pending.setdefault(profile_name, {})
+        if platform in profile_pending:
+            return
+        task = asyncio.create_task(
+            self._run_secondary_profile_reconnect(profile_name, platform),
+            name=f"secondary-reconnect:{profile_name}:{platform.value}",
+        )
+        profile_pending[platform] = {"task": task}
+        background_tasks = getattr(self, "_background_tasks", None)
+        if not isinstance(background_tasks, set):
+            background_tasks = set()
+            self._background_tasks = background_tasks
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+
+    def _make_profile_fatal_error_handler(
+        self, profile_name: str, platform: Platform
+    ) -> Callable[[BasePlatformAdapter], Awaitable[None]]:
+        """Route a secondary-profile fatal error to that profile's reconnect slot."""
+        async def _handler(adapter: BasePlatformAdapter) -> None:
+            await self._handle_profile_adapter_fatal_error(profile_name, platform, adapter)
+
+        return _handler
+
+    async def _handle_profile_adapter_fatal_error(
+        self,
+        profile_name: str,
+        platform: Platform,
+        adapter: BasePlatformAdapter,
+    ) -> None:
+        """Remove a failed multiplexed adapter without touching the primary slot.
+
+        Secondary adapters are owned by ``_profile_adapters`` rather than
+        ``self.adapters``. The primary-only fatal handler intentionally ignores
+        them; without this route, a fatal secondary Discord client stayed live
+        forever after its liveness sampler stopped.
+        """
+        profile_map = getattr(self, "_profile_adapters", {}).get(profile_name)
+        if not isinstance(profile_map, dict) or profile_map.get(platform) is not adapter:
+            logger.debug(
+                "Ignoring stale fatal error from secondary %s adapter (profile: %s)",
+                platform.value,
+                profile_name,
+            )
+            return
+        profile_map.pop(platform, None)
+        await self._safe_adapter_disconnect(adapter, platform)
+        self._schedule_secondary_profile_reconnect(profile_name, platform, adapter)
+        logger.error(
+            "Fatal %s adapter error for multiplexed profile %s (%s): %s",
+            platform.value,
+            profile_name,
+            adapter.fatal_error_code or "unknown",
+            _redact_gateway_user_facing_secrets(
+                adapter.fatal_error_message or "unknown error"
+            ),
+        )
+        # Reconnect is scoped to the profile's own config and secret mapping;
+        # never rebuild a secondary adapter with the default profile's credentials.
 
     def _make_profile_message_handler(self, profile_name: str):
         """Return a message handler that stamps source.profile then delegates.
@@ -21583,7 +21793,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if runner.exit_code is not None:
             raise SystemExit(runner.exit_code)
         return True
-    
+
+    runner._update_runtime_status("running")
+
     # Start the background cron scheduler via the resolved provider so
     # scheduled jobs fire automatically. The built-in provider is the
     # historical in-process 60s ticker; an external provider (e.g. chronos)
@@ -21620,6 +21832,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         name="gateway-housekeeping",
     )
     housekeeping_thread.start()
+
+    # READY is emitted only after adapters, cron, and housekeeping have all
+    # reached their running boundary. Missing config/systemd runtime state
+    # leaves the watchdog disabled without changing gateway behavior.
+    start_watchdog = getattr(runner, "_start_systemd_watchdog", None)
+    if callable(start_watchdog):
+        start_watchdog()
     
     # Wait for shutdown
     await runner.wait_for_shutdown()

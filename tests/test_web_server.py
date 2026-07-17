@@ -91,6 +91,20 @@ def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
     assert captured["ws_ping_timeout"] is None
 
 
+def test_start_server_accepts_base64_desktop_attachments_above_preview_limit(monkeypatch):
+    """The gateway frame cap must fit the Desktop attachment default after
+    base64 expansion and JSON framing; uvicorn's 16 MiB default would reject
+    the request before ``file.attach`` can stage it.
+    """
+    captured = _stub_uvicorn(monkeypatch)
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    raw_attachment_bytes = 256 * 1024 * 1024
+    base64_bytes = ((raw_attachment_bytes + 2) // 3) * 4
+    assert captured["ws_max_size"] > base64_bytes
+
+
 def test_start_server_enables_ws_ping_for_half_open_detection(monkeypatch):
     """Non-loopback (public) binds MUST keep the ws ping enabled so half-open
     connections (reverse-proxy 524, dropped Cloudflare Tunnel) raise

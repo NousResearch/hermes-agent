@@ -287,6 +287,12 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 # injection share a single, testable seam.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 
+# Desktop's file.attach compatibility transport sends a complete base64 data
+# URL in one JSON-RPC frame. Uvicorn defaults to 16 MiB, which rejects files at
+# the old preview ceiling before the dispatcher sees them. Keep the gateway
+# finite while allowing the 256 MiB raw Desktop cap plus base64/JSON overhead.
+_DESKTOP_ATTACHMENT_WS_MAX_BYTES = 384 * 1024 * 1024
+
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
@@ -18006,6 +18012,7 @@ def start_server(
         # reaped via the WebSocketDisconnect → disconnect/reap path.
         ws_ping_interval=None if _is_loopback else 20.0,
         ws_ping_timeout=None if _is_loopback else 20.0,
+        ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     )
     server = uvicorn.Server(config)
 

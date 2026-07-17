@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 from utils import atomic_replace, fast_safe_load
@@ -509,21 +511,66 @@ def refresh_hermes_dotenv_strict(
     return loaded
 
 
+def _load_unique_yaml_mapping(config_path: Path) -> dict:
+    """Load YAML recursively rejecting duplicate mapping keys."""
+    import yaml
+
+    class _UniqueKeyLoader(yaml.SafeLoader):
+        pass
+
+    def _construct_unique_mapping(
+        loader: Any, node: Any, deep: bool = False
+    ) -> dict[Any, Any]:
+        loader.flatten_mapping(node)
+        result: dict[Any, Any] = {}
+        for key_node, value_node in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            if key in result:
+                raise ValueError("duplicate mapping key")
+            result[key] = loader.construct_object(value_node, deep=deep)
+        return result
+
+    _UniqueKeyLoader.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+        _construct_unique_mapping,
+    )
+    with open(config_path, "r", encoding="utf-8") as config_file:
+        data = yaml.load(config_file, Loader=_UniqueKeyLoader) or {}
+    if not isinstance(data, dict):
+        raise ValueError("config root is not a mapping")
+    return data
+
+
+def _has_unresolved_env_reference(value: Any) -> bool:
+    if isinstance(value, str):
+        return re.search(r"\${[^}]+}", value) is not None
+    if isinstance(value, dict):
+        return any(_has_unresolved_env_reference(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_unresolved_env_reference(item) for item in value)
+    return False
+
+
 def _load_secrets_config_strict(home_path: Path) -> dict:
-    """Parse the secrets section without startup's fail-open swallowing."""
+    """Parse and expand secrets config, rejecting ambiguity or unresolved refs."""
     config_path = home_path / "config.yaml"
     if not config_path.exists():
         return {}
-    with open(config_path, "r", encoding="utf-8") as config_file:
-        data = fast_safe_load(config_file) or {}
-    if not isinstance(data, dict):
-        raise ValueError("config root is not a mapping")
+
+    from hermes_cli.config import _expand_env_vars
+
+    data = _load_unique_yaml_mapping(config_path)
     secrets = data.get("secrets", {})
     if secrets is None:
         return {}
     if not isinstance(secrets, dict):
         raise ValueError("secrets is not a mapping")
-    return secrets
+    expanded = _expand_env_vars(secrets)
+    if not isinstance(expanded, dict):
+        raise ValueError("expanded secrets is not a mapping")
+    if _has_unresolved_env_reference(expanded):
+        raise ValueError("secrets contains an unresolved environment reference")
+    return expanded
 
 
 def _load_secrets_config(home_path: Path) -> dict:

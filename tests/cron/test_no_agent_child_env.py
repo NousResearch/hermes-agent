@@ -26,8 +26,10 @@ class _StrictTestSource(SecretSource):
     def __init__(self, result: FetchResult):
         self.result = result
         self.invalidated: list[Path] = []
+        self.fetch_configs: list[dict] = []
 
     def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
+        self.fetch_configs.append(dict(cfg))
         return self.result
 
     def invalidate_cache(self, home_path: Path) -> None:
@@ -293,6 +295,79 @@ def test_strict_apply_exception_is_sanitized(tmp_path, monkeypatch):
     assert "source=stricttest" in str(raised.value)
     assert "stage=apply" in str(raised.value)
     assert raw_secret not in str(raised.value)
+
+
+def test_strict_refresh_expands_environment_backed_source_config(tmp_path, monkeypatch):
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "secrets:\n"
+        "  stricttest:\n"
+        "    enabled: true\n"
+        "    token_alias: ${STRICT_TOKEN_ALIAS}\n"
+    )
+    monkeypatch.setenv("STRICT_TOKEN_ALIAS", "EXPANDED_BOOTSTRAP_NAME")
+    source = _StrictTestSource(FetchResult(secrets={"ROTATING_SECRET": "fresh"}))
+    _install_strict_source(monkeypatch, source)
+
+    env_loader.refresh_hermes_dotenv_strict(hermes_home=home)
+
+    assert source.fetch_configs == [
+        {"enabled": True, "token_alias": "EXPANDED_BOOTSTRAP_NAME"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        (
+            "secrets:\n  stricttest:\n    enabled: false\n"
+            "secrets:\n  stricttest:\n    enabled: true\n"
+        ),
+        (
+            "secrets:\n  stricttest:\n    enabled: false\n"
+            "  stricttest:\n    enabled: true\n"
+        ),
+        (
+            "secrets:\n  stricttest:\n    enabled: true\n"
+            "    enabled: false\n"
+        ),
+    ],
+)
+def test_strict_refresh_rejects_duplicate_yaml_keys(tmp_path, monkeypatch, body):
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    (home / "config.yaml").write_text(body)
+    _install_strict_source(monkeypatch, _StrictTestSource(FetchResult()))
+
+    with pytest.raises(env_loader.SecretSourceRefreshError) as raised:
+        env_loader.refresh_hermes_dotenv_strict(hermes_home=home)
+    assert raised.value.stage == "config"
+    assert "duplicate" not in str(raised.value)
+
+
+def test_strict_refresh_rejects_unresolved_environment_reference(tmp_path, monkeypatch):
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "secrets:\n"
+        "  stricttest:\n"
+        "    enabled: true\n"
+        "    token_alias: ${UNSET_STRICT_TOKEN_ALIAS}\n"
+    )
+    monkeypatch.delenv("UNSET_STRICT_TOKEN_ALIAS", raising=False)
+    _install_strict_source(monkeypatch, _StrictTestSource(FetchResult()))
+
+    with pytest.raises(env_loader.SecretSourceRefreshError) as raised:
+        env_loader.refresh_hermes_dotenv_strict(hermes_home=home)
+    assert raised.value.stage == "config"
+    assert "UNSET_STRICT_TOKEN_ALIAS" not in str(raised.value)
 
 
 def test_strict_refresh_success_replaces_stale_value(tmp_path, monkeypatch):

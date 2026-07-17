@@ -374,8 +374,11 @@ const shortModelLabel = (model: string) =>
     .replace(/\b(\d+)\s+(\d+)\b/g, '$1.$2')
     .trim()
 
-const modelLabel = (model: string, effort?: string, fast?: boolean) =>
-  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+const modelLabel = (model: string, effort?: string, fast?: boolean, credentialLabel?: string) => {
+  const modelText = [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+
+  return credentialLabel ? `${modelText} | ${credentialLabel}` : modelText
+}
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
@@ -404,6 +407,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 
 export function StatusRule({
   cwdLabel,
+  credentialLabel,
   cols,
   busy,
   status,
@@ -438,7 +442,7 @@ export function StatusRule({
       : ''
 
   const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
-  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  const modelText = modelLabel(model, modelReasoningEffort, modelFast, credentialLabel)
 
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
@@ -775,6 +779,7 @@ interface StatusRuleProps {
   liveSessionCount: number
   busy: boolean
   cols: number
+  credentialLabel?: string
   cwdLabel: string
   model: string
   modelFast?: boolean

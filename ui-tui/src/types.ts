@@ -181,6 +181,7 @@ export interface Usage {
   active_subagents?: number
   calls: number
   compressions?: number
+  credential_label?: string
   context_max?: number
   context_percent?: number
   context_used?: number

@@ -104,6 +104,24 @@ const baseProps = {
   voiceLabel: ''
 }
 
+describe('StatusRule active credential label', () => {
+  it('renders the active pooled-account label beside the model', () => {
+    const element = StatusRule({
+      ...baseProps,
+      credentialLabel: 'personal'
+    })
+
+    expect(textContent(element)).toContain('opus 4.8 | personal')
+  })
+
+  it('does not add an account separator when no pooled label is available', () => {
+    const element = StatusRule({ ...baseProps })
+
+    expect(textContent(element)).toContain('opus 4.8')
+    expect(textContent(element)).not.toContain('opus 4.8 |')
+  })
+})
+
 describe('StatusRule background-subagent indicator', () => {
   it('renders ⛓ N on a wide terminal when subagents are running', () => {
     const element = StatusRule({

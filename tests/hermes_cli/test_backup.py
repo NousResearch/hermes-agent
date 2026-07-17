@@ -2452,6 +2452,65 @@ class TestRestoreCronJobsIfEmptied:
 
 
 # ---------------------------------------------------------------------------
+# Source-DB integrity check before snapshot/backup
+# ---------------------------------------------------------------------------
+
+def _corrupt_db(path: Path) -> None:
+    """Create a SQLite DB then scribble over a page so quick_check fails."""
+    conn = sqlite3.connect(str(path))
+    conn.execute("CREATE TABLE t(x)")
+    for i in range(500):
+        conn.execute("INSERT INTO t VALUES (?)", (i,))
+    conn.commit()
+    conn.close()
+    with open(path, "r+b") as f:
+        f.seek(4096)
+        f.write(b"\xde\xad\xbe\xef" * 400)
+
+
+class TestDbIntegrityCheck:
+    """_safe_copy_db warns when the SOURCE db is already malformed — backup()
+    copies pages verbatim, so an unchecked corrupt source propagates silently."""
+
+    def test_quick_check_passes_on_healthy_db(self, tmp_path):
+        from hermes_cli.backup import _db_quick_check
+        db = tmp_path / "good.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE t(x)")
+        conn.execute("INSERT INTO t VALUES (1)")
+        conn.commit()
+        conn.close()
+        assert _db_quick_check(db) is None
+
+    def test_quick_check_flags_corrupt_db(self, tmp_path):
+        from hermes_cli.backup import _db_quick_check
+        db = tmp_path / "bad.db"
+        _corrupt_db(db)
+        assert _db_quick_check(db) is not None
+
+    def test_safe_copy_warns_on_malformed_source(self, tmp_path, caplog):
+        import logging
+        from hermes_cli.backup import _safe_copy_db
+        db = tmp_path / "bad.db"
+        _corrupt_db(db)
+        with caplog.at_level(logging.WARNING):
+            _safe_copy_db(db, tmp_path / "out.db")
+        assert any("MALFORMED" in r.getMessage() for r in caplog.records)
+
+    def test_safe_copy_silent_on_healthy_source(self, tmp_path, caplog):
+        import logging
+        from hermes_cli.backup import _safe_copy_db
+        db = tmp_path / "good.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE t(x)")
+        conn.commit()
+        conn.close()
+        with caplog.at_level(logging.WARNING):
+            assert _safe_copy_db(db, tmp_path / "out.db") is True
+        assert not any("MALFORMED" in r.getMessage() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
 # Memory-provider external paths (~/.honcho, ~/.hindsight, ...) — captured via
 # MemoryProvider.backup_paths() and restored to their original home-relative
 # location, NOT under HERMES_HOME. (backup/import cycle data-loss fix)

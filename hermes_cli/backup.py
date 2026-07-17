@@ -253,12 +253,41 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
 # SQLite safe copy
 # ---------------------------------------------------------------------------
 
+def _db_quick_check(src: Path) -> Optional[str]:
+    """Return ``None`` if the SQLite DB passes ``PRAGMA quick_check``, else a
+    short description of the problem.
+
+    The ``backup()`` API copies pages without validating them, so a source DB
+    that is already corrupt is reproduced faithfully into the snapshot/backup —
+    the corruption propagates silently. Checking the source first lets callers
+    surface it instead of shipping a corrupt "safety" copy.
+    """
+    try:
+        conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        try:
+            row = conn.execute("PRAGMA quick_check(1)").fetchone()
+        finally:
+            conn.close()
+        result = (row[0] if row else "") or ""
+        return None if result == "ok" else result.splitlines()[0][:200]
+    except Exception as exc:  # any failure means we cannot trust the source
+        return f"quick_check failed: {exc}"[:200]
+
+
 def _safe_copy_db(src: Path, dst: Path) -> bool:
     """Copy a SQLite database safely using the backup() API.
 
     Handles WAL mode — produces a consistent snapshot even while
     the DB is being written to.  Falls back to raw copy on failure.
     """
+    problem = _db_quick_check(src)
+    if problem:
+        logger.warning(
+            "Database %s is MALFORMED before copy (quick_check: %s) — the "
+            "snapshot/backup will faithfully preserve the corruption. "
+            "Investigate the source database.",
+            src, problem,
+        )
     try:
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
         backup_conn = sqlite3.connect(str(dst))

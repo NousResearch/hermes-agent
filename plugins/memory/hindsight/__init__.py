@@ -910,6 +910,32 @@ class HindsightMemoryProvider(MemoryProvider):
                             break
                 env_writes["HINDSIGHT_LLM_API_KEY"] = existing_llm_key
 
+        # Step 3.5: v0.8.4+ recall parameters (optional)
+        print("\n  Advanced recall parameters (Hindsight >= 0.8.4 required):")
+        val = input("  Enable v0.8.4+ recall params? [y/N]: ").strip().lower()
+        if val in ("y", "yes"):
+            provider_config["enable_recall_v084_params"] = True
+            existing_prefer = provider_config.get("prefer_observations", False)
+            val = input(
+                f"  Prefer observations over raw facts? [y/N] (current: {existing_prefer}): "
+            ).strip().lower()
+            if val in ("y", "yes", "n", "no", ""):
+                provider_config["prefer_observations"] = val in ("y", "yes")
+
+            existing_min = provider_config.get("min_scores", "")
+            if existing_min and isinstance(existing_min, dict):
+                import json as _json
+                existing_min = _json.dumps(existing_min)
+            prompt = "  min_scores JSON (e.g. {\"semantic\": 0.7}) [blank to skip]"
+            if existing_min:
+                prompt += f" (current: {existing_min})"
+            prompt += ": "
+            val = input(prompt).strip()
+            if val:
+                provider_config["min_scores"] = val
+        else:
+            provider_config["enable_recall_v084_params"] = False
+
         # Step 4: Save everything
         provider_config.setdefault("bank_id", "hermes")
         provider_config.setdefault("recall_budget", "mid")
@@ -1366,9 +1392,50 @@ class HindsightMemoryProvider(MemoryProvider):
         # v0.8.4+ recall parameters — gated behind explicit toggle so older
         # Hindsight servers silently ignore unknown keys rather than erroring.
         self._enable_recall_v084_params = self._config.get("enable_recall_v084_params", False)
+        self._prefer_observations = False
+        self._min_scores: dict | None = None
+        if self._enable_recall_v084_params:
+            # Guard: these params require hindsight-client >= 0.8.4.
+            try:
+                from importlib.metadata import version as pkg_version
+                from packaging.version import Version
+                installed = pkg_version("hindsight-client")
+                if Version(installed) < Version("0.8.4"):
+                    logger.warning(
+                        "enable_recall_v084_params requires hindsight-client >= 0.8.4 "
+                        "(installed: %s). Feature disabled.", installed,
+                    )
+                    self._enable_recall_v084_params = False
+            except Exception:
+                pass
+
         if self._enable_recall_v084_params:
             self._prefer_observations = self._config.get("prefer_observations", False)
-            self._min_scores = self._config.get("min_scores", None)
+            raw_min_scores = self._config.get("min_scores", None)
+            if raw_min_scores is not None and raw_min_scores != "":
+                if isinstance(raw_min_scores, str):
+                    import json
+                    try:
+                        parsed = json.loads(raw_min_scores)
+                        if isinstance(parsed, dict):
+                            self._min_scores = parsed
+                        else:
+                            logger.warning(
+                                "min_scores must be a JSON object, got %s. Ignored.",
+                                type(parsed).__name__,
+                            )
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "min_scores is not valid JSON: %r. Ignored.",
+                            raw_min_scores[:80],
+                        )
+                elif isinstance(raw_min_scores, dict):
+                    self._min_scores = raw_min_scores
+                else:
+                    logger.warning(
+                        "min_scores must be a JSON object or dict, got %s. Ignored.",
+                        type(raw_min_scores).__name__,
+                    )
         self._retain_async = self._config.get("retain_async", True)
 
         _client_version = "unknown"

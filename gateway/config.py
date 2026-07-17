@@ -183,7 +183,7 @@ def _getenv(name: str, default: Optional[str] = None) -> Optional[str]:
     if current_secret_scope() is not None:
         scope_val = _get_secret(name, None)
         return scope_val if scope_val is not None else default
-    env_val = os.environ.get(name)
+    env_val = os.getenv(name)
     if env_val is not None:
         return env_val
     return default
@@ -1122,29 +1122,26 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
 
             # Multiplexing flag: accept both the top-level key and the nested
-            # gateway.multiplex_profiles form (written by
-            # ``hermes config set gateway.multiplex_profiles true``).
+            # gateway.multiplex_profiles form. Top-level config keeps
+            # precedence; nested is honored when the top-level key is absent,
+            # matching the documented ``hermes config set gateway.*`` path.
+            gateway_section = yaml_cfg.get("gateway")
             if "multiplex_profiles" in yaml_cfg:
                 gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
+            elif isinstance(gateway_section, dict) and "multiplex_profiles" in gateway_section:
+                gw_data["multiplex_profiles"] = gateway_section["multiplex_profiles"]
 
             # Profile-based routing rules: accept either top-level
             # ``profile_routes`` or the nested ``gateway.profile_routes`` form
             # (matching the multiplex_profiles parity above).
             _pr = yaml_cfg.get("profile_routes")
-            if _pr is None:
-                _gw_section = yaml_cfg.get("gateway")
-                if isinstance(_gw_section, dict):
-                    _pr = _gw_section.get("profile_routes")
+            if _pr is None and isinstance(gateway_section, dict):
+                _pr = gateway_section.get("profile_routes")
             if isinstance(_pr, list):
                 gw_data["profile_routes"] = _pr
 
-            gateway_section = yaml_cfg.get("gateway")
-            if isinstance(gateway_section, dict):
-                if "multiplex_profiles" in gateway_section and "multiplex_profiles" not in gw_data:
-                    # gateway.multiplex_profiles written by `hermes config set gateway.multiplex_profiles true`
-                    gw_data["multiplex_profiles"] = gateway_section["multiplex_profiles"]
-                if "max_concurrent_sessions" in gateway_section:
-                    gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
+            if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:
+                gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]
@@ -1255,7 +1252,7 @@ def load_gateway_config() -> GatewayConfig:
                 # ``_merge_platform_map`` already merged it with the correct
                 # precedence, so re-applying it here would overwrite that.
                 if not _cfg_toplevel:
-                    for _src in (gateway_platforms, yaml_cfg.get("platforms")):
+                    for _src in (yaml_cfg.get("platforms"), gateway_platforms):
                         if isinstance(_src, dict):
                             _candidate = _src.get(plat.value)
                             if isinstance(_candidate, dict):
@@ -1338,9 +1335,22 @@ def load_gateway_config() -> GatewayConfig:
                             if isinstance(ov_data, dict)
                         }
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
-                if not bridged and not enabled_was_explicit and not has_channel_overrides:
+                platform_extra_raw = platform_cfg.get("extra")
+                platform_extra = platform_extra_raw if isinstance(platform_extra_raw, dict) else {}
+                if (
+                    not bridged
+                    and not enabled_was_explicit
+                    and not has_channel_overrides
+                    and not platform_extra
+                ):
                     continue
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
+                if platform_extra:
+                    # Preserve top-level ``<platform>.extra`` with the same
+                    # precedence as top-level shared keys: it overlays nested
+                    # ``gateway.platforms`` / ``platforms`` defaults, while
+                    # explicit bridgeable keys below still win over ``extra``.
+                    extra.update(platform_extra)
                 if enabled_was_explicit:
                     plat_data["enabled"] = platform_cfg["enabled"]
                     # Mark the explicit enable/disable so the registry-driven
@@ -1367,7 +1377,7 @@ def load_gateway_config() -> GatewayConfig:
                     # (e.g. ``platforms.discord.extra.allow_from``) and not via a
                     # top-level ``discord:`` block.
                     if not isinstance(platform_cfg, dict):
-                        for _src in (gateway_platforms, yaml_cfg.get("platforms")):
+                        for _src in (yaml_cfg.get("platforms"), gateway_platforms):
                             if isinstance(_src, dict):
                                 _candidate = _src.get(entry.name)
                                 if isinstance(_candidate, dict):

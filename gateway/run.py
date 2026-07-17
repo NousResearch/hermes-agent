@@ -683,6 +683,137 @@ def _float_env(name: str, default: float) -> float:
         return float(default)
 
 
+def _bridge_terminal_config_to_env(terminal_cfg: Any) -> None:
+    """Bridge documented ``terminal`` config keys into runtime env vars.
+
+    This is the production gateway bootstrap bridge, factored so tests can call
+    the runtime path directly instead of executing a source slice from this file.
+    ``config.yaml`` is authoritative for these variables and overrides inherited
+    environment values, except for cwd placeholders that are intentionally left
+    for the terminal backend defaults to resolve.
+    """
+    if not terminal_cfg or not isinstance(terminal_cfg, dict):
+        return
+
+    terminal_backend = str(
+        terminal_cfg.get("backend") or os.environ.get("TERMINAL_ENV") or ""
+    ).strip().lower()
+    terminal_env_map = {
+        "backend": "TERMINAL_ENV",
+        "cwd": "TERMINAL_CWD",
+        "timeout": "TERMINAL_TIMEOUT",
+        "home_mode": "TERMINAL_HOME_MODE",
+        "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
+        "docker_image": "TERMINAL_DOCKER_IMAGE",
+        "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
+        "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+        "modal_image": "TERMINAL_MODAL_IMAGE",
+        "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "ssh_host": "TERMINAL_SSH_HOST",
+        "ssh_user": "TERMINAL_SSH_USER",
+        "ssh_port": "TERMINAL_SSH_PORT",
+        "ssh_key": "TERMINAL_SSH_KEY",
+        "container_cpu": "TERMINAL_CONTAINER_CPU",
+        "container_memory": "TERMINAL_CONTAINER_MEMORY",
+        "container_disk": "TERMINAL_CONTAINER_DISK",
+        "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+        "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+        "docker_env": "TERMINAL_DOCKER_ENV",
+        "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
+        "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+        "docker_network": "TERMINAL_DOCKER_NETWORK",
+        "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+        "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
+        "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
+        "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+        "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+    }
+    for cfg_key, env_var in terminal_env_map.items():
+        if cfg_key not in terminal_cfg:
+            continue
+        val = terminal_cfg[cfg_key]
+        # Skip cwd placeholder values (".", "auto", "cwd") — the gateway
+        # resolves these to Path.home() later. Writing the raw placeholder here
+        # would just be noise; only bridge explicit paths from config.yaml.
+        if cfg_key == "cwd" and str(val) in {".", "auto", "cwd"}:
+            continue
+        # Expand shell tilde in local/container cwd so subprocess.Popen never
+        # receives a literal "~/" which the kernel rejects. SSH cwd is
+        # interpreted by the remote shell, so preserve it for SSH backends.
+        if cfg_key == "cwd" and isinstance(val, str):
+            from tools.terminal_tool import _is_ssh_remote_tilde_cwd
+            if not _is_ssh_remote_tilde_cwd(terminal_backend, val.strip()):
+                val = os.path.expanduser(val)
+        if isinstance(val, (list, dict)):
+            os.environ[env_var] = json.dumps(val)
+        else:
+            os.environ[env_var] = str(val)
+
+
+def _bridge_auxiliary_config_to_env(auxiliary_cfg: Any) -> None:
+    """Bridge gateway-consumed auxiliary routing config into env vars.
+
+    Built-in auxiliary tasks plus plugin-registered task keys are bridged. The
+    ``auto`` provider is intentionally not exported so runtime provider auto
+    detection can keep working, while explicit model/base_url/api_key values are
+    still passed through. Compression remains config-file-only for agent and
+    auxiliary-client consumers.
+    """
+    if not auxiliary_cfg or not isinstance(auxiliary_cfg, dict):
+        return
+
+    aux_bridged_keys = {"vision", "web_extract", "approval"}
+    try:
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        for entry in get_plugin_auxiliary_tasks():
+            aux_bridged_keys.add(entry["key"])
+    except Exception:
+        # Plugin discovery failure must not break gateway startup; built-in
+        # bridging stays intact.
+        pass
+
+    for task_key in aux_bridged_keys:
+        task_cfg = auxiliary_cfg.get(task_key, {})
+        if not isinstance(task_cfg, dict):
+            continue
+        prov = str(task_cfg.get("provider", "")).strip()
+        model = str(task_cfg.get("model", "")).strip()
+        base_url = str(task_cfg.get("base_url", "")).strip()
+        api_key = str(task_cfg.get("api_key", "")).strip()
+        upper = task_key.upper()
+        if prov and prov != "auto":
+            os.environ[f"AUXILIARY_{upper}_PROVIDER"] = prov
+        if model:
+            os.environ[f"AUXILIARY_{upper}_MODEL"] = model
+        if base_url:
+            os.environ[f"AUXILIARY_{upper}_BASE_URL"] = base_url
+        if api_key:
+            os.environ[f"AUXILIARY_{upper}_API_KEY"] = api_key
+
+
+def _bridge_agent_config_to_env(agent_cfg: Any) -> None:
+    """Bridge documented ``agent`` gateway knobs into runtime env vars.
+
+    Keep this limited to settings with runtime readers in the current gateway.
+    Do not expose future config contracts here until the corresponding runtime
+    behavior lands with coverage.
+    """
+    if not agent_cfg or not isinstance(agent_cfg, dict):
+        return
+
+    mapping = (
+        ("max_turns", "HERMES_MAX_ITERATIONS"),
+        ("gateway_timeout", "HERMES_AGENT_TIMEOUT"),
+        ("gateway_timeout_warning", "HERMES_AGENT_TIMEOUT_WARNING"),
+        ("gateway_notify_interval", "HERMES_AGENT_NOTIFY_INTERVAL"),
+        ("restart_drain_timeout", "HERMES_RESTART_DRAIN_TIMEOUT"),
+        ("gateway_auto_continue_freshness", "HERMES_AUTO_CONTINUE_FRESHNESS"),
+    )
+    for cfg_key, env_name in mapping:
+        if cfg_key in agent_cfg:
+            os.environ[env_name] = str(agent_cfg[cfg_key])
+
+
 def _is_fresh_gateway_interruption(
     value: Any,
     *,
@@ -1554,65 +1685,7 @@ if _config_path.exists():
             if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
                 os.environ[_key] = str(_val)
         # Terminal config is nested — bridge to TERMINAL_* env vars.
-        # config.yaml overrides .env for these since it's the documented config path.
-        _terminal_cfg = _cfg.get("terminal", {})
-        if _terminal_cfg and isinstance(_terminal_cfg, dict):
-            _terminal_backend = str(
-                _terminal_cfg.get("backend") or os.environ.get("TERMINAL_ENV") or ""
-            ).strip().lower()
-            _terminal_env_map = {
-                "backend": "TERMINAL_ENV",
-                "cwd": "TERMINAL_CWD",
-                "timeout": "TERMINAL_TIMEOUT",
-                "home_mode": "TERMINAL_HOME_MODE",
-                "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-                "docker_image": "TERMINAL_DOCKER_IMAGE",
-                "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-                "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-                "modal_image": "TERMINAL_MODAL_IMAGE",
-                "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-                "ssh_host": "TERMINAL_SSH_HOST",
-                "ssh_user": "TERMINAL_SSH_USER",
-                "ssh_port": "TERMINAL_SSH_PORT",
-                "ssh_key": "TERMINAL_SSH_KEY",
-                "container_cpu": "TERMINAL_CONTAINER_CPU",
-                "container_memory": "TERMINAL_CONTAINER_MEMORY",
-                "container_disk": "TERMINAL_CONTAINER_DISK",
-                "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-                "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-                "docker_env": "TERMINAL_DOCKER_ENV",
-                "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
-                "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-                "docker_network": "TERMINAL_DOCKER_NETWORK",
-                "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-                "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
-                "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
-                "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-                "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-            }
-            for _cfg_key, _env_var in _terminal_env_map.items():
-                if _cfg_key in _terminal_cfg:
-                    _val = _terminal_cfg[_cfg_key]
-                    # Skip cwd placeholder values (".", "auto", "cwd") — the
-                    # gateway resolves these to Path.home() later (line ~255).
-                    # Writing the raw placeholder here would just be noise.
-                    # Only bridge explicit absolute paths from config.yaml.
-                    if _cfg_key == "cwd" and str(_val) in {".", "auto", "cwd"}:
-                        continue
-                    # Expand shell tilde in local/container cwd so subprocess.Popen
-                    # never receives a literal "~/" which the kernel rejects.
-                    # SSH cwd is interpreted by the remote shell, so preserve
-                    # "~" / "~/..." for the SSH backend instead of expanding it
-                    # to the Hermes host/container HOME (often /opt/data). Shared
-                    # predicate with terminal_tool so the two sites can't drift.
-                    if _cfg_key == "cwd" and isinstance(_val, str):
-                        from tools.terminal_tool import _is_ssh_remote_tilde_cwd
-                        if not _is_ssh_remote_tilde_cwd(_terminal_backend, _val.strip()):
-                            _val = os.path.expanduser(_val)
-                    if isinstance(_val, (list, dict)):
-                        os.environ[_env_var] = json.dumps(_val)
-                    else:
-                        os.environ[_env_var] = str(_val)
+        _bridge_terminal_config_to_env(_cfg.get("terminal", {}))
         # Compression config is read directly from config.yaml by run_agent.py
         # and auxiliary_client.py — no env var bridging needed.
         # Auxiliary model/direct-endpoint overrides (vision, web_extract,
@@ -1622,60 +1695,14 @@ if _config_path.exists():
         # hard-coded list (vision/web_extract/approval) is replaced by a
         # dynamic loop so plugin-registered tasks benefit from the same
         # config→env bridging without core knowing about each one.
-        _auxiliary_cfg = _cfg.get("auxiliary", {})
-        if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
-            # Built-in tasks that previously had explicit env-var bridging.
-            # Kept here as the canonical bridged set; plugin tasks are added
-            # below via the plugin auxiliary registry.
-            _aux_bridged_keys = {"vision", "web_extract", "approval"}
-            try:
-                from hermes_cli.plugins import get_plugin_auxiliary_tasks
-                for _entry in get_plugin_auxiliary_tasks():
-                    _aux_bridged_keys.add(_entry["key"])
-            except Exception:
-                # Plugin discovery failure must not break gateway startup;
-                # built-in bridging stays intact.
-                pass
-
-            for _task_key in _aux_bridged_keys:
-                _task_cfg = _auxiliary_cfg.get(_task_key, {})
-                if not isinstance(_task_cfg, dict):
-                    continue
-                _prov = str(_task_cfg.get("provider", "")).strip()
-                _model = str(_task_cfg.get("model", "")).strip()
-                _base_url = str(_task_cfg.get("base_url", "")).strip()
-                _api_key = str(_task_cfg.get("api_key", "")).strip()
-                _upper = _task_key.upper()
-                if _prov and _prov != "auto":
-                    os.environ[f"AUXILIARY_{_upper}_PROVIDER"] = _prov
-                if _model:
-                    os.environ[f"AUXILIARY_{_upper}_MODEL"] = _model
-                if _base_url:
-                    os.environ[f"AUXILIARY_{_upper}_BASE_URL"] = _base_url
-                if _api_key:
-                    os.environ[f"AUXILIARY_{_upper}_API_KEY"] = _api_key
+        _bridge_auxiliary_config_to_env(_cfg.get("auxiliary", {}))
         # config.yaml is the documented, authoritative source for these
         # settings — it unconditionally wins over .env values. Previously
         # the guards below read `if X not in os.environ` and let stale
         # .env entries (e.g. HERMES_MAX_ITERATIONS=60 written by an old
         # `hermes setup` run) silently shadow the user's current config.
         # See PR #18413 / the 60-vs-500 max_turns incident.
-        _agent_cfg = _cfg.get("agent", {})
-        if _agent_cfg and isinstance(_agent_cfg, dict):
-            if "max_turns" in _agent_cfg:
-                os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
-            if "gateway_timeout" in _agent_cfg:
-                os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
-            if "gateway_timeout_warning" in _agent_cfg:
-                os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
-            if "gateway_notify_interval" in _agent_cfg:
-                os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
-            if "restart_drain_timeout" in _agent_cfg:
-                os.environ["HERMES_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
-            if "gateway_auto_continue_freshness" in _agent_cfg:
-                os.environ["HERMES_AUTO_CONTINUE_FRESHNESS"] = str(
-                    _agent_cfg["gateway_auto_continue_freshness"]
-                )
+        _bridge_agent_config_to_env(_cfg.get("agent", {}))
         _display_cfg = _cfg.get("display", {})
         if _display_cfg and isinstance(_display_cfg, dict):
             if "busy_input_mode" in _display_cfg:

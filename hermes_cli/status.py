@@ -383,6 +383,28 @@ def show_status(args):
             key_val = get_env_value(ev) or ""
             if key_val:
                 break
+        # Also check credential pool (keys added via hermes auth)
+        if not key_val:
+            try:
+                from agent.credential_pool import load_pool
+                # Map display name to provider_id for pool lookup
+                _pool_id = {
+                    "Z.AI / GLM": "zai",
+                    "Kimi / Moonshot": "kimi-coding",
+                    "StepFun Step Plan": "stepfun",
+                    "MiniMax": "minimax",
+                    "MiniMax (China)": "minimax-cn",
+                    "DeepInfra": "deepinfra",
+                }.get(pname)
+                if _pool_id:
+                    pool = load_pool(_pool_id)
+                    if pool and pool.has_credentials():
+                        entry = pool.peek()
+                        if entry:
+                            k = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
+                            key_val = str(k).strip()
+            except Exception:
+                pass
         configured = bool(key_val)
         label = "configured" if configured else "not configured (run: hermes model)"
         print(f"  {pname:<16} {check_mark(configured)} {label}")

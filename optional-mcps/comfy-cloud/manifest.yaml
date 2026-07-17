@@ -3,7 +3,7 @@
 manifest_version: 1
 
 name: comfy-cloud
-description: Generate images, video, audio, and 3D on Comfy Cloud — ComfyUI workflows, templates, and partner models (Flux, Kling, Veo, ...).
+description: Generate images, video, audio, and 3D on Comfy Cloud.
 source: https://docs.comfy.org/agent-tools/cloud
 
 # Comfy Cloud ships a hosted remote MCP server (Streamable HTTP) with native
@@ -21,12 +21,50 @@ auth:
   # probe / first connect.
 
 # Tool selection at install time:
-# The server exposes ~30 tools across generation (partner_generate,
-# submit_workflow, run_template), job lifecycle (get_job_status, wait_for_job,
-# get_output), asset handling (upload_file, use_previous_output), and
-# discovery (search_templates / search_models / search_nodes). We leave
-# `default_enabled` unset so the install-time checklist starts with
-# everything pre-checked — users prune what they don't want.
+# The server exposes ~37 tools (public beta — surface may grow). At Hermes's
+# measured ~600 tokens/tool schema average, all 37 would add ~16-22k tokens
+# to EVERY API call while enabled — larger than the entire Hermes core
+# toolset. The curated default below (20 tools) keeps the surface to what an
+# agent needs to discover, generate, and fetch results (~9-12k tokens).
+#
+# Deliberately excluded from the default (opt back in any time with
+# `hermes mcp configure comfy-cloud`):
+#   - cql, get_server_info            — power-user / debug probes
+#   - submit_batch, get_batch_status, get_batch_output, wait_for_batch
+#                                     — batch variants of the job lifecycle
+#   - list_saved_workflows, get_saved_workflow, save_workflow,
+#     update_workflow, run_saved_workflow, share_workflow,
+#     import_shared_workflow          — saved/shared workflow management
+#   - create_app, get_app_mode_url    — Comfy App Mode product features
+#   - submit_feedback                 — beta survey link
+#   - report_session_summary         — outbound telemetry; excluded per
+#     Hermes policy (no telemetry without explicit user opt-in)
+tools:
+  default_enabled:
+    # Discovery
+    - search_templates
+    - get_template
+    - get_template_schema
+    - search_models
+    - search_nodes
+    - get_node
+    - get_prompting_guide
+    # Generation
+    - run_template
+    - submit_workflow
+    - partner_generate
+    - upload_file
+    - apply_slots
+    # Job lifecycle
+    - get_job_status
+    - wait_for_job
+    - get_output
+    - use_previous_output
+    - cancel_job
+    - get_queue
+    # Account / handoff
+    - get_billing_status
+    - get_workflow_canvas_url
 
 post_install: |
   On first connection, Hermes will open a browser to authenticate with your
@@ -38,5 +76,7 @@ post_install: |
   so they need a subscription or credit balance — see
   https://www.comfy.org/cloud for plans.
 
-  You can re-run the tool checklist any time with:
+  A curated 20-tool subset is enabled by default (discovery, generation, job
+  lifecycle, billing). Batch jobs, saved/shared workflow management, and App
+  Mode tools are available but unchecked — enable them any time with:
     hermes mcp configure comfy-cloud

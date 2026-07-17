@@ -523,17 +523,61 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
  * renderer — at that point the gateway is open, config is loaded, and
  * sessions are loaded. We detect this by waiting for the boot/connecting
  * overlay to become invisible and the main app shell to be present.
+ *
+ * Two things must both be true before we return:
+ *  1. The composer (chat input) is visible — it's disabled until the
+ *     gateway is open.
+ *  2. No full-screen overlay (onboarding Preparing, connecting overlay,
+ *     boot-failure) covers the viewport center. The composer can be
+ *     "visible" in Playwright's eyes (non-zero bounding box, not
+ *     display:none) even when a z-1300+ overlay is painted on top of it,
+ *     so checking the composer alone catches the app mid-boot at ~92%
+ *     with the loading bar still showing.
  */
 export async function waitForAppReady(fixture: MockBackendFixture | NoProviderFixture | DeadBackendFixture, timeoutMs = 60_000): Promise<void> {
   const { page, app } = fixture
-  // The connecting overlay has a data-testid or we can check for the
-  // absence of boot indicators. The simplest reliable approach is to wait
-  // for the composer (chat input) to become visible — it's disabled until
-  // the gateway is open.
+
+  // Wait for the composer to exist in the DOM (not necessarily interactive yet).
   await page.waitForSelector('textarea, [contenteditable="true"]', {
-    state: 'visible',
+    state: 'attached',
     timeout: timeoutMs,
   })
+
+  // Now poll until no full-screen overlay covers the viewport center.
+  // elementFromPoint returns the topmost element at a point — if it's part
+  // of a fixed inset-0 overlay (onboarding/connecting/boot-failure), the
+  // app isn't ready yet.
+  await page.waitForFunction(
+    () => {
+      const el = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2)
+
+      if (!el) {
+        return false
+      }
+
+      // Walk up to the nearest positioned ancestor — overlays are
+      // `position: fixed; inset: 0`. If the hit element or an ancestor
+      // is a full-viewport fixed overlay, we're still covered.
+      let node: Element | null = el
+      while (node) {
+        const cs = window.getComputedStyle(node)
+
+        if (cs.position === 'fixed') {
+          const rect = node.getBoundingClientRect()
+
+          if (rect.left <= 0 && rect.top <= 0 && rect.right >= window.innerWidth && rect.bottom >= window.innerHeight) {
+            return false
+          }
+        }
+
+        node = node.parentElement
+      }
+
+      return true
+    },
+    undefined,
+    { timeout: timeoutMs },
+  )
 
   // On Electron 40.x, ready-to-show may never fire (electron/electron#51972)
   // and the window stays hidden even though the DOM is rendered. The main

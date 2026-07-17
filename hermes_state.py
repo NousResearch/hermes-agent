@@ -23,6 +23,7 @@ import sqlite3
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -141,6 +142,8 @@ T = TypeVar("T")
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
 SCHEMA_VERSION = 22
+FTS_STORAGE_REVISION_KEY = "fts_storage_revision"
+FTS_STORAGE_REVISION_EXTERNAL_V1 = "external-content-v1"
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -603,6 +606,41 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
         conn.close()
 
 
+def _rebuild_fts_table_for_repair(
+    conn: sqlite3.Connection,
+    table_name: str,
+) -> bool:
+    """Rebuild one existing FTS table using its actual storage protocol."""
+    if table_name not in {"messages_fts", "messages_fts_trigram"}:
+        raise ValueError(f"unsupported FTS table: {table_name}")
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    if row is None:
+        return False
+    normalized = "".join(str(row[0]).lower().split())
+    external = (
+        "content='messages_fts_source'" in normalized
+        or 'content="messages_fts_source"' in normalized
+    )
+    if external:
+        conn.execute(
+            f"INSERT INTO {table_name}({table_name}) VALUES('rebuild')"
+        )
+    else:
+        conn.execute(f"DELETE FROM {table_name}")
+        conn.execute(
+            f"INSERT INTO {table_name}(rowid, content) "
+            "SELECT id, "
+            "COALESCE(content, '') || ' ' || "
+            "COALESCE(tool_name, '') || ' ' || "
+            "COALESCE(tool_calls, '') "
+            "FROM messages"
+        )
+    return True
+
+
 def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, Any]:
     """Repair a state.db whose ``sqlite_master`` schema is malformed or whose
     FTS indexes reject writes.
@@ -613,10 +651,10 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     ``integrity_check`` passes but writes fail through the ``messages_fts*``
     triggers. Tries least-destructive recovery first and escalates:
 
-      1. **Rebuild FTS indexes in place** via the FTS5 ``'rebuild'`` command,
-         which rewrites the internal b-tree segments from the canonical
-         ``messages`` rows without dropping or recreating anything. Fixes the
-         FTS write-corruption class while preserving the schema intact.
+      1. **Rebuild FTS indexes in place** using the mode-correct protocol:
+         FTS5 ``'rebuild'`` for external-content tables, transactional
+         delete/backfill for legacy inline tables. This rewrites internal b-tree
+         segments from canonical ``messages`` rows without changing schema.
       2. **De-duplicate** ``sqlite_master`` (keep the lowest rowid per
          ``type``/``name``). Fixes the canonical "table X already exists"
          case and PRESERVES the existing FTS index intact.
@@ -652,20 +690,29 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
         report["backup_path"] = str(bpath) if bpath else None
 
     # ── Strategy 0: rebuild FTS indexes in place (FTS write-corruption) ──
-    # The FTS5 'rebuild' command rewrites the internal index from the canonical
-    # content table. This is the recommended, least-destructive recovery for a
-    # corrupt FTS index that rejects message writes while reads still succeed.
+    # External-content tables use FTS5's 'rebuild' command; legacy inline
+    # tables require an ordinary delete/backfill. Keep both in one transaction
+    # so a failure in either table leaves both original indexes intact.
     try:
         conn = sqlite3.connect(str(db_path), isolation_level=None)
         try:
+            conn.execute("BEGIN IMMEDIATE")
             for table_name in ("messages_fts", "messages_fts_trigram"):
                 try:
-                    conn.execute(
-                        f"INSERT INTO {table_name}({table_name}) VALUES('rebuild')"
-                    )
-                except sqlite3.OperationalError:
-                    # Table absent (FTS disabled / trigram off) — skip it.
-                    continue
+                    _rebuild_fts_table_for_repair(conn, table_name)
+                except sqlite3.OperationalError as exc:
+                    msg = str(exc).lower()
+                    if (
+                        "no such table" in msg
+                        or "no such module" in msg
+                        or "no such tokenizer: trigram" in msg
+                    ):
+                        continue
+                    raise
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
         finally:
             conn.close()
         if _db_opens_cleanly(db_path) is None:
@@ -912,9 +959,25 @@ CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
 """
 
-FTS_SQL = """
+# FTS5 indexes the same canonical document for ordinary text, tool names, and
+# serialized tool calls.  A zero-storage view lets external-content FTS retrieve
+# that exact document for snippet()/rebuild without duplicating it in each
+# FTS ``*_content`` shadow table.
+FTS_CONTENT_VIEW_SQL = """
+CREATE VIEW IF NOT EXISTS messages_fts_source AS
+SELECT
+    id,
+    COALESCE(content, '') || ' ' ||
+    COALESCE(tool_name, '') || ' ' ||
+    COALESCE(tool_calls, '') AS content
+FROM messages;
+"""
+
+FTS_SQL = FTS_CONTENT_VIEW_SQL + """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-    content
+    content,
+    content='messages_fts_source',
+    content_rowid='id'
 );
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
@@ -925,11 +988,20 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
-    DELETE FROM messages_fts WHERE rowid = old.id;
+    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES (
+        'delete',
+        old.id,
+        COALESCE(old.content, '') || ' ' || COALESCE(old.tool_name, '') || ' ' || COALESCE(old.tool_calls, '')
+    );
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
-    DELETE FROM messages_fts WHERE rowid = old.id;
+CREATE TRIGGER IF NOT EXISTS messages_fts_update
+AFTER UPDATE OF id, content, tool_name, tool_calls ON messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES (
+        'delete',
+        old.id,
+        COALESCE(old.content, '') || ' ' || COALESCE(old.tool_name, '') || ' ' || COALESCE(old.tool_calls, '')
+    );
     INSERT INTO messages_fts(rowid, content) VALUES (
         new.id,
         COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
@@ -941,9 +1013,11 @@ END;
 # tokenizer splits CJK characters into individual tokens, breaking phrase
 # matching.  The trigram tokenizer creates overlapping 3-byte sequences so
 # substring queries work natively for any script (CJK, Thai, etc.).
-FTS_TRIGRAM_SQL = """
+FTS_TRIGRAM_SQL = FTS_CONTENT_VIEW_SQL + """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
     content,
+    content='messages_fts_source',
+    content_rowid='id',
     tokenize='trigram'
 );
 
@@ -955,16 +1029,45 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON message
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages BEGIN
-    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content) VALUES (
+        'delete',
+        old.id,
+        COALESCE(old.content, '') || ' ' || COALESCE(old.tool_name, '') || ' ' || COALESCE(old.tool_calls, '')
+    );
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages BEGIN
-    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update
+AFTER UPDATE OF id, content, tool_name, tool_calls ON messages BEGIN
+    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content) VALUES (
+        'delete',
+        old.id,
+        COALESCE(old.content, '') || ' ' || COALESCE(old.tool_name, '') || ' ' || COALESCE(old.tool_calls, '')
+    );
     INSERT INTO messages_fts_trigram(rowid, content) VALUES (
         new.id,
         COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
     );
 END;
+"""
+
+# Startup uses table-only DDL and installs triggers separately after inspecting
+# the existing table's storage mode.  The full FTS_SQL constants above remain
+# for historical migrations that explicitly drop/recreate their FTS schema.
+FTS_TABLE_ONLY_SQL = FTS_CONTENT_VIEW_SQL + """
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    content,
+    content='messages_fts_source',
+    content_rowid='id'
+);
+"""
+
+FTS_TRIGRAM_TABLE_ONLY_SQL = FTS_CONTENT_VIEW_SQL + """
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
+    content,
+    content='messages_fts_source',
+    content_rowid='id',
+    tokenize='trigram'
+);
 """
 
 
@@ -1178,31 +1281,144 @@ class SessionDB:
         return int(row[0] if not isinstance(row, sqlite3.Row) else row[0])
 
     @staticmethod
+    def _fts_trigger_names(table_name: str) -> Tuple[str, str, str]:
+        if table_name not in {"messages_fts", "messages_fts_trigram"}:
+            raise ValueError(f"unsupported FTS table: {table_name}")
+        return (
+            f"{table_name}_insert",
+            f"{table_name}_delete",
+            f"{table_name}_update",
+        )
+
+    @classmethod
+    def _missing_fts_triggers(
+        cls,
+        cursor: sqlite3.Cursor,
+        table_name: str,
+    ) -> List[str]:
+        names = cls._fts_trigger_names(table_name)
+        placeholders = ",".join("?" for _ in names)
+        rows = cursor.execute(
+            f"SELECT name FROM sqlite_master "
+            f"WHERE type = 'trigger' AND name IN ({placeholders})",
+            names,
+        ).fetchall()
+        present = {str(row[0]) for row in rows}
+        return [name for name in names if name not in present]
+
+    @classmethod
+    def _create_fts_triggers(
+        cls,
+        cursor: sqlite3.Cursor,
+        table_name: str,
+        *,
+        external: bool,
+    ) -> None:
+        """Install mode-correct write triggers for one FTS table."""
+        cls._fts_trigger_names(table_name)  # Validate interpolated identifier.
+        document_new = (
+            "COALESCE(new.content, '') || ' ' || "
+            "COALESCE(new.tool_name, '') || ' ' || "
+            "COALESCE(new.tool_calls, '')"
+        )
+        document_old = (
+            "COALESCE(old.content, '') || ' ' || "
+            "COALESCE(old.tool_name, '') || ' ' || "
+            "COALESCE(old.tool_calls, '')"
+        )
+        cursor.execute(
+            f"CREATE TRIGGER IF NOT EXISTS {table_name}_insert "
+            "AFTER INSERT ON messages BEGIN "
+            f"INSERT INTO {table_name}(rowid, content) "
+            f"VALUES (new.id, {document_new}); END"
+        )
+        if external:
+            delete_old = (
+                f"INSERT INTO {table_name}({table_name}, rowid, content) "
+                f"VALUES ('delete', old.id, {document_old})"
+            )
+        else:
+            delete_old = f"DELETE FROM {table_name} WHERE rowid = old.id"
+        cursor.execute(
+            f"CREATE TRIGGER IF NOT EXISTS {table_name}_delete "
+            "AFTER DELETE ON messages BEGIN "
+            f"{delete_old}; END"
+        )
+        cursor.execute(
+            f"CREATE TRIGGER IF NOT EXISTS {table_name}_update "
+            "AFTER UPDATE OF id, content, tool_name, tool_calls ON messages BEGIN "
+            f"{delete_old}; "
+            f"INSERT INTO {table_name}(rowid, content) "
+            f"VALUES (new.id, {document_new}); END"
+        )
+
+    @classmethod
+    def _repair_fts_triggers(
+        cls,
+        cursor: sqlite3.Cursor,
+        table_name: str,
+    ) -> bool:
+        """Create missing triggers in the table's mode; return whether repaired."""
+        missing = cls._missing_fts_triggers(cursor, table_name)
+        if not missing:
+            return False
+        cls._create_fts_triggers(
+            cursor,
+            table_name,
+            external=cls._fts_table_uses_external_content(cursor, table_name),
+        )
+        return True
+
+    @staticmethod
+    def _fts_table_uses_external_content(
+        cursor: sqlite3.Cursor,
+        table_name: str,
+    ) -> bool:
+        """Return whether *table_name* references the canonical content view."""
+        row = cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        if row is None:
+            return False
+        sql = str(row[0] if not isinstance(row, sqlite3.Row) else row["sql"])
+        normalized = "".join(sql.lower().split())
+        return (
+            "content='messages_fts_source'" in normalized
+            or 'content="messages_fts_source"' in normalized
+        )
+
+    @classmethod
+    def _rebuild_fts_table(
+        cls,
+        cursor: sqlite3.Cursor,
+        table_name: str,
+    ) -> None:
+        if cls._fts_table_uses_external_content(cursor, table_name):
+            cursor.execute(
+                f"INSERT INTO {table_name}({table_name}) VALUES('rebuild')"
+            )
+            return
+        cursor.execute(f"DELETE FROM {table_name}")
+        cursor.execute(
+            f"INSERT INTO {table_name}(rowid, content) "
+            "SELECT id, "
+            "COALESCE(content, '') || ' ' || "
+            "COALESCE(tool_name, '') || ' ' || "
+            "COALESCE(tool_calls, '') "
+            "FROM messages"
+        )
+
+    @classmethod
     def _rebuild_fts_indexes(
+        cls,
         cursor: sqlite3.Cursor,
         *,
         include_trigram: bool = True,
     ) -> None:
-        cursor.execute("DELETE FROM messages_fts")
-        cursor.execute(
-            "INSERT INTO messages_fts(rowid, content) "
-            "SELECT id, "
-            "COALESCE(content, '') || ' ' || "
-            "COALESCE(tool_name, '') || ' ' || "
-            "COALESCE(tool_calls, '') "
-            "FROM messages"
-        )
-        if not include_trigram:
-            return
-        cursor.execute("DELETE FROM messages_fts_trigram")
-        cursor.execute(
-            "INSERT INTO messages_fts_trigram(rowid, content) "
-            "SELECT id, "
-            "COALESCE(content, '') || ' ' || "
-            "COALESCE(tool_name, '') || ' ' || "
-            "COALESCE(tool_calls, '') "
-            "FROM messages"
-        )
+        cls._rebuild_fts_table(cursor, "messages_fts")
+        if include_trigram:
+            cls._rebuild_fts_table(cursor, "messages_fts_trigram")
 
     def _fts_table_probe(self, cursor: sqlite3.Cursor, table_name: str) -> Optional[bool]:
         try:
@@ -1814,24 +2030,71 @@ class SessionDB:
             pass  # Index already exists
 
         if fts5_available:
-            # FTS5 setup. Run the DDL even when the virtual table exists so
-            # CREATE TRIGGER IF NOT EXISTS repairs trigger-only degradation from
-            # an earlier no-FTS5 runtime.
-            triggers_need_repair = self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
-            self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
+            # Create/probe each FTS table independently, then repair only that
+            # table's missing triggers using its actual storage mode.  Inline
+            # tables require ordinary DELETE statements; external-content tables
+            # require FTS5's special 'delete' command.
+            self._fts_enabled = self._ensure_fts_schema(
+                cursor,
+                "messages_fts",
+                FTS_TABLE_ONLY_SQL,
+            )
 
             # Trigram FTS5 for CJK/substring search. This is optional relative
             # to the main FTS table; if it cannot be created, CJK search falls
             # back to LIKE.
             if self._fts_enabled:
+                base_triggers_repaired = self._repair_fts_triggers(
+                    cursor,
+                    "messages_fts",
+                )
                 trigram_enabled = self._ensure_fts_schema(
-                    cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                    cursor,
+                    "messages_fts_trigram",
+                    FTS_TRIGRAM_TABLE_ONLY_SQL,
                 )
                 self._trigram_available = trigram_enabled
-                if triggers_need_repair:
-                    self._rebuild_fts_indexes(
+                trigram_triggers_repaired = False
+                if trigram_enabled:
+                    trigram_triggers_repaired = self._repair_fts_triggers(
                         cursor,
-                        include_trigram=trigram_enabled,
+                        "messages_fts_trigram",
+                    )
+
+                # A missing trigger means writes may have occurred while that
+                # table was stale. Rebuild only the affected table; absence of
+                # optional trigram triggers must never force a base-index rebuild.
+                if base_triggers_repaired:
+                    self._rebuild_fts_table(cursor, "messages_fts")
+                if trigram_triggers_repaired:
+                    self._rebuild_fts_table(cursor, "messages_fts_trigram")
+
+                fts_names = [
+                    str(row[0])
+                    for row in cursor.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'table' AND name IN (?, ?)",
+                        self._FTS_TABLES,
+                    ).fetchall()
+                ]
+                all_external = bool(fts_names) and all(
+                    self._fts_table_uses_external_content(cursor, name)
+                    for name in fts_names
+                )
+                if all_external:
+                    cursor.execute(
+                        "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value "
+                        "WHERE state_meta.value IS NOT excluded.value",
+                        (
+                            FTS_STORAGE_REVISION_KEY,
+                            FTS_STORAGE_REVISION_EXTERNAL_V1,
+                        ),
+                    )
+                else:
+                    cursor.execute(
+                        "DELETE FROM state_meta WHERE key = ?",
+                        (FTS_STORAGE_REVISION_KEY,),
                     )
 
         self._conn.commit()
@@ -7225,6 +7488,168 @@ class SessionDB:
     # trigram table is created lazily / may be disabled, so we probe before
     # touching it (see optimize_fts).
     _FTS_TABLES = ("messages_fts", "messages_fts_trigram")
+
+    def fts_storage_mode(self) -> str:
+        """Return ``external``, ``inline``, ``mixed``, or ``missing``."""
+        with self._lock:
+            cursor = self._conn.cursor()
+            rows = cursor.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name IN (?, ?) ORDER BY name",
+                self._FTS_TABLES,
+            ).fetchall()
+            names = [str(row[0]) for row in rows]
+            if not names:
+                return "missing"
+            modes = {
+                self._fts_table_uses_external_content(cursor, name)
+                for name in names
+            }
+            if modes == {True}:
+                return "external"
+            if modes == {False}:
+                return "inline"
+            return "mixed"
+
+    @classmethod
+    def _create_external_fts_triggers(
+        cls,
+        cursor: sqlite3.Cursor,
+        table_name: str,
+    ) -> None:
+        """Create INSERT/DELETE/UPDATE triggers for one external FTS table."""
+        cls._create_fts_triggers(cursor, table_name, external=True)
+
+    @staticmethod
+    def _validate_external_fts_table(
+        cursor: sqlite3.Cursor,
+        table_name: str,
+    ) -> None:
+        # rank=1 compares the index against its external content source, not
+        # merely the internal FTS b-tree structure.
+        cursor.execute(
+            f"INSERT INTO {table_name}({table_name}, rank) "
+            "VALUES('integrity-check', 1)"
+        )
+
+    def migrate_fts_to_external_content(self) -> Dict[str, Any]:
+        """Explicitly migrate inline FTS indexes to external-content storage.
+
+        This operation is deliberately never called by :meth:`_init_schema`:
+        rebuilding a multi-GiB index belongs in a maintenance window.  The
+        staged rebuild, integrity checks, trigger swap, and table renames run in
+        one ``BEGIN IMMEDIATE`` transaction so any failure restores the original
+        inline tables and triggers.
+        """
+        if self.read_only:
+            raise sqlite3.OperationalError(
+                "external-content FTS migration requires a writable SessionDB"
+            )
+        if not self._fts_enabled:
+            raise sqlite3.OperationalError(
+                "external-content FTS migration requires SQLite FTS5"
+            )
+
+        with self._lock:
+            cursor = self._conn.cursor()
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                # Discover storage mode only after acquiring the cross-process
+                # SQLite write lock. Concurrent migrators therefore observe the
+                # latest committed schema instead of acting on stale mode data.
+                rows = cursor.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'table' AND name IN (?, ?) ORDER BY name",
+                    self._FTS_TABLES,
+                ).fetchall()
+                existing = [str(row[0]) for row in rows]
+                if not existing:
+                    raise sqlite3.OperationalError("no FTS5 tables are present")
+                external = [
+                    name
+                    for name in existing
+                    if self._fts_table_uses_external_content(cursor, name)
+                ]
+                if len(external) == len(existing):
+                    previous_mode = "external"
+                elif not external:
+                    previous_mode = "inline"
+                else:
+                    previous_mode = "mixed"
+                to_migrate = [name for name in existing if name not in external]
+                if not to_migrate:
+                    self._conn.commit()
+                    return {
+                        "previous_mode": previous_mode,
+                        "final_mode": "external",
+                        "migrated_tables": [],
+                        "noop": True,
+                    }
+
+                if (
+                    "messages_fts_trigram" in to_migrate
+                    and not self._trigram_available
+                ):
+                    raise sqlite3.OperationalError(
+                        "cannot migrate trigram FTS with this SQLite build"
+                    )
+
+                suffix = uuid.uuid4().hex
+                staging = {
+                    name: f"{name}__external_new_{suffix}"
+                    for name in to_migrate
+                }
+                cursor.execute(FTS_CONTENT_VIEW_SQL)
+                for name in to_migrate:
+                    stage = staging[name]
+                    collision = cursor.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name = ?",
+                        (stage,),
+                    ).fetchone()
+                    if collision is not None:
+                        raise sqlite3.OperationalError(
+                            f"refusing to overwrite existing staging object: {stage}"
+                        )
+                    tokenize = ", tokenize='trigram'" if name.endswith("_trigram") else ""
+                    cursor.execute(
+                        f"CREATE VIRTUAL TABLE {stage} USING fts5("
+                        "content, content='messages_fts_source', "
+                        f"content_rowid='id'{tokenize})"
+                    )
+                    cursor.execute(
+                        f"INSERT INTO {stage}({stage}) VALUES('rebuild')"
+                    )
+                    self._validate_external_fts_table(cursor, stage)
+
+                self._drop_fts_triggers(cursor)
+                for name in to_migrate:
+                    stage = staging[name]
+                    cursor.execute(f"DROP TABLE {name}")
+                    cursor.execute(f"ALTER TABLE {stage} RENAME TO {name}")
+
+                for name in existing:
+                    self._create_external_fts_triggers(cursor, name)
+                    self._validate_external_fts_table(cursor, name)
+                cursor.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value "
+                    "WHERE state_meta.value IS NOT excluded.value",
+                    (
+                        FTS_STORAGE_REVISION_KEY,
+                        FTS_STORAGE_REVISION_EXTERNAL_V1,
+                    ),
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+
+            return {
+                "previous_mode": previous_mode,
+                "final_mode": "external",
+                "migrated_tables": to_migrate,
+                "noop": False,
+            }
 
     def _fts_table_exists(self, name: str) -> bool:
         """True if an FTS5 virtual table is queryable in this DB."""

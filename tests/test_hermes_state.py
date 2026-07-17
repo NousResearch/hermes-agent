@@ -594,6 +594,11 @@ class TestSessionLifecycle:
             assert len(messages) == 1
             assert messages[0]["content"] == "hello from sqlite without fts"
             assert db.search_messages("hello") == []
+            with pytest.raises(
+                sqlite3.OperationalError,
+                match="requires SQLite FTS5",
+            ):
+                db.migrate_fts_to_external_content()
         finally:
             db.close()
 
@@ -735,6 +740,27 @@ class TestSessionLifecycle:
             assert len(restored.search_messages("needle")) == 1
         finally:
             restored.close()
+
+        rebuild_calls = []
+        original_rebuild = SessionDB._rebuild_fts_table.__func__
+
+        def track_rebuild(cls, cursor, table_name):
+            rebuild_calls.append(table_name)
+            return original_rebuild(cls, cursor, table_name)
+
+        monkeypatch.setattr(
+            SessionDB,
+            "_rebuild_fts_table",
+            classmethod(track_rebuild),
+        )
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened._fts_enabled is True
+            assert reopened._trigram_available is False
+            assert len(reopened.search_messages("needle")) == 1
+            assert rebuild_calls == []
+        finally:
+            reopened.close()
 
     def test_is_fts5_unavailable_error_catches_trigram_tokenizer(self):
         """Unit test: _is_fts5_unavailable_error matches 'no such tokenizer: trigram'."""

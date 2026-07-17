@@ -410,6 +410,36 @@ class TestChatCompletionsBuildKwargs:
         # Nous rejects enabled=false; reasoning omitted entirely
         assert "reasoning" not in kw.get("extra_body", {})
 
+    def test_disabled_reasoning_honored_without_profile(self, transport):
+        """A profile-less route must not re-enable reasoning the caller disabled."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            supports_reasoning=True,
+            reasoning_config={"enabled": False},
+        )
+        assert kw["extra_body"]["reasoning"]["enabled"] is False
+
+    def test_disabled_reasoning_omitted_for_nous_without_profile(self, transport):
+        """Nous rejects enabled=false, so the field is omitted, as the profile does."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            supports_reasoning=True,
+            reasoning_config={"enabled": False},
+            is_nous=True,
+        )
+        assert "reasoning" not in kw.get("extra_body", {})
+
+    def test_requested_effort_preserved_without_profile(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "high"}
+
     def test_ollama_num_ctx(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("custom")

@@ -474,6 +474,15 @@ class ChatCompletionsTransport(ProviderTransport):
                 gh_reasoning = params.get("github_reasoning_extra")
                 if gh_reasoning is not None:
                     extra_body["reasoning"] = gh_reasoning
+            elif (
+                isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            ):
+                # Honor an explicit disable instead of forcing enabled=True.
+                # Nous rejects enabled=false, so omit the field there, as the
+                # nous profile does.
+                if not is_nous:
+                    extra_body["reasoning"] = {"enabled": False}
             else:
                 _effort = "medium"
                 if reasoning_config and isinstance(reasoning_config, dict):

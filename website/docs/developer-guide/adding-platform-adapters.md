@@ -194,7 +194,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | PII redaction | `pii_safe` flag |
 | `hermes status` | Shows plugin platforms with `(plugin)` tag |
 | `hermes gateway setup` | Plugin platforms appear in setup menu |
-| `hermes tools` / `hermes skills` | Plugin platforms in per-platform config |
+| `hermes tools` / `hermes skills config` | Plugin platforms in per-platform config |
 | Token lock (multi-profile) | Use `acquire_scoped_lock()` in your `connect()` |
 | Orphaned config warning | Descriptive log when plugin is missing |
 

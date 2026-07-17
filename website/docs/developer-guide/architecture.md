@@ -85,7 +85,7 @@ hermes-agent/
 │   ├── model_switch.py       # /model command logic (CLI + gateway shared)
 │   ├── setup.py              # Interactive setup wizard (large file)
 │   ├── skin_engine.py        # CLI theming engine
-│   ├── skills_config.py      # hermes skills — enable/disable per platform
+│   ├── skills_config.py      # hermes skills config — enable/disable per platform
 │   ├── skills_hub.py         # /skills slash command
 │   ├── tools_config.py       # hermes tools — enable/disable per platform
 │   ├── plugins.py            # PluginManager — discovery, loading, hooks

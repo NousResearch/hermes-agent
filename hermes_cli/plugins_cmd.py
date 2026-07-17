@@ -1355,6 +1355,55 @@ def _configure_context_engine() -> bool:
 # ---------------------------------------------------------------------------
 
 
+def cmd_show(name: str) -> None:
+    """Show details for a single plugin, including declared emits/listens.
+
+    Resolves *name* against every discoverable plugin (bundled + user +
+    entrypoint) by either its display name or its registry key, then reads
+    its ``plugin.yaml`` to surface the advisory event-bus declarations
+    (``emits`` / ``listens``) alongside the basic metadata.
+    """
+    from rich.console import Console
+
+    console = Console()
+    entries = _discover_all_plugins()
+    match = None
+    for entry in entries:
+        # entry = (name, version, description, source, dir_path, key)
+        if entry[0] == name or entry[5] == name:
+            match = entry
+            break
+
+    if match is None:
+        console.print(f"[red]Plugin '{name}' not found.[/red]")
+        console.print("[dim]List installed plugins:[/dim] hermes plugins list")
+        sys.exit(1)
+
+    pname, version, description, source, dir_path, key = match
+    manifest = _read_manifest(Path(dir_path)) if dir_path else {}
+    emits = manifest.get("emits") or []
+    listens = manifest.get("listens") or []
+
+    enabled = _get_enabled_set()
+    disabled = _get_disabled_set()
+    status = _plugin_status(pname, enabled, disabled, key=key)
+
+    console.print()
+    console.print(f"[bold]{pname}[/bold]" + (f" [dim]v{version}[/dim]" if version else ""))
+    if description:
+        console.print(description)
+    console.print(f"[dim]Status:[/dim] {status}")
+    console.print(f"[dim]Source:[/dim] {source}")
+    console.print(f"[dim]Key:[/dim] {key}")
+    console.print(
+        "[dim]Emits:[/dim] " + (", ".join(emits) if emits else "[dim](none)[/dim]")
+    )
+    console.print(
+        "[dim]Listens:[/dim] " + (", ".join(listens) if listens else "[dim](none)[/dim]")
+    )
+    console.print()
+
+
 def cmd_toggle() -> None:
     """Interactive composite UI — general plugins + provider plugin categories."""
     from rich.console import Console
@@ -2035,6 +2084,8 @@ def plugins_command(args) -> None:
         cmd_disable(args.name)
     elif action in {"list", "ls"}:
         cmd_list(args)
+    elif action in {"show", "info"}:
+        cmd_show(args.name)
     elif action is None:
         cmd_toggle()
     else:

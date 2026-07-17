@@ -216,6 +216,15 @@ VALID_HOOKS: Set[str] = {
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 
+# Reserved event namespace prefix — only core may publish ``hermes:<event>``.
+HERMES_EVENT_NAMESPACE = "hermes"
+
+# Max inter-plugin event dispatch recursion depth. A subscriber may itself
+# call ``ctx.emit``; this bound stops mutually-emitting plugins from looping
+# forever. When exceeded the over-deep emit is dropped (with a warning), not
+# raised, so delivery always terminates cleanly.
+_EVENT_EMIT_DEPTH_CAP = 8
+
 _NS_PARENT = "hermes_plugins"
 
 
@@ -312,6 +321,14 @@ class PluginManifest:
     # category plugin at ``plugins/image_gen/openai/`` the key is
     # ``image_gen/openai``. When empty, falls back to ``name``.
     key: str = ""
+    # Inter-plugin event bus declarations (advisory in v1 — NOT enforced).
+    # ``emits`` lists the bare event names this plugin publishes under its own
+    # ``<key>:`` namespace (e.g. ``["ping"]`` → publishes ``<key>:ping``).
+    # ``listens`` lists the fully-qualified ``<plugin>:<event>`` names this
+    # plugin subscribes to. Both are purely for discoverability
+    # (``hermes plugins show``); a plugin may emit/subscribe without declaring.
+    emits: List[str] = field(default_factory=list)
+    listens: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1172,6 +1189,74 @@ class PluginContext:
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
+    # -- inter-plugin event bus --------------------------------------------
+
+    def emit(self, event: str, payload: Optional[dict] = None) -> int:
+        """Publish *event* to all subscribers; return the number invoked.
+
+        The event is delivered as ``<plugin_key>:<event>`` where
+        ``plugin_key`` is FORCED to this plugin's own registry key
+        (``manifest.key or manifest.name``). Pass only the bare event name —
+        a plugin may only publish under its own namespace.
+
+        Passing an already-namespaced name (anything containing ``':'``,
+        including ``hermes:x`` or a foreign ``other:x``) is rejected with a
+        ``ValueError`` and a logged warning — fail-closed. The ``hermes:``
+        prefix is reserved for core.
+
+        Subscribers are invoked in registration order, each isolated in its
+        own ``try/except`` (one raising subscriber does not stop delivery to
+        the others). ``payload`` is passed to each callback as keyword
+        arguments (``cb(**payload)``), mirroring the hook convention.
+
+        Returns the count of subscriber callbacks invoked (0 when there are
+        no subscribers, or when the recursion cap dropped the emit).
+        """
+        plugin_key = self.manifest.key or self.manifest.name
+        if not event or not isinstance(event, str):
+            logger.warning(
+                "Plugin '%s' tried to emit an invalid event name %r",
+                plugin_key, event,
+            )
+            raise ValueError(
+                f"Plugin '{plugin_key}' emit() requires a non-empty event name"
+            )
+        if ":" in event:
+            logger.warning(
+                "Plugin '%s' tried to emit namespaced/reserved event '%s' — "
+                "a plugin may only emit bare event names under its own '%s:' "
+                "namespace (the '%s:' prefix is reserved for core, and foreign "
+                "namespaces are forbidden)",
+                plugin_key, event, plugin_key, HERMES_EVENT_NAMESPACE,
+            )
+            raise ValueError(
+                f"Plugin '{plugin_key}' may not emit '{event}': emit only the "
+                f"bare event name; the namespace is forced to '{plugin_key}:' "
+                f"and the '{HERMES_EVENT_NAMESPACE}:' prefix is reserved for core"
+            )
+        full_event = f"{plugin_key}:{event}"
+        return self._manager._dispatch_event(full_event, payload or {})
+
+    def subscribe(self, event: str, callback: Callable) -> None:
+        """Subscribe *callback* to a fully-qualified event name.
+
+        *event* is the full ``<plugin_key>:<event>`` name (or ``hermes:<event>``
+        if core ever emits). Subscribing is unrestricted — any plugin may
+        listen to any published event; only *emitting* is namespace-gated.
+
+        Callbacks are stored in registration order and invoked with the
+        emitter's payload as keyword arguments.
+        """
+        if not event or not isinstance(event, str):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' subscribe() requires a "
+                f"non-empty event name"
+            )
+        self._manager._subscriptions.setdefault(event, []).append(callback)
+        logger.debug(
+            "Plugin %s subscribed to event: %s", self.manifest.name, event,
+        )
+
     # -- middleware registration -------------------------------------------
 
     def register_middleware(self, kind: str, callback: Callable) -> None:
@@ -1264,6 +1349,13 @@ class PluginManager:
         # Plugin-registered auxiliary tasks: key → {key, display_name,
         # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
+        # Inter-plugin event bus: full event name (``<plugin_key>:<event>`` or
+        # ``hermes:<event>``) → list of subscriber callbacks in registration
+        # order. See PluginContext.subscribe/emit and _dispatch_event.
+        self._subscriptions: Dict[str, List[Callable]] = {}
+        # Per-thread re-entrancy depth for event dispatch, used to cap
+        # mutually-emitting plugins (see _EVENT_EMIT_DEPTH_CAP).
+        self._emit_depth = threading.local()
         # Slack Block Kit action handlers registered by plugins. Each entry
         # is (matcher, callback, plugin_name); the Slack adapter wires them
         # into its slack_bolt App at connect() time. ``matcher`` is whatever
@@ -1299,6 +1391,7 @@ class PluginManager:
             self._plugin_commands.clear()
             self._plugin_skills.clear()
             self._aux_tasks.clear()
+            self._subscriptions.clear()
             self._slack_action_handlers.clear()
             self._context_engine = None
         # Set the flag up front as a re-entrancy guard (a plugin's register()
@@ -1644,6 +1737,8 @@ class PluginManager:
                 path=str(plugin_dir),
                 kind=kind,
                 key=key,
+                emits=data.get("emits") or [],
+                listens=data.get("listens") or [],
             )
         except Exception as exc:
             logger.warning(
@@ -1925,6 +2020,48 @@ class PluginManager:
                     exc,
                 )
         return results
+
+    def _dispatch_event(self, event: str, payload: Dict[str, Any]) -> int:
+        """Deliver *event* to its subscribers; return the number invoked.
+
+        Mirrors :meth:`invoke_hook`: iterate subscribers in registration
+        order, isolate each in its own ``try/except`` so one raising
+        subscriber cannot break delivery to the rest, and pass the payload
+        as keyword arguments.
+
+        A subscriber may itself call ``ctx.emit`` (re-entrant dispatch). A
+        per-thread depth counter caps recursion at
+        :data:`_EVENT_EMIT_DEPTH_CAP`; over-deep emits are dropped with a
+        single warning (never raised) so delivery always terminates.
+        """
+        depth = getattr(self._emit_depth, "value", 0)
+        if depth >= _EVENT_EMIT_DEPTH_CAP:
+            logger.warning(
+                "Event bus recursion cap (%d) exceeded while dispatching '%s' "
+                "— dropping this emit to prevent an infinite loop",
+                _EVENT_EMIT_DEPTH_CAP, event,
+            )
+            return 0
+        callbacks = list(self._subscriptions.get(event, []))
+        if not callbacks:
+            return 0
+        self._emit_depth.value = depth + 1
+        invoked = 0
+        try:
+            for cb in callbacks:
+                invoked += 1
+                try:
+                    cb(**payload)
+                except Exception as exc:
+                    logger.warning(
+                        "Event '%s' subscriber %s raised: %s",
+                        event,
+                        getattr(cb, "__name__", repr(cb)),
+                        exc,
+                    )
+        finally:
+            self._emit_depth.value = depth
+        return invoked
 
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
@@ -2419,6 +2556,18 @@ def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:
     """
     manager = _ensure_plugins_discovered()
     return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
+
+
+def get_plugin_subscriptions() -> Dict[str, List[Callable]]:
+    """Return the inter-plugin event bus subscription registry.
+
+    Maps each fully-qualified event name (``<plugin_key>:<event>`` or
+    ``hermes:<event>``) to its list of subscriber callbacks in registration
+    order. Triggers idempotent plugin discovery so callers can read the
+    registry before any explicit ``discover_plugins()`` call.
+    """
+    manager = _ensure_plugins_discovered()
+    return manager._subscriptions
 
 
 def get_plugin_toolsets() -> List[tuple]:

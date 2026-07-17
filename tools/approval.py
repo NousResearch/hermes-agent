@@ -382,6 +382,11 @@ HARDLINE_PATTERNS = [
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
+    # Windows drive-letter recursive deletes (rm -rf C:\ or rm -rf C:/).
+    # Single backslash in the shell becomes \x5c after normalization;
+    # forward-slash form is accepted directly. Both are hardline because
+    # drive roots have no recovery path, mirroring the POSIX / rule.
+    (_RM_FLAG_PREFIX + _hardline_rm_path(r'[A-Za-z]:[/\\](?:\*)?'), "recursive delete of Windows drive root"),
     # Filesystem format
     (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)
@@ -545,6 +550,9 @@ def _sudo_stdin_block_result(description: str) -> dict:
 
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
+    # Windows drive-letter root deletion without flags: rm C:/ rm X:\ etc.
+    # Mirrors the POSIX "delete in root path" rule for Windows paths.
+    (r'\brm\s+(-[^\s]*\s+)*[A-Za-z]:[/\\]', "delete in Windows drive root"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
     # Windows shell front-ends have destructive built-ins that do not look like

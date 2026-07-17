@@ -397,6 +397,8 @@ export const zh: Translations = {
       colorModeDesc: '选择固定模式，或让 Hermes 跟随系统设置。',
       toolViewTitle: '工具调用显示',
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
+      commentaryLaneTitle: '实时工作栏',
+      commentaryLaneDesc: '将 Codex 的过程中评述实时显示在"工作中"栏，而不是并入最终回复。',
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
@@ -2525,6 +2527,7 @@ export const zh: Translations = {
       resumeWhenBackgroundDone: count =>
         count === 1 ? '后台任务完成后将自动继续' : `${count} 个后台任务完成后将自动继续`,
       thinking: '思考中',
+      working: '工作中',
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,
       copy: '复制',

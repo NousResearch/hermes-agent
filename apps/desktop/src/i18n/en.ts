@@ -408,6 +408,9 @@ export const en: Translations = {
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
       toolViewTitle: 'Tool Call Display',
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
+      commentaryLaneTitle: 'Live Working Lane',
+      commentaryLaneDesc:
+        'Stream Codex mid-turn commentary into a live Working lane instead of folding it into the final answer.',
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
@@ -2365,6 +2368,7 @@ export const en: Translations = {
           ? 'Will resume when the background task finishes'
           : `Will resume when ${count} background tasks finish`,
       thinking: 'Thinking',
+      working: 'Working',
       today: time => `Today, ${time}`,
       yesterday: time => `Yesterday, ${time}`,
       copy: 'Copy',

@@ -294,6 +294,8 @@ export const ja = defineLocale({
       colorModeDesc: '固定モードを選ぶか、Hermes をシステム設定に合わせます。',
       toolViewTitle: 'ツール呼び出しの表示',
       toolViewDesc: 'プロダクト表示は生のツールペイロードを隠し、テクニカル表示は入出力をすべて表示します。',
+      commentaryLaneTitle: 'ライブ作業レーン',
+      commentaryLaneDesc: 'Codex の途中経過コメントを最終回答に統合せず、ライブの「作業中」レーンに表示します。',
       uiScaleTitle: 'UI スケール',
       uiScaleDesc: (percent: number) =>
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
@@ -2281,6 +2283,7 @@ export const ja = defineLocale({
           ? 'バックグラウンドタスクの完了後に再開します'
           : `${count} 件のバックグラウンドタスクの完了後に再開します`,
       thinking: '考え中',
+      working: '作業中',
       today: time => `今日 ${time}`,
       yesterday: time => `昨日 ${time}`,
       copy: 'コピー',

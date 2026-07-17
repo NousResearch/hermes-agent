@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
+import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
@@ -13,6 +14,7 @@ import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
+import { $commentaryLane, setCommentaryLane, syncCommentaryLane } from '@/store/commentary-lane'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
@@ -244,6 +246,8 @@ function MarketplaceThemeResults({
 export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
+  const { requestGateway } = useGatewayRequest()
+  const commentaryLane = useStore($commentaryLane)
   const toolViewMode = useStore($toolViewMode)
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
@@ -256,6 +260,12 @@ export function AppearanceSettings() {
   const a = t.settings.appearance
 
   const [query, setQuery] = useState('')
+
+  // The Working-lane toggle is backed by the gateway config (commentary_lane),
+  // so hydrate it from the backend on mount rather than trusting a local cache.
+  useEffect(() => {
+    void syncCommentaryLane(requestGateway).catch(() => undefined)
+  }, [requestGateway])
 
   // One box does double duty: filter installed themes live (below), and run a
   // name search against the VS Code Marketplace (the Cmd-K "Install theme…"
@@ -484,6 +494,24 @@ export function AppearanceSettings() {
             }
             description={a.toolViewDesc}
             title={a.toolViewTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  void setCommentaryLane(requestGateway, id === 'on').catch(() => undefined)
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={commentaryLane ? 'on' : 'off'}
+              />
+            }
+            description={a.commentaryLaneDesc}
+            title={a.commentaryLaneTitle}
           />
 
           <ListRow

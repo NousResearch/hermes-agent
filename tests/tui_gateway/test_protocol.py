@@ -1943,3 +1943,48 @@ def test_slow_completion_does_not_block_fast_handler(completion_method, server):
     assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind {completion_method}"
 
     released.set()
+
+
+# ── Codex commentary "Working" lane ──────────────────────────────────
+
+
+def test_agent_cbs_interim_callback_emits_commentary_delta(server, monkeypatch):
+    """Codex commentary / mid-turn narration gets its own lane, never reasoning.delta."""
+    emitted = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload))
+    )
+
+    monkeypatch.setattr(server, "_load_commentary_lane", lambda: True)
+    cbs = server._agent_cbs("sid-1")
+    assert "interim_assistant_callback" in cbs
+    cbs["interim_assistant_callback"]("Reading the screenshot first.")
+
+    # Trailing blank line separates successive commentary messages in one flush.
+    assert emitted == [
+        ("commentary.delta", "sid-1", {"text": "Reading the screenshot first.\n\n"})
+    ]
+
+
+def test_agent_cbs_interim_callback_skips_already_streamed_and_empty(server, monkeypatch):
+    """already_streamed text is the answer already relayed via message.delta; blanks are noise."""
+    emitted = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload))
+    )
+
+    monkeypatch.setattr(server, "_load_commentary_lane", lambda: True)
+    cbs = server._agent_cbs("sid-1")
+    cbs["interim_assistant_callback"]("final answer body", already_streamed=True)
+    cbs["interim_assistant_callback"]("   ")
+
+    assert emitted == []
+
+
+def test_agent_cbs_omits_interim_callback_when_lane_disabled(server, monkeypatch):
+    """Default (display.commentary_lane off): no interim callback → upstream behavior."""
+    monkeypatch.setattr(server, "_load_commentary_lane", lambda: False)
+
+    cbs = server._agent_cbs("sid-1")
+
+    assert "interim_assistant_callback" not in cbs

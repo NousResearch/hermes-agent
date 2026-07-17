@@ -186,6 +186,27 @@ function assistantSeparatedReasoningMessage(): ThreadMessage {
   } as ThreadMessage
 }
 
+function assistantCommentaryMessage(): ThreadMessage {
+  return {
+    id: 'assistant-commentary-1',
+    role: 'assistant',
+    content: [
+      { type: 'reasoning', text: ' Planning the analysis.', status: { type: 'complete' } },
+      { type: 'data', name: 'commentary', data: { text: 'Reading the screenshot first.' } },
+      { type: 'text', text: 'The total is $42.' }
+    ],
+    status: { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
 function assistantTodoMessage(
   todos: Array<{ content: string; id: string; status: 'cancelled' | 'completed' | 'in_progress' | 'pending' }>,
   running = true
@@ -354,6 +375,20 @@ function RunningReasoningHarness() {
 function GroupedReasoningHarness() {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [assistantMultiReasoningMessage([' First thought.', ' Second thought.'])],
+    isRunning: false,
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread />
+    </AssistantRuntimeProvider>
+  )
+}
+
+function CommentaryHarness() {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages: [assistantCommentaryMessage()],
     isRunning: false,
     onNew: async () => {}
   })
@@ -549,5 +584,30 @@ describe('assistant-ui streaming renderer', () => {
     })
     expect(container.querySelector('[data-slot="aui_generated-image"]')).toBeTruthy()
     expect(screen.queryByRole('status', { name: /rendering image/i })).toBeNull()
+  })
+
+  it('renders Codex commentary in a separate Working disclosure, not under Thinking', () => {
+    const { container } = render(<CommentaryHarness />)
+    const ui = within(container)
+
+    const thinkingDisclosures = container.querySelectorAll('[data-slot="aui_thinking-disclosure"]')
+    const commentaryDisclosures = container.querySelectorAll('[data-slot="aui_commentary-disclosure"]')
+    expect(thinkingDisclosures.length).toBe(1)
+    expect(commentaryDisclosures.length).toBe(1)
+
+    // Working lane opens to the narration text.
+    fireEvent.click(ui.getByRole('button', { name: /working/i }))
+    expect(container.querySelector('[data-slot="aui_commentary-text"]')?.textContent).toBe(
+      'Reading the screenshot first.'
+    )
+
+    // Thinking lane holds only the genuine reasoning.
+    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
+    const reasoningText = container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent ?? ''
+    expect(reasoningText).toBe('Planning the analysis.')
+    expect(reasoningText).not.toContain('screenshot')
+
+    // Final answer renders as normal chat text.
+    expect(container.textContent).toContain('The total is $42.')
   })
 })

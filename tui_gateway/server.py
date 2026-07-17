@@ -2849,6 +2849,15 @@ def _load_show_reasoning() -> bool:
     return bool((_load_cfg().get("display") or {}).get("show_reasoning", True))
 
 
+def _load_commentary_lane() -> bool:
+    # display.commentary_lane (default False) — opt-in live "Working" lane on the
+    # desktop. When False the agent's interim_assistant_callback stays unset, so
+    # Codex commentary falls back onto the reasoning channel exactly like
+    # upstream (byte-identical). Only when True do we wire the callback that
+    # streams commentary into its own lane.
+    return bool((_load_cfg().get("display") or {}).get("commentary_lane", False))
+
+
 def _load_memory_notifications() -> str:
     """Self-improvement review notification mode from config.yaml.
 
@@ -4153,7 +4162,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
 
 
 def _agent_cbs(sid: str) -> dict:
-    return {
+    cbs = {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
             sid, tc_id, name, args
         ),
@@ -4207,6 +4216,25 @@ def _agent_cbs(sid: str) -> dict:
             timeout=30,
         ),
     }
+
+    # Codex commentary / mid-turn narration → its own "Working" lane in the
+    # desktop renderer. Opt-in (display.commentary_lane, default off): only when
+    # enabled do we set interim_assistant_callback and emit commentary.delta.
+    # Leaving it unset keeps commentary on the reasoning channel, byte-identical
+    # to upstream. Upstream fires this via _fire_streamed_codex_commentary only
+    # when the callback is set and show_commentary is on; the per-turn
+    # _delivered_interim_texts dedup keeps the same text out of the final.
+    # already_streamed means the text is the answer already relayed via
+    # message.delta — skip it. Each call is one completed commentary message; the
+    # trailing blank line separates messages that flush in the same window.
+    if _load_commentary_lane():
+        cbs["interim_assistant_callback"] = lambda text, already_streamed=False: (
+            None
+            if already_streamed or not str(text or "").strip()
+            else _emit("commentary.delta", sid, {"text": f"{text}\n\n"})
+        )
+
+    return cbs
 
 
 def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
@@ -10831,6 +10859,11 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.busy_input_mode", raw)
         return _ok(rid, {"key": key, "value": raw})
 
+    if key == "commentary_lane":
+        nv = value if isinstance(value, bool) else str(value).strip().lower() in {"1", "true", "on", "yes"}
+        _write_config_key("display.commentary_lane", nv)
+        return _ok(rid, {"key": key, "value": nv})
+
     if key == "verbose":
         cycle = ["off", "new", "all", "verbose"]
         cur = (
@@ -11721,6 +11754,8 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"config": _load_cfg()})
     if key == "prompt":
         return _ok(rid, {"prompt": _load_cfg().get("custom_prompt", "")})
+    if key == "commentary_lane":
+        return _ok(rid, {"value": _load_commentary_lane()})
     if key == "skin":
         return _ok(
             rid, {"value": (_load_cfg().get("display") or {}).get("skin", "default")}

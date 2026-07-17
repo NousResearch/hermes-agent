@@ -4,11 +4,13 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import { translateNow } from '@/i18n'
 import {
   appendAssistantTextPart,
+  appendCommentaryPart,
   appendReasoningPart,
   assistantTextPart,
   type ChatMessage,
   type ChatMessagePart,
   chatMessageText,
+  commentaryPart,
   type GatewayEventPayload,
   reasoningPart,
   renderMediaTags,
@@ -50,6 +52,7 @@ interface MessageStreamOptions {
 
 interface QueuedStreamDeltas {
   assistant: string
+  commentary: string
   reasoning: string
 }
 
@@ -155,19 +158,32 @@ export function useMessageStream({
 
         queue.delete(id)
 
-        if (queued.assistant) {
-          mutateStream(
-            id,
-            parts => dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(parts, queued.assistant)),
-            () => [assistantTextPart(queued.assistant)]
-          )
-        }
-
+        // Flush in semantic order — reasoning, then commentary, then answer
+        // text. Within a segment the model thinks, narrates, and only then
+        // answers (Codex item order: reasoning → commentary → final_answer),
+        // so when several lanes land in the same flush window the parts must
+        // not seed in reverse (e.g. the Working lane below the answer).
         if (queued.reasoning) {
           mutateStream(
             id,
             parts => appendReasoningPart(parts, queued.reasoning),
             () => [reasoningPart(queued.reasoning)]
+          )
+        }
+
+        if (queued.commentary) {
+          mutateStream(
+            id,
+            parts => appendCommentaryPart(parts, queued.commentary),
+            () => [commentaryPart(queued.commentary)]
+          )
+        }
+
+        if (queued.assistant) {
+          mutateStream(
+            id,
+            parts => dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(parts, queued.assistant)),
+            () => [assistantTextPart(queued.assistant)]
           )
         }
       }
@@ -216,7 +232,7 @@ export function useMessageStream({
         return
       }
 
-      const queued = queuedDeltasRef.current.get(sessionId) ?? { assistant: '', reasoning: '' }
+      const queued = queuedDeltasRef.current.get(sessionId) ?? { assistant: '', commentary: '', reasoning: '' }
       queued[key] += delta
       queuedDeltasRef.current.set(sessionId, queued)
       scheduleDeltaFlush()
@@ -247,6 +263,17 @@ export function useMessageStream({
       }
 
       queueDelta(sessionId, 'assistant', delta)
+    },
+    [queueDelta]
+  )
+
+  const appendCommentaryDelta = useCallback(
+    (sessionId: string, delta: string) => {
+      if (!delta) {
+        return
+      }
+
+      queueDelta(sessionId, 'commentary', delta)
     },
     [queueDelta]
   )
@@ -515,6 +542,7 @@ export function useMessageStream({
 
   const handleGatewayEvent = useGatewayEventHandler({
     appendAssistantDelta,
+    appendCommentaryDelta,
     appendReasoningDelta,
     activeSessionIdRef,
     compactedTurnRef,
@@ -532,6 +560,7 @@ export function useMessageStream({
 
   return {
     appendAssistantDelta,
+    appendCommentaryDelta,
     appendReasoningDelta,
     completeAssistantMessage,
     handleGatewayEvent,

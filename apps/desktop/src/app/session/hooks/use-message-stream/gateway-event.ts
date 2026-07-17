@@ -70,6 +70,7 @@ interface GatewayEventDeps {
   lastCwdInfoSessionRef: MutableRefObject<string | null>
   nativeSubagentSessionsRef: MutableRefObject<Set<string>>
   appendAssistantDelta: (sessionId: string, delta: string) => void
+  appendCommentaryDelta: (sessionId: string, delta: string) => void
   appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean) => void
   completeAssistantMessage: (sessionId: string, text: string) => void
   failAssistantMessage: (sessionId: string, errorMessage: string) => void
@@ -94,6 +95,7 @@ interface GatewayEventDeps {
 export function useGatewayEventHandler(deps: GatewayEventDeps) {
   const {
     appendAssistantDelta,
+    appendCommentaryDelta,
     appendReasoningDelta,
     activeSessionIdRef,
     compactedTurnRef,
@@ -337,6 +339,17 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'reasoning.delta') {
         if (sessionId) {
           appendReasoningDelta(sessionId, coerceThinkingText(payload?.text))
+        }
+
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: true })
+        }
+      } else if (event.type === 'commentary.delta') {
+        // Codex commentary / analysis narration — user-facing mid-turn
+        // progress. Its own "Working" lane, never appendReasoningDelta: the
+        // Thinking disclosure is reserved for genuine model reasoning.
+        if (sessionId) {
+          appendCommentaryDelta(sessionId, coerceGatewayText(payload?.text))
         }
 
         if (isActiveEvent) {

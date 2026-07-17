@@ -97,6 +97,26 @@ export function reasoningPart(text: string): ChatMessagePart {
   return { type: 'reasoning', text }
 }
 
+/** Codex commentary/analysis narration — user-facing mid-turn progress,
+ *  semantically distinct from reasoning and from the final answer. Rides
+ *  assistant-ui's data-part extension point and renders via the
+ *  `MESSAGE_PARTS_COMPONENTS.data.by_name.commentary` "Working" disclosure. */
+export const COMMENTARY_PART_TYPE = 'data-commentary' as const
+
+export function commentaryPart(text: string): ChatMessagePart {
+  return { type: COMMENTARY_PART_TYPE, data: { text } }
+}
+
+export function commentaryPartText(part: ChatMessagePart): string {
+  if (part.type !== COMMENTARY_PART_TYPE) {
+    return ''
+  }
+
+  const data = (part as { data?: { text?: unknown } }).data
+
+  return typeof data?.text === 'string' ? data.text : ''
+}
+
 const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
 
 const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
@@ -196,40 +216,62 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   return [refs.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
 }
 
-const STREAM_PART: Record<'reasoning' | 'text', (text: string) => ChatMessagePart> = {
+type StreamChannel = 'commentary' | 'reasoning' | 'text'
+
+const STREAM_PART: Record<StreamChannel, (text: string) => ChatMessagePart> = {
+  commentary: commentaryPart,
   reasoning: reasoningPart,
   text: textPart
 }
 
+const STREAM_PART_TYPE: Record<StreamChannel, ChatMessagePart['type']> = {
+  commentary: COMMENTARY_PART_TYPE,
+  reasoning: 'reasoning',
+  text: 'text'
+}
+
+// Streaming channels are mutually transparent (see appendStreamPart below);
+// any other part type bounds the current segment.
+const STREAM_TRANSPARENT_TYPES = new Set<string>(['text', 'reasoning', COMMENTARY_PART_TYPE])
+
+function appendStreamDelta(part: ChatMessagePart, delta: string): ChatMessagePart {
+  if (part.type === COMMENTARY_PART_TYPE) {
+    return commentaryPart(`${commentaryPartText(part)}${delta}`)
+  }
+
+  return { ...part, text: `${(part as { text: string }).text}${delta}` } as ChatMessagePart
+}
+
 // Coalesce a streaming delta into the most recent same-type part within the
 // current segment, where a segment is bounded by any non-streaming part (a
-// tool call, image, …). The opposite streaming channel (text <-> reasoning) is
-// transparent, so a reasoning burst between two content deltas can't shred one
-// sentence into text / Thinking / text — the fragmentation models that
-// interleave reasoning_content + content otherwise produce. Tool calls still
-// open a fresh part, preserving narration order across steps.
+// tool call, image, …). The other streaming channels (text <-> reasoning <->
+// commentary) are transparent, so a reasoning burst between two content deltas
+// can't shred one sentence into text / Thinking / text — the fragmentation
+// models that interleave reasoning_content + content otherwise produce. Tool
+// calls still open a fresh part, preserving narration order across steps.
 function appendStreamPart(
   parts: ChatMessagePart[],
-  type: 'reasoning' | 'text',
+  channel: StreamChannel,
   delta: string
 ): { index: number; parts: ChatMessagePart[] } {
   const next = [...parts]
+  const partType = STREAM_PART_TYPE[channel]
 
   for (let i = next.length - 1; i >= 0; i--) {
     const part = next[i]
 
-    if (part.type === type) {
-      next[i] = { ...part, text: `${(part as { text: string }).text}${delta}` } as ChatMessagePart
+    if (part.type === partType) {
+      next[i] = appendStreamDelta(part, delta)
 
       return { index: i, parts: next }
     }
 
-    if (part.type !== 'text' && part.type !== 'reasoning') {
+    if (!STREAM_TRANSPARENT_TYPES.has(part.type)) {
       break
     }
   }
 
-  next.push(STREAM_PART[type](delta))
+  next.push(STREAM_PART[channel](delta))
 
   return { index: next.length - 1, parts: next }
 }
@@ -240,6 +282,10 @@ export function appendTextPart(parts: ChatMessagePart[], delta: string): ChatMes
 
 export function appendReasoningPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
   return appendStreamPart(parts, 'reasoning', delta).parts
+}
+
+export function appendCommentaryPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
+  return appendStreamPart(parts, 'commentary', delta).parts
 }
 
 export function appendAssistantTextPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {

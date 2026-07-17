@@ -325,6 +325,8 @@ export interface Translations {
       colorModeDesc: string
       toolViewTitle: string
       toolViewDesc: string
+      commentaryLaneTitle: string
+      commentaryLaneDesc: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
       translucencyTitle: string
@@ -1987,6 +1989,7 @@ export interface Translations {
       loadingResponse: string
       resumeWhenBackgroundDone: (count: number) => string
       thinking: string
+      working: string
       today: (time: string) => string
       yesterday: (time: string) => string
       copy: string

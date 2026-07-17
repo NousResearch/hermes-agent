@@ -286,6 +286,8 @@ export const zhHant = defineLocale({
       colorModeDesc: '選擇固定模式，或讓 Hermes 跟隨系統設定。',
       toolViewTitle: '工具呼叫顯示',
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
+      commentaryLaneTitle: '即時工作列',
+      commentaryLaneDesc: '將 Codex 的過程中評述即時顯示在「工作中」列，而不是併入最終回覆。',
       uiScaleTitle: '介面縮放',
       uiScaleDesc: (percent: number) =>
         `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,
@@ -2211,6 +2213,7 @@ export const zhHant = defineLocale({
       resumeWhenBackgroundDone: count =>
         count === 1 ? '背景工作完成後將自動繼續' : `${count} 個背景工作完成後將自動繼續`,
       thinking: '思考中',
+      working: '工作中',
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,
       copy: '複製',

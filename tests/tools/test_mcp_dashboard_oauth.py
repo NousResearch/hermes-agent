@@ -72,6 +72,28 @@ def test_dashboard_flow_rejects_second_callback():
         flow.deliver_callback(code="second", state="state", error=None)
 
 
+def test_dashboard_flow_cannot_resurrect_after_terminal_error():
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-terminal",
+        server_name="reports",
+        profile=None,
+        redirect_uri="https://agent.example/mcp/oauth/callback/flow-terminal",
+    )
+    flow.mark_error("start timed out")
+
+    with pytest.raises(RuntimeError, match="already ended"):
+        asyncio.run(
+            flow.publish_authorization_url(
+                "https://idp.example/authorize?state=too-late"
+            )
+        )
+
+    assert flow.status == "error"
+    assert flow.authorization_url is None
+
+
 def test_dashboard_context_overrides_redirect_and_handlers():
     from tools.mcp_dashboard_oauth import (
         DashboardOAuthFlow,

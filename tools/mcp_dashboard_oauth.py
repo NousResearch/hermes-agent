@@ -36,6 +36,8 @@ class DashboardOAuthFlow:
     _callback_ready: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
 
     async def publish_authorization_url(self, url: str) -> None:
+        if self.status in {"approved", "error"}:
+            raise RuntimeError("OAuth flow already ended")
         state = parse_qs(urlparse(url).query).get("state", [None])[0]
         if not state:
             raise ValueError("OAuth authorization URL did not include state")

@@ -159,6 +159,29 @@ def test_hosted_auth_start_bounds_pending_flow_registry():
     assert response.status_code == 429
 
 
+def test_hosted_auth_rejects_overlapping_flow_for_same_server():
+    from hermes_cli import web_server
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    client = _client()
+    client.post(
+        "/api/mcp/servers",
+        json={"name": "reports", "url": "https://mcp.example/mcp", "auth": "oauth"},
+    )
+    existing = DashboardOAuthFlow(
+        flow_id="existing-reports",
+        server_name="reports",
+        profile="other-profile",
+        redirect_uri="https://agent.example/callback/existing",
+    )
+    web_server._mcp_oauth_flows[existing.flow_id] = existing
+
+    response = client.post("/api/mcp/servers/reports/auth")
+
+    assert response.status_code == 409
+    assert "already in progress" in response.text
+
+
 def test_flow_status_does_not_expose_authorization_code():
     from hermes_cli import web_server
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow

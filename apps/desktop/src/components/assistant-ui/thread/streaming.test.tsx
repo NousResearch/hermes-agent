@@ -3,6 +3,8 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { commentaryPart } from '@/lib/chat-messages'
+
 import { Thread } from '.'
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
@@ -192,7 +194,10 @@ function assistantCommentaryMessage(): ThreadMessage {
     role: 'assistant',
     content: [
       { type: 'reasoning', text: ' Planning the analysis.', status: { type: 'complete' } },
-      { type: 'data', name: 'commentary', data: { text: 'Reading the screenshot first.' } },
+      // Use the real runtime factory so the render test exercises the exact
+      // part shape the message stream builds (a name-routed data part), not a
+      // hand-written shape that can silently drift from what actually renders.
+      commentaryPart('Reading the screenshot first.'),
       { type: 'text', text: 'The total is $42.' }
     ],
     status: { type: 'complete', reason: 'stop' },

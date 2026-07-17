@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
-import { COMMENTARY_PART_TYPE, commentaryPartText } from '@/lib/chat-messages'
+import { commentaryPartText, isCommentaryPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -80,7 +80,7 @@ describe('useMessageStream commentary lane', () => {
     expect(message).toBeDefined()
 
     const reasoningParts = message!.parts.filter(part => part.type === 'reasoning')
-    const commentaryParts = message!.parts.filter(part => part.type === COMMENTARY_PART_TYPE)
+    const commentaryParts = message!.parts.filter(isCommentaryPart)
     const textParts = message!.parts.filter(part => part.type === 'text')
 
     expect(reasoningParts).toHaveLength(1)
@@ -113,8 +113,8 @@ describe('useMessageStream commentary lane', () => {
     const message = assistantMessage()
     expect(message).toBeDefined()
 
-    const partTypes = message!.parts.map(part => part.type)
-    expect(partTypes).toEqual(['reasoning', COMMENTARY_PART_TYPE, 'tool-call', COMMENTARY_PART_TYPE, 'text'])
+    const partTypes = message!.parts.map(part => (isCommentaryPart(part) ? 'commentary' : part.type))
+    expect(partTypes).toEqual(['reasoning', 'commentary', 'tool-call', 'commentary', 'text'])
     expect(commentaryPartText(message!.parts[1])).toBe('Checking the logs first.')
     expect(commentaryPartText(message!.parts[3])).toBe('Now writing the summary.')
     expect((message!.parts[4] as { text: string }).text).toBe('All done.')
@@ -130,7 +130,10 @@ describe('useMessageStream commentary lane', () => {
     send({ payload: { text: 'The answer.' }, session_id: SID, type: 'message.complete' })
 
     const message = assistantMessage()
-    expect(message!.parts.map(part => part.type)).toEqual([COMMENTARY_PART_TYPE, 'text'])
+    expect(message!.parts.map(part => (isCommentaryPart(part) ? 'commentary' : part.type))).toEqual([
+      'commentary',
+      'text'
+    ])
     expect(commentaryPartText(message!.parts[0])).toBe('Wrapping up now.')
   })
 
@@ -142,7 +145,7 @@ describe('useMessageStream commentary lane', () => {
     send({ payload: { text: 'Done.' }, session_id: SID, type: 'message.complete' })
 
     const message = assistantMessage()
-    const commentaryParts = message!.parts.filter(part => part.type === COMMENTARY_PART_TYPE)
+    const commentaryParts = message!.parts.filter(isCommentaryPart)
 
     expect(commentaryParts).toHaveLength(1)
     expect(commentaryPartText(commentaryParts[0])).toBe('Reading the file.')

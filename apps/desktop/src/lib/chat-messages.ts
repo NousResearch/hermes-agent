@@ -98,17 +98,25 @@ export function reasoningPart(text: string): ChatMessagePart {
 }
 
 /** Codex commentary/analysis narration — user-facing mid-turn progress,
- *  semantically distinct from reasoning and from the final answer. Rides
- *  assistant-ui's data-part extension point and renders via the
- *  `MESSAGE_PARTS_COMPONENTS.data.by_name.commentary` "Working" disclosure. */
-export const COMMENTARY_PART_TYPE = 'data-commentary' as const
+ *  semantically distinct from reasoning and from the final answer. It rides
+ *  assistant-ui's data-part extension point and renders via
+ *  `MESSAGE_PARTS_COMPONENTS.data.by_name.commentary`. assistant-ui routes a
+ *  data part by its `name`, so the runtime shape MUST be
+ *  `{ type: 'data', name: 'commentary', data }` — a discriminated
+ *  `{ type: 'data-commentary' }` part never matches the `by_name` registry and
+ *  silently renders nothing (the empty-lane bug). */
+export const COMMENTARY_PART_NAME = 'commentary' as const
 
 export function commentaryPart(text: string): ChatMessagePart {
-  return { type: COMMENTARY_PART_TYPE, data: { text } }
+  return { type: 'data', name: COMMENTARY_PART_NAME, data: { text } } as ChatMessagePart
+}
+
+export function isCommentaryPart(part: ChatMessagePart): boolean {
+  return part.type === 'data' && (part as { name?: unknown }).name === COMMENTARY_PART_NAME
 }
 
 export function commentaryPartText(part: ChatMessagePart): string {
-  if (part.type !== COMMENTARY_PART_TYPE) {
+  if (!isCommentaryPart(part)) {
     return ''
   }
 
@@ -224,25 +232,27 @@ const STREAM_PART: Record<StreamChannel, (text: string) => ChatMessagePart> = {
   text: textPart
 }
 
-const STREAM_PART_TYPE: Record<StreamChannel, ChatMessagePart['type']> = {
-  commentary: COMMENTARY_PART_TYPE,
-  reasoning: 'reasoning',
-  text: 'text'
+// Does `part` belong to the given streaming channel? Commentary is a named
+// data part (matched by name); reasoning/text match by `type`.
+function isStreamChannelPart(part: ChatMessagePart, channel: StreamChannel): boolean {
+  return channel === 'commentary' ? isCommentaryPart(part) : part.type === channel
 }
 
-// Streaming channels are mutually transparent (see appendStreamPart below);
-// any other part type bounds the current segment.
-const STREAM_TRANSPARENT_TYPES = new Set<string>(['text', 'reasoning', COMMENTARY_PART_TYPE])
+// The streaming channels (text <-> reasoning <-> commentary) are mutually
+// transparent (see appendStreamPart); any other part type bounds the segment.
+function isTransparentStreamPart(part: ChatMessagePart): boolean {
+  return part.type === 'text' || part.type === 'reasoning' || isCommentaryPart(part)
+}
 
 function appendStreamDelta(part: ChatMessagePart, delta: string): ChatMessagePart {
-  if (part.type === COMMENTARY_PART_TYPE) {
+  if (isCommentaryPart(part)) {
     return commentaryPart(`${commentaryPartText(part)}${delta}`)
   }
 
   return { ...part, text: `${(part as { text: string }).text}${delta}` } as ChatMessagePart
 }
 
-// Coalesce a streaming delta into the most recent same-type part within the
+// Coalesce a streaming delta into the most recent same-channel part within the
 // current segment, where a segment is bounded by any non-streaming part (a
 // tool call, image, …). The other streaming channels (text <-> reasoning <->
 // commentary) are transparent, so a reasoning burst between two content deltas
@@ -255,18 +265,17 @@ function appendStreamPart(
   delta: string
 ): { index: number; parts: ChatMessagePart[] } {
   const next = [...parts]
-  const partType = STREAM_PART_TYPE[channel]
 
   for (let i = next.length - 1; i >= 0; i--) {
     const part = next[i]
 
-    if (part.type === partType) {
+    if (isStreamChannelPart(part, channel)) {
       next[i] = appendStreamDelta(part, delta)
 
       return { index: i, parts: next }
     }
 
-    if (!STREAM_TRANSPARENT_TYPES.has(part.type)) {
+    if (!isTransparentStreamPart(part)) {
       break
     }
   }

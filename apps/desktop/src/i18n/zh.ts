@@ -2245,6 +2245,7 @@ export const zh: Translations = {
       xhigh: '极高',
       max: '最高',
       ultra: '超高',
+      auto: '自动',
       updateFailed: '模型选项更新失败',
       fastFailed: '快速模式更新失败'
     },

@@ -15368,6 +15368,9 @@ def main(
     # Handle gateway mode (messaging + cron)
     if gateway:
         import asyncio
+        from hermes_cli.gateway_bootstrap import purge_stale_gateway_pycache_before_import
+
+        purge_stale_gateway_pycache_before_import()
         from gateway.run import start_gateway
         print("Starting Hermes Gateway (messaging platforms)...")
         asyncio.run(start_gateway())

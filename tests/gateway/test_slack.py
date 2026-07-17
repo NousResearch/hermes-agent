@@ -1607,6 +1607,202 @@ class TestSlackThreadFileContext:
         assert "unknown file size" in context
 
     @pytest.mark.asyncio
+    async def test_file_owner_controls_trust_when_authorized_user_reshares(self, adapter):
+        adapter.set_authorization_check(
+            lambda user_id, _chat_type, _chat_id: user_id == "U_OWNER"
+        )
+        adapter._user_name_cache = {
+            ("", "U_OWNER"): "배익현",
+            ("", "U_GUEST"): "게스트",
+        }
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "1000.1",
+                        "user": "U_OWNER",
+                        "files": [
+                            {
+                                "id": "F_RESHARED",
+                                "user": "U_GUEST",
+                                "name": "guest-notes.txt",
+                                "mimetype": "text/plain",
+                                "size": 32,
+                                "url_private_download": "https://files.slack.com/guest-notes.txt",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+        files, context = await adapter._fetch_thread_file_attachments(
+            channel_id="C123",
+            thread_ts="1000.0",
+            current_ts="1000.2",
+        )
+
+        assert files[0]["_hermes_thread_uploader"] == "게스트"
+        assert files[0]["_hermes_thread_unverified"] is True
+        assert "[unverified] 게스트" in context
+
+    @pytest.mark.asyncio
+    async def test_slack_connect_stub_rechecks_canonical_file_owner(self, adapter):
+        adapter.config.extra["thread_file_context"] = "on_request"
+        adapter.set_authorization_check(
+            lambda user_id, _chat_type, _chat_id: user_id == "U_OWNER"
+        )
+        adapter._has_active_session_for_thread = MagicMock(return_value=True)
+        adapter._user_name_cache = {
+            ("", "U_OWNER"): "배익현",
+            ("", "U_GUEST"): "게스트",
+        }
+        adapter._fetch_thread_file_attachments = AsyncMock(
+            return_value=(
+                [
+                    {
+                        "id": "F_STUB_OWNER",
+                        "file_access": "check_file_info",
+                        "_hermes_thread_uploader_id": "U_OWNER",
+                        "_hermes_thread_sharer_id": "U_OWNER",
+                        "_hermes_thread_uploader": "배익현",
+                        "_hermes_thread_unverified": False,
+                    }
+                ],
+                "[Slack thread attachment]",
+            )
+        )
+        adapter._app.client.files_info = AsyncMock(
+            return_value={
+                "ok": True,
+                "file": {
+                    "id": "F_STUB_OWNER",
+                    "user": "U_GUEST",
+                    "name": "guest-notes.txt",
+                    "mimetype": "text/plain",
+                    "size": 32,
+                    "url_private_download": "https://files.slack.com/guest-notes.txt",
+                },
+            }
+        )
+
+        with patch.object(
+            adapter,
+            "_download_slack_file_bytes",
+            new=AsyncMock(return_value=b"untrusted content"),
+        ):
+            await adapter._handle_slack_message(
+                {
+                    "text": "위 파일 검토해줘",
+                    "user": "U_OWNER",
+                    "channel": "C123",
+                    "channel_type": "channel",
+                    "team": "",
+                    "ts": "1000.2",
+                    "thread_ts": "1000.0",
+                    "files": [],
+                }
+            )
+
+        msg_event = adapter.handle_message.call_args.args[0]
+        assert "[unverified] 게스트" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_historical_files_share_one_20_mib_request_budget(self, adapter):
+        adapter.config.extra["thread_file_context"] = "on_request"
+        adapter.set_authorization_check(lambda *_args: True)
+        adapter._has_active_session_for_thread = MagicMock(return_value=True)
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="")
+        adapter._user_name_cache = {("", "U_OWNER"): "배익현"}
+        historical_files = [
+            {
+                "id": f"F_{index}",
+                "user": "U_OWNER",
+                "name": f"image-{index}.png",
+                "mimetype": "image/png",
+                "size": 12 * 1024 * 1024,
+                "url_private_download": f"https://files.slack.com/image-{index}.png",
+                "_hermes_thread_uploader_id": "U_OWNER",
+                "_hermes_thread_sharer_id": "U_OWNER",
+                "_hermes_thread_uploader": "배익현",
+                "_hermes_thread_unverified": False,
+            }
+            for index in (1, 2)
+        ]
+        adapter._fetch_thread_file_attachments = AsyncMock(
+            return_value=(historical_files, "[Slack thread attachment]")
+        )
+
+        with patch.object(
+            adapter,
+            "_download_slack_file",
+            new=AsyncMock(side_effect=["/tmp/image-1.png", "/tmp/image-2.png"]),
+        ) as download:
+            await adapter._handle_slack_message(
+                {
+                    "text": "위 파일 검토해줘",
+                    "user": "U_OWNER",
+                    "channel": "C123",
+                    "channel_type": "channel",
+                    "team": "",
+                    "ts": "1000.2",
+                    "thread_ts": "1000.0",
+                    "files": [],
+                }
+            )
+
+        assert download.await_count == 1
+        msg_event = adapter.handle_message.call_args.args[0]
+        assert "cumulative 20 MiB limit" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_stream_reader_rejects_body_larger_than_hard_limit(self, adapter):
+        class FakeResponse:
+            headers = {}
+
+            async def aiter_bytes(self):
+                yield b"1234"
+                yield b"56"
+
+        with pytest.raises(ValueError, match="exceeds the 5-byte download limit"):
+            await adapter._read_slack_response_body(FakeResponse(), max_bytes=5)
+
+    @pytest.mark.asyncio
+    async def test_always_mode_context_does_not_claim_explicit_request(self, adapter):
+        adapter.config.extra["thread_file_context"] = "always"
+        adapter.set_authorization_check(lambda *_args: True)
+        adapter._user_name_cache = {("", "U_OWNER"): "배익현"}
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "1000.1",
+                        "user": "U_OWNER",
+                        "files": [
+                            {
+                                "id": "F_ALWAYS",
+                                "user": "U_OWNER",
+                                "name": "notes.txt",
+                                "mimetype": "text/plain",
+                                "size": 32,
+                                "url_private_download": "https://files.slack.com/notes.txt",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+        _files, context = await adapter._fetch_thread_file_attachments(
+            channel_id="C123",
+            thread_ts="1000.0",
+            current_ts="1000.2",
+        )
+
+        assert "explicitly asked" not in context
+        assert "authorized requester" in context
+
+    @pytest.mark.asyncio
     async def test_unverified_thread_text_file_content_is_labeled_as_data(self, adapter):
         """Injected historical text must retain uploader trust provenance."""
         adapter.config.extra["thread_file_context"] = "on_request"
@@ -1664,17 +1860,46 @@ class TestSlackThreadFileContext:
         ) in msg_event.text
 
     @pytest.mark.asyncio
+    async def test_allow_bots_policy_preserves_authorized_thread_context(self, adapter):
+        adapter.config.extra["allow_bots"] = "all"
+        adapter.set_authorization_check(lambda *_args: False)
+        adapter._has_active_session_for_thread = MagicMock(return_value=False)
+        adapter._fetch_thread_context = AsyncMock(return_value="trusted bot context")
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="parent")
+
+        await adapter._handle_slack_message(
+            {
+                "text": "자동화 결과를 설명해줘",
+                "user": "U_AUTOMATION",
+                "bot_id": "B_EXTERNAL",
+                "subtype": "bot_message",
+                "channel": "D123",
+                "channel_type": "im",
+                "team": "",
+                "ts": "1000.2",
+                "thread_ts": "1000.0",
+                "files": [],
+            }
+        )
+
+        adapter._fetch_thread_context.assert_awaited_once()
+        adapter._fetch_thread_parent_text.assert_awaited_once()
+        msg_event = adapter.handle_message.call_args.args[0]
+        assert msg_event.source.is_bot is True
+        assert "trusted bot context" in msg_event.text
+
+    @pytest.mark.asyncio
     async def test_unauthorized_requester_cannot_fetch_thread_files(self, adapter):
         adapter.config.extra["thread_file_context"] = "on_request"
         adapter.set_authorization_check(lambda *_args: False)
-        adapter._has_active_session_for_thread = MagicMock(return_value=True)
+        adapter._has_active_session_for_thread = MagicMock(return_value=False)
         adapter._fetch_thread_parent_text = AsyncMock(return_value="")
         adapter._user_name_cache = {("", "U_GUEST"): "게스트"}
         adapter._app.client.conversations_replies = AsyncMock(return_value={"messages": []})
 
         await adapter._handle_slack_message(
             {
-                "text": "위 파일 검토해줘",
+                "text": "<@U_BOT> 위 파일 검토해줘",
                 "user": "U_GUEST",
                 "channel": "C123",
                 "channel_type": "channel",
@@ -1686,6 +1911,7 @@ class TestSlackThreadFileContext:
         )
 
         adapter._app.client.conversations_replies.assert_not_awaited()
+        adapter._fetch_thread_parent_text.assert_not_awaited()
         msg_event = adapter.handle_message.call_args.args[0]
         assert msg_event.media_urls == []
         assert "[Slack thread attachment]" not in msg_event.text
@@ -1697,6 +1923,8 @@ class TestSlackThreadFileContext:
             ("off", "위 파일 검토해줘"),
             ("on_request", "이 스레드 내용을 설명해줘"),
             ("on_request", "check my profile settings"),
+            ("on_request", "자료 확인해줘"),
+            ("on_request", "open this documentary"),
         ],
     )
     async def test_thread_files_are_not_fetched_without_enabled_explicit_intent(
@@ -4823,6 +5051,7 @@ class TestSlackReplyToText:
         (e.g. cron summary), reply_to_text must carry the parent's text."""
         adapter._channel_team = {}  # primary workspace only
         adapter._team_bot_user_ids = {}
+        adapter.set_authorization_check(lambda *_args: True)
 
         # Mock conversations_replies to return a bot-posted parent
         adapter._app.client.conversations_replies = AsyncMock(

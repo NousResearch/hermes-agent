@@ -597,15 +597,9 @@ class TestSlackDownloadSlackFile:
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
         adapter = _make_slack_adapter()
 
-        fake_response = MagicMock()
-        fake_response.content = b"\x89PNG\r\n\x1a\n fake png"
-        fake_response.raise_for_status = MagicMock()
+        fake_response = _make_stream_response(b"\x89PNG\r\n\x1a\n fake png")
         fake_response.headers = {"content-type": "image/png"}
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=fake_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client = _make_stream_client(responses=[fake_response])
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client):
@@ -615,22 +609,18 @@ class TestSlackDownloadSlackFile:
 
         path = asyncio.run(run())
         assert path.endswith(".jpg")
-        mock_client.get.assert_called_once()
+        mock_client.stream.assert_called_once()
 
     def test_rejects_html_response(self, tmp_path, monkeypatch):
         """An HTML sign-in page from Slack is rejected, not cached as image."""
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
         adapter = _make_slack_adapter()
 
-        fake_response = MagicMock()
-        fake_response.content = b"<!DOCTYPE html><html><title>Slack</title></html>"
-        fake_response.raise_for_status = MagicMock()
+        fake_response = _make_stream_response(
+            b"<!DOCTYPE html><html><title>Slack</title></html>"
+        )
         fake_response.headers = {"content-type": "text/html; charset=utf-8"}
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=fake_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client = _make_stream_client(responses=[fake_response])
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client):
@@ -651,17 +641,11 @@ class TestSlackDownloadSlackFile:
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
         adapter = _make_slack_adapter()
 
-        fake_response = MagicMock()
-        fake_response.content = b"\x89PNG\r\n\x1a\n image bytes"
-        fake_response.raise_for_status = MagicMock()
+        fake_response = _make_stream_response(b"\x89PNG\r\n\x1a\n image bytes")
         fake_response.headers = {"content-type": "image/png"}
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(
-            side_effect=[_make_timeout_error(), fake_response]
+        mock_client = _make_stream_client(
+            responses=[_make_timeout_error(), fake_response]
         )
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
 
         mock_sleep = AsyncMock()
 
@@ -674,7 +658,7 @@ class TestSlackDownloadSlackFile:
 
         path = asyncio.run(run())
         assert path.endswith(".jpg")
-        assert mock_client.get.call_count == 2
+        assert mock_client.stream.call_count == 2
         mock_sleep.assert_called_once()
 
     def test_raises_after_max_retries(self, tmp_path, monkeypatch):
@@ -682,10 +666,7 @@ class TestSlackDownloadSlackFile:
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
         adapter = _make_slack_adapter()
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=_make_timeout_error())
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client = _make_stream_client(side_effect=_make_timeout_error())
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
@@ -697,7 +678,7 @@ class TestSlackDownloadSlackFile:
         with pytest.raises(httpx.TimeoutException):
             asyncio.run(run())
 
-        assert mock_client.get.call_count == 3
+        assert mock_client.stream.call_count == 3
 
     def test_non_retryable_403_raises_immediately(self, tmp_path, monkeypatch):
         """A 403 is not retried; it raises immediately."""
@@ -705,10 +686,7 @@ class TestSlackDownloadSlackFile:
         adapter = _make_slack_adapter()
 
         mock_sleep = AsyncMock()
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=_make_http_status_error(403))
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client = _make_stream_client(side_effect=_make_http_status_error(403))
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
@@ -720,7 +698,7 @@ class TestSlackDownloadSlackFile:
         with pytest.raises(httpx.HTTPStatusError):
             asyncio.run(run())
 
-        assert mock_client.get.call_count == 1
+        assert mock_client.stream.call_count == 1
         mock_sleep.assert_not_called()
 
 
@@ -735,15 +713,9 @@ class TestSlackDownloadSlackFileBytes:
         """Successful download returns raw bytes."""
         adapter = _make_slack_adapter()
 
-        fake_response = MagicMock()
-        fake_response.content = b"raw bytes here"
-        fake_response.raise_for_status = MagicMock()
+        fake_response = _make_stream_response(b"raw bytes here")
         fake_response.headers = {"content-type": "application/pdf"}
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=fake_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client = _make_stream_client(responses=[fake_response])
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client):
@@ -758,15 +730,11 @@ class TestSlackDownloadSlackFileBytes:
         """Slack HTML sign-in pages should not be accepted as file bytes."""
         adapter = _make_slack_adapter()
 
-        fake_response = MagicMock()
-        fake_response.content = b"<!DOCTYPE html><html><title>Slack</title></html>"
-        fake_response.raise_for_status = MagicMock()
+        fake_response = _make_stream_response(
+            b"<!DOCTYPE html><html><title>Slack</title></html>"
+        )
         fake_response.headers = {"content-type": "text/html; charset=utf-8"}
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=fake_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client = _make_stream_client(responses=[fake_response])
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client):
@@ -781,17 +749,11 @@ class TestSlackDownloadSlackFileBytes:
         """429 on first attempt is retried; raw bytes returned on second."""
         adapter = _make_slack_adapter()
 
-        ok_response = MagicMock()
-        ok_response.content = b"final bytes"
-        ok_response.raise_for_status = MagicMock()
+        ok_response = _make_stream_response(b"final bytes")
         ok_response.headers = {"content-type": "application/pdf"}
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(
-            side_effect=[_make_http_status_error(429), ok_response]
+        mock_client = _make_stream_client(
+            responses=[_make_http_status_error(429), ok_response]
         )
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
@@ -802,16 +764,13 @@ class TestSlackDownloadSlackFileBytes:
 
         result = asyncio.run(run())
         assert result == b"final bytes"
-        assert mock_client.get.call_count == 2
+        assert mock_client.stream.call_count == 2
 
     def test_raises_after_max_retries(self):
         """Persistent timeouts raise after all 3 attempts are exhausted."""
         adapter = _make_slack_adapter()
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=_make_timeout_error())
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client = _make_stream_client(side_effect=_make_timeout_error())
 
         async def run():
             with patch("httpx.AsyncClient", return_value=mock_client), \
@@ -823,7 +782,7 @@ class TestSlackDownloadSlackFileBytes:
         with pytest.raises(httpx.TimeoutException):
             asyncio.run(run())
 
-        assert mock_client.get.call_count == 3
+        assert mock_client.stream.call_count == 3
 
 
 # ---------------------------------------------------------------------------

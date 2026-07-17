@@ -222,7 +222,10 @@ slack:
 
 With `on_request`, an authorized user can say, for example, “review the file uploaded
 above” or “위에 올린 파일 검토해줘.” Hermes then inspects the current thread and passes up
-to five prior files to the agent. Files larger than 20 MiB are reported but skipped.
+to five prior files to the agent. Files larger than 20 MiB are reported but skipped, and
+all historical files in one request share a cumulative 20 MiB download budget. The
+`on_request` matcher requires an explicit file/attachment/document reference; broad phrases
+such as “자료 확인” do not trigger historical file retrieval.
 Files uploaded by users outside the allowlist are labeled `[unverified]` and treated as
 data rather than instructions.
 

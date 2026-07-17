@@ -509,6 +509,10 @@ def load_cli_config() -> Dict[str, Any]:
     # overwrite env vars that were already set by .env -- only a user's config
     # file should be authoritative.
     _file_has_terminal_config = False
+    # The default clarify timeout is always populated below.  Keep whether it
+    # was explicitly configured separately so the callback can distinguish a
+    # real override from 120.
+    _clarify_timeout_explicitly_configured = False
 
     # Load from file if exists
     if config_path.exists():
@@ -519,6 +523,10 @@ def load_cli_config() -> Dict[str, Any]:
                 file_config = _normalize_root_model_keys(fast_safe_load(f) or {})
             
             _file_has_terminal_config = "terminal" in file_config
+            _clarify_timeout_explicitly_configured = (
+                isinstance(file_config.get("clarify"), dict)
+                and "timeout" in file_config["clarify"]
+            )
 
             # Handle model config - can be string (new format) or dict (old format)
             if "model" in file_config:
@@ -581,7 +589,14 @@ def load_cli_config() -> Dict[str, Any]:
     # normalization, leaf-merge) and is fail-open.
     from hermes_cli import managed_scope
 
+    # A managed value is authoritative even when it happens to equal the
+    # hardcoded default.  Check the key's provenance before applying the
+    # overlay; comparing values would miss a managed ``timeout: 120``.
+    _managed_clarify_timeout = managed_scope.is_key_managed("clarify.timeout")
     defaults = managed_scope.apply_managed_overlay(defaults)
+    defaults["clarify"]["_clarify_timeout_explicitly_configured"] = (
+        _clarify_timeout_explicitly_configured or _managed_clarify_timeout
+    )
 
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
@@ -11667,7 +11682,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """
         import time as _time
 
-        timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
+        clarify_config = CLI_CONFIG.get("clarify", {})
+        timeout = clarify_config.get("timeout")
+        if not clarify_config.get("_clarify_timeout_explicitly_configured"):
+            fallback = CLI_CONFIG.get("agent", {}).get("clarify_timeout")
+            if fallback is not None:
+                timeout = fallback
+        if timeout is None:
+            timeout = 120
         response_queue = queue.Queue()
         is_open_ended = not choices
 

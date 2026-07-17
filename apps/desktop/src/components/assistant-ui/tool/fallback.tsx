@@ -659,7 +659,10 @@ function useToolWindow(enabled: boolean) {
       syncFade()
     }
 
-    pin()
+    // No sync pin() here: the observer's guaranteed initial delivery runs it
+    // inside RO timing (layout already clean, still before paint). A sync call
+    // at effect time reads scrollHeight while the commit's layout is dirty —
+    // one forced reflow per tool group, which cascades on a session switch.
     const observer = new ResizeObserver(pin)
     observer.observe(content)
 

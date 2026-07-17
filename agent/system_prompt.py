@@ -322,12 +322,22 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if skills_prompt:
         stable_parts.append(skills_prompt)
 
-    # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
-    # of the requested model. Inject explicit model identity into the system prompt
-    # so the agent can correctly report which model it is (workaround for API bug).
-    # Stable for the lifetime of an agent instance — model and provider are fixed
-    # at construction time.
-    if agent.provider == "alibaba":
+    # Some gateways report a wrong model name in API responses (Alibaba's
+    # coding/token-plan gateways return a fixed name regardless of the
+    # requested model). Inject explicit model identity into the system prompt
+    # so the agent can correctly report which model it is (workaround for API
+    # bug). Driven by the provider profile's misreports_model_identity flag so
+    # provider plugins can opt in without a core edit. Stable for the lifetime
+    # of an agent instance — model and provider are fixed at construction time.
+    _misreports_identity = False
+    try:
+        from providers import get_provider_profile
+
+        _profile = get_provider_profile(agent.provider) if agent.provider else None
+        _misreports_identity = bool(_profile and _profile.misreports_model_identity)
+    except Exception:
+        pass
+    if _misreports_identity:
         _model_short = agent.model.split("/")[-1] if "/" in agent.model else agent.model
         stable_parts.append(
             f"You are powered by the model named {_model_short}. "

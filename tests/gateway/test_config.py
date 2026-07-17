@@ -719,6 +719,26 @@ class TestLoadGatewayConfig:
             "123456789012345678,999888777666555444"
         )
 
+    def test_bridges_discord_room_observation_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  observe_unmentioned_group_messages: true\n"
+            "  observed_channels:\n"
+            '    - "123456789012345678"\n',
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        discord_config = config.platforms[Platform.DISCORD]
+        assert discord_config.extra["observe_unmentioned_group_messages"] is True
+        assert discord_config.extra["observed_channels"] == ["123456789012345678"]
+
     def test_bridges_discord_platform_extra_allow_from_to_env(self, tmp_path, monkeypatch):
         """platforms.discord.extra.allow_from should reach DISCORD_ALLOWED_USERS too."""
         hermes_home = tmp_path / ".hermes"

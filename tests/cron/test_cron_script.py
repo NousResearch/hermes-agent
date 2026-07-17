@@ -249,6 +249,33 @@ class TestRunJobScript:
         assert captured["kwargs"]["encoding"] == "utf-8"
         assert captured["kwargs"]["errors"] == "replace"
 
+    def test_non_windows_script_preserves_default_text_decoding(self, cron_env, monkeypatch):
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text('print("ok")\n')
+
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+        monkeypatch.setattr(sched_mod.sys, "platform", "linux")
+        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+
+        success, output = _run_job_script("probe.py")
+
+        assert success is True
+        assert output == "ok"
+        assert captured["argv"] == [sys.executable, str(script.resolve())]
+        assert captured["kwargs"]["text"] is True
+        assert "creationflags" not in captured["kwargs"]
+        assert "encoding" not in captured["kwargs"]
+        assert "errors" not in captured["kwargs"]
+
     def test_script_empty_output(self, cron_env):
         from cron.scheduler import _run_job_script
 

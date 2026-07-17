@@ -3875,6 +3875,7 @@ class BasePlatformAdapter(ABC):
         interval: float = 2.0,
         metadata=None,
         stop_event: asyncio.Event | None = None,
+        completion_event: asyncio.Event | None = None,
     ) -> None:
         """
         Continuously send typing indicator until cancelled.
@@ -3886,6 +3887,11 @@ class BasePlatformAdapter(ABC):
         the agent is waiting for dangerous-command approval).  This is critical
         for Slack's Assistant API where ``assistant_threads_setStatus`` disables
         the compose box — pausing lets the user type ``/approve`` or ``/deny``.
+
+        ``stop_event`` remains the reusable session interrupt signal so adapter
+        overrides keep their existing steering contract. ``completion_event``
+        is scoped to one background turn and prevents a delayed or
+        cancellation-resistant refresher from outliving that turn.
 
         Each ``send_typing`` call is bounded by a ~1.5s timeout so a slow
         network round-trip can't stall the refresh cadence.  Telegram- and
@@ -3900,9 +3906,16 @@ class BasePlatformAdapter(ABC):
         # gated on network health.  Must stay below ``interval`` so a slow
         # call gets abandoned before the next scheduled tick.
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+
+        def _typing_should_stop() -> bool:
+            return bool(
+                (stop_event is not None and stop_event.is_set())
+                or (completion_event is not None and completion_event.is_set())
+            )
+
         try:
             while True:
-                if stop_event is not None and stop_event.is_set():
+                if _typing_should_stop():
                     return
                 if chat_id not in self._typing_paused:
                     try:
@@ -3921,12 +3934,12 @@ class BasePlatformAdapter(ABC):
                             "[%s] send_typing error (non-fatal): %s",
                             self.name, typing_err,
                         )
-                if stop_event is None:
+                if stop_event is None and completion_event is None:
                     await asyncio.sleep(interval)
                     continue
                 loop = asyncio.get_running_loop()
                 deadline = loop.time() + interval
-                while not stop_event.is_set():
+                while not _typing_should_stop():
                     remaining = deadline - loop.time()
                     if remaining <= 0:
                         break
@@ -3935,7 +3948,7 @@ class BasePlatformAdapter(ABC):
                     # shutdown paths stuck awaiting the typing task on Python
                     # 3.11/pytest-asyncio; sleep cancellation is immediate.
                     await asyncio.sleep(min(0.25, remaining))
-                if stop_event.is_set():
+                if _typing_should_stop():
                     return
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
@@ -4922,14 +4935,36 @@ class BasePlatformAdapter(ABC):
         # typing_task stays None; _stop_typing_refresh already no-ops on None.
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
         typing_task: Optional[asyncio.Task] = None
+        typing_completion_event = asyncio.Event()
         if getattr(self.config, "typing_indicator", True):
             _keep_typing_kwargs: Dict[str, Any] = {"metadata": _thread_metadata}
             try:
                 _keep_typing_sig = inspect.signature(self._keep_typing)
             except (TypeError, ValueError):
                 _keep_typing_sig = None
-            if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
+            _keep_typing_accepts_kwargs = bool(
+                _keep_typing_sig
+                and any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in _keep_typing_sig.parameters.values()
+                )
+            )
+            if (
+                _keep_typing_sig is None
+                or _keep_typing_accepts_kwargs
+                or "stop_event" in _keep_typing_sig.parameters
+            ):
+                # Preserve the established stop_event contract for adapter
+                # overrides: it is the reusable session interrupt signal.
                 _keep_typing_kwargs["stop_event"] = interrupt_event
+            if (
+                _keep_typing_sig is not None
+                and (
+                    _keep_typing_accepts_kwargs
+                    or "completion_event" in _keep_typing_sig.parameters
+                )
+            ):
+                _keep_typing_kwargs["completion_event"] = typing_completion_event
             typing_task = asyncio.create_task(
                 self._keep_typing(
                     event.source.chat_id,
@@ -4938,6 +4973,10 @@ class BasePlatformAdapter(ABC):
             )
 
         async def _stop_typing_task() -> None:
+            # Revoke this turn's typing lease before best-effort cancellation.
+            # A delayed or cancellation-resistant refresh task must not resume
+            # sending platform typing actions after cleanup unpauses the chat.
+            typing_completion_event.set()
             await self._stop_typing_refresh(
                 event.source.chat_id,
                 typing_task,

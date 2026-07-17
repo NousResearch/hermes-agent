@@ -1,0 +1,43 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: qq-mail
+category: email
+description: Read, search, send QQ Mail (@qq.com / @foxmail.com) via IMAP+SMTP MCP server.
+source: https://github.com/hermes-agent/mcp-imap
+
+# QQ Mail uses IMAP+SMTP with an "authorization code" (授权码) — you generate
+# a 16-char code in QQ 邮箱 settings and use it as the SMTP/IMAP password.
+# Regular QQ password does not work for third-party clients.
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - "mcp-server-imap==0.2.1"
+  env:
+    IMAP_HOST: imap.qq.com
+    IMAP_PORT: "993"
+    SMTP_HOST: smtp.qq.com
+    SMTP_PORT: "465"
+
+auth:
+  type: api_key
+  env:
+    - name: QQ_MAIL_ADDRESS
+      prompt: "QQ 邮箱地址（如 xxx@qq.com）"
+      required: true
+      secret: false
+    - name: QQ_MAIL_AUTHCODE
+      prompt: "QQ 邮箱授权码（16 位，非 QQ 密码）"
+      required: true
+      secret: true
+
+post_install: |
+  获取 QQ 邮箱授权码步骤（不能用 QQ 密码）：
+    1. 登录 https://mail.qq.com
+    2. 顶部菜单 → 设置 → 账户
+    3. 找到「POP3/IMAP/SMTP/Exchange/CardDAV/CalDAV 服务」
+    4. 开启「IMAP/SMTP 服务」→ 发送短信 → 得到 16 位授权码
+    5. 授权码填入 QQ_MAIL_AUTHCODE，QQ 邮箱地址填入 QQ_MAIL_ADDRESS
+    6. 重启 Hermes 会话

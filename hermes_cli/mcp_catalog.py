@@ -123,6 +123,7 @@ class CatalogEntry:
     tools: ToolsSpec = field(default_factory=ToolsSpec)
     install: Optional[InstallSpec] = None
     post_install: str = ""
+    category: str = ""
     manifest_path: Path = field(default_factory=Path)
 
 
@@ -274,6 +275,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         tools=tools_spec,
         install=install,
         post_install=str(data.get("post_install") or ""),
+        category=str(data.get("category") or "").strip().lower(),
         manifest_path=path,
     )
 

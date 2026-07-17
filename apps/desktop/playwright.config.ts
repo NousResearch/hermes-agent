@@ -38,6 +38,14 @@ export default defineConfig({
   use: {
     screenshot: 'on',
     trace: { mode: 'on', screenshots: true, snapshots: true, sources: true },
+    // Emulate prefers-reduced-motion: reduce so all CSS transitions and
+    // animations resolve instantly. This prevents boot/connecting overlays
+    // from being mid-fade when a screenshot fires, and skips JS-driven exit
+    // choreography in components that check matchMedia (onboarding, connecting
+    // overlay, DecodeText). Without this, screenshots capture the loading bar
+    // or overlay at a transient opacity because the text-content check fires
+    // before the visual transition finishes.
+    reducedMotion: 'reduce',
   },
   expect: {
     toHaveScreenshot: {

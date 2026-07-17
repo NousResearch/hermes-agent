@@ -3,15 +3,15 @@ label: Zalo
 kind: platform
 version: 0.2.0
 description: >
-  Zalo Bot Platform gateway adapter for Hermes Agent. Uses the official
-  Zalo Bot API over long polling, with an optional external URL intake page
-  for links that Zalo does not deliver to bots.
+  Official Zalo Bot Platform channel for Hermes Agent, with long polling for
+  local development and authenticated webhooks for production.
 author: Hermes Agent contributors
 requires_env:
   - name: ZALO_BOT_TOKEN
     description: "Zalo Bot Platform token from Zalo Bot Manager"
     prompt: "Zalo bot token"
     password: true
+    url: "https://docs.zaloplatforms.com/docs/BOT/create_bot"
 optional_env:
   - name: ZALO_ALLOWED_USERS
     description: "Comma-separated Zalo user IDs allowed to talk to this bot"
@@ -44,10 +44,6 @@ optional_env:
   - name: ZALO_PARSE_MODE
     description: "Text formatting mode for sendMessage: markdown, html, or blank for plain text"
     prompt: "Zalo parse mode"
-    password: false
-  - name: ZALO_SUPPRESS_NOISY_STATUS
-    description: "Hide transient gateway status notices such as preflight compression, context compaction, retry backoff, and auxiliary-model chatter (default: true)"
-    prompt: "Suppress noisy gateway status notices? (true/false)"
     password: false
   - name: ZALO_HOME_CHANNEL
     description: "Default chat ID for cron / notification delivery"
@@ -92,12 +88,4 @@ optional_env:
   - name: ZALO_DELETE_WEBHOOK_ON_DISCONNECT
     description: "Call deleteWebhook when the adapter disconnects from webhook mode (default: false)"
     prompt: "Delete webhook on disconnect? (true/false)"
-    password: false
-  - name: ZALO_URL_INTAKE_PUBLIC_BASE
-    description: "Public HTTPS base URL for the URL intake page"
-    prompt: "URL intake public base"
-    password: false
-  - name: ZALO_URL_INTAKE_PENDING_FILE
-    description: "Local pending-submissions JSON file used by the URL intake server"
-    prompt: "URL intake pending file"
     password: false

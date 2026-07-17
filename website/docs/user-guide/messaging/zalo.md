@@ -18,7 +18,7 @@ Run Hermes Agent as a [Zalo](https://zalo.me/) bot via the Zalo Bot Platform API
 | **Group/channel chat** | Ignored when `ZALO_DM_ONLY=true`; otherwise routed through normal allowlist checks |
 | **Cron / notifications** | Delivered to `ZALO_HOME_CHANNEL` when configured |
 
-Inbound text, image, voice, sticker, document, and link-preview events are normalized into Hermes message events when Zalo exposes their content to the bot. Some Zalo clients convert pasted URLs into rich preview cards that may not include the raw URL in bot updates. For those cases, configure the optional URL intake page so the user can submit the URL through a normal HTTPS form and continue the chat in Zalo.
+Inbound text, image, voice, sticker, and supported link content are normalized into Hermes message events when Zalo exposes their content to the bot. Zalo may send `message.unsupported.received` without the original content for protected or unsupported messages; Hermes reports that limitation instead of guessing what was sent.
 
 ## Step 1: Create a Zalo bot
 
@@ -86,9 +86,6 @@ platforms:
       chat_id: USER_OR_CHAT_ID
       name: Zalo Home
 
-    # Hide transient status chatter like preflight compression, compaction,
-    # retry backoff, and auxiliary-model notices. Defaults to true.
-    suppress_noisy_status: true
     # Disable gateway shutdown/restart/startup lifecycle pings on Zalo.
     # Defaults to true when omitted.
     gateway_restart_notification: false
@@ -99,19 +96,6 @@ Restart the gateway:
 ```bash
 hermes gateway restart
 ```
-
-## Optional URL intake
-
-If your users often send Google Drive, Google Sheets, or other long links that Zalo converts into unreadable preview events, run a small intake page and point the adapter at its public base URL:
-
-```yaml
-platforms:
-  zalo:
-    url_intake_public_base: https://your-intake.example.com
-    url_intake_pending_file: /var/lib/hermes/zalo-url-intake/pending.json
-```
-
-When Zalo delivers an unsupported/no-content event, the adapter can include an instruction for the agent to send the user to the intake page. The next inbound Zalo message from the same chat includes the submitted URL in the session context.
 
 ## Relationship to other Zalo work
 
@@ -125,6 +109,5 @@ This adapter uses the official Zalo Bot Platform API and is packaged as a bundle
 | Group messages are ignored | Check `ZALO_DM_ONLY`. This is intentional when private-chat-only mode is enabled. |
 | Webhook starts but receives nothing | Check the public HTTPS URL, `ZALO_WEBHOOK_PATH`, and Bot Manager webhook settings. |
 | Long polling receives nothing after webhook testing | Clear the Bot Platform webhook or set `ZALO_DELETE_WEBHOOK_ON_POLLING_START=true` for the long-polling profile. |
-| Link cards are unreadable | Configure URL intake, or ask the user to send the URL as broken plain text such as `docs . google . com / spreadsheets / d / SHEET_ID`. |
-| Compression/compaction notices are hidden | This is the default Zalo behavior. Set `platforms.zalo.suppress_noisy_status: false` or `ZALO_SUPPRESS_NOISY_STATUS=false` if you want those transient gateway notices delivered. |
+| Zalo reports an unsupported message | Ask the user to resend the content as plain text or as a supported image or voice message. Zalo can intentionally omit content for some unsupported events. |
 | Gateway shutdown/restart notices are noisy | Set `platforms.zalo.gateway_restart_notification: false`. |

@@ -9,13 +9,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { Eye, EyeOff, ExternalLink, Trash2 } from '@/lib/icons'
 import { triggerHaptic } from '@/lib/haptics'
+import { ExternalLink, Eye, EyeOff, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
-interface EnvVarActionsMenuProps
-  extends Pick<React.ComponentProps<typeof DropdownMenuContent>, 'align' | 'sideOffset'> {
+interface EnvVarActionsMenuProps extends Pick<
+  React.ComponentProps<typeof DropdownMenuContent>,
+  'align' | 'sideOffset'
+> {
   children: React.ReactNode
   clearDisabled?: boolean
   docsUrl?: string | null
@@ -51,12 +54,7 @@ export function EnvVarActionsMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-      <DropdownMenuContent
-        align={align}
-        aria-label={copy.actionsFor(label)}
-        className="w-44"
-        sideOffset={sideOffset}
-      >
+      <DropdownMenuContent align={align} aria-label={copy.actionsFor(label)} className="w-44" sideOffset={sideOffset}>
         {hasDocs && (
           <DropdownMenuItem
             onSelect={event => {
@@ -122,15 +120,16 @@ export function EnvVarActionsTrigger({ className, label, ...props }: EnvVarActio
   const copy = t.settings.envActions
 
   return (
-    <Button
-      aria-label={copy.actionsFor(label)}
-      className={cn('text-muted-foreground hover:text-foreground', className)}
-      size="icon-sm"
-      title={copy.credentialActions}
-      variant="ghost"
-      {...props}
-    >
-      <Codicon name="ellipsis" size="0.875rem" />
-    </Button>
+    <Tip label={copy.credentialActions}>
+      <Button
+        aria-label={copy.actionsFor(label)}
+        className={cn('text-muted-foreground hover:text-foreground', className)}
+        size="icon-sm"
+        variant="ghost"
+        {...props}
+      >
+        <Codicon name="ellipsis" size="0.875rem" />
+      </Button>
+    </Tip>
   )
 }

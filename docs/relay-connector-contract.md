@@ -51,6 +51,7 @@ JSON object. Source of truth: `gateway/relay/descriptor.py`.
 | `emoji` | string | no | Display emoji (default 🔌). |
 | `platform_hint` | string | no | System-prompt platform hint. |
 | `pii_safe` | bool | no | Redact PII in session descriptions. |
+| `supports_context` | bool | no | Whether the connector can supply surrounding channel/group **context** for an addressed turn on this platform (Model A on-demand history fetch — Discord/Slack/Matrix; Model B passive buffer — Telegram/Signal/WhatsApp). Default false ⇒ no `context` is attached to inbound events. See §3. |
 
 Most fields are a projection of the gateway's existing `PlatformEntry`; the
 runtime-only fields (`len_unit`, `supports_*`, `markdown_dialect`) come from the
@@ -94,6 +95,24 @@ Frames (connector → gateway, over the WS):
 - `{"type":"inbound", "event": <MessageEvent>, "bufferId"?}`
 - `{"type":"interrupt_inbound", "session_key", "chat_id"}` (§5)
 - `{"type":"passthrough_forward", "forward": <PassthroughForward>, "bufferId"?}` (§5.1)
+
+**Channel context on inbound (design relay-channel-context).** When the source
+platform's descriptor advertised `supports_context` (§2) and the chat is
+multi-party (`chat_type` ∈ group/channel/thread/forum, never `dm`), the
+connector MAY attach two optional, additive fields to the inbound `MessageEvent`:
+
+- `context`: an array of read-only surrounding messages (same channel, oldest→
+  newest) — nearby non-addressed chatter the connector fetched (Model A) or
+  buffered (Model B). REFERENCE ONLY: it never triggers the agent (the trigger
+  decision was already made connector-side on the addressed event alone). The
+  gateway renders it into `MessageEvent.channel_context` (the same read-only
+  injection path history-backfill uses).
+- `context_error`: bool, true when the platform is context-capable but the
+  fetch/buffer failed and the connector fail-opened to an empty `context`
+  (observability marker; surfaced connector-side via the delivery span).
+
+Both absent ⇒ byte-identical to today. A connector that never sends them, or a
+`dm`, or a no-context platform, yields no `channel_context`.
 
 `PassthroughForward` is the wire form of a forwarded passthrough-plane request
 (Class-2/3 webhooks — Discord interactions, Twilio): `{platform, botId, method,
@@ -156,7 +175,8 @@ present (may be `null`); the rest are included only when set.
 | `chat_topic` | string\|null | yes | Channel topic/description (Discord, Slack). |
 | `user_id_alt` | string | no | Platform-specific stable alt id (Signal UUID, Feishu union_id). |
 | `chat_id_alt` | string | no | Alternate chat id (e.g. Signal group internal id). |
-| `guild_id` | string | no | Discord guild / Slack workspace / Matrix server scope. **REQUIRED for Discord server isolation.** Session-key discriminator. |
+| `scope_id` | string | no | Platform-neutral **scope** discriminator: Discord guild / Slack workspace / Matrix server. **REQUIRED for Discord/Slack scope isolation.** Session-key discriminator. (Canonical name as of the D-Q2.5 wire migration.) |
+| `guild_id` | string | no | **Legacy alias, no longer read by the connector.** As of D-Q2.5c the connector reads and writes only `scope_id`; the gateway's agent-wide `SessionSource.to_dict()` still emits `guild_id` (mirrored to `scope_id`) for non-relay session persistence, so it may still appear on the wire but the connector ignores it. Do not depend on it. |
 | `parent_chat_id` | string | no | Parent channel when `chat_id` refers to a thread. |
 | `message_id` | string | no | Id of the triggering message (for pin/reply/react). |
 
@@ -167,7 +187,7 @@ present (may be `null`); the rest are included only when set.
 
 ### SessionSource discriminators per platform
 
-| Platform | chat_id | chat_type | user_id | thread_id | guild_id |
+| Platform | chat_id | chat_type | user_id | thread_id | scope_id |
 | --- | --- | --- | --- | --- | --- |
 | **Discord** | channel id | `dm`/`group`/`thread` | author id | thread channel id (threads) | **guild id** (REQUIRED for server isolation) |
 | **Telegram** | chat id | `dm`/`group`/`forum` | from id | forum topic id (forums) | — |
@@ -185,6 +205,56 @@ tenant**. Tenant is resolved from the event's own discriminator (Discord
 `guild_id`, Telegram `chat_id`, webhook path/subdomain) — **never** from which
 token/socket/process delivered it. This keeps one shared bot able to front many
 tenants (Phase 6) without overloading an existing field.
+
+### Author-first resolution + the account-link (DM) path (Phase 7)
+
+Phase 7 adds **self-serve, per-user onboarding to a shared bot**, which changes
+*which* discriminator resolves the instance for a routed inbound message — and
+adds a management path for users to bind their own account.
+
+**Author-first resolution (the multi-tenant-guild rule, D-7.2).** A single
+Discord guild may hold **many** tenants — different members each linked to their
+own agent. So for delivery the connector resolves the destination instance from
+the **authenticated author binding** (`user_instance_binding`, keyed by
+`(tenant, platform, platform_user_id)` via `resolveByUser`), **NOT** by a
+guild→instance route. Concretely:
+
+- A routed message authored by a **linked** user reaches **only that user's**
+  instance — even when a second linked user in the **same guild** is served by a
+  different instance (each reaches only their own).
+- A message authored by an **unlinked** user resolves to **no** instance and is
+  dropped (**fail-closed** — never broadcast to the guild's other tenants).
+- The author id used is the **authentic `user_id` off the observed event**, the
+  same `SessionSource.user_id` documented above — never a value asserted by a
+  gateway or carried in a management frame.
+
+This is the per-`user_id` owner-only routing the connector enforces in
+`WsGatewayDelivery` (the gateway-side multi-tenant-guild E2E driver
+`gateway_multitenant_guild_driver.py` is the cross-repo oracle).
+
+**The account-link (DM) path.** A user binds their account to an instance with a
+one-time code, redeemed by DMing the shared bot:
+
+1. The owner triggers a link from the Portal (or a self-hosted CLI). The
+   connector mints a short-lived **link code** for the **authenticated**
+   instance (`POST /manage/link`; instanceId comes from the caller's principal —
+   a NAS-signed `aud=agent:{instanceId}` token or the instance's own per-gateway
+   secret — **never** the request body).
+2. The user sends `/link <code>` as a **direct message** to the shared bot from
+   the account they want to bind.
+3. The connector's inbound observer **consumes** that DM (it is not routed to any
+   agent) and writes the `user_instance_binding` using the **authentic
+   `user_id`** off the observed DM event. From then on, author-first resolution
+   routes that user's messages to the bound instance.
+
+**Opt-out is connector-authoritative.** Deprovisioning an instance
+(`POST /manage/deprovision`) drops its author bindings (so its users stop
+resolving to it) **and** revokes its per-gateway secret (so its socket can no
+longer authenticate — the next WS upgrade is closed **4401**). A gateway that
+sees a **4401 close after a previously-successful handshake** treats it as a
+terminal revocation: it stops reconnecting and reports the relay platform as
+**disabled** (not a retryable error). A 4401 *before* any successful handshake
+stays retryable (a cold-start / not-yet-provisioned race, not a revocation).
 
 ### 3.2 Going-idle / buffered-flip primitive (§5.3)
 

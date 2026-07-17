@@ -314,12 +314,12 @@ class TestOpenRouterProfile:
 
         Covers the full real config range produced by
         ``hermes_constants.parse_reasoning_effort`` —
-        ``VALID_REASONING_EFFORTS = (minimal, low, medium, high, xhigh)``.
+        ``VALID_REASONING_EFFORTS`` (including max and ultra).
         """
         p = get_provider_profile("openrouter")
         model = "anthropic/claude-fable-5"
         assert self._is_mandatory(model)  # fixture really is mandatory
-        for effort in ("minimal", "low", "medium", "high", "xhigh"):
+        for effort in ("minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
             eb, tl = p.build_api_kwargs_extras(
                 reasoning_config={"enabled": True, "effort": effort},
                 supports_reasoning=True,
@@ -342,14 +342,12 @@ class TestOpenRouterProfile:
 
     def test_mandatory_anthropic_verbosity_is_value_agnostic_passthrough(self):
         """The mapping passes the effort value through verbatim — it must NOT
-        clamp or whitelist. ``xhigh`` is a real config value; ``max`` is not
-        producible by ``parse_reasoning_effort`` today but OpenRouter accepts it
-        for Claude (live-proven in #43432), so a forward value must survive
+        clamp or whitelist. Extended values must survive
         rather than be silently dropped. The OpenAI SDK type only literals
         ``low|medium|high`` but it's a TypedDict (no runtime validation), so the
         extended scale reaches the wire untouched."""
         p = get_provider_profile("openrouter")
-        for effort in ("xhigh", "max"):
+        for effort in ("xhigh", "max", "ultra"):
             _, tl = p.build_api_kwargs_extras(
                 reasoning_config={"enabled": True, "effort": effort},
                 supports_reasoning=True,
@@ -414,6 +412,25 @@ class TestNousProfile:
         body = p.build_extra_body()
         assert body["tags"] == nous_portal_tags()
 
+    def test_extra_body_with_provider_preferences(self):
+        from agent.portal_tags import nous_portal_tags
+
+        p = get_provider_profile("nous")
+        assert p is not None
+        preferences = {"only": ["deepseek"], "ignore": ["deepinfra"]}
+        body = p.build_extra_body(provider_preferences=preferences)
+
+        assert body == {
+            "tags": nous_portal_tags(),
+            "provider": preferences,
+        }
+
+    def test_tags_include_conversation_when_session_id(self):
+        from agent.portal_tags import conversation_tag
+        p = get_provider_profile("nous")
+        body = p.build_extra_body(session_id="sess-99")
+        assert conversation_tag("sess-99") in body["tags"]
+
     def test_auth_type(self):
         p = get_provider_profile("nous")
         assert p.auth_type == "oauth_device_code"
@@ -463,6 +480,69 @@ class TestQwenProfile:
         # User message: content normalized to list
         assert isinstance(result[1]["content"], list)
         assert result[1]["content"][0]["text"] == "hello"
+
+    def test_prepare_messages_copy_on_write(self):
+        p = get_provider_profile("qwen-oauth")
+        system_part = {"type": "text", "text": "Be helpful"}
+        msgs = [
+            {"role": "system", "content": [system_part]},
+            {"role": "assistant", "content": [{"type": "text", "text": "unchanged"}]},
+            {"role": "user", "content": ["hello"]},
+        ]
+
+        result = p.prepare_messages(msgs)
+
+        assert result is not msgs
+        assert result[0] is not msgs[0]
+        assert result[0]["content"] is not msgs[0]["content"]
+        assert result[0]["content"][0] is not system_part
+        assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in system_part
+        assert result[1] is msgs[1]
+        assert result[2] is not msgs[2]
+        assert result[2]["content"] == [{"type": "text", "text": "hello"}]
+        assert msgs[2]["content"] == ["hello"]
+
+    def test_prepare_messages_does_not_poison_strict_provider_history(self):
+        qwen = get_provider_profile("qwen-oauth")
+        msgs = [
+            {"role": "system", "content": [{"type": "text", "text": "Be helpful"}]},
+            {"role": "user", "content": "hello"},
+        ]
+
+        qwen_result = qwen.prepare_messages(msgs)
+
+        assert qwen_result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in msgs[0]["content"][0]
+        assert msgs[1]["content"] == "hello"
+
+    def test_prepare_messages_protects_nested_image_url_retry_mutation(self):
+        qwen = get_provider_profile("qwen-oauth")
+        image_url = {"url": "data:image/png;base64,original"}
+        msgs = [
+            {"role": "system", "content": "Be helpful"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "see image"},
+                    {"type": "image_url", "image_url": image_url},
+                ],
+            },
+        ]
+
+        qwen_result = qwen.prepare_messages(msgs)
+
+        assert qwen_result[1] is not msgs[1]
+        assert qwen_result[1]["content"] is not msgs[1]["content"]
+        assert qwen_result[1]["content"][1] is not msgs[1]["content"][1]
+        assert qwen_result[1]["content"][1]["image_url"] is not image_url
+
+        qwen_result[1]["content"][1]["image_url"]["url"] = (
+            "data:image/png;base64,shrunk"
+        )
+        assert msgs[1]["content"][1]["image_url"]["url"] == (
+            "data:image/png;base64,original"
+        )
 
     def test_metadata_top_level(self):
         p = get_provider_profile("qwen-oauth")

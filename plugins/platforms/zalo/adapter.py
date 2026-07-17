@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import json
 import logging
 import os
 import random
@@ -20,7 +19,7 @@ import re
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 import httpx
 
@@ -62,25 +61,6 @@ EVENT_IMAGE = "message.image.received"
 EVENT_STICKER = "message.sticker.received"
 EVENT_VOICE = "message.voice.received"
 EVENT_UNSUPPORTED = "message.unsupported.received"
-EVENT_LINK = "message.link.received"
-ZALO_NOISY_STATUS_RE = re.compile(
-    r"("
-    r"auxiliary\s+.+\s+failed"
-    r"|compression\s+summary\s+failed"
-    r"|fallback\s+context\s+marker"
-    r"|configured\s+compression\s+model\s+.+\s+failed"
-    r"|no\s+auxiliary\s+llm\s+provider\s+configured"
-    r"|auto-lowered\s+compression\s+threshold"
-    r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
-    r"|preflight\s+compression"
-    r"|rate\s+limited\.\s+waiting\s+\d"
-    r"|retrying\s+in\s+\d"
-    r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
-    r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
-    r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
-    r")",
-    re.IGNORECASE | re.DOTALL,
-)
 TOP_LEVEL_UPDATE_KEYS = {
     "message",
     "event",
@@ -473,11 +453,6 @@ class ZaloAdapter(BasePlatformAdapter):
         if self.parse_mode not in {"", "markdown", "html"}:
             logger.warning("Zalo: unsupported parse_mode=%r; sending plain text", self.parse_mode)
             self.parse_mode = ""
-        self.suppress_noisy_status = self._config_bool(
-            "suppress_noisy_status",
-            "ZALO_SUPPRESS_NOISY_STATUS",
-            True,
-        )
         self.allow_all = _truthy(os.getenv("ZALO_ALLOW_ALL_USERS")) or bool(
             extra.get("allow_all_users", False)
         )
@@ -557,17 +532,6 @@ class ZaloAdapter(BasePlatformAdapter):
             "ZALO_DELETE_WEBHOOK_ON_DISCONNECT",
             False,
         )
-        self.url_intake_public_base = str(
-            os.getenv("ZALO_URL_INTAKE_PUBLIC_BASE")
-            or extra.get("url_intake_public_base")
-            or ""
-        ).strip().rstrip("/")
-        self.url_intake_pending_file = str(
-            os.getenv("ZALO_URL_INTAKE_PENDING_FILE")
-            or extra.get("url_intake_pending_file")
-            or ""
-        ).strip()
-
         self._client: Optional[httpx.AsyncClient] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._web_runner: Any = None
@@ -581,7 +545,8 @@ class ZaloAdapter(BasePlatformAdapter):
     def _bot_base_url(self) -> str:
         return f"{self.api_base}/bot{self.bot_token}"
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        _ = is_reconnect
         if not self.bot_token:
             self._set_fatal_error(
                 "config_missing",
@@ -774,15 +739,6 @@ class ZaloAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"id": str(chat_id), "name": str(chat_id), "type": "dm"}
-
-    def prepare_gateway_status_message(self, event_type: str, message: str) -> Optional[str]:
-        """Filter transient gateway status chatter before it reaches Zalo users."""
-        text = str(message or "").strip()
-        if not text:
-            return None
-        if self.suppress_noisy_status and ZALO_NOISY_STATUS_RE.search(text):
-            return None
-        return text
 
     async def send_image(
         self,
@@ -1074,9 +1030,6 @@ class ZaloAdapter(BasePlatformAdapter):
             return
 
         text, message_type, media_urls, media_types = await self._event_content(update, message)
-        intake_text = self._pop_url_intake_text(str(chat_id))
-        if intake_text:
-            text = f"{text}\n\n{intake_text}".strip()
         if not text and not media_urls:
             logger.info(
                 "Zalo: skipped update without text or supported media event_name=%s keys=%s message_keys=%s",
@@ -1152,7 +1105,7 @@ class ZaloAdapter(BasePlatformAdapter):
         document_url = str(_first_from(payloads, *DOCUMENT_URL_PATHS) or "")
         caption = str(_first_from(payloads, *CAPTION_PATHS) or "").strip()
 
-        if not text and (event_name == EVENT_LINK or _link_preview_text(message, update)):
+        if not text and _link_preview_text(message, update):
             text = _link_preview_text(message, update)
 
         if event_name == EVENT_IMAGE or photo_url:
@@ -1194,20 +1147,6 @@ class ZaloAdapter(BasePlatformAdapter):
                     sorted(str(key) for key in update.keys())[:16],
                     sorted(str(key) for key in message.keys())[:16],
                 )
-            chat_id = self._extract_chat_id(update, message) or ""
-            intake_link = self._url_intake_link(str(chat_id))
-            intake_instruction = (
-                f"Ask the user to open this intake page and paste the URL there: {intake_link}. "
-                "After submitting, they should return to Zalo and send a short message like "
-                "`da gui link`; the next inbound message will include the submitted URL."
-                if intake_link
-                else (
-                    "Ask the user to send the link as broken plain text, for example "
-                    "`drive . google . com / drive / folders / FOLDER_ID` or "
-                    "`docs . google . com / spreadsheets / d / SHEET_ID / edit`; "
-                    "the adapter can reconstruct that when Zalo delivers it as text."
-                )
-            )
             text = (
                 text
                 or link_text
@@ -1216,12 +1155,8 @@ class ZaloAdapter(BasePlatformAdapter):
                     "or media content to the bot for this event. Reply in the user's "
                     "language. Explain briefly that this exact Zalo message cannot be "
                     "read because Zalo sent it as an unsupported/no-content event. "
-                    "Do not ask the user to paste the same normal full URL again, "
-                    "because Zalo may keep converting it into an unreadable link "
-                    f"preview/card. {intake_instruction} "
-                    "For other sources, ask for raw text or a short non-URL identifier "
-                    "that can be reconstructed. Do not ask for unrelated website brief "
-                    "details until the source is readable.]"
+                    "Ask the user to resend the content as plain text or as a supported "
+                    "image or voice message. Do not invent content that Zalo omitted.]"
                 )
             )
 
@@ -1279,59 +1214,6 @@ class ZaloAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("Zalo: failed to cache %s media URL: %s", kind, exc)
         return None
-
-    def _url_intake_link(self, chat_id: str) -> str:
-        if not self.url_intake_public_base or not chat_id:
-            return ""
-        return f"{self.url_intake_public_base}/i?chat_id={quote(str(chat_id), safe='')}"
-
-    def _pop_url_intake_text(self, chat_id: str) -> str:
-        if not self.url_intake_pending_file or not chat_id:
-            return ""
-        path = self.url_intake_pending_file
-        try:
-            if not os.path.exists(path):
-                return ""
-            lock_path = f"{path}.lock"
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(lock_path, "a+", encoding="utf-8") as lock_handle:
-                try:
-                    import fcntl
-
-                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-                except Exception:
-                    fcntl = None  # type: ignore[assignment]
-                try:
-                    with open(path, "r", encoding="utf-8") as pending_handle:
-                        pending = json.load(pending_handle)
-                    if not isinstance(pending, dict):
-                        return ""
-                    entries = pending.pop(str(chat_id), [])
-                    with open(path, "w", encoding="utf-8") as pending_handle:
-                        json.dump(pending, pending_handle, ensure_ascii=False, indent=2)
-                finally:
-                    try:
-                        if fcntl is not None:  # type: ignore[name-defined]
-                            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-                    except Exception:
-                        pass
-            if not isinstance(entries, list) or not entries:
-                return ""
-            lines = ["[Zalo URL intake submissions for this chat]"]
-            for idx, entry in enumerate(entries[-10:], 1):
-                if not isinstance(entry, dict):
-                    continue
-                url = _safe_str(entry.get("url"), limit=4096)
-                note = _safe_str(entry.get("note"), limit=1000)
-                if not url:
-                    continue
-                lines.append(f"{idx}. URL: {url}")
-                if note:
-                    lines.append(f"   Note: {note}")
-            return "\n".join(lines) if len(lines) > 1 else ""
-        except Exception as exc:
-            logger.warning("Zalo: failed to read URL intake submissions: %s", exc)
-            return ""
 
     def _extract_message_id(self, payload: Any) -> Optional[str]:
         if isinstance(payload, dict):
@@ -1432,8 +1314,6 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
         parse_mode = os.environ["ZALO_PARSE_MODE"].strip().lower()
         if parse_mode in {"markdown", "html", ""}:
             seeded["parse_mode"] = parse_mode
-    if os.getenv("ZALO_SUPPRESS_NOISY_STATUS"):
-        seeded["suppress_noisy_status"] = _truthy(os.environ["ZALO_SUPPRESS_NOISY_STATUS"])
     webhook_url = os.getenv("ZALO_WEBHOOK_URL") or os.getenv("ZALO_WEBHOOK_PUBLIC_URL")
     if webhook_url:
         seeded["webhook_url"] = webhook_url.strip()
@@ -1458,10 +1338,6 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
         seeded["delete_webhook_on_disconnect"] = _truthy(
             os.environ["ZALO_DELETE_WEBHOOK_ON_DISCONNECT"]
         )
-    if os.getenv("ZALO_URL_INTAKE_PUBLIC_BASE"):
-        seeded["url_intake_public_base"] = os.environ["ZALO_URL_INTAKE_PUBLIC_BASE"].strip()
-    if os.getenv("ZALO_URL_INTAKE_PENDING_FILE"):
-        seeded["url_intake_pending_file"] = os.environ["ZALO_URL_INTAKE_PENDING_FILE"].strip()
     return seeded
 
 
@@ -1484,7 +1360,6 @@ def _apply_yaml_config(yaml_cfg: dict, zalo_cfg: dict) -> dict | None:
         "poll_interval_seconds",
         "connection_mode",
         "parse_mode",
-        "suppress_noisy_status",
         "webhook_url",
         "webhook_public_url",
         "webhook_path",
@@ -1493,8 +1368,6 @@ def _apply_yaml_config(yaml_cfg: dict, zalo_cfg: dict) -> dict | None:
         "webhook_auto_register",
         "delete_webhook_on_polling_start",
         "delete_webhook_on_disconnect",
-        "url_intake_public_base",
-        "url_intake_pending_file",
     )
     for key in passthrough_keys:
         if key in zalo_cfg and zalo_cfg[key] is not None:
@@ -1526,8 +1399,11 @@ async def _standalone_send(
     if not token or not chat_id:
         return {"error": "Zalo standalone send: missing token or chat_id"}
 
+    api_base = str(
+        os.getenv("ZALO_API_BASE") or extra.get("api_base") or ZALO_API_BASE
+    ).rstrip("/")
     async with httpx.AsyncClient(timeout=20) as client:
-        url = f"{ZALO_API_BASE}/bot{token}/sendMessage"
+        url = f"{api_base}/bot{token}/sendMessage"
         try:
             parse_mode = (
                 os.getenv("ZALO_PARSE_MODE")

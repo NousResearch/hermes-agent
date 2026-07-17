@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-
 import httpx
 import pytest
 
@@ -49,7 +47,6 @@ class TestConfig:
         monkeypatch.setenv("ZALO_ALLOWED_USERS", "u1, u2")
         monkeypatch.setenv("ZALO_ALLOW_ALL_USERS", "false")
         monkeypatch.setenv("ZALO_DM_ONLY", "true")
-        monkeypatch.setenv("ZALO_SUPPRESS_NOISY_STATUS", "false")
         monkeypatch.setenv("ZALO_CONNECTION_MODE", "webhook")
         monkeypatch.setenv("ZALO_WEBHOOK_PUBLIC_URL", "https://bot.example.test/zalo")
         monkeypatch.setenv("ZALO_WEBHOOK_SECRET", "secret")
@@ -68,7 +65,6 @@ class TestConfig:
             "allowed_users": ["u1", "u2"],
             "allow_all_users": False,
             "dm_only": True,
-            "suppress_noisy_status": False,
             "connection_mode": "webhook",
             "webhook_url": "https://bot.example.test/zalo",
             "webhook_secret": "secret",
@@ -95,7 +91,6 @@ class TestConfig:
                 "poll_interval_seconds": 0.5,
                 "connection_mode": "polling",
                 "parse_mode": "",
-                "suppress_noisy_status": False,
                 "webhook_url": "https://bot.example.test/zalo",
                 "webhook_path": "zalo-hook",
                 "webhook_host": "0.0.0.0",
@@ -103,8 +98,6 @@ class TestConfig:
                 "webhook_auto_register": True,
                 "delete_webhook_on_polling_start": True,
                 "delete_webhook_on_disconnect": False,
-                "url_intake_public_base": "https://intake.example.test",
-                "url_intake_pending_file": "/tmp/zalo-intake.json",
                 "bot_token": "ignored-token",
                 "webhook_secret": "ignored-secret",
             },
@@ -120,7 +113,6 @@ class TestConfig:
             "poll_interval_seconds": 0.5,
             "connection_mode": "polling",
             "parse_mode": "",
-            "suppress_noisy_status": False,
             "webhook_url": "https://bot.example.test/zalo",
             "webhook_path": "zalo-hook",
             "webhook_host": "0.0.0.0",
@@ -128,8 +120,6 @@ class TestConfig:
             "webhook_auto_register": True,
             "delete_webhook_on_polling_start": True,
             "delete_webhook_on_disconnect": False,
-            "url_intake_public_base": "https://intake.example.test",
-            "url_intake_pending_file": "/tmp/zalo-intake.json",
         }
         assert "bot_token" not in seeded
         assert "webhook_secret" not in seeded
@@ -152,44 +142,6 @@ class TestConfig:
         assert adapter.webhook_url == "https://bot.example.test/zalo"
         assert adapter._webhook_enabled is False
         assert adapter._webhook_config_incomplete is False
-
-
-class TestStatusFiltering:
-    def test_noisy_compression_status_is_suppressed_by_default(self):
-        adapter = ZaloAdapter(PlatformConfig(enabled=True, extra={"bot_token": "token"}))
-
-        assert (
-            adapter.prepare_gateway_status_message(
-                "lifecycle",
-                "📦 Preflight compression: ~147,901 tokens >= 136,000 threshold. "
-                "This may take a moment.",
-            )
-            is None
-        )
-        assert (
-            adapter.prepare_gateway_status_message(
-                "lifecycle",
-                "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
-            )
-            is None
-        )
-
-    def test_noisy_status_filter_can_be_disabled(self):
-        adapter = ZaloAdapter(
-            PlatformConfig(
-                enabled=True,
-                extra={"bot_token": "token", "suppress_noisy_status": False},
-            )
-        )
-        message = "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
-
-        assert adapter.prepare_gateway_status_message("lifecycle", message) == message
-
-    def test_normal_status_is_preserved(self):
-        adapter = ZaloAdapter(PlatformConfig(enabled=True, extra={"bot_token": "token"}))
-        message = "Working on the website now."
-
-        assert adapter.prepare_gateway_status_message("progress", message) == message
 
 
 class TestHttp:
@@ -357,39 +309,6 @@ class TestWebhookPollingMode:
         )
 
         assert await adapter.connect() is False
-
-
-class TestUrlIntake:
-    def test_url_intake_pop_is_generic_and_consumes_entries(self, tmp_path):
-        pending_path = tmp_path / "pending.json"
-        pending_path.write_text(
-            json.dumps(
-                {
-                    "chat-1": [
-                        {
-                            "url": "https://docs.google.com/spreadsheets/d/sheet/edit",
-                            "note": "rooms",
-                        }
-                    ]
-                }
-            ),
-            encoding="utf-8",
-        )
-        adapter = ZaloAdapter(
-            PlatformConfig(
-                enabled=True,
-                extra={
-                    "bot_token": "token",
-                    "url_intake_pending_file": str(pending_path),
-                },
-            )
-        )
-
-        text = adapter._pop_url_intake_text("chat-1")
-
-        assert "[Zalo URL intake submissions for this chat]" in text
-        assert "https://docs.google.com/spreadsheets/d/sheet/edit" in text
-        assert json.loads(pending_path.read_text(encoding="utf-8")) == {}
 
 
 class TestSourcePolicy:

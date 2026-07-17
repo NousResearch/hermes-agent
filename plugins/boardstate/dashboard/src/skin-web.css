@@ -1,0 +1,40 @@
+/* Hermes WEB skin — class-level overrides the theme tokens can't express.
+ *
+ * The board mounts in the LIGHT DOM, so these page-level rules reach the vendored
+ * `.dashboard-widget__*` / `.page-title` / `.bs-btn` classes. Every rule is scoped
+ * under `boardstate-view` (so it only touches the embedded board, never the host
+ * chrome) and reads from Hermes `--color-*` tokens with a stock fallback, so a
+ * non-Hermes host degrades cleanly to the bundle's own look. `applyHermesTheme`
+ * handles the token-expressible parts (radii, shadow, translucent card, host font);
+ * this file handles the title-bar slab, the display font, and the sharp buttons. */
+
+/* Kill the contrasting title-bar slab: a near-transparent bar with a hairline rule
+   instead of the bundle's filled, rounded drag handle. The tint derives from
+   currentColor (the theme's own text color), so it adapts to ANY palette — a light
+   tint on dark themes, a dark tint on light ones — instead of hardcoding white. */
+boardstate-view .dashboard-widget__bar {
+  background: color-mix(in srgb, currentColor 3%, transparent);
+  border-bottom: 1px solid var(--color-border, color-mix(in srgb, currentColor 15%, transparent));
+}
+
+/* Widget titles adopt the Hermes display face ("Rules Expanded", already loaded by
+   the host page) — expanded, uppercase-feel tracking, bold. `sans-serif` is the
+   fallback (a bare `inherit` is invalid inside a font-family list and would drop
+   the whole declaration back to the host font). */
+boardstate-view .dashboard-widget__title {
+  font-family: "Rules Expanded", sans-serif;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+}
+
+/* The board page header inside the view — same display face, slightly tighter track. */
+boardstate-view .page-title {
+  font-family: "Rules Expanded", sans-serif;
+  letter-spacing: 0.05em;
+}
+
+/* Hermes web buttons are sharp-cornered. */
+boardstate-view .bs-btn {
+  border-radius: 0;
+}

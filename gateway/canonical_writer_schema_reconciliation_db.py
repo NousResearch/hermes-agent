@@ -84,9 +84,11 @@ _MUTATION_BODY_START = (
 _MUTATION_CLOSE_START = (
     "DO $reconcile_discord_routeback_helper_authority_close$"
 )
+_ROLE_GRAPH_STABILIZATION_ATTEMPTS = 12
+_ROLE_GRAPH_STABILIZATION_INTERVAL_SECONDS = 5.0
 
 _AUTHORITY_OPEN_RECEIPT_SQL = r"""
-WITH temporary_login AS (
+WITH RECURSIVE temporary_login AS (
     SELECT oid, rolname, rolcanlogin, rolinherit, rolsuper, rolcreatedb,
            rolcreaterole, rolreplication, rolbypassrls, rolconnlimit,
            rolvaliduntil, rolconfig
@@ -107,6 +109,15 @@ WITH temporary_login AS (
         OR member.rolname = 'canonical_brain_migration_owner'
         OR granted.rolname = 'canonical_brain_migration_owner'
         OR grantor.rolname = 'canonical_brain_migration_owner'
+), forward_role_closure(roleid) AS (
+    SELECT membership.roleid
+      FROM pg_catalog.pg_auth_members AS membership
+      JOIN temporary_login ON temporary_login.oid = membership.member
+    UNION
+    SELECT membership.roleid
+      FROM pg_catalog.pg_auth_members AS membership
+      JOIN forward_role_closure AS reachable
+        ON reachable.roleid = membership.member
 )
 SELECT CURRENT_USER = SESSION_USER
            AS current_user_is_session_user,
@@ -176,22 +187,77 @@ SELECT CURRENT_USER = SESSION_USER
                   AND prepared.owner = SESSION_USER
            )
        ) AS temporary_login_has_no_prepared_transaction,
+       NOT pg_catalog.pg_has_role(
+           SESSION_USER, 'cloudsqlsuperuser', 'MEMBER'
+       ) AS api_role_graph_cloudsqlsuperuser_absent,
+       NOT EXISTS (
+           SELECT 1
+             FROM forward_role_closure AS closure
+             JOIN pg_catalog.pg_roles AS reachable
+               ON reachable.oid = closure.roleid
+            WHERE reachable.rolname NOT IN (
+                'canonical_brain_writer',
+                'canonical_brain_migration_owner'
+            )
+       ) AS api_role_graph_forward_closure_no_unexpected_roles,
        (
-           SELECT pg_catalog.count(*) = 2
-                  AND pg_catalog.count(DISTINCT roleid) = 2
+           SELECT pg_catalog.count(DISTINCT reachable.rolname) = 2
                   AND COALESCE(pg_catalog.bool_and(
-                      member_name = SESSION_USER
-                      AND granted_name IN (
+                      reachable.rolname IN (
                           'canonical_brain_writer',
                           'canonical_brain_migration_owner'
                       )
-                      AND grantor_name = 'cloudsqladmin'
-                      AND admin_option IS FALSE
-                      AND inherit_option IS TRUE
-                      AND set_option IS FALSE
                   ), false)
-             FROM role_graph
-       ) AS api_role_graph_exact,
+             FROM forward_role_closure AS closure
+             JOIN pg_catalog.pg_roles AS reachable
+               ON reachable.oid = closure.roleid
+       ) AS api_role_graph_forward_closure_exact,
+       NOT EXISTS (
+           SELECT 1 FROM role_graph
+            WHERE member_name IS DISTINCT FROM SESSION_USER
+       ) AS api_role_graph_member_identity_exact,
+       NOT EXISTS (
+           SELECT 1 FROM role_graph
+            WHERE granted_name NOT IN (
+                'canonical_brain_writer',
+                'canonical_brain_migration_owner'
+            )
+       ) AS api_role_graph_granted_roles_exact,
+       NOT EXISTS (
+           SELECT 1 FROM role_graph
+            WHERE grantor_name IS DISTINCT FROM 'cloudsqladmin'
+       ) AS api_role_graph_grantor_exact,
+       NOT EXISTS (
+           SELECT 1 FROM role_graph
+            WHERE admin_option IS DISTINCT FROM FALSE
+       ) AS api_role_graph_admin_options_false,
+       NOT EXISTS (
+           SELECT 1 FROM role_graph
+            WHERE inherit_option IS DISTINCT FROM TRUE
+       ) AS api_role_graph_inherit_options_true,
+       NOT EXISTS (
+           SELECT 1 FROM role_graph
+            WHERE set_option IS DISTINCT FROM FALSE
+       ) AS api_role_graph_set_options_false,
+       (
+           SELECT pg_catalog.count(*) <= 2 FROM role_graph
+       ) AS api_role_graph_edge_count_not_overbound,
+       EXISTS (
+           SELECT 1 FROM role_graph
+            WHERE member_name = SESSION_USER
+              AND granted_name = 'canonical_brain_migration_owner'
+       ) AS api_role_graph_owner_edge_present,
+       EXISTS (
+           SELECT 1 FROM role_graph
+            WHERE member_name = SESSION_USER
+              AND granted_name = 'canonical_brain_writer'
+       ) AS api_role_graph_writer_edge_present,
+       (
+           SELECT pg_catalog.count(*) = 2 FROM role_graph
+       ) AS api_role_graph_edge_count_exact,
+       (
+           SELECT pg_catalog.count(DISTINCT roleid) = 2 FROM role_graph
+       ) AS api_role_graph_distinct_roleids_exact,
        pg_catalog.pg_has_role(
            SESSION_USER, 'canonical_brain_migration_owner', 'MEMBER'
        ) AS migration_owner_member,
@@ -289,7 +355,20 @@ _AUTHORITY_OPEN_RECEIPT_COLUMNS = (
     "event_trigger_inventory_empty",
     "plpgsql_usage_present",
     "temporary_login_has_no_prepared_transaction",
-    "api_role_graph_exact",
+    "api_role_graph_cloudsqlsuperuser_absent",
+    "api_role_graph_forward_closure_no_unexpected_roles",
+    "api_role_graph_forward_closure_exact",
+    "api_role_graph_member_identity_exact",
+    "api_role_graph_granted_roles_exact",
+    "api_role_graph_grantor_exact",
+    "api_role_graph_admin_options_false",
+    "api_role_graph_inherit_options_true",
+    "api_role_graph_set_options_false",
+    "api_role_graph_edge_count_not_overbound",
+    "api_role_graph_owner_edge_present",
+    "api_role_graph_writer_edge_present",
+    "api_role_graph_edge_count_exact",
+    "api_role_graph_distinct_roleids_exact",
     "migration_owner_member",
     "migration_owner_inherited",
     "migration_owner_not_settable",
@@ -334,8 +413,47 @@ _AUTHORITY_PREFLIGHT_FAILURE_CODES = {
     "temporary_login_has_no_prepared_transaction": (
         "schema_reconciliation_authority_prepared_transaction_present"
     ),
-    "api_role_graph_exact": (
-        "schema_reconciliation_authority_role_graph_invalid"
+    "api_role_graph_cloudsqlsuperuser_absent": (
+        "schema_reconciliation_authority_cloudsqlsuperuser_membership_present"
+    ),
+    "api_role_graph_forward_closure_no_unexpected_roles": (
+        "schema_reconciliation_authority_role_graph_forward_closure_unexpected"
+    ),
+    "api_role_graph_forward_closure_exact": (
+        "schema_reconciliation_authority_role_graph_forward_closure_inexact"
+    ),
+    "api_role_graph_member_identity_exact": (
+        "schema_reconciliation_authority_role_graph_member_invalid"
+    ),
+    "api_role_graph_granted_roles_exact": (
+        "schema_reconciliation_authority_role_graph_granted_role_invalid"
+    ),
+    "api_role_graph_grantor_exact": (
+        "schema_reconciliation_authority_role_graph_grantor_invalid"
+    ),
+    "api_role_graph_admin_options_false": (
+        "schema_reconciliation_authority_role_graph_admin_option_present"
+    ),
+    "api_role_graph_inherit_options_true": (
+        "schema_reconciliation_authority_role_graph_inherit_option_invalid"
+    ),
+    "api_role_graph_set_options_false": (
+        "schema_reconciliation_authority_role_graph_set_option_present"
+    ),
+    "api_role_graph_edge_count_not_overbound": (
+        "schema_reconciliation_authority_role_graph_edge_count_overbound"
+    ),
+    "api_role_graph_owner_edge_present": (
+        "schema_reconciliation_authority_role_graph_owner_edge_missing"
+    ),
+    "api_role_graph_writer_edge_present": (
+        "schema_reconciliation_authority_role_graph_writer_edge_missing"
+    ),
+    "api_role_graph_edge_count_exact": (
+        "schema_reconciliation_authority_role_graph_edge_count_invalid"
+    ),
+    "api_role_graph_distinct_roleids_exact": (
+        "schema_reconciliation_authority_role_graph_distinct_roles_invalid"
     ),
     "migration_owner_member": (
         "schema_reconciliation_authority_owner_membership_missing"
@@ -362,6 +480,23 @@ _AUTHORITY_PREFLIGHT_FAILURE_CODES = {
         "schema_reconciliation_authority_trampoline_invalid"
     ),
 }
+_ROLE_GRAPH_EDGE_PRESENCE_INVARIANTS = frozenset(
+    {
+        "api_role_graph_owner_edge_present",
+        "api_role_graph_writer_edge_present",
+    }
+)
+_ROLE_GRAPH_MISSING_EDGE_INVARIANTS = frozenset(
+    {
+        *_ROLE_GRAPH_EDGE_PRESENCE_INVARIANTS,
+        "api_role_graph_forward_closure_exact",
+        "api_role_graph_edge_count_exact",
+        "api_role_graph_distinct_roleids_exact",
+        "migration_owner_member",
+        "migration_owner_inherited",
+        "writer_member_and_inherited",
+    }
+)
 _AUTHORITY_OPEN_PREFLIGHT_SERVER_MESSAGE = (
     "canonical route-back helper authority preflight failed"
 )
@@ -860,8 +995,8 @@ def _require_boolean_receipt(
         raise PostgresProtocolError(code)
 
 
-def _require_authority_preflight_receipt(result: QueryResult) -> None:
-    """Name the first failed fixed invariant without reflecting DB text."""
+def _authority_preflight_failures(result: QueryResult) -> tuple[str, ...]:
+    """Return only fixed invariant names after validating the receipt shape."""
 
     if (
         result.command_tag.upper() != "SELECT 1"
@@ -875,15 +1010,78 @@ def _require_authority_preflight_receipt(result: QueryResult) -> None:
         raise PostgresProtocolError(
             "schema_reconciliation_database_authority_preflight_invalid"
         )
-    for column, value in zip(
-        _AUTHORITY_OPEN_RECEIPT_COLUMNS,
-        result.rows[0],
-        strict=True,
-    ):
-        if value == "f":
+    return tuple(
+        column
+        for column, value in zip(
+            _AUTHORITY_OPEN_RECEIPT_COLUMNS,
+            result.rows[0],
+            strict=True,
+        )
+        if value == "f"
+    )
+
+
+def _raise_authority_preflight_failure(failures: tuple[str, ...]) -> None:
+    if failures:
+        raise SchemaReconciliationError(
+            _AUTHORITY_PREFLIGHT_FAILURE_CODES[failures[0]]
+        )
+
+
+def _require_authority_preflight_receipt(result: QueryResult) -> None:
+    """Name the first failed fixed invariant without reflecting DB text."""
+
+    _raise_authority_preflight_failure(
+        _authority_preflight_failures(result)
+    )
+
+
+def _is_missing_role_graph_stabilization_candidate(
+    failures: tuple[str, ...],
+) -> bool:
+    failed = frozenset(failures)
+    return (
+        bool(failed & _ROLE_GRAPH_EDGE_PRESENCE_INVARIANTS)
+        and failed <= _ROLE_GRAPH_MISSING_EDGE_INVARIANTS
+    )
+
+
+def _require_stable_authority_preflight(
+    session: _Session,
+    *,
+    sleep: Callable[[float], None],
+) -> None:
+    """Bound fresh snapshots only while expected API role edges are absent."""
+
+    for attempt in range(_ROLE_GRAPH_STABILIZATION_ATTEMPTS):
+        receipt = session.query(
+            _AUTHORITY_OPEN_RECEIPT_SQL,
+            maximum_rows=1,
+        )
+        failures = _authority_preflight_failures(receipt)
+        if not failures:
+            return
+        if not _is_missing_role_graph_stabilization_candidate(failures):
+            _raise_authority_preflight_failure(failures)
+        if attempt + 1 == _ROLE_GRAPH_STABILIZATION_ATTEMPTS:
             raise SchemaReconciliationError(
-                _AUTHORITY_PREFLIGHT_FAILURE_CODES[column]
+                "schema_reconciliation_authority_role_graph_stabilization_timeout"
             )
+        sleep(_ROLE_GRAPH_STABILIZATION_INTERVAL_SECONDS)
+    raise SchemaReconciliationError(
+        "schema_reconciliation_authority_role_graph_stabilization_timeout"
+    )
+
+
+def _require_unchanged_authority_preflight_receipt(
+    result: QueryResult,
+) -> None:
+    try:
+        _require_authority_preflight_receipt(result)
+    except SchemaReconciliationError:
+        raise SchemaReconciliationError(
+            "schema_reconciliation_authority_preflight_changed"
+        ) from None
 
 
 def _require_void_lock(result: QueryResult, *, expected_column: str) -> None:
@@ -1619,6 +1817,7 @@ class PostgresSchemaReconciliationDatabase:
         writer_config: WriterDBConfig,
         managed_hba_receipt: ManagedCloudSQLAdminHBAReceipt,
         _session_factory: SessionFactory | None = None,
+        _stabilization_sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if (
             not isinstance(plan, SchemaReconciliationPlan)
@@ -1657,6 +1856,7 @@ class PostgresSchemaReconciliationDatabase:
                 managed_hba_receipt,
                 ManagedCloudSQLAdminHBAReceipt,
             )
+            or not callable(_stabilization_sleep)
         ):
             raise SchemaReconciliationError(
                 "schema_reconciliation_database_authority_invalid"
@@ -1686,6 +1886,7 @@ class PostgresSchemaReconciliationDatabase:
             )
         )
         self._session_factory = _session_factory or _open_postgres_session
+        self._stabilization_sleep = _stabilization_sleep
         self._mutation_segments = _split_sealed_mutation_sql(plan)
         self._scope_lock = threading.Lock()
 
@@ -1736,6 +1937,10 @@ class PostgresSchemaReconciliationDatabase:
             )
             _require_void_lock(lock, expected_column="pg_advisory_lock")
             session_lock_acquired = True
+            _require_stable_authority_preflight(
+                session,
+                sleep=self._stabilization_sleep,
+            )
             _require_command(
                 session,
                 "BEGIN ISOLATION LEVEL SERIALIZABLE",
@@ -1782,7 +1987,9 @@ class PostgresSchemaReconciliationDatabase:
                 _AUTHORITY_OPEN_RECEIPT_SQL,
                 maximum_rows=1,
             )
-            _require_authority_preflight_receipt(authority_receipt)
+            _require_unchanged_authority_preflight_receipt(
+                authority_receipt
+            )
             scope = _PostgresSchemaReconciliationTransaction(
                 session=session,
                 plan=self._plan,

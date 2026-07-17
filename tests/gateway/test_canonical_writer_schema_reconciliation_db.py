@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import dataclasses
 import hashlib
 import json
@@ -130,6 +131,7 @@ class _FakeSession:
         open_preflight_failure: str | None = None,
         open_postflight_failure: str | None = None,
         authority_open_server_preflight_failure: bool = False,
+        stabilization_failures: tuple[tuple[str, ...], ...] = (),
     ) -> None:
         self.plan = plan
         self.segments = reconciliation_db._split_sealed_mutation_sql(plan)
@@ -148,6 +150,9 @@ class _FakeSession:
         self.authority_open_server_preflight_failure = (
             authority_open_server_preflight_failure
         )
+        self.stabilization_failures = stabilization_failures
+        self.stabilization_receipt_count = 0
+        self.transaction_receipt_count = 0
         self.quarantine_flags = ("t", "t", "t")
         self.quarantine_receipts: object = _truth_receipt().value[
             "quarantine_anchors"
@@ -180,27 +185,39 @@ class _FakeSession:
                 )
             return QueryResult((), (), "DO")
         if sql == reconciliation_db._AUTHORITY_OPEN_RECEIPT_SQL:
-            receipt_count = sum(
-                statement == reconciliation_db._AUTHORITY_OPEN_RECEIPT_SQL
-                for statement, _maximum_rows in self.queries
-            )
             values = [
                 "t" if self.authority_present else "f"
                 for _column in reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS
             ]
-            if receipt_count == 1 and self.open_preflight_failure is not None:
+            failures: tuple[str, ...] = ()
+            if not self.transaction_open:
+                self.stabilization_receipt_count += 1
+                if self.stabilization_failures:
+                    failures = self.stabilization_failures[
+                        min(
+                            self.stabilization_receipt_count - 1,
+                            len(self.stabilization_failures) - 1,
+                        )
+                    ]
+            else:
+                self.transaction_receipt_count += 1
+                if (
+                    self.transaction_receipt_count == 1
+                    and self.open_preflight_failure is not None
+                ):
+                    failures = (self.open_preflight_failure,)
+                if (
+                    self.transaction_receipt_count > 1
+                    and self.open_postflight_failure is not None
+                ):
+                    failures = (self.open_postflight_failure,)
+            for failure in failures:
                 values[
                     reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS.index(
-                        self.open_preflight_failure
+                        failure
                     )
                 ] = "f"
-            if receipt_count > 1 and self.open_postflight_failure is not None:
-                values[
-                    reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS.index(
-                        self.open_postflight_failure
-                    )
-                ] = "f"
-            if receipt_count > 1 and not self.open_receipt_valid:
+            if not self.open_receipt_valid:
                 values = ["f" for _value in values]
             return QueryResult(
                 reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS,
@@ -334,6 +351,7 @@ def _database(
     monkeypatch: pytest.MonkeyPatch,
     *,
     session: _FakeSession | None = None,
+    stabilization_sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[
     reconciliation_db.PostgresSchemaReconciliationDatabase,
     _FakeSession,
@@ -363,6 +381,7 @@ def _database(
             if config == admin
             else (_ for _ in ()).throw(AssertionError("wrong config"))
         ),
+        _stabilization_sleep=stabilization_sleep,
     )
     return database, active_session, target, plan, observations
 
@@ -410,8 +429,12 @@ def test_transaction_proves_api_authority_and_restored_trampoline_before_commit(
         for index, statement in enumerate(sql)
         if statement == reconciliation_db._AUTHORITY_OPEN_RECEIPT_SQL
     ]
-    assert len(authority_open_receipts) == 2
-    authority_preflight, authority_open_receipt = authority_open_receipts
+    assert len(authority_open_receipts) == 3
+    (
+        authority_stabilization,
+        authority_preflight,
+        authority_open_receipt,
+    ) = authority_open_receipts
     authority_open = sql.index(session.segments.authority_open)
     table_lock = sql.index(reconciliation_db._CANONICAL_DATA_LOCK_SQL)
     xact_lock = next(
@@ -438,6 +461,7 @@ def test_transaction_proves_api_authority_and_restored_trampoline_before_commit(
     assert len(truths) == 2
     assert (
         session_lock
+        < authority_stabilization
         < begin
         < authority_preflight
         < authority_open
@@ -735,17 +759,212 @@ def test_transaction_names_first_failed_authority_preflight_invariant(
     assert session.closed
 
 
+def test_transaction_stabilizes_only_missing_role_edges_before_begin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, plan = _target_and_plan()
+    missing_owner_edge = (
+        "api_role_graph_forward_closure_exact",
+        "api_role_graph_owner_edge_present",
+        "api_role_graph_edge_count_exact",
+        "api_role_graph_distinct_roleids_exact",
+        "migration_owner_member",
+        "migration_owner_inherited",
+    )
+    session = _FakeSession(
+        plan,
+        stabilization_failures=(missing_owner_edge, ()),
+    )
+    sleeps: list[float] = []
+    database, _, _, _, _ = _database(
+        monkeypatch,
+        session=session,
+        stabilization_sleep=lambda seconds: sleeps.append(seconds),
+    )
+
+    with database.transaction(
+        advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+    ) as transaction:
+        transaction.lock_canonical_truth()
+
+    sql = [item[0] for item in session.queries]
+    begin = sql.index("BEGIN ISOLATION LEVEL SERIALIZABLE")
+    receipt_indexes = [
+        index
+        for index, statement in enumerate(sql)
+        if statement == reconciliation_db._AUTHORITY_OPEN_RECEIPT_SQL
+    ]
+    assert len(receipt_indexes) == 4
+    assert all(index < begin for index in receipt_indexes[:2])
+    assert begin < receipt_indexes[2] < sql.index(session.segments.authority_open)
+    assert sleeps == [
+        reconciliation_db._ROLE_GRAPH_STABILIZATION_INTERVAL_SECONDS
+    ]
+    assert session.segments.body not in sql
+    assert "COMMIT" in sql
+    assert session.closed
+
+
+def test_missing_role_edge_stabilization_times_out_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, plan = _target_and_plan()
+    missing_writer_edge = (
+        "api_role_graph_forward_closure_exact",
+        "api_role_graph_writer_edge_present",
+        "api_role_graph_edge_count_exact",
+        "api_role_graph_distinct_roleids_exact",
+        "writer_member_and_inherited",
+    )
+    session = _FakeSession(
+        plan,
+        stabilization_failures=(missing_writer_edge,),
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        reconciliation_db,
+        "_ROLE_GRAPH_STABILIZATION_ATTEMPTS",
+        3,
+    )
+    database, _, _, _, _ = _database(
+        monkeypatch,
+        session=session,
+        stabilization_sleep=lambda seconds: sleeps.append(seconds),
+    )
+
+    with pytest.raises(
+        reconciliation.SchemaReconciliationError,
+        match=(
+            "schema_reconciliation_authority_role_graph_"
+            "stabilization_timeout"
+        ),
+    ):
+        with database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ):
+            raise AssertionError("scope opened after stabilization timeout")
+
+    sql = [item[0] for item in session.queries]
+    assert sql.count(reconciliation_db._AUTHORITY_OPEN_RECEIPT_SQL) == 3
+    assert sleeps == [
+        reconciliation_db._ROLE_GRAPH_STABILIZATION_INTERVAL_SECONDS,
+        reconciliation_db._ROLE_GRAPH_STABILIZATION_INTERVAL_SECONDS,
+    ]
+    assert "BEGIN ISOLATION LEVEL SERIALIZABLE" not in sql
+    assert session.segments.authority_open not in sql
+    assert session.segments.body not in sql
+    assert session.segments.authority_close not in sql
+    assert "COMMIT" not in sql
+    assert "ROLLBACK" not in sql
+    assert any(
+        statement.startswith("SELECT pg_catalog.pg_advisory_unlock(")
+        for statement in sql
+    )
+    assert session.closed
+
+
+@pytest.mark.parametrize(
+    ("failures", "error_code"),
+    (
+        (
+            ("api_role_graph_cloudsqlsuperuser_absent",),
+            "schema_reconciliation_authority_cloudsqlsuperuser_membership_present",
+        ),
+        (
+            (
+                "api_role_graph_forward_closure_no_unexpected_roles",
+                "api_role_graph_forward_closure_exact",
+            ),
+            "schema_reconciliation_authority_role_graph_"
+            "forward_closure_unexpected",
+        ),
+        (
+            ("api_role_graph_forward_closure_exact",),
+            "schema_reconciliation_authority_role_graph_"
+            "forward_closure_inexact",
+        ),
+        (
+            ("api_role_graph_member_identity_exact",),
+            "schema_reconciliation_authority_role_graph_member_invalid",
+        ),
+        (
+            ("api_role_graph_granted_roles_exact",),
+            "schema_reconciliation_authority_role_graph_granted_role_invalid",
+        ),
+        (
+            ("api_role_graph_grantor_exact",),
+            "schema_reconciliation_authority_role_graph_grantor_invalid",
+        ),
+        (
+            ("api_role_graph_admin_options_false",),
+            "schema_reconciliation_authority_role_graph_admin_option_present",
+        ),
+        (
+            ("api_role_graph_inherit_options_true",),
+            "schema_reconciliation_authority_role_graph_inherit_option_invalid",
+        ),
+        (
+            ("api_role_graph_set_options_false",),
+            "schema_reconciliation_authority_role_graph_set_option_present",
+        ),
+        (
+            (
+                "api_role_graph_edge_count_not_overbound",
+                "api_role_graph_edge_count_exact",
+            ),
+            "schema_reconciliation_authority_role_graph_edge_count_overbound",
+        ),
+        (
+            ("migration_owner_member",),
+            "schema_reconciliation_authority_owner_membership_missing",
+        ),
+    ),
+)
+def test_unsafe_or_non_missing_role_graph_shape_fails_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    failures: tuple[str, ...],
+    error_code: str,
+) -> None:
+    _, plan = _target_and_plan()
+    session = _FakeSession(
+        plan,
+        stabilization_failures=(failures,),
+    )
+    database, _, _, _, _ = _database(
+        monkeypatch,
+        session=session,
+        stabilization_sleep=lambda _seconds: pytest.fail(
+            "unsafe role graph was retried"
+        ),
+    )
+
+    with pytest.raises(reconciliation.SchemaReconciliationError, match=error_code):
+        with database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ):
+            raise AssertionError("scope opened with unsafe role graph")
+
+    sql = [item[0] for item in session.queries]
+    assert sql.count(reconciliation_db._AUTHORITY_OPEN_RECEIPT_SQL) == 1
+    assert "BEGIN ISOLATION LEVEL SERIALIZABLE" not in sql
+    assert session.segments.authority_open not in sql
+    assert session.segments.body not in sql
+    assert "COMMIT" not in sql
+    assert "ROLLBACK" not in sql
+    assert session.closed
+
+
 def test_transaction_names_post_open_authority_drift_and_rolls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target, plan = _target_and_plan()
-    column = "no_foreign_database_client_sessions"
+    column = "api_role_graph_set_options_false"
     session = _FakeSession(plan, open_postflight_failure=column)
     database, _, _, _, _ = _database(monkeypatch, session=session)
 
     with pytest.raises(
         reconciliation.SchemaReconciliationError,
-        match=reconciliation_db._AUTHORITY_PREFLIGHT_FAILURE_CODES[column],
+        match="schema_reconciliation_authority_preflight_changed",
     ):
         with database.transaction(
             advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY

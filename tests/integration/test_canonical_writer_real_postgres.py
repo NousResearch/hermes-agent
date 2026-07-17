@@ -1268,6 +1268,128 @@ def test_stock_postgresql_18_rejects_wrong_cloud_role_graph_cleanly(
         )
 
 
+def test_schema_reconciliation_rejects_indirect_unexpected_role_before_begin(
+    real_writer_stack: RealWriterStack,
+    tmp_path: Path,
+) -> None:
+    """Exact direct API edges cannot hide an inherited third role."""
+
+    name = real_writer_stack.name
+    writer_config = real_writer_stack.backend._database._config
+    admin = "muncho_canary_admin_" + "b" * 16
+    unexpected = "muncho_canary_unexpected_role"
+    password = secrets.token_hex(32)
+    escaped_password = password.replace("'", "''")
+    target_asset = SchemaContractAsset.from_bytes(
+        SCHEMA_CONTRACT_ASSET.read_bytes()
+    )
+    artifact = _load_source_artifacts_for_tests()["base_migration"]
+    plan = schema_reconciliation._build_plan_from_artifact(
+        "b" * 40,
+        target_asset.contract,
+        artifact,
+        target_asset_sha256=target_asset.sha256,
+    )
+    admin_config = _temporary_admin_config(
+        writer_config,
+        tmp_path,
+        admin=admin,
+        password=password,
+    )
+    writer_probe = _open_postgres_session(writer_config)
+    try:
+        tls_peer_certificate_sha256 = (
+            writer_probe.tls_peer_certificate_sha256
+        )
+    finally:
+        writer_probe.close()
+    managed_hba_receipt = replace(
+        _test_managed_hba_receipt(writer_config),
+        server_certificate_sha256=tls_peer_certificate_sha256,
+    )
+    trampoline_before = _trampoline_semantic_identity(name)
+
+    try:
+        _psql(
+            name,
+            DATABASE,
+            f"CREATE ROLE {admin} LOGIN INHERIT NOSUPERUSER NOCREATEDB "
+            "NOCREATEROLE NOREPLICATION NOBYPASSRLS "
+            f"PASSWORD '{escaped_password}';\n"
+            f"CREATE ROLE {unexpected} NOLOGIN INHERIT NOSUPERUSER "
+            "NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n",
+            secrets_=(password,),
+        )
+        _install_cloudsql_api_role_graph(name, admin)
+        _psql(
+            name,
+            DATABASE,
+            f"GRANT {unexpected} TO canonical_brain_writer "
+            "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE GRANTED BY postgres;\n",
+        )
+        assert _schema_reconciliation_role_graph(name, admin) == [
+            "2",
+            "2",
+            "canonical_brain_migration_owner,canonical_brain_writer",
+            admin,
+            "cloudsqladmin",
+            "t",
+            "t",
+            "t",
+        ]
+        assert _psql_fields(
+            name,
+            DATABASE,
+            "SELECT pg_catalog.pg_has_role('"
+            + admin
+            + "', '"
+            + unexpected
+            + "', 'MEMBER');",
+        ) == ["t"]
+        reconciliation_database = (
+            schema_reconciliation_db.PostgresSchemaReconciliationDatabase(
+                plan=plan,
+                target=target_asset.contract,
+                admin_config=admin_config,
+                writer_config=writer_config,
+                managed_hba_receipt=managed_hba_receipt,
+            )
+        )
+
+        with pytest.raises(
+            schema_reconciliation.SchemaReconciliationError,
+            match=(
+                "schema_reconciliation_authority_role_graph_"
+                "forward_closure_unexpected"
+            ),
+        ):
+            with reconciliation_database.transaction(
+                advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+            ):
+                raise AssertionError("unsafe indirect role reached a transaction")
+
+        assert _trampoline_semantic_identity(name) == trampoline_before
+        assert _schema_reconciliation_role_graph(name, admin) == [
+            "2",
+            "2",
+            "canonical_brain_migration_owner,canonical_brain_writer",
+            admin,
+            "cloudsqladmin",
+            "t",
+            "t",
+            "t",
+        ]
+    finally:
+        _psql(
+            name,
+            DATABASE,
+            f"REVOKE {unexpected} FROM canonical_brain_writer "
+            "GRANTED BY postgres;\n"
+            f"DROP ROLE IF EXISTS {admin};\n"
+            f"DROP ROLE IF EXISTS {unexpected};\n",
+        )
+
+
 def _runtime(
     request_id: str,
     *,

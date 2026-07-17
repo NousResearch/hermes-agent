@@ -179,6 +179,23 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts.filter(t => t === 'same reply')).toHaveLength(1)
   })
 
+  it('settles a prefix-matched final onto the interim when response_previewed', async () => {
+    await mountStream()
+    await start()
+
+    // Interim text is a PREFIX of the final — the model streamed part of
+    // its answer before the verify nudge fired, then the final includes
+    // the same text plus a trailing delta.
+    await interim('partial answer')
+    await completePreviewed('partial answer with more detail')
+
+    // Prefix match: the final starts with the interim text, so settle
+    // onto the interim instead of creating a duplicate bubble.
+    const texts = assistantMessages()
+    expect(texts.filter(t => t.includes('partial answer'))).toHaveLength(1)
+    expect(texts[0]).toBe('partial answer with more detail')
+  })
+
   it('ignores malformed message.interim payload', async () => {
     await mountStream()
     await start()

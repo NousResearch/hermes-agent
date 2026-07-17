@@ -495,12 +495,23 @@ export function useMessageStream({
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )
-            } else if (interimBoundaryPending && responsePreviewed && finalText && existingText === finalText) {
+            } else if (
+              interimBoundaryPending &&
+              responsePreviewed &&
+              finalText &&
+              existingText &&
+              finalText.startsWith(existingText)
+            ) {
               // The verification candidate was published provisionally as an
               // interim message and then reused as the terminal response
               // (continuation-budget fallback). Settle the interim in place
               // instead of creating a duplicate — the DB has one row, so the
               // live UI must agree. (#65919 review: duplicate-message blocker)
+              //
+              // Prefix match (not exact equality): the final response may be
+              // the streamed text plus a trailing delta.  mergeFinalAssistantText
+              // (called via completeMessage) handles the actual merge — it
+              // strips the old text parts and appends the full final text.
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )

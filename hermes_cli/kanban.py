@@ -54,7 +54,8 @@ def _fmt_task_line(t: kb.Task) -> str:
     icon = _STATUS_ICONS.get(t.status, "?")
     assignee = t.assignee or "(unassigned)"
     tenant = f" [{t.tenant}]" if t.tenant else ""
-    return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}  {t.title}"
+    labels = f" {{{','.join(t.labels)}}}" if getattr(t, "labels", None) else ""
+    return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}{labels}  {t.title}"
 
 
 def _task_to_dict(t: kb.Task) -> dict[str, Any]:
@@ -66,6 +67,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "status": t.status,
         "priority": t.priority,
         "tenant": t.tenant,
+        "labels": list(t.labels),
         "workspace_kind": t.workspace_kind,
         "workspace_path": t.workspace_path,
         "branch_name": t.branch_name,
@@ -320,6 +322,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "worktree under the project's primary repo with a "
                                "deterministic branch. See `hermes project list`.")
     p_create.add_argument("--tenant", default=None, help="Tenant namespace")
+    p_create.add_argument("--label", action="append", default=[], dest="labels",
+                          help="Task label (repeatable), e.g. --label qa --label frontend")
     p_create.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
     p_create.add_argument("--triage", action="store_true",
                           help="Park in triage — a specifier will flesh out the spec and promote to todo")
@@ -397,6 +401,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_list.add_argument("--status", default=None,
                         choices=sorted(kb.VALID_STATUSES))
     p_list.add_argument("--tenant", default=None)
+    p_list.add_argument("--label", action="append", default=[], dest="labels",
+                        help="Require a label (repeatable; all labels must match)")
     p_list.add_argument("--session", default=None,
                         help="Filter by originating chat/agent session id "
                              "(set on tasks created from inside an ACP loop)")
@@ -444,6 +450,25 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
     p_assign.add_argument("task_id")
     p_assign.add_argument("profile", help="Profile name (or 'none' to unassign)")
+
+    # --- labels ---
+    p_label = sub.add_parser("label", help="Manage task labels")
+    label_sub = p_label.add_subparsers(dest="label_action", required=True)
+    p_label_list = label_sub.add_parser("list", aliases=["ls"], help="List labels for a task")
+    p_label_list.add_argument("task_id")
+    p_label_list.add_argument("--json", action="store_true")
+    p_label_add = label_sub.add_parser("add", help="Add labels to a task")
+    p_label_add.add_argument("task_id")
+    p_label_add.add_argument("labels", nargs="+")
+    p_label_add.add_argument("--json", action="store_true")
+    p_label_rm = label_sub.add_parser("remove", aliases=["rm"], help="Remove labels from a task")
+    p_label_rm.add_argument("task_id")
+    p_label_rm.add_argument("labels", nargs="+")
+    p_label_rm.add_argument("--json", action="store_true")
+    p_label_set = label_sub.add_parser("set", help="Replace all labels on a task")
+    p_label_set.add_argument("task_id")
+    p_label_set.add_argument("labels", nargs="*")
+    p_label_set.add_argument("--json", action="store_true")
 
     # --- reclaim / reassign (recovery) ---
     p_reclaim = sub.add_parser(
@@ -989,6 +1014,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "ls":       _cmd_list,
             "show":     _cmd_show,
             "assign":   _cmd_assign,
+            "label":    _cmd_label,
             "reclaim":  _cmd_reclaim,
             "reassign": _cmd_reassign,
             "diagnostics": _cmd_diagnostics,
@@ -1386,6 +1412,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             branch_name=branch_name,
             project_id=getattr(args, "project", None),
             tenant=args.tenant,
+            labels=getattr(args, "labels", None) or None,
             priority=args.priority,
             parents=tuple(args.parent or ()),
             triage=bool(getattr(args, "triage", False)),
@@ -1461,6 +1488,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
             assignee=assignee,
             status=args.status,
             tenant=args.tenant,
+            labels=getattr(args, "labels", None) or None,
             session_id=args.session,
             include_archived=args.archived,
             order_by=getattr(args, "sort", None),
@@ -1560,6 +1588,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
     print(f"  assignee:  {task.assignee or '-'}")
     if task.tenant:
         print(f"  tenant:    {task.tenant}")
+    if task.labels:
+        print(f"  labels:    {', '.join(task.labels)}")
     print(f"  workspace: {task.workspace_kind}" +
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
     if task.branch_name:
@@ -1661,6 +1691,35 @@ def _cmd_show(args: argparse.Namespace) -> int:
                 print(f"        → {r.summary.splitlines()[0][:160]}")
             if r.error:
                 print(f"        ! {r.error.splitlines()[0][:160]}")
+    return 0
+
+
+def _cmd_label(args: argparse.Namespace) -> int:
+    action = getattr(args, "label_action", None)
+    with kb.connect_closing() as conn:
+        if action in {"list", "ls"}:
+            task = kb.get_task(conn, args.task_id)
+            if not task:
+                print(f"no such task: {args.task_id}", file=sys.stderr)
+                return 1
+            labels = task.labels
+        elif action == "add":
+            labels = kb.add_task_labels(
+                conn, args.task_id, args.labels, created_by=_profile_author()
+            )
+        elif action in {"remove", "rm"}:
+            labels = kb.remove_task_labels(conn, args.task_id, args.labels)
+        elif action == "set":
+            labels = kb.set_task_labels(
+                conn, args.task_id, args.labels, created_by=_profile_author()
+            )
+        else:
+            print(f"unknown label action: {action}", file=sys.stderr)
+            return 2
+    if getattr(args, "json", False):
+        print(json.dumps({"task_id": args.task_id, "labels": labels}, indent=2, ensure_ascii=False))
+    else:
+        print(f"{args.task_id}: " + (", ".join(labels) if labels else "(no labels)"))
     return 0
 
 

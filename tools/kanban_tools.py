@@ -344,6 +344,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "status": task.status,
         "priority": task.priority,
         "tenant": task.tenant,
+        "labels": list(task.labels),
         "workspace_kind": task.workspace_kind,
         "workspace_path": task.workspace_path,
         "project_id": task.project_id,
@@ -390,6 +391,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "id": t.id, "title": t.title, "body": t.body,
                     "assignee": t.assignee, "status": t.status,
                     "tenant": t.tenant, "priority": t.priority,
+                    "labels": list(t.labels),
                     "workspace_kind": t.workspace_kind,
                     "workspace_path": t.workspace_path,
                     "created_by": t.created_by, "created_at": t.created_at,
@@ -448,6 +450,11 @@ def _handle_list(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     status = args.get("status")
     tenant = args.get("tenant")
+    labels = args.get("labels")
+    if isinstance(labels, str):
+        labels = [labels]
+    if labels is not None and not isinstance(labels, (list, tuple)):
+        return tool_error(f"labels must be a list of strings, got {type(labels).__name__}")
     include_archived, bool_error = _parse_bool_arg(args, "include_archived")
     if bool_error:
         return tool_error(bool_error)
@@ -476,6 +483,7 @@ def _handle_list(args: dict, **kw) -> str:
                 assignee=assignee,
                 status=status,
                 tenant=tenant,
+                labels=labels,
                 include_archived=include_archived,
                 limit=limit + 1,
             )
@@ -1080,6 +1088,11 @@ def _handle_create(args: dict, **kw) -> str:
     body = args.get("body")
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
+    labels = args.get("labels")
+    if isinstance(labels, str):
+        labels = [labels]
+    if labels is not None and not isinstance(labels, (list, tuple)):
+        return tool_error(f"labels must be a list of strings, got {type(labels).__name__}")
     # Stamp the originating session id when the agent loop runs under
     # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on
     # CLI / dashboard paths and on legacy hosts that don't set the env.
@@ -1146,6 +1159,7 @@ def _handle_create(args: dict, **kw) -> str:
                 assignee=str(assignee),
                 parents=tuple(parents),
                 tenant=tenant,
+                labels=labels,
                 priority=int(priority) if priority is not None else 0,
                 workspace_kind=str(workspace_kind),
                 workspace_path=workspace_path,
@@ -1170,6 +1184,7 @@ def _handle_create(args: dict, **kw) -> str:
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
+                labels=list(new_task.labels) if new_task else [],
                 subscribed=subscribed,
             )
         finally:
@@ -1386,7 +1401,7 @@ KANBAN_LIST_SCHEMA = {
     "description": (
         "List Kanban task summaries so an orchestrator profile can discover "
         "work to route. Supports the same core filters as the CLI: assignee, "
-        "status, tenant, include_archived, and limit. Returns compact rows "
+        "status, tenant, labels, include_archived, and limit. Returns compact rows "
         "with ids, title, status, assignee, priority, parent/child ids, and "
         "counts. Bounded to 50 rows by default, 200 max, with truncation "
         "metadata. Also recomputes ready tasks before listing, matching the "
@@ -1411,6 +1426,11 @@ KANBAN_LIST_SCHEMA = {
             "tenant": {
                 "type": "string",
                 "description": "Optional tenant/project namespace filter.",
+            },
+            "labels": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional label filters. All labels must match.",
             },
             "include_archived": {
                 "type": "boolean",
@@ -1768,6 +1788,11 @@ KANBAN_CREATE_SCHEMA = {
                     "Optional namespace for multi-project isolation. "
                     "Defaults to HERMES_TENANT env if set."
                 ),
+            },
+            "labels": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional task labels for filtering/routing, e.g. ['qa', 'frontend'].",
             },
             "priority": {
                 "type": "integer",

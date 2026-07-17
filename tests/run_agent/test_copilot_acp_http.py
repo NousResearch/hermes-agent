@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -89,6 +90,18 @@ class _FakeStreamResponse:
         pass
 
 
+class _PersistentStreamResponse(_FakeStreamResponse):
+    """SSE response that fails if the client reads past its matching result."""
+
+    def __init__(self, events: list[dict]):
+        super().__init__([])
+        self._events = events
+
+    def iter_lines(self):
+        yield from _make_sse_response(self._events)
+        raise AssertionError("client kept reading the persistent SSE connection")
+
+
 # ---------------------------------------------------------------------------
 # _HttpACPSession
 # ---------------------------------------------------------------------------
@@ -157,6 +170,35 @@ class TestHttpACPSession:
             with pytest.raises(RuntimeError, match="Method not found"):
                 session._rpc_sse("conn-id", "bad_method", {}, msg_id=1)
 
+    def test_rpc_sse_stops_after_matching_result_and_preserves_notifications(self):
+        notification = {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"sessionId": "session-1"},
+        }
+        result = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {"sessionId": "session-1"},
+        }
+        fake_stream = _PersistentStreamResponse([notification, result])
+        mock_client = MagicMock()
+        mock_client.stream.return_value = fake_stream
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+
+        with patch("agent.copilot_acp_client.httpx") as mock_httpx:
+            mock_httpx.Client.return_value = mock_client
+            session = _HttpACPSession("http://localhost:3100")
+            events = session._rpc_sse(
+                "conn-id",
+                "session/new",
+                {"mcpServers": [], "cwd": "/tmp"},
+                msg_id=2,
+            )
+
+        assert events == [notification, result]
+
 
 # ---------------------------------------------------------------------------
 # CopilotACPClient transport auto-detection
@@ -204,3 +246,27 @@ class TestCopilotACPClientTransportSelection:
             with pytest.raises((RuntimeError, BrokenPipeError, OSError)):
                 client._run_prompt("test", timeout_seconds=1)
             mock_http.assert_not_called()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    os.environ.get("HERMES_LIVE_TESTS") != "1"
+    or not os.environ.get("COPILOT_ACP_BASE_URL", "").startswith(
+        ("acp+http://", "acp+https://", "acp+tcp://")
+    ),
+    reason=(
+        "live-only: set HERMES_LIVE_TESTS=1 and COPILOT_ACP_BASE_URL to "
+        "a compatible running server"
+    ),
+)
+def test_live_compatible_server_full_flow():
+    """Exercise connect → initialize → session/new → session/prompt end to end."""
+    base_url = os.environ["COPILOT_ACP_BASE_URL"]
+    session = _HttpACPSession(base_url, timeout=60)
+
+    text, _reasoning = session.prompt(
+        "Reply exactly with the word pong.",
+        timeout=60,
+    )
+
+    assert text.strip()

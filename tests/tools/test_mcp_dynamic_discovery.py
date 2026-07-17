@@ -30,10 +30,10 @@ class TestRegisterServerTools:
 
         with patch("tools.registry.registry", mock_registry):
             registered = _register_server_tools("my_srv", server, {})
-            assert "mcp_my_srv_my_tool" in registered
-            assert "mcp_my_srv_my_tool" in mock_registry.get_all_tool_names()
+            assert "mcp__my_srv__my_tool" in registered
+            assert "mcp__my_srv__my_tool" in mock_registry.get_all_tool_names()
             assert validate_toolset("my_srv") is True
-            assert "mcp_my_srv_my_tool" in resolve_toolset("my_srv")
+            assert "mcp__my_srv__my_tool" in resolve_toolset("my_srv")
 
 
 class TestRefreshTools:
@@ -53,11 +53,11 @@ class TestRefreshTools:
 
         # Seed initial state: one old tool registered
         mock_registry.register(
-            name="mcp_live_srv_old_tool", toolset="mcp-live_srv", schema={},
+            name="mcp__live_srv__old_tool", toolset="mcp-live_srv", schema={},
             handler=lambda x: x, check_fn=lambda: True, is_async=False,
             description="", emoji="",
         )
-        server._registered_tool_names = ["mcp_live_srv_old_tool"]
+        server._registered_tool_names = ["mcp__live_srv__old_tool"]
 
         # New tool list from server
         new_tool = _make_mcp_tool("new_tool", "new behavior")
@@ -69,11 +69,11 @@ class TestRefreshTools:
 
         with patch("tools.registry.registry", mock_registry):
             await server._refresh_tools()
-            assert "mcp_live_srv_old_tool" not in mock_registry.get_all_tool_names()
-            assert "mcp_live_srv_old_tool" not in resolve_toolset("live_srv")
-            assert "mcp_live_srv_new_tool" in mock_registry.get_all_tool_names()
-            assert "mcp_live_srv_new_tool" in resolve_toolset("live_srv")
-            assert server._registered_tool_names == ["mcp_live_srv_new_tool"]
+            assert "mcp__live_srv__old_tool" not in mock_registry.get_all_tool_names()
+            assert "mcp__live_srv__old_tool" not in resolve_toolset("live_srv")
+            assert "mcp__live_srv__new_tool" in mock_registry.get_all_tool_names()
+            assert "mcp__live_srv__new_tool" in resolve_toolset("live_srv")
+            assert server._registered_tool_names == ["mcp__live_srv__new_tool"]
 
 
 class TestMessageHandler:
@@ -88,24 +88,29 @@ class TestMessageHandler:
         from mcp.types import ServerNotification, ToolListChangedNotification
 
         server = MCPServerTask("notif_srv")
-        with patch.object(MCPServerTask, "_refresh_tools", new_callable=AsyncMock) as mock_refresh:
+        # Product now schedules the refresh as a background task (see
+        # _schedule_tools_refresh in mcp_tool.py ~L918) rather than awaiting
+        # it directly, to avoid wedging the stdio JSON-RPC stream. Patch at
+        # the scheduler seam so we can still assert dispatch happened without
+        # reaching into asyncio.create_task internals.
+        with patch.object(MCPServerTask, "_schedule_tools_refresh") as mock_schedule:
             handler = server._make_message_handler()
             notification = ServerNotification(
                 root=ToolListChangedNotification(method="notifications/tools/list_changed")
             )
             await handler(notification)
-            mock_refresh.assert_awaited_once()
+            mock_schedule.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_ignores_exceptions_and_other_messages(self):
         server = MCPServerTask("notif_srv")
-        with patch.object(MCPServerTask, "_refresh_tools", new_callable=AsyncMock) as mock_refresh:
+        with patch.object(MCPServerTask, "_schedule_tools_refresh") as mock_schedule:
             handler = server._make_message_handler()
             # Exceptions should not trigger refresh
             await handler(RuntimeError("connection dead"))
             # Unknown message types should not trigger refresh
             await handler({"jsonrpc": "2.0", "result": "ok"})
-            mock_refresh.assert_not_awaited()
+            mock_schedule.assert_not_called()
 
 
 class TestDeregister:

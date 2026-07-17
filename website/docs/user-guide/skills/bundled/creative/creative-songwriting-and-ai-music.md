@@ -1,14 +1,14 @@
 ---
-title: "Songwriting And Ai Music"
+title: "Songwriting And Ai Music — Songwriting craft and Suno AI music prompts"
 sidebar_label: "Songwriting And Ai Music"
-description: "Songwriting craft, AI music generation prompts (Suno focus), parody/adaptation techniques, phonetic tricks, and lessons learned"
+description: "Songwriting craft and Suno AI music prompts"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Songwriting And Ai Music
 
-Songwriting craft, AI music generation prompts (Suno focus), parody/adaptation techniques, phonetic tricks, and lessons learned. These are tools and ideas, not rules. Break any of them when the art calls for it.
+Songwriting craft and Suno AI music prompts.
 
 ## Skill metadata
 
@@ -16,6 +16,7 @@ Songwriting craft, AI music generation prompts (Suno focus), parody/adaptation t
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/creative/songwriting-and-ai-music` |
+| Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
 

@@ -17,6 +17,7 @@ Give the agent its own dedicated email inbox via AgentMail. Send, receive, and m
 | Source | Optional — install with `hermes skills install official/email/agentmail` |
 | Path | `optional-skills/email/agentmail` |
 | Version | `1.0.0` |
+| Platforms | linux, macos, windows |
 | Tags | `email`, `communication`, `agentmail`, `mcp` |
 
 ## Reference: full SKILL.md

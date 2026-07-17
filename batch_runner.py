@@ -20,6 +20,17 @@ Usage:
     python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run --distribution=image_gen
 """
 
+# IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
+# on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
+try:
+    import hermes_bootstrap  # noqa: F401
+except ModuleNotFoundError:
+    # Graceful fallback when hermes_bootstrap isn't registered in the venv
+    # yet — happens during partial ``hermes update`` where git-reset landed
+    # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
+    # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
+    pass
+
 import json
 import logging
 import os
@@ -326,6 +337,7 @@ def _process_single_prompt(
             providers_ignored=config.get("providers_ignored"),
             providers_order=config.get("providers_order"),
             provider_sort=config.get("provider_sort"),
+            openrouter_min_coding_score=config.get("openrouter_min_coding_score"),
             max_tokens=config.get("max_tokens"),
             reasoning_config=config.get("reasoning_config"),
             prefill_messages=config.get("prefill_messages"),
@@ -535,6 +547,7 @@ class BatchRunner:
         providers_ignored: List[str] = None,
         providers_order: List[str] = None,
         provider_sort: str = None,
+        openrouter_min_coding_score: Optional[float] = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
@@ -584,6 +597,7 @@ class BatchRunner:
         self.providers_ignored = providers_ignored
         self.providers_order = providers_order
         self.provider_sort = provider_sort
+        self.openrouter_min_coding_score = openrouter_min_coding_score
         self.max_tokens = max_tokens
         self.reasoning_config = reasoning_config
         self.prefill_messages = prefill_messages
@@ -781,7 +795,7 @@ class BatchRunner:
                 conversations = entry.get("conversations", [])
                 for msg in conversations:
                     role = msg.get("role") or msg.get("from")
-                    if role in ("user", "human"):
+                    if role in {"user", "human"}:
                         prompt_text = (msg.get("content") or msg.get("value", "")).strip()
                         break
             
@@ -848,13 +862,32 @@ class BatchRunner:
                 "last_updated": None
             }
         
-        # Prepare configuration for workers
+        # Prepare configuration for workers.
+        #
+        # ``self.api_key`` may be a zero-arg callable (Azure Foundry Entra ID
+        # bearer provider returned by ``agent.azure_identity_adapter``). Such
+        # closures are not safely picklable across the multiprocessing.Pool
+        # boundary. Drop the callable here and let each worker rebuild its
+        # own provider via ``resolve_runtime_provider()``, which reads
+        # ``model.auth_mode`` from ``config.yaml`` and constructs a fresh
+        # token provider in the worker process (azure-identity caches
+        # in-process so each worker gets its own short-lived cache).
+        if callable(self.api_key) and not isinstance(self.api_key, str):
+            worker_api_key = None
+            print(
+                "ℹ️  Detected Entra ID bearer provider — workers will rebuild "
+                "credentials from config.yaml in each process.",
+                flush=True,
+            )
+        else:
+            worker_api_key = self.api_key
+
         config = {
             "distribution": self.distribution,
             "model": self.model,
             "max_iterations": self.max_iterations,
             "base_url": self.base_url,
-            "api_key": self.api_key,
+            "api_key": worker_api_key,
             "verbose": self.verbose,
             "ephemeral_system_prompt": self.ephemeral_system_prompt,
             "log_prefix_chars": self.log_prefix_chars,
@@ -862,6 +895,7 @@ class BatchRunner:
             "providers_ignored": self.providers_ignored,
             "providers_order": self.providers_order,
             "provider_sort": self.provider_sort,
+            "openrouter_min_coding_score": self.openrouter_min_coding_score,
             "max_tokens": self.max_tokens,
             "reasoning_config": self.reasoning_config,
             "prefill_messages": self.prefill_messages,
@@ -1158,7 +1192,7 @@ def main(
         providers_order (str): Comma-separated list of OpenRouter providers to try in order (e.g. "anthropic,openai,google")
         provider_sort (str): Sort providers by "price", "throughput", or "latency" (OpenRouter only)
         max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
-        reasoning_effort (str): OpenRouter reasoning effort level: "none", "minimal", "low", "medium", "high", "xhigh" (default: "medium")
+        reasoning_effort (str): Reasoning effort: "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra" (default: "medium")
         reasoning_disabled (bool): Completely disable reasoning/thinking tokens (default: False)
         prefill_messages_file (str): Path to JSON file containing prefill messages (list of {role, content} dicts)
         max_samples (int): Only process the first N samples from the dataset (optional, processes all if not set)
@@ -1227,7 +1261,7 @@ def main(
         print("🧠 Reasoning: DISABLED (effort=none)")
     elif reasoning_effort:
         # Use specified effort level
-        valid_efforts = ["none", "minimal", "low", "medium", "high", "xhigh"]
+        valid_efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
         if reasoning_effort not in valid_efforts:
             print(f"❌ Error: --reasoning_effort must be one of: {', '.join(valid_efforts)}")
             return

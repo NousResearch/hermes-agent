@@ -19,7 +19,8 @@ import React, { Fragment, useEffect, useState } from "react";
  *  these in their manifest's `slots` field get wired in automatically.
  *
  *  Shell-wide slots:
- *  - `backdrop`         — rendered inside `<Backdrop />`, above the noise layer
+ *  - `backdrop`         — optional full-viewport background decoration;
+ *                         mounted behind shell chrome at z-0
  *  - `header-left`      — injected before the Hermes brand in the top bar
  *  - `header-right`     — injected before the theme/language switchers
  *  - `header-banner`    — injected below the top nav bar, full-width
@@ -46,6 +47,8 @@ import React, { Fragment, useEffect, useState } from "react";
  *  - `cron:bottom`      — bottom of /cron page
  *  - `skills:top`       — top of /skills page
  *  - `skills:bottom`    — bottom of /skills page
+ *  - `plugins:top`       — top of /plugins page
+ *  - `plugins:bottom`    — bottom of /plugins page
  *  - `config:top`       — top of /config page
  *  - `config:bottom`    — bottom of /config page
  *  - `env:top`          — top of /env (Keys) page
@@ -78,6 +81,8 @@ export const KNOWN_SLOT_NAMES = [
   "cron:bottom",
   "skills:top",
   "skills:bottom",
+  "plugins:top",
+  "plugins:bottom",
   "config:top",
   "config:bottom",
   "env:top",

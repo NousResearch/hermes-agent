@@ -93,7 +93,7 @@ def poll_registration(device_code: str) -> dict:
     """
     data = _api_post("/app/registration/poll", {"device_code": device_code})
     status_raw = str(data.get("status", "")).strip().upper()
-    if status_raw not in ("WAITING", "SUCCESS", "FAIL", "EXPIRED"):
+    if status_raw not in {"WAITING", "SUCCESS", "FAIL", "EXPIRED"}:
         status_raw = "UNKNOWN"
     return {
         "status": status_raw,
@@ -163,17 +163,15 @@ def _ensure_qrcode_installed() -> bool:
 
     import subprocess
 
-    # Try uv first (Hermes convention), then pip
-    for cmd in (
-        [sys.executable, "-m", "uv", "pip", "install", "qrcode"],
-        [sys.executable, "-m", "pip", "install", "-q", "qrcode"],
-    ):
-        try:
-            subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    from hermes_cli.tools_config import _pip_install
+
+    try:
+        result = _pip_install(["-q", "qrcode"], timeout=120)
+        if result.returncode == 0:
             import qrcode  # noqa: F401,F811
             return True
-        except (subprocess.CalledProcessError, ImportError, FileNotFoundError):
-            continue
+    except (subprocess.SubprocessError, ImportError, OSError):
+        pass
     return False
 
 
@@ -257,7 +255,7 @@ def dingtalk_qr_auth() -> Optional[Tuple[str, str]]:
     print()
 
     if not render_qr_to_terminal(url):
-        print_warning(f"  QR code render failed, please open the link below to authorize:")
+        print_warning("  QR code render failed, please open the link below to authorize:")
 
     print()
     print_info(f"  Or open this link manually: {url}")

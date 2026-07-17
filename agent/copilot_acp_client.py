@@ -36,8 +36,15 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
-from agent.file_safety import get_read_block_error, is_write_denied
+
+from openai.types.chat.chat_completion_message_tool_call import (
+    ChatCompletionMessageToolCall,
+    Function,
+)
+
+from agent.file_safety import get_read_block_error, get_write_denied_error
 from agent.redact import redact_sensitive_text
+from tools.environments.local import hermes_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
@@ -62,6 +69,28 @@ def _normalize_http_base_url(base_url: str) -> str:
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
 
+# Stderr fingerprint of the deprecated `gh copilot` CLI extension
+# (https://github.blog/changelog/2025-09-25-upcoming-deprecation-of-gh-copilot-cli-extension).
+# We require BOTH the literal product name ("gh-copilot") AND a deprecation
+# marker, so generic stderr from the NEW `@github/copilot` CLI — whose repo
+# is github.com/github/copilot-cli and which legitimately mentions "copilot-cli"
+# in its own banners and error messages — doesn't get misclassified as the
+# deprecated extension.
+_DEPRECATION_REQUIRED = ("gh-copilot",)
+_DEPRECATION_MARKERS = (
+    "has been deprecated",
+    "no commands will be executed",
+)
+
+
+def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
+    """True iff stderr looks like the deprecated gh-copilot extension's banner."""
+
+    lower = stderr_text.lower()
+    if not any(req in lower for req in _DEPRECATION_REQUIRED):
+        return False
+    return any(marker in lower for marker in _DEPRECATION_MARKERS)
+
 
 def _resolve_command() -> str:
     return (
@@ -80,16 +109,6 @@ def _resolve_args() -> list[str]:
 
 def _resolve_home_dir() -> str:
     """Return a stable HOME for child ACP processes."""
-
-    try:
-        from hermes_constants import get_subprocess_home
-
-        profile_home = get_subprocess_home()
-        if profile_home:
-            return profile_home
-    except Exception:
-        pass
-
     home = os.environ.get("HOME", "").strip()
     if home:
         return home
@@ -101,7 +120,7 @@ def _resolve_home_dir() -> str:
     try:
         import pwd
 
-        resolved = pwd.getpwuid(os.getuid()).pw_dir.strip()
+        resolved = pwd.getpwuid(os.getuid()).pw_dir.strip()  # windows-footgun: ok — POSIX fallback inside try/except (pwd import fails on Windows)
         if resolved:
             return resolved
     except Exception:
@@ -114,8 +133,14 @@ def _resolve_home_dir() -> str:
 
 
 def _build_subprocess_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env["HOME"] = _resolve_home_dir()
+    # Copilot ACP is a model-driving CLI executor: it legitimately needs LLM
+    # provider credentials. Route through the central helper so Tier-1 secrets
+    # (gateway bot tokens, GitHub auth, infra) are still stripped (#29157).
+    env = hermes_subprocess_env(inherit_credentials=True)
+    home = _resolve_home_dir()
+    env["HOME"] = home
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(env)
     return env
 
 
@@ -241,11 +266,73 @@ def _render_message_content(content: Any) -> str:
     return str(content).strip()
 
 
-def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str]:
+def _build_openai_tool_call(
+    *,
+    call_id: str,
+    name: str,
+    arguments: str,
+) -> ChatCompletionMessageToolCall:
+    """Build an OpenAI-compatible tool-call object for downstream handling."""
+    return ChatCompletionMessageToolCall(
+        id=call_id,
+        call_id=call_id,
+        response_item_id=None,
+        type="function",
+        function=Function(name=name, arguments=arguments),
+    )
+
+
+def _completion_to_stream_chunks(completion: SimpleNamespace) -> list[SimpleNamespace]:
+    """Convert a one-shot ACP response into OpenAI-style stream chunks."""
+    choice = completion.choices[0]
+    message = choice.message
+    tool_call_deltas = None
+    if message.tool_calls:
+        tool_call_deltas = []
+        for index, tool_call in enumerate(message.tool_calls):
+            tool_call_deltas.append(
+                SimpleNamespace(
+                    index=index,
+                    id=getattr(tool_call, "id", None),
+                    type=getattr(tool_call, "type", "function"),
+                    function=SimpleNamespace(
+                        name=getattr(tool_call.function, "name", None),
+                        arguments=getattr(tool_call.function, "arguments", None),
+                    ),
+                )
+            )
+
+    delta = SimpleNamespace(
+        role="assistant",
+        content=message.content or None,
+        tool_calls=tool_call_deltas,
+        reasoning_content=message.reasoning_content,
+        reasoning=message.reasoning,
+    )
+    data_chunk = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                index=0,
+                delta=delta,
+                finish_reason=choice.finish_reason,
+            )
+        ],
+        model=completion.model,
+        usage=None,
+    )
+    usage_chunk = SimpleNamespace(
+        choices=[],
+        model=completion.model,
+        usage=completion.usage,
+    )
+    return [data_chunk, usage_chunk]
+
+
+def _extract_tool_calls_from_text(text: str) -> tuple[list[ChatCompletionMessageToolCall], str]:
     if not isinstance(text, str) or not text.strip():
         return [], ""
 
-    extracted: list[SimpleNamespace] = []
+    extracted: list[ChatCompletionMessageToolCall] = []
     consumed_spans: list[tuple[int, int]] = []
 
     def _try_add_tool_call(raw_json: str) -> None:
@@ -269,12 +356,10 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str
             call_id = f"acp_call_{len(extracted)+1}"
 
         extracted.append(
-            SimpleNamespace(
-                id=call_id,
+            _build_openai_tool_call(
                 call_id=call_id,
-                response_item_id=None,
-                type="function",
-                function=SimpleNamespace(name=fn_name.strip(), arguments=fn_args),
+                name=fn_name.strip(),
+                arguments=fn_args,
             )
         )
 
@@ -382,9 +467,8 @@ class _HttpACPSession:
         return conn_id
 
     def _rpc_sse(self, conn_id: str, method: str, params: dict[str, Any],
-                 msg_id: int, *, collect_notifications: bool = False,
-                 timeout: float = 30.0) -> list[dict[str, Any]]:
-        """Send one JSON-RPC request and read SSE events until response arrives."""
+                 msg_id: int, *, timeout: float = 30.0) -> list[dict[str, Any]]:
+        """Send one JSON-RPC request and preserve events through its response."""
         payload = {"jsonrpc": "2.0", "method": method, "id": msg_id, "params": params}
         headers = {
             "Content-Type": "application/json",
@@ -410,8 +494,7 @@ class _HttpACPSession:
                         continue
                     events.append(msg)
                     if msg.get("id") == msg_id and ("result" in msg or "error" in msg):
-                        if not collect_notifications:
-                            break
+                        break
         # Check for JSON-RPC error in the response
         for ev in events:
             if ev.get("id") == msg_id and "error" in ev:
@@ -442,7 +525,7 @@ class _HttpACPSession:
         session_events = self._rpc_sse(conn_id, "session/new", {
             "mcpServers": [],
             "cwd": os.getcwd(),
-        }, new_id, collect_notifications=True, timeout=15)
+        }, new_id, timeout=15)
 
         # sessionId arrives in a session/update notification
         session_id: str | None = None
@@ -582,6 +665,7 @@ class CopilotACPClient:
         timeout: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: Any = None,
+        stream: bool = False,
         **_: Any,
     ) -> Any:
         prompt_text = _format_messages_as_prompt(
@@ -628,11 +712,14 @@ class CopilotACPClient:
         )
         finish_reason = "tool_calls" if tool_calls else "stop"
         choice = SimpleNamespace(message=assistant_message, finish_reason=finish_reason)
-        return SimpleNamespace(
+        completion = SimpleNamespace(
             choices=[choice],
             usage=usage,
             model=model or "copilot-acp",
         )
+        if stream:
+            return _completion_to_stream_chunks(completion)
+        return completion
 
     def _run_prompt(self, prompt_text: str, *, model: str | None = None, timeout_seconds: float) -> tuple[str, str]:
         # HTTP mode: base_url points to a running ACP streamable-http server
@@ -704,8 +791,8 @@ class CopilotACPClient:
             proc.stdin.write(json.dumps(payload) + "\n")
             proc.stdin.flush()
 
-            deadline = time.time() + timeout_seconds
-            while time.time() < deadline:
+            deadline = time.monotonic() + timeout_seconds
+            while time.monotonic() < deadline:
                 if proc.poll() is not None:
                     break
                 try:
@@ -733,6 +820,21 @@ class CopilotACPClient:
 
             stderr_text = "\n".join(stderr_tail).strip()
             if proc.poll() is not None and stderr_text:
+                if _is_gh_copilot_deprecation_message(stderr_text):
+                    raise RuntimeError(
+                        "Hermes ACP mode requires the NEW GitHub Copilot CLI "
+                        "(github.com/github/copilot-cli), but the binary it just "
+                        "spawned is the deprecated `gh copilot` extension.\n\n"
+                        "Install the new CLI:\n"
+                        "  npm install -g @github/copilot\n"
+                        "  # then verify with: copilot --help\n\n"
+                        "If `copilot` already resolves to the new CLI but you still see this,\n"
+                        "point Hermes at it explicitly:\n"
+                        "  export HERMES_COPILOT_ACP_COMMAND=/path/to/new/copilot\n\n"
+                        "Alternative: use the `copilot` provider (no ACP, hits the Copilot API\n"
+                        "directly with a Copilot subscription token) via `hermes setup`.\n\n"
+                        f"Original error:\n{stderr_text}"
+                    )
                 raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
             raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
 
@@ -826,7 +928,10 @@ class CopilotACPClient:
                 block_error = get_read_block_error(str(path))
                 if block_error:
                     raise PermissionError(block_error)
-                content = path.read_text() if path.exists() else ""
+                try:
+                    content = path.read_text()
+                except FileNotFoundError:
+                    content = ""
                 line = params.get("line")
                 limit = params.get("limit")
                 if isinstance(line, int) and line > 1:
@@ -835,7 +940,7 @@ class CopilotACPClient:
                     end = start + limit if isinstance(limit, int) and limit > 0 else None
                     content = "".join(lines[start:end])
                 if content:
-                    content = redact_sensitive_text(content)
+                    content = redact_sensitive_text(content, force=True)
                 response = {
                     "jsonrpc": "2.0",
                     "id": message_id,
@@ -848,10 +953,9 @@ class CopilotACPClient:
         elif method == "fs/write_text_file":
             try:
                 path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)
-                if is_write_denied(str(path)):
-                    raise PermissionError(
-                        f"Write denied: '{path}' is a protected system/credential file."
-                    )
+                denied = get_write_denied_error(str(path))
+                if denied:
+                    raise PermissionError(denied)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(str(params.get("content") or ""))
                 response = {

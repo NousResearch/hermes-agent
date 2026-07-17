@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { $uiState, resetUiState } from '../app/uiStore.js'
 import {
   applyDisplay,
+  hydrateFullConfig,
   normalizeBusyInputMode,
   normalizeIndicatorStyle,
   normalizeMouseTracking,
@@ -24,7 +25,6 @@ describe('applyDisplay', () => {
             bell_on_complete: true,
             details_mode: 'expanded',
             inline_diffs: false,
-            show_cost: true,
             show_reasoning: true,
             streaming: false,
             tui_compact: true,
@@ -40,7 +40,6 @@ describe('applyDisplay', () => {
     expect(s.compact).toBe(true)
     expect(s.detailsMode).toBe('expanded')
     expect(s.inlineDiffs).toBe(false)
-    expect(s.showCost).toBe(true)
     expect(s.showReasoning).toBe(true)
     expect(s.statusBar).toBe('off')
     expect(s.streaming).toBe(false)
@@ -64,7 +63,6 @@ describe('applyDisplay', () => {
     const s = $uiState.get()
     expect(setBell).toHaveBeenCalledWith(false)
     expect(s.inlineDiffs).toBe(true)
-    expect(s.showCost).toBe(false)
     expect(s.showReasoning).toBe(false)
     expect(s.statusBar).toBe('top')
     expect(s.streaming).toBe(true)
@@ -75,13 +73,26 @@ describe('applyDisplay', () => {
     const setBell = vi.fn()
 
     applyDisplay({ config: { display: { mouse_tracking: false } } }, setBell)
-    expect($uiState.get().mouseTracking).toBe(false)
+    expect($uiState.get().mouseTracking).toBe('off')
 
     applyDisplay({ config: { display: { mouse_tracking: true, tui_mouse: false } } }, setBell)
-    expect($uiState.get().mouseTracking).toBe(true)
+    expect($uiState.get().mouseTracking).toBe('all')
 
     applyDisplay({ config: { display: { tui_mouse: false } } }, setBell)
-    expect($uiState.get().mouseTracking).toBe(false)
+    expect($uiState.get().mouseTracking).toBe('off')
+  })
+
+  it('threads mouse_tracking presets through to $uiState', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { mouse_tracking: 'wheel' } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe('wheel')
+
+    applyDisplay({ config: { display: { mouse_tracking: 'buttons' } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe('buttons')
+
+    applyDisplay({ config: { display: { mouse_tracking: 'all' } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe('all')
   })
 
   it('parses display.sections into per-section overrides', () => {
@@ -181,15 +192,30 @@ describe('normalizeStatusBar', () => {
 })
 
 describe('normalizeMouseTracking', () => {
-  it('defaults on and prefers canonical mouse_tracking over legacy tui_mouse', () => {
-    expect(normalizeMouseTracking({})).toBe(true)
-    expect(normalizeMouseTracking({ mouse_tracking: false })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: 0 })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: 'off' })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: 'false' })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: null, tui_mouse: false })).toBe(true)
-    expect(normalizeMouseTracking({ mouse_tracking: true, tui_mouse: false })).toBe(true)
-    expect(normalizeMouseTracking({ tui_mouse: false })).toBe(false)
+  it('defaults to all and prefers canonical mouse_tracking over legacy tui_mouse', () => {
+    expect(normalizeMouseTracking({})).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: false })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: 0 })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: 'off' })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: 'false' })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: null, tui_mouse: false })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: true, tui_mouse: false })).toBe('all')
+    expect(normalizeMouseTracking({ tui_mouse: false })).toBe('off')
+  })
+
+  it('accepts preset strings (wheel/buttons/all) and their aliases', () => {
+    expect(normalizeMouseTracking({ mouse_tracking: 'wheel' })).toBe('wheel')
+    expect(normalizeMouseTracking({ mouse_tracking: 'scroll' })).toBe('wheel')
+    expect(normalizeMouseTracking({ mouse_tracking: 'buttons' })).toBe('buttons')
+    expect(normalizeMouseTracking({ mouse_tracking: 'click' })).toBe('buttons')
+    expect(normalizeMouseTracking({ mouse_tracking: 'all' })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: 'full' })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: 'on' })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: ' WHEEL ' })).toBe('wheel')
+  })
+
+  it('falls back to all for unknown strings', () => {
+    expect(normalizeMouseTracking({ mouse_tracking: 'rainbows' })).toBe('all')
   })
 })
 
@@ -290,5 +316,131 @@ describe('applyDisplay → tui_status_indicator', () => {
 
     applyDisplay({ config: { display: { tui_status_indicator: 'rainbow' } } }, setBell)
     expect($uiState.get().indicatorStyle).toBe('kaomoji')
+  })
+})
+
+// Regressions from Copilot review on #19835: the config-hydration path
+// for voice.record_key was untested, so a future regression in the
+// hydration or mtime-reapply wiring would slip past the suite.
+describe('applyDisplay → voice.record_key (#18994)', () => {
+  beforeEach(() => {
+    resetUiState()
+  })
+
+  it('parses voice.record_key and pushes it through the setter', () => {
+    const setBell = vi.fn()
+    const setVoiceRecordKey = vi.fn()
+
+    applyDisplay({ config: { display: {}, voice: { record_key: 'ctrl+space' } } }, setBell, setVoiceRecordKey)
+
+    expect(setVoiceRecordKey).toHaveBeenCalledWith(
+      expect.objectContaining({ ch: 'space', mod: 'ctrl', named: 'space', raw: 'ctrl+space' })
+    )
+  })
+
+  it('falls back to the documented default when voice.record_key is missing', () => {
+    const setBell = vi.fn()
+    const setVoiceRecordKey = vi.fn()
+
+    applyDisplay({ config: { display: {} } }, setBell, setVoiceRecordKey)
+
+    expect(setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'b', mod: 'ctrl', raw: 'ctrl+b' }))
+  })
+
+  it('is a no-op when the voice setter is not passed (back-compat)', () => {
+    const setBell = vi.fn()
+
+    // applyDisplay is used in the setVoiceEnabled-less init path too;
+    // omitting the third arg must not throw.
+    expect(() => applyDisplay({ config: { display: {}, voice: { record_key: 'alt+r' } } }, setBell)).not.toThrow()
+  })
+
+  it('does not reset voiceRecordKey when cfg is null (transient RPC failure)', () => {
+    const setBell = vi.fn()
+    const setVoiceRecordKey = vi.fn()
+
+    // quietRpc() collapses request failures to null. Resetting the
+    // cached shortcut on every null would clobber a custom binding
+    // after one transient error until the next successful poll
+    // (Copilot round-8 review on #19835).
+    applyDisplay(null, setBell, setVoiceRecordKey)
+
+    expect(setVoiceRecordKey).not.toHaveBeenCalled()
+    // bell is still applied (defaults to false on null), so the setter
+    // runs — we specifically only skip voiceRecordKey.
+    expect(setBell).toHaveBeenCalledWith(false)
+  })
+})
+
+// Round-12 Copilot review regression on #19835: the live mtime-reload
+// path was previously untested, so a regression in the polling/RPC
+// wiring to applyDisplay would only be visible at runtime. The fetch
+// + apply body is now shared as ``hydrateFullConfig()``, exercised
+// directly from both the initial hydration and the poll-tick body.
+describe('hydrateFullConfig', () => {
+  beforeEach(() => {
+    resetUiState()
+  })
+
+  const makeFakeGw = (payload: unknown) =>
+    ({
+      request: vi.fn(() => Promise.resolve(payload)),
+      on: vi.fn(),
+      off: vi.fn()
+    }) as any
+
+  it('re-applies voice.record_key from a fresh config.get full response', async () => {
+    const gw = makeFakeGw({ config: { display: {}, voice: { record_key: 'ctrl+o' } } })
+    const setBell = vi.fn()
+    const setVoiceRecordKey = vi.fn()
+
+    await hydrateFullConfig(gw, setBell, setVoiceRecordKey)
+
+    expect(gw.request).toHaveBeenCalledWith('config.get', { key: 'full' })
+    expect(setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'o', mod: 'ctrl', raw: 'ctrl+o' }))
+    expect(setBell).toHaveBeenCalledWith(false)
+  })
+
+  it('reapplies the latest value on each invocation (mtime-reload semantics)', async () => {
+    const gw = makeFakeGw({ config: { display: {}, voice: { record_key: 'ctrl+b' } } })
+    const setBell = vi.fn()
+    const setVoiceRecordKey = vi.fn()
+
+    await hydrateFullConfig(gw, setBell, setVoiceRecordKey)
+    expect(setVoiceRecordKey).toHaveBeenLastCalledWith(expect.objectContaining({ ch: 'b' }))
+
+    // Simulate a config edit: gw now returns a new shortcut.
+    gw.request = vi.fn(() => Promise.resolve({ config: { display: {}, voice: { record_key: 'alt+space' } } }))
+
+    await hydrateFullConfig(gw, setBell, setVoiceRecordKey)
+    expect(setVoiceRecordKey).toHaveBeenLastCalledWith(
+      expect.objectContaining({ ch: 'space', mod: 'alt', named: 'space' })
+    )
+  })
+
+  it('leaves cached voiceRecordKey untouched when the RPC fails', async () => {
+    const gw = { request: vi.fn(() => Promise.reject(new Error('boom'))), on: vi.fn(), off: vi.fn() } as any
+    const setBell = vi.fn()
+    const setVoiceRecordKey = vi.fn()
+
+    const result = await hydrateFullConfig(gw, setBell, setVoiceRecordKey)
+
+    // quietRpc() swallows the error and returns null; applyDisplay
+    // sees cfg=null and skips the voice setter (Copilot round-8).
+    expect(result).toBeNull()
+    expect(setVoiceRecordKey).not.toHaveBeenCalled()
+    // bell setter still fires — applyDisplay's null-cfg path applies
+    // the documented bell default (false).
+    expect(setBell).toHaveBeenCalledWith(false)
+  })
+
+  it('threads through without a voice setter (back-compat call sites)', async () => {
+    const gw = makeFakeGw({ config: { display: { bell_on_complete: true } } })
+    const setBell = vi.fn()
+
+    // No third arg — applyDisplay must not throw and must still apply
+    // display flags (round-2 / round-8 invariant).
+    await expect(hydrateFullConfig(gw, setBell)).resolves.toBeTruthy()
+    expect(setBell).toHaveBeenCalledWith(true)
   })
 })

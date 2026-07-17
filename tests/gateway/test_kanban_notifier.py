@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 
+import pytest
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
@@ -70,11 +71,18 @@ def _unseen_terminal_events(tid):
 
 
 def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monkeypatch):
-    db_path = tmp_path / "shared-kanban.db"
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
-    kb.init_db()
-    kb.write_board_metadata("alias-a", name="Alias A")
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "alias-a")
+    kb.create_board("alias-a", name="Alias A")
     kb.write_board_metadata("alias-b", name="Alias B")
+    alias_a_db = kb.board_dir("alias-a") / "kanban.db"
+    alias_b_db = kb.board_dir("alias-b") / "kanban.db"
+    try:
+        alias_b_db.symlink_to(alias_a_db)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    assert alias_a_db.resolve() == alias_b_db.resolve()
 
     tid = _create_completed_subscription()
 

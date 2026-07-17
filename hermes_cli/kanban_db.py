@@ -29,9 +29,9 @@ Board resolution order (highest precedence first, all optional):
   ``?board=...`` query param).
 * ``HERMES_KANBAN_BOARD`` env var (used by the dispatcher to pin workers
   to the board their task lives on — workers cannot see other boards).
-* ``HERMES_KANBAN_DB`` env var (pins the DB file path directly — legacy
-  override still honoured; highest precedence when the file path itself
-  is what the caller wants to force).
+* ``HERMES_KANBAN_DB`` env var (pins implicit operations, and explicit
+  operations that re-select the same ``HERMES_KANBAN_BOARD``, to the exact
+  dispatcher-resolved path).
 * ``<root>/kanban/current`` — a one-line text file holding the slug of
   the "currently selected" board. Written by ``hermes kanban boards
   switch <slug>``. When absent, the active board is ``default``.
@@ -368,6 +368,57 @@ def _normalize_board_slug(slug: Optional[str]) -> Optional[str]:
     return s
 
 
+def _path_board_selection(board: Optional[str]) -> tuple[Optional[str], bool]:
+    """Return ``(slug, is_explicit)`` for a per-board path lookup.
+
+    ``scoped_current_board`` is explicit too: the CLI ``--board`` surface sets
+    that ContextVar, then legacy handlers call :func:`connect` without a board
+    kwarg. Treating only the direct kwarg as explicit would leave the CLI path
+    vulnerable to an inherited worker DB pin.
+    """
+    slug = _normalize_board_slug(board)
+    if slug is not None:
+        return slug, True
+    scoped = (_CURRENT_BOARD_OVERRIDE.get() or "").strip()
+    if scoped:
+        return _normalize_board_slug(scoped), True
+    return None, False
+
+
+def _path_override_for_selection(
+    env_name: str,
+    selected_slug: Optional[str],
+    *,
+    is_explicit: bool,
+) -> Optional[Path]:
+    """Return a path pin only when it belongs to the selected board.
+
+    Dispatcher-spawned workers carry both a slug and exact path pins. Implicit
+    operations, plus explicit operations targeting that same slug, must keep
+    using the exact path for custom/symlink/Docker layouts. An explicit
+    different slug must not inherit that pin or every named board collapses
+    onto the worker's current DB.
+    """
+    override = os.environ.get(env_name, "").strip()
+    if not override:
+        return None
+    if not is_explicit:
+        return Path(override).expanduser()
+    # A bare path override has no board identity to compare against. Preserve
+    # its legacy "pin everything" semantics; only the dispatcher-style pair
+    # (slug + path) gives us enough information to reject a mismatched pin.
+    pinned_raw = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+    if not pinned_raw:
+        return Path(override).expanduser()
+    try:
+        pinned_slug = _normalize_board_slug(pinned_raw)
+    except ValueError:
+        return None
+    if pinned_slug == selected_slug:
+        return Path(override).expanduser()
+    return None
+
+
 def kanban_home() -> Path:
     """Return the shared Hermes root that anchors the kanban board.
 
@@ -518,19 +569,22 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
 
     Resolution (highest precedence first):
 
-    1. ``HERMES_KANBAN_DB`` env var — pins the path directly. Honoured for
-       back-compat and for the dispatcher→worker handoff (defense in
-       depth: dispatcher injects this into worker env so workers are
-       immune to any path-resolution disagreement).
-    2. When ``board`` arg is None, the active board from
-       :func:`get_current_board` is used.
+    1. A matching dispatcher path pin (``HERMES_KANBAN_DB`` together with
+       ``HERMES_KANBAN_BOARD``), or a bare legacy path pin. An explicit
+       different board ignores a dispatcher pin belonging to another slug.
+    2. When neither ``board`` nor :func:`scoped_current_board` selects a slug,
+       the active board from :func:`get_current_board` is used.
     3. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
        Other boards → ``<root>/kanban/boards/<slug>/kanban.db``.
     """
-    override = os.environ.get("HERMES_KANBAN_DB", "").strip()
+    slug, is_explicit = _path_board_selection(board)
+    override = _path_override_for_selection(
+        "HERMES_KANBAN_DB",
+        slug,
+        is_explicit=is_explicit,
+    )
     if override:
-        return Path(override).expanduser()
-    slug = _normalize_board_slug(board)
+        return override
     if slug is None:
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
@@ -549,10 +603,14 @@ def workspaces_root(board: Optional[str] = None) -> Path:
     that existing scratch workspaces from before the boards feature are
     preserved. Other boards use ``<root>/kanban/boards/<slug>/workspaces/``.
     """
-    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+    slug, is_explicit = _path_board_selection(board)
+    override = _path_override_for_selection(
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        slug,
+        is_explicit=is_explicit,
+    )
     if override:
-        return Path(override).expanduser()
-    slug = _normalize_board_slug(board)
+        return override
     if slug is None:
         slug = get_current_board()
     if slug == DEFAULT_BOARD:

@@ -1837,6 +1837,38 @@ def test_board_param_routes_show_to_alt_board(multi_board_env):
     assert good["task"]["title"] == "seed-alt"
 
 
+def test_board_param_routes_show_past_worker_db_pin(tmp_path, monkeypatch):
+    """An explicit tool board must beat a different dispatcher's DB pin."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.create_board("worker-board")
+    kb.create_board("other-board")
+    with kb.connect(board="other-board") as conn:
+        other_tid = kb.create_task(conn, title="other-only", assignee="worker")
+
+    worker_db = kb.board_dir("worker-board") / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "worker-board")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(worker_db))
+
+    out = json.loads(kt._handle_show({
+        "task_id": other_tid,
+        "board": "other-board",
+    }))
+
+    assert out["task"]["id"] == other_tid
+    assert out["task"]["title"] == "other-only"
+
+
 def test_board_param_routes_assign_via_create_to_alt(multi_board_env):
     """Workflow test for the 'assign' UX — create with assignee on a
     specific board. (The CLI has a separate ``kanban assign`` verb; the

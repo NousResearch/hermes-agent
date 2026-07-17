@@ -124,6 +124,9 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
+    picker_title:          "⚡ **Priority Processing**\\n\\nПоточний режим: `{mode}`\\n\\nОберіть варіант:"
+    choice_fast:           "fast — Priority Processing увімкнено"
+    choice_normal:         "normal — стандартна обробка"
 
   footer:
     status:                "📎 Нижній колонтитул середовища: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
@@ -194,6 +197,11 @@ gateway:
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` не підтримується. Використовуйте `/reasoning <level> --global`, щоб змінити глобальне значення за замовчуванням."
     reset_done:                "🧠 ✓ Перевизначення мислення для сеансу скинуто; повернення до глобальної конфігурації."
     unknown_arg:               "⚠️ Невідомий аргумент: `{arg}`\n\n**Дійсні рівні:** none, minimal, low, medium, high, xhigh, max, ultra\n**Показ:** show, hide\n**Зберегти:** додайте `--global`, щоб зберегти поза цим сеансом"
+    picker_title:              "🧠 **Налаштування мислення**\\n\\n**Зусилля:** `{level}`\\n**Область:** {scope}\\n**Показ:** {display}\\n\\nОберіть варіант:"
+    choice_none:               "none — вимкнути мислення"
+    choice_reset:              "reset — скинути перевизначення сесії"
+    choice_show:               "показувати мислення у відповідях"
+    choice_hide:               "приховувати мислення у відповідях"
     set_global:                "🧠 ✓ Зусилля мислення встановлено на `{effort}` (збережено в конфігурації)\n_(набуде чинності з наступного повідомлення)_"
     set_global_save_failed:    "🧠 ✓ Зусилля мислення встановлено на `{effort}` (лише цей сеанс — не вдалося зберегти конфігурацію)\n_(набуде чинності з наступного повідомлення)_"
     set_session:               "🧠 ✓ Зусилля мислення встановлено на `{effort}` (лише цей сеанс — додайте `--global`, щоб зберегти)\n_(набуде чинності з наступного повідомлення)_"

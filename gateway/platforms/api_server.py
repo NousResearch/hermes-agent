@@ -932,6 +932,11 @@ class APIServerAdapter(BasePlatformAdapter):
     # ``async_delivery_supported()``.
     supports_async_delivery: bool = False
 
+    # Same statelessness applies to the startup auto-resume prompt: no client
+    # is waiting to answer "session restored — what next?", so a resumed turn
+    # should complete the interrupted work rather than acknowledge (#57056).
+    interactive_resume: bool = False
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}

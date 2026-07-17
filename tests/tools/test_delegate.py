@@ -562,7 +562,11 @@ class TestToolNamePreservation(unittest.TestCase):
             captured["acp_command"] = kwargs.get("acp_command")
             captured["acp_args"] = kwargs.get("acp_args")
 
-        mock_which.assert_called_with("copilot")
+        # any_call, not called_with: the patch is global to shutil.which, so an
+        # unrelated which("uv") from a code path reached later in the same
+        # process (order-dependent under CI test-slicing) can be the *last*
+        # call. The intent here is only that the copilot binary was probed.
+        mock_which.assert_any_call("copilot")
         self.assertNotEqual(
             captured["provider"],
             "copilot-acp",

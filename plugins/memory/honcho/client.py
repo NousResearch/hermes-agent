@@ -17,8 +17,10 @@ import json
 import os
 import logging
 import hashlib
+import ipaddress
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from hermes_cli.profiles import _get_default_hermes_home
@@ -56,8 +58,9 @@ def resolve_active_host() -> str:
 
     Resolution order:
       1. HERMES_HONCHO_HOST env var (explicit override)
-      2. Active profile name via profiles system -> ``hermes.<profile>``
-      3. Fallback: ``"hermes"`` (default profile)
+      2. Active profile name via profiles system -> ``hermes_<profile>``
+      3. defaultHost from the active config, but only for the default profile
+      4. Fallback: ``"hermes"`` (default profile)
     """
     explicit = os.environ.get("HERMES_HONCHO_HOST", "").strip()
     if explicit:
@@ -66,10 +69,26 @@ def resolve_active_host() -> str:
     try:
         from hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name()
-        return profile_host_key(profile)
+        profile_host = profile_host_key(profile)
     except Exception:
-        pass
-    return HOST
+        profile_host = HOST
+
+    # Honcho's generic config can carry a defaultHost (for example "local"),
+    # but applying it before profile resolution makes every named Hermes
+    # profile share that same host.  Keep named profiles isolated; only the
+    # default Hermes profile may opt into the config's default host.
+    if profile_host == HOST:
+        try:
+            path = resolve_config_path()
+            if path.exists():
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                default_host = str(raw.get("defaultHost", "")).strip()
+                if default_host:
+                    return default_host
+        except Exception:
+            pass
+
+    return profile_host
 
 
 def resolve_global_config_path() -> Path:
@@ -145,6 +164,17 @@ def _parse_int_config(host_val, root_val, default: int) -> int:
     return default
 
 
+def _parse_float_config(host_val, root_val, default: float) -> float:
+    """Parse a float config: host wins, then root, then default. Clamped ≥ 0."""
+    for val in (host_val, root_val):
+        if val is not None:
+            try:
+                return max(0.0, float(val))
+            except (ValueError, TypeError):
+                pass
+    return default
+
+
 def _parse_string_map(host_obj: dict, root_obj: dict, key: str) -> dict[str, str]:
     """Parse a string-to-string map with host-level whole-map override."""
     source = host_obj[key] if key in host_obj else root_obj.get(key)
@@ -213,6 +243,44 @@ def _parse_dialectic_depth_levels(host_val, root_val, depth: int) -> list[str] |
 # the Honcho backend is unreachable, preventing the gateway from
 # delivering the already-generated response.
 _DEFAULT_HTTP_TIMEOUT = 30.0
+
+
+def _is_local_base_url(base_url: str | None) -> bool:
+    """Return True for loopback/LAN/VPN self-hosted Honcho URLs.
+
+    Local Honcho deployments can run without auth, but the SDK requires a
+    non-empty api_key argument.  Treat loopback plus RFC1918/link-local/ULA
+    and carrier-grade-NAT IPs as local so LAN/VPN URLs such as
+    ``http://192.168.2.112:8000`` get the same placeholder-key behavior as
+    localhost.
+    """
+    if not base_url:
+        return False
+
+    try:
+        parsed = urlparse(base_url)
+        host = (parsed.hostname or "").strip().lower()
+    except Exception:
+        host = ""
+
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    if not host:
+        return False
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        return True
+
+    # Tailscale/other VPN setups often sit in carrier-grade NAT space.
+    if ip.version == 4 and ipaddress.ip_address("100.64.0.0") <= ip <= ipaddress.ip_address("100.127.255.255"):
+        return True
+
+    return False
 
 
 def _resolve_optional_float(*values: Any) -> float | None:
@@ -331,7 +399,7 @@ class HonchoClientConfig:
     # honcho_reasoning tool param (agentic). When false, always uses
     # dialecticReasoningLevel and ignores model-provided overrides.
     dialectic_dynamic: bool = True
-    # Max chars of dialectic result to inject into Hermes system prompt
+    # Automatic-injection cap; explicit honcho_reasoning calls bypass it.
     dialectic_max_chars: int = 600
     # Dialectic depth: how many .chat() calls per dialectic cycle (1-3).
     # Depth 1: single call. Depth 2: self-audit + targeted synthesis.
@@ -359,6 +427,20 @@ class HonchoClientConfig:
     # Eager init in tools mode — when true, initializes session during
     # initialize() instead of deferring to first tool call
     init_on_session_start: bool = False
+    # Injection frequency: "every-turn" (default) or "first-turn" (inject only on turn 1)
+    injection_frequency: str = "every-turn"
+    # Minimum turns between peer.context() API calls (base layer refresh cadence)
+    context_cadence: int = 1
+    # Minimum turns between dialectic prefetch fires (supplement layer cadence)
+    dialectic_cadence: int = 1
+    # Rewrite the latest user message into a retrieval query before dialectic.
+    # Off by default: adds one auxiliary LLM call per dialectic fire
+    # (model/timeout under auxiliary.memory_query_rewrite in config.yaml).
+    query_rewrite: bool = False
+    # Bounded synchronous waits on turn 1, in seconds. 0 disables the wait
+    # entirely (fully async first turn; context surfaces on later turns).
+    first_turn_base_wait: float = 3.0
+    first_turn_dialectic_wait: float = 2.0
     # Observation mode: legacy string shorthand ("directional" or "unified").
     # Kept for backward compat; granular per-peer booleans below are preferred.
     observation_mode: str = "directional"
@@ -457,7 +539,10 @@ class HonchoClientConfig:
             or os.environ.get("HONCHO_BASE_URL", "").strip()
             or None
         )
+        # Host config wins over flat/global config and environment.
         timeout = _resolve_optional_float(
+            host_block.get("timeout"),
+            host_block.get("requestTimeout"),
             raw.get("timeout"),
             raw.get("requestTimeout"),
             os.environ.get("HONCHO_TIMEOUT"),
@@ -593,6 +678,36 @@ class HonchoClientConfig:
                 host_block.get("initOnSessionStart"),
                 raw.get("initOnSessionStart"),
                 default=False,
+            ),
+            # Host cadence settings override flat/global values.
+            injection_frequency=(
+                host_block.get("injectionFrequency")
+                or raw.get("injectionFrequency", "every-turn")
+            ),
+            context_cadence=_parse_int_config(
+                host_block.get("contextCadence"),
+                raw.get("contextCadence"),
+                default=1,
+            ),
+            dialectic_cadence=_parse_int_config(
+                host_block.get("dialecticCadence"),
+                raw.get("dialecticCadence"),
+                default=1,
+            ),
+            query_rewrite=_resolve_bool(
+                host_block.get("queryRewrite"),
+                raw.get("queryRewrite"),
+                default=False,
+            ),
+            first_turn_base_wait=_parse_float_config(
+                host_block.get("firstTurnBaseWait"),
+                raw.get("firstTurnBaseWait"),
+                default=3.0,
+            ),
+            first_turn_dialectic_wait=_parse_float_config(
+                host_block.get("firstTurnDialecticWait"),
+                raw.get("firstTurnDialecticWait"),
+                default=2.0,
             ),
             # Migration guard: existing configs without an explicit
             # observationMode keep the old "unified" default so users
@@ -740,6 +855,50 @@ class HonchoClientConfig:
 
 
 _honcho_client_slot: SingletonSlot = SingletonSlot()
+_cached_timeout: float | None = None
+# Memo for the config.yaml-derived timeout, keyed on the file's mtime_ns so
+# the staleness check on every get_honcho_client() call costs one stat()
+# instead of a full YAML load. (None, None) = not yet populated.
+_config_timeout_memo: tuple[int | None, float | None] = (None, None)
+
+
+def _config_yaml_timeout() -> float | None:
+    """Read honcho.timeout / honcho.request_timeout from config.yaml, memoized on mtime."""
+    global _config_timeout_memo
+    try:
+        from hermes_constants import get_hermes_home
+
+        cfg_path = get_hermes_home() / "config.yaml"
+        try:
+            mtime_ns: int | None = cfg_path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = None
+        if _config_timeout_memo[0] is not None and _config_timeout_memo[0] == mtime_ns:
+            return _config_timeout_memo[1]
+
+        from hermes_cli.config import load_config
+
+        honcho_cfg = load_config().get("honcho", {})
+        timeout = None
+        if isinstance(honcho_cfg, dict):
+            timeout = _resolve_optional_float(
+                honcho_cfg.get("timeout"),
+                honcho_cfg.get("request_timeout"),
+            )
+        _config_timeout_memo = (mtime_ns, timeout)
+        return timeout
+    except Exception:
+        return None
+
+
+def _resolve_timeout_from_sources(config: HonchoClientConfig | None) -> float:
+    """Resolve the effective timeout from env, config.yaml, and the explicit config."""
+    timeout = config.timeout if config is not None else None
+    if timeout is None:
+        timeout = _resolve_optional_float(os.environ.get("HONCHO_TIMEOUT"))
+    if timeout is None:
+        timeout = _config_yaml_timeout()
+    return timeout if timeout is not None else _DEFAULT_HTTP_TIMEOUT
 
 
 def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
@@ -785,10 +944,20 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     first calls (double-checked locking via ``SingletonSlot``), so racing
     threads can't each construct a client and leak the loser's connection.
     """
+    global _cached_timeout
     cached = _honcho_client_slot.peek()
     if cached is not None:
-        _refresh_cached_oauth(cached, config)
-        return cached
+        # Detect timeout config changes in long-lived processes (gateway,
+        # dashboard).  If the user changed the timeout after the client was
+        # built, rebuild with the new value.
+        new_timeout = _resolve_timeout_from_sources(config)
+        if new_timeout != _cached_timeout:
+            _honcho_client_slot.reset()
+            _cached_timeout = None
+            cached = None
+        else:
+            _refresh_cached_oauth(cached, config)
+            return cached
 
     if config is None:
         config = HonchoClientConfig.from_global_config()
@@ -805,16 +974,9 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             "For local instances, set HONCHO_BASE_URL instead."
         )
 
-    # Everything below is the expensive part the issue flags: lazy SDK
-    # install, config resolution, and client construction. Run it inside the
-    # slot's factory so it executes exactly once even when several threads
-    # race the first call — the slot's double-checked lock serializes them and
-    # the losers get the winner's client instead of building their own.
+    # Build inside the singleton factory so racing callers share one client.
     def _build() -> "Honcho":
-        # Lazy-install the honcho SDK on demand. ensure() honors
-        # security.allow_lazy_installs (default true). On failure we surface
-        # the original ImportError-shape message so existing callers still get
-        # the "go run hermes honcho setup" hint they used to.
+        # Lazy dependency failures fall through to the canonical import error.
         try:
             from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
             _lazy_ensure("memory.honcho", prompt=False)
@@ -871,16 +1033,12 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         # For local: only use config.api_key if the host block explicitly
         # sets apiKey (meaning the user wants local auth). Otherwise skip
         # the stored key -- it's likely a cloud key that would break local.
-        _is_local = resolved_base_url and (
-            "localhost" in resolved_base_url
-            or "127.0.0.1" in resolved_base_url
-            or "::1" in resolved_base_url
-        )
+        _is_local = _is_local_base_url(resolved_base_url)
         if _is_local:
             # Check if the host block has its own apiKey (explicit local auth).
-            # Auth-skipping is loopback-only: a stored key is likely a cloud key
-            # that would break a no-auth local server, so we substitute the SDK's
-            # required-non-empty placeholder unless the host block opts in.
+            # For local/LAN/VPN self-hosts, a stored root key is likely a cloud
+            # key that would break a no-auth local server, so we substitute the
+            # SDK's required-non-empty placeholder unless the host block opts in.
             _raw = config.raw or {}
             _host_block = (_raw.get("hosts") or {}).get(config.host, {})
             _host_has_key = bool(_host_block.get("apiKey"))
@@ -910,6 +1068,8 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         if resolved_timeout is not None:
             kwargs["timeout"] = resolved_timeout
 
+        global _cached_timeout
+        _cached_timeout = resolved_timeout
         return Honcho(**kwargs)
 
     return _honcho_client_slot.get(_build)
@@ -917,4 +1077,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
 def reset_honcho_client() -> None:
     """Reset the Honcho client singleton (useful for testing)."""
+    global _cached_timeout, _config_timeout_memo
     _honcho_client_slot.reset()
+    _cached_timeout = None
+    _config_timeout_memo = (None, None)

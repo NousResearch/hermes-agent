@@ -1016,6 +1016,12 @@ class SessionDB:
 
         self._lock = threading.Lock()
         self._write_count = 0
+        # One-shot guard for the runtime FTS rebuild recovery on the write
+        # path. A corrupt FTS shadow table makes EVERY message write raise
+        # the malformed/corrupt error class via the sync triggers; we repair
+        # in place at most once per SessionDB instance so a genuinely
+        # unrecoverable database can't put writers into a rebuild loop.
+        self._fts_runtime_rebuild_attempted = False
         self._fts_enabled = False
         self._trigram_available = False
         self._fts_unavailable_warned = False
@@ -1297,10 +1303,88 @@ class SessionDB:
                         continue
                 # Non-lock error or retries exhausted — propagate.
                 raise
+            except sqlite3.DatabaseError as exc:
+                # Corrupt FTS shadow tables make every write raise the
+                # malformed/corrupt error class through the FTS sync triggers
+                # while the canonical messages table is intact. The gateway
+                # session store has its own retry queue for transcript
+                # appends (#65637 salvage), but cron and CLI writers call
+                # SessionDB directly — without this, their writes hard-fail
+                # until the next process restart triggers the offline repair.
+                # Rebuild the FTS index in place (once per instance) via
+                # rebuild_fts() and retry the failed write immediately.
+                if not self._try_runtime_fts_rebuild(exc):
+                    raise
+                continue
         # Retries exhausted (shouldn't normally reach here).
         raise last_err or sqlite3.OperationalError(
             "database is locked after max retries"
         )
+
+    @staticmethod
+    def _is_fts_write_corruption_error(exc: sqlite3.DatabaseError) -> bool:
+        """True for the error class a corrupt FTS index raises on writes.
+
+        The message varies by SQLite version: older builds raise the generic
+        ``database disk image is malformed`` (covered by
+        ``is_malformed_db_error``); newer builds (e.g. ubuntu-latest CI)
+        raise the FTS5-specific ``fts5: corrupt structure record for table
+        "messages_fts"``. Both mean the same thing for the write path: the
+        canonical rows are fine, the FTS shadow tables are not.
+        """
+        if is_malformed_db_error(exc):
+            return True
+        msg = str(exc).lower()
+        return "fts5" in msg and "corrupt" in msg
+
+    def _try_runtime_fts_rebuild(self, exc: sqlite3.DatabaseError) -> bool:
+        """One-shot in-place FTS rebuild after a corrupt-index write failure.
+
+        Returns True when a rebuild was performed and the failed write should
+        be retried; False when the error isn't the FTS-corruption class, FTS
+        is disabled, or a rebuild was already attempted for this instance.
+
+        Delegates to :meth:`rebuild_fts` (the FTS5 ``'rebuild'`` command —
+        index rewritten from the canonical messages table, zero message-row
+        mutation). Safe to call from ``_execute_write``'s except path: the
+        failed transaction was rolled back and ``self._lock`` released before
+        the exception propagated, and ``rebuild_fts`` re-acquires it.
+        E2E-verified: a corrupted ``messages_fts_data`` shadow table rejects
+        every append; after the in-place rebuild the same append succeeds and
+        search works again.
+        """
+        if self._fts_runtime_rebuild_attempted:
+            return False
+        if not self._fts_enabled:
+            return False
+        if not self._is_fts_write_corruption_error(exc):
+            return False
+        self._fts_runtime_rebuild_attempted = True
+        logger.warning(
+            "state.db write failed with an FTS-corruption error (%s) — "
+            "attempting one-shot in-place FTS rebuild; canonical message "
+            "rows are preserved.", exc,
+        )
+        try:
+            rebuilt = self.rebuild_fts()
+        except Exception as rebuild_exc:
+            logger.error(
+                "In-place FTS rebuild failed (%s); the database needs the "
+                "full offline repair path (repair_state_db_schema).",
+                rebuild_exc,
+            )
+            return False
+        if not rebuilt:
+            logger.error(
+                "In-place FTS rebuild made no progress; the database needs "
+                "the full offline repair path (repair_state_db_schema)."
+            )
+            return False
+        logger.warning(
+            "state.db FTS indexes rebuilt in place (%d); retrying the failed write.",
+            rebuilt,
+        )
+        return True
 
     def _try_wal_checkpoint(self) -> None:
         """Best-effort PASSIVE WAL checkpoint.  Never raises.
@@ -2286,6 +2370,55 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def promote_to_session_reset(
+        self, session_id: str, reason: str = "session_reset"
+    ) -> bool:
+        """Durably mark a session as ended by an intentional reset boundary.
+
+        Promotes *only* live rows (``ended_at IS NULL``) or rows carrying an
+        accidental end_reason that the recovery query
+        (``find_latest_gateway_session_for_peer``) treats as recoverable:
+        ``agent_close`` (older gateway cleanup bug) and ``ws_orphan_reap``
+        (mistaken TUI reaper).  Explicit conversation boundaries such as
+        ``compression``, ``session_reset``, ``session_switch``, etc. are
+        preserved — the first writer wins for those, and a later expiry
+        finalization must not silently overwrite them.
+
+        Plain ``end_session()`` is NOT sufficient for reset boundaries: it
+        no-ops on an already-ended row, so a row that agent cleanup already
+        closed as ``agent_close`` would stay recoverable and stale-route
+        recovery would resurrect the reset session with its full history
+        (#61220, #61993, #63539).
+
+        Keep this promotion set in sync with the recoverable set in
+        ``find_latest_gateway_session_for_peer`` — any reason recovery would
+        reopen must be promotable here.
+
+        ``reason`` lets reset paths keep their auditable specific reasons
+        (``idle``, ``daily``, ``suspended``, ``resume_pending_expired``).
+
+        Returns ``True`` when the row was promoted, ``False`` when skipped
+        (already has a different explicit end_reason, or row not found).
+        """
+        if not session_id:
+            return False
+        now = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET ended_at = ?, end_reason = ? "
+                "WHERE id = ? AND (ended_at IS NULL "
+                "OR end_reason IN ('agent_close', 'ws_orphan_reap'))",
+                (now, reason, session_id),
+            )
+            return cursor.rowcount
+
+        try:
+            rows = self._execute_write(_do)
+            return bool(rows)
+        except Exception:
+            return False
+
     def update_session_cwd(
         self, session_id: str, cwd: str, git_branch: str = None, git_repo_root: str = None
     ) -> None:
@@ -3222,16 +3355,24 @@ class SessionDB:
         ).fetchone()
         return row is not None
 
-    def set_session_title(self, session_id: str, title: str) -> bool:
-        """Set or update a session's title.
-
-        Returns True if session was found and title was set.
-        Raises ValueError if title is already in use by another session,
-        or if the title fails validation (too long, invalid characters).
-        Empty/whitespace-only strings are normalized to None (clearing the title).
-        """
+    def _set_session_title(
+        self,
+        session_id: str,
+        title: str,
+        *,
+        only_if_empty: bool,
+    ) -> bool:
         title = self.sanitize_title(title)
+
         def _do(conn):
+            if only_if_empty:
+                current = conn.execute(
+                    "SELECT title FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
+                if current is None or current["title"] is not None:
+                    return 0
+
             if title:
                 # Check uniqueness (allow the same session to keep its own title)
                 cursor = conn.execute(
@@ -3263,13 +3404,34 @@ class SessionDB:
                         raise ValueError(
                             f"Title '{title}' is already in use by session {conflict_id}"
                         )
+            predicate = " AND title IS NULL" if only_if_empty else ""
             cursor = conn.execute(
-                "UPDATE sessions SET title = ? WHERE id = ?",
+                f"UPDATE sessions SET title = ? WHERE id = ?{predicate}",
                 (title, session_id),
             )
             return cursor.rowcount
+
         rowcount = self._execute_write(_do)
         return rowcount > 0
+
+    def set_session_title(self, session_id: str, title: str) -> bool:
+        """Set or update a session's title.
+
+        Returns True if session was found and title was set.
+        Raises ValueError if title is already in use by another session,
+        or if the title fails validation (too long, invalid characters).
+        Empty/whitespace-only strings are normalized to None (clearing the title).
+        """
+        return self._set_session_title(session_id, title, only_if_empty=False)
+
+    def set_auto_title_if_empty(self, session_id: str, title: str) -> bool:
+        """Set an auto-generated title only when the current title is NULL.
+
+        The predicate and write run in one transaction so a concurrent manual
+        rename cannot be overwritten. Validation and uniqueness behavior match
+        :meth:`set_session_title`.
+        """
+        return self._set_session_title(session_id, title, only_if_empty=True)
 
     def get_session_title(self, session_id: str) -> Optional[str]:
         """Get the title for a session, or None."""
@@ -7194,6 +7356,37 @@ class SessionDB:
                         "FTS optimize failed for %s: %s", tbl, exc
                     )
         return optimized
+
+    def rebuild_fts(self) -> int:
+        """Rebuild FTS5 indexes from the canonical ``messages`` table.
+
+        Uses the FTS5 ``'rebuild'`` command, which rewrites the internal
+        b-tree segments from the content rows. This is the documented
+        recovery for a corrupt FTS index that rejects message writes while
+        reads still succeed (issue #50502). Unlike ``optimize_fts`` (which
+        merges existing segments), ``rebuild`` discards and recreates the
+        index data entirely.
+
+        Safe to call when FTS tables don't exist (skips them).
+        Returns the number of FTS indexes that were rebuilt.
+        """
+        rebuilt = 0
+        with self._lock:
+            for tbl in self._FTS_TABLES:
+                if not self._fts_table_exists(tbl):
+                    continue
+                try:
+                    self._conn.execute(
+                        f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')"
+                    )
+                    self._conn.commit()
+                    rebuilt += 1
+                except sqlite3.OperationalError as exc:
+                    self._conn.rollback()
+                    logger.warning(
+                        "FTS rebuild failed for %s: %s", tbl, exc
+                    )
+        return rebuilt
 
     def vacuum(self) -> int:
         """Run VACUUM to reclaim disk space after large deletes.

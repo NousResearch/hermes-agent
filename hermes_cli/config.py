@@ -1287,7 +1287,8 @@ DEFAULT_CONFIG = {
         "engine": "auto",
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
-        "allow_unsafe_evaluate": False,  # Allow browser_console(expression=...) to use sensitive JS primitives (cookies/storage/clipboard/network/form values)
+        "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely
+        "restrict_evaluate": False,  # Opt-in denylist blocking sensitive JS primitives (cookies/storage/clipboard/network/form values) in browser_console(expression=...)
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
         # Active only when a CDP-capable backend is attached (Browserbase or
         # local Chrome via /browser connect). See
@@ -1643,6 +1644,7 @@ DEFAULT_CONFIG = {
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
         "title_generation": {
+            "enabled": True,
             "provider": "auto",
             "model": "",
             "base_url": "",
@@ -1651,6 +1653,14 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
             "language": "",
+        },
+        "memory_query_rewrite": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 8,
+            "extra_body": {},
         },
         "tts_audio_tags": {
             "provider": "auto",
@@ -1897,6 +1907,12 @@ DEFAULT_CONFIG = {
             "last_lines": 2,
         },
         "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
+        # Codex Responses models narrate progress in a dedicated commentary
+        # channel. When true (default), completed commentary messages are
+        # delivered as visible mid-turn updates via the interim message path.
+        # When false, commentary falls back to the reasoning channel and is
+        # only visible when show_reasoning is enabled.
+        "show_commentary": True,
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
@@ -1994,6 +2010,11 @@ DEFAULT_CONFIG = {
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        # Process-isolation rollout controls. Runtime reads these through the
+        # raw config loader, so tui_gateway.server also owns explicit defaults.
+        "turn_isolation": False,
+        "compute_host_heartbeat_secs": 15,
+        "compute_host_respawn_max": 3,
         # Hide the token/cost analytics surfaces (Analytics page, token bars and
         # cost figures on the Models page) by default.  The numbers shown there
         # are a local debug estimate: they only count successful main-agent
@@ -3110,21 +3131,29 @@ DEFAULT_CONFIG = {
 
     # ``hermes update`` behaviour.
     "updates": {
-        # Run a full ``hermes backup``-style zip of HERMES_HOME before every
-        # ``hermes update``.  Backups land in ``<HERMES_HOME>/backups/`` and
-        # can be restored with ``hermes import <path>``.  Off by default:
-        # zipping a large HERMES_HOME (sessions DB, caches, skills) can add
-        # minutes to every update.  The #48200 incident — a ``hermes update
-        # --yes`` run that computed a wrong path and silently wiped the
-        # user's ``.env``, ``MEMORY.md``, ``kanban.db``, custom skills, and
-        # scripts — is the reason this knob exists; enable it (here, or via
-        # ``--backup`` for a single run) if you want that safety net.
-        "pre_update_backup": False,
-        # How many pre-update backup zips to retain.  Older ones are pruned
-        # automatically after each successful backup.  Values below 1 are
-        # floored to 1 — the backup just created is always preserved.  To
-        # disable backups entirely, set ``pre_update_backup: false`` above
-        # rather than ``backup_keep: 0``.
+        # Pre-update safety backup — ONE consolidated mechanism, three modes:
+        #
+        #   quick (default) — snapshot critical small state files (pairing
+        #     JSONs, cron jobs, config.yaml, .env, auth.json, per-profile
+        #     DBs) into <HERMES_HOME>/state-snapshots/ before the update.
+        #     Files over 1 GiB (e.g. a bloated state.db) are skipped with a
+        #     warning so the snapshot stays fast. Restore via ``/snapshot``.
+        #     This is the #15733 (lost pairing data) / #34600 (emptied cron
+        #     jobs) safety net.
+        #   full — the quick snapshot PLUS a full ``hermes backup``-style zip
+        #     of HERMES_HOME into <HERMES_HOME>/backups/, restorable with
+        #     ``hermes import``. Can add minutes on large homes. This is the
+        #     #48200 (wrong-path wipe) safety net. ``--backup`` forces this
+        #     for a single run.
+        #   off — no pre-update backup of any kind. ``--no-backup`` forces
+        #     this for a single run.
+        #
+        # Legacy boolean values are honored: true -> full, false -> off.
+        "pre_update_backup": "quick",
+        # How many full pre-update backup zips to retain (mode ``full``).
+        # Older ones are pruned automatically after each successful backup.
+        # Values below 1 are floored to 1 — the backup just created is
+        # always preserved. The quick snapshot always keeps exactly 1.
         "backup_keep": 5,
         # What `hermes update` does with uncommitted local changes to the
         # source tree when it runs NON-interactively — i.e. triggered from

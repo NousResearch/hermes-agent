@@ -22,6 +22,12 @@ def _configured_hybrid_config() -> _FakeHonchoConfig:
         base_url="http://127.0.0.1:8000",
         recall_mode="hybrid",
         init_on_session_start=False,
+        injection_frequency="every-turn",
+        context_cadence=1,
+        dialectic_cadence=1,
+        query_rewrite=False,
+        first_turn_base_wait=3.0,
+        first_turn_dialectic_wait=2.0,
         dialectic_depth=1,
         dialectic_depth_levels=None,
         reasoning_heuristic=True,
@@ -66,6 +72,43 @@ def test_honcho_hybrid_initialize_returns_without_waiting_for_session_init(monke
         assert elapsed < 0.5
         assert started.wait(timeout=1)
         assert provider._session_key == "test-session"
+    finally:
+        release.set()
+        init_thread = getattr(provider, "_init_thread", None)
+        if init_thread:
+            init_thread.join(timeout=1)
+
+
+def test_stalled_init_only_delays_first_turn_prefetch(monkeypatch):
+    """A stalled session init may bound-wait on turn 1 only; every later
+    prefetch must keep the fail-open contract and return immediately."""
+    provider = HonchoMemoryProvider()
+    cfg = _configured_hybrid_config()
+    release = threading.Event()
+
+    monkeypatch.setattr(
+        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+        lambda: cfg,
+    )
+
+    def stalled_session_init(self, cfg, session_id, **kwargs):
+        release.wait(timeout=10)
+
+    monkeypatch.setattr(HonchoMemoryProvider, "_do_session_init", stalled_session_init)
+    provider.initialize("session-1", platform="cli")
+    provider._FIRST_TURN_BASE_TIMEOUT = 1.0
+
+    try:
+        provider._turn_count = 1
+        start = time.perf_counter()
+        assert provider.prefetch("first question") == ""
+        assert time.perf_counter() - start >= 0.5  # turn 1 waited (bounded)
+
+        for turn in (2, 3, 4):
+            provider._turn_count = turn
+            start = time.perf_counter()
+            assert provider.prefetch("follow-up question") == ""
+            assert time.perf_counter() - start < 0.4  # fail-open, no wait
     finally:
         release.set()
         init_thread = getattr(provider, "_init_thread", None)
@@ -129,6 +172,49 @@ def test_honcho_prefetch_returns_without_waiting_for_first_context_fetch():
     assert result == ""
     assert elapsed < 0.5
     assert fetch_started.is_set()
+
+
+def test_first_turn_base_wait_is_shared_by_init_and_context_fetch():
+    """Session init and base retrieval share one configured turn-1 deadline."""
+    provider = HonchoMemoryProvider()
+    cfg = _configured_hybrid_config()
+    cfg.first_turn_base_wait = 0.5
+    cfg.timeout = None
+    release_context = threading.Event()
+
+    class SlowManager:
+        def get_prefetch_context(self, session_key, user_message=None):
+            release_context.wait(timeout=5)
+            return {"representation": "late"}
+
+        def set_context_result(self, session_key, result):
+            pass
+
+        def pop_context_result(self, session_key):
+            return {}
+
+    def finish_init():
+        time.sleep(0.3)
+        provider._manager = SlowManager()
+        provider._session_initialized = True
+
+    provider._config = cfg
+    provider._session_key = "test-session"
+    provider._recall_mode = "context"
+    provider._turn_count = 1
+    provider._last_dialectic_turn = 0
+    provider._FIRST_TURN_BASE_TIMEOUT = cfg.first_turn_base_wait
+    provider._init_thread = threading.Thread(target=finish_init, daemon=True)
+    provider._init_thread.start()
+
+    try:
+        started = time.perf_counter()
+        assert provider.prefetch("what do you know about me?") == ""
+        elapsed = time.perf_counter() - started
+        assert 0.4 <= elapsed < 0.65
+    finally:
+        release_context.set()
+        provider._init_thread.join(timeout=1)
 
 
 

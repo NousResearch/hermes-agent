@@ -4690,12 +4690,14 @@ def resolve_provider_client(
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
 
-    # Universal model-resolution fallback chain.  Callers (notably title
-    # generation, vision, session search, and other auxiliary tasks) can
-    # reach this function without an explicit model — the user picked their
-    # main provider, didn't bother configuring a per-task ``auxiliary.<task>.model``,
-    # and just expects "use my main model for side tasks too."  Resolve in
-    # this order, stopping at the first non-empty answer:
+    # Universal model-resolution fallback for concrete providers. ``auto`` is
+    # intentionally excluded: `_resolve_auto(main_runtime=...)` returns the
+    # model paired with the provider it actually selected. Pre-filling an auto
+    # call from `_read_main_model()` can leak a stale process-global runtime
+    # into a different provider (for example Claude model slug on Codex OAuth)
+    # and override that correctly resolved model.
+    #
+    # Concrete provider resolution order:
     #
     #   1. ``model`` argument (caller knew what they wanted)
     #   2. Provider's catalog default — cheap/fast model the provider

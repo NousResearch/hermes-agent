@@ -109,6 +109,7 @@ function Harness({
   const localActiveSessionIdRef = useRef<string | null>(
     activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId
   )
+
   const activeSessionIdRef = activeSessionIdRefProp ?? localActiveSessionIdRef
 
   const selectedStoredSessionIdRef: MutableRefObject<string | null> = selectedStoredSessionIdRefProp ?? {
@@ -564,6 +565,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
 
     const updates: { sessionId: string; state: Record<string, unknown>; storedSessionId: null | string | undefined }[] =
       []
+
     const requestGateway = vi.fn(async () => ({}) as never)
 
     let handle: HarnessHandle | null = null

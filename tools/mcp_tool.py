@@ -3902,12 +3902,18 @@ _SESSION_EXPIRED_MARKERS: tuple = (
 
 def _exception_tree_contains_interruption(exc: BaseException) -> bool:
     """Return whether ``exc`` or any nested exception is user cancellation."""
-    if isinstance(exc, InterruptedError):
-        return True
-    return any(
-        _exception_tree_contains_interruption(child)
-        for child in getattr(exc, "exceptions", ())
-    )
+    stack = [exc]
+    seen: set[int] = set()
+    while stack:
+        current = stack.pop()
+        identity = id(current)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if isinstance(current, InterruptedError):
+            return True
+        stack.extend(getattr(current, "exceptions", ()))
+    return False
 
 
 def _is_session_expired_error(exc: BaseException) -> bool:

@@ -272,6 +272,45 @@ class TestSessionLifecycle:
             prompt_rows[0]["hash"]
         }
 
+    def test_system_prompt_replacement_and_reset_collect_orphans(self, db):
+        shared_prompt = "shared prompt"
+        replacement = "replacement prompt"
+        db.create_session("s1", "cli", system_prompt=shared_prompt)
+        db.create_session("s2", "cli", system_prompt=shared_prompt)
+
+        db.update_system_prompt("s1", replacement)
+        prompts = {
+            row["prompt"]
+            for row in db._conn.execute("SELECT prompt FROM system_prompts")
+        }
+        assert prompts == {shared_prompt, replacement}
+
+        db.update_session_billing_route(
+            "s2", provider="openrouter", base_url="https://example.test/v1"
+        )
+        prompts = [
+            row["prompt"]
+            for row in db._conn.execute("SELECT prompt FROM system_prompts")
+        ]
+        assert prompts == [replacement]
+        assert db.get_session("s2")["system_prompt"] is None
+
+        db.update_system_prompt("s1", None)
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM system_prompts"
+        ).fetchone()[0] == 0
+
+    def test_existing_session_enrichment_does_not_leak_unused_prompt(self, db):
+        db.create_session("s1", "cli", system_prompt="original prompt")
+        db.create_session("s1", "cli", system_prompt="unused prompt")
+
+        prompts = [
+            row["prompt"]
+            for row in db._conn.execute("SELECT prompt FROM system_prompts")
+        ]
+        assert prompts == ["original prompt"]
+        assert db.get_session("s1")["system_prompt"] == "original prompt"
+
     def test_system_prompt_hydrates_session_listing_and_gateway_readers(self, db):
         prompt = "Shared prompt body"
         db.create_session(
@@ -3162,6 +3201,81 @@ class TestSessionTitle:
         assert session["ended_at"] is not None
 
 
+class TestSessionTitleIndexRepair:
+    @staticmethod
+    def _seed_legacy_database(tmp_path, *, duplicate_titles):
+        db_path = tmp_path / "legacy_titles.db"
+        session_db = SessionDB(db_path=db_path)
+        session_db.create_session("older", "cli")
+        session_db.append_message("older", role="user", content="keep older message")
+        session_db.create_session("newer", "cli")
+        session_db.append_message(
+            "newer", role="assistant", content="keep newer message"
+        )
+        session_db.create_session("unique", "cli")
+        session_db.set_session_title("unique", "unique-title")
+        session_db.close()
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("DROP INDEX idx_sessions_title_unique")
+            if duplicate_titles:
+                conn.execute(
+                    "UPDATE sessions SET title = 'shared-title' "
+                    "WHERE id IN ('older', 'newer')"
+                )
+
+        return db_path
+
+    def test_duplicate_titles_are_repaired_without_deleting_sessions(self, tmp_path):
+        db_path = self._seed_legacy_database(tmp_path, duplicate_titles=True)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            conn = reopened._conn
+            assert conn is not None
+            rows = {
+                row["id"]: row
+                for row in conn.execute(
+                    "SELECT id, title FROM sessions ORDER BY rowid"
+                ).fetchall()
+            }
+            assert set(rows) == {"older", "newer", "unique"}
+            assert rows["older"]["title"] is None
+            assert rows["newer"]["title"] == "shared-title"
+            assert rows["unique"]["title"] == "unique-title"
+            assert reopened.get_messages("older")[0]["content"] == "keep older message"
+            assert reopened.get_messages("newer")[0]["content"] == "keep newer message"
+            index = conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'index' AND name = 'idx_sessions_title_unique'"
+            ).fetchone()
+            assert index is not None
+        finally:
+            reopened.close()
+
+    def test_repaired_index_rejects_future_duplicate_title(self, tmp_path):
+        db_path = self._seed_legacy_database(tmp_path, duplicate_titles=True)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            reopened.create_session("future", "cli")
+            with pytest.raises(ValueError, match="already in use"):
+                reopened.set_session_title("future", "shared-title")
+        finally:
+            reopened.close()
+
+    def test_clean_legacy_database_keeps_existing_titles(self, tmp_path):
+        db_path = self._seed_legacy_database(tmp_path, duplicate_titles=False)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened.get_session_title("unique") == "unique-title"
+            assert reopened.get_session_title("older") is None
+            assert reopened.get_session_title("newer") is None
+        finally:
+            reopened.close()
+
+
 class TestSessionTitleLineage:
     """Renaming a compression continuation back to its base title must succeed
     by transferring the title off the ended, hidden predecessor.
@@ -3364,9 +3478,9 @@ class TestSchemaInit:
             "UPDATE sessions SET system_prompt = ?, system_prompt_hash = NULL",
             (legacy_prompt,),
         )
-        # Current main already uses v21. The prompt dedupe migration must
+        # Current main already uses v22. The prompt dedupe migration must
         # still run for databases created by that exact schema version.
-        db._conn.execute("UPDATE schema_version SET version = 21")
+        db._conn.execute("UPDATE schema_version SET version = 22")
         db._conn.commit()
         db.close()
 

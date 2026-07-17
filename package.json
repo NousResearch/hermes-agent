@@ -7,7 +7,8 @@
     "apps/*",
     "ui-tui",
     "ui-tui/packages/*",
-    "web"
+    "web",
+    "tests-js"
   ],
   "scripts": {
     "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'",
@@ -21,7 +22,8 @@
     "audit:fix:root": "npm audit fix --workspaces=false",
     "audit:fix:web": "npm audit fix --workspace web",
     "audit:fix:tui": "npm audit fix --workspace ui-tui",
-    "check": "npm run check --ws"
+    "check": "npm run --ws check",
+    "fix": "npm run --ws fix"
   },
   "repository": {
     "type": "git",

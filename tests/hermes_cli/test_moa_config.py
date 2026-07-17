@@ -106,6 +106,7 @@ def test_normalize_moa_config_preserves_slot_reasoning_effort():
                         {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "LOW"},
                         {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": False},
                         {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "nonsense"},
+                        {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "ultra"},
                     ],
                     "aggregator": {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "xhigh"},
                 }
@@ -117,6 +118,7 @@ def test_normalize_moa_config_preserves_slot_reasoning_effort():
     assert preset["reference_models"][0]["reasoning_effort"] == "low"
     assert preset["reference_models"][1]["reasoning_effort"] == "none"
     assert "reasoning_effort" not in preset["reference_models"][2]
+    assert preset["reference_models"][3]["reasoning_effort"] == "ultra"
     assert preset["aggregator"]["reasoning_effort"] == "xhigh"
 
 

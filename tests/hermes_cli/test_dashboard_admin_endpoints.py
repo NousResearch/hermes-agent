@@ -65,6 +65,98 @@ class TestMcpEndpoints:
         srv = self.client.get("/api/mcp/servers").json()["servers"][0]
         assert srv["env"]["API_KEY"] != "sk-secret-1234567890"
 
+    def test_http_bearer_auth_separates_secret_from_config(
+        self, _isolate_hermes_home
+    ):
+        from hermes_constants import get_hermes_home
+
+        secret = "dashboard-secret-value"
+        response = self.client.post(
+            "/api/mcp/servers",
+            json={
+                "name": "Bearer Server",
+                "url": "https://example.com/mcp",
+                "auth": "header",
+                "bearer_token": f"Bearer {secret}",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["auth"] == "header"
+        assert "bearer_token" not in response.json()
+
+        hermes_home = get_hermes_home()
+        config_text = (hermes_home / "config.yaml").read_text()
+        env_text = (hermes_home / ".env").read_text()
+        assert secret not in config_text
+        assert "Bearer ${MCP_BEARER_SERVER_API_KEY}" in config_text
+        assert f"MCP_BEARER_SERVER_API_KEY={secret}" in env_text
+
+    def test_http_oauth_mode_is_persisted_for_existing_auth_flow(self):
+        response = self.client.post(
+            "/api/mcp/servers",
+            json={
+                "name": "oauth-server",
+                "url": "https://example.com/mcp",
+                "auth": "oauth",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["auth"] == "oauth"
+
+        from hermes_cli.mcp_config import _get_mcp_servers
+
+        assert _get_mcp_servers()["oauth-server"]["auth"] == "oauth"
+
+    @pytest.mark.parametrize(
+        ("payload", "error"),
+        [
+            (
+                {"name": "bad", "url": "https://x/mcp", "env": {"KEY": "value"}},
+                "only supported for stdio",
+            ),
+            (
+                {"name": "bad", "url": "https://x/mcp", "args": ["ignored"]},
+                "only supported for stdio",
+            ),
+            (
+                {"name": "bad", "command": "npx", "auth": "oauth"},
+                "not supported for stdio",
+            ),
+            (
+                {"name": "bad", "url": "https://x/mcp", "auth": "header"},
+                "Bearer token is required",
+            ),
+            (
+                {
+                    "name": "bad",
+                    "url": "https://x/mcp",
+                    "auth": "header",
+                    "bearer_token": "Bearer   ",
+                },
+                "Bearer token is required",
+            ),
+            (
+                {"name": "bad", "url": "https://x/mcp", "bearer_token": "secret"},
+                "requires header authentication",
+            ),
+            (
+                {"name": "bad", "url": "https://x/mcp", "command": "npx"},
+                "exactly one",
+            ),
+            (
+                {"name": "bad", "url": "https://x/mcp", "auth": "unknown"},
+                "Unsupported auth mode",
+            ),
+        ],
+    )
+    def test_transport_auth_contract_is_enforced(self, payload, error):
+        response = self.client.post("/api/mcp/servers", json=payload)
+
+        assert response.status_code == 400
+        assert error in response.json()["detail"]
+
     def test_duplicate_rejected(self):
         self.client.post("/api/mcp/servers", json={"name": "dup", "url": "u"})
         r = self.client.post("/api/mcp/servers", json={"name": "dup", "url": "u"})
@@ -1191,3 +1283,35 @@ class TestToolsConfigEndpoints:
                 kwargs["json"] = payload
             r = fn(path, **kwargs)
             assert r.status_code == 401, f"{method} {path} not gated"
+
+
+# ---------------------------------------------------------------------------
+# _spawn_hermes_action env scrubbing (#52470)
+# ---------------------------------------------------------------------------
+
+def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path):
+    """The dashboard runs inside the gateway, so os.environ has
+    _HERMES_GATEWAY=1. Spawned actions (e.g. `gateway restart`) must NOT inherit
+    it, or the in-process restart-loop guard rejects the restart and it silently
+    fails (#52470).
+    """
+    import hermes_cli.web_server as ws
+
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setattr(ws, "_ACTION_LOG_DIR", tmp_path)
+
+    captured = {}
+
+    class _FakeProc:
+        pid = 1234
+
+    def _fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _FakeProc()
+
+    monkeypatch.setattr(ws.subprocess, "Popen", _fake_popen)
+
+    ws._spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+
+    assert "_HERMES_GATEWAY" not in captured["env"]
+    assert captured["env"]["HERMES_NONINTERACTIVE"] == "1"

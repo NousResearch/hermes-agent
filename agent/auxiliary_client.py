@@ -1618,8 +1618,9 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
 def _read_main_model() -> str:
     """Read the user's configured main model from config.yaml.
 
-    config.yaml model.default is the single source of truth for the active
-    model. Environment variables are no longer consulted.
+    config.yaml model.default (falling back to model.model, which some
+    ``hermes auth`` paths write instead) is the source of truth for the
+    active model. Environment variables are no longer consulted.
 
     Runtime override: when an AIAgent is active with a CLI/gateway-provided
     model that differs from config.yaml, ``set_runtime_main()`` records the
@@ -1637,9 +1638,12 @@ def _read_main_model() -> str:
         if isinstance(model_cfg, str) and model_cfg.strip():
             return model_cfg.strip()
         if isinstance(model_cfg, dict):
-            default = model_cfg.get("default", "")
-            if isinstance(default, str) and default.strip():
-                return default.strip()
+            # Some auth flows write the model under ``model.model`` instead
+            # of ``model.default`` — accept both, like fallback_cmd does.
+            for key in ("default", "model"):
+                value = model_cfg.get(key, "")
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
     except Exception:
         pass
     return ""

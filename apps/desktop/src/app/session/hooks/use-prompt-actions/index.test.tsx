@@ -239,12 +239,34 @@ function QueueHarness({
     branchCurrentSession: async () => true,
     busyRef: { current: false },
     createBackendSessionForSend: async () => null,
-    getRouteToken: () => routeTokenRef.current,
+    getRoutedStoredSessionId: () => selectedStoredSessionIdRef.current,
+    getRuntimeIdForStoredSession: storedSessionId =>
+      storedSessionId === selectedStoredSessionIdRef.current
+        ? activeSessionIdRef.current
+        : null,
+    resumeStoredSession: async storedSessionId => {
+      const routeToken = routeTokenRef.current
+      const selectedStoredSessionId = selectedStoredSessionIdRef.current
+      const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+        session_id: storedSessionId,
+        source: 'desktop'
+      })
+
+      if (
+        routeTokenRef.current !== routeToken ||
+        selectedStoredSessionIdRef.current !== selectedStoredSessionId
+      ) {
+        return
+      }
+
+      selectedStoredSessionIdRef.current = storedSessionId
+      activeSessionIdRef.current = resumed.session_id
+    },
     handleSkinCommand: () => '',
     openMemoryGraph: () => undefined,
     refreshSessions: async () => undefined,
     requestGateway,
-    resumeStoredSession: () => undefined,
+    getRouteToken: () => routeTokenRef.current,
     selectedStoredSessionIdRef,
     startFreshSessionDraft: () => undefined,
     sttEnabled: false,

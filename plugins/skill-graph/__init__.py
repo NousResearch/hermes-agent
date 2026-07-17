@@ -1720,7 +1720,7 @@ def register(ctx):
             return None
 
         # Check gating: skill-graph mode + restricted tool + not yet searched
-        _graph_mode = getattr(agent, "_skill_graph_mode", False) if agent else False
+        _graph_mode = False  # agent._skill_graph_mode not available in hook context
         if (
             _graph_mode
             and tool_name in _gated_tools
@@ -1802,20 +1802,31 @@ def register(ctx):
             logger.exception("skill-graph: failed to register proxy commands")
 
     def _make_proxy(skill_name: str):
-        """Create a proxy handler that loads the given skill."""
-        def _proxy(_args: str) -> str | None:
+        """Create a proxy handler that loads the skill and injects it as agent input."""
+        def _proxy(_args: str) -> dict | None:
             try:
                 _result = _handle_skill_load({"name": skill_name})
                 _data = json.loads(_result)
-                if _data.get("success"):
-                    _content = _data.get("content", "")
-                    return (
-                        f"Loaded skill: {skill_name}\n"
-                        f"  Description: {_data.get('description', '')}\n"
-                        f"  Category:    {_data.get('category', '')}\n"
-                        f"  Content ({len(_content)} chars):\n"
-                        f"{_content[:500]}\n..."
-                    )
+                if not _data.get("success"):
+                    return None
+                _content = _data.get("content", "")
+                _skill_dir = _data.get("skill_dir", "")
+                _name = _data.get("name", skill_name)
+
+                parts = [
+                    f"[IMPORTANT: The user has invoked the {_name} skill. "
+                    f"The full skill content is loaded below.]",
+                    "",
+                    _content.strip(),
+                ]
+                if _skill_dir:
+                    parts.extend(["", f"[Skill directory: {_skill_dir}]"])
+                if _args:
+                    parts.extend(["",
+                        f"The user has provided the following instruction "
+                        f"alongside the skill invocation: {_args}"])
+
+                return {"action": "inject", "content": "\n".join(parts)}
             except Exception:
                 pass
             return None

@@ -32,7 +32,7 @@ class _StubPsutil:
 
 @pytest.fixture()
 def watchdog_with_stub(monkeypatch):
-    """Import the module with a stub psutil so the psutil branch runs."""
+    """Yield the module reloaded with a stub psutil; monkeypatch restores on teardown."""
     stub = _StubPsutil(alive=True)
     # Build a fake module so `import psutil` inside the target resolves to stub.
     fake = types.ModuleType("psutil")
@@ -46,8 +46,13 @@ def watchdog_with_stub(monkeypatch):
 
     importlib.reload(wd)
     yield wd
-    monkeypatch.setitem(sys.modules, "psutil", None)
-    importlib.reload(wd)
+    # No explicit reload here: setting sys.modules["psutil"] = None is an
+    # import-blocking sentinel and the subsequent `importlib.reload(wd)`
+    # would raise ModuleNotFoundError from the module's top-level
+    # `import psutil`. monkeypatch restores the original sys.modules entry
+    # during its own finalizer, which runs after this fixture's teardown.
+    # Leaving the reloaded module pointing at the now-restored (real or
+    # absent) psutil is harmless because the test process exits next.
 
 
 def test_not_orphaned_when_ppid_matches_and_alive_drifting_ct(watchdog_with_stub):

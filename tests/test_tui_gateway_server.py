@@ -6641,6 +6641,80 @@ def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+@pytest.mark.parametrize(
+    ("cancel_turn", "expected_message"),
+    [
+        (True, "cancelled"),
+        (False, "no longer running"),
+    ],
+)
+def test_prompt_submit_emits_error_when_stopped_before_agent_ready(
+    monkeypatch, cancel_turn, expected_message
+):
+    """A lazy-start turn that cannot run must not disappear silently."""
+    threads = []
+    emitted = []
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+            threads.append(self)
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return True
+
+    session = _session()
+    session["agent"] = None
+    server._sessions["sid"] = session
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+        monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
+        monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+        monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
+        monkeypatch.setattr(
+            server,
+            "_run_prompt_submit",
+            lambda *args: pytest.fail("cancelled turn must not start"),
+        )
+
+        submit = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hello"},
+            }
+        )
+        assert submit.get("result"), f"got error: {submit.get('error')}"
+
+        if cancel_turn:
+            stop = server.handle_request(
+                {
+                    "id": "2",
+                    "method": "session.interrupt",
+                    "params": {"session_id": "sid"},
+                }
+            )
+            assert stop.get("result"), f"got error: {stop.get('error')}"
+        else:
+            with session["history_lock"]:
+                session["running"] = False
+
+        threads[0].target()
+
+        errors = [event for event in emitted if event[:2] == ("error", "sid")]
+        assert len(errors) == 1
+        assert expected_message in errors[0][2]["message"].lower()
+        assert session.get("inflight_turn") is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_clear_pending_without_sid_clears_all():
     """_clear_pending(None) is the shutdown path — must still release
     every pending prompt regardless of owning session."""

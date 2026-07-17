@@ -8923,8 +8923,20 @@ def _(rid, params: dict) -> dict:
             return
         with session["history_lock"]:
             if session.get("_turn_cancel_requested") or not session.get("running"):
+                cancelled = bool(session.get("_turn_cancel_requested"))
                 session["running"] = False
                 _clear_inflight_turn(session)
+                _emit(
+                    "error",
+                    sid,
+                    {
+                        "message": (
+                            "turn cancelled before agent ready"
+                            if cancelled
+                            else "session no longer running before agent ready"
+                        )
+                    },
+                )
                 return
         _run_prompt_submit(rid, sid, session, text)
 

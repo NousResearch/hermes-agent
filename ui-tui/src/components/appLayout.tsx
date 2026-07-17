@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { Fragment, memo, useEffect, useMemo, useRef } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
-import type { AppLayoutProps } from '../app/interfaces.js'
+import type { AppLayoutProps, OverlayState } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
 import { $uiState } from '../app/uiStore.js'
@@ -32,6 +32,17 @@ import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
+
+export function hasFloatingOverlay(overlay: OverlayState) {
+  return Boolean(
+    overlay.modelPicker ||
+    overlay.pager ||
+    overlay.petPicker ||
+    overlay.pluginsHub ||
+    overlay.sessions ||
+    overlay.skillsHub
+  )
+}
 
 // Box geometry, kept here so the transcript's reservation math matches the
 // rendered overlay exactly.
@@ -265,7 +276,9 @@ const ComposerPane = memo(function ComposerPane({
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'>) {
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
+  const overlay = useStore($overlayState)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
+  const floatingOverlayActive = hasFloatingOverlay(overlay)
 
   const promptText = composerPromptText(
     ui.theme.brand.prompt,
@@ -367,6 +380,8 @@ const ComposerPane = memo(function ComposerPane({
         />
 
         {composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
+
+        {isBlocked && floatingOverlayActive && <Box height={1} width={Math.max(1, composer.cols - 2)} />}
 
         {!isBlocked && (
           <>

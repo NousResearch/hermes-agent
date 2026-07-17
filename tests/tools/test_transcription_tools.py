@@ -369,6 +369,101 @@ class TestTranscribeOpenAIExtended:
         mock_client.close.assert_called_once()
 
 
+# ============================================================================
+# Self-hosted / OpenAI-compatible STT (config base_url, keyless, language)
+# ============================================================================
+
+class TestSelfHostedOpenAISTT:
+    SELF = "http://192.168.1.50:8000/v1"
+
+    def _cfg(self, **openai):
+        return {"provider": "openai", "openai": {"model": "nemotron", **openai}}
+
+    def test_config_base_url_honored_keyless(self, monkeypatch):
+        """A configured base_url is used even with no key anywhere; a
+        placeholder Bearer is sent so auth-less servers work."""
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: self._cfg(base_url=self.SELF),
+        )
+        from tools.transcription_tools import (
+            _resolve_openai_audio_client_config,
+            _PLACEHOLDER_OPENAI_KEY,
+            _has_openai_audio_backend,
+        )
+        key, base = _resolve_openai_audio_client_config()
+        assert base == self.SELF
+        assert key == _PLACEHOLDER_OPENAI_KEY
+        assert _has_openai_audio_backend() is True
+
+    def test_stray_env_key_does_not_redirect_base_url(self, monkeypatch):
+        """A stray OPENAI_API_KEY (set for chat) must not send self-hosted
+        STT traffic to api.openai.com — base_url stays authoritative."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-chat-unrelated")
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: self._cfg(base_url=self.SELF),
+        )
+        from tools.transcription_tools import _resolve_openai_audio_client_config
+        key, base = _resolve_openai_audio_client_config()
+        assert base == self.SELF
+        assert key == "sk-chat-unrelated"
+
+    def test_response_format_and_timeout_override(self, monkeypatch, sample_wav):
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hi"
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client) as cls:
+            from tools.transcription_tools import _transcribe_openai
+            _transcribe_openai(
+                sample_wav, "custom-model", api_key="k", base_url=self.SELF,
+                response_format="json", timeout=90,
+            )
+        assert cls.call_args.kwargs["timeout"] == 90.0
+        assert mock_client.audio.transcriptions.create.call_args.kwargs[
+            "response_format"] == "json"
+
+    def test_language_forwarded_when_set(self, monkeypatch, sample_wav):
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hi"
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_openai
+            _transcribe_openai(sample_wav, "m", api_key="k", base_url=self.SELF,
+                               language="de")
+        assert mock_client.audio.transcriptions.create.call_args.kwargs[
+            "language"] == "de"
+
+    def test_language_absent_when_none(self, monkeypatch, sample_wav):
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hi"
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_openai
+            _transcribe_openai(sample_wav, "m", api_key="k", base_url=self.SELF)
+        assert "language" not in mock_client.audio.transcriptions.create.call_args.kwargs
+
+    def test_transcribe_audio_threads_language_and_config(self, monkeypatch, sample_wav):
+        """End-to-end dispatch: transcribe_audio(language=...) reaches the
+        OpenAI create() call, and config response_format/timeout are applied."""
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: self._cfg(base_url=self.SELF, response_format="json", timeout=45),
+        )
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hallo"
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client) as cls:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_wav, language="de")
+        assert result["success"] is True
+        assert cls.call_args.kwargs["base_url"] == self.SELF
+        assert cls.call_args.kwargs["timeout"] == 45.0
+        create_kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+        assert create_kwargs["language"] == "de"
+        assert create_kwargs["response_format"] == "json"
+
+
 class TestTranscribeLocalCommand:
     def test_auto_detects_local_whisper_binary(self, monkeypatch):
         monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)

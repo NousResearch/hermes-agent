@@ -182,6 +182,9 @@ DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+# Sent as the Bearer token when a self-hosted ``tts.openai.base_url`` is
+# configured without any key — auth-less OpenAI-compatible servers ignore it.
+_PLACEHOLDER_OPENAI_KEY = "sk-no-key-required"
 DEFAULT_MINIMAX_MODEL = "speech-02-hd"
 DEFAULT_MINIMAX_VOICE_ID = "English_expressive_narrator"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
@@ -1054,8 +1057,10 @@ def _generate_openai_tts(
         output_path: Where to save the audio file.
         tts_config: TTS config dict (used for ``tts.openai`` sub-block
             and the global ``speed`` default).
-        api_key: Bearer token. When None, resolved from the OpenAI auth
-            chain (config → env → managed gateway).
+        api_key: Bearer token. When None, resolved from ``tts.openai.api_key``,
+            then the OpenAI auth chain (env → managed gateway). A configured
+            ``tts.openai.base_url`` is treated as a self-hosted server and may
+            be keyless (a placeholder Bearer is sent).
         base_url: API base URL. When None, falls back to
             ``tts.openai.base_url`` then the OpenAI default.
         model: Model id. When None, reads ``tts.openai.model``.
@@ -1072,11 +1077,23 @@ def _generate_openai_tts(
     fallback_base: Optional[str] = None
     is_managed = False
     explicit_base_url = base_url is not None
-    if api_key is None:
-        api_key, fallback_base, is_managed = _resolve_openai_audio_client_config()
 
     # ``tts.openai: null`` in YAML yields None — coalesce so .get() is safe.
     oai_config = (tts_config.get("openai") if isinstance(tts_config, dict) else None) or {}
+
+    if api_key is None:
+        # A self-hosted ``tts.openai.base_url`` is authoritative: honour a
+        # config ``api_key`` and allow keyless servers (placeholder Bearer),
+        # mirroring the STT side. Only fall back to the env/managed auth chain
+        # when config supplies neither base_url nor api_key.
+        cfg_api_key = (oai_config.get("api_key") or "").strip()
+        cfg_base_url = (oai_config.get("base_url") or "").strip()
+        if cfg_base_url:
+            api_key = cfg_api_key or resolve_openai_audio_api_key() or _PLACEHOLDER_OPENAI_KEY
+        elif cfg_api_key:
+            api_key = cfg_api_key
+        else:
+            api_key, fallback_base, is_managed = _resolve_openai_audio_client_config()
     if model is None:
         model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
     if voice is None:
@@ -2637,6 +2654,10 @@ def check_tts_requirements() -> bool:
             _import_openai_client()
         except ImportError:
             return False
+        oai_cfg = (tts_config.get("openai") if isinstance(tts_config, dict) else None) or {}
+        if (oai_cfg.get("base_url") or "").strip() or (oai_cfg.get("api_key") or "").strip():
+            # Self-hosted / config-credentialed OpenAI-compatible server.
+            return True
         return _has_openai_audio_backend()
     if provider == "deepinfra":
         try:

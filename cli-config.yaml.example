@@ -1038,6 +1038,14 @@ stt:
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+    # --- Self-hosted / OpenAI-compatible servers (llama.cpp/whisper.cpp, etc.) ---
+    # base_url: "http://192.168.1.50:8000/v1"  # authoritative when set; a stray
+    #                            # OPENAI_API_KEY no longer redirects traffic to OpenAI
+    # api_key: ""              # omit for auth-less servers (a placeholder Bearer is sent)
+    # response_format: "json"  # override the whisper-1/json heuristic if your server
+    #                          # only implements one format
+    # timeout: 60              # seconds; raise for slow CPU-bound servers (default 30)
+    # language: ""             # ISO-639-1 hint forwarded to the server; "" = auto-detect
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
   # deepinfra:
@@ -1046,10 +1054,10 @@ stt:
   #   # live result. Pin only when you need a specific Whisper variant.
   #   model: ""
 
-# Text-to-speech. Only the deepinfra block is documented here — the
-# remaining providers (edge, openai, xai, minimax, mistral, gemini,
-# elevenlabs, neutts, kittentts, piper) inherit sensible defaults from
-# DEFAULT_CONFIG in hermes_cli/config.py.
+# Text-to-speech. Only the deepinfra/openai blocks are documented here — the
+# remaining providers (edge, xai, minimax, mistral, gemini, elevenlabs,
+# neutts, kittentts, piper) inherit sensible defaults from DEFAULT_CONFIG in
+# hermes_cli/config.py.
 # tts:
 #   provider: "deepinfra"
 #   deepinfra:
@@ -1058,6 +1066,12 @@ stt:
 #     # live result.
 #     model: ""
 #     voice: "default"
+#   # --- Self-hosted / OpenAI-compatible TTS (e.g. an /v1/audio/speech server) ---
+#   openai:
+#     base_url: "http://192.168.1.50:8001/v1"  # authoritative when set
+#     api_key: ""              # omit for auth-less servers (a placeholder Bearer is sent)
+#     model: "your-tts-model"
+#     voice: "your-voice-id"
 
 # Image generation. Each provider plugin reads its own ``image_gen.<name>``
 # block; deepinfra discovers models live from

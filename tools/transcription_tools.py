@@ -97,6 +97,9 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
+# Sent as the Bearer token when a self-hosted ``stt.openai.base_url`` is
+# configured without any key — auth-less OpenAI-compatible servers ignore it.
+_PLACEHOLDER_OPENAI_KEY = "sk-no-key-required"
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
 # DeepInfra STT base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
@@ -1353,6 +1356,9 @@ def _transcribe_openai(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     provider_label: str = "openai",
+    response_format: Optional[str] = None,
+    timeout: Optional[float] = None,
+    language: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Transcribe via the OpenAI ``audio.transcriptions.create`` SDK shape.
 
@@ -1361,6 +1367,11 @@ def _transcribe_openai(
     ``base_url`` to skip the OpenAI-only auth chain, and a
     ``provider_label`` so the response carries the right ``provider``
     name.
+
+    ``response_format`` and ``timeout`` let self-hosted / OpenAI-compatible
+    servers override the defaults (some only implement ``json``; CPU-bound
+    servers need more than 30s). ``language`` is forwarded as an ISO-639-1
+    hint when set (empty/None = auto-detect).
     """
     if api_key is None:
         try:
@@ -1381,13 +1392,23 @@ def _transcribe_openai(
 
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
-        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
+        try:
+            client_timeout = float(timeout) if timeout is not None else 30.0
+        except (TypeError, ValueError):
+            client_timeout = 30.0
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=client_timeout, max_retries=0)
+        resolved_format = response_format or ("text" if model_name == "whisper-1" else "json")
+        create_kwargs: Dict[str, Any] = {
+            "model": model_name,
+            "response_format": resolved_format,
+        }
+        if language:
+            create_kwargs["language"] = language
         try:
             with open(file_path, "rb") as audio_file:
                 transcription = client.audio.transcriptions.create(
-                    model=model_name,
                     file=audio_file,
-                    response_format="text" if model_name == "whisper-1" else "json",
+                    **create_kwargs,
                 )
 
             transcript_text = _extract_transcript_text(transcription)
@@ -1709,7 +1730,11 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+def transcribe_audio(
+    file_path: str,
+    model: Optional[str] = None,
+    language: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Transcribe an audio file using the configured STT provider.
 
@@ -1720,6 +1745,9 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     Args:
         file_path: Absolute path to the audio file to transcribe.
         model:     Override the model. If None, uses config or provider default.
+        language:  Optional ISO-639-1 language hint. Forwarded to providers
+                   that accept one (OpenAI-compatible); None = auto-detect.
+                   Falls back to ``stt.<provider>.language`` from config.
 
     Returns:
         dict with keys:
@@ -1765,7 +1793,13 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     if provider == "openai":
         openai_cfg = stt_config.get("openai") or {}
         model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
-        return _transcribe_openai(file_path, model_name)
+        return _transcribe_openai(
+            file_path,
+            model_name,
+            response_format=openai_cfg.get("response_format"),
+            timeout=openai_cfg.get("timeout"),
+            language=language or openai_cfg.get("language"),
+        )
 
     if provider == "mistral":
         mistral_cfg = stt_config.get("mistral") or {}
@@ -1846,13 +1880,26 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str]:
-    """Return direct OpenAI audio config or a managed gateway fallback."""
+    """Return direct OpenAI audio config or a managed gateway fallback.
+
+    A configured ``stt.openai.base_url`` points at a self-hosted or otherwise
+    OpenAI-compatible transcription server and is authoritative: it is honoured
+    regardless of where the API key is resolved from. Env keys
+    (``VOICE_TOOLS_OPENAI_KEY`` / ``OPENAI_API_KEY``) are commonly set for
+    *chat* against ``api.openai.com``; without this, a config that only sets
+    ``base_url`` would silently send self-hosted STT traffic to OpenAI with an
+    unrelated key. Self-hosted servers frequently need no auth, so a configured
+    ``base_url`` also makes the key optional (a placeholder Bearer is sent).
+    """
     stt_config = _load_stt_config()
     openai_cfg = stt_config.get("openai") or {}
     cfg_api_key = openai_cfg.get("api_key", "")
     cfg_base_url = openai_cfg.get("base_url", "")
+    if cfg_base_url:
+        api_key = cfg_api_key or resolve_openai_audio_api_key() or _PLACEHOLDER_OPENAI_KEY
+        return api_key, cfg_base_url
     if cfg_api_key:
-        return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
+        return cfg_api_key, OPENAI_BASE_URL
 
     direct_api_key = resolve_openai_audio_api_key()
     if direct_api_key:

@@ -54,8 +54,8 @@ except Exception:
 # This keeps startup fast for users who don't use Bedrock.
 # ---------------------------------------------------------------------------
 
-_bedrock_runtime_client_cache: Dict[str, Any] = {}
-_bedrock_control_client_cache: Dict[str, Any] = {}
+_bedrock_runtime_client_cache: Dict[Any, Any] = {}
+_bedrock_control_client_cache: Dict[Any, Any] = {}
 
 
 _MIN_BOTO3_VERSION = (1, 34, 59)
@@ -88,27 +88,57 @@ def _require_boto3():
     return boto3
 
 
-def _get_bedrock_runtime_client(region: str):
-    """Get or create a cached ``bedrock-runtime`` client for the given region.
+def _load_bedrock_config() -> dict:
+    """Return the current ``bedrock`` config section."""
+    try:
+        from hermes_cli.config import load_config
 
-    Uses the default AWS credential chain (env vars → profile → instance role).
-    """
-    if region not in _bedrock_runtime_client_cache:
+        return load_config().get("bedrock", {}) or {}
+    except Exception:
+        return {}
+
+
+def _resolve_bedrock_profile() -> str:
+    """Return the configured AWS profile, or an empty default-chain marker."""
+    return str(_load_bedrock_config().get("profile") or "").strip()
+
+
+def _client_cache_key(region: str, profile: str) -> str | tuple[str, str]:
+    return (region, profile) if profile else region
+
+
+def _get_bedrock_runtime_client(region: str):
+    """Get or create a profile-isolated ``bedrock-runtime`` client."""
+    profile = _resolve_bedrock_profile()
+    cache_key = _client_cache_key(region, profile)
+    if cache_key not in _bedrock_runtime_client_cache:
         boto3 = _require_boto3()
-        _bedrock_runtime_client_cache[region] = boto3.client(
-            "bedrock-runtime", region_name=region,
-        )
-    return _bedrock_runtime_client_cache[region]
+        if profile:
+            client = boto3.Session(profile_name=profile).client(
+                "bedrock-runtime",
+                region_name=region,
+            )
+        else:
+            client = boto3.client("bedrock-runtime", region_name=region)
+        _bedrock_runtime_client_cache[cache_key] = client
+    return _bedrock_runtime_client_cache[cache_key]
 
 
 def _get_bedrock_control_client(region: str):
-    """Get or create a cached ``bedrock`` control-plane client for model discovery."""
-    if region not in _bedrock_control_client_cache:
+    """Get or create a profile-isolated Bedrock control-plane client."""
+    profile = _resolve_bedrock_profile()
+    cache_key = _client_cache_key(region, profile)
+    if cache_key not in _bedrock_control_client_cache:
         boto3 = _require_boto3()
-        _bedrock_control_client_cache[region] = boto3.client(
-            "bedrock", region_name=region,
-        )
-    return _bedrock_control_client_cache[region]
+        if profile:
+            client = boto3.Session(profile_name=profile).client(
+                "bedrock",
+                region_name=region,
+            )
+        else:
+            client = boto3.client("bedrock", region_name=region)
+        _bedrock_control_client_cache[cache_key] = client
+    return _bedrock_control_client_cache[cache_key]
 
 
 def reset_client_cache():
@@ -128,9 +158,13 @@ def invalidate_runtime_client(region: str) -> bool:
     Returns True if a cached entry was evicted, False if the region was not
     cached.
     """
-    existed = region in _bedrock_runtime_client_cache
-    _bedrock_runtime_client_cache.pop(region, None)
-    return existed
+    removed = False
+    for cache_key in list(_bedrock_runtime_client_cache):
+        cached_region = cache_key[0] if isinstance(cache_key, tuple) else cache_key
+        if cached_region == region:
+            _bedrock_runtime_client_cache.pop(cache_key, None)
+            removed = True
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -337,12 +371,17 @@ def has_aws_credentials(env: Optional[Dict[str, str]] = None) -> bool:
     """
     if resolve_aws_auth_env_var(env) is not None:
         return True
-    # Fall back to boto3's credential resolver — this covers EC2 instance
-    # metadata (IMDS), ECS container credentials, and other implicit sources
-    # that don't set environment variables.
+    # Fall back to botocore's credential resolver — this covers named profiles,
+    # EC2 instance metadata, ECS task credentials, and other implicit sources.
     try:
         import botocore.session
-        session = botocore.session.get_session()
+
+        profile = _resolve_bedrock_profile()
+        session = (
+            botocore.session.Session(profile=profile)
+            if profile
+            else botocore.session.get_session()
+        )
         credentials = session.get_credentials()
         if credentials is not None:
             resolved = credentials.get_frozen_credentials()
@@ -376,7 +415,14 @@ def resolve_bedrock_region(env: Optional[Dict[str, str]] = None) -> str:
         return explicit
     try:
         import botocore.session
-        region = botocore.session.get_session().get_config_variable("region")
+
+        profile = _resolve_bedrock_profile()
+        session = (
+            botocore.session.Session(profile=profile)
+            if profile
+            else botocore.session.get_session()
+        )
+        region = session.get_config_variable("region")
         if region:
             return region
     except Exception:
@@ -1092,7 +1138,7 @@ def call_converse_stream(
 # Model discovery
 # ---------------------------------------------------------------------------
 
-_discovery_cache: Dict[str, Any] = {}
+_discovery_cache: Dict[Any, Any] = {}
 _DISCOVERY_CACHE_TTL_SECONDS = 3600
 
 
@@ -1122,7 +1168,8 @@ def discover_bedrock_models(
     """
     import time
 
-    cache_key = f"{region}:{','.join(sorted(provider_filter or []))}"
+    profile = _resolve_bedrock_profile()
+    cache_key = (profile, region, tuple(sorted(provider_filter or [])))
     cached = _discovery_cache.get(cache_key)
     if cached and (time.time() - cached["timestamp"]) < _DISCOVERY_CACHE_TTL_SECONDS:
         return cached["models"]

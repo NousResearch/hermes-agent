@@ -1214,7 +1214,7 @@ def _stream_openai(
     Mirrors the synthesize() config surface: ``tts.openai.model`` /
     ``voice`` / ``speed`` / ``base_url`` and ``tts.use_gateway``.
     """
-    api_key, base_url = _resolve_openai_audio_client_config()
+    api_key, fallback_base, is_managed = _resolve_openai_audio_client_config()
 
     tts_config = extra.pop("tts_config", None) or {}
     oai_config = (
@@ -1224,12 +1224,31 @@ def _stream_openai(
         model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
     if voice is None:
         voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
-    base_url = oai_config.get("base_url", base_url)
+    config_base_url = oai_config.get("base_url")
+    base_url = config_base_url or fallback_base or DEFAULT_OPENAI_BASE_URL
     if speed is None:
         raw_speed = oai_config.get("speed", tts_config.get("speed", 1.0))
         speed = float(raw_speed) if raw_speed is not None else 1.0
     else:
         speed = float(speed)
+
+    # The managed OpenAI audio gateway only proxies MANAGED_OPENAI_TTS_MODELS.
+    # A model set for direct OpenAI (e.g. "tts-1-hd") 400s there with
+    # "Unsupported managed OpenAI speech model", so coerce it — unless the user
+    # redirected base_url to their own endpoint, in which case respect it.
+    # Mirrors the sync path in _generate_openai_tts.
+    if (
+        is_managed
+        and not config_base_url
+        and model not in MANAGED_OPENAI_TTS_MODELS
+    ):
+        logger.warning(
+            "TTS: managed OpenAI audio gateway does not support model %r; "
+            "falling back to %s. Set VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY "
+            "to use %r directly.",
+            model, DEFAULT_OPENAI_MODEL, model,
+        )
+        model = DEFAULT_OPENAI_MODEL
 
     fmt = (format or "opus").lower()
     if fmt in ("ogg", "opus"):

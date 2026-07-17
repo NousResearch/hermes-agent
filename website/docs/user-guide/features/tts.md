@@ -48,14 +48,17 @@ tts:
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
     speed: 1.0                  # Converted to rate percentage (+/-%)
+    streaming: false            # Real-time playback (needs miniaudio; opt-in)
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
     model_id: "eleven_multilingual_v2"
+    streaming: true             # Real-time playback via SDK pcm_24000
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
     speed: 1.0                  # 0.25 - 4.0
+    streaming: false            # Real-time playback (HTTP-body chunked; no latency win)
   minimax:
     model: "speech-02-hd"     # speech-02-hd (default), speech-02-turbo
     voice_id: "English_Graceful_Lady"  # See https://platform.minimax.io/faq/system-voice-id

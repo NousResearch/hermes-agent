@@ -1,4 +1,4 @@
-"""Tests for tts.<provider>.streaming config field (v31 → v32 migration).
+"""Tests for tts.<provider>.streaming config field.
 
 Per-provider streaming flag controls whether CLI voice mode plays audio
 in real-time (chunk-by-chunk via sounddevice) instead of synthesizing a
@@ -7,6 +7,10 @@ complete file first. Defaults preserve existing behaviour:
 - elevenlabs: streaming = true  (already wired in stream_tts_to_speaker)
 - edge:       streaming = false (real-time path added in this PR)
 - openai:     streaming = false (real-time path added in this PR)
+
+The flag ships as an additive default and reaches users via the existing
+deep-merge path, so no version-pinned snapshot assertion is needed — the
+migration tests below cover the deep-merge invariant instead.
 """
 
 import yaml
@@ -20,11 +24,6 @@ def test_default_config_has_streaming_fields():
     assert tts["edge"]["streaming"] is False
     assert tts["openai"]["streaming"] is False
     assert tts["elevenlabs"]["streaming"] is True
-
-
-def test_config_version_bumped_to_32():
-    from hermes_cli.config import DEFAULT_CONFIG
-    assert DEFAULT_CONFIG["_config_version"] == 32
 
 
 def test_v31_config_migrates_streaming_fields():

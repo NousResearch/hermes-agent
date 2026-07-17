@@ -90,7 +90,7 @@ class TestStreamOpenai:
 
         with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
              patch("tools.tts_tool._resolve_openai_audio_client_config",
-                   return_value=("test-key", None)):
+                   return_value=("test-key", None, False)):
             from tools.tts_tool import _stream_openai
             chunks = list(_stream_openai("hello", tts_config=tts_config))
         return chunks, mock_client.audio.speech.create

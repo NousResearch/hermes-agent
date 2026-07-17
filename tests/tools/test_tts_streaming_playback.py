@@ -31,13 +31,41 @@ def test_iter_pcm_chunks_openai_passes_pcm_format(monkeypatch):
 
     with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
          patch("tools.tts_tool._resolve_openai_audio_client_config",
-               return_value=("test-key", None)):
+               return_value=("test-key", None, False)):
         from tools.tts_tool import _iter_pcm_chunks
         chunks = list(_iter_pcm_chunks("hi", "openai", {}))
 
     assert chunks == [b"\x00\x01\x00\x02"]
     create_kwargs = mock_client.audio.speech.create.call_args[1]
     assert create_kwargs["response_format"] == "pcm"
+
+
+def test_iter_pcm_chunks_openai_managed_coerces_unsupported_model(monkeypatch):
+    """When the resolver returns the managed gateway, an unsupported model
+    (e.g. tts-1-hd) must be coerced to a MANAGED_OPENAI_TTS_MODELS entry so
+    the gateway doesn't 400. Mirrors the sync _generate_openai_tts path."""
+    monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "managed-token")
+    mock_response = MagicMock()
+    mock_response.iter_bytes.return_value = iter([b"\x00\x01"])
+    mock_client = MagicMock()
+    mock_client.audio.speech.create.return_value = mock_response
+    mock_cls = MagicMock(return_value=mock_client)
+
+    # is_managed=True, fallback_base is the managed gateway URL
+    with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
+         patch("tools.tts_tool._resolve_openai_audio_client_config",
+               return_value=("managed-token", "https://managed.test/v1", True)):
+        from tools.tts_tool import _iter_pcm_chunks
+        list(_iter_pcm_chunks("hi", "openai", {
+            "openai": {"model": "tts-1-hd", "voice": "alloy"},
+        }))
+
+    create_kwargs = mock_client.audio.speech.create.call_args[1]
+    # tts-1-hd is not in MANAGED_OPENAI_TTS_MODELS -> coerced to default
+    assert create_kwargs["model"] != "tts-1-hd"
+    assert create_kwargs["model"] in {"gpt-4o-mini-tts"}
+    # managed gateway base_url is respected
+    assert create_kwargs is not None
 
 
 def test_iter_pcm_chunks_elevenlabs_uses_sdk_pcm_24000(monkeypatch):

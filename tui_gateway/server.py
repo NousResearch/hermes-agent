@@ -2442,8 +2442,31 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
         logger.debug("failed to persist live session system prompt", exc_info=True)
 
 
+# Stable leading text of the model-switch marker, shared by the builder and the
+# dedup below. Only the newest marker is meaningful (it names the *currently*
+# active model); older ones are stale and would otherwise be re-sent to the
+# provider on every turn (#65891).
+_MODEL_SWITCH_MARKER_PREFIX = "[System: The active model for this chat has changed to "
+
+
+def _is_model_switch_marker(entry: Any) -> bool:
+    """Whether a history entry is a (self-replacing) model-switch marker."""
+    if not isinstance(entry, dict):
+        return False
+    content = entry.get("content")
+    return isinstance(content, str) and content.startswith(_MODEL_SWITCH_MARKER_PREFIX)
+
+
 def _append_model_switch_marker(session: dict | None, *, model: str, provider: str) -> None:
-    """Record a real system-history pivot after a live model switch."""
+    """Record a real system-history pivot after a live model switch.
+
+    Only the most recent marker is kept: each new switch first strips any
+    prior model-switch markers from the live history, so N switches leave one
+    marker (naming the active model), not N stale ones accumulating tokens on
+    every subsequent API call (#65891). The in-memory history is the payload
+    re-sent each turn; the dedup is self-healing across resumes because the
+    next switch collapses whatever markers a reload brought back.
+    """
     if not session:
         return
     session_key = str(session.get("session_key") or "").strip()
@@ -2452,7 +2475,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
 
     provider_part = f" via provider {provider}" if provider else ""
     marker = (
-        "[System: The active model for this chat has changed to "
+        f"{_MODEL_SWITCH_MARKER_PREFIX}"
         f"{model}{provider_part}. From this point forward, use this runtime "
         "metadata when answering questions about what model/provider is active.]"
     )
@@ -2462,14 +2485,19 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
     # beginning of the API message list (#48338).
     entry = {"role": "user", "content": marker}
 
+    def _replace_markers() -> None:
+        history = session.setdefault("history", [])
+        # Drop any earlier markers in place before appending the new one.
+        history[:] = [h for h in history if not _is_model_switch_marker(h)]
+        history.append(entry)
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+
     lock = session.get("history_lock")
     if lock is not None:
         with lock:
-            session.setdefault("history", []).append(entry)
-            session["history_version"] = int(session.get("history_version", 0)) + 1
+            _replace_markers()
     else:
-        session.setdefault("history", []).append(entry)
-        session["history_version"] = int(session.get("history_version", 0)) + 1
+        _replace_markers()
 
     try:
         agent = session.get("agent")

@@ -4787,6 +4787,7 @@ class TestFeishuFetchMessageText(unittest.TestCase):
         adapter._bot_user_id = ""
         adapter._bot_name = "Hermes"
         adapter._message_text_cache = OrderedDict()
+        adapter._message_item_cache = OrderedDict()
         adapter._client = Mock()
         adapter._build_get_message_request = Mock(return_value=object())
         return adapter
@@ -4796,6 +4797,7 @@ class TestFeishuFetchMessageText(unittest.TestCase):
         text,
         *,
         parent_id=None,
+        root_id=None,
         chat_id="oc_chat",
         thread_id=None,
     ):
@@ -4805,6 +4807,7 @@ class TestFeishuFetchMessageText(unittest.TestCase):
             mentions=[],
             parent_id=parent_id,
             upper_message_id=None,
+            root_id=root_id,
             chat_id=chat_id,
             thread_id=thread_id,
         )
@@ -4867,6 +4870,44 @@ class TestFeishuFetchMessageText(unittest.TestCase):
             result,
             "直接父消息\n[Earlier quoted message]\n更早的原始问题",
         )
+
+    def test_fetch_message_context_chain_follows_root_only_ancestry(self):
+        adapter = self._build_adapter()
+        messages = {
+            "m_parent": self._reply_item("直接父消息", root_id="m_root"),
+            "m_root": self._reply_item("根消息"),
+        }
+        self._install_reply_messages(adapter, messages)
+
+        result = asyncio.run(
+            adapter._fetch_message_context_chain(
+                "m_parent", chat_id="oc_chat", thread_id=None
+            )
+        )
+
+        self.assertEqual(result, "直接父消息\n[Earlier quoted message]\n根消息")
+
+    def test_fetch_message_context_chain_reuses_cached_message_items(self):
+        adapter = self._build_adapter()
+        messages = {
+            "m_parent": self._reply_item("直接父消息", parent_id="m_root"),
+            "m_root": self._reply_item("根消息"),
+        }
+        self._install_reply_messages(adapter, messages)
+
+        first = asyncio.run(
+            adapter._fetch_message_context_chain(
+                "m_parent", chat_id="oc_chat", thread_id=None
+            )
+        )
+        second = asyncio.run(
+            adapter._fetch_message_context_chain(
+                "m_parent", chat_id="oc_chat", thread_id=None
+            )
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(adapter._client.im.v1.message.get.call_count, 2)
 
     def test_fetch_message_context_chain_stops_before_cross_chat_ancestor(self):
         adapter = self._build_adapter()
@@ -4933,6 +4974,35 @@ class TestFeishuFetchMessageText(unittest.TestCase):
 
         self.assertEqual(result, "直接父消息")
 
+    def test_fetch_message_context_chain_falls_back_to_cached_direct_text(self):
+        adapter = self._build_adapter()
+        adapter._message_text_cache["m_parent"] = "缓存的直接父消息"
+        adapter._client.im.v1.message.get = Mock(side_effect=OSError("offline"))
+
+        result = asyncio.run(
+            adapter._fetch_message_context_chain(
+                "m_parent", chat_id="oc_chat", thread_id=None
+            )
+        )
+
+        self.assertEqual(result, "缓存的直接父消息")
+
+    def test_fetch_message_context_chain_stops_before_unneeded_ancestor_call(self):
+        adapter = self._build_adapter()
+        messages = {
+            "m_parent": self._reply_item("p" * 500, parent_id="m_unneeded"),
+        }
+        self._install_reply_messages(adapter, messages)
+
+        result = asyncio.run(
+            adapter._fetch_message_context_chain(
+                "m_parent", chat_id="oc_chat", thread_id=None
+            )
+        )
+
+        self.assertEqual(result, "p" * 500)
+        self.assertEqual(adapter._client.im.v1.message.get.call_count, 1)
+
     def test_fetch_message_context_chain_honors_total_character_budget(self):
         adapter = self._build_adapter()
         messages = {
@@ -4984,6 +5054,25 @@ class TestFeishuFetchMessageText(unittest.TestCase):
             "直接父消息\n[Earlier quoted message]\n祖先消息",
         )
         self.assertEqual(adapter._client.im.v1.message.get.call_count, 2)
+
+    def test_fetch_message_context_chain_caps_api_calls_at_max_depth(self):
+        adapter = self._build_adapter()
+        messages = {
+            f"m{index}": self._reply_item(
+                str(index), parent_id=f"m{index + 1}" if index < 7 else None
+            )
+            for index in range(8)
+        }
+        self._install_reply_messages(adapter, messages)
+
+        result = asyncio.run(
+            adapter._fetch_message_context_chain(
+                "m0", chat_id="oc_chat", thread_id=None
+            )
+        )
+
+        self.assertNotIn("6", result or "")
+        self.assertEqual(adapter._client.im.v1.message.get.call_count, 6)
 
     def test_extract_text_from_raw_content_accepts_mentions_kwarg(self):
         from plugins.platforms.feishu.adapter import FeishuAdapter

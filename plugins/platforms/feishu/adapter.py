@@ -254,7 +254,8 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # drain on completion; the cap is a safeguard against unbounded growth from
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
-_FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
+_FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512  # LRU cap for reply-context message text lookups
+_FEISHU_MESSAGE_ITEM_CACHE_SIZE = 128
 _FEISHU_REPLY_CHAIN_MAX_DEPTH = 6
 _FEISHU_REPLY_CONTEXT_MAX_CHARS = 500
 _FEISHU_EARLIER_REPLY_SEPARATOR = "\n[Earlier quoted message]\n"
@@ -1484,6 +1485,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        self._message_item_cache: "OrderedDict[str, Any]" = OrderedDict()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -3257,10 +3259,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 text = f"{hint}\n\n{text}" if text else hint
 
         chat_id = getattr(message, "chat_id", "") or ""
-        # root_id can describe quote ancestry as well as a topic. Use only an
-        # explicit thread_id as the ancestry lane guard.
+        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        # Keep the existing session route above unchanged. root_id is also
+        # quote metadata, so only an explicit topic ID is safe as a lane guard.
         explicit_thread_id = getattr(message, "thread_id", None) or None
-        thread_id = explicit_thread_id or getattr(message, "root_id", None) or None
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
@@ -4191,15 +4193,9 @@ class FeishuAdapter(BasePlatformAdapter):
             self._message_text_cache.move_to_end(message_id)
             return self._message_text_cache[message_id]
         try:
-            request = self._build_get_message_request(message_id)
-            response = await self._run_blocking(self._client.im.v1.message.get, request)
-            if not response or getattr(response, "success", lambda: False)() is False:
-                code = getattr(response, "code", "unknown")
-                msg = getattr(response, "msg", "message lookup failed")
-                logger.warning("[Feishu] Failed to fetch parent message %s: [%s] %s", message_id, code, msg)
+            parent = await self._fetch_message_item(message_id)
+            if parent is None:
                 return None
-            items = getattr(getattr(response, "data", None), "items", None) or []
-            parent = items[0] if items else None
             body = getattr(parent, "body", None)
             msg_type = getattr(parent, "msg_type", "") or ""
             raw_content = getattr(body, "content", "") or ""
@@ -4213,6 +4209,32 @@ class FeishuAdapter(BasePlatformAdapter):
             while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
                 self._message_text_cache.popitem(last=False)
             return text
+        except Exception:
+            logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
+            return None
+
+    async def _fetch_message_item(self, message_id: str) -> Optional[Any]:
+        """Fetch one message through a shared LRU for text/media reply context."""
+        if not self._client or not message_id:
+            return None
+        if message_id in self._message_item_cache:
+            self._message_item_cache.move_to_end(message_id)
+            return self._message_item_cache[message_id]
+        try:
+            request = self._build_get_message_request(message_id)
+            response = await self._run_blocking(self._client.im.v1.message.get, request)
+            if not response or getattr(response, "success", lambda: False)() is False:
+                code = getattr(response, "code", "unknown")
+                msg = getattr(response, "msg", "message lookup failed")
+                logger.warning("[Feishu] Failed to fetch parent message %s: [%s] %s", message_id, code, msg)
+                return None
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            item = items[0] if items else None
+            if item is not None:
+                self._message_item_cache[message_id] = item
+                while len(self._message_item_cache) > _FEISHU_MESSAGE_ITEM_CACHE_SIZE:
+                    self._message_item_cache.popitem(last=False)
+            return item
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
             return None
@@ -4241,32 +4263,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 break
             seen.add(current_id)
 
-            try:
-                request = self._build_get_message_request(current_id)
-                response = await self._run_blocking(
-                    self._client.im.v1.message.get,
-                    request,
-                )
-            except Exception:
-                logger.warning(
-                    "[Feishu] Failed to fetch reply ancestry from %s",
-                    message_id,
-                    exc_info=True,
-                )
-                break
-
-            if not response or getattr(response, "success", lambda: False)() is False:
-                logger.warning(
-                    "[Feishu] Failed to fetch reply ancestor %s: [%s] %s",
-                    current_id,
-                    getattr(response, "code", "unknown"),
-                    getattr(response, "msg", "message lookup failed"),
-                )
-                break
-
-            items = getattr(getattr(response, "data", None), "items", None) or []
-            item = items[0] if items else None
+            item = await self._fetch_message_item(current_id)
             if item is None:
+                cached_text = self._message_text_cache.get(current_id)
+                if cached_text and not rendered:
+                    rendered = cached_text[:max_chars]
                 break
 
             item_chat_id = str(getattr(item, "chat_id", "") or "")
@@ -4293,6 +4294,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             if text:
                 self._message_text_cache[current_id] = text
+                self._message_text_cache.move_to_end(current_id)
                 while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
                     self._message_text_cache.popitem(last=False)
 
@@ -4308,9 +4310,15 @@ class FeishuAdapter(BasePlatformAdapter):
                 if len(rendered) >= max_chars:
                     break
 
+            if rendered and (
+                max_chars - len(rendered) <= len(_FEISHU_EARLIER_REPLY_SEPARATOR)
+            ):
+                break
+
             current_id = (
                 getattr(item, "parent_id", None)
                 or getattr(item, "upper_message_id", None)
+                or getattr(item, "root_id", None)
                 or None
             )
 

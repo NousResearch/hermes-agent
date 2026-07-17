@@ -2731,20 +2731,23 @@ def run_job(
                 return
             try:
                 _title_base = " ".join(job_name.split())[:40].strip() or f"cron {job_id}"
-                _ts = _hermes_now().strftime('%b %d %H:%M')
+                _ts = _hermes_now().strftime('%b %d %H:%M:%S')
                 _preview = body.strip()[:80].replace("\n", " ")
                 _na_session_db.set_session_title(
                     _na_session_id,
                     f"{_title_base} · {_ts} [{status_label}]",
                 )
-                # End as assistant message so the session's preview reflects
-                # the output. SessionDB's _insert_session_row stores `preview`
-                # as the first N chars of the session — we set it via title
-                # only because there is no public add_message on SessionDB.
                 _na_session_db.end_session(_na_session_id, status)
-                _na_session_db.close()
             except Exception as e2:
                 logger.debug("Job '%s' (no_agent): failed to record session: %s", job_id, e2)
+            finally:
+                # Always close the DB — even if set_session_title raised on a
+                # duplicate title (e.g. two runs in the same second), the
+                # connection must be released.
+                try:
+                    _na_session_db.close()
+                except Exception:
+                    pass
 
         # Apply workdir if configured — lets scripts use predictable relative
         # paths. For no_agent jobs this is just the subprocess cwd (not an

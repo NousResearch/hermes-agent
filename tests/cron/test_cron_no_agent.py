@@ -329,3 +329,81 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     ok, output = _run_job_script("/etc/passwd")
     assert ok is False
     assert "Blocked" in output or "outside" in output
+
+
+# ---------------------------------------------------------------------------
+# no_agent session-recording regression: duplicate titles
+# ---------------------------------------------------------------------------
+
+
+class TestNoAgentSessionRecording:
+    """Tests for the no_agent run-history session recording path."""
+
+    def test_two_runs_same_second_no_title_conflict(
+        self, hermes_env, monkeypatch,
+    ) -> None:
+        """Two no_agent cron runs in the same second must not crash on duplicate titles.
+
+        The session title now includes seconds, and the DB connection is
+        always closed in a finally block even when set_session_title raises.
+        """
+        from cron.jobs import create_job
+
+        # Write a script that succeeds trivially.
+        script = hermes_env / "scripts" / "ok.sh"
+        script.write_text("#!/bin/bash\necho done\n")
+
+        job1 = create_job(
+            prompt=None, schedule="every 5m", script="ok.sh",
+            no_agent=True, deliver="local",
+        )
+        job2 = create_job(
+            prompt=None, schedule="every 5m", script="ok.sh",
+            no_agent=True, deliver="local",
+        )
+
+        # Freeze time so both runs produce the same timestamp.
+        from datetime import datetime, timezone as _tz
+        frozen = datetime(2026, 7, 17, 12, 0, 0, tzinfo=_tz.utc)
+
+        with patch("cron.scheduler._hermes_now", return_value=frozen):
+            from cron.scheduler import run_job
+            run_job(job1)
+            run_job(job2)
+
+        # Both runs completed without unhandled exceptions.
+
+    def test_session_db_closed_on_title_error(
+        self, hermes_env, monkeypatch,
+    ) -> None:
+        """The SessionDB connection is released even when set_session_title raises."""
+        from cron.jobs import create_job
+        from hermes_state import SessionDB
+        import cron.scheduler as sched
+
+        # Write a script.
+        script = hermes_env / "scripts" / "ok.sh"
+        script.write_text("#!/bin/bash\necho done\n")
+
+        job = create_job(
+            prompt=None, schedule="every 5m", script="ok.sh",
+            no_agent=True, deliver="local",
+        )
+
+        close_called = False
+        original_close = SessionDB.close
+
+        def tracking_close(self):
+            nonlocal close_called
+            close_called = True
+            original_close(self)
+
+        with patch.object(
+            SessionDB, "set_session_title",
+            side_effect=ValueError("duplicate title"),
+        ), patch.object(
+            SessionDB, "close", tracking_close,
+        ):
+            sched.run_job(job)
+
+        assert close_called, "SessionDB.close() must be called even after title error"

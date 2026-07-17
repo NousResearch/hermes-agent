@@ -16,13 +16,20 @@ import pytest
 
 @pytest.fixture()
 def fake_homes(tmp_path, monkeypatch):
-    import agent.file_safety as fs
+    """Point HERMES_HOME at a temp profile dir.
 
+    Uses the real env-var resolution chain (get_hermes_home /
+    get_default_hermes_root) instead of monkeypatching private helpers —
+    a stale monkeypatch on a since-deleted helper broke CI in July 2026
+    (monkeypatch.setattr raises AttributeError on missing attributes).
+    HERMES_HOME=<root>/profiles/<name> makes get_default_hermes_root()
+    derive <root> via the `profiles` parent-dir rule, so both the
+    profile-scoped and root-scoped deny lists resolve into tmp_path.
+    """
     root = tmp_path / ".hermes"
     profile = root / "profiles" / "work"
     profile.mkdir(parents=True)
-    monkeypatch.setattr(fs, "_hermes_home_path", lambda: profile)
-    monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
     return root, profile
 
 
@@ -58,14 +65,13 @@ def test_project_local_state_db_remains_writable(fake_homes, tmp_path):
     assert is_write_denied(str(target)) is False
 
 
-def test_write_file_tool_preserves_existing_session_snapshot(fake_homes, monkeypatch):
+def test_write_file_tool_preserves_existing_session_snapshot(fake_homes):
     import tools.file_tools as ft
 
     _root, profile = fake_homes
     target = profile / "sessions" / "session_abc.json"
     target.parent.mkdir(parents=True)
     target.write_text("original transcript", encoding="utf-8")
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
 
     result = json.loads(ft.write_file_tool(str(target), "tampered"))
 

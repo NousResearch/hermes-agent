@@ -1107,3 +1107,141 @@ def test_migrate_model_config_no_catalog_leaves_value_alone(tmp_path: Path):
         {"agents": {"defaults": {"model": "some-model-id"}}},
     )
     assert _extract_model(parsed) == "some-model-id"
+
+
+# ── non-UTF-8 tolerance (issue #8901) ───────────────────────────────────────
+
+
+def _write_invalid_utf8_json(path: Path, prefix: bytes, valid_value: bytes, suffix: bytes) -> None:
+    """Write a JSON-shaped file containing one invalid UTF-8 byte (0xB3) inside
+    a string value, alongside a separate, validly-encoded value. Used to check
+    that a single bad byte does not prevent the rest of the file's data from
+    being read (relies on read_text(..., errors="replace"))."""
+    path.write_bytes(prefix + b"\xb3" + valid_value + suffix)
+
+
+def test_command_allowlist_handles_invalid_utf8_bytes(tmp_path: Path):
+    """exec-approvals.json with a non-UTF-8 byte should not abort migration;
+    valid patterns elsewhere in the same file must still be imported."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    source.mkdir()
+    target.mkdir()
+
+    _write_invalid_utf8_json(
+        source / "exec-approvals.json",
+        prefix=b'{"agents": {"*": {"allowlist": [{"pattern": "/bad',
+        valid_value=b'"}, {"pattern": "/usr/bin/*"}]}}}',
+        suffix=b"",
+    )
+    (target / "config.yaml").write_text("command_allowlist: []\n", encoding="utf-8")
+
+    migrator = mod.Migrator(
+        source_root=source, target_root=target, execute=True,
+        workspace_target=None, overwrite=False, migrate_secrets=False, output_dir=None,
+        selected_options={"command-allowlist"},
+    )
+    report = migrator.migrate()
+
+    items = [i for i in report["items"] if i["kind"] == "command-allowlist"]
+    assert items and items[0]["status"] == "migrated"
+    config_text = (target / "config.yaml").read_text(encoding="utf-8")
+    assert "/usr/bin/*" in config_text
+
+
+def test_messaging_settings_handles_invalid_utf8_in_telegram_allowlist(tmp_path: Path):
+    """Telegram allowFrom file with a non-UTF-8 byte should not abort migration;
+    valid user IDs elsewhere in the same file must still be imported."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    source.mkdir()
+    target.mkdir()
+
+    creds_dir = source / "credentials"
+    creds_dir.mkdir()
+    _write_invalid_utf8_json(
+        creds_dir / "telegram-default-allowFrom.json",
+        prefix=b'{"allowFrom": ["bad',
+        valid_value=b'", "123456789"]}',
+        suffix=b"",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source, target_root=target, execute=True,
+        workspace_target=None, overwrite=False, migrate_secrets=False, output_dir=None,
+        selected_options={"messaging-settings"},
+    )
+    report = migrator.migrate()
+
+    items = [i for i in report["items"] if i["kind"] == "messaging-settings"]
+    assert items and items[0]["status"] == "migrated"
+    env_text = (target / ".env").read_text(encoding="utf-8")
+    assert "123456789" in env_text
+
+
+def test_provider_keys_handles_invalid_utf8_in_auth_profiles(tmp_path: Path):
+    """auth-profiles.json with a non-UTF-8 byte should not abort migration;
+    a valid provider key elsewhere in the same file must still be imported."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    source.mkdir()
+    target.mkdir()
+
+    agent_dir = source / "agents" / "main" / "agent"
+    agent_dir.mkdir(parents=True)
+    _write_invalid_utf8_json(
+        agent_dir / "auth-profiles.json",
+        prefix=b'{"profiles": {"broken": {"key": "bad',
+        valid_value=b'"}, "openrouter-main": {"key": "sk-or-valid-key"}}}',
+        suffix=b"",
+    )
+    (source / "openclaw.json").write_text(json.dumps({}), encoding="utf-8")
+
+    migrator = mod.Migrator(
+        source_root=source, target_root=target, execute=True,
+        workspace_target=None, overwrite=False, migrate_secrets=True, output_dir=None,
+        selected_options={"provider-keys"},
+    )
+    report = migrator.migrate()
+
+    items = [i for i in report["items"] if i["kind"] == "provider-keys"]
+    assert items and items[0]["status"] == "migrated"
+    env_text = (target / ".env").read_text(encoding="utf-8")
+    assert "OPENROUTER_API_KEY=sk-or-valid-key" in env_text
+
+
+def test_daily_memory_skips_undecodable_file_but_merges_others(tmp_path: Path):
+    """A daily-memory .md file with invalid UTF-8 bytes should not abort the
+    merge; entries from the other, cleanly-encoded file must still land."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    target.mkdir()
+
+    mem_dir = source / "workspace" / "memory"
+    mem_dir.mkdir(parents=True)
+    (mem_dir / "2026-03-01.md").write_text(
+        "# March 1 Notes\n\n- User prefers dark mode\n",
+        encoding="utf-8",
+    )
+    # errors="replace" means this file is still readable (bad byte becomes
+    # U+FFFD), so its valid heading/entries should also survive alongside it.
+    (mem_dir / "2026-03-02.md").write_bytes(
+        b"# March 2 Notes\n\n- Working on \xb3migration project\n"
+    )
+
+    migrator = mod.Migrator(
+        source_root=source, target_root=target, execute=True,
+        workspace_target=None, overwrite=False, migrate_secrets=False, output_dir=None,
+        selected_options={"daily-memory"},
+    )
+    report = migrator.migrate()
+
+    items = [i for i in report["items"] if i["kind"] == "daily-memory"]
+    assert items and items[0]["status"] == "migrated"
+    content = (target / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "dark mode" in content
+    assert "migration project" in content

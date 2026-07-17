@@ -178,6 +178,21 @@ async def test_backfills_when_only_down_notice_exists(adapter):
 
 
 @pytest.mark.asyncio
+async def test_generic_unavailable_response_counts_as_completed(adapter):
+    bot_reply = SimpleNamespace(
+        id=2,
+        content="That package is unavailable on this platform.",
+        author=SimpleNamespace(id=999, bot=True),
+        reference=SimpleNamespace(message_id=1),
+        created_at=datetime.now(timezone.utc),
+    )
+    channel = FakeChannel(history_messages=[bot_reply])
+    message = make_message(message_id=1, channel=channel)
+
+    assert await adapter._should_backfill_discord_message(message) is False
+
+
+@pytest.mark.asyncio
 async def test_run_backfill_dispatches_unaddressed_messages(adapter, monkeypatch):
     message = make_message(message_id=1)
 
@@ -294,6 +309,14 @@ def test_default_config_exposes_missed_message_backfill_settings():
     }
 
 
+def test_default_recovery_scope_includes_allowed_and_free_response_channels(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "100,200")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "200,300")
+
+    assert adapter._missed_message_backfill_channels() == {"100", "200", "300"}
+
+
 @pytest.mark.asyncio
 async def test_persistent_responded_record_suppresses_backfill(adapter):
     message = make_message(message_id=77)
@@ -362,6 +385,28 @@ def test_empty_successful_turn_is_not_persistently_complete(adapter):
     assert adapter._discord_message_is_persistently_complete("89") is False
 
 
+def test_disabled_recovery_does_not_create_hot_path_ledger(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_MISSED_MESSAGE_BACKFILL", "false")
+    message = make_message(message_id=90)
+    event = MessageEvent(
+        text=message.content,
+        message_type=MessageType.TEXT,
+        raw_message=message,
+        message_id=str(message.id),
+    )
+
+    adapter._record_discord_processing_start(event, emoji_ack=False)
+    adapter._record_discord_processing_complete(event, ProcessingOutcome.SUCCESS)
+    adapter._record_discord_response(
+        reply_to="90",
+        result=SimpleNamespace(success=True, message_id="9003"),
+        content="Done",
+    )
+
+    db_path = adapter._discord_recovery_db_path()
+    assert not db_path.exists()
+
+
 @pytest.mark.asyncio
 async def test_iter_candidates_includes_active_and_archived_threads(adapter):
     active_msg = make_message(message_id=201, channel=FakeChannel(channel_id=2010))
@@ -405,3 +450,35 @@ async def test_iter_candidates_applies_one_global_scan_limit(adapter, monkeypatc
         got.append(msg.id)
 
     assert got == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_iter_candidates_keeps_latest_messages_when_window_exceeds_limit(adapter, monkeypatch):
+    class RealisticChannel(FakeChannel):
+        def history(self, **kwargs):
+            async def _gen():
+                messages = list(self._history_messages)
+                if not kwargs["oldest_first"]:
+                    messages.reverse()
+                for message in messages[:kwargs["limit"]]:
+                    yield message
+
+            return _gen()
+
+    channel = RealisticChannel(
+        channel_id=123,
+        history_messages=[
+            make_message(message_id=1),
+            make_message(message_id=2),
+            make_message(message_id=3),
+            make_message(message_id=4),
+        ],
+    )
+    adapter._client.get_channel = lambda _channel_id: channel
+    monkeypatch.setattr(adapter, "_missed_message_backfill_limit", lambda: 3)
+
+    got = []
+    async for msg in adapter._iter_missed_message_backfill_candidates({"123"}):
+        got.append(msg.id)
+
+    assert got == [2, 3, 4]

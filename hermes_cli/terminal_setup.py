@@ -76,23 +76,6 @@ def _iterm2_has_shift_return_keybinding() -> bool:
         return False
 
 
-def _remove_iterm2_global_keymap() -> bool:
-    """Delete the entire iTerm2 GlobalKeyMap preference key.
-
-    Returns True on success, False on failure.
-    """
-    try:
-        result = subprocess.run(
-            ["defaults", "delete", _ITERM2_DOMAIN, "GlobalKeyMap"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
-
-
 _RESET = "\033[0m"
 _BOLD = "\033[1m"
 _GREEN = "\033[32m"
@@ -161,22 +144,19 @@ def _wizard_iterm2() -> None:
     if has_conflict:
         _warn("Found a GlobalKeyMap entry that intercepts Shift+Return.")
         _info("This binding captures the key before iTerm2 can emit the CSI-u")
-        _info("sequence, so Hermes never sees it.  It must be removed.")
+        _info("sequence, so Hermes never sees it. Remove only the conflicting")
+        _info("Shift+Return mapping; do not delete the entire GlobalKeyMap.")
         _info("")
-        answer = _ask(
-            "Remove the conflicting GlobalKeyMap entry now?", default="y"
-        )
-        if answer == "y":
-            ok = _remove_iterm2_global_keymap()
-            if ok:
-                _ok("GlobalKeyMap cleared successfully.")
-                _info("You may need to restart iTerm2 for the change to take effect.")
-            else:
-                _err("Could not clear GlobalKeyMap via 'defaults delete'.")
-                _info("Try removing it manually:")
-                _info("  defaults delete com.googlecode.iterm2 GlobalKeyMap")
-        else:
-            _warn("Skipped.  Shift+Enter will not work until this is removed.")
+        _info("Manual fix:")
+        _info("  1. Open iTerm2 → Settings/Preferences → Keys → Key Mappings")
+        _info("  2. Look for a global Shift+Return / Shift+Enter entry; also")
+        _info("     check Profiles → Keys for an overriding profile mapping")
+        _info("  3. Remove that single mapping, or change it so it no longer")
+        _info("     intercepts Return")
+        _info("  4. If you manage settings via defaults, inspect first with:")
+        _info("     defaults read com.googlecode.iterm2 GlobalKeyMap")
+        _info("")
+        _warn("Shift+Enter will not work until that conflicting mapping is removed.")
     else:
         _ok("No conflicting GlobalKeyMap binding found.")
 
@@ -200,8 +180,7 @@ def _wizard_iterm2() -> None:
     _header("Validation")
     _info("After completing Step 2:")
     _info("")
-    _info("  • Open a new iTerm2 tab (or restart iTerm2 if you cleared")
-    _info("    the GlobalKeyMap above).")
+    _info("  • Open a new iTerm2 tab after changing the key mapping.")
     _info("  • Run  hermes  and press Shift+Enter inside the prompt.")
     _info("  • A newline should be inserted without submitting the message.")
     _info("")
@@ -252,15 +231,17 @@ def _wizard_modern_terminal(name: str) -> None:
 def _wizard_vscode() -> None:
     """VS Code integrated terminal guidance."""
     _header("VS Code / Cursor / Windsurf integrated terminal detected")
-    _info("VS Code's integrated terminal partially supports modified-key")
-    _info("reporting, but the binding depends on your OS and terminal profile.")
+    _info("The classic CLI can use Shift+Enter here only when the integrated")
+    _info("terminal is configured to emit a distinct modified Enter sequence.")
     _info("")
-    _info("For the best experience, run  /terminal-setup  inside Hermes from")
-    _info("the integrated terminal — the slash command installs the Cmd+Enter")
-    _info("and Shift+Enter key bindings into VS Code's keybindings.json.")
+    _info("Per the CLI guide, VS Code-family terminals support this once the")
+    _info("Kitty keyboard protocol is enabled in terminal settings.")
+    _info("If Shift+Enter still submits, enable the terminal's keyboard")
+    _info("protocol setting and open a fresh integrated terminal tab.")
     _info("")
-    _info("Alternatively, Alt+Enter is always available as an unconditional")
-    _info("fallback for inserting newlines.")
+    _info("Alt+Enter is the general classic-CLI fallback for inserting a")
+    _info("newline. In Windows Terminal, Alt+Enter toggles fullscreen, so")
+    _info("use Ctrl+Enter or Ctrl+J there instead.")
     _info("")
 
 
@@ -277,8 +258,10 @@ def _wizard_unknown() -> None:
     _info("    \\x1b[27;2;13~  (xterm modifyOtherKeys Shift+Enter)")
     _info("")
     _info("Terminals known to support this out of the box:")
-    _info("  kitty, WezTerm, Ghostty, Alacritty (with modifyOtherKeys),")
-    _info("  iTerm2 (with 'Report modifiers using CSI u' enabled)")
+    _info("  kitty, foot, WezTerm, Ghostty")
+    _info("")
+    _info("Supported once terminal keyboard-protocol settings are enabled:")
+    _info("  iTerm2, Alacritty, VS Code terminal, Warp")
     _info("")
     _info("Alt+Enter is always available as a fallback.")
     _info("")

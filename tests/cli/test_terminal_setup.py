@@ -138,25 +138,6 @@ class TestITerm2GlobalKeyMap:
         with patch("subprocess.run", return_value=mock_result):
             assert _iterm2_has_shift_return_keybinding() is False
 
-    def test_remove_returns_true_on_success(self, monkeypatch):
-        from hermes_cli.terminal_setup import _remove_iterm2_global_keymap
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        with patch("subprocess.run", return_value=mock_result):
-            assert _remove_iterm2_global_keymap() is True
-
-    def test_remove_returns_false_on_failure(self, monkeypatch):
-        from hermes_cli.terminal_setup import _remove_iterm2_global_keymap
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        with patch("subprocess.run", return_value=mock_result):
-            assert _remove_iterm2_global_keymap() is False
-
-    def test_remove_returns_false_on_exception(self, monkeypatch):
-        from hermes_cli.terminal_setup import _remove_iterm2_global_keymap
-        with patch("subprocess.run", side_effect=OSError("not found")):
-            assert _remove_iterm2_global_keymap() is False
-
 
 
 class TestWizardRouting:
@@ -187,7 +168,6 @@ class TestWizardRouting:
         from hermes_cli import terminal_setup as ts_mod
         monkeypatch.setattr(ts_mod, "_detect_terminal", lambda: "iterm2")
         monkeypatch.setattr(ts_mod, "_iterm2_has_shift_return_keybinding", lambda: True)
-        monkeypatch.setattr(ts_mod, "_remove_iterm2_global_keymap", lambda: True)
         monkeypatch.setattr("builtins.input", lambda _: "y")
         captured = StringIO()
         monkeypatch.setattr(sys, "stdout", captured)
@@ -198,24 +178,22 @@ class TestWizardRouting:
         from hermes_cli import terminal_setup as ts_mod
         monkeypatch.setattr(ts_mod, "_detect_terminal", lambda: "iterm2")
         monkeypatch.setattr(ts_mod, "_iterm2_has_shift_return_keybinding", lambda: True)
-        monkeypatch.setattr(ts_mod, "_remove_iterm2_global_keymap", lambda: True)
         monkeypatch.setattr("builtins.input", lambda _: "n")
         captured = StringIO()
         monkeypatch.setattr(sys, "stdout", captured)
         ts_mod.run_terminal_setup(args=None)
-        assert "Skipped" in captured.getvalue()
+        assert "do not delete the entire GlobalKeyMap" in captured.getvalue()
 
-    def test_iterm2_remove_fails_shows_manual_hint(self, monkeypatch):
+    def test_iterm2_conflict_shows_manual_hint(self, monkeypatch):
         from hermes_cli import terminal_setup as ts_mod
         monkeypatch.setattr(ts_mod, "_detect_terminal", lambda: "iterm2")
         monkeypatch.setattr(ts_mod, "_iterm2_has_shift_return_keybinding", lambda: True)
-        monkeypatch.setattr(ts_mod, "_remove_iterm2_global_keymap", lambda: False)
-        monkeypatch.setattr("builtins.input", lambda _: "y")
         captured = StringIO()
         monkeypatch.setattr(sys, "stdout", captured)
         ts_mod.run_terminal_setup(args=None)
         out = captured.getvalue()
-        assert "defaults delete" in out
+        assert "defaults read com.googlecode.iterm2 GlobalKeyMap" in out
+        assert "do not delete the entire GlobalKeyMap" in out
 
     def test_terminal_app(self, monkeypatch):
         output = self._run("terminal_app", monkeypatch)
@@ -235,7 +213,8 @@ class TestWizardRouting:
 
     def test_vscode(self, monkeypatch):
         output = self._run("vscode", monkeypatch)
-        assert "/terminal-setup" in output
+        assert "/terminal-setup" not in output
+        assert "Kitty keyboard protocol" in output
 
     def test_unknown(self, monkeypatch):
         output = self._run("unknown", monkeypatch)

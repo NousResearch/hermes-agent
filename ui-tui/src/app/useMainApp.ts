@@ -427,6 +427,23 @@ export function useMainApp(gw: GatewayClient) {
     [selection]
   )
 
+  const scrollToHistoryIndex = useCallback(
+    (index: number) => {
+      const scroll = scrollRef.current
+      const row = virtualRows[index]
+
+      if (!scroll || !row) {
+        return false
+      }
+
+      const target = Number(virtualHistory.offsets[index] ?? 0)
+
+      scroll.scrollTo(Math.max(0, target))
+      return true
+    },
+    [virtualHistory.offsets, virtualRows]
+  )
+
   const appendMessage = useCallback(
     (msg: Msg) => setHistoryItems(prev => capHistory(appendTranscriptMessage(prev, msg))),
     []
@@ -735,15 +752,17 @@ export function useMainApp(gw: GatewayClient) {
     actions: {
       answerClarify,
       appendMessage,
+      branchAtHistoryItem: session.branchAtMessage,
       die,
       dispatchSubmission,
       guardBusySessionSwitch: session.guardBusySessionSwitch,
       newSession: session.newSession,
+      openHistoryTimeline: () => slashRef.current('/history'),
       sys
     },
     composer: { actions: composerActions, refs: composerRefs, state: composerState },
     gateway,
-    terminal: { hasSelection, scrollRef, scrollWithSelection, selection, stdout },
+    terminal: { hasSelection, scrollRef, scrollToHistoryIndex, scrollWithSelection, selection, stdout },
     voice: {
       enabled: voiceEnabled,
       recordKey: voiceRecordKey,

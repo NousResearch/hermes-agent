@@ -811,7 +811,7 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
   })
 
-  it('/history pages the current TUI transcript (user + assistant)', () => {
+  it('/history opens the current TUI transcript in the timeline overlay', () => {
     const ctx = buildCtx({
       local: {
         ...buildLocal(),
@@ -825,17 +825,18 @@ describe('createSlashHandler', () => {
     })
 
     createSlashHandler(ctx)('/history')
-    expect(ctx.transcript.page).toHaveBeenCalledTimes(1)
-
-    const [body, title] = ctx.transcript.page.mock.calls[0]!
-
-    expect(title).toBe('History')
-    expect(body).toContain('[You #1]')
-    expect(body).toContain('hello')
-    expect(body).toContain('[Hermes #2]')
-    expect(body).toContain('hi there')
-    expect(body).toContain('[You #3]')
-    expect(body).not.toContain('ignore me')
+    expect(ctx.transcript.page).not.toHaveBeenCalled()
+    expect(getOverlayState().historyTimeline).toMatchObject({
+      items: [
+        { actionable: true, ordinal: 1, preview: 'hello', role: 'user', sourceIndex: 0 },
+        { actionable: false, ordinal: 2, preview: 'ignore me', role: 'system', sourceIndex: 1 },
+        { actionable: true, ordinal: 3, preview: 'hi there', role: 'assistant', sourceIndex: 2 },
+        { actionable: true, ordinal: 4, preview: 'test', role: 'user', sourceIndex: 3 }
+      ],
+      query: '',
+      selected: 3,
+      unfilteredSelected: 3
+    })
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 

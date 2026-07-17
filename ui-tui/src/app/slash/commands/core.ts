@@ -3,10 +3,13 @@ import { forceRedraw, type MouseTrackingMode } from '@hermes/ink'
 import { DASHBOARD_TUI_MODE, NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
+import { buildHistoryTimelineState } from '../../../components/historyTimelineOverlay.js'
 import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
+import { toTranscriptMessages } from '../../../domain/messages.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
+  SessionHistoryResponse,
   SessionSaveResponse,
   SessionStatusResponse,
   SessionSteerResponse,
@@ -504,17 +507,24 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys('no conversation yet')
       }
 
-      const preview = Math.max(80, parseInt(arg, 10) || 400)
+      if (!ctx.sid) {
+        return patchOverlayState({ historyTimeline: buildHistoryTimelineState(ctx.local.getHistoryItems()) })
+      }
 
-      const lines = items.map((m, i) => {
-        const tag = m.role === 'user' ? `You #${i + 1}` : `Hermes #${i + 1}`
-        const body = m.text.trim() || (m.tools?.length ? `(${m.tools.length} tool calls)` : '(empty)')
-        const clipped = body.length > preview ? `${body.slice(0, preview).trimEnd()}…` : body
+      ctx.gateway
+        .rpc<SessionHistoryResponse>('session.history', { session_id: ctx.sid })
+        .then(
+          ctx.guarded<SessionHistoryResponse>(r => {
+            const persisted = toTranscriptMessages(r?.messages ?? [])
+            const localTail = ctx.local.getHistoryItems().filter(m =>
+              (m.role === 'user' || m.role === 'assistant' || m.role === 'tool' || m.role === 'system') && typeof m.dbId !== 'number'
+            )
+            const fresh = persisted.length ? [...persisted, ...localTail] : ctx.local.getHistoryItems()
 
-        return `[${tag}]\n${clipped}`
-      })
-
-      ctx.transcript.page(lines.join('\n\n'), 'History')
+            patchOverlayState({ historyTimeline: buildHistoryTimelineState(fresh) })
+          })
+        )
+        .catch(() => patchOverlayState({ historyTimeline: buildHistoryTimelineState(ctx.local.getHistoryItems()) }))
     }
   },
 

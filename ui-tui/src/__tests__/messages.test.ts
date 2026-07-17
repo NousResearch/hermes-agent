@@ -13,18 +13,21 @@ import { DEFAULT_THEME } from '../theme.js'
 describe('toTranscriptMessages', () => {
   it('preserves assistant tool-call rows so resume does not drop prior turns', () => {
     const rows = [
-      { role: 'user', text: 'first prompt' },
-      { role: 'tool', context: 'repo', name: 'search_files', text: 'ignored raw result' },
+      { db_id: 11, role: 'user', text: 'first prompt' },
+      { db_id: 12, role: 'tool', context: 'repo', name: 'search_files', text: 'ignored raw result' },
       { role: 'assistant', text: 'first answer' },
       { role: 'user', text: 'second prompt' }
     ]
 
     expect(toTranscriptMessages(rows).map(msg => [msg.role, msg.text])).toEqual([
       ['user', 'first prompt'],
+      ['tool', 'ignored raw result'],
       ['assistant', 'first answer'],
       ['user', 'second prompt']
     ])
-    expect(toTranscriptMessages(rows)[1]?.tools?.[0]).toContain('Search Files')
+    expect(toTranscriptMessages(rows)[0]?.dbId).toBe(11)
+    expect(toTranscriptMessages(rows)[1]?.dbId).toBe(12)
+    expect(toTranscriptMessages(rows)[2]?.tools?.[0]).toContain('Search Files')
   })
 })
 

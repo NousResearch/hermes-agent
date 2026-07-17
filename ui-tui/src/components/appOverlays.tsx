@@ -9,6 +9,7 @@ import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
+import { HistoryTimelineOverlay, historyTimelineMaxVisibleItems } from './historyTimelineOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
@@ -21,11 +22,15 @@ const COMPLETION_WINDOW = 16
 
 export function PromptZone({
   cols,
+  pagerPageSize,
   onApprovalChoice,
   onClarifyAnswer,
   onSecretSubmit,
   onSudoSubmit
-}: Pick<AppOverlaysProps, 'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onSecretSubmit' | 'onSudoSubmit'>) {
+}: Pick<
+  AppOverlaysProps,
+  'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onSecretSubmit' | 'onSudoSubmit' | 'pagerPageSize'
+>) {
   const overlay = useStore($overlayState)
   const theme = useStore($uiTheme)
 
@@ -140,6 +145,7 @@ export function FloatingOverlays({
 
   const hasAny =
     overlay.modelPicker ||
+    overlay.historyTimeline ||
     overlay.pager ||
     overlay.petPicker ||
     overlay.sessions ||
@@ -204,6 +210,17 @@ export function FloatingOverlays({
       {overlay.pluginsHub && (
         <FloatBox color={theme.color.border}>
           <PluginsHub gw={gw} onClose={() => patchOverlayState({ pluginsHub: false })} t={theme} />
+        </FloatBox>
+      )}
+
+      {overlay.historyTimeline && (
+        <FloatBox color={theme.color.border}>
+          <HistoryTimelineOverlay
+            maxVisibleItems={historyTimelineMaxVisibleItems(pagerPageSize)}
+            state={overlay.historyTimeline}
+            t={theme}
+            width={Math.max(40, cols - 4)}
+          />
         </FloatBox>
       )}
 

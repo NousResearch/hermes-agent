@@ -10,6 +10,8 @@ import { ZERO } from '../domain/usage.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   SessionActivateResponse,
+  PromptSubmitResponse,
+  SessionBranchResponse,
   SessionCloseResponse,
   SessionCreateResponse,
   SessionInflightTurn,
@@ -310,7 +312,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const activateLiveSession = useCallback(
-    (id: string) => {
+    (id: string, afterActivate?: (response: SessionActivateResponse) => void) => {
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'switching session…' })
 
@@ -340,6 +342,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             usage: usageFrom(info)
           })
           hydrateLiveSessionInflight(r.inflight)
+          afterActivate?.(r)
           cancelResumeScrollRef.current?.()
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
         })
@@ -349,6 +352,79 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         })
     },
     [gw, resetSession, scrollRef, setHistoryItems, setSessionStartedAt, sys]
+  )
+
+  const branchAtMessage = useCallback(
+    (messageId: number, cutMode?: string, originLabel?: string) => {
+      const sid = getUiState().sid
+
+      if (!sid) {
+        return sys('history timeline: session not ready yet')
+      }
+
+      if (getUiState().busy) {
+        return sys('interrupt the current turn before trying to branch')
+      }
+
+      patchUiState({ status: 'branching session…' })
+
+      gw.request<SessionBranchResponse>('session.branch_at', {
+        cut_mode: cutMode,
+        message_id: messageId,
+        session_id: sid
+      })
+        .then(raw => {
+          const r = asRpcResult<SessionBranchResponse>(raw)
+
+          if (!r?.session_id) {
+            sys('error: invalid response: session.branch_at')
+            patchUiState({ status: 'ready' })
+
+            return
+          }
+
+          const rawPrefill = r.prefill ?? r.branch?.prefill ?? null
+          const prefill = typeof rawPrefill === 'string' ? rawPrefill : null
+          const copied = r.branch?.copied_message_count
+          const suffix = typeof copied === 'number' ? ` (${copied} messages copied)` : ''
+          const retry = cutMode === 'user_retry_include' && Boolean(prefill)
+          const source = originLabel ? ` from ${originLabel}` : ''
+
+          activateLiveSession(r.session_id, () => {
+            if (retry && prefill) {
+              composerActions.setInput('')
+              composerActions.setInputBuf([])
+              setLastUserMsg(prefill)
+              setHistoryItems(prev => [...prev, { role: 'user', text: prefill }])
+              patchUiState({ busy: true, status: 'running…' })
+              gw.request<PromptSubmitResponse>('prompt.submit', { session_id: r.session_id, text: prefill }).catch((e: Error) => {
+                setHistoryItems(prev => prev.slice(0, -1))
+                composerActions.setInput(prefill)
+                composerActions.setInputBuf([])
+                sys(`error: ${e.message}`)
+                patchUiState({ busy: false, status: 'ready' })
+              })
+              sys(`branched${source} into ${r.title ?? r.session_id}${suffix}; retrying selected user message`)
+
+              return
+            }
+
+            if (prefill) {
+              composerActions.setInput(prefill)
+              composerActions.setInputBuf([])
+            } else if (rawPrefill !== null) {
+              sys('branched; selected retry message is not plain text, so it was not auto-submitted')
+            }
+
+            sys(`branched${source} into ${r.title ?? r.session_id}${suffix}`)
+          })
+        })
+        .catch((e: Error) => {
+          sys(`error: ${e.message}`)
+          patchUiState({ status: 'ready' })
+        })
+    },
+    [activateLiveSession, composerActions, gw, setHistoryItems, setLastUserMsg, sys]
   )
 
   const resumeById = useCallback(
@@ -425,6 +501,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   return {
     activateLiveSession,
+    branchAtMessage,
     closeSession,
     guardBusySessionSwitch,
     newLiveSession,

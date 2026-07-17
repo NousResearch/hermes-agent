@@ -743,6 +743,10 @@ def init_agent(
     # commentary when the provider later returns it as a completed interim
     # assistant message.
     agent._current_streamed_assistant_text = ""
+    # Completed interim messages delivered during the current user turn.
+    # Unlike token-stream tracking, this spans Codex continuation/tool calls so
+    # repeated commentary is not re-sent before normalization can deduplicate it.
+    agent._delivered_interim_texts: set[str] = set()
 
     # Optional current-turn user-message override used when the API-facing
     # user message intentionally differs from the persisted transcript
@@ -1354,6 +1358,19 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+
+    # Codex commentary visibility (display.show_commentary, default true).
+    # When true, completed Codex phase=commentary messages are delivered as
+    # visible mid-turn updates through the interim message path. When false,
+    # commentary falls back to the reasoning channel (visible only with
+    # show_reasoning enabled).
+    agent.show_commentary = True
+    try:
+        _display_section = _agent_cfg.get("display", {})
+        if isinstance(_display_section, dict):
+            agent.show_commentary = bool(_display_section.get("show_commentary", True))
+    except Exception:
+        agent.show_commentary = True
 
     # LM Studio can either be explicitly preloaded through LM Studio's
     # management API (the historical Hermes behavior) or left to LM Studio's

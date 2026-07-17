@@ -125,13 +125,26 @@ REASONING_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Override the default reasoning depth. "
-                    "Omit to use the configured default (typically low). "
-                    "Guide:\n"
-                    "- minimal: quick factual lookups (name, role, simple preference)\n"
-                    "- low: straightforward questions with clear answers\n"
-                    "- medium: multi-aspect questions requiring synthesis across observations\n"
-                    "- high: complex behavioral patterns, contradictions, deep analysis\n"
-                    "- max: thorough audit-level analysis, leave no stone unturned"
+                    "Omit to use the configured default (typically low).\n"
+                    "reasoning_level parameter guide:\n"
+                    "- minimal: use ONLY for a single quick factual lookup (e.g. "
+                    "'what is the user's name'). Honcho hard-caps this tier's output "
+                    "at 250 tokens combined with the model's own hidden reasoning "
+                    "tokens — a multi-part answer can get cut off mid-thought before "
+                    "it even reaches the final-answer phase, especially on models "
+                    "with reasoning/thinking enabled.\n"
+                    "- low/medium/high/max: use for anything requiring a synthesized, "
+                    "multi-fact, or summary-style answer (e.g. 'summarize known facts "
+                    "about this peer', 'what are their communication preferences'). "
+                    "These tiers have no output-token cap of their own (fall back to "
+                    "Honcho's 8192-token global default), so they don't have "
+                    "minimal's cutoff failure mode.\n"
+                    "  - low: straightforward questions with clear answers\n"
+                    "  - medium: multi-aspect questions requiring synthesis across observations\n"
+                    "  - high: complex behavioral patterns, contradictions, deep analysis\n"
+                    "  - max: thorough audit-level analysis, leave no stone unturned\n"
+                    "Default to at least 'low' unless the query is genuinely a single "
+                    "fact lookup."
                 ),
                 "enum": ["minimal", "low", "medium", "high", "max"],
             },
@@ -1437,7 +1450,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 return json.dumps({"result": card})
 
             elif tool_name == "honcho_search":
-                query = args.get("query", "")
+                query = (args.get("query") or "").strip()
                 if not query:
                     return tool_error("Missing required parameter: query")
                 max_tokens = min(int(args.get("max_tokens", 800)), 2000)
@@ -1450,7 +1463,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 return json.dumps({"result": result})
 
             elif tool_name == "honcho_reasoning":
-                query = args.get("query", "")
+                query = (args.get("query") or "").strip()
                 if not query:
                     return tool_error("Missing required parameter: query")
                 peer = args.get("peer", "user")

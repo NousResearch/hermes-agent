@@ -9678,12 +9678,32 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     from agent.title_generator import maybe_auto_title
 
                     _title_key = session.get("session_key") or sid
+                    # Snapshot the runtime identity; the validator lets the
+                    # background titler skip its LLM call if the session's
+                    # model changed before it fires (#19027).
+                    _title_model = getattr(agent, "model", None)
+                    _title_provider = getattr(agent, "provider", None)
                     maybe_auto_title(
                         _get_db(),
                         _title_key,
                         text,
                         raw,
                         session.get("history", []),
+                        # Keep auxiliary auto-detection aligned with the active
+                        # Desktop/Webapp session. Without this, providers that
+                        # rely on runtime auth (for example OpenAI Codex OAuth)
+                        # are skipped and the new session remains untitled.
+                        main_runtime={
+                            "model": getattr(agent, "model", None),
+                            "provider": getattr(agent, "provider", None),
+                            "base_url": getattr(agent, "base_url", None),
+                            "api_key": getattr(agent, "api_key", None),
+                            "api_mode": getattr(agent, "api_mode", None),
+                        },
+                        runtime_validator=lambda: (
+                            getattr(agent, "model", None) == _title_model
+                            and getattr(agent, "provider", None) == _title_provider
+                        ),
                         # Push the generated title live so the sidebar renames
                         # without waiting for the next list refresh (the titler
                         # runs async, after this turn's refresh already fired).

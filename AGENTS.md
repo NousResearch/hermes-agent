@@ -1281,32 +1281,66 @@ def profile_env(tmp_path, monkeypatch):
 ## Testing
 
 ### Python
-**ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
-hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
-`-n auto` xdist workers, in-tree subprocess-isolation plugin). Direct `pytest`
-on a 16+ core developer machine with API keys set diverges from CI in ways
-that have caused multiple "works locally, fails in CI" incidents (and the reverse).
+**ALWAYS use `scripts/run_tests.sh`** — never run `pytest tests/` directly.
+The supported runner is `scripts/run_tests_parallel.py`, which launches one
+`python -m pytest <file>` subprocess per test file. Running the full suite as
+a single `pytest` process leaks module-level state across files and turns slow
+directories into long collection bottlenecks.
 
 ```bash
 scripts/run_tests.sh                                  # full suite, CI-parity
 scripts/run_tests.sh tests/gateway/                   # one directory
-scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
-scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
+scripts/run_tests.sh tests/agent/test_foo.py          # single file
+scripts/run_tests.sh tests/agent/test_foo.py -- -k bar  # one test by name
+scripts/run_tests.sh -j 4                             # cap parallelism
+scripts/run_tests.sh -- -v --tb=long                  # pytest flags (after --)
 ```
 
 #### Subprocess-per-test-file isolation
 
-Every test file runs in a freshly-spawned Python subprocess via `run_tests_parallel.py`. This means module-level dicts/sets and
-ContextVars from one test file cannot leak into the next.
+`scripts/run_tests_parallel.py` (invoked by `run_tests.sh`) spawns one
+`python -m pytest <file>` subprocess per file. This means module-level
+dicts/sets and `ContextVar`s from one test file cannot leak into the next.
+There is no xdist layer or in-tree isolation plugin.
 
-#### Why the wrapper
+#### Runner flags
 
-|                     | Without wrapper                             | With wrapper                              |
-| ------------------- | ------------------------------------------- | ----------------------------------------- |
-| Provider API keys   | Whatever is in your env (auto-detects pool) | All env vars except a specific few unset. |
-| HOME / `~/.hermes/` | Your real config+auth.json                  | Temp dir per test                         |
-| Timezone            | Local TZ (PDT etc.)                         | UTC                                       |
-| Locale              | Whatever is set                             | C.UTF-8                                   |
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `-j N` / `--jobs N` | `cpu_count * 2` | Parallel worker count |
+| `--file-timeout S` | 300 | Per-file wall-clock cap (seconds) |
+| `--slice I/N` | — | CI sharding (for example `--slice 2/6`) |
+| `--include-integration` | off | Also discover `integration/` and `e2e/` |
+| `--paths A:B` | `tests` | Colon-separated discovery roots |
+
+Everything after a literal `--` is forwarded to every per-file `pytest`
+invocation unchanged; bare pytest flags are also forwarded automatically.
+
+#### Why `pytest tests/` directly is broken
+
+| Source of breakage | Effect |
+| --- | --- |
+| No per-file isolation | Module-level state leaks across files and causes cascading failures |
+| Single-process collection | Slow directories become large serial bottlenecks |
+| API keys in env | Provider auto-detection can make live calls |
+| Real `~/.hermes/` | Tests read real config/auth instead of hermetic state |
+| Local timezone/locale | Date and string assertions diverge from CI |
+
+`tests/conftest.py`'s `_hermetic_environment` autouse fixture handles the
+last three points by scrubbing credentials, redirecting `HERMES_HOME`, and
+pinning TZ/locale. It cannot provide the per-file process isolation that the
+runner does.
+
+#### Running without the wrapper (only if you must)
+
+```bash
+source .venv/bin/activate   # or: source venv/bin/activate
+python -m pytest tests/agent/test_foo.py -q   # single file only
+```
+
+Running `python -m pytest tests/` in one process is not supported.
+
+Always run the full suite (`scripts/run_tests.sh`) before pushing changes.
 
 ### Where to place what tests
 

@@ -11009,10 +11009,26 @@ async def cron_fire_webhook(request: Request):
         return JSONResponse({"status": "gone", "job_id": job_id}, status_code=200)
 
     # Run in the background; the store CAS claim inside fire_due de-dupes a
-    # NAS/scheduler retry that arrives while this is in flight.
-    asyncio.create_task(
-        asyncio.to_thread(_fire_cron_job_for_profile, profile, job_id)
-    )
+    # NAS/scheduler retry that arrives while this is in flight. Consume worker
+    # failures inside the coroutine so detached-task diagnostics cannot expose
+    # provider exception text.
+    async def _run_cron_fire() -> None:
+        try:
+            await asyncio.to_thread(_fire_cron_job_for_profile, profile, job_id)
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            _log.error("Cron dashboard fire worker failed")
+
+    fire_coro = _run_cron_fire()
+    try:
+        asyncio.create_task(fire_coro)
+    except BaseException:
+        fire_coro.close()
+        _log.error("Cron dashboard fire task startup failed")
+        return JSONResponse(
+            {"error": "cron fire dispatch unavailable"}, status_code=503
+        )
     return JSONResponse({"status": "accepted", "job_id": job_id}, status_code=202)
 
 

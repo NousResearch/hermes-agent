@@ -13,6 +13,9 @@ hosted agents don't expose). It must:
     background, returning 202.
 """
 
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 from starlette.testclient import TestClient
 
@@ -140,3 +143,68 @@ def test_valid_token_accepts_and_fires(monkeypatch):
         client.close()
     # background task ran the fire for the resolved profile
     assert fired == [("default", "j1")]
+
+
+@pytest.mark.asyncio
+async def test_worker_exception_is_consumed_and_redacted(monkeypatch, caplog):
+    raw_secret = "RAW_SECRET_SENTINEL"
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+
+    async def dashboard_io(_callback, *_args):
+        return "default"
+
+    monkeypatch.setattr(web_server, "_run_cron_dashboard_io", dashboard_io)
+    monkeypatch.setattr(
+        web_server,
+        "_fire_cron_job_for_profile",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError(raw_secret)),
+    )
+    request = SimpleNamespace(
+        headers={"Authorization": "Bearer good"},
+        json=lambda: asyncio.sleep(0, result={"job_id": "failing"}),
+    )
+    created = []
+    original_create_task = asyncio.create_task
+
+    def capture_task(coro):
+        task = original_create_task(coro)
+        created.append(task)
+        return task
+
+    monkeypatch.setattr(web_server.asyncio, "create_task", capture_task)
+    response = await web_server.cron_fire_webhook(request)
+    assert response.status_code == 202
+    await created[0]
+    assert created[0].exception() is None
+    assert raw_secret not in caplog.text
+    assert "Cron dashboard fire worker failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_task_start_failure_is_sanitized(monkeypatch, caplog):
+    raw_secret = "TASK_START_SECRET_SENTINEL"
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+
+    async def dashboard_io(_callback, *_args):
+        return "default"
+
+    monkeypatch.setattr(web_server, "_run_cron_dashboard_io", dashboard_io)
+    monkeypatch.setattr(
+        web_server.asyncio,
+        "create_task",
+        lambda _coro: (_ for _ in ()).throw(RuntimeError(raw_secret)),
+    )
+    request = SimpleNamespace(
+        headers={"Authorization": "Bearer good"},
+        json=lambda: asyncio.sleep(0, result={"job_id": "startup-failure"}),
+    )
+    response = await web_server.cron_fire_webhook(request)
+    assert response.status_code == 503
+    assert raw_secret not in caplog.text
+    assert raw_secret not in bytes(response.body).decode()

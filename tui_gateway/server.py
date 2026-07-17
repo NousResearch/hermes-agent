@@ -1054,6 +1054,19 @@ def _reap_idle_sessions() -> None:
         _close_session_by_id(sid, end_reason="idle_timeout")
     _enforce_session_cap()
     _reclaim_orphaned_leases()
+    # Periodic heap release for long-lived gateway processes.  Even when no
+    # session is reaped, Python's generational GC rarely runs gen2 collection
+    # under steady-state allocation, and glibc retains freed pages as RSS.
+    # Calling trim_memory here ensures every reaper scan (default every 5 min)
+    # returns releasable pages, preventing unbounded RSS growth over days/weeks.
+    try:
+        from hermes_cli.mem_trim import trim_memory
+
+        trim_memory(reason="idle reaper periodic trim")
+    except Exception as exc:
+        logger.warning(
+            "idle reaper memory trim failed: %s: %s", type(exc).__name__, exc
+        )
 
 
 def _reclaim_orphaned_leases() -> None:
@@ -9826,6 +9839,23 @@ def _run_prompt_submit(
                 )
                 _emit("error", sid, {"message": str(e)})
         finally:
+            # Drop both local snapshots of the pre-turn history before asking
+            # glibc to return pages. session["history"] already points at the
+            # new/pruned result; retaining either list defeats this trim.
+            history.clear()
+            local_run_kwargs = locals().get("run_kwargs")
+            if isinstance(local_run_kwargs, dict):
+                local_run_kwargs.clear()
+
+            # Run while any profile-specific HERMES_HOME override is still active
+            # so context.memory_trim is resolved from the session's own config.
+            try:
+                from hermes_cli.mem_trim import trim_memory
+
+                trim_memory(reason="tui turn completion")
+            except Exception:
+                logger.debug("post-turn memory trim failed", exc_info=True)
+
             if thinking_started:
                 # Kill the ambient thinking sound the moment the turn ends —
                 # error and success paths both land here.

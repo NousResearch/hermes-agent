@@ -336,6 +336,48 @@ test.skipIf(process.platform === 'win32')(
   }
 )
 
+// ─── non-ASCII path regression tests ───────────────────────────────
+//
+// Node 24's native fs.cpSync/fs.rmSync mishandle non-ASCII Windows paths
+// (accented user-profile dirs): recursive copies fail or crash, overwrite
+// copies fail with a bogus errno-0 unlink error, and rmSync silently
+// deletes nothing. Staging therefore uses libuv-backed primitives only.
+// This test stages into an accented src/dest tree — twice, so the
+// restage exercises the delete-then-recopy path — to keep it that way.
+
+test('non-ASCII paths: staging into an accented tree works and restages cleanly', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const accented = join(tmp, 'áccentéd ünïcødé-pŕöfílé')
+    const srcRoot = join(accented, 'node-pty')
+    const destRoot = join(accented, 'dest')
+
+    makeFakeNodePty(srcRoot, {
+      prebuildPlatform: process.platform,
+      prebuildArch: process.arch
+    })
+    // Windows prebuilds ship a nested conpty/ payload — cover the
+    // recursive-directory branch on every platform.
+    const conptyDir = join(srcRoot, 'prebuilds', `${process.platform}-${process.arch}`, 'conpty')
+    fs.mkdirSync(conptyDir, { recursive: true })
+    fs.writeFileSync(join(conptyDir, 'conpty.dll'), 'fake dll')
+    fs.writeFileSync(join(conptyDir, 'OpenConsole.exe'), 'fake exe')
+
+    for (let pass = 1; pass <= 2; pass++) {
+      stageNodePtyInto(srcRoot, destRoot, { platform: process.platform, arch: process.arch })
+
+      const stagedPrebuild = join(destRoot, 'prebuilds', `${process.platform}-${process.arch}`)
+      assert.equal(existsSync(join(destRoot, 'package.json')), true, `pass ${pass}: package.json staged`)
+      assert.equal(existsSync(join(destRoot, 'lib', 'index.js')), true, `pass ${pass}: lib staged`)
+      assert.equal(existsSync(join(stagedPrebuild, 'pty.node')), true, `pass ${pass}: prebuild staged`)
+      assert.equal(existsSync(join(stagedPrebuild, 'conpty', 'conpty.dll')), true, `pass ${pass}: conpty dir staged`)
+      assert.equal(existsSync(join(stagedPrebuild, 'conpty', 'OpenConsole.exe')), true, `pass ${pass}: conpty exe staged`)
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('validation rejects a staged binary with the wrong platform magic', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {

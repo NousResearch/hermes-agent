@@ -50,6 +50,13 @@ class _IncompleteCleanupError(RuntimeError):
         super().__init__("oneshot bounded cleanup did not complete")
 
 
+class _OneshotCleanupError(RuntimeError):
+    """A fixed, payload-free signal that one or more cleanup owners failed."""
+
+    def __init__(self) -> None:
+        super().__init__("oneshot cleanup did not complete")
+
+
 class _FinalDelivery:
     """Claim, write, and flush the one-shot final response exactly once."""
 
@@ -106,6 +113,11 @@ class _OneshotResources:
         self._watchdog_armed = False
         self._final_marked = False
         self._closed = False
+        self._cleanup_failed = False
+
+    @property
+    def cleanup_failed(self) -> bool:
+        return self._cleanup_failed
 
     def _arm_watchdog_once(self, exit_code: int = 70) -> None:
         with self._state_lock:
@@ -257,6 +269,7 @@ class _OneshotResources:
         )
 
         session_id = getattr(agent, "session_id", None) if agent is not None else None
+        self._cleanup_failed = had_failure
         if not had_failure:
             logger.info(
                 "oneshot cleanup completed session_id=%s task_id=%s",
@@ -534,30 +547,34 @@ def run_oneshot(
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
             try:
-                response, result = _run_agent(
-                    prompt,
-                    model=model,
-                    provider=provider,
-                    toolsets=explicit_toolsets,
-                    use_config_toolsets=use_config_toolsets,
-                    delivery=delivery,
-                    resources=resources,
-                )
-                delivery.deliver(response)
-            except BaseException as exc:  # noqa: BLE001
-                # Capture anything that escapes the agent (including OSError
-                # from prompt_toolkit/Vt100 when stdout is a non-TTY pipe,
-                # KeyboardInterrupt, SystemExit, etc.) so we can surface it on
-                # the real stderr instead of crashing past the redirect with a
-                # traceback that the caller never sees. A silent exit in a
-                # cron / SSH / subprocess context is the worst failure mode.
-                # See #30623.
-                failure = exc
-            try:
-                resources.close(primary_failure=failure)
-            except BaseException as exc:  # noqa: BLE001
-                if failure is None:
+                try:
+                    response, result = _run_agent(
+                        prompt,
+                        model=model,
+                        provider=provider,
+                        toolsets=explicit_toolsets,
+                        use_config_toolsets=use_config_toolsets,
+                        delivery=delivery,
+                        resources=resources,
+                    )
+                    delivery.deliver(response)
+                except BaseException as exc:  # noqa: BLE001
+                    # Capture anything that escapes the agent (including OSError
+                    # from prompt_toolkit/Vt100 when stdout is a non-TTY pipe,
+                    # KeyboardInterrupt, SystemExit, etc.) so we can surface it on
+                    # the real stderr instead of crashing past the redirect with a
+                    # traceback that the caller never sees. A silent exit in a
+                    # cron / SSH / subprocess context is the worst failure mode.
+                    # See #30623.
                     failure = exc
+            finally:
+                try:
+                    resources.close(primary_failure=failure)
+                except BaseException as exc:  # noqa: BLE001
+                    if failure is None:
+                        failure = exc
+                if failure is None and resources.cleanup_failed:
+                    failure = _OneshotCleanupError()
     finally:
         try:
             devnull.close()

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
+import os
 import sys
 import threading
 import types
 import uuid
-from unittest.mock import Mock, call
+from pathlib import Path
+from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
 
@@ -724,3 +727,414 @@ def test_run_agent_passes_explicit_uuid_task_id_and_installs_hook(monkeypatch):
     assert captured["prompt"] == "prompt"
     assert captured["hook_present"] is True
     assert manager._hooks["post_llm_call"] == []
+
+
+def test_terminal_delivery_resolves_rotated_session_after_flush_and_ends_it_once(
+    monkeypatch,
+):
+    events: list[str] = []
+
+    class OrderedStream(io.StringIO):
+        def write(self, value):
+            events.append("stdout_write")
+            return super().write(value)
+
+        def flush(self):
+            events.append("stdout_flush")
+            return super().flush()
+
+    stream = OrderedStream()
+    resources = oneshot._OneshotResources()
+    resources.task_id = str(uuid.uuid4())
+
+    db = types.SimpleNamespace(
+        end_session=Mock(side_effect=lambda *_args: events.append("session_end")),
+        close=Mock(side_effect=lambda: events.append("db_close")),
+    )
+
+    def close_agent():
+        events.append("agent_close")
+        if agent._end_session_on_close:
+            db.end_session(agent.session_id, "agent_close")
+
+    agent = types.SimpleNamespace(
+        session_id="compression-parent",
+        _end_session_on_close=True,
+        _session_messages=[],
+        _memory_manager=None,
+        shutdown_memory_provider=Mock(side_effect=lambda _messages: events.append("memory_stop")),
+        _cleanup_task_resources=Mock(side_effect=lambda _task_id: events.append("task_cleanup")),
+        close=Mock(side_effect=close_agent),
+    )
+    resources.agent = agent
+    resources.session_db = db
+    _install_cleanup_modules(monkeypatch, events)
+    monkeypatch.setattr(
+        resources,
+        "_arm_watchdog_once",
+        Mock(side_effect=lambda exit_code=70: events.append("watchdog")),
+    )
+    delivery = oneshot._FinalDelivery(
+        stream,
+        lambda: (events.append("delivered_callback"), resources.mark_final_delivered()),
+    )
+
+    agent.session_id = "compression-child"
+    assert delivery.deliver("final") is True
+    resources.mark_final_delivered()
+    resources.close()
+    resources.close()
+
+    assert stream.getvalue() == "final\n"
+    assert events.index("stdout_flush") < events.index("watchdog")
+    assert events.index("watchdog") < events.index("session_end")
+    assert db.end_session.call_args_list == [
+        call("compression-child", "oneshot_complete")
+    ]
+    assert agent._end_session_on_close is False
+    assert agent.close.call_count == 1
+    assert db.close.call_count == 1
+
+
+def test_memory_shutdown_receives_a_copy_of_session_messages(monkeypatch):
+    events: list[str] = []
+    _install_cleanup_modules(monkeypatch, events)
+    monkeypatch.setattr(oneshot._OneshotResources, "_arm_watchdog_once", Mock())
+    original = [{"role": "user", "content": "first"}]
+    captured = []
+
+    def shutdown(messages):
+        captured.append(messages)
+        original.append({"role": "assistant", "content": "late mutation"})
+
+    resources = oneshot._OneshotResources()
+    resources.task_id = str(uuid.uuid4())
+    resources.agent = types.SimpleNamespace(
+        session_id="child",
+        _session_messages=original,
+        _memory_manager=None,
+        shutdown_memory_provider=shutdown,
+        _cleanup_task_resources=Mock(),
+        close=Mock(),
+    )
+    resources.session_db = types.SimpleNamespace(close=Mock())
+
+    resources.close()
+
+    assert captured == [[{"role": "user", "content": "first"}]]
+    assert captured[0] is not original
+
+
+@pytest.mark.parametrize(
+    "failing_owner",
+    [
+        "watchdog",
+        "async_delegation",
+        "memory_flush",
+        "memory_shutdown",
+        "process_cleanup",
+        "task_cleanup",
+        "agent_close",
+        "mcp_shutdown",
+        "auxiliary_shutdown",
+        "session_db_close",
+    ],
+)
+def test_each_cleanup_owner_failure_still_runs_every_later_owner(
+    monkeypatch,
+    failing_owner,
+):
+    events: list[str] = []
+
+    def action(owner):
+        def run(*_args, **_kwargs):
+            events.append(owner)
+            if owner == failing_owner:
+                raise RuntimeError("private cleanup detail")
+            return True
+
+        return Mock(side_effect=run)
+
+    def module(name, **attrs):
+        value = types.ModuleType(name)
+        for key, item in attrs.items():
+            setattr(value, key, item)
+        monkeypatch.setitem(sys.modules, name, value)
+
+    watchdog = action("watchdog")
+    monkeypatch.setattr(
+        oneshot._OneshotResources,
+        "_arm_watchdog_once",
+        lambda self, exit_code=70: watchdog(exit_code=exit_code),
+    )
+    module("tools.async_delegation", interrupt_all=action("async_delegation"))
+    module(
+        "tools.process_registry",
+        process_registry=types.SimpleNamespace(kill_all=action("process_cleanup")),
+    )
+    module("tools.mcp_tool", shutdown_mcp_servers=action("mcp_shutdown"))
+    module(
+        "agent.auxiliary_client",
+        shutdown_cached_clients=action("auxiliary_shutdown"),
+    )
+    resources = oneshot._OneshotResources()
+    resources.task_id = str(uuid.uuid4())
+    resources.agent = types.SimpleNamespace(
+        session_id="child",
+        _session_messages=[],
+        _memory_manager=types.SimpleNamespace(flush_pending=action("memory_flush")),
+        shutdown_memory_provider=action("memory_shutdown"),
+        _cleanup_task_resources=action("task_cleanup"),
+        close=action("agent_close"),
+    )
+    resources.session_db = types.SimpleNamespace(close=action("session_db_close"))
+
+    resources.close()
+
+    owners = [
+        "watchdog",
+        "async_delegation",
+        "memory_flush",
+        "memory_shutdown",
+        "process_cleanup",
+        "task_cleanup",
+        "agent_close",
+        "mcp_shutdown",
+        "auxiliary_shutdown",
+        "session_db_close",
+    ]
+    assert events == owners
+
+
+@pytest.mark.parametrize(
+    ("run_failure", "delivers", "expected"),
+    [
+        (None, True, 0),
+        (RuntimeError("before"), False, 1),
+        (RuntimeError("after"), True, 1),
+        (KeyboardInterrupt(), False, KeyboardInterrupt),
+        (SystemExit(23), False, SystemExit),
+    ],
+)
+def test_outer_lifecycle_closes_once_for_success_error_and_interrupt(
+    monkeypatch,
+    run_failure,
+    delivers,
+    expected,
+):
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    close_calls = Mock()
+    monkeypatch.setattr(oneshot._OneshotResources, "close", close_calls)
+
+    def run(*_args, delivery, resources, **_kwargs):
+        resources.task_id = "task"
+        if delivers:
+            delivery.deliver("final")
+        if run_failure is not None:
+            raise run_failure
+        return "final", {"failed": False, "session_id": "child"}
+
+    monkeypatch.setattr(oneshot, "_run_agent", run)
+    try:
+        if isinstance(expected, type) and issubclass(expected, BaseException):
+            with pytest.raises(expected) as raised:
+                oneshot.run_oneshot("prompt")
+            assert raised.value is run_failure
+        else:
+            assert oneshot.run_oneshot("prompt") == expected
+    finally:
+        logging.disable(logging.NOTSET)
+
+    assert close_calls.call_count == 1
+    assert stdout.getvalue() == ("final\n" if delivers else "")
+
+
+def test_outer_lifecycle_retains_flush_failure_without_retry_and_still_closes(
+    monkeypatch,
+):
+    failure = OSError("flush failed")
+
+    class FlushFailure(io.StringIO):
+        def __init__(self):
+            super().__init__()
+            self.flush_calls = 0
+
+        def flush(self):
+            self.flush_calls += 1
+            raise failure
+
+    stream = FlushFailure()
+    monkeypatch.setattr(sys, "stdout", stream)
+    close_calls = Mock()
+    monkeypatch.setattr(oneshot._OneshotResources, "close", close_calls)
+    monkeypatch.setattr(
+        oneshot,
+        "_run_agent",
+        lambda *_args, **_kwargs: ("private final", {"failed": False}),
+    )
+
+    try:
+        assert oneshot.run_oneshot("prompt") == 1
+    finally:
+        logging.disable(logging.NOTSET)
+
+    assert stream.getvalue() == "private final\n"
+    assert stream.flush_calls == 1
+    assert close_calls.call_count == 1
+
+
+def test_outer_lifecycle_reports_ordinary_cleanup_failure_after_all_owners(
+    monkeypatch,
+):
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    events: list[str] = []
+    _install_cleanup_modules(monkeypatch, events)
+    monkeypatch.setattr(oneshot._OneshotResources, "_arm_watchdog_once", Mock())
+
+    def run(*_args, delivery, resources, **_kwargs):
+        resources.task_id = str(uuid.uuid4())
+        resources.agent = types.SimpleNamespace(
+            session_id="child",
+            _session_messages=[],
+            _memory_manager=types.SimpleNamespace(
+                flush_pending=Mock(side_effect=RuntimeError("private memory detail"))
+            ),
+            shutdown_memory_provider=Mock(side_effect=lambda _messages: events.append("memory")),
+            _cleanup_task_resources=Mock(side_effect=lambda _task_id: events.append("task")),
+            close=Mock(side_effect=lambda: events.append("agent")),
+        )
+        resources.session_db = types.SimpleNamespace(
+            close=Mock(side_effect=lambda: events.append("db"))
+        )
+        delivery.deliver("final")
+        return "final", {"failed": False, "session_id": "child"}
+
+    monkeypatch.setattr(oneshot, "_run_agent", run)
+    try:
+        assert oneshot.run_oneshot("prompt") == 1
+    finally:
+        logging.disable(logging.NOTSET)
+
+    assert stdout.getvalue() == "final\n"
+    assert "private memory detail" not in stderr.getvalue()
+    assert events == [
+        "interrupt",
+        "memory",
+        "processes",
+        "task",
+        "agent",
+        "mcp",
+        "aux",
+        "db",
+    ]
+
+
+def test_cleanup_terminal_chatter_stays_inside_redirected_streams(monkeypatch):
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    def run(*_args, delivery, **_kwargs):
+        delivery.deliver("final")
+        return "final", {"failed": False}
+
+    def noisy_close(*_args, **_kwargs):
+        print("cleanup stdout chatter")
+        print("cleanup stderr chatter", file=sys.stderr)
+
+    monkeypatch.setattr(oneshot, "_run_agent", run)
+    monkeypatch.setattr(oneshot._OneshotResources, "close", noisy_close)
+    try:
+        assert oneshot.run_oneshot("prompt") == 0
+    finally:
+        logging.disable(logging.NOTSET)
+
+    assert stdout.getvalue() == "final\n"
+    assert stderr.getvalue() == ""
+
+
+def test_real_sessiondb_compression_child_is_the_only_oneshot_terminal_session(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent = "oneshot-parent"
+    db.create_session(parent, source="cli", model="test/model")
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            platform="cli",
+            quiet_mode=True,
+            session_db=db,
+            session_id=parent,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+    compressor = MagicMock()
+    compressor.compress.return_value = [
+        {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+        {"role": "user", "content": "tail"},
+    ]
+    compressor.compression_count = 1
+    compressor.last_prompt_tokens = 0
+    compressor.last_completion_tokens = 0
+    compressor._last_summary_error = None
+    compressor._last_compress_aborted = False
+    compressor._last_summary_auth_failure = False
+    compressor._last_aux_model_failure_model = None
+    compressor._last_aux_model_failure_error = None
+    agent.context_compressor = compressor
+    agent.compression_in_place = False
+    messages = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"}
+        for i in range(20)
+    ]
+
+    agent._compress_context(messages, "sys", approx_tokens=120_000)
+    child = agent.session_id
+    assert child != parent
+    task_id = str(uuid.uuid4())
+    events: list[str] = []
+    _, kill_all, _, _ = _install_cleanup_modules(monkeypatch, events)
+    resources = oneshot._OneshotResources()
+    resources.agent = agent
+    resources.session_db = db
+    resources.task_id = task_id
+    monkeypatch.setattr(resources, "_arm_watchdog_once", Mock())
+
+    close_fallback = Mock(
+        side_effect=lambda: db.end_session(agent.session_id, "agent_close")
+        if agent._end_session_on_close
+        else None
+    )
+    monkeypatch.setattr(agent, "close", close_fallback)
+    resources.mark_final_delivered()
+
+    result = {"session_id": agent.session_id, "failed": False}
+    usage_path = tmp_path / "usage.json"
+    oneshot._write_usage_file(str(usage_path), result)
+    resources.close()
+
+    reopened = SessionDB(db_path=tmp_path / "state.db")
+    parent_row = reopened.get_session(parent)
+    child_row = reopened.get_session(child)
+    assert parent_row["end_reason"] == "compression"
+    assert child_row["end_reason"] == "oneshot_complete"
+    assert result["session_id"] == child
+    assert json.loads(usage_path.read_text())["session_id"] == child
+    assert kill_all.call_args_list == [call(task_id=task_id)]
+    assert close_fallback.call_count == 1
+    assert agent._end_session_on_close is False
+    reopened.close()

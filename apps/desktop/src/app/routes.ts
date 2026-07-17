@@ -14,6 +14,7 @@ export const CRON_ROUTE = '/cron'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
 export const STARMAP_ROUTE = '/starmap'
+export const KANBAN_ROUTE = '/kanban'
 
 export type AppView =
   | 'agents'

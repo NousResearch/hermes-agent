@@ -263,5 +263,20 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   themes: {
     fetchMarketplace: id => ipcRenderer.invoke('hermes:vscode-theme:fetch', id),
     searchMarketplace: query => ipcRenderer.invoke('hermes:vscode-theme:search', query)
+  },
+  kanban: {
+    boards: () => ipcRenderer.invoke('hermes:kanban:boards'),
+    createBoard: data => ipcRenderer.invoke('hermes:kanban:createBoard', data),
+    deleteBoard: id => ipcRenderer.invoke('hermes:kanban:deleteBoard', id),
+    tasks: boardId => ipcRenderer.invoke('hermes:kanban:tasks', boardId),
+    allTasks: () => ipcRenderer.invoke('hermes:kanban:allTasks'),
+    createTask: data => ipcRenderer.invoke('hermes:kanban:createTask', data),
+    updateTask: (id, data) => ipcRenderer.invoke('hermes:kanban:updateTask', id, data),
+    deleteTask: id => ipcRenderer.invoke('hermes:kanban:deleteTask', id),
+    comments: taskId => ipcRenderer.invoke('hermes:kanban:comments', taskId),
+    addComment: data => ipcRenderer.invoke('hermes:kanban:addComment', data),
+    deleteComment: id => ipcRenderer.invoke('hermes:kanban:deleteComment', id),
+    reorderTasks: (boardId, updates) =>
+      ipcRenderer.invoke('hermes:kanban:reorderTasks', boardId, updates)
   }
 })

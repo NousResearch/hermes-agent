@@ -166,7 +166,10 @@ declare global {
           createPr: (repoPath: string) => Promise<{ url: string }>
         }
         // Repo-first discovery: scan bounded roots for git repos (depth-capped).
-        scanRepos: (roots: string[], options?: { maxDepth?: number }) => Promise<{ root: string; label: string }[]>
+        scanRepos: (
+          roots: string[],
+          options?: { maxDepth?: number }
+        ) => Promise<{ root: string; label: string }[]>
       }
       terminal: {
         /** Best-effort current working directory of the live PTY child (POSIX
@@ -221,6 +224,61 @@ declare global {
         // Search the Marketplace for color-theme extensions. An empty query
         // returns the most-installed themes.
         searchMarketplace: (query: string) => Promise<DesktopMarketplaceSearchItem[]>
+      }
+      kanban: {
+        boards: () => Promise<KanbanBoard[]>
+        createBoard: (data: { title: string; description?: string }) => Promise<KanbanBoard>
+        deleteBoard: (id: string) => Promise<{ ok: boolean }>
+        tasks: (boardId: string) => Promise<KanbanTask[]>
+        allTasks: () => Promise<KanbanTask[]>
+        createTask: (data: {
+          boardId: string
+          title: string
+          description?: string
+          status?: KanbanStatus
+          priority?: KanbanPriority
+          assignee?: string
+          labels?: string[]
+          sessionId?: string
+          source?: KanbanTaskSource
+          profileId?: string
+          profileLabel?: string
+          messageId?: string
+          assigneeType?: KanbanAssigneeType
+          assigneeId?: string
+          assigneeLabel?: string
+          agentId?: string
+          agentLabel?: string
+          externalTaskId?: string
+          externalTaskKind?: string
+          syncMode?: string
+        }) => Promise<KanbanTask>
+        updateTask: (id: string, data: Partial<{
+          title: string
+          description: string
+          status: KanbanStatus
+          priority: KanbanPriority
+          assignee: string
+          archived: boolean
+          labels: string[]
+          order: number
+          syncMode: string
+          lastSyncedAt: number
+          externalTaskId: string
+          externalTaskKind: string
+          assigneeType: KanbanAssigneeType
+          assigneeLabel: string
+          agentId: string
+          agentLabel: string
+        }>) => Promise<KanbanTask>
+        deleteTask: (id: string) => Promise<{ ok: boolean }>
+        comments: (taskId: string) => Promise<KanbanComment[]>
+        addComment: (data: { taskId: string; author: string; body: string }) => Promise<KanbanComment>
+        deleteComment: (id: string) => Promise<{ ok: boolean }>
+        reorderTasks: (
+          boardId: string,
+          updates: Array<{ id: string; status: KanbanStatus; order: number }>
+        ) => Promise<KanbanTask[]>
       }
     }
   }
@@ -300,7 +358,6 @@ export interface DesktopUpdateCommit {
 
 export interface DesktopUpdateStatus {
   supported: boolean
-  updateAvailable?: boolean
   branch?: string
   currentBranch?: string
   reason?: string
@@ -787,3 +844,57 @@ export interface BackendExit {
   code: number | null
   signal: string | null
 }
+
+export interface KanbanBoard {
+  id: string
+  title: string
+  description: string
+  createdAt: number
+}
+
+export interface KanbanTask {
+  id: string
+  boardId: string
+  title: string
+  description: string
+  status: KanbanStatus
+  priority: KanbanPriority
+  assignee: string
+  createdBy: string
+  createdAt: number
+  updatedAt: number
+  archived: boolean
+  order: number
+  labels?: string[]
+  sessionId?: string
+  source?: KanbanTaskSource
+  profileId?: string
+  profileLabel?: string
+  messageId?: string
+  messageCreatedAt?: number
+  assigneeType: KanbanAssigneeType
+  assigneeId?: string
+  assigneeLabel?: string
+  agentId?: string
+  agentLabel?: string
+  externalTaskId?: string
+  externalTaskKind?: string
+  syncMode?: string
+  lastSyncedAt?: number
+}
+
+export interface KanbanComment {
+  id: string
+  taskId: string
+  author: string
+  body: string
+  createdAt: number
+}
+
+export type KanbanStatus = 'todo' | 'ready' | 'running' | 'review' | 'done' | 'blocked'
+
+export type KanbanPriority = 'low' | 'medium' | 'high'
+
+export type KanbanAssigneeType = 'user' | 'agent' | 'unassigned'
+
+export type KanbanTaskSource = 'manual' | 'chat' | 'agent' | 'cron'

@@ -1447,6 +1447,7 @@ def init_agent(
 
     # Memory provider plugin (external — one at a time, alongside built-in)
     # Reads memory.provider from config to select which plugin to activate.
+    agent._skip_memory_prefetch_after_turn = False
     agent._memory_manager = None
     if not skip_memory:
         try:

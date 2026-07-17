@@ -11553,6 +11553,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         agent = self.agent
         if agent is None:
             return None
+        agent._skip_memory_prefetch_after_turn = getattr(
+            self, "_skip_memory_prefetch_after_turn", False
+        )
 
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
@@ -15586,6 +15589,10 @@ def main(
     if query or image:
         if not cli._claim_active_session("cli", stderr=bool(quiet)):
             sys.exit(1)
+        # A one-shot query has no following turn to consume recalled memory.
+        # Preserve/flush the completed turn, but do not start speculative
+        # prefetch work immediately before deterministic cleanup.
+        cli._skip_memory_prefetch_after_turn = True
         try:
             query, single_query_images = _collect_query_images(query, image)
             # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;
@@ -15693,6 +15700,7 @@ def main(
                         runtime_override=turn_route["runtime"],
                         request_overrides=turn_route.get("request_overrides"),
                     ):
+                        cli.agent._skip_memory_prefetch_after_turn = True
                         cli.agent.quiet_mode = True
                         cli.agent.suppress_status_output = True
                         # Suppress streaming display callbacks so stdout stays

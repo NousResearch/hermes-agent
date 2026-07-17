@@ -776,14 +776,16 @@ class ChatCompletionsTransport(ProviderTransport):
         return True
 
     def extract_cache_stats(self, response: Any) -> dict[str, int] | None:
-        """Extract cache stats from prompt_tokens_details (OpenRouter/OpenAI)
-        or DeepSeek's native top-level prompt_cache_hit_tokens field."""
+        """Extract cache stats from nested or provider-specific usage fields."""
         usage = getattr(response, "usage", None)
         if usage is None:
             return None
         details = getattr(usage, "prompt_tokens_details", None)
         cached = getattr(details, "cached_tokens", 0) or 0 if details else 0
         written = getattr(details, "cache_write_tokens", 0) or 0 if details else 0
+        if not cached:
+            # Together emits this flat field for some non-reasoning models.
+            cached = getattr(usage, "cached_tokens", 0) or 0
         if not cached:
             # DeepSeek native API shape (api.deepseek.com): top-level
             # prompt_cache_hit_tokens / prompt_cache_miss_tokens (#61871).

@@ -201,6 +201,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         extra_env_vars=("FIREWORKS_API_KEY",),
         base_url_override="https://api.fireworks.ai/inference/v1",
     ),
+    "together": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("TOGETHER_API_KEY",),
+        base_url_override="https://api.together.ai/v1",
+    ),
     "upstage": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("UPSTAGE_API_KEY",),
@@ -357,6 +362,10 @@ ALIASES: Dict[str, str] = {
     # fireworks
     "fireworks-ai": "fireworks",
     "fw": "fireworks",
+
+    # together
+    "together-ai": "together",
+    "togetherai": "together",
 
     # upstage
     "solar": "upstage",

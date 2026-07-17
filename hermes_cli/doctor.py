@@ -44,6 +44,7 @@ _PROVIDER_ENV_HINTS = (
     "KIMI_CN_API_KEY",
     "GMI_API_KEY",
     "FIREWORKS_API_KEY",
+    "TOGETHER_API_KEY",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY",
@@ -851,6 +852,8 @@ def run_doctor(args):
                 # (accounts/fireworks/models/... and .../routers/...), so a "/"
                 # is expected, not an aggregator vendor prefix.
                 "fireworks",
+                # Together's native model IDs are organization/model slugs.
+                "together",
                 # DeepInfra is an aggregator-style gateway: its catalog
                 # is exclusively ``vendor/model`` slugs (Qwen/Qwen3.5-…,
                 # meta-llama/Llama-3-…, anthropic/claude-opus-4-7, …).

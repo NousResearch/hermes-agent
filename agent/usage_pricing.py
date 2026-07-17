@@ -875,6 +875,17 @@ def resolve_billing_route(
         # Fireworks model ids look like accounts/fireworks/models/<name>;
         # rsplit("/", 1)[-1] yields just <name> which is what the dict keys on.
         return BillingRoute(provider="fireworks", model=model.rsplit("/", 1)[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if (
+        provider_name in {"together", "together-ai", "togetherai"}
+        or base_url_host_matches(base_url or "", "api.together.ai")
+        or base_url_host_matches(base_url or "", "api.together.xyz")
+    ):
+        return BillingRoute(
+            provider="together",
+            model=model,
+            base_url=base_url or "https://api.together.ai/v1",
+            billing_mode="official_models_api",
+        )
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
@@ -1021,6 +1032,32 @@ def get_pricing_entry(
         )
         if entry:
             return entry
+    if route.provider == "together":
+        try:
+            from agent.models_dev import get_model_info
+
+            model_info = get_model_info("together", route.model)
+            if model_info is not None and model_info.has_cost_data():
+                return PricingEntry(
+                    input_cost_per_million=Decimal(str(model_info.cost_input)),
+                    output_cost_per_million=Decimal(str(model_info.cost_output)),
+                    cache_read_cost_per_million=(
+                        Decimal(str(model_info.cost_cache_read))
+                        if model_info.cost_cache_read is not None
+                        else None
+                    ),
+                    cache_write_cost_per_million=(
+                        Decimal(str(model_info.cost_cache_write))
+                        if model_info.cost_cache_write is not None
+                        else None
+                    ),
+                    source="provider_models_api",
+                    source_url="https://models.dev/api.json",
+                    pricing_version="models-dev-cache",
+                    fetched_at=_UTC_NOW(),
+                )
+        except Exception:
+            pass
     return _lookup_official_docs_pricing(route)
 
 
@@ -1074,6 +1111,9 @@ def normalize_usage(
         cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
         if not cache_read_tokens:
             cache_read_tokens = _to_int(getattr(response_usage, "cache_read_input_tokens", 0))
+        if not cache_read_tokens:
+            # Together returns this flat shape for some non-reasoning models.
+            cache_read_tokens = _to_int(getattr(response_usage, "cached_tokens", 0))
         if not cache_read_tokens:
             # DeepSeek's native API (api.deepseek.com) reports context-cache
             # hits as top-level prompt_cache_hit_tokens (+ the complementary

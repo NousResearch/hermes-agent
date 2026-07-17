@@ -21,6 +21,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **Fireworks AI** | `FIREWORKS_API_KEY` in `~/.hermes/.env` (provider: `fireworks`; aliases: `fireworks-ai`, `fw`) |
+| **Together AI** | `TOGETHER_API_KEY` in `~/.hermes/.env` (provider: `together`; aliases: `together-ai`, `togetherai`) |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
@@ -219,6 +220,10 @@ These providers have built-in support with dedicated provider IDs. Set the API k
 hermes chat --provider fireworks --model accounts/fireworks/models/kimi-k2p6
 # Requires: FIREWORKS_API_KEY in ~/.hermes/.env
 
+# Together AI
+hermes chat --provider together --model MiniMaxAI/MiniMax-M3
+# Requires: TOGETHER_API_KEY in ~/.hermes/.env
+
 # NovitaAI Model API
 hermes chat --provider novita --model moonshotai/kimi-k2.5
 # Requires: NOVITA_API_KEY in ~/.hermes/.env
@@ -266,6 +271,8 @@ hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 ```
 
 Fireworks uses its native slash-form catalog IDs, such as `accounts/fireworks/models/kimi-k2p6`. Run `hermes model`, choose **Fireworks AI**, and select from the live catalog or enter another Fireworks model ID. The default endpoint is `https://api.fireworks.ai/inference/v1`; configure a different endpoint through `model.base_url` in `config.yaml`, not `.env`.
+
+Together uses namespaced model IDs such as `MiniMaxAI/MiniMax-M3` and `thinkingmachines/Inkling`. Its default endpoint is `https://api.together.ai/v1`; the older `api.together.xyz` hostname remains recognized for existing configurations. Configure endpoint overrides through `model.base_url`, not a new environment variable.
 
 Or set the provider permanently in `config.yaml`:
 ```yaml
@@ -1113,7 +1120,6 @@ Any service with an OpenAI-compatible API works. Some popular options:
 
 | Provider | Base URL | Notes |
 |----------|----------|-------|
-| [Together AI](https://together.ai) | `https://api.together.xyz/v1` | Cloud-hosted open models |
 | [Groq](https://groq.com) | `https://api.groq.com/openai/v1` | Ultra-fast inference |
 | [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
@@ -1125,14 +1131,17 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | [LocalAI](https://localai.io) | `http://localhost:8080/v1` | Self-hosted, multi-model |
 | [Jan](https://jan.ai) | `http://localhost:1337/v1` | Desktop app with local models |
 
-Configure any of these with `hermes model` → Custom endpoint, or in `config.yaml`:
+Configure any of these with `hermes model` → Custom endpoint, or as a named custom provider:
 
 ```yaml
+custom_providers:
+  - name: groq
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY
+
 model:
-  default: meta-llama/Llama-3.1-70B-Instruct-Turbo
-  provider: custom
-  base_url: https://api.together.xyz/v1
-  api_key: your-together-key
+  default: llama-3.3-70b-versatile
+  provider: custom:groq
 ```
 
 ---
@@ -1269,7 +1278,7 @@ You can also select named custom providers from the interactive `hermes model` m
 
 ### Cookbook: Together AI, Groq, Perplexity
 
-The cloud providers listed in [Other Compatible Providers](#other-compatible-providers) all speak OpenAI's REST dialect, so they wire up the same way under `custom_providers:`. Three worked recipes follow. Each drops into `~/.hermes/config.yaml` and the matching API key goes in `~/.hermes/.env`.
+Together AI is a first-class provider. Groq and Perplexity remain examples of named custom OpenAI-compatible providers. In every case, settings belong in `config.yaml` and API keys belong in `~/.hermes/.env`.
 
 #### Together AI
 
@@ -1277,15 +1286,10 @@ Hosts open-weight models (Llama, MiniMax, Gemma, DeepSeek, Qwen) at prices signi
 
 ```yaml
 # ~/.hermes/config.yaml
-custom_providers:
-  - name: together
-    base_url: https://api.together.xyz/v1
-    key_env: TOGETHER_API_KEY
-    # api_mode: chat_completions  # default — no need to set
-
 model:
-  default: MiniMaxAI/MiniMax-M2.7   # or any model from together.ai/models
-  provider: custom:together
+  provider: together
+  default: MiniMaxAI/MiniMax-M3
+  base_url: https://api.together.ai/v1
 ```
 
 ```bash
@@ -1296,12 +1300,12 @@ TOGETHER_API_KEY=your-together-key
 Switch models mid-session:
 
 ```
-/model custom:together:meta-llama/Llama-3.3-70B-Instruct-Turbo
-/model custom:together:google/gemma-4-31b-it
-/model custom:together:deepseek-ai/DeepSeek-V3
+/model together:thinkingmachines/Inkling
+/model together:moonshotai/Kimi-K2.7-Code
+/model together:deepseek-ai/DeepSeek-V4-Pro
 ```
 
-Together's `/v1/models` endpoint works, so `hermes model` can auto-discover available models.
+Together's authenticated `/v1/models` endpoint supplies model IDs, context lengths, and current prices. Existing `custom:together` configurations remain valid; switching to the first-class provider is optional.
 
 #### Groq
 
@@ -1352,7 +1356,7 @@ The three recipes compose — use all of them together and switch per turn with 
 ```yaml
 custom_providers:
   - name: together
-    base_url: https://api.together.xyz/v1
+    base_url: https://api.together.ai/v1
     key_env: TOGETHER_API_KEY
   - name: groq
     base_url: https://api.groq.com/openai/v1

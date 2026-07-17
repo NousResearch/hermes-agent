@@ -484,6 +484,9 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     # instead of falling through the unknown-custom-endpoint path.
     "models.inference.ai.azure.com": "copilot",
     "api.fireworks.ai": "fireworks",
+    "api.together.ai": "together",
+    # Legacy Together endpoint retained for existing custom-provider configs.
+    "api.together.xyz": "together",
     "opencode.ai": "opencode-go",
     "api.x.ai": "xai",
     "integrate.api.nvidia.com": "nvidia",
@@ -840,6 +843,27 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
             pricing["completion"] = str(float(novita_output) / 10_000 / 1_000_000)
         return pricing
 
+    # Together's bare-list /models response reports USD per million tokens
+    # under pricing.input/output/cached_input. Its pricing object also carries
+    # base/finetune/hourly, which distinguishes it from OpenAI-compatible
+    # endpoints whose input/output values are already per-token.
+    together_pricing = payload.get("pricing")
+    if (
+        isinstance(together_pricing, dict)
+        and all(k in together_pricing for k in ("base", "finetune", "hourly"))
+        and any(k in together_pricing for k in ("input", "output"))
+    ):
+        result: Dict[str, Any] = {}
+        if together_pricing.get("input") is not None:
+            result["prompt"] = str(float(together_pricing["input"]) / 1_000_000)
+        if together_pricing.get("output") is not None:
+            result["completion"] = str(float(together_pricing["output"]) / 1_000_000)
+        if together_pricing.get("cached_input") is not None:
+            result["cache_read"] = str(
+                float(together_pricing["cached_input"]) / 1_000_000
+            )
+        return result
+
     # DeepInfra ships pricing under ``metadata.pricing`` with $/MTok values:
     # ``input_tokens``, ``output_tokens``, ``cache_read_tokens``. Convert to
     # per-token strings so the generic cost machinery (usage_pricing.py)
@@ -1037,7 +1061,13 @@ def fetch_endpoint_model_metadata(
             response.raise_for_status()
             payload = response.json()
             cache: Dict[str, Dict[str, Any]] = {}
-            for model in payload.get("data", []):
+            if isinstance(payload, list):
+                items = payload
+            elif isinstance(payload, dict):
+                items = payload.get("data", [])
+            else:
+                items = []
+            for model in items:
                 if not isinstance(model, dict):
                     continue
                 model_id = model.get("id")
@@ -1058,7 +1088,7 @@ def fetch_endpoint_model_metadata(
             # If this is a llama.cpp server, query /props for actual allocated context
             is_llamacpp = any(
                 m.get("owned_by") == "llamacpp"
-                for m in payload.get("data", []) if isinstance(m, dict)
+                for m in items if isinstance(m, dict)
             )
             if is_llamacpp:
                 try:

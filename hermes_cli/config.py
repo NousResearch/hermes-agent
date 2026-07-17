@@ -3621,6 +3621,14 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "TOGETHER_API_KEY": {
+        "description": "Together AI API key",
+        "prompt": "Together AI API key",
+        "url": "https://api.together.ai/settings/api-keys",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
     "MINIMAX_API_KEY": {
         "description": "MiniMax API key (international)",
         "prompt": "MiniMax API key",

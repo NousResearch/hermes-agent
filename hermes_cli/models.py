@@ -1051,6 +1051,7 @@ class ProviderEntry(NamedTuple):
 
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Everything your agent needs, 300+ models with bundled tool use)"),
+    ProviderEntry("together",       "Together AI",              "Together AI (OpenAI-compatible serverless inference)"),
     ProviderEntry("fireworks",      "Fireworks AI",             "Fireworks AI (OpenAI-compatible direct model API)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (Pay-per-use API aggregator)"),
     ProviderEntry("moa",            "Mixture of Agents",        "Mixture of Agents (named presets; aggregator acts after reference models)"),
@@ -1246,6 +1247,8 @@ _PROVIDER_ALIASES = {
     "gmicloud": "gmi",
     "fireworks-ai": "fireworks",
     "fw": "fireworks",
+    "together-ai": "together",
+    "togetherai": "together",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "minimax-portal": "minimax-oauth",
@@ -1655,6 +1658,8 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
         return _fetch_deepinfra_pricing(force_refresh=force_refresh)
     if normalized == "fireworks":
         return _fireworks_pricing_from_models_dev(force_refresh=force_refresh)
+    if normalized == "together":
+        return _together_pricing_from_models_api(force_refresh=force_refresh)
     if normalized == "nous":
         api_key, base_url = _resolve_nous_pricing_credentials()
         if base_url:
@@ -1713,6 +1718,47 @@ def _fireworks_pricing_from_models_dev(
             if cache_read:
                 row["input_cache_read"] = str(float(cache_read) / 1_000_000)
             result[str(mid)] = row
+    except Exception:
+        result = {}
+
+    _pricing_cache[cache_key] = result
+    return result
+
+
+def _together_pricing_from_models_api(
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Return Together pricing from its authenticated bare-list /models API."""
+    cache_key = "together/models"
+    if not force_refresh and cache_key in _pricing_cache:
+        return _pricing_cache[cache_key]
+
+    result: dict[str, dict[str, str]] = {}
+    try:
+        from agent.model_metadata import fetch_endpoint_model_metadata
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+
+        creds = resolve_api_key_provider_credentials("together")
+        api_key = str(creds.get("api_key") or "").strip()
+        base_url = str(creds.get("base_url") or "").strip()
+        if api_key and base_url:
+            metadata = fetch_endpoint_model_metadata(
+                base_url,
+                api_key=api_key,
+                force_refresh=force_refresh,
+            )
+            for model_id, entry in metadata.items():
+                pricing = entry.get("pricing") if isinstance(entry, dict) else None
+                if not isinstance(pricing, dict):
+                    continue
+                row = {
+                    "prompt": str(pricing.get("prompt", "")),
+                    "completion": str(pricing.get("completion", "")),
+                }
+                if pricing.get("cache_read") not in {None, ""}:
+                    row["input_cache_read"] = str(pricing["cache_read"])
+                result[model_id] = row
     except Exception:
         result = {}
 
@@ -2359,6 +2405,7 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "kilocode",
     "fireworks",
     "mistral",
+    "together",
     "togetherai",
     "cohere",
     "perplexity",
@@ -3784,8 +3831,18 @@ def probe_api_models(
         try:
             with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
+                if isinstance(data, list):
+                    items = data
+                elif isinstance(data, dict):
+                    items = data.get("data", [])
+                else:
+                    items = []
                 return {
-                    "models": [m.get("id", "") for m in data.get("data", [])],
+                    "models": [
+                        m.get("id", "")
+                        for m in items
+                        if isinstance(m, dict) and m.get("id")
+                    ],
                     "probed_url": url,
                     "resolved_base_url": candidate_base.rstrip("/"),
                     "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,

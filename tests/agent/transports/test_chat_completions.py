@@ -21,6 +21,19 @@ class TestChatCompletionsBasic:
     def test_registered(self, transport):
         assert transport is not None
 
+    def test_extract_cache_stats_accepts_together_flat_shape(self, transport):
+        response = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens_details=None,
+                cached_tokens=321,
+            )
+        )
+
+        assert transport.extract_cache_stats(response) == {
+            "cached_tokens": 321,
+            "creation_tokens": 0,
+        }
+
     @pytest.mark.parametrize("provider", ["nous", "openrouter"])
     def test_gpt56_ultra_uses_max_wire_effort(self, transport, provider):
         from providers import get_provider_profile

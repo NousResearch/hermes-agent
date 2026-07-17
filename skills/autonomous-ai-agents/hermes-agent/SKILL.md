@@ -407,6 +407,7 @@ Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/con
 | Provider | Auth | Key env var |
 |----------|------|-------------|
 | OpenRouter | API key | `OPENROUTER_API_KEY` |
+| Together AI | API key | `TOGETHER_API_KEY` |
 | Anthropic | API key | `ANTHROPIC_API_KEY` |
 | Nous Portal | OAuth | `hermes auth` |
 | OpenAI Codex | OAuth | `hermes auth` |

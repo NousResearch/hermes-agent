@@ -173,6 +173,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "nvidia": "nvidia",
     "groq": "groq",
     "mistral": "mistral",
+    "together": "togetherai",
     "togetherai": "togetherai",
     "perplexity": "perplexity",
     "cohere": "cohere",

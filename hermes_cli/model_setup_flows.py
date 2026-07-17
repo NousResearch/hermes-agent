@@ -2620,6 +2620,12 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     pconfig = PROVIDER_REGISTRY[provider_id]
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
+    try:
+        from providers import get_provider_profile
+
+        provider_profile = get_provider_profile(provider_id)
+    except Exception:
+        provider_profile = None
 
     # Check / prompt for API key
     existing_key = ""
@@ -2802,7 +2808,9 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                         f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
                     )
     else:
-        curated = _PROVIDER_MODELS.get(provider_id, [])
+        curated = list(_PROVIDER_MODELS.get(provider_id, []))
+        if not curated and provider_profile is not None:
+            curated = list(provider_profile.fallback_models or ())
 
         # Try models.dev first — returns tool-capable models, filtered for noise
         mdev_models: list = []
@@ -2837,7 +2845,13 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             api_key_for_probe = existing_key or (
                 get_env_value(key_env) if key_env else ""
             )
-            live_models = fetch_api_models(api_key_for_probe, effective_base)
+            if provider_profile is not None:
+                live_models = provider_profile.fetch_models(
+                    api_key=api_key_for_probe,
+                    base_url=effective_base,
+                )
+            else:
+                live_models = fetch_api_models(api_key_for_probe, effective_base)
             if live_models and len(live_models) >= len(curated):
                 model_list = live_models
                 print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")

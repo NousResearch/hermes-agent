@@ -76,6 +76,7 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
     }
   }, [])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     activeRef.current = true
     void refresh()

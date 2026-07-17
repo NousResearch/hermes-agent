@@ -1,4 +1,4 @@
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
 import { getHermesConfigRecord, type HermesConfigRecord, saveHermesConfig } from '@/hermes'
 
@@ -87,10 +87,8 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
   const [isSavingLocale, setIsSavingLocale] = useState(false)
   const [configLoadError, setConfigLoadError] = useState<Error | null>(null)
   const [saveError, setSaveError] = useState<Error | null>(null)
-  const localeRef = useRef(locale)
 
   useEffect(() => {
-    localeRef.current = locale
     setRuntimeI18nLocale(locale)
   }, [locale])
 
@@ -130,7 +128,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
 
   const setLocale = useCallback(
     async (next: Locale) => {
-      const previousLocale = localeRef.current
+      const previousLocale = locale
 
       setSaveError(null)
       setLocaleState(next)
@@ -159,7 +157,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
         setIsSavingLocale(false)
       }
     },
-    [configClient]
+    [configClient, locale]
   )
 
   const value = useMemo<I18nContextValue>(

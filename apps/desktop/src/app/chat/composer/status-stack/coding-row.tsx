@@ -91,6 +91,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   const worktreeReq = useStore($newWorktreeRequest)
   const lastWorktreeReqRef = useRef(worktreeReq)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (worktreeReq === lastWorktreeReqRef.current) {
       return

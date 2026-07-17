@@ -305,6 +305,7 @@ export function useComposerQueue({
   // never churns, so a change there is a real session switch and must NOT
   // migrate; only the runtime-derived key (queueSessionKey falsy → key is
   // sessionId) churns on a backend bounce/resume of the same conversation.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const prev = prevQueueKeyRef.current
     prevQueueKeyRef.current = activeQueueSessionKey

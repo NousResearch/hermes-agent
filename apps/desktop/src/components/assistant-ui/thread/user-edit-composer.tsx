@@ -128,11 +128,10 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         return
       }
 
-      const base = mode === 'inline' ? draftRef.current.trimEnd() : draftRef.current
+      const base = mode === 'inline' ? draft.trimEnd() : draft
       const sep = mode === 'inline' ? (base ? ' ' : '') : base && !base.endsWith('\n') ? '\n\n' : ''
       const next = `${base}${sep}${value}`
 
-      draftRef.current = next
       aui.composer().setText(next)
 
       const editor = editorRef.current
@@ -144,12 +143,10 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
       setFocusRequestId(id => id + 1)
     },
-    [aui]
+    [aui, draft]
   )
 
   useEffect(() => {
-    draftRef.current = draft
-
     const editor = editorRef.current
 
     if (

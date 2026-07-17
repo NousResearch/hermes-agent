@@ -176,6 +176,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
   // session.resume before the gateway is OPEN. Persisted tiles mount at boot
   // while it's still connecting — an ungated resume rejected there and
   // latched every restored tile into the error card.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!gatewayOpen || runtimeId || tile?.error || resumingRef.current) {
       return

@@ -40,6 +40,7 @@ export function useElapsedSeconds(active = true, timerKey?: string): number {
     lastKey.current = timerKey
   }
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!active) {
       return

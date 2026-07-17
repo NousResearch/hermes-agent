@@ -186,6 +186,7 @@ export function useSessionActions({
   // history entry.
   const rotatedStoredId = useStore($activeSessionStoredId)
 
+  // eslint-disable-next-line no-restricted-syntax -- direct ref write paired with atom setter, not a mirroring effect
   useEffect(() => {
     if (!rotatedStoredId || rotatedStoredId === selectedStoredSessionIdRef.current) {
       return

@@ -29,6 +29,7 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
 
   const prevSessionIdRef = useRef(sessionId)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const prev = prevSessionIdRef.current
     prevSessionIdRef.current = sessionId

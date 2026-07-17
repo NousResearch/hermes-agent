@@ -81,17 +81,15 @@ export function useSessionStateCache({
   // flush below tell a same-session refresh from a thread switch.
   const viewSessionIdRef = useRef<string | null>(null)
 
-  useEffect(() => {
-    activeSessionIdRef.current = activeSessionId
-  }, [activeSessionId])
-
-  useEffect(() => {
-    setMutableRef(busyRef, busy)
-  }, [busy, busyRef])
-
-  useEffect(() => {
-    selectedStoredSessionIdRef.current = selectedStoredSessionId
-  }, [selectedStoredSessionId])
+  // Sync refs from atoms synchronously during render (NOT via useEffect) so
+  // callbacks that fire after an await or inside a stable-ref bag read values
+  // that are current as of the last render, not lagged by one effect tick.
+  // The atom-mirrored-ref eslint rule bans useEffect-based mirroring; these
+  // synchronous writes are the correct pattern for values that must be read
+  // inside stable callbacks passed through the actionsRef bag.
+  activeSessionIdRef.current = activeSessionId
+  selectedStoredSessionIdRef.current = selectedStoredSessionId
+  setMutableRef(busyRef, busy)
 
   const ensureSessionState = useCallback((sessionId: string, storedSessionId?: string | null) => {
     const existing = sessionStateByRuntimeIdRef.current.get(sessionId)

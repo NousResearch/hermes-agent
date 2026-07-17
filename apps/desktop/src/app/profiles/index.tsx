@@ -388,6 +388,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
   const [error, setError] = useState<null | string>(null)
   const requestRef = useRef<string>(profileName)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     requestRef.current = profileName
     setLoading(true)

@@ -28,6 +28,7 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
     return { ...terminalTheme(renderedMode, ansi), background: surface, cursorAccent: surface }
   }
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const host = hostRef.current
 

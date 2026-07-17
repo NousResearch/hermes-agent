@@ -1,5 +1,4 @@
 import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
-import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
@@ -8,23 +7,17 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, setConnection } from '@/store/session'
 
 export function useGatewayRequest() {
-  const gatewayState = useStore($gatewayState)
   const gatewayRef = useRef<HermesGateway | null>(null)
 
   const connectionRef = useRef<Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null>(
     null
   )
 
-  const gatewayStateRef = useRef(gatewayState)
   const reconnectingRef = useRef<Promise<HermesGateway | null> | null>(null)
   // Holds the reauth error from the most recent failed reconnect so
   // requestGateway can surface the gateway's "session expired, sign in again"
   // message instead of the opaque "connection closed" that triggered the retry.
   const reauthErrorRef = useRef<unknown>(null)
-
-  useEffect(() => {
-    gatewayStateRef.current = gatewayState
-  }, [gatewayState])
 
   // Track the active gateway (primary or a background profile's socket) so
   // outbound requests and overlay props always target the focused profile.
@@ -43,7 +36,7 @@ export function useGatewayRequest() {
       return null
     }
 
-    if (gatewayStateRef.current === 'open') {
+    if ($gatewayState.get() === 'open') {
       return existing
     }
 

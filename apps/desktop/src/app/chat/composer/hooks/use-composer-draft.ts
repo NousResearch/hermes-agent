@@ -222,6 +222,7 @@ export function useComposerDraft({
   // source otherwise), and (3) schedule the debounced per-session stash.
   // Browsing history / editing a queued prompt suppress the stash so recalled
   // text never clobbers the draft.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const sync = () => {
       const text = composerRuntime.getState().text
@@ -309,6 +310,7 @@ export function useComposerDraft({
   // Per-thread draft swap — the composer's only session coupling. Lifecycle
   // never clears composer state; this effect alone stashes on leave, restores
   // on enter. Keyed writes are idempotent, so no skip-sentinel.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     // A pending debounce timer from the outgoing session is now stale — its
     // scope was correct when scheduled, but the authoritative stash below
@@ -335,6 +337,7 @@ export function useComposerDraft({
 
   // pagehide is load-bearing: React skips effect cleanups on reload, so Cmd+R
   // inside the debounce/rAF window would drop trailing keystrokes without this.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const flushPendingDraftPersist = () => {
       const scope = draftScopeRef.current

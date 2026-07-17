@@ -463,6 +463,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   // in-progress edit — the draft is the user's until they save or reset.
   const draftSeeded = useRef(false)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     // profilePending: config still holds the PREVIOUS profile's record right
     // after a switch — seeding from it would latch the wrong profile's doc.
@@ -525,6 +526,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   // on a fresh success, errorUpdatedAt on a fresh failure. Releasing on error too
   // means a failed refetch surfaces the retry UI instead of leaving mutations
   // silently no-op forever.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (
       profilePending &&

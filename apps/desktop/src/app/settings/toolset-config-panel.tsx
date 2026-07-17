@@ -200,6 +200,7 @@ function PostSetupRunner({ toolset, postSetupKey, onComplete }: PostSetupRunnerP
   // Guard against overlapping polls / state updates after unmount.
   const activeRef = useRef(false)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     return () => {
       activeRef.current = false

@@ -290,6 +290,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   // Sidebar → "open this job": resolve the focus id (or name) to a job, select
   // it, queue a scroll, then clear the one-shot focus so re-opening cron
   // normally doesn't re-trigger it.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!focusJobId) {
       return
@@ -318,6 +319,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   )
 
   // Scroll a sidebar-opened job into view once its list row is mounted.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const target = pendingScrollRef.current
 

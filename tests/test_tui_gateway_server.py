@@ -1415,11 +1415,11 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         def get_resume_conversations(self, session_id):
             return (
                 self.get_messages_as_conversation(session_id, repair_alternation=True),
-                self.get_messages_as_conversation(session_id, include_ancestors=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True, include_ids=True),
             )
 
-        def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False):
-            captured.setdefault("history_calls", []).append((target, include_ancestors))
+        def get_messages_as_conversation(self, target, include_ancestors=False, include_ids=False, repair_alternation=False):
+            captured.setdefault("history_calls", []).append((target, include_ancestors, include_ids))
             return (
                 [
                     {"role": "user", "content": "root prompt"},
@@ -1458,7 +1458,7 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         {"role": "user", "text": "root prompt"},
         {"role": "assistant", "text": "root answer"},
     ]
-    assert captured["history_calls"] == [("tip", False), ("tip", True)]
+    assert captured["history_calls"] == [("tip", False, False), ("tip", True, True)]
 
 
 def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
@@ -1552,10 +1552,10 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
         def get_resume_conversations(self, session_id):
             return (
                 self.get_messages_as_conversation(session_id, repair_alternation=True),
-                self.get_messages_as_conversation(session_id, include_ancestors=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True, include_ids=True),
             )
 
-        def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False):
+        def get_messages_as_conversation(self, target, include_ancestors=False, include_ids=False, repair_alternation=False):
             return [{"role": "user", "content": "hello"}]
 
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
@@ -1618,10 +1618,10 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         def get_resume_conversations(self, session_id):
             return (
                 self.get_messages_as_conversation(session_id, repair_alternation=True),
-                self.get_messages_as_conversation(session_id, include_ancestors=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True, include_ids=True),
             )
 
-        def get_messages_as_conversation(self, _target, include_ancestors=False, repair_alternation=False):
+        def get_messages_as_conversation(self, _target, include_ancestors=False, include_ids=False, repair_alternation=False):
             return [{"role": "user", "content": "hello"}]
 
         def update_session_cwd(self, *_args):

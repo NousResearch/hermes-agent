@@ -44,10 +44,20 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
-    const { context, name, role, text } = row as TranscriptRow
+    const { context, db_id: dbId, db_session_id: dbSessionId, name, role, text } = row as TranscriptRow
+    const dbMeta = {
+      ...(typeof dbId === 'number' && { dbId }),
+      ...(typeof dbSessionId === 'string' && dbSessionId ? { dbSessionId } : {})
+    }
 
     if (role === 'tool') {
-      pending.push(buildToolTrailLine(name ?? 'tool', context ?? ''))
+      const trailLine = buildToolTrailLine(name ?? 'tool', context ?? '')
+      pending.push(trailLine)
+      out.push({
+        role,
+        text: typeof text === 'string' && text.trim() ? text : trailLine,
+        ...dbMeta
+      })
 
       continue
     }
@@ -57,10 +67,10 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     }
 
     if (role === 'assistant') {
-      out.push({ role, text, ...(pending.length && { tools: pending }) })
+      out.push({ role, text, ...dbMeta, ...(pending.length && { tools: pending }) })
       pending = []
     } else if (role === 'user' || role === 'system') {
-      out.push({ role, text })
+      out.push({ role, text, ...dbMeta })
       pending = []
     }
   }
@@ -85,6 +95,8 @@ interface ImageMeta {
 
 interface TranscriptRow {
   context?: string
+  db_id?: number
+  db_session_id?: string
   name?: string
   role?: string
   text?: string

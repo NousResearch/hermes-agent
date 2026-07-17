@@ -41,6 +41,7 @@ const sidebars: SidebarsConfig = {
           ],
         },
         'user-guide/sessions',
+        'user-guide/tui-history-timeline',
         'user-guide/profiles',
         'user-guide/profile-distributions',
         'user-guide/multi-profile-gateways',

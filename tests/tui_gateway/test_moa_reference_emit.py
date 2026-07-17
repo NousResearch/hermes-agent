@@ -30,7 +30,10 @@ def server():
         import importlib
 
         mod = importlib.import_module("tui_gateway.server")
+        orig_methods = mod._methods.copy()
         yield mod
+        mod._methods.clear()
+        mod._methods.update(orig_methods)
         mod._sessions.clear()
 
 

@@ -42,16 +42,18 @@ def server(hermes_home):
         },
     ):
         mod = importlib.import_module("tui_gateway.server")
+        orig_methods = mod._methods.copy()
         yield mod
         # Reset module-level session state without re-importing. importlib.reload
         # would re-register the module's atexit hooks; duplicated hooks race the
         # stderr buffer at interpreter shutdown (Fatal Python error:
         # _enter_buffered_busy) — same class as PR #34217.
+        mod._methods.clear()
+        mod._methods.update(orig_methods)
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()
-        # NOTE: _methods is intentionally NOT cleared — it's populated at import
-        # time and would only repopulate via reload.
+        # NOTE: _methods is restored from the import-time snapshot above.
         mod._db = None
 
 

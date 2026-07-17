@@ -269,6 +269,7 @@ export interface OverlayState {
   billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  historyTimeline: null | HistoryTimelineOverlayState
   journey: boolean
   modelPicker: boolean | { refresh?: boolean }
   pager: null | PagerState
@@ -285,6 +286,31 @@ export interface PagerState {
   lines: string[]
   offset: number
   title?: string
+}
+
+export interface HistoryTimelineOverlayState {
+  /** The currently displayed timeline rows; filtered when query is active. */
+  items: HistoryTimelineItem[]
+  /** Complete current-session timeline, preserved while a filter is active. */
+  allItems: HistoryTimelineItem[]
+  /** True after `/` enters filter input mode, even before any query text. */
+  filterActive: boolean
+  /** Case-insensitive current-session filter query. */
+  query: string
+  selected: number
+  /** Selection to restore when the active filter is cleared. */
+  unfilteredSelected: number
+}
+
+export interface HistoryTimelineItem {
+  actionable: boolean
+  dbId?: number
+  fullText: string
+  identity: string
+  ordinal: number
+  preview: string
+  role: 'assistant' | 'system' | 'tool' | 'user'
+  sourceIndex: number
 }
 
 export interface TranscriptRow {
@@ -390,10 +416,12 @@ export interface UseComposerStateResult {
 export interface InputHandlerActions {
   answerClarify: (answer: string) => void
   appendMessage: (msg: Msg) => void
+  branchAtHistoryItem: (messageId: number, cutMode?: string, originLabel?: string) => void
   die: () => void
   dispatchSubmission: (full: string) => void
   guardBusySessionSwitch: (what?: string) => boolean
   newSession: (msg?: string, title?: string) => void
+  openHistoryTimeline: () => boolean
   sys: (text: string) => void
 }
 
@@ -407,6 +435,7 @@ export interface InputHandlerContext {
   gateway: GatewayServices
   terminal: {
     hasSelection: boolean
+    scrollToHistoryIndex: (index: number) => boolean
     scrollRef: RefObject<null | ScrollBoxHandle>
     scrollWithSelection: (delta: number) => void
     selection: SelectionApi

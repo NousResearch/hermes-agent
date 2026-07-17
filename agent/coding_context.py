@@ -390,7 +390,13 @@ def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
 
 def _git_root(cwd: Path) -> Optional[Path]:
     current = cwd.resolve()
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve()
+    except Exception:
+        temp_root = None
     for parent in [current, *current.parents]:
+        if temp_root is not None and parent == temp_root:
+            continue
         if (parent / ".git").exists():
             return parent
     return None
@@ -824,7 +830,16 @@ def project_facts_for(cwd: Optional[str | Path] = None) -> Optional[dict[str, An
     re-derive "are we coding?" or duplicate the verify-command sniffing.
     """
     resolved = _resolve_cwd(cwd)
-    root = _git_root(resolved) or _marker_root(resolved)
+    marker_root = _marker_root(resolved)
+    git_root = _git_root(resolved)
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve()
+    except Exception:
+        temp_root = None
+    if git_root is not None and temp_root is not None and git_root == temp_root:
+        # A stray /tmp/.git must not swallow marker-only test projects below it.
+        git_root = None
+    root = git_root or marker_root
     if root is None:
         return None
 

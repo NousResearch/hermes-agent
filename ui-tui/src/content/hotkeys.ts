@@ -19,6 +19,7 @@ export const HOTKEYS: [string, string][] = [
   ...copyHotkeys,
   [action + '+D', 'exit'],
   [action + '+G / Alt+G', 'open $EDITOR (Alt+G fallback for VSCode/Cursor)'],
+  ['Ctrl+H', 'open /history timeline'],
   [action + '+L', 'redraw / repaint'],
   [paste + '+V / /paste', 'paste text; /paste attaches clipboard image'],
   ['Tab', 'apply completion'],

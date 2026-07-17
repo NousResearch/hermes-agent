@@ -29,15 +29,18 @@ def server():
     }):
         import importlib
         mod = importlib.import_module("tui_gateway.server")
+        orig_methods = mod._methods.copy()
         yield mod
         # Reset module-level session state without re-importing. importlib.reload
         # would re-register the module's atexit hooks (ThreadPoolExecutor
         # shutdown, _shutdown_sessions); the duplicates race the stderr
         # buffer at interpreter shutdown and surface as Fatal Python error:
         # _enter_buffered_busy. Clearing the per-session dicts gives the
-        # next test a clean slate; _methods is NOT cleared because it's
-        # populated at module import time and re-registration only happens
-        # via reload (which we don't do).
+        # next test a clean slate. Restore _methods too: some dispatch tests
+        # temporarily replace handlers and cross-file pytest runs reuse this
+        # imported module even though CI normally isolates files.
+        mod._methods.clear()
+        mod._methods.update(orig_methods)
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()
@@ -349,18 +352,21 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
         def get_resume_conversations(self, session_id):
             return (
                 self.get_messages_as_conversation(session_id, repair_alternation=True),
-                self.get_messages_as_conversation(session_id, include_ancestors=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True, include_ids=True),
             )
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
-            return [
-                {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "yo", "reasoning": "thoughts"},
-                {"role": "tool", "content": "searched"},
-                {"role": "assistant", "content": "   "},
-                {"role": "assistant", "content": None},
-                {"role": "narrator", "content": "skip"},
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, include_ids=False, repair_alternation=False):
+            rows = [
+                {"id": 101, "role": "user", "content": "hello"},
+                {"id": 102, "role": "assistant", "content": "yo", "reasoning": "thoughts"},
+                {"id": 103, "role": "tool", "content": "searched"},
+                {"id": 104, "role": "assistant", "content": "   "},
+                {"id": 105, "role": "assistant", "content": None},
+                {"id": 106, "role": "narrator", "content": "skip"},
             ]
+            if include_ids:
+                return rows
+            return [{k: v for k, v in row.items() if k != "id"} for row in rows]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None, **_kwargs: object())
@@ -380,9 +386,9 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     assert "error" not in resp
     assert resp["result"]["message_count"] == 3
     assert resp["result"]["messages"] == [
-        {"role": "user", "text": "hello"},
-        {"role": "assistant", "text": "yo", "reasoning": "thoughts"},
-        {"role": "tool", "name": "tool", "context": ""},
+        {"role": "user", "text": "hello", "db_id": 101},
+        {"role": "assistant", "text": "yo", "db_id": 102, "reasoning": "thoughts"},
+        {"role": "tool", "name": "tool", "context": "", "db_id": 103},
     ]
 
 
@@ -415,10 +421,10 @@ def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
         def get_resume_conversations(self, session_id):
             return (
                 self.get_messages_as_conversation(session_id, repair_alternation=True),
-                self.get_messages_as_conversation(session_id, include_ancestors=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True, include_ids=True),
             )
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, include_ids=False, repair_alternation=False):
             return [
                 {"role": "user", "content": "hello"},
                 {"role": "assistant", "content": "yo"},
@@ -562,10 +568,10 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
         def get_resume_conversations(self, session_id):
             return (
                 self.get_messages_as_conversation(session_id, repair_alternation=True),
-                self.get_messages_as_conversation(session_id, include_ancestors=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True, include_ids=True),
             )
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, include_ids=False, repair_alternation=False):
             return [multimodal_user, text_only_assistant]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
@@ -618,10 +624,10 @@ def test_session_resume_lazy_registers_watch_session_without_agent(server, monke
         def get_resume_conversations(self, session_id):
             return (
                 self.get_messages_as_conversation(session_id, repair_alternation=True),
-                self.get_messages_as_conversation(session_id, include_ancestors=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True, include_ids=True),
             )
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, include_ids=False, repair_alternation=False):
             return [
                 {"role": "user", "content": "delegated goal"},
             ]
@@ -697,10 +703,10 @@ def test_session_resume_lazy_reports_running_for_inflight_child(server, monkeypa
         def get_resume_conversations(self, session_id):
             return (
                 self.get_messages_as_conversation(session_id, repair_alternation=True),
-                self.get_messages_as_conversation(session_id, include_ancestors=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True, include_ids=True),
             )
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, include_ids=False, repair_alternation=False):
             return [{"role": "user", "content": "delegated goal"}]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
@@ -754,10 +760,10 @@ def test_session_resume_lazy_tolerates_missing_row_for_active_child(server, monk
         def get_resume_conversations(self, session_id):
             return (
                 self.get_messages_as_conversation(session_id, repair_alternation=True),
-                self.get_messages_as_conversation(session_id, include_ancestors=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True, include_ids=True),
             )
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, include_ids=False, repair_alternation=False):
             # No rows for an unwritten session.
             return []
 
@@ -857,10 +863,10 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
         def get_resume_conversations(self, session_id):
             return (
                 self.get_messages_as_conversation(session_id, repair_alternation=True),
-                self.get_messages_as_conversation(session_id, include_ancestors=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True, include_ids=True),
             )
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, include_ids=False, repair_alternation=False):
             return [
                 {"role": "user", "content": "hello"},
                 {"role": "assistant", "content": "yo"},
@@ -1080,10 +1086,10 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
         def get_resume_conversations(self, session_id):
             return (
                 self.get_messages_as_conversation(session_id, repair_alternation=True),
-                self.get_messages_as_conversation(session_id, include_ancestors=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True, include_ids=True),
             )
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, include_ids=False, repair_alternation=False):
             if include_ancestors:
                 return ancestor_history + current_history
             return list(current_history)
@@ -1200,16 +1206,10 @@ def test_session_activate_rebinds_orphaned_ws_session_to_current_transport(serve
     assert not server._ws_session_is_orphaned(server._sessions[sid])
 
 
-def test_session_branch_persists_branched_from_marker(server, monkeypatch):
-    """TUI /branch must persist a _branched_from marker so the branch stays
-    visible in /resume and /sessions.
-
-    Regression for issue #20856: the TUI branch leaves the parent live (it
-    never ends it with end_reason='branched'), so list_sessions_rich's legacy
-    heuristic never surfaces it — the stable model_config marker is the only
-    thing that keeps a TUI branch visible.
-    """
-    create_calls = []
+def test_session_branch_at_branches_from_persisted_message_without_building_source_agent(server, monkeypatch):
+    built_calls = {"count": 0}
+    made_calls = {"count": 0}
+    branch_at_call = {}
 
     class _DB:
         def get_session_title(self, _key):
@@ -1218,51 +1218,109 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
         def get_next_title_in_lineage(self, base):
             return f"{base} 2"
 
-        def create_session(self, new_key, **kwargs):
-            create_calls.append((new_key, kwargs))
-            return new_key
+        def branch_at_message(self, source_session_id, source_message_id, **kwargs):
+            branch_at_call["value"] = (source_session_id, source_message_id, kwargs)
+            return {
+                "session_id": kwargs["new_session_id"],
+                "parent_session_id": source_session_id,
+                "source_session_id": source_session_id,
+                "source_message_id": source_message_id,
+                "cut_mode": "assistant_after",
+                "copied_message_count": 2,
+                "prefill": None,
+            }
 
-        def append_message(self, **_kwargs):
-            return None
+        def get_messages_as_conversation(self, sid, include_ancestors=False, include_ids=False):
+            if sid == "branch-session":
+                return [{"id": 11, "role": "user", "content": "hello"}]
+            return [{"id": 7, "role": "user", "content": "parent"}, {"id": 8, "role": "assistant", "content": "reply"}]
 
         def set_session_title(self, _key, _title):
             return None
 
+    def _boom(*_args, **_kwargs):
+        built_calls["count"] += 1
+        raise AssertionError("branch_at must not build the source session")
+
+    def _make_agent(*_args, **_kwargs):
+        made_calls["count"] += 1
+        return object()
+
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    monkeypatch.setattr(server, "_resolve_model", lambda: "test/model")
-    monkeypatch.setattr(server, "_new_session_key", lambda: "20260101_000001_child0")
-    monkeypatch.setattr(
-        server,
-        "_make_agent",
-        lambda _sid, key, session_id=None, session_db=None, **_kwargs: types.SimpleNamespace(
-            model="test/model", session_id=session_id or key
-        ),
-    )
-    monkeypatch.setattr(server, "_init_session", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_start_agent_build", _boom)
+    monkeypatch.setattr(server, "_wait_agent", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_make_agent", _make_agent)
     monkeypatch.setattr(server, "_set_session_context", lambda *_a, **_k: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_init_session", lambda *_a, **_k: None)
     monkeypatch.setattr(server, "_session_cwd", lambda _s: "/tmp/branch-cwd")
+    monkeypatch.setattr(server, "_new_session_key", lambda: "branch-session")
 
     parent_sid = "parent01"
-    parent_key = "20260101_000000_parent"
     server._sessions[parent_sid] = {
-        "session_key": parent_key,
+        "session_key": "parent-session",
+        "history": [{"role": "user", "content": "parent"}, {"role": "assistant", "content": "reply"}],
+        "history_lock": threading.Lock(),
+        "cols": 80,
+    }
+
+    resp = server.handle_request(
+        {
+            "id": "b1",
+            "method": "session.branch_at",
+            "params": {"session_id": parent_sid, "message_id": 8},
+        }
+    )
+
+    assert "error" not in resp, resp
+    assert built_calls["count"] == 0
+    assert made_calls["count"] == 1
+    assert branch_at_call["value"][0] == "parent-session"
+    assert branch_at_call["value"][1] == 8
+    assert resp["result"]["branch_from_message_id"] == 8
+    assert resp["result"]["db_session_id"] == "branch-session"
+
+
+def test_session_branch_at_rejects_invalid_ordinal_and_releases_lease(server, monkeypatch):
+    released = {"count": 0}
+
+    class _Lease:
+        def release(self):
+            released["count"] += 1
+
+    class _DB:
+        def get_session_title(self, _key):
+            return "parent-title"
+
+        def get_next_title_in_lineage(self, base):
+            return f"{base} 2"
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, include_ids=False):
+            return [{"id": 1, "role": "user", "content": "hello"}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_new_session_key", lambda: "branch-session")
+    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (_Lease(), None))
+
+    parent_sid = "parent01"
+    server._sessions[parent_sid] = {
+        "session_key": "parent-session",
         "history": [{"role": "user", "content": "hello"}],
         "history_lock": threading.Lock(),
         "cols": 80,
     }
 
     resp = server.handle_request(
-        {"id": "b1", "method": "session.branch", "params": {"session_id": parent_sid}}
+        {
+            "id": "b2",
+            "method": "session.branch_at",
+            "params": {"session_id": parent_sid, "ordinal": 9},
+        }
     )
 
-    assert "error" not in resp, resp
-    assert len(create_calls) == 1
-    new_key, kwargs = create_calls[0]
-    assert new_key == "20260101_000001_child0"
-    assert kwargs["parent_session_id"] == parent_key
-    # The marker — without it the branch is invisible in /resume and /sessions.
-    assert kwargs["model_config"] == {"_branched_from": parent_key}
+    assert resp["error"]["code"] == 4008
+    assert "not found" in resp["error"]["message"].lower()
+    assert released["count"] == 1
 
 
 def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
@@ -1774,11 +1832,14 @@ def test_command_dispatch_returns_skill_payload(server):
     sid = "test-session"
     server._sessions[sid] = {"session_key": sid}
 
+    import agent.skill_commands as skill_commands
+
     fake_skills = {"/hermes-agent-dev": {"name": "hermes-agent-dev", "description": "Dev workflow"}}
     fake_msg = "Loaded skill content here"
 
-    with patch("agent.skill_commands.scan_skill_commands", return_value=fake_skills), \
-         patch("agent.skill_commands.build_skill_invocation_message", return_value=fake_msg):
+    with patch.object(skill_commands, "_skill_commands", fake_skills), \
+         patch.object(skill_commands, "get_skill_commands", return_value=fake_skills), \
+         patch.object(skill_commands, "build_skill_invocation_message", return_value=fake_msg):
         resp = server.handle_request({
             "id": "r2",
             "method": "command.dispatch",

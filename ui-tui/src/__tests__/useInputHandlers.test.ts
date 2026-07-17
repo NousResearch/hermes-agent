@@ -6,7 +6,8 @@ import {
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
   shouldAllowIdleHotkeyExit,
-  shouldFallThroughForScroll
+  shouldFallThroughForScroll,
+  shouldOpenHistoryTimelineHotkey
 } from '../app/useInputHandlers.js'
 
 const baseKey = {
@@ -56,6 +57,18 @@ describe('shouldAllowIdleHotkeyExit', () => {
 
   it('disables idle exit hotkeys in dashboard chat', () => {
     expect(shouldAllowIdleHotkeyExit(true)).toBe(false)
+  })
+})
+
+describe('shouldOpenHistoryTimelineHotkey', () => {
+  it('matches Ctrl+H as the /history timeline shortcut', () => {
+    expect(shouldOpenHistoryTimelineHotkey({ ctrl: true }, 'h')).toBe(true)
+    expect(shouldOpenHistoryTimelineHotkey({ ctrl: true }, 'H')).toBe(true)
+  })
+
+  it('does not steal plain h or other Ctrl chords', () => {
+    expect(shouldOpenHistoryTimelineHotkey({ ctrl: false }, 'h')).toBe(false)
+    expect(shouldOpenHistoryTimelineHotkey({ ctrl: true }, 'x')).toBe(false)
   })
 })
 

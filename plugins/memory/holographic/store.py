@@ -380,8 +380,17 @@ class MemoryStore:
         records a fact_supersedes(new_id, old_id) edge for tracing the chain.
         The new fact inherits the old fact's category unless `category` is given.
 
-        Returns the new fact_id. Raises KeyError if `old_id` does not exist,
-        and ValueError if the new content is empty or identical to the old.
+        The insert, retirement, and lineage edge are written as one explicit
+        transaction and rolled back together on any failure, so a partial
+        supersede can never persist under the autocommit connection (and no
+        dangling write lock is left behind).
+
+        Returns the new fact_id. Raises KeyError if `old_id` does not exist, and
+        ValueError if the new content is empty, identical to the old fact, or
+        already stored as another fact. The last case matters because
+        facts.content is UNIQUE: add_fact() would dedupe onto the existing row
+        and the lineage edge would then point at a pre-existing (possibly
+        already retired) fact, so supersede requires a genuinely new version.
         """
         with self._lock:
             content = content.strip()
@@ -396,22 +405,52 @@ class MemoryStore:
             if old["content"] == content:
                 raise ValueError("new content is identical to the existing fact")
 
-            new_id = self.add_fact(
-                content,
-                category=category or old["category"],
-                tags=tags,
-            )
-            self._conn.execute(
-                "UPDATE facts SET superseded_at = CURRENT_TIMESTAMP WHERE fact_id = ?",
-                (old_id,),
-            )
-            self._conn.execute(
-                "INSERT INTO fact_supersedes (new_id, old_id) VALUES (?, ?)",
-                (new_id, old_id),
-            )
-            self._conn.commit()
-            # Old fact is now retired; rebuild its bank so it drops out of HRR recall.
-            self._rebuild_bank(old["category"])
+            dup = self._conn.execute(
+                "SELECT fact_id FROM facts WHERE content = ?", (content,)
+            ).fetchone()
+            if dup is not None:
+                raise ValueError(
+                    f"new content already exists as fact {int(dup['fact_id'])}; "
+                    "supersede requires distinct new content"
+                )
+
+            new_category = category or old["category"]
+            # Atomic state transition. isolation_level=None means we drive the
+            # transaction explicitly; ROLLBACK on any failure guarantees no
+            # partial supersede and no lingering write lock. The UNIQUE
+            # constraint on content is a backstop if a duplicate raced in past
+            # the check above (impossible while we hold the lock, but harmless).
+            self._conn.execute("BEGIN")
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO facts (content, category, tags, trust_score) "
+                    "VALUES (?, ?, ?, ?)",
+                    (content, new_category, tags, self.default_trust),
+                )
+                new_id = int(cur.lastrowid)
+                self._conn.execute(
+                    "UPDATE facts SET superseded_at = CURRENT_TIMESTAMP WHERE fact_id = ?",
+                    (old_id,),
+                )
+                self._conn.execute(
+                    "INSERT INTO fact_supersedes (new_id, old_id) VALUES (?, ?)",
+                    (new_id, old_id),
+                )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+
+            # Post-commit enrichment, mirroring add_fact's order (durable row
+            # first, then entities/HRR/bank). A failure here leaves a valid live
+            # fact that simply falls back to FTS recall until the next rebuild.
+            for name in self._extract_entities(content):
+                self._link_fact_entity(new_id, self._resolve_entity(name))
+            self._compute_hrr_vector(new_id, content)
+            self._rebuild_bank(new_category)
+            if old["category"] != new_category:
+                # Retiring old_id also drops it from its own bank.
+                self._rebuild_bank(old["category"])
             return new_id
 
     def remove_fact(self, fact_id: int) -> bool:

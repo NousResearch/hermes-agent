@@ -16,6 +16,7 @@ import threading
 
 import pytest
 
+from plugins.memory.holographic.retrieval import FactRetriever
 from plugins.memory.holographic.store import MemoryStore
 
 
@@ -241,3 +242,185 @@ class TestProviderShutdown:
         b._store.add_fact("write after sibling shutdown")
         b.shutdown()
         assert MemoryStore._shared == {}
+
+
+@pytest.fixture
+def store(db_path):
+    """A MemoryStore that closes on teardown so the shared registry stays clean
+    (the autouse fixture asserts no connection leaks)."""
+    s = MemoryStore(db_path)
+    try:
+        yield s
+    finally:
+        s.close()
+
+
+class TestSupersede:
+    """supersede() inserts a corrected fact, retires the old one, and records
+    lineage as one all-or-nothing transaction, without destroying old wording."""
+
+    def test_returns_new_live_fact_and_retires_old(self, store):
+        old_id = store.add_fact("Deploy runs on Mondays", category="project")
+        new_id = store.supersede(old_id, "Deploy runs on Fridays")
+        assert new_id != old_id
+        new_row = store._conn.execute(
+            "SELECT superseded_at FROM facts WHERE fact_id = ?", (new_id,)
+        ).fetchone()
+        old_row = store._conn.execute(
+            "SELECT superseded_at FROM facts WHERE fact_id = ?", (old_id,)
+        ).fetchone()
+        assert new_row["superseded_at"] is None      # new version is live
+        assert old_row["superseded_at"] is not None  # old version retired
+
+    def test_records_lineage_edge(self, store):
+        old_id = store.add_fact("Deploy runs on Mondays")
+        new_id = store.supersede(old_id, "Deploy runs on Fridays")
+        row = store._conn.execute(
+            "SELECT 1 FROM fact_supersedes WHERE new_id = ? AND old_id = ?",
+            (new_id, old_id),
+        ).fetchone()
+        assert row is not None
+
+    def test_old_content_preserved(self, store):
+        old_id = store.add_fact("Deploy runs on Mondays")
+        store.supersede(old_id, "Deploy runs on Fridays")
+        row = store._conn.execute(
+            "SELECT content FROM facts WHERE fact_id = ?", (old_id,)
+        ).fetchone()
+        assert row["content"] == "Deploy runs on Mondays"
+
+    def test_inherits_old_category_by_default(self, store):
+        old_id = store.add_fact("Deploy runs on Mondays", category="project")
+        new_id = store.supersede(old_id, "Deploy runs on Fridays")
+        cat = store._conn.execute(
+            "SELECT category FROM facts WHERE fact_id = ?", (new_id,)
+        ).fetchone()["category"]
+        assert cat == "project"
+
+    def test_category_override(self, store):
+        old_id = store.add_fact("Deploy runs on Mondays", category="project")
+        new_id = store.supersede(old_id, "Deploy runs on Fridays", category="tool")
+        cat = store._conn.execute(
+            "SELECT category FROM facts WHERE fact_id = ?", (new_id,)
+        ).fetchone()["category"]
+        assert cat == "tool"
+
+    def test_missing_old_raises_keyerror(self, store):
+        with pytest.raises(KeyError):
+            store.supersede(9999, "Deploy runs on Fridays")
+
+    def test_empty_content_raises(self, store):
+        old_id = store.add_fact("Deploy runs on Mondays")
+        with pytest.raises(ValueError):
+            store.supersede(old_id, "   ")
+
+    def test_identical_content_raises(self, store):
+        old_id = store.add_fact("Deploy runs on Mondays")
+        with pytest.raises(ValueError):
+            store.supersede(old_id, "  Deploy runs on Mondays  ")
+
+    def test_rejects_duplicate_target_content(self, store):
+        # facts.content is UNIQUE, so add_fact() would dedupe onto an existing
+        # row and return its id. supersede must refuse rather than retire old_id
+        # against, and record lineage to, a pre-existing (possibly retired) fact.
+        old_id = store.add_fact("Deploy runs on Mondays", category="project")
+        other_id = store.add_fact("Deploy runs on Fridays", category="general")
+        with pytest.raises(ValueError):
+            store.supersede(old_id, "Deploy runs on Fridays")
+        # old_id stays live and no lineage edge was written to other_id.
+        old_row = store._conn.execute(
+            "SELECT superseded_at FROM facts WHERE fact_id = ?", (old_id,)
+        ).fetchone()
+        assert old_row["superseded_at"] is None
+        n_edges = store._conn.execute(
+            "SELECT COUNT(*) AS c FROM fact_supersedes"
+        ).fetchone()["c"]
+        assert n_edges == 0
+        assert other_id != old_id  # sanity: the collision was a distinct fact
+
+    def test_rolls_back_atomically_on_failure(self, store):
+        # Inject a failure at the lineage INSERT (drop its table) and prove the
+        # whole transition rolls back: no new version persists and old_id is not
+        # retired. On a non-transactional write path the new fact and the
+        # retirement would survive as a partial supersede.
+        old_id = store.add_fact("Deploy runs on Mondays")
+        store._conn.execute("DROP TABLE fact_supersedes")
+        with pytest.raises(sqlite3.OperationalError):
+            store.supersede(old_id, "Deploy runs on Fridays")
+        old_row = store._conn.execute(
+            "SELECT superseded_at FROM facts WHERE fact_id = ?", (old_id,)
+        ).fetchone()
+        assert old_row["superseded_at"] is None  # not retired
+        n_new = store._conn.execute(
+            "SELECT COUNT(*) AS c FROM facts WHERE content = ?",
+            ("Deploy runs on Fridays",),
+        ).fetchone()["c"]
+        assert n_new == 0  # new version rolled back
+
+
+class TestSupersededRecallFilter:
+    """A superseded fact must vanish from default recall paths while the live
+    version still surfaces."""
+
+    def _two_versions(self, store):
+        old_id = store.add_fact("Project Hermes runs on the old server alpha")
+        new_id = store.supersede(old_id, "Project Hermes runs on the new server beta")
+        return old_id, new_id
+
+    def test_search_facts_excludes_superseded(self, store):
+        old_id, new_id = self._two_versions(store)
+        ids = [f["fact_id"] for f in store.search_facts("Project Hermes server")]
+        assert old_id not in ids
+        assert new_id in ids
+
+    def test_list_facts_excludes_superseded(self, store):
+        old_id, new_id = self._two_versions(store)
+        ids = [f["fact_id"] for f in store.list_facts()]
+        assert old_id not in ids
+        assert new_id in ids
+
+    def test_retriever_search_excludes_superseded(self, store):
+        old_id, new_id = self._two_versions(store)
+        ids = [f["fact_id"] for f in FactRetriever(store).search("Project Hermes server")]
+        assert old_id not in ids
+        assert new_id in ids
+
+
+class TestRemoveFactLineageCleanup:
+    """remove_fact() drops the fact's fact_supersedes edges so no dangling
+    lineage rows remain."""
+
+    def test_removing_new_id_clears_lineage(self, store):
+        old_id = store.add_fact("Deploy runs on Mondays")
+        new_id = store.supersede(old_id, "Deploy runs on Fridays")
+        store.remove_fact(new_id)
+        n = store._conn.execute(
+            "SELECT COUNT(*) AS c FROM fact_supersedes WHERE new_id = ? OR old_id = ?",
+            (new_id, new_id),
+        ).fetchone()["c"]
+        assert n == 0
+
+    def test_removing_old_id_clears_lineage(self, store):
+        old_id = store.add_fact("Deploy runs on Mondays")
+        new_id = store.supersede(old_id, "Deploy runs on Fridays")
+        store.remove_fact(old_id)
+        n = store._conn.execute(
+            "SELECT COUNT(*) AS c FROM fact_supersedes WHERE new_id = ? OR old_id = ?",
+            (old_id, old_id),
+        ).fetchone()["c"]
+        assert n == 0
+
+
+class TestTrace:
+    """trace() walks the supersede chain backward, including retired versions."""
+
+    def test_walks_supersede_chain_newest_first(self, store):
+        v1 = store.add_fact("Deploy runs on Mondays")
+        v2 = store.supersede(v1, "Deploy runs on Wednesdays")
+        v3 = store.supersede(v2, "Deploy runs on Fridays")
+        chain = FactRetriever(store).trace(v3)
+        assert [r["fact_id"] for r in chain] == [v3, v2, v1]
+        assert [r["depth"] for r in chain] == [0, 1, 2]
+
+    def test_unknown_fact_returns_empty(self, store):
+        assert FactRetriever(store).trace(9999) == []

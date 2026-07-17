@@ -1703,8 +1703,16 @@ def register(ctx):
     _gated_tools = frozenset({"find", "read_file", "session_search"})
     _graph_searched_turn: dict[str, bool] = {}  # turn_id → searched
 
+    # Resolve skill_graph_mode from config at registration time (startup constant)
+    _graph_mode = False
+    try:
+        from hermes_cli.config import load_config
+        _graph_mode = load_config().get("agent", {}).get("skill_graph_mode", False)
+    except Exception:
+        pass
+
     def _on_pre_tool_call(tool_name: str, args: dict | None = None, **kw: Any) -> dict | str | None:
-        nonlocal _graph_searched_turn
+        nonlocal _graph_searched_turn, _graph_mode
         turn_id = kw.get("turn_id", "")
         if not turn_id:
             return None
@@ -1720,7 +1728,6 @@ def register(ctx):
             return None
 
         # Check gating: skill-graph mode + restricted tool + not yet searched
-        _graph_mode = False  # agent._skill_graph_mode not available in hook context
         if (
             _graph_mode
             and tool_name in _gated_tools

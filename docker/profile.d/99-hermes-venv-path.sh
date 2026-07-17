@@ -13,8 +13,8 @@
 # repair idempotent when a login shell re-sources this file, yet still fixes a
 # PATH where the venv is merely present but not in front (a bare `python3` would
 # otherwise resolve to /usr/bin/python3). Keep the directory list in sync with
-# `ENV PATH` in the Dockerfile (tests/tools/test_dockerfile_login_shell_path.py
-# enforces this). See https://github.com/NousResearch/hermes-agent/issues/56634.
+# `ENV PATH` in the Dockerfile.
+# See https://github.com/NousResearch/hermes-agent/issues/56634.
 case "${PATH}" in
     /opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:*) ;;
     *) PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}" ;;

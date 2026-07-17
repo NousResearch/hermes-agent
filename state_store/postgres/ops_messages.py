@@ -14,9 +14,9 @@ from state_store.session_api import normalize_row
 class PostgresSessionDBMessageOperations(PostgresSessionDBBase):
     """Message operations intended for composition into ``PostgresSessionDB``.
 
-    The SQL here is deliberately PostgreSQL-native.  Every cursor remains
-    transaction-local, and bounded reads use ``fetchmany`` rather than
-    materializing an unbounded result set.
+    The SQL here is deliberately PostgreSQL-native. Every cursor remains
+    transaction-local and streams with ``fetchmany``; explicitly bounded APIs
+    cap total rows, while transcript reconstruction reads complete histories.
     """
 
     _CONTENT_JSON_PREFIX = "\x00json:"
@@ -69,23 +69,34 @@ class PostgresSessionDBMessageOperations(PostgresSessionDBBase):
         query: str,
         params: tuple[Any, ...] = (),
         *,
-        limit: int,
+        limit: Optional[int],
     ) -> list[dict[str, Any]]:
-        if limit <= 0 or limit > self._MAX_READ_ROWS:
+        if limit is not None and (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or limit <= 0
+            or limit > self._MAX_READ_ROWS
+        ):
             raise ValueError("read limit exceeds PostgreSQL SessionDB maximum")
         cursor = connection.execute(query, params)
         columns = self._cursor_columns(cursor)
         result: list[dict[str, Any]] = []
         remaining = limit
-        while remaining:
-            batch = cursor.fetchmany(min(self._READ_BATCH_SIZE, remaining))
+        while remaining is None or remaining:
+            batch_size = (
+                self._READ_BATCH_SIZE
+                if remaining is None
+                else min(self._READ_BATCH_SIZE, remaining)
+            )
+            batch = cursor.fetchmany(batch_size)
             if not batch:
                 break
             for row in batch:
                 normalized = normalize_row(row, columns=columns)
                 if normalized is not None:
                     result.append(normalized)
-            remaining -= len(batch)
+            if remaining is not None:
+                remaining -= len(batch)
         return result
 
     def _row(
@@ -311,20 +322,29 @@ class PostgresSessionDBMessageOperations(PostgresSessionDBBase):
     ) -> List[Dict[str, Any]]:
         if offset < 0:
             raise ValueError("offset must be non-negative")
-        requested = self._MAX_READ_ROWS if limit is None else limit
-        if not isinstance(requested, int) or isinstance(requested, bool) or requested <= 0:
+        if limit is not None and (
+            not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0
+        ):
             raise ValueError("limit must be a positive integer")
-        if requested > self._MAX_READ_ROWS:
+        if limit is not None and limit > self._MAX_READ_ROWS:
             raise ValueError("limit exceeds PostgreSQL SessionDB maximum")
         active = "" if include_inactive else " AND active = 1"
-        rows = self._read_many(
-            f"""
-            SELECT * FROM messages
-            WHERE session_id = %s{active}
-            ORDER BY id ASC LIMIT %s OFFSET %s
-            """,
-            (session_id, requested, offset),
-            limit=requested,
+        pagination = " LIMIT %s OFFSET %s" if limit is not None else " OFFSET %s"
+        params: tuple[Any, ...] = (
+            (session_id, limit, offset) if limit is not None else (session_id, offset)
+        )
+        rows = self._run(
+            lambda connection: self._rows(
+                connection,
+                f"""
+                SELECT * FROM messages
+                WHERE session_id = %s{active}
+                ORDER BY id ASC{pagination}
+                """,
+                params,
+                limit=limit,
+            ),
+            read_only=True,
         )
         return [self._hydrate_message(row) for row in rows]
 
@@ -568,16 +588,20 @@ class PostgresSessionDBMessageOperations(PostgresSessionDBBase):
             else [session_id]
         )
         active = "" if include_inactive else " AND active = 1"
-        rows = self._read_many(
-            f"""
-            SELECT role, content, tool_call_id, tool_calls, tool_name,
-                   effect_disposition, finish_reason, reasoning, reasoning_content,
-                   reasoning_details, codex_reasoning_items, codex_message_items,
-                   platform_message_id, observed, timestamp
-            FROM messages WHERE session_id = ANY(%s){active} ORDER BY id ASC
-            """,
-            (session_ids,),
-            limit=self._MAX_READ_ROWS,
+        rows = self._run(
+            lambda connection: self._rows(
+                connection,
+                f"""
+                SELECT role, content, tool_call_id, tool_calls, tool_name,
+                       effect_disposition, finish_reason, reasoning, reasoning_content,
+                       reasoning_details, codex_reasoning_items, codex_message_items,
+                       platform_message_id, observed, timestamp
+                FROM messages WHERE session_id = ANY(%s){active} ORDER BY id ASC
+                """,
+                (session_ids,),
+                limit=None,
+            ),
+            read_only=True,
         )
         messages: list[dict[str, Any]] = []
         for row in rows:
@@ -816,7 +840,7 @@ class PostgresSessionDBMessageOperations(PostgresSessionDBBase):
                 WHERE session_id = %s AND active = 1 ORDER BY id ASC
                 """,
                 (session_id,),
-                limit=self._MAX_READ_ROWS,
+                limit=None,
             )
             return {**session, "messages": [self._hydrate_message(row) for row in rows]}
 
@@ -839,7 +863,7 @@ class PostgresSessionDBMessageOperations(PostgresSessionDBBase):
                     ORDER BY id ASC
                     """,
                     (segment_id,),
-                    limit=self._MAX_READ_ROWS,
+                    limit=None,
                 )
                 segments.append(
                     {**session, "messages": [self._hydrate_message(row) for row in rows]}
@@ -877,7 +901,7 @@ class PostgresSessionDBMessageOperations(PostgresSessionDBBase):
                     WHERE session_id = %s AND active = 1 ORDER BY id ASC
                     """,
                     (session["id"],),
-                    limit=self._MAX_READ_ROWS,
+                    limit=None,
                 )
                 exported.append(
                     {**session, "messages": [self._hydrate_message(row) for row in messages]}

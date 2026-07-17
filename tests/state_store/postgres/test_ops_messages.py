@@ -137,6 +137,44 @@ def test_source_uses_native_postgres_sql_and_never_fetchall() -> None:
     assert "FOR UPDATE" in source
 
 
+@pytest.mark.parametrize("reader", ("messages", "conversation", "export"))
+def test_unbounded_transcript_reads_include_rows_beyond_max_read_limit(
+    reader: str,
+) -> None:
+    rows = [
+        {
+            "id": index,
+            "role": "assistant",
+            "content": f"message-{index}",
+            "active": 1,
+        }
+        for index in range(1, 10_002)
+    ]
+    message_cursor = Cursor(
+        rows=rows,
+        columns=("id", "role", "content", "active"),
+    )
+    if reader == "export":
+        db, store = _db(
+            Cursor(row={"id": "session-1"}, columns=("id",)),
+            message_cursor,
+        )
+        messages = db.export_session("session-1")["messages"]
+    elif reader == "conversation":
+        db, store = _db(message_cursor)
+        messages = db.get_messages_as_conversation("session-1")
+    else:
+        db, store = _db(message_cursor)
+        messages = db.get_messages("session-1")
+
+    assert len(messages) == 10_001
+    assert messages[-1]["content"] == "message-10001"
+    assert message_cursor.fetchmany_sizes == [
+        db._READ_BATCH_SIZE
+    ] * 41
+    assert db._MAX_READ_ROWS not in store.connection.executed[-1][1]
+
+
 def test_append_uses_one_write_transaction_identity_and_atomic_counters() -> None:
     db, store = _db(
         Cursor(row={"id": 901}, columns=("id",)),

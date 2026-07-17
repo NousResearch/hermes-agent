@@ -89,6 +89,9 @@ class InsightsEngine:
     message data.
     """
 
+    _ASSISTANT_TOOL_CALL_PAGE_SIZE = 200
+    _MAX_ASSISTANT_TOOL_CALL_ROWS = 10_000
+
     def __init__(self, db):
         """
         Initialize with a SessionDB instance.
@@ -113,8 +116,7 @@ class InsightsEngine:
 
         # Gather raw data
         sessions = self._get_sessions(cutoff, source)
-        tool_usage = self._get_tool_usage(cutoff, source)
-        skill_usage = self._get_skill_usage(cutoff, source)
+        tool_usage, skill_usage = self._get_tool_and_skill_usage(cutoff, source)
         message_stats = self._get_message_stats(cutoff, source)
 
         if not sessions:
@@ -173,20 +175,33 @@ class InsightsEngine:
     def _iter_assistant_tool_calls(
         self, cutoff: float, source: str = None, *, include_timestamp: bool = False
     ):
-        """Yield bounded assistant tool-call pages without retaining history."""
+        """Yield one report-bounded assistant tool-call scan without retaining history."""
         after_message_id = 0
+        scanned_rows = 0
         while True:
+            # Request one row beyond the remaining budget so an oversized
+            # report fails rather than silently omitting its newest rows.
+            page_limit = min(
+                self._ASSISTANT_TOOL_CALL_PAGE_SIZE,
+                self._MAX_ASSISTANT_TOOL_CALL_ROWS - scanned_rows + 1,
+            )
             page = self.db.get_insights_assistant_tool_calls_page(
                 cutoff,
                 source,
                 after_message_id=after_message_id,
-                limit=200,
+                limit=page_limit,
                 include_timestamp=include_timestamp,
             )
             if not page:
                 return
+            if len(page) > self._MAX_ASSISTANT_TOOL_CALL_ROWS - scanned_rows:
+                raise RuntimeError(
+                    "insights assistant tool-call scan exceeds report budget of "
+                    f"{self._MAX_ASSISTANT_TOOL_CALL_ROWS} rows"
+                )
             for row in page:
                 yield row
+            scanned_rows += len(page)
             try:
                 next_after_message_id = int(page[-1]["id"])
             except (KeyError, TypeError, ValueError):
@@ -195,8 +210,10 @@ class InsightsEngine:
                 return
             after_message_id = next_after_message_id
 
-    def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Get tool call counts from messages.
+    def _get_tool_and_skill_usage(
+        self, cutoff: float, source: str = None
+    ) -> tuple[List[Dict], List[Dict]]:
+        """Get tool and skill usage from one assistant tool-call scan.
 
         Uses two sources:
         1. tool_name column on 'tool' role messages (set by gateway)
@@ -212,44 +229,7 @@ class InsightsEngine:
         # Source 2: extract from tool_calls JSON on assistant messages
         # (covers CLI sessions where tool_name is NULL on tool responses)
         tool_calls_counts = Counter()
-        for row in self._iter_assistant_tool_calls(cutoff, source):
-            try:
-                calls = row["tool_calls"]
-                if isinstance(calls, str):
-                    calls = json.loads(calls)
-                if isinstance(calls, list):
-                    for call in calls:
-                        func = call.get("function", {}) if isinstance(call, dict) else {}
-                        name = func.get("name")
-                        if name:
-                            tool_calls_counts[name] += 1
-            except (json.JSONDecodeError, TypeError, AttributeError):
-                continue
-
-        # Merge: prefer tool_name source, supplement with tool_calls source
-        # for tools not already counted
-        if not tool_counts and tool_calls_counts:
-            # No tool_name data at all — use tool_calls exclusively
-            tool_counts = tool_calls_counts
-        elif tool_counts and tool_calls_counts:
-            # Both sources have data — use whichever has the higher count per tool
-            # (they may overlap, so take the max to avoid double-counting)
-            all_tools = set(tool_counts) | set(tool_calls_counts)
-            merged = Counter()
-            for tool in all_tools:
-                merged[tool] = max(tool_counts.get(tool, 0), tool_calls_counts.get(tool, 0))
-            tool_counts = merged
-
-        # Convert to the expected format
-        return [
-            {"tool_name": name, "count": count}
-            for name, count in tool_counts.most_common()
-        ]
-
-    def _get_skill_usage(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Extract per-skill usage from assistant tool calls."""
         skill_counts: Dict[str, Dict[str, Any]] = {}
-
         for row in self._iter_assistant_tool_calls(
             cutoff, source, include_timestamp=True
         ):
@@ -262,12 +242,17 @@ class InsightsEngine:
             except (json.JSONDecodeError, TypeError):
                 continue
 
-            timestamp = row["timestamp"]
+            timestamp = row.get("timestamp")
             for call in calls:
                 if not isinstance(call, dict):
                     continue
                 func = call.get("function", {})
+                if not isinstance(func, dict):
+                    continue
                 tool_name = func.get("name")
+                if not isinstance(tool_name, str) or not tool_name:
+                    continue
+                tool_calls_counts[tool_name] += 1
                 if tool_name not in {"skill_view", "skill_manage"}:
                     continue
 
@@ -303,7 +288,35 @@ class InsightsEngine:
                 ):
                     entry["last_used_at"] = timestamp
 
-        return list(skill_counts.values())
+        # Merge: prefer tool_name source, supplement with tool_calls source
+        # for tools not already counted
+        if not tool_counts and tool_calls_counts:
+            # No tool_name data at all — use tool_calls exclusively
+            tool_counts = tool_calls_counts
+        elif tool_counts and tool_calls_counts:
+            # Both sources have data — use whichever has the higher count per tool
+            # (they may overlap, so take the max to avoid double-counting)
+            all_tools = set(tool_counts) | set(tool_calls_counts)
+            merged = Counter()
+            for tool in all_tools:
+                merged[tool] = max(tool_counts.get(tool, 0), tool_calls_counts.get(tool, 0))
+            tool_counts = merged
+
+        return (
+            [
+                {"tool_name": name, "count": count}
+                for name, count in tool_counts.most_common()
+            ],
+            list(skill_counts.values()),
+        )
+
+    def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+        """Get tool call counts from messages."""
+        return self._get_tool_and_skill_usage(cutoff, source)[0]
+
+    def _get_skill_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+        """Extract per-skill usage from assistant tool calls."""
+        return self._get_tool_and_skill_usage(cutoff, source)[1]
 
     def _get_message_stats(self, cutoff: float, source: str = None) -> Dict:
         """Get aggregate message statistics."""

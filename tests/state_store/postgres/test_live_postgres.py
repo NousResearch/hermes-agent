@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import threading
+import time
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -18,13 +19,19 @@ from hermes_cli.state_postgres_migration import (
     MigrationPhase,
     MigrationRequest,
     StatePostgresMigration,
+    TableSpec,
 )
 from hermes_state import SessionDB
 from state_store.postgres import (
     PostgresReadOnlyError,
     PostgresSchemaValidationError,
+    PostgresStateStore,
 )
-from state_store.postgres.migration_adapter import PostgresMigrationTargetAdapter
+from state_store.postgres.migration_adapter import (
+    PostgresMigrationTargetAdapter,
+    _advisory_key,
+    _generated_identifier,
+)
 from state_store.postgres.session_db import PostgresSessionDB
 from state_store.spec import StateStoreSpec
 from state_store.sqlite.migration_adapter import SQLiteMigrationSourceAdapter
@@ -191,6 +198,29 @@ def test_schema_creation_happens_before_read_only_access(postgres_state: LivePos
     assert readonly.get_session("ordered")["id"] == "ordered"
     with pytest.raises(PostgresReadOnlyError):
         readonly.create_session("must-not-write", "cli")
+
+
+def test_read_only_open_rejects_routines_in_configured_schema(
+    postgres_state: LivePostgresState,
+):
+    schema = postgres_state.schema()
+    writable = postgres_state.open(schema)
+    writable.close()
+    with postgres_state.psycopg.connect(
+        postgres_state.dsn, autocommit=True
+    ) as connection:
+        connection.execute(
+            postgres_state.psycopg.sql.SQL(
+                "CREATE FUNCTION {}.shadow_catalog() RETURNS integer "
+                "LANGUAGE sql AS 'SELECT 1'"
+            ).format(postgres_state.psycopg.sql.Identifier(schema))
+        )
+
+    with pytest.raises(
+        PostgresSchemaValidationError,
+        match="namespace trust requirements",
+    ):
+        postgres_state.open(schema, read_only=True)
 
 
 def test_lifecycle_messages_and_search_use_live_postgres(
@@ -388,6 +418,104 @@ def test_recovery_refuses_executable_objects_in_published_target_schema(
     assert not recovered.cutover_complete
     assert "function or procedure" in (recovered.failure or "")
     assert cutovers == []
+
+
+def test_migration_refuses_preexisting_staging_and_hostile_control_relations(
+    postgres_state: LivePostgresState,
+):
+    schema = postgres_state.schema()
+    target = postgres_state.migration_target(schema)
+    run_id = "live-hostile-relations"
+    staging_schema = _generated_identifier(f"{schema[:30]}_stage", run_id)
+    postgres_state.schemas.add(staging_schema)
+    with postgres_state.psycopg.connect(
+        postgres_state.dsn, autocommit=True
+    ) as connection:
+        connection.execute(
+            postgres_state.psycopg.sql.SQL(
+                "CREATE SCHEMA {} AUTHORIZATION CURRENT_USER"
+            ).format(postgres_state.psycopg.sql.Identifier(staging_schema))
+        )
+        connection.execute(
+            postgres_state.psycopg.sql.SQL(
+                "CREATE TABLE {}.sessions (id text CHECK (false))"
+            ).format(postgres_state.psycopg.sql.Identifier(staging_schema))
+        )
+
+    target.acquire_advisory_lock(run_id)
+    try:
+        with pytest.raises(RuntimeError, match="fresh namespace is required"):
+            target.create_or_resume_staging(
+                run_id,
+                (TableSpec("sessions", ("id",)),),
+            )
+    finally:
+        target.release_advisory_lock(run_id)
+
+    control_schema = target._control_schema  # noqa: SLF001 - safety fixture
+    with postgres_state.psycopg.connect(
+        postgres_state.dsn, autocommit=True
+    ) as connection:
+        connection.execute(
+            postgres_state.psycopg.sql.SQL(
+                "CREATE SCHEMA {} AUTHORIZATION CURRENT_USER"
+            ).format(postgres_state.psycopg.sql.Identifier(control_schema))
+        )
+        connection.execute(
+            postgres_state.psycopg.sql.SQL(
+                "CREATE TABLE {}.state_postgres_migrations "
+                "(run_id text PRIMARY KEY CHECK (false))"
+            ).format(postgres_state.psycopg.sql.Identifier(control_schema))
+        )
+
+    with pytest.raises(RuntimeError, match="authored contract"):
+        target.record_failure({"run_id": run_id})
+
+
+def test_migration_advisory_lock_survives_idle_transaction_timeout(
+    postgres_state: LivePostgresState,
+):
+    schema = postgres_state.schema()
+    store = PostgresStateStore(
+        postgres_state._spec(schema, read_only=False),
+        environ={_DSN_ENV: postgres_state.dsn},
+        idle_in_transaction_timeout_ms=50,
+    )
+    target = PostgresMigrationTargetAdapter(
+        dsn_env=_DSN_ENV,
+        schema=schema,
+        home=postgres_state.tmp_path,
+        store=store,
+    )
+    postgres_state.schemas.add(target._control_schema)  # noqa: SLF001
+    postgres_state.stores.append(store)
+    run_id = "live-lock-survival"
+
+    # Prime the pooled connection so the session-level timeout is installed
+    # before the adapter leases it for the session advisory lock.
+    with store.transaction(
+        read_only=False,
+        configure_search_path=False,
+    ):
+        pass
+
+    target.acquire_advisory_lock(run_id)
+    try:
+        time.sleep(0.2)
+        with postgres_state.psycopg.connect(
+            postgres_state.dsn, autocommit=True
+        ) as connection:
+            acquired_elsewhere = connection.execute(
+                "SELECT pg_try_advisory_lock(%s)",
+                (_advisory_key(f"hermes-state-postgres:{schema}"),),
+            ).fetchone()[0]
+        assert acquired_elsewhere is False
+        target.create_or_resume_staging(
+            run_id,
+            (TableSpec("sessions", ("id",)),),
+        )
+    finally:
+        target.release_advisory_lock(run_id)
 
 
 def test_missing_postgres_schema_never_falls_back_to_sqlite(

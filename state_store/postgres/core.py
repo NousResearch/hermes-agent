@@ -494,6 +494,7 @@ class PostgresStateStore:
             connection.execute(
                 f"CREATE SCHEMA IF NOT EXISTS {self._quoted_schema}"
             )
+            self._validate_namespace_trust(connection)
             self._set_search_path(connection)
             connection.execute(
                 "SELECT pg_advisory_xact_lock(%s)",
@@ -547,8 +548,8 @@ class PostgresStateStore:
                 connection.execute(
                     """
                     SELECT
-                        to_regnamespace(%s) IS NOT NULL AS schema_exists,
-                        to_regclass(%s) IS NOT NULL AS version_table_exists
+                        pg_catalog.to_regnamespace(%s) IS NOT NULL AS schema_exists,
+                        pg_catalog.to_regclass(%s) IS NOT NULL AS version_table_exists
                     """,
                     (self._schema, f"{self._schema}.schema_version"),
                 ).fetchone(),
@@ -558,9 +559,10 @@ class PostgresStateStore:
                 raise PostgresSchemaValidationError(
                     "PostgreSQL state schema is missing or not initialized"
                 )
-            self._set_search_path(connection)
+            self._validate_namespace_trust(connection)
             row = connection.execute(
-                "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
+                f"SELECT version FROM {self._quoted_schema}.schema_version "
+                "ORDER BY version DESC LIMIT 1"
             ).fetchone()
             version = self._row_value(row)
             try:
@@ -621,14 +623,20 @@ class PostgresStateStore:
             SELECT
                 relation.relname AS table_name,
                 attribute.attname AS column_name,
-                format_type(attribute.atttypid, attribute.atttypmod) AS type_name,
+                pg_catalog.format_type(
+                    attribute.atttypid, attribute.atttypmod
+                ) AS type_name,
                 attribute.attnotnull AS not_null,
                 attribute.attidentity AS identity,
-                pg_get_expr(default_expr.adbin, default_expr.adrelid) AS default_expr
-            FROM pg_attribute AS attribute
-            JOIN pg_class AS relation ON relation.oid = attribute.attrelid
-            JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
-            LEFT JOIN pg_attrdef AS default_expr
+                pg_catalog.pg_get_expr(
+                    default_expr.adbin, default_expr.adrelid
+                ) AS default_expr
+            FROM pg_catalog.pg_attribute AS attribute
+            JOIN pg_catalog.pg_class AS relation
+              ON relation.oid = attribute.attrelid
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+            LEFT JOIN pg_catalog.pg_attrdef AS default_expr
               ON default_expr.adrelid = attribute.attrelid
              AND default_expr.adnum = attribute.attnum
             WHERE namespace.nspname = %s
@@ -659,7 +667,26 @@ class PostgresStateStore:
                 str(identity),
                 self._normalize_default(default_expr),
             )
+        allowed_tables = {
+            table.name for table in CORE_TABLES + TELEGRAM_TABLES
+        }
+        if set(actual_columns) - allowed_tables:
+            raise PostgresSchemaValidationError(
+                "PostgreSQL state schema contains unexpected durable tables"
+            )
         for table_name, contracts in required_columns.items():
+            expected_column_names = {contract.name for contract in contracts}
+            actual_column_names = set(actual_columns.get(table_name, {}))
+            allowed_column_names = set(expected_column_names)
+            if table_name == "messages":
+                allowed_column_names.add("search_vector")
+            if (
+                not expected_column_names.issubset(actual_column_names)
+                or actual_column_names - allowed_column_names
+            ):
+                raise PostgresSchemaValidationError(
+                    "PostgreSQL state schema has unexpected durable columns"
+                )
             for contract in contracts:
                 actual = actual_columns.get(table_name, {}).get(contract.name)
                 expected_identity = "d" if contract.identity == "BY DEFAULT" else ""
@@ -672,6 +699,51 @@ class PostgresStateStore:
                     raise PostgresSchemaValidationError(
                         "PostgreSQL state schema has invalid durable column metadata"
                     )
+        generated_columns = {
+            tuple(
+                str(value)
+                for value in self._row_fields(
+                    row,
+                    ("table_name", "column_name"),
+                )
+            )
+            for row in connection.execute(
+                """
+                SELECT
+                    relation.relname AS table_name,
+                    attribute.attname AS column_name
+                FROM pg_catalog.pg_attribute AS attribute
+                JOIN pg_catalog.pg_class AS relation
+                  ON relation.oid = attribute.attrelid
+                JOIN pg_catalog.pg_namespace AS namespace
+                  ON namespace.oid = relation.relnamespace
+                WHERE namespace.nspname = %s
+                  AND relation.relkind IN ('r', 'p')
+                  AND attribute.attgenerated <> ''
+                """,
+                (self._schema,),
+            ).fetchall()
+        }
+        search_vector_present = "search_vector" in actual_columns.get("messages", {})
+        if generated_columns != (
+            {("messages", "search_vector")} if search_vector_present else set()
+        ):
+            raise PostgresSchemaValidationError(
+                "PostgreSQL state schema has unexpected generated columns"
+            )
+        if search_vector_present:
+            type_name, not_null, identity, expression = actual_columns["messages"][
+                "search_vector"
+            ]
+            if (
+                type_name != "tsvector"
+                or not_null
+                or identity
+                or expression is None
+            ):
+                raise PostgresSchemaValidationError(
+                    "PostgreSQL state schema has invalid search-vector metadata"
+                )
 
         primary_rows = connection.execute(
             """
@@ -724,6 +796,34 @@ class PostgresStateStore:
             raise PostgresSchemaValidationError(
                 "PostgreSQL state schema has invalid foreign key metadata"
             )
+        constraint_counts = {
+            str(self._row_fields(row, ("constraint_type", "constraint_count"))[0]): int(
+                self._row_fields(row, ("constraint_type", "constraint_count"))[1]
+            )
+            for row in connection.execute(
+                """
+                SELECT
+                    constraint_meta.contype AS constraint_type,
+                    count(*) AS constraint_count
+                FROM pg_catalog.pg_constraint AS constraint_meta
+                JOIN pg_catalog.pg_class AS relation
+                  ON relation.oid = constraint_meta.conrelid
+                JOIN pg_catalog.pg_namespace AS namespace
+                  ON namespace.oid = relation.relnamespace
+                WHERE namespace.nspname = %s
+                  AND relation.relname = ANY(%s)
+                GROUP BY constraint_meta.contype
+                """,
+                (self._schema, list(required_columns)),
+            ).fetchall()
+        }
+        if constraint_counts != {
+            "p": len(required_primary_keys),
+            "f": len(required_foreign_keys),
+        }:
+            raise PostgresSchemaValidationError(
+                "PostgreSQL state schema has unexpected constraints"
+            )
 
         index_rows = connection.execute(
             """
@@ -734,15 +834,20 @@ class PostgresStateStore:
                 key_column.ordinality,
                 attribute.attname AS column_name,
                 (index_meta.indoption[key_column.ordinality - 1] & 1) = 1 AS is_desc,
-                pg_get_expr(index_meta.indpred, index_meta.indrelid) AS predicate
-            FROM pg_index AS index_meta
-            JOIN pg_class AS index_relation ON index_relation.oid = index_meta.indexrelid
-            JOIN pg_class AS table_relation ON table_relation.oid = index_meta.indrelid
-            JOIN pg_namespace AS namespace ON namespace.oid = table_relation.relnamespace
+                pg_catalog.pg_get_expr(
+                    index_meta.indpred, index_meta.indrelid
+                ) AS predicate
+            FROM pg_catalog.pg_index AS index_meta
+            JOIN pg_catalog.pg_class AS index_relation
+              ON index_relation.oid = index_meta.indexrelid
+            JOIN pg_catalog.pg_class AS table_relation
+              ON table_relation.oid = index_meta.indrelid
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = table_relation.relnamespace
             JOIN LATERAL unnest(index_meta.indkey) WITH ORDINALITY
               AS key_column(attnum, ordinality)
               ON key_column.ordinality <= index_meta.indnkeyatts
-            JOIN pg_attribute AS attribute
+            JOIN pg_catalog.pg_attribute AS attribute
               ON attribute.attrelid = table_relation.oid
              AND attribute.attnum = key_column.attnum
             WHERE namespace.nspname = %s
@@ -854,19 +959,22 @@ class PostgresStateStore:
                 constraint_meta.confdeltype AS delete_action,
                 constraint_meta.condeferrable AS deferrable,
                 constraint_meta.condeferred AS initially_deferred
-            FROM pg_constraint AS constraint_meta
-            JOIN pg_class AS table_relation ON table_relation.oid = constraint_meta.conrelid
-            JOIN pg_namespace AS namespace ON namespace.oid = table_relation.relnamespace
-            JOIN pg_class AS foreign_relation ON foreign_relation.oid = constraint_meta.confrelid
+            FROM pg_catalog.pg_constraint AS constraint_meta
+            JOIN pg_catalog.pg_class AS table_relation
+              ON table_relation.oid = constraint_meta.conrelid
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = table_relation.relnamespace
+            JOIN pg_catalog.pg_class AS foreign_relation
+              ON foreign_relation.oid = constraint_meta.confrelid
             JOIN LATERAL unnest(constraint_meta.conkey) WITH ORDINALITY
               AS local_key(attnum, ordinality) ON true
             JOIN LATERAL unnest(constraint_meta.confkey) WITH ORDINALITY
               AS referenced_key(attnum, ordinality)
               ON referenced_key.ordinality = local_key.ordinality
-            JOIN pg_attribute AS attribute
+            JOIN pg_catalog.pg_attribute AS attribute
               ON attribute.attrelid = table_relation.oid
              AND attribute.attnum = local_key.attnum
-            JOIN pg_attribute AS foreign_attribute
+            JOIN pg_catalog.pg_attribute AS foreign_attribute
               ON foreign_attribute.attrelid = foreign_relation.oid
              AND foreign_attribute.attnum = referenced_key.attnum
             WHERE namespace.nspname = %s
@@ -1008,6 +1116,84 @@ class PostgresStateStore:
             "SELECT set_config('search_path', %s, true)",
             (f"{self._quoted_schema}, pg_catalog",),
         )
+
+    def _validate_namespace_trust(self, connection: _ConnectionLike) -> None:
+        """Reject schemas that can alter unqualified runtime SQL resolution."""
+
+        row = connection.execute(
+            """
+            SELECT
+                namespace.nspowner = (
+                    SELECT role.oid
+                    FROM pg_catalog.pg_roles AS role
+                    WHERE role.rolname = CURRENT_USER
+                ) AS owned_by_current_user,
+                namespace.nspacl IS NULL AS has_default_acl,
+                NOT EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_proc AS routine
+                    WHERE routine.pronamespace = namespace.oid
+                ) AS has_no_routines,
+                NOT EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_class AS relation
+                    WHERE relation.relnamespace = namespace.oid
+                      AND (
+                        relation.relowner <> namespace.nspowner
+                        OR relation.relacl IS NOT NULL
+                      )
+                ) AS has_safe_relations
+                ,
+                NOT EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_class AS relation
+                    WHERE relation.relnamespace = namespace.oid
+                      AND relation.relkind IN ('r', 'p')
+                      AND (
+                        relation.reloptions IS NOT NULL
+                        OR relation.relrowsecurity
+                        OR relation.relforcerowsecurity
+                        OR relation.relispartition
+                        OR relation.relhassubclass
+                      )
+                ) AS has_plain_tables
+            FROM pg_catalog.pg_namespace AS namespace
+            WHERE namespace.nspname = %s
+            """,
+            (self._schema,),
+        ).fetchone()
+        if row is None:
+            raise PostgresSchemaValidationError(
+                "PostgreSQL state schema is missing or not initialized"
+            )
+        (
+            owned_by_current_user,
+            has_default_acl,
+            has_no_routines,
+            has_safe_relations,
+            has_plain_tables,
+        ) = self._row_fields(
+            row,
+            (
+                "owned_by_current_user",
+                "has_default_acl",
+                "has_no_routines",
+                "has_safe_relations",
+                "has_plain_tables",
+            ),
+        )
+        if not all(
+            (
+                owned_by_current_user,
+                has_default_acl,
+                has_no_routines,
+                has_safe_relations,
+                has_plain_tables,
+            )
+        ):
+            raise PostgresSchemaValidationError(
+                "PostgreSQL state schema does not satisfy namespace trust requirements"
+            )
 
     @classmethod
     def _validated_schema(cls, spec: StateStoreSpec) -> str:

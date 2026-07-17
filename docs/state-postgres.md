@@ -85,6 +85,10 @@ ACLs, and executable objects; any post-publication namespace change blocks
 cutover for investigation. A changed SQLite source requires a new migration
 run ID; do not force a stale run through.
 
+If a run fails before publication, inspect the failure and retry with a new
+run ID. Pre-publication staging schemas are never reused, even when they appear
+empty, because their relation definitions are not trusted across attempts.
+
 If the PostgreSQL backend is unhealthy after cutover:
 
 1. Stop Hermes writers and preserve the PostgreSQL schema and migration report

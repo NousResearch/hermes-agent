@@ -28,6 +28,17 @@ from state_store.spec import StateStoreSpec
 _IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 _CONTROL_TABLE = "state_postgres_migrations"
 _KNOWN_TABLES = {table.name: table for table in CORE_TABLES + TELEGRAM_TABLES}
+_CONTROL_COLUMN_CONTRACT = (
+    ("run_id", "text", True, "", "", None),
+    ("status", "text", True, "", "", None),
+    ("target_schema", "text", True, "", "", None),
+    ("staging_schema", "text", False, "", "", None),
+    ("verified_source", "jsonb", False, "", "", None),
+    ("report", "jsonb", False, "", "", None),
+    ("last_failure", "jsonb", False, "", "", None),
+    ("published_at", "timestamp with time zone", False, "", "", None),
+    ("completed_at", "timestamp with time zone", False, "", "", None),
+)
 
 
 def _quote_identifier(value: str) -> str:
@@ -133,6 +144,7 @@ class PostgresMigrationTargetAdapter:
                 "SELECT pg_advisory_lock(%s)",
                 (_advisory_key(f"hermes-state-postgres:{self.schema}"),),
             )
+            connection.commit()
         except Exception:
             lease.__exit__(*__import__("sys").exc_info())
             raise
@@ -155,6 +167,7 @@ class PostgresMigrationTargetAdapter:
                 "SELECT pg_advisory_unlock(%s)",
                 (_advisory_key(f"hermes-state-postgres:{self.schema}"),),
             )
+            connection.commit()
         finally:
             lease.__exit__(None, None, None)
 
@@ -173,7 +186,7 @@ class PostgresMigrationTargetAdapter:
                 connection,
                 staging_schema,
                 purpose="staging",
-                require_absent=False,
+                require_absent=True,
             )
             self._set_search_path(connection, staging_schema)
             for statement in schema_statements(include_telegram=include_telegram):
@@ -517,28 +530,30 @@ class PostgresMigrationTargetAdapter:
             yield connection
 
     def _ensure_control_table(self, connection: Any) -> None:
-        self._ensure_managed_namespace(
+        created = self._ensure_managed_namespace(
             connection,
             self._control_schema,
             purpose="migration control",
             require_absent=False,
         )
-        connection.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {_quote_identifier(self._control_schema)}.
-                {_quote_identifier(_CONTROL_TABLE)} (
-                run_id TEXT PRIMARY KEY,
-                status TEXT NOT NULL,
-                target_schema TEXT NOT NULL,
-                staging_schema TEXT,
-                verified_source JSONB,
-                report JSONB,
-                last_failure JSONB,
-                published_at TIMESTAMPTZ,
-                completed_at TIMESTAMPTZ
+        if created:
+            connection.execute(
+                f"""
+                CREATE TABLE {_quote_identifier(self._control_schema)}.
+                    {_quote_identifier(_CONTROL_TABLE)} (
+                    run_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    target_schema TEXT NOT NULL,
+                    staging_schema TEXT,
+                    verified_source JSONB,
+                    report JSONB,
+                    last_failure JSONB,
+                    published_at TIMESTAMPTZ,
+                    completed_at TIMESTAMPTZ
+                )
+                """
             )
-            """
-        )
+        self._assert_control_table_contract(connection)
 
     @staticmethod
     def _set_search_path(connection: Any, schema: str) -> None:
@@ -551,6 +566,13 @@ class PostgresMigrationTargetAdapter:
             raise RuntimeError(
                 "state-postgres migration namespace admission requires its advisory lock"
             )
+        try:
+            self._lock_connection.execute("SELECT 1")
+            self._lock_connection.commit()
+        except Exception:
+            raise RuntimeError(
+                "state-postgres migration advisory lock connection was lost"
+            ) from None
 
     @staticmethod
     def _namespace_exists(connection: Any, schema: str) -> bool:
@@ -572,7 +594,8 @@ class PostgresMigrationTargetAdapter:
         *,
         purpose: str,
         require_absent: bool,
-    ) -> None:
+    ) -> bool:
+        created = False
         if self._namespace_exists(connection, schema):
             if require_absent:
                 raise RuntimeError(
@@ -582,8 +605,100 @@ class PostgresMigrationTargetAdapter:
             connection.execute(
                 f"CREATE SCHEMA {_quote_identifier(schema)} AUTHORIZATION CURRENT_USER"
             )
+            created = True
         self._assert_namespace_policy(connection, schema, purpose=purpose)
         self._reject_namespace_nonrelation_objects(connection, schema, purpose=purpose)
+        return created
+
+    def _assert_control_table_contract(self, connection: Any) -> None:
+        cursor = connection.execute(
+            """
+            WITH namespace AS (
+                SELECT oid
+                FROM pg_catalog.pg_namespace
+                WHERE nspname = %s
+            ),
+            relation AS (
+                SELECT relation.*
+                FROM pg_catalog.pg_class AS relation
+                WHERE relation.relnamespace = (SELECT oid FROM namespace)
+                  AND relation.relname = %s
+            ),
+            columns AS (
+                SELECT pg_catalog.jsonb_agg(
+                    pg_catalog.jsonb_build_array(
+                        attribute.attname,
+                        pg_catalog.format_type(
+                            attribute.atttypid, attribute.atttypmod
+                        ),
+                        attribute.attnotnull,
+                        attribute.attidentity,
+                        attribute.attgenerated,
+                        pg_catalog.pg_get_expr(
+                            default_expr.adbin, default_expr.adrelid
+                        )
+                    )
+                    ORDER BY attribute.attnum
+                ) AS signature
+                FROM relation
+                JOIN pg_catalog.pg_attribute AS attribute
+                  ON attribute.attrelid = relation.oid
+                LEFT JOIN pg_catalog.pg_attrdef AS default_expr
+                  ON default_expr.adrelid = attribute.attrelid
+                 AND default_expr.adnum = attribute.attnum
+                WHERE attribute.attnum > 0
+                  AND NOT attribute.attisdropped
+            )
+            SELECT (
+                (SELECT count(*)
+                 FROM pg_catalog.pg_class AS item
+                 WHERE item.relnamespace = (SELECT oid FROM namespace)
+                   AND item.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')) = 1
+                AND relation.relkind = 'r'
+                AND relation.relpersistence = 'p'
+                AND relation.relacl IS NULL
+                AND relation.reloptions IS NULL
+                AND NOT relation.relrowsecurity
+                AND NOT relation.relforcerowsecurity
+                AND NOT relation.relispartition
+                AND NOT relation.relhassubclass
+                AND columns.signature = %s::jsonb
+                AND (
+                    SELECT count(*)
+                    FROM pg_catalog.pg_constraint AS constraint_meta
+                    WHERE constraint_meta.conrelid = relation.oid
+                ) = 1
+                AND EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_constraint AS constraint_meta
+                    JOIN pg_catalog.pg_attribute AS attribute
+                      ON attribute.attrelid = relation.oid
+                     AND attribute.attname = 'run_id'
+                    WHERE constraint_meta.conrelid = relation.oid
+                      AND constraint_meta.contype = 'p'
+                      AND constraint_meta.conkey = ARRAY[attribute.attnum]::smallint[]
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_inherits AS inheritance
+                    WHERE inheritance.inhrelid = relation.oid
+                       OR inheritance.inhparent = relation.oid
+                )
+            ) AS contract_valid
+            FROM relation
+            CROSS JOIN columns
+            """,
+            (
+                self._control_schema,
+                _CONTROL_TABLE,
+                json.dumps(_CONTROL_COLUMN_CONTRACT),
+            ),
+        )
+        row = cursor.fetchone()
+        if row is None or not bool(self._row_value(row, "contract_valid", 0)):
+            raise RuntimeError(
+                "migration control table does not match the authored contract"
+            )
 
     @staticmethod
     def _assert_namespace_policy(connection: Any, schema: str, *, purpose: str) -> None:

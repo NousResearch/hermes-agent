@@ -35,8 +35,13 @@ class Connection:
         self.namespaces: set[str] = set()
         self.namespace_policy: Any = (True, True, True)
         self.namespace_objects: dict[str, Any] = {}
+        self.control_contract_valid = True
+        self.commits = 0
+        self.lock_connection_alive = True
 
     def execute(self, statement: str, parameters: Any = None):
+        if not self.lock_connection_alive:
+            raise RuntimeError("connection closed")
         self.calls.append((" ".join(statement.split()), parameters))
         normalized = " ".join(statement.split()).lower()
         if normalized.startswith("create schema "):
@@ -59,6 +64,8 @@ class Connection:
             return Cursor(one=self.namespace_policy)
         if "from pg_catalog.pg_proc" in normalized:
             return Cursor(one=self.namespace_objects.get(parameters[0]))
+        if "as contract_valid" in normalized:
+            return Cursor(one=(self.control_contract_valid,))
         if "select run_id, status, verified_source, report" in normalized:
             return Cursor(one=self.marker)
         if normalized.startswith("update"):
@@ -68,6 +75,11 @@ class Connection:
         if normalized.startswith("select") and "from sessions" in normalized:
             return Cursor(many=self.rows)
         return Cursor()
+
+    def commit(self):
+        if not self.lock_connection_alive:
+            raise RuntimeError("connection closed")
+        self.commits += 1
 
 
 class Lease:
@@ -240,7 +252,9 @@ def test_advisory_lock_lifecycle_and_empty_target_refusal():
     adapter = _adapter(connection)
 
     adapter.acquire_advisory_lock("run-lock")
+    assert connection.commits == 1
     adapter.release_advisory_lock("run-lock")
+    assert connection.commits == 2
     assert any("pg_advisory_lock" in statement for statement in _statements(connection))
     assert any("pg_advisory_unlock" in statement for statement in _statements(connection))
 
@@ -256,26 +270,56 @@ def test_namespace_admission_requires_lock_and_rejects_unsafe_reuse():
     with pytest.raises(RuntimeError, match="requires its advisory lock"):
         adapter.create_or_resume_staging("run-namespace", manifest)
 
-    _lock(adapter, "run-namespace")
-    connection.namespace_policy = (False, True, True)
-    with pytest.raises(RuntimeError, match="owned by the current database user"):
-        adapter.create_or_resume_staging("run-namespace", manifest)
+    for policy, message in (
+        ((False, True, True), "owned by the current database user"),
+        ((True, False, True), "grant CREATE"),
+        ((True, True, False), "explicit ACLs"),
+    ):
+        candidate = Connection()
+        candidate.namespace_policy = policy
+        candidate_adapter = _adapter(candidate)
+        _lock(candidate_adapter, "run-namespace")
+        with pytest.raises(RuntimeError, match=message):
+            candidate_adapter.create_or_resume_staging("run-namespace", manifest)
 
-    connection.namespace_policy = (True, False, True)
-    with pytest.raises(RuntimeError, match="grant CREATE"):
-        adapter.create_or_resume_staging("run-namespace", manifest)
+    occupied = Connection()
+    occupied_adapter = _adapter(occupied)
+    _lock(occupied_adapter, "run-namespace")
+    staging_schema = _generated_staging_schema(occupied_adapter, "run-namespace")
+    occupied.namespaces.add(staging_schema)
+    with pytest.raises(RuntimeError, match="fresh namespace is required"):
+        occupied_adapter.create_or_resume_staging("run-namespace", manifest)
 
-    connection.namespace_policy = (True, True, False)
-    with pytest.raises(RuntimeError, match="explicit ACLs"):
-        adapter.create_or_resume_staging("run-namespace", manifest)
 
-    connection.namespace_policy = (True, True, True)
-    staging_schema = next(
-        schema for schema in connection.namespaces if schema.startswith("hermes_stage_")
-    )
-    connection.namespace_objects[staging_schema] = ("function or procedure",)
-    with pytest.raises(RuntimeError, match="function or procedure"):
-        adapter.create_or_resume_staging("run-namespace", manifest)
+def _generated_staging_schema(
+    adapter: PostgresMigrationTargetAdapter, run_id: str
+) -> str:
+    from state_store.postgres.migration_adapter import _generated_identifier
+
+    return _generated_identifier(f"{adapter.schema[:30]}_stage", run_id)
+
+
+def test_control_table_reuse_requires_exact_authored_contract():
+    connection = Connection()
+    adapter = _adapter(connection)
+    connection.namespaces.add(adapter._control_schema)
+    connection.control_contract_valid = False
+
+    with pytest.raises(RuntimeError, match="authored contract"):
+        adapter.record_failure({"run_id": "unsafe-control"})
+
+
+def test_lost_advisory_lock_connection_fails_closed():
+    connection = Connection()
+    adapter = _adapter(connection)
+    _lock(adapter, "run-lost-lock")
+    connection.lock_connection_alive = False
+
+    with pytest.raises(RuntimeError, match="connection was lost"):
+        adapter.create_or_resume_staging(
+            "run-lost-lock",
+            (TableSpec("sessions", ("id",)),),
+        )
 
 
 def test_publish_requires_a_fresh_target_schema_under_the_advisory_lock():

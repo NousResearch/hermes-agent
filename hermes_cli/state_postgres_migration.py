@@ -187,7 +187,7 @@ class PostgreSQLTargetAdapter(Protocol):
     def create_or_resume_staging(
         self, run_id: str, manifest: Sequence[TableSpec]
     ) -> str:
-        """Create or reopen an isolated staging schema for this run."""
+        """Create a fresh isolated staging schema for this run."""
 
     def begin_session_parent_link_copy(self, staging_schema: str) -> None:
         """Defer session self-FKs or stage parent links before session batches."""

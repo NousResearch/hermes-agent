@@ -183,11 +183,9 @@ def test_generate_uses_public_sessiondb_insights_contract():
         "sessions",
         "tool_counts",
         "tool_calls_page",
-        "tool_calls_page",
         "message_stats",
     ]
-    assert calls[2][-1] is False
-    assert calls[3][-1] is True
+    assert calls[2][-1] is True
 
 
 def test_tool_and_skill_insights_process_assistant_calls_in_pages():
@@ -248,13 +246,37 @@ def test_tool_and_skill_insights_process_assistant_calls_in_pages():
         }
     ]
     assert calls == [
-        (0, 200, False),
-        (2, 200, False),
-        (3, 200, False),
+        (0, 200, True),
+        (2, 200, True),
+        (3, 200, True),
         (0, 200, True),
         (2, 200, True),
         (3, 200, True),
     ]
+
+
+def test_assistant_tool_call_scan_fails_above_report_budget():
+    class OversizedPageStore:
+        def get_insights_assistant_tool_calls_page(
+            self,
+            cutoff,
+            source=None,
+            *,
+            after_message_id=0,
+            limit=200,
+            include_timestamp=False,
+        ):
+            return [
+                {"id": 1, "tool_calls": "[]"},
+                {"id": 2, "tool_calls": "[]"},
+                {"id": 3, "tool_calls": "[]"},
+            ]
+
+    engine = InsightsEngine(OversizedPageStore())
+    engine._MAX_ASSISTANT_TOOL_CALL_ROWS = 2
+
+    with pytest.raises(RuntimeError, match="exceeds report budget of 2 rows"):
+        list(engine._iter_assistant_tool_calls(0))
 
 
 class TestHasKnownPricing:

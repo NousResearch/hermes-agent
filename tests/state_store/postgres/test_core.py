@@ -74,6 +74,9 @@ class FakeConnection:
         self.search_exists = search_exists
         self.apply_upgrades = apply_upgrades
         self.apply_indexes = apply_indexes
+        self.namespace_trust = (True, True, True, True, True)
+        self.extra_constraint_counts: dict[str, int] = {}
+        self.generated_columns: set[tuple[str, str]] = set()
         self.queries: list[tuple[str, Any]] = []
         self.closed = False
         self.transaction_entries = 0
@@ -179,13 +182,22 @@ class FakeConnection:
     def execute(self, query: str, params: Any = None) -> FakeCursor:
         self.queries.append((query, params))
         normalized = " ".join(query.split())
-        if normalized.startswith("SELECT to_regnamespace"):
+        if "to_regnamespace" in normalized and "version_table_exists" in normalized:
             return FakeCursor((True, self.schema_version is not None))
-        if normalized.startswith("SELECT version FROM schema_version"):
+        if (
+            normalized.startswith("SELECT version FROM schema_version")
+            or normalized.startswith(
+                'SELECT version FROM "tenant_state".schema_version'
+            )
+        ):
             return FakeCursor(
                 None if self.schema_version is None else (self.schema_version,)
             )
-        if "FROM pg_attribute AS attribute" in normalized:
+        if "owned_by_current_user" in normalized and "has_no_routines" in normalized:
+            return FakeCursor(self.namespace_trust)
+        if "FROM pg_catalog.pg_attribute AS attribute" in normalized:
+            if "attribute.attgenerated <> ''" in normalized:
+                return FakeCursor(rows=tuple(sorted(self.generated_columns)))
             return FakeCursor(
                 rows=tuple(
                     (
@@ -205,7 +217,37 @@ class FakeConnection:
                     for ordinal, column_name in enumerate(columns, start=1)
                 )
             )
-        if "FROM pg_constraint AS constraint_meta" in normalized:
+        if (
+            "FROM pg_catalog.pg_constraint AS constraint_meta" in normalized
+            and "GROUP BY constraint_meta.contype" in normalized
+        ):
+            required_tables = set(params[1])
+            return FakeCursor(
+                rows=(
+                    (
+                        "p",
+                        sum(
+                            table_name in required_tables
+                            for table_name in self.primary_keys
+                        )
+                        + self.extra_constraint_counts.get("p", 0),
+                    ),
+                    (
+                        "f",
+                        sum(
+                            foreign_key[0] in required_tables
+                            for foreign_key in self.foreign_keys
+                        )
+                        + self.extra_constraint_counts.get("f", 0),
+                    ),
+                    *(
+                        (constraint_type, count)
+                        for constraint_type, count in self.extra_constraint_counts.items()
+                        if constraint_type not in {"p", "f"}
+                    ),
+                ),
+            )
+        if "FROM pg_catalog.pg_constraint AS constraint_meta" in normalized:
             return FakeCursor(
                 rows=tuple(
                     (
@@ -216,7 +258,7 @@ class FakeConnection:
                     for foreign_key in sorted(self.foreign_keys)
                 )
             )
-        if "FROM pg_index AS index_meta" in normalized:
+        if "FROM pg_catalog.pg_index AS index_meta" in normalized:
             contracts = CORE_INDEX_CONTRACTS + TELEGRAM_INDEX_CONTRACTS
             return FakeCursor(
                 rows=tuple(
@@ -723,7 +765,13 @@ def test_read_only_migrations_fail_and_health_reports_capabilities() -> None:
 
 @pytest.mark.parametrize(
     "drift",
-    ("current_version_column_contract", "wrong_index_definition"),
+    (
+        "current_version_column_contract",
+        "wrong_index_definition",
+        "unexpected_column",
+        "unexpected_check_constraint",
+        "untrusted_namespace",
+    ),
 )
 def test_read_only_schema_validation_rejects_catalog_drift_without_ddl(
     drift: str,
@@ -739,13 +787,25 @@ def test_read_only_schema_validation_rejects_catalog_drift_without_ddl(
             identity,
             default,
         )
-    else:
+    elif drift == "wrong_index_definition":
         connection.index_overrides["idx_messages_session"] = (
             "messages",
             False,
             (("timestamp", False), ("session_id", False)),
             None,
         )
+    elif drift == "unexpected_column":
+        connection.columns["sessions"].add("shadow")
+        connection.column_metadata[("sessions", "shadow")] = (
+            "text",
+            False,
+            "",
+            None,
+        )
+    elif drift == "unexpected_check_constraint":
+        connection.extra_constraint_counts["c"] = 1
+    else:
+        connection.namespace_trust = (True, True, False, True, True)
     store, _ = make_store(connection, read_only=True)
 
     with pytest.raises(PostgresSchemaValidationError):
@@ -753,7 +813,16 @@ def test_read_only_schema_validation_rejects_catalog_drift_without_ddl(
 
     queries = query_texts(connection)
     assert queries[0] == "SET TRANSACTION READ ONLY"
-    assert any("FROM pg_attribute AS attribute" in query for query in queries)
+    if drift == "untrusted_namespace":
+        assert all(
+            "FROM pg_catalog.pg_attribute AS attribute" not in query
+            for query in queries
+        )
+    else:
+        assert any(
+            "FROM pg_catalog.pg_attribute AS attribute" in query
+            for query in queries
+        )
     assert all(
         not query.lstrip().upper().startswith(
             ("ALTER ", "CREATE ", "DELETE ", "DROP ", "INSERT ", "UPDATE ")

@@ -15286,9 +15286,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 logger.debug("Failed to inspect Telegram topic icon state", exc_info=True)
                 return None
-            # True = user chose a custom icon; None = gateway did not observe
-            # topic creation. Preserve both rather than overwriting blindly.
-            if state is not False:
+            # True = the gateway observed a user-selected custom icon.
+            # False = it observed the default icon. None is also eligible here:
+            # Telegram DM topics often arrive without a forum_topic_created
+            # service message, and treating that as manual was the reason new
+            # topics kept the default letter bubble.
+            if state is True:
                 return None
 
         options_fn = getattr(adapter, "get_forum_topic_icon_options", None)
@@ -15349,11 +15352,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not callable(latest_state_fn):
                 return None
             try:
-                if latest_state_fn(str(source.chat_id), str(source.thread_id)) is not False:
+                if latest_state_fn(str(source.chat_id), str(source.thread_id)) is True:
                     return None
             except Exception:
                 logger.debug("Failed to recheck Telegram topic icon state", exc_info=True)
                 return None
+        if selected_id:
+            logger.info(
+                "Selected Telegram topic icon %s for chat %s thread_id=%s title=%r",
+                selected_emoji,
+                source.chat_id,
+                source.thread_id,
+                title,
+            )
         return selected_id
 
     async def _rename_telegram_topic_for_session_title(

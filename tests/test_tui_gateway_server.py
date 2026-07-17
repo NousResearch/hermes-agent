@@ -2362,6 +2362,10 @@ def test_shutdown_sessions_persists_tool_tail_and_marks_tui_shutdown(monkeypatch
             pass
 
     class _FakeDB:
+        def get_session(self, session_id):
+            assert session_id == "agent-session-id"
+            return {"source": "tui"}
+
         def end_session(self, session_id, end_reason):
             ended.append((session_id, end_reason))
 

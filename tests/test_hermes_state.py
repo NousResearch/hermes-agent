@@ -5712,19 +5712,19 @@ def test_bluebubbles_legacy_guid_session_recovers_under_canonical_key(db):
     """Canonicalizing the BlueBubbles DM key must not orphan existing sessions.
 
     Sessions created before ``canonical_bluebubbles_identifier`` are keyed on
-    the raw chat GUID (``any;-;+1555…``).  After the upgrade the routing key is
-    the bare handle, so the exact-key lookup misses — but canonicalization
-    rewrites only the *key*, never ``source.chat_id``, so the peer-tuple
-    fallback still matches the stored row and adopts the transcript.
+    the raw chat GUID (``iMessage;-;+1555…``).  After the upgrade the routing
+    key is the bare handle, and BlueBubbles may also report the same DM using a
+    different service prefix.  The stable participant identity and routing
+    namespace must still recover the existing transcript.
 
     Drives ``build_session_key`` rather than hardcoding the new key, so this
-    fails if the canonicalization is dropped *or* if ``source.chat_id`` is ever
-    canonicalized too (which would break the fallback).
+    fails if canonicalization is dropped or alias recovery is not enabled.
     """
     from gateway.config import Platform
     from gateway.session import SessionSource, build_session_key
 
-    legacy_chat_id = "any;-;+15551234567"
+    legacy_chat_id = "iMessage;-;+15551234567"
+    current_chat_id = "any;-;+15551234567"
     legacy_key = "agent:main:bluebubbles:dm:" + legacy_chat_id
     db.create_session(
         "legacy-bb-session",
@@ -5737,10 +5737,10 @@ def test_bluebubbles_legacy_guid_session_recovers_under_canonical_key(db):
     )
     db.append_message("legacy-bb-session", "user", "hello")
 
-    # The key the gateway now computes for that same inbound event.
+    # The server changed the service prefix before the first post-upgrade event.
     source = SessionSource(
         platform=Platform.BLUEBUBBLES,
-        chat_id=legacy_chat_id,
+        chat_id=current_chat_id,
         chat_type="dm",
         user_id="+15551234567",
     )
@@ -5751,12 +5751,73 @@ def test_bluebubbles_legacy_guid_session_recovers_under_canonical_key(db):
         source="bluebubbles",
         user_id=source.user_id,
         session_key=new_key,
-        # Raw, uncanonicalized — this is what makes the fallback match.
+        # Keep the current transport GUID; alias recovery may ignore this only
+        # because the non-empty participant identity and routing scope match.
         chat_id=source.chat_id,
         chat_type=source.chat_type,
+        match_by_participant_identity=True,
     )
     assert recovered is not None, "legacy GUID-keyed session was orphaned"
     assert recovered["id"] == "legacy-bb-session"
+
+
+def test_gateway_session_chat_alias_recovery_is_opt_in(db):
+    """chat_id aliasing must never apply unless the caller asks for it.
+
+    Only transports whose session key deliberately aliases several transport
+    chat IDs onto one participant identity may ignore chat_id. Every other
+    caller must keep the strict peer tuple, so a mismatched chat_id finds
+    nothing. Replaces the pre-alias guard that pinned "source.chat_id is never
+    canonicalized": that invariant is now enforced by opt-in, not by the
+    fallback silently depending on a raw chat_id.
+    """
+    db.create_session(
+        "legacy-optin-session",
+        "bluebubbles",
+        user_id="+15550001111",
+        session_key="agent:main:bluebubbles:dm:iMessage;-;+15550001111",
+        chat_id="iMessage;-;+15550001111",
+        chat_type="dm",
+    )
+    db.append_message("legacy-optin-session", "user", "hello")
+
+    lookup = dict(
+        source="bluebubbles",
+        user_id="+15550001111",
+        session_key="agent:main:bluebubbles:dm:+15550001111",
+        chat_id="any;-;+15550001111",
+        chat_type="dm",
+    )
+    assert db.find_latest_gateway_session_for_peer(**lookup) is None
+    opted_in = db.find_latest_gateway_session_for_peer(
+        **lookup, match_by_participant_identity=True
+    )
+    assert opted_in is not None
+    assert opted_in["id"] == "legacy-optin-session"
+
+
+def test_gateway_session_chat_alias_recovery_requires_user_id(db):
+    """Ignoring chat_id is safe only with a stable participant identity."""
+    db.create_session(
+        "legacy-bb-session",
+        "bluebubbles",
+        user_id="+15551234567",
+        session_key="agent:main:bluebubbles:dm:iMessage;-;+15551234567",
+        chat_id="iMessage;-;+15551234567",
+        chat_type="dm",
+    )
+    db.append_message("legacy-bb-session", "user", "hello")
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="bluebubbles",
+        user_id=None,
+        session_key="agent:main:bluebubbles:dm:+15551234567",
+        chat_id="any;-;+15551234567",
+        chat_type="dm",
+        match_by_participant_identity=True,
+    )
+
+    assert recovered is None
 
 
 def test_gateway_session_recovery_reopens_ws_orphan_reap_rows(db):

@@ -2287,6 +2287,7 @@ class SessionDB:
         chat_id: Optional[str] = None,
         chat_type: Optional[str] = None,
         thread_id: Optional[str] = None,
+        match_by_participant_identity: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Find the latest recoverable gateway session for a routing peer.
 
@@ -2298,6 +2299,12 @@ class SessionDB:
         (dashboard viewer disconnect before #60609) are treated as recoverable;
         explicit conversation boundaries such as /new, /resume switches, and
         compression splits are not.
+
+        ``match_by_participant_identity`` permits a final fallback that matches the same
+        routing namespace, source, non-empty user_id, chat type, and thread
+        while ignoring chat_id.  This is reserved for DM transports whose
+        session-key contract intentionally aliases multiple transport chat IDs
+        for one stable participant identity.
         """
         if not session_key:
             return None
@@ -2340,6 +2347,40 @@ class SessionDB:
                 LIMIT 1
                 """,
                 (source, user_id, chat_id, chat_type, thread_id),
+            ).fetchone()
+            if row is not None or not match_by_participant_identity:
+                return dict(row) if row else None
+
+            stable_user_id = str(user_id or "").strip()
+            key_parts = str(session_key).split(":", 4)
+            if not stable_user_id or len(key_parts) < 4:
+                return None
+            routing_prefix = ":".join(key_parts[:4]) + ":"
+            row = self._conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE source = ?
+                  -- stable_user_id is non-empty, so match the column directly:
+                  -- COALESCE() here would defeat idx_sessions_gateway_peer.
+                  AND user_id = ?
+                  AND COALESCE(chat_type, '') = COALESCE(?, '')
+                  AND COALESCE(thread_id, '') = COALESCE(?, '')
+                  AND substr(COALESCE(session_key, ''), 1, ?) = ?
+                  AND (ended_at IS NULL OR end_reason IN ('agent_close', 'ws_orphan_reap'))
+                  AND (COALESCE(message_count, 0) > 0 OR EXISTS (
+                      SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
+                  ))
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (
+                    source,
+                    stable_user_id,
+                    chat_type,
+                    thread_id,
+                    len(routing_prefix),
+                    routing_prefix,
+                ),
             ).fetchone()
         return dict(row) if row else None
 

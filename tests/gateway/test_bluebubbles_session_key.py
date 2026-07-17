@@ -9,11 +9,15 @@ landing on a long-untouched variant then trips the idle reset and wipes an
 actively-used conversation.
 """
 
+from datetime import datetime, timedelta
+
 import pytest
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
 from gateway.session import (
+    SessionEntry,
     SessionSource,
+    SessionStore,
     build_session_key,
     canonical_bluebubbles_identifier,
 )
@@ -111,3 +115,171 @@ class TestBlueBubblesDMSessionKey:
         assert build_session_key(source) == (
             f"agent:main:telegram:dm:iMessage;-;{HANDLE}"
         )
+
+
+class TestBlueBubblesRoutingMigration:
+    @pytest.fixture(autouse=True)
+    def _isolated_db(self, tmp_path, monkeypatch):
+        # Each test gets its own state.db — DEFAULT_DB_PATH is module-level and
+        # would otherwise be shared by every SessionDB() in this file's
+        # subprocess, leaking sessions between tests.
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+
+    @staticmethod
+    def _seed(store, *, chat_id, session_id, updated_at, created_at=None, handle=HANDLE):
+        """Seed one legacy route: index entry + durable session + a message."""
+        source = SessionSource(
+            platform=Platform.BLUEBUBBLES,
+            chat_id=chat_id,
+            chat_type="dm",
+            user_id=handle,
+        )
+        session_key = f"agent:main:bluebubbles:dm:{chat_id}"
+        store._entries[session_key] = SessionEntry(
+            session_key=session_key,
+            session_id=session_id,
+            created_at=created_at or updated_at,
+            updated_at=updated_at,
+            origin=source,
+            platform=Platform.BLUEBUBBLES,
+        )
+        store._db.create_session(
+            session_id,
+            "bluebubbles",
+            user_id=handle,
+            session_key=session_key,
+            chat_id=chat_id,
+            chat_type="dm",
+        )
+        store._db.append_message(session_id, "user", "hello")
+        return source
+
+    def test_loaded_legacy_alias_is_replaced_by_canonical_key(self, tmp_path):
+        """An upgrade leaves one durable route and one restart candidate."""
+        sessions_dir = tmp_path / "sessions"
+        config = GatewayConfig()
+        now = datetime.now()
+
+        initial = SessionStore(sessions_dir=sessions_dir, config=config)
+        initial._loaded = True
+        source = self._seed(
+            initial,
+            chat_id=f"any;-;{HANDLE}",
+            session_id="legacy-bb-session",
+            updated_at=now,
+        )
+        initial._save_entries()
+
+        restarted = SessionStore(sessions_dir=sessions_dir, config=config)
+        recovered = restarted.get_or_create_session(source)
+        canonical_key = build_session_key(source)
+
+        assert recovered.session_id == "legacy-bb-session"
+        aliases = {
+            key
+            for key, entry in restarted._entries.items()
+            if entry.session_id == "legacy-bb-session"
+        }
+        assert aliases == {canonical_key}
+        assert restarted.suspend_recently_active(max_age_seconds=120) == 1
+        assert set(
+            restarted._db.load_gateway_routing_entries(
+                scope=restarted._routing_scope()
+            )
+        ) == {canonical_key}
+        assert restarted._db.get_session("legacy-bb-session")["session_key"] == (
+            canonical_key
+        )
+
+    def test_loaded_alias_collision_keeps_most_recent_session(self, tmp_path):
+        """Multiple old GUID variants collapse without reviving a stale one."""
+        sessions_dir = tmp_path / "sessions"
+        config = GatewayConfig()
+        now = datetime.now()
+
+        initial = SessionStore(sessions_dir=sessions_dir, config=config)
+        initial._loaded = True
+        self._seed(
+            initial,
+            chat_id=f"iMessage;-;{HANDLE}",
+            session_id="older-bb-session",
+            updated_at=now - timedelta(minutes=5),
+        )
+        source = self._seed(
+            initial,
+            chat_id=f"any;-;{HANDLE}",
+            session_id="newer-bb-session",
+            updated_at=now,
+        )
+        initial._save_entries()
+
+        restarted = SessionStore(sessions_dir=sessions_dir, config=config)
+        recovered = restarted.get_or_create_session(source)
+        canonical_key = build_session_key(source)
+
+        assert recovered.session_id == "newer-bb-session"
+        assert set(restarted._entries) == {canonical_key}
+
+    def test_retired_alias_sibling_cannot_strand_the_live_transcript(self, tmp_path):
+        """A retired sibling must be ended, not merely dropped from the index.
+
+        The stray bare-handle session is typically created *later* than the real
+        conversation (a GUID-less webhook lands mid-thread), so a peer lookup
+        ordered by ``started_at`` prefers it.  If the migration only drops it
+        from the routing index, it stays live in state.db under the canonical
+        key and a later recovery reopens the near-empty stray, orphaning the
+        real transcript.
+        """
+        sessions_dir = tmp_path / "sessions"
+        config = GatewayConfig()
+        now = datetime.now()
+
+        store = SessionStore(sessions_dir=sessions_dir, config=config)
+        store._loaded = True
+        real_src = self._seed(
+            store,
+            chat_id=f"any;-;{HANDLE}",
+            session_id="real-session",
+            created_at=now - timedelta(hours=2),
+            updated_at=now,
+        )
+        self._seed(
+            store,
+            chat_id=HANDLE,
+            session_id="stray-session",
+            created_at=now,
+            updated_at=now - timedelta(hours=1),
+        )
+        # Pin the started_at ordering the bug depends on: the stray is newer.
+        store._db._conn.execute(
+            "UPDATE sessions SET started_at = 1000 WHERE id = 'real-session'"
+        )
+        store._db._conn.execute(
+            "UPDATE sessions SET started_at = 2000 WHERE id = 'stray-session'"
+        )
+        store._db._conn.commit()
+        store._save_entries()
+
+        restarted = SessionStore(sessions_dir=sessions_dir, config=config)
+        resumed = restarted.get_or_create_session(real_src)
+        assert resumed.session_id == "real-session"
+
+        stray_row = restarted._db.get_session("stray-session")
+        assert stray_row["ended_at"] is not None, "retired sibling left live"
+
+        recovered = restarted._db.find_latest_gateway_session_for_peer(
+            source="bluebubbles",
+            user_id=HANDLE,
+            session_key=build_session_key(real_src),
+            chat_id=f"any;-;{HANDLE}",
+            chat_type="dm",
+            match_by_participant_identity=True,
+        )
+        assert recovered is not None
+        assert recovered["id"] == "real-session", (
+            "recovery reopened the retired stray and orphaned the transcript"
+        )
+
+

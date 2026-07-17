@@ -890,6 +890,11 @@ def _session_key_namespace(profile: Optional[str]) -> str:
     return f"agent:{profile}"
 
 
+# The DM separator in a BlueBubbles chat GUID (``<service>;-;<handle>``).
+# Groups use ``;+;`` and an opaque chat id, so they are never unwrapped.
+_BLUEBUBBLES_DM_SEPARATOR = ";-;"
+
+
 def canonical_bluebubbles_identifier(chat_id: Optional[str]) -> Optional[str]:
     """Collapse BlueBubbles DM chat GUID variants to the bare handle.
 
@@ -908,7 +913,7 @@ def canonical_bluebubbles_identifier(chat_id: Optional[str]) -> Optional[str]:
     if not chat_id:
         return chat_id
     value = chat_id.strip()
-    service, sep, handle = value.partition(";-;")
+    service, sep, handle = value.partition(_BLUEBUBBLES_DM_SEPARATOR)
     if sep and handle and ";" not in service:
         return handle.strip()
     return value
@@ -1107,6 +1112,86 @@ class SessionStore:
         except Exception:
             return str(self.sessions_dir)
 
+    def _migrate_loaded_bluebubbles_keys_locked(
+        self,
+    ) -> tuple[bool, List[tuple[str, SessionEntry]], List[str]]:
+        """Canonicalize legacy BlueBubbles DM routes before startup resumes.
+
+        Older routing indexes may contain several raw GUID keys for one DM.
+        Collapse them to the current key and keep the most recently active
+        entry so stale siblings cannot be scheduled or reset independently.
+        Returns whether the index changed, the winners whose state.db peer row
+        must be rewritten to the canonical key, and the retired sibling
+        sessions that must be ended.  Dropping a sibling from the index is not
+        enough: it stays live in state.db under the canonical key, and because
+        a stray sibling is usually *started* later than the real conversation,
+        a later ``ORDER BY started_at DESC`` peer lookup would reopen the stray
+        and orphan the live transcript.
+        """
+        # Only a key still carrying a raw DM GUID can move, so once an install
+        # has migrated this pass is inert. Keep its steady-state cost to one
+        # substring test per key instead of regrouping the whole index forever.
+        if not any(_BLUEBUBBLES_DM_SEPARATOR in key for key in self._entries):
+            return False, [], []
+
+        group_per_user = getattr(self.config, "group_sessions_per_user", True)
+        thread_per_user = getattr(self.config, "thread_sessions_per_user", False)
+        grouped: Dict[str, List[tuple[str, SessionEntry]]] = {}
+        for stored_key, entry in self._entries.items():
+            target_key = stored_key
+            origin = entry.origin
+            if (
+                origin is not None
+                and origin.platform == Platform.BLUEBUBBLES
+                and origin.chat_type == "dm"
+            ):
+                profile = self._profile_from_session_key(stored_key)
+                if profile is not None:
+                    target_key = build_session_key(
+                        origin,
+                        group_sessions_per_user=group_per_user,
+                        thread_sessions_per_user=thread_per_user,
+                        profile=profile,
+                    )
+            grouped.setdefault(target_key, []).append((stored_key, entry))
+
+        retired = 0
+        migrated_entries: Dict[str, SessionEntry] = {}
+        peer_updates: List[tuple[str, SessionEntry]] = []
+        retired_sessions: List[str] = []
+        for target_key, candidates in grouped.items():
+            # Most recently active wins; on an exact tie prefer whichever entry
+            # already owns the canonical key.
+            winner_key, winner = max(
+                candidates,
+                key=lambda item: (item[1].updated_at, item[0] == target_key),
+            )
+            # Routing keys are unique, so at most one candidate per group can
+            # already be canonical — every other one is an alias being retired.
+            retired += sum(
+                stored_key != target_key for stored_key, _entry in candidates
+            )
+            for _stored_key, entry in candidates:
+                if entry is winner or not entry.session_id:
+                    continue
+                if entry.session_id != winner.session_id:
+                    retired_sessions.append(entry.session_id)
+            winner.session_key = target_key
+            migrated_entries[target_key] = winner
+            if winner_key != target_key:
+                peer_updates.append((target_key, winner))
+
+        changed = retired > 0
+        if changed:
+            self._entries = migrated_entries
+            logger.info(
+                "gateway.session: canonicalized BlueBubbles routing index "
+                "(%d legacy alias%s retired)",
+                retired,
+                "" if retired == 1 else "es",
+            )
+        return changed, peer_updates, retired_sessions
+
     def _ensure_loaded_locked(self) -> None:
         """Load the routing index. Must be called with self._lock held.
 
@@ -1188,6 +1273,9 @@ class SessionStore:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
 
         self._loaded = True
+        routing_migrated, peer_updates, retired_sessions = (
+            self._migrate_loaded_bluebubbles_keys_locked()
+        )
 
         # Prune any sessions.json entries that point to sessions already ended
         # in state.db. A hard gateway crash (exit code 1) skips the graceful
@@ -1199,6 +1287,38 @@ class SessionStore:
         # entries before the first message arrives. Pruning here (lock already
         # held) is cheap: one lookup per routing key, once at startup.
         self._prune_stale_sessions_locked()
+        if routing_migrated:
+            # Retire the siblings before rewriting the winner's peer row, so no
+            # window exists where two live rows share the canonical key.
+            for retired_session_id in retired_sessions:
+                self._end_retired_alias_session(retired_session_id)
+            for canonical_key, entry in peer_updates:
+                if self._entries.get(canonical_key) is not entry:
+                    continue
+                self._record_gateway_session_peer(
+                    entry.session_id,
+                    canonical_key,
+                    entry.origin,
+                    display_name=entry.display_name,
+                )
+            self._save()
+
+    def _end_retired_alias_session(self, session_id: str) -> None:
+        """End a sibling retired by the alias migration.
+
+        ``session_key_migration`` is deliberately not one of the reasons
+        ``find_latest_gateway_session_for_peer`` treats as recoverable, so the
+        retired row can never be reopened, while its transcript stays readable
+        via ``/resume``.
+        """
+        if not self._db:
+            return
+        try:
+            self._db.end_session(session_id, "session_key_migration")
+        except Exception:
+            logger.debug(
+                "Could not retire aliased session %s", session_id, exc_info=True
+            )
 
     def _prune_stale_sessions_locked(self) -> None:
         """Remove sessions.json entries whose session has ended in state.db.
@@ -1461,6 +1581,26 @@ class SessionStore:
             chat_type=source.chat_type,
         )
 
+    @staticmethod
+    def _gateway_peer_lookup_kwargs(
+        *, session_key: str, source: SessionSource
+    ) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "source": source.platform.value,
+            "user_id": source.user_id,
+            "session_key": session_key,
+            "chat_id": source.chat_id,
+            "chat_type": source.chat_type,
+            "thread_id": source.thread_id,
+        }
+        if (
+            source.platform == Platform.BLUEBUBBLES
+            and source.chat_type == "dm"
+            and str(source.user_id or "").strip()
+        ):
+            kwargs["match_by_participant_identity"] = True
+        return kwargs
+
     def _recover_session_from_db(
         self,
         *,
@@ -1477,12 +1617,9 @@ class SessionStore:
             return None
         try:
             recovered = finder(
-                source=source.platform.value,
-                user_id=source.user_id,
-                session_key=session_key,
-                chat_id=source.chat_id,
-                chat_type=source.chat_type,
-                thread_id=source.thread_id,
+                **self._gateway_peer_lookup_kwargs(
+                    session_key=session_key, source=source
+                )
             )
         except Exception as exc:
             logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)
@@ -1526,12 +1663,9 @@ class SessionStore:
             return None
         try:
             recovered = finder(
-                source=source.platform.value,
-                user_id=source.user_id,
-                session_key=session_key,
-                chat_id=source.chat_id,
-                chat_type=source.chat_type,
-                thread_id=source.thread_id,
+                **self._gateway_peer_lookup_kwargs(
+                    session_key=session_key, source=source
+                )
             )
         except Exception as exc:
             logger.debug("Gateway session DB recovery failed for %s: %s",
@@ -2062,6 +2196,13 @@ class SessionStore:
                         published = recovered
                 entry = published
                 _needs_save = True
+                if published is recovered:
+                    self._record_gateway_session_peer(
+                        recovered.session_id,
+                        session_key,
+                        source,
+                        display_name=recovered.display_name,
+                    )
 
         if entry is None:
             # Create a candidate outside the lock, then publish only if another

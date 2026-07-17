@@ -19,9 +19,9 @@ complete" on the *legitimate* new connection.
 
 Fix: don't spawn the MCP server command directly. Spawn this supervisor
 instead, which:
-  1. execs the real command as its own child (own process group via
-     ``start_new_session``, so it doesn't inherit the supervisor's
-     controlling terminal weirdly and so we can killpg it cleanly);
+  1. execs the real command as its own child in the supervisor's SDK-owned
+     process group, so the MCP SDK's SIGTERM/SIGKILL teardown reaches the
+     supervisor, real server, and descendants as one tree;
   2. transparently passes stdin/stdout/stderr through — the MCP stdio
      protocol talks directly over those pipes, so the supervisor must be a
      no-op relay, not a bytes-in-the-middle proxy;
@@ -121,7 +121,13 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
 def _watchdog_loop(proc: subprocess.Popen, original_ppid: int, parent_create_time: float) -> None:
     while proc.poll() is None:
         if _is_orphaned(original_ppid, parent_create_time):
-            _terminate_process_group(proc)
+            # stdio_client starts this watchdog in a fresh session/process
+            # group. The real server intentionally inherits that group, so a
+            # hard parent death can atomically reap the entire owned tree.
+            try:
+                os.killpg(os.getpgrp(), signal.SIGKILL)
+            except (AttributeError, ProcessLookupError, PermissionError, OSError):
+                _terminate_process_group(proc)
             return
         time.sleep(_POLL_INTERVAL_S)
 
@@ -142,29 +148,16 @@ def main(argv: list[str] | None = None) -> int:
         print("mcp_stdio_watchdog: no command given after '--'", file=sys.stderr)
         return 2
 
-    # New process group so we can killpg() the whole tree the real command
-    # may spawn (e.g. mcp-remote's own child `node` process), without
-    # touching our own group or the (already-gone) original parent's.
+    # Do NOT create another process group here. mcp.client.stdio already
+    # starts this watchdog in a fresh session. A nested group would let the
+    # SDK kill only the watchdog while npx/Playwright/Chromium survive.
     proc = subprocess.Popen(
         real_argv,
         stdin=sys.stdin,
         stdout=sys.stdout,
         stderr=sys.stderr,
-        start_new_session=True,
+        start_new_session=False,
     )
-
-    # Because the real server lives in its OWN process group (above), the
-    # parent's graceful-shutdown killpg of *our* group no longer reaches it.
-    # Forward SIGTERM/SIGINT to the child's group so graceful teardown
-    # (`_kill_orphaned_mcp_children`, shutdown sweeps) still kills a wedged
-    # server that ignores stdin EOF — otherwise the watchdog wrap would
-    # invert the bug it fixes.
-    def _forward_shutdown(signum, frame):  # noqa: ARG001
-        _terminate_process_group(proc)
-        sys.exit(128 + signum)
-
-    signal.signal(signal.SIGTERM, _forward_shutdown)
-    signal.signal(signal.SIGINT, _forward_shutdown)
 
     watchdog = threading.Thread(
         target=_watchdog_loop,

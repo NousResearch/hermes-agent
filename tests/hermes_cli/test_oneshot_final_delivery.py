@@ -6,6 +6,7 @@ import logging
 import os
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 import types
@@ -721,6 +722,69 @@ def test_memory_flush_false_is_cleanup_failure_but_none_and_true_succeed(
         )
 
 
+def test_lifecycle_logs_are_exact_sanitized_and_cleanup_marker_is_success_only(
+    monkeypatch,
+):
+    events: list[str] = []
+    _install_cleanup_modules(monkeypatch, events)
+    monkeypatch.setattr(oneshot._OneshotResources, "_arm_watchdog_once", Mock())
+    info = Mock()
+    warning = Mock()
+    monkeypatch.setattr(oneshot.logger, "info", info)
+    monkeypatch.setattr(oneshot.logger, "warning", warning)
+
+    def resources_with(flush_pending):
+        value = oneshot._OneshotResources()
+        value.task_id = "00000000-0000-4000-8000-000000000004"
+        value.agent = types.SimpleNamespace(
+            session_id="opaque-session",
+            _end_session_on_close=True,
+            _session_messages=[],
+            _memory_manager=types.SimpleNamespace(flush_pending=flush_pending),
+            shutdown_memory_provider=Mock(),
+            _cleanup_task_resources=Mock(),
+            close=Mock(),
+        )
+        value.session_db = types.SimpleNamespace(end_session=Mock(), close=Mock())
+        return value
+
+    healthy = resources_with(Mock(return_value=True))
+    healthy.mark_final_delivered()
+    healthy.close()
+
+    assert info.call_args_list == [
+        call(
+            "oneshot final delivered session_id=%s task_id=%s",
+            "opaque-session",
+            "00000000-0000-4000-8000-000000000004",
+        ),
+        call(
+            "oneshot cleanup completed session_id=%s task_id=%s",
+            "opaque-session",
+            "00000000-0000-4000-8000-000000000004",
+        ),
+    ]
+
+    info.reset_mock()
+    failed = resources_with(
+        Mock(side_effect=RuntimeError("private prompt response tool-output payload"))
+    )
+    failed.close()
+
+    assert not any(
+        item.args and item.args[0] == "oneshot cleanup completed session_id=%s task_id=%s"
+        for item in info.call_args_list
+    )
+    assert warning.call_args_list[-1].args == (
+        "oneshot lifecycle operation failed operation=%s exception_type=%s",
+        "memory_flush",
+        "RuntimeError",
+    )
+    rendered = repr(info.call_args_list) + repr(warning.call_args_list)
+    for secret in ("private prompt", "response", "tool-output", "payload"):
+        assert secret not in rendered
+
+
 def test_mark_final_delivered_leaves_agent_fallback_when_db_end_fails(monkeypatch):
     resources = oneshot._OneshotResources()
     agent = types.SimpleNamespace(session_id="current-child", _end_session_on_close=True)
@@ -1133,6 +1197,185 @@ def test_cleanup_terminal_chatter_stays_inside_redirected_streams(monkeypatch):
 
     assert stdout.getvalue() == "final\n"
     assert stderr.getvalue() == ""
+
+
+def test_oneshot_logging_preserves_file_logs_and_suppresses_preexisting_terminal_handler(
+    monkeypatch,
+    tmp_path,
+):
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    path = tmp_path / "agent.log"
+    file_handler = logging.FileHandler(path, encoding="utf-8")
+    terminal_handler = logging.StreamHandler(stderr)
+    file_handler.setLevel(logging.INFO)
+    terminal_handler.setLevel(logging.INFO)
+    test_logger = logging.getLogger("hermes.tests.oneshot.task4")
+    old_level = test_logger.level
+    old_propagate = test_logger.propagate
+    test_logger.setLevel(logging.INFO)
+    test_logger.propagate = False
+    test_logger.addHandler(file_handler)
+    test_logger.addHandler(terminal_handler)
+
+    def run(*_args, delivery, **_kwargs):
+        test_logger.info("agent-call-record")
+        delivery.deliver("final")
+        return "final", {"failed": False}
+
+    def close(*_args, **_kwargs):
+        test_logger.info("cleanup-record")
+
+    monkeypatch.setattr(oneshot, "_run_agent", run)
+    monkeypatch.setattr(oneshot._OneshotResources, "close", close)
+    try:
+        assert oneshot.run_oneshot("private prompt") == 0
+    finally:
+        test_logger.removeHandler(file_handler)
+        test_logger.removeHandler(terminal_handler)
+        test_logger.setLevel(old_level)
+        test_logger.propagate = old_propagate
+        file_handler.close()
+        terminal_handler.close()
+
+    assert stdout.getvalue() == "final\n"
+    assert stderr.getvalue() == ""
+    assert path.read_text(encoding="utf-8").splitlines() == [
+        "agent-call-record",
+        "cleanup-record",
+    ]
+    assert file_handler.level == logging.INFO
+    assert terminal_handler.level == logging.INFO
+
+
+def _run_watchdog_subprocess(
+    mode: str,
+    usage_path: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    usage_literal = repr(str(usage_path)) if usage_path is not None else "None"
+    script = textwrap.dedent(
+        f"""
+        import os
+        import sys
+        import threading
+        import types
+
+        os.environ.pop("PYTEST_CURRENT_TEST", None)
+        os.environ["HERMES_EXIT_WATCHDOG_S"] = "0.2"
+
+        import hermes_cli.oneshot as oneshot
+
+        mode = {mode!r}
+        stop = threading.Event()
+
+        def module(name, **attrs):
+            value = types.ModuleType(name)
+            for key, item in attrs.items():
+                setattr(value, key, item)
+            sys.modules[name] = value
+
+        def interrupt_all(reason):
+            if mode in {{"cleanup_after_final", "cleanup_without_final"}}:
+                threading.Event().wait()
+
+        module("tools.async_delegation", interrupt_all=interrupt_all)
+        module(
+            "tools.process_registry",
+            process_registry=types.SimpleNamespace(kill_all=lambda task_id: None),
+        )
+
+        def shutdown_mcp_servers():
+            if mode == "mcp_release":
+                stop.set()
+
+        module("tools.mcp_tool", shutdown_mcp_servers=shutdown_mcp_servers)
+        module("agent.auxiliary_client", shutdown_cached_clients=lambda: None)
+
+        def run(*_args, delivery, resources, **_kwargs):
+            resources.task_id = "00000000-0000-4000-8000-000000000004"
+            resources.agent = types.SimpleNamespace(
+                session_id="session-opaque",
+                _end_session_on_close=True,
+                _session_messages=[],
+                _memory_manager=None,
+                shutdown_memory_provider=lambda messages: None,
+                _cleanup_task_resources=lambda task_id: None,
+                close=lambda: None,
+            )
+            resources.session_db = types.SimpleNamespace(
+                end_session=lambda session_id, reason: None,
+                close=lambda: None,
+            )
+            if mode == "mcp_release":
+                worker = threading.Thread(target=stop.wait, daemon=False)
+                worker.start()
+            if mode != "cleanup_without_final":
+                delivery.deliver("final")
+            if mode == "late_hook_after_final":
+                threading.Event().wait()
+            return ("final" if mode != "cleanup_without_final" else "", {{"failed": False}})
+
+        oneshot._run_agent = run
+        raise SystemExit(
+            oneshot.run_oneshot("private prompt", usage_file={usage_literal})
+        )
+        """
+    )
+    env = os.environ.copy()
+    env.pop("PYTEST_CURRENT_TEST", None)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
+    started = time.monotonic()
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=4,
+    )
+    completed.elapsed = time.monotonic() - started
+    return completed
+
+
+@pytest.mark.parametrize("mode", ["late_hook_after_final", "cleanup_after_final"])
+def test_watchdog_forces_bounded_exit_after_delivered_final(mode):
+    completed = _run_watchdog_subprocess(mode)
+
+    assert completed.returncode == 70
+    assert completed.stdout == "final\n"
+    assert completed.stderr == ""
+    assert completed.elapsed < 3
+
+
+@pytest.mark.parametrize("preexisting_usage", [False, True])
+def test_watchdog_forces_bounded_exit_during_cleanup_without_final(
+    tmp_path,
+    preexisting_usage,
+):
+    usage_path = tmp_path / "usage.json"
+    if preexisting_usage:
+        usage_path.write_text('{"sentinel":"earlier-valid"}\n', encoding="utf-8")
+    completed = _run_watchdog_subprocess("cleanup_without_final", usage_path)
+
+    assert completed.returncode == 70
+    assert completed.stdout == ""
+    assert completed.stderr == ""
+    assert completed.elapsed < 3
+    if preexisting_usage:
+        assert json.loads(usage_path.read_text()) == {"sentinel": "earlier-valid"}
+    else:
+        assert not usage_path.exists()
+
+
+def test_normal_cleanup_releases_non_daemon_mcp_like_thread():
+    completed = _run_watchdog_subprocess("mcp_release")
+
+    assert completed.returncode == 0
+    assert completed.stdout == "final\n"
+    assert completed.stderr == ""
+    assert completed.elapsed < 3
 
 
 def test_real_fixture_cleanup_survives_failures_and_force_kills_stuck_process():

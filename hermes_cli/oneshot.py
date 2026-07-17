@@ -36,6 +36,43 @@ from hermes_cli.fallback_config import get_fallback_chain
 logger = logging.getLogger(__name__)
 
 
+@contextmanager
+def _suppress_terminal_log_handlers() -> Iterator[None]:
+    """Silence existing console handlers without disabling file logging."""
+    handlers: list[logging.Handler] = []
+    seen: set[int] = set()
+
+    def remember(handler: logging.Handler) -> None:
+        if id(handler) in seen:
+            return
+        if not isinstance(handler, logging.StreamHandler):
+            return
+        # FileHandler deliberately subclasses StreamHandler. It is the
+        # persistent diagnostic channel one-shot mode must preserve.
+        if isinstance(handler, logging.FileHandler):
+            return
+        seen.add(id(handler))
+        handlers.append(handler)
+
+    for handler in logging.getLogger().handlers:
+        remember(handler)
+    for candidate in logging.Logger.manager.loggerDict.values():
+        if isinstance(candidate, logging.Logger):
+            for handler in candidate.handlers:
+                remember(handler)
+    if logging.lastResort is not None:
+        remember(logging.lastResort)
+
+    original_levels = [(handler, handler.level) for handler in handlers]
+    try:
+        for handler, _level in original_levels:
+            handler.setLevel(logging.CRITICAL + 1)
+        yield
+    finally:
+        for handler, level in original_levels:
+            handler.setLevel(level)
+
+
 class _IncompleteFinalWriteError(OSError):
     """A final-response stream accepted fewer characters than requested."""
 
@@ -504,11 +541,6 @@ def run_oneshot(
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
-    # Silence every stdlib logger for the duration.  Task 4 replaces this
-    # process-global switch with handler-scoped terminal suppression while
-    # preserving file logs.
-    logging.disable(logging.CRITICAL)
-
     # --provider without --model is ambiguous: carrying the user's configured
     # model across to a different provider is usually wrong (that provider may
     # not host it), and silently picking the provider's catalog default hides
@@ -545,7 +577,11 @@ def run_oneshot(
     resources = _OneshotResources()
     delivery = _FinalDelivery(real_stdout, resources.mark_final_delivered)
     try:
-        with redirect_stdout(devnull), redirect_stderr(devnull):
+        with (
+            _suppress_terminal_log_handlers(),
+            redirect_stdout(devnull),
+            redirect_stderr(devnull),
+        ):
             try:
                 try:
                     response, result = _run_agent(

@@ -334,6 +334,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Der Befehl `hermes` konnte nicht gefunden werden. Hermes läuft, aber der Update-Befehl konnte das ausführbare Programm weder im PATH noch über den aktuellen Python-Interpreter finden. Versuchen Sie, `hermes update` manuell im Terminal auszuführen."
     start_failed:            "✗ Update konnte nicht gestartet werden: {error}"
     starting:                "⚕ Hermes-Update wird gestartet… Ich streame den Fortschritt hier."
+    confirm_prompt:          "⚠️ **Update bestätigen**\n\nDies zieht den neuesten Hermes-Code und **startet das Gateway neu** — jede aktive Sitzung auf diesem Host wird unterbrochen, während es sich neu verbindet.\n\nWählen Sie:\n• **Einmal genehmigen** — jetzt aktualisieren\n• **Abbrechen** — nicht aktualisieren\n\n_Text-Alternative: Antworten Sie mit `/approve` oder `/cancel`._"
+    cancelled:               "🟡 /update abgebrochen. Hermes wurde nicht aktualisiert."
 
   usage:
     rate_limits:              "⏱️ **Ratenlimits:** {state}"

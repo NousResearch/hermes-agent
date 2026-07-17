@@ -331,6 +331,8 @@ gateway:
     hermes_cmd_not_found:    "✗ No se pudo localizar el comando `hermes`. Hermes está en ejecución, pero el comando de actualización no encontró el ejecutable en PATH ni a través del intérprete de Python actual. Intenta ejecutar `hermes update` manualmente en tu terminal."
     start_failed:            "✗ No se pudo iniciar la actualización: {error}"
     starting:                "⚕ Iniciando la actualización de Hermes… Transmitiré el progreso aquí."
+    confirm_prompt:          "⚠️ **Confirmar /update**\n\nEsto descarga el código más reciente de Hermes y **reinicia el gateway** — cada sesión activa en este host se interrumpe mientras se reconecta.\n\nElige:\n• **Aprobar una vez** — actualizar ahora\n• **Cancelar** — no actualizar\n\n_Alternativa de texto: responde `/approve` o `/cancel`._"
+    cancelled:               "🟡 /update cancelado. Hermes no ha sido actualizado."
 
   usage:
     rate_limits:              "⏱️ **Límites de tasa:** {state}"

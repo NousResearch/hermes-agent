@@ -334,6 +334,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Impossibile localizzare il comando `hermes`. Hermes è in esecuzione, ma il comando di aggiornamento non ha trovato l'eseguibile nel PATH o tramite l'interprete Python attuale. Prova a eseguire `hermes update` manualmente nel terminale."
     start_failed:            "✗ Avvio dell'aggiornamento non riuscito: {error}"
     starting:                "⚕ Avvio dell'aggiornamento di Hermes… mostrerò qui i progressi in streaming."
+    confirm_prompt:          "⚠️ **Conferma /update**\n\nQuesto scarica il codice Hermes più recente e **riavvia il gateway** — ogni sessione attiva su questo host viene interrotta durante la riconnessione.\n\nScegli:\n• **Approva una volta** — aggiorna ora\n• **Annulla** — non aggiornare\n\n_Alternativa testuale: rispondi `/approve` oppure `/cancel`._"
+    cancelled:               "🟡 /update annullato. Hermes non è stato aggiornato."
 
   usage:
     rate_limits:              "⏱️ **Limiti di frequenza:** {state}"

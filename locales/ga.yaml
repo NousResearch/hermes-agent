@@ -338,6 +338,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Níorbh fhéidir an t-ordú `hermes` a aimsiú. Tá Hermes ag rith, ach níorbh fhéidir leis an ordú nuashonraithe an inrite a aimsiú ar PATH ná tríd an léirmhínitheoir Python reatha. Bain triail as `hermes update` a rith de láimh i do theirminéal."
     start_failed:            "✗ Theip ar nuashonrú a thosú: {error}"
     starting:                "⚕ Ag tosú nuashonrú Hermes… Cuirfidh mé an dul chun cinn ar shruth anseo."
+    confirm_prompt:          "⚠️ **Dearbhaigh /update**\n\nTarraingíonn sé seo an cód Hermes is déanaí agus **atosaíonn sé an gateway** — cuirtear isteach ar gach seisiún gníomhach ar an óstach seo agus é ag athcheangal.\n\nRoghnaigh:\n• **Approve Once** — nuashonraigh anois\n• **Cancel** — ná nuashonraigh\n\n_Cúltaca téacs: freagair `/approve` nó `/cancel`._"
+    cancelled:               "🟡 /update cealaithe. Níor nuashonraíodh Hermes."
 
   usage:
     rate_limits:              "⏱️ **Teorainneacha Ráta:** {state}"

@@ -334,6 +334,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ 找不到 `hermes` 指令。Hermes 正在執行，但更新指令無法在 PATH 上或透過目前的 Python 解譯器找到執行檔。請嘗試在終端機中手動執行 `hermes update`。"
     start_failed:            "✗ 啟動更新失敗：{error}"
     starting:                "⚕ 正在啟動 Hermes 更新…… 進度將在此處顯示。"
+    confirm_prompt:          "⚠️ **確認 /update**\n\n此操作會提取最新的 Hermes 程式碼並**重新啟動閘道** — 在重新連線期間，此主機上所有使用中的工作階段都會中斷。\n\n請選擇：\n• **批准一次** — 立即更新\n• **取消** — 不更新\n\n_文字備援：回覆 `/approve` 或 `/cancel`。_"
+    cancelled:               "🟡 已取消 /update。Hermes 未更新。"
 
   usage:
     rate_limits:              "⏱️ **速率限制：** {state}"

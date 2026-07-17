@@ -334,6 +334,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Kon nie die `hermes`-opdrag vind nie. Hermes loop, maar die opdateeropdrag kon nie die uitvoerbare lêer op PATH of via die huidige Python-vertolker vind nie. Probeer `hermes update` met die hand in jou terminale uitvoer."
     start_failed:            "✗ Kon nie opdatering begin nie: {error}"
     starting:                "⚕ Begin Hermes-opdatering… Ek sal vordering hier stroom."
+    confirm_prompt:          "⚠️ **Bevestig /update**\n\nDit trek die jongste Hermes-kode en **herbegin die gateway** — elke aktiewe sessie op hierdie gasheer word onderbreek terwyl dit herverbind.\n\nKies:\n• **Approve Once** — opdateer nou\n• **Cancel** — moenie opdateer nie\n\n_Teks-alternatief: antwoord `/approve` of `/cancel`._"
+    cancelled:               "🟡 /update gekanselleer. Hermes is nie opgedateer nie."
 
   usage:
     rate_limits:              "⏱️ **Tariefperke:** {state}"

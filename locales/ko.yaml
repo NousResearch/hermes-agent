@@ -334,6 +334,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ `hermes` 명령을 찾을 수 없습니다. Hermes는 실행 중이지만 PATH나 현재 Python 인터프리터를 통해 실행 파일을 찾을 수 없습니다. 터미널에서 `hermes update`를 직접 실행해 보세요."
     start_failed:            "✗ 업데이트 시작 실패: {error}"
     starting:                "⚕ Hermes 업데이트를 시작합니다… 진행 상황을 여기에 스트리밍하겠습니다."
+    confirm_prompt:          "⚠️ **/update 확인**\n\n이 작업은 최신 Hermes 코드를 가져오고 **게이트웨이를 재시작합니다** — 재연결하는 동안 이 호스트의 모든 활성 세션이 중단됩니다.\n\n선택하세요:\n• **한 번 승인** — 지금 업데이트\n• **취소** — 업데이트하지 않음\n\n_텍스트 대체: `/approve` 또는 `/cancel`로 응답하세요._"
+    cancelled:               "🟡 /update가 취소되었습니다. Hermes가 업데이트되지 않았습니다."
 
   usage:
     rate_limits:              "⏱️ **요청 제한:** {state}"

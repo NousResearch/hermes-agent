@@ -265,7 +265,7 @@ async def test_fire_task_cancellation_holds_reservation_until_worker_exits(
 
 
 @pytest.mark.asyncio
-async def test_fire_inner_task_cancellation_does_not_spin_or_release_early(
+async def test_fire_supervisor_cancellation_does_not_release_worker_early(
     adapter, monkeypatch
 ):
     fired = threading.Event()
@@ -307,23 +307,21 @@ async def test_fire_inner_task_cancellation_does_not_spin_or_release_early(
             for task in asyncio.all_tasks()
             if task.get_name() == "cron-fire-supervisor"
         )
-        inner = next(
-            task
+        assert not any(
+            task.get_name() == "cron-fire-worker"
             for task in asyncio.all_tasks()
-            if task.get_name() == "cron-fire-worker"
         )
 
         outer.cancel()
-        inner.cancel()
-        # This yield would hang if the supervisor busy-spun on the cancelled
-        # inner task.
         await asyncio.wait_for(asyncio.sleep(0.05), timeout=1)
-        assert outer.done()
+        assert not outer.done()
         assert not reservation_released.is_set()
         assert adapter.active_agent_work_count() == 1
 
         release_fire.set()
         assert await asyncio.to_thread(reservation_released.wait, 2)
+        with pytest.raises(asyncio.CancelledError):
+            await outer
         for _ in range(50):
             if adapter.active_agent_work_count() == 0:
                 break
@@ -374,6 +372,52 @@ async def test_fire_provider_exception_is_consumed_and_redacted(
 
     assert raw_secret not in caplog.text
     assert "cron fire: provider worker failed" in caplog.text
+    assert adapter.active_agent_work_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_fire_reservation_release_error_is_contained_and_redacted(
+    adapter, monkeypatch, caplog
+):
+    raw_secret = "reservation-release-secret-must-not-leak"
+    provider_called = threading.Event()
+
+    class Provider:
+        def fire_due(self, job_id, *, adapters=None, loop=None):
+            provider_called.set()
+            return True
+
+    class FailingReservation:
+        provider = Provider()
+
+        def release(self):
+            raise RuntimeError(raw_secret)
+
+    monkeypatch.setattr(
+        "cron.scheduler_runtime.reserve_active_scheduler_provider",
+        lambda: FailingReservation(),
+    )
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/cron/fire",
+            headers={"Authorization": "Bearer good"},
+            json={"job_id": "abc123"},
+        )
+        assert response.status == 202
+        assert await asyncio.to_thread(provider_called.wait, 2)
+        for _ in range(50):
+            if adapter.active_agent_work_count() == 0:
+                break
+            await asyncio.sleep(0.01)
+
+    assert raw_secret not in caplog.text
+    assert "cron fire: scheduler reservation release failed" in caplog.text
     assert adapter.active_agent_work_count() == 0
 
 

@@ -4291,15 +4291,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
 
             loop = asyncio.get_running_loop()
-            # Fire in the background (202 immediately). fire_due claims via the
-            # store CAS, so a retry while this is in flight is de-duped. Keep the
-            # scheduler reservation until the actual worker thread exits:
-            # cancelling asyncio.to_thread() does not stop a running worker.
+            # Fire in a dedicated daemon thread (202 immediately). A raw thread
+            # cannot be cancelled by asyncio teardown, so the scheduler
+            # reservation remains tied to the actual callback lifetime rather
+            # than to a cancellable executor wrapper.
             import threading
 
-            worker_started = threading.Event()
             release_lock = threading.Lock()
             released = False
+            completion = loop.create_future()
 
             def _release_fire_reservations() -> None:
                 nonlocal released
@@ -4307,19 +4307,27 @@ class APIServerAdapter(BasePlatformAdapter):
                     if released:
                         return
                     released = True
-                scheduler_reservation.release()
                 try:
-                    loop.call_soon_threadsafe(
-                        _release_pending_api_work, self, reservation
-                    )
-                except RuntimeError:
-                    # The loop can close during process teardown. The scheduler
-                    # reservation has already been released; finish local
-                    # accounting without leaking the detached reservation.
-                    _release_pending_api_work(self, reservation)
+                    scheduler_reservation.release()
+                except BaseException:
+                    # Reservation failures must fail closed without leaking raw
+                    # backend text or preventing pending-work cleanup.
+                    logger.error("cron fire: scheduler reservation release failed")
+                finally:
+                    try:
+                        loop.call_soon_threadsafe(
+                            _release_pending_api_work, self, reservation
+                        )
+                    except RuntimeError:
+                        # The loop can close during process teardown. Finish
+                        # local accounting without leaking the detached work.
+                        _release_pending_api_work(self, reservation)
+
+            def _mark_worker_complete() -> None:
+                if not completion.done():
+                    completion.set_result(None)
 
             def _fire_due_worker() -> None:
-                worker_started.set()
                 try:
                     scheduler_reservation.provider.fire_due(
                         job_id,
@@ -4329,53 +4337,50 @@ class APIServerAdapter(BasePlatformAdapter):
                 except BaseException:
                     # Provider/backend messages can contain credentials. Keep
                     # diagnostics deliberately generic and consume the error in
-                    # the worker so asyncio cannot print an unredacted
-                    # "Task exception was never retrieved" traceback.
+                    # the worker so asyncio cannot print an unredacted traceback.
                     logger.error("cron fire: provider worker failed")
                 finally:
                     _release_fire_reservations()
+                    try:
+                        loop.call_soon_threadsafe(_mark_worker_complete)
+                    except RuntimeError:
+                        pass
 
             async def _wait_for_fire_worker() -> None:
-                worker = asyncio.create_task(
-                    asyncio.to_thread(_fire_due_worker),
-                    name="cron-fire-worker",
-                )
                 cancelled = False
-                while True:
+                while not completion.done():
                     try:
-                        await asyncio.shield(worker)
-                        break
+                        await asyncio.shield(completion)
                     except asyncio.CancelledError:
-                        # Shield the worker from every shutdown cancellation and
-                        # keep this task pending until the worker truly exits.
-                        # Event-loop teardown can also cancel the inner task
-                        # directly; in that case stop awaiting the already
-                        # cancelled wrapper. The real thread still owns release
-                        # through _fire_due_worker()'s finally block (or never
-                        # started, which the outer done callback handles).
                         cancelled = True
-                        if worker.cancelled():
+                        # Loop teardown may cancel the completion future itself.
+                        # The thread still owns release, so stop waiting rather
+                        # than spinning on an already-cancelled Future.
+                        if completion.cancelled():
                             break
                 if cancelled:
                     raise asyncio.CancelledError
 
+            reservation["detached"] = True
+            worker_thread = threading.Thread(
+                target=_fire_due_worker,
+                daemon=True,
+                name="cron-fire-worker",
+            )
+            try:
+                worker_thread.start()
+            except BaseException:
+                _release_fire_reservations()
+                raise
             try:
                 task = asyncio.create_task(
                     _wait_for_fire_worker(),
                     name="cron-fire-supervisor",
                 )
             except BaseException:
-                _release_fire_reservations()
+                # The worker remains authoritative and will release from its
+                # finally block even if no asyncio tracking task can be created.
                 raise
-            reservation["detached"] = True
-
-            def _release_if_never_started(_task: asyncio.Task) -> None:
-                # A task can be cancelled before its coroutine gets its first
-                # turn, in which case no worker exists to run its finally block.
-                if not worker_started.is_set():
-                    _release_fire_reservations()
-
-            task.add_done_callback(_release_if_never_started)
             try:
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)

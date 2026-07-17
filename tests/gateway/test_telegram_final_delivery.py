@@ -144,6 +144,39 @@ async def test_turn_final_flood_keeps_complete_preview_without_fresh_resend():
 
 
 @pytest.mark.asyncio
+async def test_confirmed_missing_preview_recovers_with_full_final_send():
+    adapter = _adapter()
+    adapter.edit_message.return_value = SendResult(
+        success=False,
+        error="Bad Request: message to edit not found",
+        retryable=False,
+    )
+    adapter.send.return_value = SendResult(success=True, message_id="fresh-final")
+
+    consumer = GatewayStreamConsumer(adapter, "chat-1")
+    consumer._already_sent = True
+    consumer._message_id = "deleted-preview"
+    consumer._last_sent_text = "Final answer"
+
+    edit_succeeded = await consumer._send_or_edit(
+        "Final answer",
+        finalize=True,
+        is_turn_final=True,
+    )
+
+    assert edit_succeeded is False
+    assert consumer._fallback_final_send is True
+    assert consumer._fallback_preview_missing is True
+
+    await consumer._send_fallback_final("Final answer")
+
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.kwargs["content"] == "Final answer"
+    assert consumer.final_response_sent is True
+    assert consumer.final_content_delivered is True
+
+
+@pytest.mark.asyncio
 async def test_turn_final_timeout_with_complete_preview_does_not_fresh_resend():
     """An ambiguous final-edit timeout must not duplicate a complete preview.
 

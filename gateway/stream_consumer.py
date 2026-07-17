@@ -173,6 +173,10 @@ class GatewayStreamConsumer:
         self._last_edit_overflowed = False
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        # True only when the last edit response proves the tracked preview no
+        # longer exists. In that case an empty continuation must recover by
+        # sending the complete final answer rather than trusting cached text.
+        self._fallback_preview_missing = False
         # True when fallback is sending only the missing tail after a partial
         # Telegram overflow delivery.  In that case the already-visible prefix
         # is intentional content, not a stale preview to delete.
@@ -348,6 +352,7 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        self._fallback_preview_missing = False
         self._fallback_preserve_partial_messages = False
         self._segment_preview_message_ids = set()
         # #29346: a tool/segment boundary means what we delivered was an interim
@@ -990,6 +995,16 @@ class GatewayStreamConsumer:
         final_text = self._clean_for_display(text)
         continuation = self._continuation_text(final_text)
         self._fallback_final_send = False
+        if (
+            not continuation.strip()
+            and final_text.strip()
+            and self._fallback_preview_missing
+        ):
+            # The cached visible prefix is no longer trustworthy: the platform
+            # explicitly reported that the preview was deleted/missing. Recover
+            # with the complete answer even though the local text cache matches.
+            continuation = final_text
+            self._fallback_preview_missing = False
         if not continuation.strip():
             # Some platforms treat a successful streaming preview as durable
             # delivery. Telegram clients can instead lose or retain only part
@@ -1151,6 +1166,7 @@ class GatewayStreamConsumer:
         self._final_content_delivered = True
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
+        self._fallback_preview_missing = False
         self._fallback_preserve_partial_messages = False
 
     async def _send_empty_fallback_final(self, final_text: str) -> str:
@@ -1224,6 +1240,19 @@ class GatewayStreamConsumer:
         self._fallback_preserve_partial_messages = False
         self._notify_new_message()
         return "delivered"
+
+    @staticmethod
+    def _edit_failure_proves_preview_missing(result_or_exc: Any) -> bool:
+        """Return True only when an edit failure confirms the preview is gone."""
+        error = str(getattr(result_or_exc, "error", None) or result_or_exc).lower()
+        markers = (
+            "message to edit not found",
+            "message not found",
+            "message_id_invalid",
+            "message id invalid",
+            "message has been deleted",
+        )
+        return any(marker in error for marker in markers)
 
     @staticmethod
     def _send_failure_may_have_delivered(result_or_exc: Any) -> bool:
@@ -1793,6 +1822,7 @@ class GatewayStreamConsumer:
                     )
                     if result.success:
                         self._already_sent = True
+                        self._fallback_preview_missing = False
                         # Record any continuation fragments an oversized edit
                         # split off, so fresh-final can clean them all up.
                         self._track_preview_ids_from_result(result)
@@ -1824,6 +1854,9 @@ class GatewayStreamConsumer:
                         self._flood_strikes = 0
                         return True
                     else:
+                        self._fallback_preview_missing = (
+                            self._edit_failure_proves_preview_missing(result)
+                        )
                         if (
                             finalize
                             and is_turn_final

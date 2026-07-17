@@ -601,7 +601,18 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
+def _manual_run_should_detach() -> bool:
+    """True for persistent gateway sessions that can receive async delivery."""
+    try:
+        from gateway.session_context import async_delivery_supported, get_session_env
+
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip()
+        return bool(platform and async_delivery_supported())
+    except Exception:
+        return False
+
+
+def _execute_job_now(job: Dict[str, Any], *, wait: bool = True) -> Dict[str, Any]:
     """Execute a cron job immediately, outside the scheduler tick.
 
     Atomically claims the job first via ``claim_job_for_fire`` — the same
@@ -615,11 +626,16 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
     failure delivery, ``[SILENT]`` handling, and live-adapter delivery stay
     identical across paths and can't drift.
 
-    Returns {"claimed": bool, "success": bool, "error": str|None}.
+    When ``wait`` is false, dispatches through the scheduler's persistent pool
+    and returns as soon as the job has started. CLI/standalone callers keep the
+    historical synchronous behavior by using the default ``wait=True``.
+
+    Returns {"claimed": bool, "started": bool, "success": bool|None,
+    "error": str|None}.
     """
     job_id = job["id"]
     try:
-        from cron.scheduler import run_one_job
+        from cron.scheduler import run_one_job, submit_claimed_job
 
         # At-most-once claim: bail without running if a tick/other fire owns it.
         if not claim_job_for_fire(job_id):
@@ -634,7 +650,15 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
                 reason = "Job is paused/disabled; resume it before running."
             else:
                 reason = "Job is already being fired by the scheduler; not run again."
-            return {"claimed": False, "success": False, "error": reason}
+            return {"claimed": False, "started": False, "success": False, "error": reason}
+
+        if not wait:
+            future = submit_claimed_job(job)
+            if future is None:
+                error = "Cron scheduler could not start the claimed job."
+                mark_job_run(job_id, False, error)
+                return {"claimed": True, "started": False, "success": False, "error": error}
+            return {"claimed": True, "started": True, "success": None, "error": None}
 
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
@@ -643,6 +667,7 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
         ok = refreshed.get("last_status") == "ok"
         return {
             "claimed": True,
+            "started": True,
             "success": bool(processed and ok),
             "error": refreshed.get("last_error"),
         }
@@ -653,7 +678,7 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
             mark_job_run(job_id, False, str(e))
         except Exception:
             pass
-        return {"claimed": True, "success": False, "error": str(e)}
+        return {"claimed": True, "started": True, "success": False, "error": str(e)}
 
 
 def cronjob(
@@ -841,11 +866,16 @@ def cronjob(
             # no gateway/ticker is active (the #41037 case). The claim inside
             # _execute_job_now advances next_run_at and blocks a concurrent tick
             # from double-firing.
-            exec_result = _execute_job_now(job)
+            detached = _manual_run_should_detach()
+            exec_result = _execute_job_now(job, wait=not detached)
             # Re-read so the response reflects the post-run last_run_at/last_status.
             result = _format_job(get_job(job_id) or {"id": job_id})
             result["executed"] = exec_result.get("claimed", False)
-            result["execution_success"] = exec_result.get("success", False)
+            result["execution_started"] = exec_result.get("started", False)
+            if exec_result.get("success") is None:
+                result["execution_pending"] = True
+            else:
+                result["execution_success"] = exec_result.get("success", False)
             if not exec_result.get("claimed", False):
                 result["execution_skipped"] = exec_result.get("error") or (
                     "Already being fired by the scheduler; not run again."

@@ -59,6 +59,33 @@ class TestPersistentPool:
 class TestRunningJobGuard:
     """_running_job_ids prevents double-dispatch of active jobs."""
 
+    def test_submit_claimed_job_returns_before_completion_and_tracks_run(self, monkeypatch):
+        """Manual gateway dispatch uses the persistent pool and running set."""
+        import cron.scheduler as sched
+
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
+        sched._running_job_ids.clear()
+        job = {"id": "manual-job", "name": "manual", "prompt": "test"}
+        barrier = threading.Barrier(2, timeout=5)
+
+        def slow_run(_job, **_kwargs):
+            barrier.wait()
+            return True
+
+        monkeypatch.setattr(sched, "run_one_job", slow_run)
+
+        future = sched.submit_claimed_job(job)
+
+        assert future is not None
+        assert "manual-job" in sched.get_running_job_ids()
+        assert future.done() is False
+
+        barrier.wait()
+        assert future.result(timeout=5) is True
+        assert "manual-job" not in sched.get_running_job_ids()
+        sched._shutdown_parallel_pool()
+
     def test_running_set_prevents_double_dispatch(self, tmp_path, monkeypatch):
         """A job already in _running_job_ids is skipped on the next tick."""
         import cron.scheduler as sched

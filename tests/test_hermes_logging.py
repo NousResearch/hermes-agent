@@ -169,6 +169,43 @@ class TestSetupLogging:
         content = agent_log.read_text()
         assert "test message for agent.log" in content
 
+    def test_gateway_lifecycle_debug_is_safely_forwarded_to_gateway_log(
+        self, hermes_home
+    ):
+        from plugins.platforms.discord import adapter as discord_adapter
+
+        gateway_logger = logging.getLogger("discord.gateway")
+        client_logger = logging.getLogger("discord.client")
+        original_state = {
+            item: (item.level, list(item.filters))
+            for item in (gateway_logger, client_logger)
+        }
+        try:
+            hermes_logging.setup_logging(
+                hermes_home=hermes_home,
+                log_level="INFO",
+                mode="gateway",
+            )
+            discord_adapter._enable_discord_gateway_lifecycle_debug_logging()
+
+            gateway_logger.debug("Received RECONNECT opcode.")
+            client_logger.debug("Got a request to %s the websocket.", "RESUME")
+            gateway_logger.debug(
+                "For Shard ID %s: WebSocket Event: %s",
+                0,
+                {"content": "payload-test-sentinel"},
+            )
+            hermes_logging.flush_log_queue()
+
+            content = (hermes_home / "logs" / "gateway.log").read_text()
+            assert "Received RECONNECT opcode" in content
+            assert "Discord Gateway requested a RESUME websocket" in content
+            assert "payload-test-sentinel" not in content
+        finally:
+            for target_logger, (level, filters) in original_state.items():
+                target_logger.setLevel(level)
+                target_logger.filters[:] = filters
+
     def test_warnings_appear_in_both_logs(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home)
 

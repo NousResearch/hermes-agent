@@ -30,6 +30,70 @@ from typing import Callable, Dict, List, Optional, Any, Tuple
 logger = logging.getLogger(__name__)
 
 
+class _DiscordGatewayLifecycleFilter(logging.Filter):
+    """Keep only payload-free discord.py reconnect lifecycle diagnostics."""
+
+    _SAFE_MESSAGES = {
+        "Received RECONNECT opcode.",
+        "Timed out receiving packet. Attempting a reconnect.",
+    }
+    _CLOSE_MESSAGES = {
+        "Websocket closed with %s, attempting a reconnect.",
+        "Websocket closed with %s, cannot reconnect.",
+    }
+    _CLOSE_FRAME_TYPES = {"CLOSE", "CLOSED", "CLOSING"}
+
+    @staticmethod
+    def _safe_integer(value: object) -> str:
+        return str(value) if isinstance(value, int) and not isinstance(value, bool) else "unknown"
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno != logging.DEBUG:
+            return True
+        if not isinstance(record.msg, str):
+            return False
+        if record.msg in self._SAFE_MESSAGES:
+            logger.info("%s", record.msg)
+            return False
+        if record.msg == "Got a request to %s the websocket.":
+            operation = record.args[0] if isinstance(record.args, tuple) and record.args else None
+            safe_operation = operation if operation in {"IDENTIFY", "RESUME"} else "UNKNOWN"
+            logger.info("Discord Gateway requested a %s websocket.", safe_operation)
+            return False
+        if record.msg in self._CLOSE_MESSAGES:
+            code = record.args[0] if isinstance(record.args, tuple) and record.args else None
+            logger.info(record.msg, self._safe_integer(code))
+            return False
+        if record.msg == "Received %s":
+            frame = record.args[0] if isinstance(record.args, tuple) and record.args else None
+            try:
+                frame_type = getattr(getattr(frame, "type", None), "name", None)
+                code = getattr(frame, "data", None)
+            except Exception:
+                return False
+            if frame_type not in self._CLOSE_FRAME_TYPES:
+                return False
+            logger.info(
+                "Received Discord Gateway %s frame (code=%s)",
+                frame_type,
+                self._safe_integer(code),
+            )
+            return False
+        return False
+
+
+def _enable_discord_gateway_lifecycle_debug_logging() -> None:
+    """Enable bounded reconnect diagnostics without logging Gateway payloads."""
+    for logger_name in ("discord.gateway", "discord.client"):
+        lifecycle_logger = logging.getLogger(logger_name)
+        if not any(
+            isinstance(item, _DiscordGatewayLifecycleFilter)
+            for item in lifecycle_logger.filters
+        ):
+            lifecycle_logger.addFilter(_DiscordGatewayLifecycleFilter())
+        lifecycle_logger.setLevel(logging.DEBUG)
+
+
 class _Snowflake:
     """Minimal object exposing ``.id`` — satisfies discord.py's Snowflake
     protocol for ``channel.history(before=...)`` without constructing a
@@ -1073,6 +1137,8 @@ class DiscordAdapter(BasePlatformAdapter):
         if not DISCORD_AVAILABLE:
             logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)
             return False
+
+        _enable_discord_gateway_lifecycle_debug_logging()
 
         # Load opus codec for voice channel support
         if not discord.opus.is_loaded():

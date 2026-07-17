@@ -705,7 +705,7 @@ class TestGatewayRuntimeStatus:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         diagnostic = (
             "request failed at https://user:pass@example.invalid:8443/path?access_token=opaque#fragment "
-            "Bearer opaque-token-value-1234567890"
+            "Bearer x"
         )
 
         status.write_runtime_status(

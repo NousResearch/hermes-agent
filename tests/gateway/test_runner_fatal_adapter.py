@@ -11,7 +11,7 @@ from gateway.run import GatewayRunner
 
 _FATAL_DIAGNOSTIC = (
     "request failed at https://user:pass@example.invalid:8443/path?access_token=opaque#fragment "
-    "Bearer opaque-token-value-1234567890"
+    "Bearer x"
 )
 
 

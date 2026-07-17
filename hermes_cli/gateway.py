@@ -2774,14 +2774,12 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         "/sbin",
         "/bin",
     ]
-    # systemd's TimeoutStopSec must exceed the gateway's drain_timeout so
-    # there's budget left for post-interrupt cleanup (tool subprocess kill,
-    # adapter disconnect, session DB close) before systemd escalates to
-    # SIGKILL on the cgroup — otherwise bash/sleep tool-call children left
-    # by a force-interrupted agent get reaped by systemd instead of us
-    # (#8202). 30s of headroom covers the worst case we've observed.
+    # Preserve 30s for post-drain cleanup before systemd escalates, with a
+    # 60s minimum for installs that use the default immediate drain. Positive
+    # drain values extend the deadline directly instead of inheriting a second
+    # 60s floor, so a configured 45s drain yields 75s rather than 90s.
     _drain_timeout = int(_get_restart_drain_timeout() or 0)
-    restart_timeout = max(60, _drain_timeout) + 30
+    restart_timeout = max(60, _drain_timeout + 30)
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)

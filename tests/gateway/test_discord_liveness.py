@@ -9,6 +9,7 @@ heartbeat-latency state rather than ``fetch_user()``.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -142,6 +143,79 @@ def test_default_liveness_bounds_trigger_timed_recovery(monkeypatch):
     assert adapter._max_latency_seconds == 30.0
 
 
+def test_gateway_debug_logging_keeps_only_safe_lifecycle_events(caplog):
+    gateway_logger = logging.getLogger("discord.gateway")
+    client_logger = logging.getLogger("discord.client")
+    original_state = {
+        item: (item.level, list(item.filters))
+        for item in (gateway_logger, client_logger)
+    }
+    try:
+        discord_platform._enable_discord_gateway_lifecycle_debug_logging()
+        discord_platform._enable_discord_gateway_lifecycle_debug_logging()
+        caplog.set_level(logging.INFO, logger=discord_platform.logger.name)
+
+        gateway_logger.debug("Received RECONNECT opcode.")
+        gateway_logger.debug(
+            "Websocket closed with %s, attempting a reconnect.",
+            1000,
+        )
+        gateway_logger.debug(
+            "Received %s",
+            SimpleNamespace(
+                type=SimpleNamespace(name="CLOSE"),
+                data=1000,
+                extra="close-test-sentinel",
+            ),
+        )
+        gateway_logger.debug(
+            "For Shard ID %s: WebSocket Event: %s",
+            0,
+            {"content": "payload-test-sentinel"},
+        )
+        gateway_logger.info("Gateway lifecycle info remains visible")
+        client_logger.debug("Got a request to %s the websocket.", "RESUME")
+        client_logger.debug(
+            "Got a request to %s the websocket.",
+            {"value": "operation-test-sentinel"},
+        )
+        gateway_logger.debug(
+            "Websocket closed with %s, cannot reconnect.",
+            "code-test-sentinel",
+        )
+        client_logger.debug("Discord client payload: %s", "client-test-sentinel")
+
+        assert "Received RECONNECT opcode" in caplog.text
+        assert "Discord Gateway requested a RESUME websocket" in caplog.text
+        assert "Discord Gateway requested a UNKNOWN websocket" in caplog.text
+        assert "Websocket closed with unknown, cannot reconnect" in caplog.text
+        assert "operation-test-sentinel" not in caplog.text
+        assert "code-test-sentinel" not in caplog.text
+        assert "client-test-sentinel" not in caplog.text
+        assert "Websocket closed with 1000" in caplog.text
+        assert "Received Discord Gateway CLOSE frame (code=1000)" in caplog.text
+        assert "close-test-sentinel" not in caplog.text
+        assert "payload-test-sentinel" not in caplog.text
+        assert "Gateway lifecycle info remains visible" in caplog.text
+        reconnect_records = [
+            record
+            for record in caplog.records
+            if "Received RECONNECT opcode" in record.getMessage()
+        ]
+        assert len(reconnect_records) == 1
+        assert reconnect_records[0].levelno == logging.INFO
+        assert reconnect_records[0].name == discord_platform.logger.name
+        for target_logger in (gateway_logger, client_logger):
+            assert sum(
+                isinstance(item, discord_platform._DiscordGatewayLifecycleFilter)
+                for item in target_logger.filters
+            ) == 1
+    finally:
+        for target_logger, (level, filters) in original_state.items():
+            target_logger.setLevel(level)
+            target_logger.filters[:] = filters
+
+
 def test_platform_config_extra_overrides_process_liveness_bridge(monkeypatch):
     monkeypatch.setenv("HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS", "99")
     monkeypatch.setenv("HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD", "9")
@@ -269,7 +343,7 @@ async def test_bot_task_exit_redacts_diagnostic_before_logging_and_notification(
     adapter = _make_adapter(monkeypatch)
     diagnostic = (
         "request failed at https://user:pass@example.invalid:8443/path?access_token=opaque#fragment "
-        "Bearer opaque-token-value-1234567890"
+        "Bearer x"
     )
     adapter._running = True
     adapter._notify_fatal_error = AsyncMock()

@@ -75,7 +75,7 @@ def test_runtime_health_lines_redact_and_flatten_untrusted_reason(monkeypatch):
 def test_runtime_health_lines_strip_url_credentials_and_query_values(monkeypatch):
     diagnostic = (
         "request failed at https://user:pass@example.invalid:8443/path?access_token=opaque#fragment "
-        "Bearer opaque-token-value-1234567890"
+        "Bearer x"
     )
     monkeypatch.setattr(
         "gateway.status.read_runtime_status",

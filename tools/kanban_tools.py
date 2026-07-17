@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -1018,17 +1019,181 @@ def _handle_attach_url(args: dict, **kw) -> str:
         return tool_error(f"kanban_attach_url: {e}")
 
 
+_ATTACHMENT_READ_DEFAULT_CHARS = 32_000
+_ATTACHMENT_READ_MAX_CHARS = 100_000
+_TEXT_ATTACHMENT_SUFFIXES = frozenset({
+    ".cfg", ".conf", ".css", ".csv", ".htm", ".html", ".ini", ".js",
+    ".json", ".jsx", ".log", ".md", ".markdown", ".py", ".rst", ".sh",
+    ".sql", ".toml", ".ts", ".tsv", ".tsx", ".txt", ".xml", ".yaml",
+    ".yml",
+})
+_TEXT_ATTACHMENT_CONTENT_TYPES = frozenset({
+    "application/json",
+    "application/toml",
+    "application/xml",
+    "application/yaml",
+})
+
+
+def _attachment_is_text(att) -> bool:
+    content_type = (att.content_type or "").split(";", 1)[0].strip().lower()
+    return (
+        content_type.startswith("text/")
+        or content_type in _TEXT_ATTACHMENT_CONTENT_TYPES
+        or content_type.endswith("+json")
+        or Path(att.filename).suffix.lower() in _TEXT_ATTACHMENT_SUFFIXES
+    )
+
+
+def _worker_can_read_attachment_task(task_id: str) -> bool:
+    """Authorize against the immutable ancestor snapshot stamped at spawn."""
+    worker_task = os.environ.get("HERMES_KANBAN_TASK")
+    if not worker_task:
+        return True
+    if task_id == worker_task:
+        return True
+    try:
+        ancestors = json.loads(os.environ.get("HERMES_KANBAN_ANCESTORS", "[]"))
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(ancestors, list):
+        return False
+    return task_id in {str(ancestor) for ancestor in ancestors}
+
+
+def _parse_attachment_page_arg(
+    args: dict, name: str, *, default: int, minimum: int, maximum: Optional[int] = None
+) -> tuple[Optional[int], Optional[str]]:
+    value = args.get(name, default)
+    if isinstance(value, bool):
+        return None, f"{name} must be an integer"
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None, f"{name} must be an integer"
+    if parsed < minimum:
+        return None, f"{name} must be at least {minimum}"
+    if maximum is not None and parsed > maximum:
+        return None, f"{name} must be at most {maximum}"
+    return parsed, None
+
+
 def _handle_attachments(args: dict, **kw) -> str:
-    """List a task's attachments (read-only; no ownership restriction)."""
-    tid = _default_task_id(args.get("task_id"))
-    if not tid:
+    """List attachments or read one task-scoped UTF-8 text attachment."""
+    requested_tid = args.get("task_id")
+    tid = _default_task_id(requested_tid)
+    attachment_id = args.get("attachment_id")
+    if not tid and attachment_id is None:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
     board = args.get("board")
     try:
+        if os.environ.get("HERMES_KANBAN_TASK") and board is not None:
+            from hermes_cli import kanban_db as kb
+
+            worker_board = os.environ.get("HERMES_KANBAN_BOARD")
+            worker_db = kb.kanban_db_path(worker_board).resolve()
+            requested_db = kb.kanban_db_path(board).resolve()
+            if requested_db != worker_db:
+                return tool_error(
+                    f"worker board is pinned to {worker_board or 'default'}; "
+                    f"refusing to read board {board}"
+                )
         kb, conn = _connect(board=board)
         try:
+            if attachment_id is not None:
+                try:
+                    attachment_id = int(attachment_id)
+                except (TypeError, ValueError):
+                    return tool_error("attachment_id must be an integer")
+                att = kb.get_attachment(conn, attachment_id)
+                if att is None:
+                    return tool_error(f"attachment {attachment_id} not found")
+                if requested_tid and att.task_id != requested_tid:
+                    return tool_error(
+                        f"attachment {attachment_id} not found on task {requested_tid}"
+                    )
+                if not _worker_can_read_attachment_task(att.task_id):
+                    return tool_error(
+                        f"attachment {attachment_id} is not on the current task or an ancestor"
+                    )
+                if kb.get_task(conn, att.task_id) is None:
+                    return tool_error(f"task {att.task_id} not found")
+                if not _attachment_is_text(att):
+                    return tool_error(
+                        f"attachment {attachment_id} is not a supported text file"
+                    )
+
+                offset, error = _parse_attachment_page_arg(
+                    args, "offset", default=0, minimum=0
+                )
+                if error:
+                    return tool_error(error)
+                assert offset is not None
+                limit, error = _parse_attachment_page_arg(
+                    args,
+                    "limit",
+                    default=_ATTACHMENT_READ_DEFAULT_CHARS,
+                    minimum=1,
+                    maximum=_ATTACHMENT_READ_MAX_CHARS,
+                )
+                if error:
+                    return tool_error(error)
+                assert limit is not None
+
+                expected_dir = kb.task_attachments_dir(
+                    att.task_id, board=board
+                )
+                path = Path(att.stored_path)
+                try:
+                    expected_dir_resolved = expected_dir.resolve(strict=True)
+                    resolved = path.resolve(strict=True)
+                except OSError as e:
+                    return tool_error(
+                        f"attachment {attachment_id} cannot be read: {e}"
+                    )
+                if (
+                    expected_dir.is_symlink()
+                    or path.is_symlink()
+                    or path.parent != expected_dir_resolved
+                    or resolved.parent != expected_dir_resolved
+                    or not resolved.is_file()
+                ):
+                    return tool_error(
+                        f"attachment {attachment_id} is outside task attachment storage"
+                    )
+                try:
+                    content = resolved.read_text(encoding="utf-8-sig")
+                except (OSError, UnicodeError) as e:
+                    return tool_error(
+                        f"attachment {attachment_id} cannot be read as UTF-8 text: {e}"
+                    )
+                if "\x00" in content:
+                    return tool_error(
+                        f"attachment {attachment_id} is not a supported text file"
+                    )
+
+                end = min(len(content), offset + limit)
+                next_offset = end if end < len(content) else None
+                return json.dumps({
+                    "ok": True,
+                    "task_id": att.task_id,
+                    "attachment": {
+                        "id": att.id,
+                        "filename": att.filename,
+                        "content_type": att.content_type,
+                        "size": att.size,
+                        "uploaded_by": att.uploaded_by,
+                        "created_at": att.created_at,
+                    },
+                    "content": content[offset:end],
+                    "offset": offset,
+                    "next_offset": next_offset,
+                    "truncated": next_offset is not None,
+                    "total_chars": len(content),
+                }, ensure_ascii=False)
+
             if kb.get_task(conn, tid) is None:
                 return tool_error(f"task {tid} not found")
             atts = kb.list_attachments(conn, tid)
@@ -1695,15 +1860,36 @@ KANBAN_ATTACH_URL_SCHEMA = {
 KANBAN_ATTACHMENTS_SCHEMA = {
     "name": "kanban_attachments",
     "description": (
-        "List the files attached to a task: id, filename, content_type, "
-        "size, who uploaded it, and the absolute on-disk path you can read."
+        "List files attached to a task. Pass attachment_id to read one UTF-8 "
+        "text attachment from the current task or an ancestor captured at dispatch "
+        "general filesystem tools. Continue from next_offset until it is null."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "task_id": {
                 "type": "string",
-                "description": _DESC_TASK_ID_DEFAULT,
+                "description": (
+                    "Task to list, or optional owner check when reading by "
+                    "attachment_id. Defaults to HERMES_KANBAN_TASK when listing."
+                ),
+            },
+            "attachment_id": {
+                "type": "integer",
+                "description": "Optional attachment id to read as UTF-8 text.",
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Character offset for attachment text (default 0).",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100000,
+                "description": (
+                    "Maximum characters to return (default 32000, max 100000)."
+                ),
             },
             "board": _board_schema_prop(),
         },

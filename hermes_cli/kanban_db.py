@@ -573,11 +573,11 @@ def attachments_root(board: Optional[str] = None) -> Path:
     ``default`` uses ``<root>/kanban/attachments/``; other boards use
     ``<root>/kanban/boards/<slug>/attachments/``.
 
-    Workers (which run with full file-tool access) read attached files
-    by the absolute path surfaced in :func:`build_worker_context`. On the
-    local terminal backend — the default for kanban — that path resolves
-    directly. Remote backends (Docker/Modal) need this directory mounted;
-    see the kanban docs.
+    Worker context surfaces each absolute path for profiles with file-tool
+    access. Restricted workers can read supported text attachments through
+    ``kanban_attachments`` instead. Remote file-tool backends (Docker/Modal)
+    still need this directory mounted when they use the absolute path; see
+    the kanban docs.
     """
     override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
     if override:
@@ -1235,8 +1235,8 @@ CREATE TABLE IF NOT EXISTS task_runs (
 -- lives on disk under ``attachments_root(board)/<task_id>/<stored_name>``;
 -- this row carries metadata + the absolute ``stored_path`` so the
 -- dashboard can list/download and ``build_worker_context`` can surface
--- the absolute path to the worker (which has full file-tool access). See
--- #35338.
+-- the absolute path to the worker. Restricted workers read supported text
+-- through the task-scoped ``kanban_attachments`` tool. See #35338.
 CREATE TABLE IF NOT EXISTS task_attachments (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id      TEXT NOT NULL,
@@ -2891,6 +2891,23 @@ def parent_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
         (task_id,),
     ).fetchall()
     return [r["parent_id"] for r in rows]
+
+
+def transitive_parent_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Return a deterministic breadth-first snapshot of all task ancestors."""
+    pending = list(parent_ids(conn, task_id))
+    seen: set[str] = set()
+    ancestors: list[str] = []
+    cursor = 0
+    while cursor < len(pending):
+        parent_id = pending[cursor]
+        cursor += 1
+        if parent_id in seen:
+            continue
+        seen.add(parent_id)
+        ancestors.append(parent_id)
+        pending.extend(parent_ids(conn, parent_id))
+    return ancestors
 
 
 def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
@@ -8216,6 +8233,13 @@ def _default_spawn(
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
+    # Snapshot readable upstream evidence before the worker starts. The live
+    # graph is mutable through kanban_link, so it cannot be an authorization
+    # boundary for task-scoped attachment reads after dispatch.
+    with connect(board=board) as ancestor_conn:
+        env["HERMES_KANBAN_ANCESTORS"] = json.dumps(
+            transitive_parent_ids(ancestor_conn, task.id)
+        )
     env["HERMES_KANBAN_WORKSPACE"] = workspace
     # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and
     # context-file loader anchor on the workspace, not whatever cwd the

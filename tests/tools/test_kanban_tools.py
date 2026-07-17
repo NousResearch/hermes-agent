@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any, cast
 
 import pytest
 
@@ -78,14 +79,28 @@ def test_kanban_worker_env_overrides_profile_toolset_filter(monkeypatch, tmp_pat
     invalidate_check_fn_cache()
     _clear_tool_defs_cache()
     schema = get_tool_definitions(
-        enabled_toolsets=["terminal"],
+        enabled_toolsets=["web"],
+        disabled_toolsets=["file", "terminal"],
         quiet_mode=True,
     )
     names = {s["function"].get("name") for s in schema if "function" in s}
     assert "kanban_show" in names
     assert "kanban_complete" in names
     assert "kanban_block" in names
+    assert "kanban_attachments" in names
     assert "kanban_list" not in names
+    assert {"read_file", "write_file", "patch", "terminal"}.isdisjoint(names)
+
+
+def test_kanban_attachment_reader_schema_exposes_pagination():
+    from tools import kanban_tools as kt
+
+    parameters = cast(dict[str, Any], kt.KANBAN_ATTACHMENTS_SCHEMA["parameters"])
+    properties = cast(dict[str, Any], parameters["properties"])
+    assert {"attachment_id", "offset", "limit"}.issubset(properties)
+    assert properties["offset"]["minimum"] == 0
+    assert properties["limit"]["minimum"] == 1
+    assert properties["limit"]["maximum"] == 100_000
 
 
 def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_path):
@@ -170,6 +185,7 @@ def worker_env(monkeypatch, tmp_path):
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_ANCESTORS", "[]")
     return tid
 
 
@@ -2398,6 +2414,269 @@ def test_attachments_unknown_task_errors(worker_env):
     from tools import kanban_tools as kt
 
     out = kt._handle_attachments({"task_id": "t_nope"})
+    assert "error" in json.loads(out)
+
+
+def test_attachments_reads_text_attachment_without_file_tool(worker_env):
+    """A restricted worker can read task evidence through the Kanban surface."""
+    import base64
+
+    from tools import kanban_tools as kt
+
+    content = "section one\nsection two — verified\n"
+    attached = json.loads(kt._handle_attach({
+        "filename": "review.md",
+        "content_base64": base64.b64encode(content.encode()).decode(),
+        "content_type": "text/markdown",
+    }))
+
+    out = kt._handle_attachments({"attachment_id": attached["attachment_id"]})
+    d = json.loads(out)
+
+    assert d["ok"] is True, out
+    assert d["attachment"]["filename"] == "review.md"
+    assert d["content"] == content
+    assert d["offset"] == 0
+    assert d["next_offset"] is None
+    assert d["truncated"] is False
+
+
+def test_attachments_reads_transitive_ancestor_attachment(worker_env, monkeypatch):
+    """Review tasks can consume evidence produced anywhere in their ancestry."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        grandparent = kb.create_task(conn, title="source brief", assignee="researcher")
+        parent = kb.create_task(conn, title="script", assignee="writer")
+        kb.link_tasks(conn, grandparent, parent)
+        kb.link_tasks(conn, parent, worker_env)
+        attachment_id = kb.store_attachment_bytes(
+            conn,
+            grandparent,
+            "source.md",
+            b"canonical source evidence",
+            content_type="text/markdown",
+        )
+    finally:
+        conn.close()
+
+    monkeypatch.setenv(
+        "HERMES_KANBAN_ANCESTORS", json.dumps([parent, grandparent])
+    )
+    out = kt._handle_attachments({"attachment_id": attachment_id})
+    d = json.loads(out)
+
+    assert d["ok"] is True, out
+    assert d["task_id"] == grandparent
+    assert d["content"] == "canonical source evidence"
+
+
+def test_attachments_rejects_unrelated_task_attachment(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        unrelated = kb.create_task(conn, title="unrelated", assignee="peer")
+        attachment_id = kb.store_attachment_bytes(
+            conn,
+            unrelated,
+            "private.md",
+            b"not part of this handoff",
+            content_type="text/markdown",
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_attachments({"attachment_id": attachment_id})
+    assert "current task or an ancestor" in json.loads(out)["error"]
+
+
+def test_attachments_linking_task_after_spawn_does_not_widen_access(worker_env):
+    """The worker's spawn-time ancestor snapshot is the read boundary."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        unrelated = kb.create_task(conn, title="late parent", assignee="peer")
+        attachment_id = kb.store_attachment_bytes(
+            conn,
+            unrelated,
+            "late.md",
+            b"must remain unreadable",
+            content_type="text/markdown",
+        )
+    finally:
+        conn.close()
+
+    linked = json.loads(kt._handle_link({
+        "parent_id": unrelated,
+        "child_id": worker_env,
+    }))
+    assert linked["ok"] is True
+
+    out = kt._handle_attachments({"attachment_id": attachment_id})
+    assert "current task or an ancestor" in json.loads(out)["error"]
+
+
+def test_attachments_paginates_utf8_text_and_infers_markdown(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    content = "αβγδεζηθ"
+    conn = kb.connect()
+    try:
+        attachment_id = kb.store_attachment_bytes(
+            conn,
+            worker_env,
+            "unicode.md",
+            content.encode(),
+            content_type=None,
+        )
+    finally:
+        conn.close()
+
+    first_raw = kt._handle_attachments({
+        "attachment_id": attachment_id,
+        "offset": 2,
+        "limit": 3,
+    })
+    assert "γδε" in first_raw
+    first = json.loads(first_raw)
+    assert first["content"] == "γδε"
+    assert first["offset"] == 2
+    assert first["next_offset"] == 5
+    assert first["truncated"] is True
+    assert first["total_chars"] == len(content)
+
+    final = json.loads(kt._handle_attachments({
+        "attachment_id": attachment_id,
+        "offset": first["next_offset"],
+        "limit": 10,
+    }))
+    assert final["content"] == "ζηθ"
+    assert final["next_offset"] is None
+    assert final["truncated"] is False
+
+
+def test_attachments_rejects_binary_and_noncanonical_paths(worker_env, tmp_path):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        binary_id = kb.store_attachment_bytes(
+            conn,
+            worker_env,
+            "payload.bin",
+            b"\x00\xff\x01",
+            content_type="application/octet-stream",
+        )
+        outside = tmp_path / "outside.md"
+        outside.write_text("must stay unread")
+        outside_id = kb.add_attachment(
+            conn,
+            worker_env,
+            filename="outside.md",
+            stored_path=str(outside),
+            content_type="text/markdown",
+            size=outside.stat().st_size,
+        )
+    finally:
+        conn.close()
+
+    binary = json.loads(kt._handle_attachments({"attachment_id": binary_id}))
+    assert "supported text file" in binary["error"]
+
+    outside_result = json.loads(kt._handle_attachments({"attachment_id": outside_id}))
+    assert "outside task attachment storage" in outside_result["error"]
+
+
+def test_attachments_accepts_resolved_attachment_root_symlink(
+    worker_env, tmp_path, monkeypatch
+):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    real_root = tmp_path / "real-attachments"
+    real_root.mkdir()
+    linked_root = tmp_path / "linked-attachments"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+    monkeypatch.setenv("HERMES_KANBAN_ATTACHMENTS_ROOT", str(linked_root))
+
+    conn = kb.connect()
+    try:
+        attachment_id = kb.store_attachment_bytes(
+            conn,
+            worker_env,
+            "linked-root.md",
+            b"valid evidence",
+            content_type="text/markdown",
+        )
+    finally:
+        conn.close()
+
+    out = json.loads(kt._handle_attachments({"attachment_id": attachment_id}))
+    assert out["ok"] is True, out
+    assert out["content"] == "valid evidence"
+
+
+def test_attachments_rejects_cross_board_reads(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kb.init_db(board="other")
+    conn = kb.connect(board="other")
+    try:
+        other_task = kb.create_task(conn, title="other board", assignee="peer")
+        attachment_id = kb.store_attachment_bytes(
+            conn,
+            other_task,
+            "other.md",
+            b"other board evidence",
+            content_type="text/markdown",
+            board="other",
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_attachments({
+        "board": "other",
+        "task_id": other_task,
+        "attachment_id": attachment_id,
+    })
+    assert "worker board" in json.loads(out)["error"]
+
+
+def test_attachments_cross_board_denial_does_not_create_board(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    forbidden_db = kb.kanban_db_path("forbidden")
+    assert not forbidden_db.exists()
+
+    out = kt._handle_attachments({
+        "board": "forbidden",
+        "task_id": worker_env,
+        "attachment_id": 1,
+    })
+
+    assert "worker board" in json.loads(out)["error"]
+    assert not forbidden_db.exists()
+
+
+def test_attachments_invalid_board_returns_tool_error(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_attachments({
+        "board": "../invalid",
+        "task_id": worker_env,
+        "attachment_id": 1,
+    })
+
     assert "error" in json.loads(out)
 
 

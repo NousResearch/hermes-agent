@@ -3143,7 +3143,47 @@ class TestSharedBoardPaths:
             default_home / "kanban" / "workspaces"
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
+        assert env["HERMES_KANBAN_ANCESTORS"] == "[]"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
+
+    def test_dispatcher_spawn_snapshots_transitive_ancestors(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        with kb.connect() as conn:
+            grandparent = kb.create_task(
+                conn, title="source", assignee="researcher"
+            )
+            parent = kb.create_task(
+                conn, title="draft", assignee="writer", parents=[grandparent]
+            )
+            task_id = kb.create_task(
+                conn, title="review", assignee="reviewer", parents=[parent]
+            )
+            task = kb.get_task(conn, task_id)
+        assert task is not None
+
+        kb._default_spawn(task, str(workspace))
+
+        assert json.loads(captured["env"]["HERMES_KANBAN_ANCESTORS"]) == [
+            parent,
+            grandparent,
+        ]
 
 
 # ---------------------------------------------------------------------------

@@ -204,7 +204,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 | Command | Description |
 |---------|-------------|
-| `/start` | Platform-protocol command. Many chat platforms (Telegram, Discord, …) send `/start` automatically the first time a user opens a bot conversation. Hermes acknowledges the ping silently — no agent reply, no session burn — so first-contact handshakes don't waste a turn. You can also send it explicitly to confirm the gateway is reachable. |
+| `/start` | Platform-protocol command. Many chat platforms (Telegram, Discord, …) send `/start` automatically the first time a user opens a bot conversation. On first contact (no agent running) Hermes replies with a short welcome — confirmation the bot is listening, the basic commands (`/help`, `/status`, `/new`), and whether a home channel is set — without burning an agent turn. While an agent is running, `/start` is still acknowledged silently so it can't interrupt or inject into the session. You can also send it explicitly to confirm the gateway is reachable. |
 | `/new [name]` (alias: `/reset`) | Start a new session (fresh session ID + history). Optional `[name]` sets the initial session title. Append `now`, `--yes`, or `-y` to skip the confirmation modal — e.g. `/reset now`, `/new --yes my-experiment`. |
 | `/status` | Show session info, followed by a local **Session recap** block (recent turn counts, top tools used, files touched, latest prompt + reply). |
 | `/stop` | Kill all running background processes and interrupt the running agent. |

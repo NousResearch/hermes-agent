@@ -864,8 +864,8 @@ class CLICommandsMixin:
         explore a different approach without losing the original session state.
         Inspired by Claude Code's /branch command.
 
-        ``--thread`` is gateway-only (Discord/Telegram/Slack). On CLI it is
-        rejected so the flag is never stored as a branch title.
+        Gateway-only flags (``--here``) are stripped so they never become titles.
+        CLI always branches in-place (no platform threads).
         """
         from cli import _cprint, _sync_process_session_id
         if not self.conversation_history:
@@ -880,12 +880,8 @@ class CLICommandsMixin:
         parts = cmd_original.split(None, 1)
         raw_args = parts[1].strip() if len(parts) > 1 else ""
         from gateway.slash_commands import _parse_branch_command_args
-        want_thread, branch_name = _parse_branch_command_args(raw_args)
-        if want_thread:
-            # ponytail: CLI has no platform threads; refuse rather than title="--thread"
-            _cprint("  /branch --thread is only available on Discord, Telegram, and Slack.")
-            _cprint("  In CLI use: /branch [name]")
-            return
+        # stay_here ignored on CLI — always in-place; just strip known flags.
+        _stay_here, branch_name = _parse_branch_command_args(raw_args)
 
         # Generate the new session ID
         now = datetime.now()

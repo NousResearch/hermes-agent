@@ -96,8 +96,8 @@ gateway:
     thread_no_parent:      "Cannot create a thread here — need a parent channel (DMs and nested threads are unsupported)."
     thread_create_failed:  "Could not create a thread for the branch: {error}"
     thread_switch_failed:  "Thread created and branch session ready, but binding failed.\nThread: {thread}\nBranch: `{new}` — try messaging in the new thread or `/resume {new}`."
-    branched_thread_one:   "⑂ Branched to **{title}** in a new thread ({count} message copied)\nThread: {thread}\nOriginal: `{parent}` (this chat stays on it)\nBranch: `{new}`"
-    branched_thread_many:  "⑂ Branched to **{title}** in a new thread ({count} messages copied)\nThread: {thread}\nOriginal: `{parent}` (this chat stays on it)\nBranch: `{new}`"
+    branched_thread_one:   "⑂ Branched to **{title}** in a new thread ({count} message copied)\nThread: {thread}\nOriginal: `{parent}` (this chat stays on it)\nBranch: `{new}`\nUse `/branch --here` to keep the next branch on this surface."
+    branched_thread_many:  "⑂ Branched to **{title}** in a new thread ({count} messages copied)\nThread: {thread}\nOriginal: `{parent}` (this chat stays on it)\nBranch: `{new}`\nUse `/branch --here` to keep the next branch on this surface."
 
   commands:
     usage:                 "Usage: `/commands [page]`"

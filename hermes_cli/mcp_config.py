@@ -297,6 +297,7 @@ def _probe_single_server(
         _connect_server,
         _stop_mcp_loop_if_idle,
         _parse_boolish,
+        _paginate_full_list,
     )
 
     config = _resolve_mcp_server_config(config)
@@ -352,17 +353,27 @@ def _probe_single_server(
                     return getattr(advertised_caps, cap_attr, None) is not None
 
                 # Capability probes are best-effort: servers without the
-                # capability raise, which just means "0".
+                # capability raise, which just means "0". Drain nextCursor
+                # pagination so the reported counts match what the agent will
+                # actually see — the tool count above already comes from the
+                # paginated discovery (server._tools), so a page-1-only prompt/
+                # resource count here would understate a paginated server.
                 if prompts_enabled and _advertises("prompts"):
                     try:
-                        result = await server.session.list_prompts()
-                        details["prompts"] = len(result.prompts)
+                        async with server._rpc_lock:
+                            all_prompts = await _paginate_full_list(
+                                server.session.list_prompts, "prompts", name
+                            )
+                        details["prompts"] = len(all_prompts)
                     except Exception:
                         pass
                 if resources_enabled and _advertises("resources"):
                     try:
-                        result = await server.session.list_resources()
-                        details["resources"] = len(result.resources)
+                        async with server._rpc_lock:
+                            all_resources = await _paginate_full_list(
+                                server.session.list_resources, "resources", name
+                            )
+                        details["resources"] = len(all_resources)
                     except Exception:
                         pass
         finally:

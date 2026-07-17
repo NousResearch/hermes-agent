@@ -130,6 +130,12 @@ docs/superpowers/*
 # treat it as a local edit and autostash it on every run (#38529).
 .hermes-bootstrap-complete
 
+# Installer-created runtime stamp written by scripts/install.sh into the managed
+# checkout root. It is Hermes-managed runtime state, never a code change — ignore
+# so `git status --porcelain` stays clean and `hermes update`'s stash operations
+# skip it (#66189).
+.install_method
+
 # Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
 .hermes-sandbox/
 

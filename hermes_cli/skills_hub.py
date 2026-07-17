@@ -27,6 +27,10 @@ from agent.skill_utils import is_excluded_skill_path
 
 _console = Console()
 
+SKILL_SIZE_WARN_CHARS = 25_000
+SKILL_SIZE_LARGE_CHARS = 50_000
+SKILL_SIZE_OVERSIZED_CHARS = 100_000
+
 
 def _display_source(r) -> str:
     """Human-facing source label for a result row.
@@ -1020,6 +1024,237 @@ def do_list(source_filter: str = "all",
     c.print(summary)
 
 
+def _skill_size_level(chars: int) -> str:
+    if chars >= SKILL_SIZE_OVERSIZED_CHARS:
+        return "oversized"
+    if chars >= SKILL_SIZE_LARGE_CHARS:
+        return "large"
+    if chars >= SKILL_SIZE_WARN_CHARS:
+        return "warn"
+    return "ok"
+
+
+def _skill_size_source(
+    *,
+    name: str,
+    scan_dir: Path,
+    local_skills_dir: Path,
+    hub_installed: Dict[str, Any],
+    builtin_names: set[str],
+) -> str:
+    if name in hub_installed:
+        return "hub"
+    if name in builtin_names:
+        return "builtin"
+    try:
+        scan_dir.resolve().relative_to(local_skills_dir.resolve())
+        return "local"
+    except Exception:
+        return "external"
+
+
+def _skill_category_for_path(skill_md: Path, scan_dir: Path) -> str:
+    try:
+        rel_parent = skill_md.parent.relative_to(scan_dir)
+    except ValueError:
+        return ""
+    parts = rel_parent.parts
+    if len(parts) <= 1:
+        return ""
+    return "/".join(parts[:-1])
+
+
+def collect_skill_size_audit(
+    *,
+    source_filter: str = "all",
+    min_chars: int = 0,
+) -> Dict[str, Any]:
+    """Return installed SKILL.md size diagnostics without loading skills.
+
+    This is intentionally filesystem-based rather than ``skill_view``-based:
+    the point is to inspect large skill bodies without injecting their full
+    contents into an agent conversation.
+    """
+    from agent.skill_utils import get_all_skills_dirs, iter_skill_index_files, parse_frontmatter
+    from hermes_constants import get_skills_dir
+    from tools.skills_hub import HubLockFile, ensure_hub_dirs
+    from tools.skills_sync import _read_manifest
+
+    ensure_hub_dirs()
+    local_skills_dir = get_skills_dir()
+    hub_installed = {e["name"]: e for e in HubLockFile().list_installed()}
+    builtin_names = set(_read_manifest())
+
+    entries: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+
+    for scan_dir in get_all_skills_dirs():
+        if not scan_dir.exists():
+            continue
+        for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
+            try:
+                key = str(skill_md.resolve())
+            except Exception:
+                key = str(skill_md)
+            if key in seen_paths:
+                continue
+            seen_paths.add(key)
+
+            parse_error = ""
+            try:
+                content = skill_md.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                content = ""
+                parse_error = str(exc)
+
+            frontmatter: dict[str, Any] = {}
+            if content:
+                try:
+                    frontmatter, _body = parse_frontmatter(content)
+                except Exception as exc:
+                    parse_error = str(exc)
+
+            name = str(frontmatter.get("name") or skill_md.parent.name)
+            description = str(frontmatter.get("description") or "")
+            chars = len(content)
+            if chars < min_chars:
+                continue
+
+            source = _skill_size_source(
+                name=name,
+                scan_dir=scan_dir,
+                local_skills_dir=local_skills_dir,
+                hub_installed=hub_installed,
+                builtin_names=builtin_names,
+            )
+            if source_filter != "all" and source != source_filter:
+                continue
+
+            try:
+                byte_count = skill_md.stat().st_size
+            except OSError:
+                byte_count = len(content.encode("utf-8"))
+
+            skill_dir = skill_md.parent
+            references_dir = skill_dir / "references"
+            scripts_dir = skill_dir / "scripts"
+
+            entries.append(
+                {
+                    "name": name,
+                    "category": _skill_category_for_path(skill_md, scan_dir),
+                    "source": source,
+                    "chars": chars,
+                    "bytes": byte_count,
+                    "lines": content.count("\n") + (1 if content else 0),
+                    "description_chars": len(description),
+                    "level": _skill_size_level(chars),
+                    "has_references": references_dir.is_dir(),
+                    "has_scripts": scripts_dir.is_dir(),
+                    "path": str(skill_md),
+                    "parse_error": parse_error,
+                }
+            )
+
+    entries.sort(key=lambda e: (e["chars"], e["bytes"], e["name"]), reverse=True)
+    totals = {
+        "skills": len(entries),
+        "chars": sum(int(e["chars"]) for e in entries),
+        "bytes": sum(int(e["bytes"]) for e in entries),
+        "warn_or_larger": sum(1 for e in entries if e["level"] != "ok"),
+        "large_or_larger": sum(1 for e in entries if e["level"] in {"large", "oversized"}),
+        "oversized": sum(1 for e in entries if e["level"] == "oversized"),
+    }
+    return {
+        "thresholds": {
+            "warn_chars": SKILL_SIZE_WARN_CHARS,
+            "large_chars": SKILL_SIZE_LARGE_CHARS,
+            "oversized_chars": SKILL_SIZE_OVERSIZED_CHARS,
+        },
+        "totals": totals,
+        "skills": entries,
+    }
+
+
+def do_audit_size(
+    *,
+    source_filter: str = "all",
+    min_chars: int = 0,
+    limit: int = 20,
+    as_json: bool = False,
+    console: Optional[Console] = None,
+) -> None:
+    """Show installed SKILL.md size diagnostics."""
+    c = console or _console
+    data = collect_skill_size_audit(
+        source_filter=source_filter,
+        min_chars=max(0, min_chars),
+    )
+
+    if limit and limit > 0:
+        shown = data["skills"][:limit]
+    else:
+        shown = data["skills"]
+
+    if as_json:
+        payload = dict(data)
+        payload["skills"] = shown
+        payload["shown"] = len(shown)
+        c.print(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            markup=False,
+            highlight=False,
+            soft_wrap=True,
+        )
+        return
+
+    title = "Skill Size Audit"
+    if source_filter != "all":
+        title += f" ({source_filter})"
+    table = Table(title=title)
+    table.add_column("Name", style="bold cyan", overflow="fold")
+    table.add_column("Category", style="dim")
+    table.add_column("Source", style="dim")
+    table.add_column("Level", style="dim")
+    table.add_column("Chars", justify="right")
+    table.add_column("Lines", justify="right")
+    table.add_column("Desc", justify="right")
+    table.add_column("Refs", justify="center")
+    table.add_column("Scripts", justify="center")
+
+    level_style = {
+        "ok": "green",
+        "warn": "yellow",
+        "large": "bold yellow",
+        "oversized": "bold red",
+    }
+
+    for entry in shown:
+        level = entry["level"]
+        table.add_row(
+            entry["name"],
+            entry["category"],
+            entry["source"],
+            f"[{level_style.get(level, 'dim')}]{level}[/]",
+            f"{entry['chars']:,}",
+            f"{entry['lines']:,}",
+            f"{entry['description_chars']:,}",
+            "yes" if entry["has_references"] else "no",
+            "yes" if entry["has_scripts"] else "no",
+        )
+
+    c.print(table)
+    totals = data["totals"]
+    c.print(
+        "[dim]"
+        f"{totals['skills']} scanned, "
+        f"{totals['warn_or_larger']} >= {SKILL_SIZE_WARN_CHARS:,} chars, "
+        f"{totals['large_or_larger']} >= {SKILL_SIZE_LARGE_CHARS:,} chars, "
+        f"{totals['oversized']} >= {SKILL_SIZE_OVERSIZED_CHARS:,} chars"
+        "[/]\n"
+    )
+
+
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:
     """Check hub-installed skills for upstream updates."""
     from tools.skills_hub import check_for_skill_updates
@@ -1727,6 +1962,13 @@ def skills_command(args) -> None:
     elif action == "audit":
         do_audit(name=getattr(args, "name", None),
                  deep=getattr(args, "deep", False))
+    elif action == "audit-size":
+        do_audit_size(
+            source_filter=getattr(args, "source", "all"),
+            min_chars=getattr(args, "min_chars", 0),
+            limit=getattr(args, "limit", 20),
+            as_json=getattr(args, "json", False),
+        )
     elif action == "uninstall":
         do_uninstall(args.name)
     elif action == "reset":
@@ -1766,7 +2008,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|audit-size|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1792,6 +2034,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         /skills audit my-skill
         /skills audit --deep
         /skills audit my-skill --deep
+        /skills audit-size
         /skills uninstall my-skill
         /skills tap list
         /skills tap add owner/repo
@@ -1914,6 +2157,38 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         name = args[0] if args and not args[0].startswith("--") else None
         deep = "--deep" in args
         do_audit(name=name, console=c, deep=deep)
+
+    elif action == "audit-size":
+        source = "all"
+        limit = 20
+        min_chars = 0
+        as_json = "--json" in args
+        i = 0
+        while i < len(args):
+            if args[i] == "--source" and i + 1 < len(args):
+                source = args[i + 1]
+                i += 2
+            elif args[i] == "--limit" and i + 1 < len(args):
+                try:
+                    limit = int(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
+            elif args[i] == "--min-chars" and i + 1 < len(args):
+                try:
+                    min_chars = int(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
+            else:
+                i += 1
+        do_audit_size(
+            source_filter=source,
+            min_chars=min_chars,
+            limit=limit,
+            as_json=as_json,
+            console=c,
+        )
 
     elif action == "uninstall":
         if not args:

@@ -1,3 +1,4 @@
+import json
 from io import StringIO
 from unittest.mock import patch
 
@@ -5,7 +6,17 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import (
+    SKILL_SIZE_LARGE_CHARS,
+    SKILL_SIZE_WARN_CHARS,
+    collect_skill_size_audit,
+    do_audit_size,
+    do_check,
+    do_install,
+    do_list,
+    do_update,
+    handle_skills_slash,
+)
 
 
 class _DummyLockFile:
@@ -68,6 +79,35 @@ def _capture(source_filter: str = "all") -> str:
     console = Console(file=sink, force_terminal=False, color_system=None)
     do_list(source_filter=source_filter, console=console)
     return sink.getvalue()
+
+
+def _write_skill(root, relative, *, name=None, description="short", body="body"):
+    skill_dir = root / relative
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_name = name or skill_dir.name
+    content = (
+        "---\n"
+        f"name: {skill_name}\n"
+        f"description: {description}\n"
+        "---\n"
+        f"{body}"
+    )
+    (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+    return skill_dir / "SKILL.md"
+
+
+def _isolate_size_audit(monkeypatch, tmp_path, hub_env, *, hub_entries=None, builtin_manifest=None):
+    import agent.skill_utils as skill_utils
+    import hermes_constants
+    import tools.skills_hub as tools_hub
+    import tools.skills_sync as skills_sync
+
+    skills_dir = tmp_path / "skills"
+    monkeypatch.setattr(skill_utils, "get_all_skills_dirs", lambda: [skills_dir])
+    monkeypatch.setattr(hermes_constants, "get_skills_dir", lambda: skills_dir)
+    monkeypatch.setattr(tools_hub, "HubLockFile", lambda: _DummyLockFile(hub_entries or []))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: dict(builtin_manifest or {}))
+    return skills_dir
 
 
 def _capture_check(monkeypatch, results, name=None) -> str:
@@ -220,6 +260,77 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
     _capture()
 
     assert seen["platform"] is None
+
+
+def test_collect_skill_size_audit_reports_size_levels_without_loading_skill_view(
+    monkeypatch, tmp_path, hub_env
+):
+    skills_dir = _isolate_size_audit(
+        monkeypatch,
+        tmp_path,
+        hub_env,
+        hub_entries=[{"name": "hub-large", "source": "github"}],
+        builtin_manifest={"builtin-warn": "abc123"},
+    )
+    _write_skill(skills_dir, "ops/hub-large", name="hub-large", body="x" * SKILL_SIZE_LARGE_CHARS)
+    _write_skill(skills_dir, "writing/builtin-warn", name="builtin-warn", body="y" * SKILL_SIZE_WARN_CHARS)
+    _write_skill(skills_dir, "local-small", name="local-small", body="z")
+    _write_skill(
+        skills_dir,
+        "ops/hub-large/references/archived-copy",
+        name="archived-copy",
+        body="should not be scanned",
+    )
+    (skills_dir / "ops" / "hub-large" / "scripts").mkdir()
+
+    data = collect_skill_size_audit()
+
+    names = [entry["name"] for entry in data["skills"]]
+    assert names == ["hub-large", "builtin-warn", "local-small"]
+    by_name = {entry["name"]: entry for entry in data["skills"]}
+    assert by_name["hub-large"]["source"] == "hub"
+    assert by_name["hub-large"]["level"] == "large"
+    assert by_name["hub-large"]["category"] == "ops"
+    assert by_name["hub-large"]["has_scripts"] is True
+    assert by_name["builtin-warn"]["source"] == "builtin"
+    assert by_name["builtin-warn"]["level"] == "warn"
+    assert by_name["local-small"]["source"] == "local"
+    assert by_name["local-small"]["level"] == "ok"
+    assert data["totals"]["large_or_larger"] == 1
+    assert data["totals"]["warn_or_larger"] == 2
+
+
+def test_do_audit_size_json_honors_filters_and_limit(monkeypatch, tmp_path, hub_env):
+    skills_dir = _isolate_size_audit(monkeypatch, tmp_path, hub_env)
+    _write_skill(skills_dir, "big", name="big", body="x" * 200)
+    _write_skill(skills_dir, "small", name="small", body="x")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    do_audit_size(min_chars=100, limit=1, as_json=True, console=console)
+
+    payload = json.loads(sink.getvalue())
+    assert payload["shown"] == 1
+    assert payload["totals"]["skills"] == 1
+    assert payload["skills"][0]["name"] == "big"
+    assert payload["skills"][0]["chars"] >= 200
+    assert payload["thresholds"]["warn_chars"] == SKILL_SIZE_WARN_CHARS
+
+
+def test_handle_skills_slash_audit_size_renders_table(monkeypatch, tmp_path, hub_env):
+    skills_dir = _isolate_size_audit(monkeypatch, tmp_path, hub_env)
+    _write_skill(skills_dir, "big", name="big", body="x" * SKILL_SIZE_WARN_CHARS)
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    handle_skills_slash("/skills audit-size --min-chars 100 --limit 1", console=console)
+    output = sink.getvalue()
+
+    assert "Skill Size Audit" in output
+    assert "big" in output
+    assert "warn" in output
 
 
 def test_do_check_reports_available_updates(monkeypatch):
@@ -780,4 +891,3 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     assert payload[0]["source"] == "browse-sh"
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
-

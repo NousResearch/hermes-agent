@@ -183,7 +183,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       let pendingCreatedRouteToken: string | null = null
 
       const sessionContextDrifted = (): boolean => {
-        if (targetStartedInCurrentView && pendingCreatedRouteToken) {
+        if (!targetStartedInCurrentView) {
+          return false
+        }
+
+        if (pendingCreatedRouteToken) {
           if (
             activeSessionIdRef.current === expectedRuntimeSessionId &&
             selectedStoredSessionIdRef.current === expectedStoredSessionId &&
@@ -195,8 +199,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         return (
-          targetStartedInCurrentView &&
-          (selectedStoredSessionIdRef.current !== expectedStoredSessionId || getRouteToken() !== expectedRouteToken)
+          activeSessionIdRef.current !== expectedRuntimeSessionId ||
+          selectedStoredSessionIdRef.current !== expectedStoredSessionId ||
+          getRouteToken() !== expectedRouteToken
         )
       }
 
@@ -337,6 +342,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         } catch {
           return abortForSessionSwitch(null)
         }
+
+        // resumeStoredSession re-homes the foreground runtime to the durable
+        // routed target. Re-pin the expected runtime before the generic drift
+        // guard; the following cache/selection checks still reject a failed or
+        // cross-wired resume.
+        expectedRuntimeSessionId = activeSessionIdRef.current
 
         if (sessionContextDrifted()) {
           return abortForSessionSwitch(null)

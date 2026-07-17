@@ -402,7 +402,9 @@ def test_register_calls_register_platform():
 # Inbound attachment message type classification
 # ---------------------------------------------------------------------------
 
-def _make_file_chat_item(file_path: str, file_name: str) -> dict:
+def _make_file_chat_item(
+    file_path: str, file_name: str, *, file_id: int = 7, text: str = "here you go"
+) -> dict:
     """Minimal direct-chat rcvMsgContent item carrying a completed file."""
     return {
         "chatInfo": {
@@ -414,12 +416,30 @@ def _make_file_chat_item(file_path: str, file_name: str) -> dict:
             "meta": {"itemTs": "2026-01-01T00:00:00Z"},
             "content": {
                 "type": "rcvMsgContent",
-                "msgContent": {"type": "file", "text": "here you go"},
+                "msgContent": {"type": "file", "text": text},
             },
             "file": {
-                "fileId": 7,
+                "fileId": file_id,
                 "fileName": file_name,
                 "fileSource": {"filePath": file_path},
+            },
+        },
+    }
+
+
+def _make_text_chat_item(text: str) -> dict:
+    """Minimal direct-chat rcvMsgContent item carrying plain text."""
+    return {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 42, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemTs": "2026-01-01T00:00:00Z"},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "text", "text": text},
             },
         },
     }
@@ -432,7 +452,10 @@ async def test_document_file_sets_document_type():
     from gateway.config import PlatformConfig
     from gateway.platforms.base import MessageType
 
-    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "media_batch_delay": 0.05},
+    )
     adapter = SimplexAdapter(cfg)
     dispatched = []
 
@@ -441,6 +464,7 @@ async def test_document_file_sets_document_type():
 
     adapter.handle_message = _capture
     await adapter._handle_chat_item(_make_file_chat_item("/tmp/report.pdf", "report.pdf"))
+    await asyncio.sleep(0.1)
 
     assert dispatched, "_handle_chat_item did not dispatch any event"
     assert dispatched[0].message_type == MessageType.DOCUMENT
@@ -455,7 +479,10 @@ async def test_image_file_still_sets_photo_type():
     from gateway.config import PlatformConfig
     from gateway.platforms.base import MessageType
 
-    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "media_batch_delay": 0.05},
+    )
     adapter = SimplexAdapter(cfg)
     dispatched = []
 
@@ -464,6 +491,231 @@ async def test_image_file_still_sets_photo_type():
 
     adapter.handle_message = _capture
     await adapter._handle_chat_item(_make_file_chat_item("/tmp/pic.jpg", "pic.jpg"))
+    await asyncio.sleep(0.1)
 
     assert dispatched, "_handle_chat_item did not dispatch any event"
     assert dispatched[0].message_type == MessageType.PHOTO
+
+
+@pytest.mark.asyncio
+async def test_two_photos_within_batch_window_dispatch_as_one_event():
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "media_batch_delay": 0.05},
+    )
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(
+        _make_file_chat_item("/tmp/first.jpg", "first.jpg", file_id=7, text="")
+    )
+    await adapter._handle_chat_item(
+        _make_file_chat_item("/tmp/second.jpg", "second.jpg", file_id=8, text="")
+    )
+
+    assert dispatched == []
+    await asyncio.sleep(0.1)
+
+    assert len(dispatched) == 1
+    assert dispatched[0].message_type == MessageType.PHOTO
+    assert dispatched[0].media_urls == ["/tmp/first.jpg", "/tmp/second.jpg"]
+
+
+@pytest.mark.asyncio
+async def test_text_then_photo_batch_upgrades_message_type():
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "media_batch_delay": 0.05},
+    )
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(_make_text_chat_item("look at this"))
+    await adapter._handle_chat_item(
+        _make_file_chat_item("/tmp/photo.jpg", "photo.jpg", text="")
+    )
+    await asyncio.sleep(0.1)
+
+    assert len(dispatched) == 1
+    assert dispatched[0].text == "look at this"
+    assert dispatched[0].message_type == MessageType.PHOTO
+    assert dispatched[0].media_urls == ["/tmp/photo.jpg"]
+
+
+@pytest.mark.asyncio
+async def test_mixed_media_batch_uses_voice_photo_document_precedence():
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "media_batch_delay": 0.05},
+    )
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(
+        _make_file_chat_item("/tmp/report.pdf", "report.pdf", file_id=7, text="")
+    )
+    await adapter._handle_chat_item(
+        _make_file_chat_item("/tmp/photo.jpg", "photo.jpg", file_id=8, text="")
+    )
+    await adapter._handle_chat_item(
+        _make_file_chat_item("/tmp/note.ogg", "note.ogg", file_id=9, text="")
+    )
+    await asyncio.sleep(0.1)
+
+    assert len(dispatched) == 1
+    assert dispatched[0].message_type == MessageType.VOICE
+    assert dispatched[0].media_urls == [
+        "/tmp/report.pdf",
+        "/tmp/photo.jpg",
+        "/tmp/note.ogg",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_single_photo_dispatches_only_after_batch_window():
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "media_batch_delay": 0.05},
+    )
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(
+        _make_file_chat_item("/tmp/only.jpg", "only.jpg", text="")
+    )
+
+    assert dispatched == []
+    await asyncio.sleep(0.1)
+
+    assert len(dispatched) == 1
+    assert dispatched[0].message_type == MessageType.PHOTO
+    assert dispatched[0].media_urls == ["/tmp/only.jpg"]
+
+
+def _rcv_file_complete_event(file_path: str, file_name: str, file_id: int) -> dict:
+    """Daemon rcvFileComplete event for a previously deferred transfer."""
+    return {
+        "resp": {
+            "type": "rcvFileComplete",
+            "chatItem": _make_file_chat_item(
+                file_path, file_name, file_id=file_id, text=""
+            ),
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_batch_held_while_sibling_transfer_downloading():
+    """Multi-attachment sends deliver chat items together but downloads
+    complete serially, often further apart than the quiet period. The flush
+    must hold while a sibling transfer for the same chat is pending."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "media_batch_delay": 0.05},
+    )
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    async def _no_send(command):
+        pass
+
+    adapter.handle_message = _capture
+    adapter._send_fire_and_forget = _no_send
+
+    # Two voice notes from one send arrive together, neither downloaded yet.
+    await adapter._handle_chat_item(
+        _make_file_chat_item("", "note1.ogg", file_id=31, text="")
+    )
+    await adapter._handle_chat_item(
+        _make_file_chat_item("", "note2.ogg", file_id=32, text="")
+    )
+
+    # First transfer completes; the second is still on the wire, so the
+    # batch must stay open well past the quiet period.
+    await adapter._handle_event(
+        _rcv_file_complete_event("/tmp/note1.ogg", "note1.ogg", 31)
+    )
+    await asyncio.sleep(0.12)
+    assert dispatched == []
+
+    await adapter._handle_event(
+        _rcv_file_complete_event("/tmp/note2.ogg", "note2.ogg", 32)
+    )
+    await asyncio.sleep(0.12)
+
+    assert len(dispatched) == 1
+    assert dispatched[0].message_type == MessageType.VOICE
+    assert dispatched[0].media_urls == ["/tmp/note1.ogg", "/tmp/note2.ogg"]
+
+
+@pytest.mark.asyncio
+async def test_batch_hold_capped_by_max_hold(monkeypatch):
+    """A transfer that never completes must not hold the batch hostage —
+    after MEDIA_BATCH_MAX_HOLD the batch flushes with what it has."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    monkeypatch.setattr(_simplex, "MEDIA_BATCH_MAX_HOLD", 0.0)
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "media_batch_delay": 0.05},
+    )
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    async def _no_send(command):
+        pass
+
+    adapter.handle_message = _capture
+    adapter._send_fire_and_forget = _no_send
+
+    # A voice note that never finishes downloading...
+    await adapter._handle_chat_item(
+        _make_file_chat_item("", "stuck.ogg", file_id=41, text="")
+    )
+    # ...must not block an already-complete photo in the same chat.
+    await adapter._handle_chat_item(
+        _make_file_chat_item("/tmp/pic.jpg", "pic.jpg", file_id=42, text="")
+    )
+    await asyncio.sleep(0.12)
+
+    assert len(dispatched) == 1
+    assert dispatched[0].message_type == MessageType.PHOTO
+    assert dispatched[0].media_urls == ["/tmp/pic.jpg"]

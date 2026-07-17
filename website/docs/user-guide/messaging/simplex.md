@@ -60,6 +60,19 @@ SIMPLEX_HOME_CHANNEL=<contact-id>
 | `SIMPLEX_HOME_CHANNEL_NAME` | Optional | Human label for the home channel |
 | `HERMES_SIMPLEX_TEXT_BATCH_DELAY` | Optional | Quiet-period seconds (default: `0.8`) used to concatenate rapid-fire inbound text messages into one event |
 
+### Optional `config.yaml` settings (`platforms.simplex.extra`)
+
+| Setting | Description |
+|---|---|
+| `media_batch_delay` | Quiet-period seconds for batches containing media (default: the text batch delay). SimpleX has no album concept — the attachments of one send arrive as separate chat items, and the adapter batches them into a single message, holding the batch while sibling file transfers are still downloading. Widen this only if transfers routinely finish further apart than the default window. |
+
+```yaml
+platforms:
+  simplex:
+    extra:
+      media_batch_delay: 2.0
+```
+
 ## Find your contact ID or display name
 
 After starting the daemon, open a conversation with your agent contact. The numeric `contactId` appears in session logs. If you'd rather use the display name shown in the SimpleX UI, that works too — `SIMPLEX_ALLOWED_USERS` accepts either form.

@@ -34,9 +34,17 @@ Optional environment variables:
     SIMPLEX_HOME_CHANNEL_NAME  Human label for the home channel
     HERMES_SIMPLEX_TEXT_BATCH_DELAY
                                Quiet-period seconds (default: 0.8) used to
-                               concatenate rapid-fire inbound text messages
-                               into a single MessageEvent — same pattern as
-                               Telegram's text batching.
+                               combine rapid-fire inbound messages into a
+                               single MessageEvent — same pattern as
+                               Telegram's batching.
+
+Optional ``config.yaml`` settings (``platforms.simplex.extra``):
+    media_batch_delay          Quiet-period seconds for batches containing
+                               media (default: the text batch delay). The
+                               attachments of one send arrive as separate
+                               chat items; widen this if their transfers
+                               routinely finish further apart than the
+                               default window.
 
 The ``websockets`` Python package is imported lazily — the plugin is
 discoverable and ``hermes setup`` can describe it even when websockets is
@@ -77,6 +85,10 @@ WS_RETRY_DELAY_INITIAL = 2.0
 WS_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0
 HEALTH_CHECK_STALE_THRESHOLD = 300.0
+# Longest a message batch is held open waiting for sibling file transfers
+# to finish downloading, so one stalled XFTP transfer can't hold a chat's
+# messages hostage indefinitely.
+MEDIA_BATCH_MAX_HOLD = 60.0
 
 # Correlation ID prefix for requests we send so we can ignore our own echoes.
 _CORR_PREFIX = "hermes-"
@@ -128,6 +140,17 @@ def _is_image_ext(ext: str) -> bool:
 
 def _is_audio_ext(ext: str) -> bool:
     return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".opus"}
+
+
+def _message_type_for_media(media_types: List[str]) -> MessageType:
+    """Classify accumulated media using the same priority as one message."""
+    if any(mt.startswith("audio/") for mt in media_types):
+        return MessageType.VOICE
+    if any(mt.startswith("image/") for mt in media_types):
+        return MessageType.PHOTO
+    if media_types:
+        return MessageType.DOCUMENT
+    return MessageType.TEXT
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +205,12 @@ class SimplexAdapter(BasePlatformAdapter):
         # when a newChatItems event carries an unfinished rcvFileTransfer,
         # consumed when the file finishes downloading.
         self._pending_file_transfers: Dict[int, dict] = {}
+        # Batch key of the chat each pending transfer belongs to (parallel to
+        # ``_pending_file_transfers``). Multi-attachment sends deliver their
+        # chat items together but the downloads complete serially, often
+        # further apart than the batch quiet period — the batcher uses this
+        # map to hold a flush while siblings are still on the wire.
+        self._pending_transfer_batch_keys: Dict[int, str] = {}
 
         # Correlation tracking for ``_send_command``. Separate from
         # ``_pending_corr_ids`` (which is the upstream cosmetic echo filter)
@@ -189,13 +218,23 @@ class SimplexAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._corr_counter = 0
 
-        # Text message batching — concatenate rapid-fire messages into one
-        # event before dispatching, mirroring Telegram's batching.
+        # Message batching — combine rapid-fire messages into one event before
+        # dispatching, mirroring Telegram's batching.
         self._text_batch_delay = float(
             os.getenv("HERMES_SIMPLEX_TEXT_BATCH_DELAY", "0.8")
         )
+        # XFTP completion timing varies and SimpleX exposes no album boundary,
+        # so a universally longer media delay would still be a guess while
+        # slowing every lone attachment. Preserve the existing default, but
+        # let platform config widen the media quiet period when transfers need it.
+        self._media_batch_delay = float(
+            extra.get("media_batch_delay", self._text_batch_delay)
+        )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # When each held batch started waiting on pending transfers, for the
+        # MEDIA_BATCH_MAX_HOLD cutoff.
+        self._batch_hold_started: Dict[str, float] = {}
 
         logger.info(
             "SimpleX adapter initialized: url=%s auto_accept=%s groups=%s",
@@ -446,6 +485,7 @@ class SimplexAdapter(BasePlatformAdapter):
             file_id = file_info.get("fileId") if isinstance(file_info, dict) else None
             if file_id is not None and file_id in self._pending_file_transfers:
                 pending = self._pending_file_transfers.pop(file_id)
+                self._pending_transfer_batch_keys.pop(file_id, None)
                 file_source = file_info.get("fileSource", {}) or {}
                 file_path = (
                     file_source.get("filePath")
@@ -583,6 +623,9 @@ class SimplexAdapter(BasePlatformAdapter):
                     file_id,
                 )
                 self._pending_file_transfers[file_id] = chat_item
+                self._pending_transfer_batch_keys[file_id] = (
+                    f"{self.platform.value}:{chat_id}"
+                )
                 # Fire-and-forget: simplex-chat does not return a corrId reply
                 # for /freceive, so awaiting one would block the event loop.
                 await self._send_fire_and_forget(f"/freceive {file_id}")
@@ -618,18 +661,9 @@ class SimplexAdapter(BasePlatformAdapter):
             user_name=sender_name or sender_id,
         )
 
-        # Message type
-        msg_type = MessageType.TEXT
-        if media_types:
-            if any(mt.startswith("audio/") for mt in media_types):
-                msg_type = MessageType.VOICE
-            elif any(mt.startswith("image/") for mt in media_types):
-                msg_type = MessageType.PHOTO
-            else:
-                # Catch-all: non-image/non-audio files (tagged
-                # application/octet-stream above) are documents so run.py's
-                # document-context injection surfaces the file to the agent.
-                msg_type = MessageType.DOCUMENT
+        # Catch-all media types are documents so run.py's document-context
+        # injection surfaces non-image/non-audio files to the agent.
+        msg_type = _message_type_for_media(media_types)
 
         # Timestamp
         ts_str = meta.get("itemTs") or meta.get("createdAt", "")
@@ -658,28 +692,32 @@ class SimplexAdapter(BasePlatformAdapter):
             (text or "")[:50],
         )
 
-        # Batch consecutive text messages so the agent sees one combined
-        # message instead of dropping earlier ones when the user pastes
-        # several lines in quick succession.
-        if msg_type == MessageType.TEXT and text:
+        # Batch consecutive messages so rapid text sends and SimpleX's
+        # separately delivered media items reach the agent as one event.
+        if (msg_type == MessageType.TEXT and text) or msg_type in {
+            MessageType.PHOTO,
+            MessageType.DOCUMENT,
+            MessageType.VOICE,
+        }:
             self._enqueue_text_event(msg_event)
         else:
             await self.handle_message(msg_event)
 
     # ------------------------------------------------------------------
-    # Text message batching
+    # Message batching
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
+        """Session-scoped key for inbound message batching."""
         return f"{event.source.platform.value}:{event.source.chat_id}"
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer a text event and reset the flush timer."""
+        """Buffer an inbound event and reset the appropriate flush timer."""
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         if existing is None:
             self._pending_text_batches[key] = event
+            existing = event
         else:
             if event.text:
                 existing.text = (
@@ -688,26 +726,47 @@ class SimplexAdapter(BasePlatformAdapter):
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+            existing.message_type = _message_type_for_media(existing.media_types)
 
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
             prior_task.cancel()
+        delay = (
+            self._media_batch_delay if existing.media_urls else self._text_batch_delay
+        )
         self._pending_text_batch_tasks[key] = asyncio.create_task(
-            self._flush_text_batch(key)
+            self._flush_text_batch(key, delay)
         )
 
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text."""
+    async def _flush_text_batch(self, key: str, delay: float) -> None:
+        """Wait for the quiet period then dispatch the aggregated event."""
         current_task = asyncio.current_task()
         try:
-            await asyncio.sleep(self._text_batch_delay)
+            await asyncio.sleep(delay)
+            # A sibling attachment from the same send may still be
+            # downloading — the chat items arrive together, but XFTP
+            # completions land serially and regularly straddle the quiet
+            # period. Keep the batch open until the transfer finishes
+            # (its completion re-enters the batcher and resets the timer),
+            # bounded by MEDIA_BATCH_MAX_HOLD.
+            if key in self._pending_transfer_batch_keys.values():
+                started = self._batch_hold_started.setdefault(
+                    key, time.monotonic()
+                )
+                if time.monotonic() - started < MEDIA_BATCH_MAX_HOLD:
+                    self._pending_text_batch_tasks[key] = asyncio.create_task(
+                        self._flush_text_batch(key, delay)
+                    )
+                    return
             event = self._pending_text_batches.pop(key, None)
+            self._batch_hold_started.pop(key, None)
             if not event:
                 return
             logger.info(
-                "[SimpleX] Flushing text batch %s (%d chars)",
+                "[SimpleX] Flushing message batch %s (%d chars, %d media items)",
                 key,
                 len(event.text or ""),
+                len(event.media_urls),
             )
             await self.handle_message(event)
         finally:

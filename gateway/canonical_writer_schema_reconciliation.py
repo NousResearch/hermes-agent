@@ -7,16 +7,16 @@ attestation.  Every other routine identity, owner, ACL, role privilege, event
 log identity, and private-schema identity must remain byte-for-byte equal.
 
 The database transport is injected.  Its transaction boundary must acquire
-the supplied PostgreSQL advisory transaction lock, roll back on an exception,
-and commit only after the post-mutation observation succeeds.  This keeps
-credential transport and Cloud SQL authority outside this mechanical module.
+the supplied PostgreSQL advisory lock, roll back on an exception, and commit
+only after the fixed owner-owned apply routine and post-apply observation
+succeed.  Credential transport and Cloud SQL authority stay outside this
+mechanical module.
 """
 
 from __future__ import annotations
 
 import contextlib
 import copy
-import dataclasses
 import fcntl
 import hashlib
 import json
@@ -55,9 +55,11 @@ from gateway.canonical_writer_foundation import (
     _fsync_directory,
     _list_xattrs,
     _load_sealed_artifacts,
+    _read_sealed_artifact,
     _same_inode,
     _secure_directory,
 )
+from gateway.canonical_writer_planner import load_release_manifest
 from gateway.canonical_writer_postgres_backend import (
     CANONICAL_WRITER_MIGRATION_OWNER,
     CANONICAL_WRITER_ROLE,
@@ -67,9 +69,9 @@ from gateway.canonical_writer_postgres_backend import (
 )
 
 
-RECONCILIATION_PLAN_SCHEMA = "muncho-canonical-writer-schema-reconciliation-plan.v1"
+RECONCILIATION_PLAN_SCHEMA = "muncho-canonical-writer-schema-reconciliation-plan.v2"
 RECONCILIATION_PREFLIGHT_SCHEMA = (
-    "muncho-canonical-writer-schema-reconciliation-preflight.v1"
+    "muncho-canonical-writer-schema-reconciliation-preflight.v2"
 )
 RECONCILIATION_AUTHORIZATION_SCHEMA = (
     "muncho-canonical-writer-schema-reconciliation-authorization.v1"
@@ -85,10 +87,10 @@ RECONCILIATION_OWNER_SIGNATURE_NAMESPACE = (
     "preflight-authorization-owner-v2"
 )
 RECONCILIATION_AUTHORIZED_INTENT_SCHEMA = (
-    "muncho-canonical-writer-schema-reconciliation-authorized-intent.v2"
+    "muncho-canonical-writer-schema-reconciliation-authorized-intent.v3"
 )
 RECONCILIATION_RECEIPT_SCHEMA = (
-    "muncho-canonical-writer-schema-reconciliation-receipt.v2"
+    "muncho-canonical-writer-schema-reconciliation-receipt.v3"
 )
 SCHEMA_CONTRACT_SCHEMA = "muncho-canonical-writer-schema-contract.v1"
 SCHEMA_CONTRACT_ASSET_SCHEMA = (
@@ -103,6 +105,12 @@ MISSING_HELPER_SIGNATURE = (
 DATABASE = "muncho_canary_brain"
 BASE_ARTIFACT_NAME = "base_migration"
 BASE_ARTIFACT_FILENAME = "canonical_writer_v1.sql"
+CONTROL_INSTALL_ARTIFACT_FILENAME = (
+    "canonical_writer_schema_reconciliation_control_v1.sql"
+)
+CONTROL_RETIRE_ARTIFACT_FILENAME = (
+    "canonical_writer_schema_reconciliation_control_retire_v1.sql"
+)
 SCHEMA_CONTRACT_ASSET_RELATIVE_PATH = Path(
     "gateway/assets/canonical_writer_schema_contract_v1.json"
 )
@@ -142,13 +150,6 @@ _EXPECTED_HELPER_PROSRC_SHA256 = (
 _EXPECTED_HELPER_DEFINITION_SHA256 = (
     "2fc8e5334784ae791398033c8b460ccb170324f4c8cc1b3d0387f907e9cf7737"
 )
-_TRAMPOLINE_SIGNATURE = "canonical_brain._deterministic_uuid(text)"
-_EXPECTED_TRAMPOLINE_DEFINITION_SHA256 = (
-    "04112d3503f68157dde37499a9bc587fb59a30ac23eb1c98646af15190fa2342"
-)
-_TEMPORARY_RECONCILIATION_LOGIN = re.compile(
-    r"^muncho_canary_admin_[0-9a-f]{16}$"
-)
 _PLAN_FIELDS = frozenset(
     {
         "schema",
@@ -158,7 +159,9 @@ _PLAN_FIELDS = frozenset(
         "base_artifact_sha256",
         "target_asset_sha256",
         "postgresql_major",
-        "mutation_sql_sha256",
+        "control_install_artifact_sha256",
+        "control_retire_artifact_sha256",
+        "control_foundation_contract_sha256",
         "helper_catalog_identity_sha256",
         "expected_old_contract_sha256",
         "target_contract_sha256",
@@ -177,7 +180,9 @@ _AUTHORIZED_INTENT_FIELDS = frozenset(
         "base_artifact_sha256",
         "target_asset_sha256",
         "postgresql_major",
-        "mutation_sql_sha256",
+        "control_install_artifact_sha256",
+        "control_retire_artifact_sha256",
+        "control_foundation_contract_sha256",
         "expected_old_contract_sha256",
         "target_contract_sha256",
         "preflight",
@@ -204,7 +209,9 @@ _PREFLIGHT_FIELDS = frozenset(
         "base_artifact_sha256",
         "target_asset_sha256",
         "postgresql_major",
-        "mutation_sql_sha256",
+        "control_install_artifact_sha256",
+        "control_retire_artifact_sha256",
+        "control_foundation_contract_sha256",
         "observed_contract_sha256",
         "truth_receipt_sha256",
         "expected_old_contract_sha256",
@@ -266,7 +273,9 @@ _RECEIPT_FIELDS = frozenset(
         "base_artifact_sha256",
         "target_asset_sha256",
         "postgresql_major",
-        "mutation_sql_sha256",
+        "control_install_artifact_sha256",
+        "control_retire_artifact_sha256",
+        "control_foundation_contract_sha256",
         "expected_old_contract_sha256",
         "target_contract_sha256",
         "initial_contract_sha256",
@@ -1801,224 +1810,6 @@ class SchemaContractCollectionSession(Protocol):
     def query(self, sql: str, *, maximum_rows: int) -> Any: ...
 
 
-@dataclass(frozen=True)
-class _ExactApiAssignedReconciliationMembershipProjection:
-    """The two fixed Cloud SQL role memberships projected during repair.
-
-    Cloud SQL creates the temporary login with these roles through the Admin
-    API.  PostgreSQL therefore sees the owner role as dangerous while the
-    login exists even though the complete, short-lived role graph is known.
-    The collector may project that graph only after proving both exact API
-    rows, their non-settable flags, the login's safe attributes, and zero
-    object ownership.  The Cloud boundary remains responsible for deleting
-    the login after this database session has terminated.
-    """
-
-    owner_role: str
-    writer_role: str
-    session_user: str
-
-    def __post_init__(self) -> None:
-        if (
-            self.owner_role != CANONICAL_WRITER_MIGRATION_OWNER
-            or self.writer_role != CANONICAL_WRITER_ROLE
-            or _TEMPORARY_RECONCILIATION_LOGIN.fullmatch(self.session_user)
-            is None
-        ):
-            raise SchemaReconciliationError(
-                "schema_reconciliation_membership_projection_invalid"
-            )
-
-
-_EXACT_API_MEMBERSHIP_RECEIPT_COLUMNS = (
-    "current_user_is_session_user",
-    "session_user_is_temporary_login",
-    "temporary_login_attributes_exact",
-    "event_trigger_inventory_empty",
-    "plpgsql_usage_present",
-    "temporary_login_has_no_prepared_transaction",
-    "api_role_graph_exact",
-    "owner_membership_inherited_not_settable",
-    "writer_membership_inherited_not_settable",
-    "no_foreign_database_client_sessions",
-    "temporary_login_has_zero_shared_dependencies",
-)
-
-
-def _attest_exact_api_assigned_reconciliation_memberships(
-    session: SchemaContractCollectionSession,
-    projection: _ExactApiAssignedReconciliationMembershipProjection,
-) -> None:
-    """Prove the complete transient role graph before projecting it out."""
-
-    if not isinstance(
-        projection,
-        _ExactApiAssignedReconciliationMembershipProjection,
-    ):
-        raise SchemaReconciliationError(
-            "schema_reconciliation_membership_projection_invalid"
-        )
-    session_user = projection.session_user.replace("'", "''")
-    result = session.query(
-        "WITH temporary_login AS (SELECT oid, rolname, rolcanlogin, "
-        "rolinherit, rolsuper, rolcreatedb, rolcreaterole, rolreplication, "
-        "rolbypassrls, rolconnlimit, rolvaliduntil, rolconfig FROM "
-        "pg_catalog.pg_roles WHERE rolname = '"
-        + session_user
-        + "'), owner_role AS (SELECT oid FROM pg_catalog.pg_roles WHERE "
-        "rolname = 'canonical_brain_migration_owner'), writer_role AS "
-        "(SELECT oid FROM pg_catalog.pg_roles WHERE rolname = "
-        "'canonical_brain_writer'), cloud_admin AS (SELECT oid FROM "
-        "pg_catalog.pg_roles WHERE rolname = 'cloudsqladmin'), role_graph AS "
-        "(SELECT membership.roleid, membership.member, membership.grantor, "
-        "membership.admin_option, membership.inherit_option, "
-        "membership.set_option, temporary_login.oid AS login_oid, "
-        "owner_role.oid AS owner_oid, writer_role.oid AS writer_oid, "
-        "cloud_admin.oid AS grantor_oid FROM pg_catalog.pg_auth_members AS "
-        "membership CROSS JOIN temporary_login CROSS JOIN owner_role CROSS "
-        "JOIN writer_role CROSS JOIN cloud_admin WHERE membership.member IN "
-        "(temporary_login.oid, owner_role.oid) OR membership.roleid IN "
-        "(temporary_login.oid, owner_role.oid) OR membership.grantor IN "
-        "(temporary_login.oid, owner_role.oid)) SELECT CURRENT_USER = "
-        "SESSION_USER AS current_user_is_session_user, SESSION_USER = "
-        "temporary_login.rolname AND SESSION_USER ~ "
-        "'^muncho_canary_admin_[0-9a-f]{16}$' AS "
-        "session_user_is_temporary_login, temporary_login.rolcanlogin AND "
-        "temporary_login.rolinherit AND NOT temporary_login.rolsuper AND NOT "
-        "temporary_login.rolcreatedb AND NOT temporary_login.rolcreaterole "
-        "AND NOT temporary_login.rolreplication AND NOT "
-        "temporary_login.rolbypassrls AND temporary_login.rolconnlimit = -1 "
-        "AND temporary_login.rolvaliduntil IS NULL AND "
-        "temporary_login.rolconfig IS NULL AS temporary_login_attributes_exact, "
-        "NOT EXISTS (SELECT 1 FROM pg_catalog.pg_event_trigger) AS "
-        "event_trigger_inventory_empty, pg_catalog.has_language_privilege("
-        "SESSION_USER, 'plpgsql', 'USAGE') AS plpgsql_usage_present, "
-        "(pg_catalog.current_setting('max_prepared_transactions')::integer = 0 "
-        "OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_prepared_xacts AS prepared "
-        "WHERE prepared.database = pg_catalog.current_database() AND "
-        "prepared.owner = SESSION_USER)) AS "
-        "temporary_login_has_no_prepared_transaction, "
-        "(SELECT pg_catalog.count(*) = 2 AND COALESCE(pg_catalog.bool_and("
-        "role_graph.member = role_graph.login_oid AND role_graph.roleid IN "
-        "(role_graph.owner_oid, role_graph.writer_oid) AND "
-        "role_graph.grantor = role_graph.grantor_oid AND "
-        "role_graph.admin_option IS FALSE AND role_graph.inherit_option IS "
-        "TRUE AND role_graph.set_option IS FALSE), false) AND "
-        "pg_catalog.count(DISTINCT role_graph.roleid) = 2 FROM role_graph) AS "
-        "api_role_graph_exact, pg_catalog.pg_has_role(SESSION_USER, "
-        "'canonical_brain_migration_owner', 'MEMBER') AND "
-        "pg_catalog.pg_has_role(SESSION_USER, "
-        "'canonical_brain_migration_owner', 'USAGE') AND NOT "
-        "pg_catalog.pg_has_role(SESSION_USER, "
-        "'canonical_brain_migration_owner', 'SET') AS "
-        "owner_membership_inherited_not_settable, "
-        "pg_catalog.pg_has_role(SESSION_USER, 'canonical_brain_writer', "
-        "'MEMBER') AND pg_catalog.pg_has_role(SESSION_USER, "
-        "'canonical_brain_writer', 'USAGE') AND NOT "
-        "pg_catalog.pg_has_role(SESSION_USER, 'canonical_brain_writer', "
-        "'SET') AS writer_membership_inherited_not_settable, NOT EXISTS "
-        "(SELECT 1 FROM pg_catalog.pg_stat_activity AS activity WHERE "
-        "activity.datname = pg_catalog.current_database() AND "
-        "activity.backend_type = 'client backend' AND activity.pid <> "
-        "pg_catalog.pg_backend_pid()) AS no_foreign_database_client_sessions, "
-        "NOT EXISTS "
-        "(SELECT 1 FROM pg_catalog.pg_shdepend AS dependency WHERE "
-        "dependency.refclassid = 'pg_catalog.pg_authid'::pg_catalog.regclass "
-        "AND dependency.refobjid = temporary_login.oid) AS "
-        "temporary_login_has_zero_shared_dependencies FROM temporary_login",
-        maximum_rows=1,
-    )
-    if (
-        result.command_tag.upper() != "SELECT 1"
-        or result.columns != _EXACT_API_MEMBERSHIP_RECEIPT_COLUMNS
-        or result.rows != (tuple("t" for _ in result.columns),)
-    ):
-        raise SchemaReconciliationError(
-            "schema_reconciliation_membership_projection_invalid"
-        )
-
-
-def _project_exact_api_assigned_owner_membership(
-    attestation: PrivilegeAttestation,
-    projection: _ExactApiAssignedReconciliationMembershipProjection,
-) -> PrivilegeAttestation:
-    """Remove only the already-attested transient API role edges."""
-
-    owner = projection.owner_role
-
-    def routine(identity: RoutineIdentity) -> RoutineIdentity:
-        if identity.owner != owner or identity.owner_dangerous is not True:
-            raise SchemaReconciliationError(
-                "schema_reconciliation_membership_projection_invalid"
-            )
-        return dataclasses.replace(identity, owner_dangerous=False)
-
-    event_log = attestation.canonical_event_log_identity
-    private_schema = attestation.canonical_private_schema_identity
-    if (
-        event_log is None
-        or event_log.owner != owner
-        or event_log.owner_dangerous is not True
-        or private_schema is None
-        or private_schema.owner != owner
-        or private_schema.owner_dangerous is not True
-    ):
-        raise SchemaReconciliationError(
-            "schema_reconciliation_membership_projection_invalid"
-        )
-    projected_relations: list[CanonicalPrivateRelationIdentity] = []
-    for relation in private_schema.relations:
-        if (
-            relation.owner != owner
-            or relation.owner_dangerous is not True
-            or any(item != f"{owner}:t" for item in relation.index_owners)
-        ):
-            raise SchemaReconciliationError(
-                "schema_reconciliation_membership_projection_invalid"
-            )
-        projected_relations.append(
-            dataclasses.replace(
-                relation,
-                owner_dangerous=False,
-                index_owners=tuple(
-                    f"{owner}:f" for _ in relation.index_owners
-                ),
-            )
-        )
-    expected_inheritors = (
-        "muncho_canary_writer_login:1:t:f",
-        f"{projection.session_user}:1:t:f",
-    )
-    if tuple(sorted(attestation.canonical_writer_role_inheritors)) != tuple(
-        sorted(expected_inheritors)
-    ):
-        raise SchemaReconciliationError(
-            "schema_reconciliation_membership_projection_invalid"
-        )
-    return dataclasses.replace(
-        attestation,
-        routine_identities=tuple(
-            routine(identity) for identity in attestation.routine_identities
-        ),
-        dependency_routine_identities=tuple(
-            routine(identity)
-            for identity in attestation.dependency_routine_identities
-        ),
-        canonical_writer_role_inheritors=(
-            "muncho_canary_writer_login:1:t:f",
-        ),
-        canonical_event_log_identity=dataclasses.replace(
-            event_log,
-            owner_dangerous=False,
-        ),
-        canonical_private_schema_identity=dataclasses.replace(
-            private_schema,
-            owner_dangerous=False,
-            relations=tuple(projected_relations),
-        ),
-    )
-
-
 def _postgres_boolean(value: Any) -> bool:
     if value in (True, "t", "true", "TRUE", "1"):
         return True
@@ -2035,9 +1826,6 @@ def collect_schema_contract(
     managed_hba_receipt: ManagedCloudSQLAdminHBAReceipt | None,
     subject_user: str = "muncho_canary_writer_login",
     allow_missing_helper: bool = False,
-    owner_membership_projection: (
-        _ExactApiAssignedReconciliationMembershipProjection | None
-    ) = None,
 ) -> SchemaContract:
     """Collect the full target through one already-open trusted DB session."""
 
@@ -2046,19 +1834,6 @@ def collect_schema_contract(
             "schema_reconciliation_contract_collection_failed"
         )
     try:
-        api_projection = owner_membership_projection
-        if api_projection is not None and not isinstance(
-            api_projection,
-            _ExactApiAssignedReconciliationMembershipProjection,
-        ):
-            raise SchemaReconciliationError(
-                "schema_reconciliation_membership_projection_invalid"
-            )
-        if api_projection is not None:
-            _attest_exact_api_assigned_reconciliation_memberships(
-                session,
-                api_projection,
-            )
         attestation = _collect_privilege_attestation(
             session,
             config=config,
@@ -2066,11 +1841,6 @@ def collect_schema_contract(
             managed_hba_receipt=managed_hba_receipt,
             subject_user=subject_user,
         )
-        if api_projection is not None:
-            attestation = _project_exact_api_assigned_owner_membership(
-                attestation,
-                api_projection,
-            )
         environment = session.query(
             "SELECT pg_catalog.current_database(), "
             "pg_catalog.current_setting('server_version_num'), "
@@ -2158,15 +1928,6 @@ def collect_schema_contract(
                     "schema_reconciliation_helper_catalog_identity_invalid"
                 )
             helper_owner_dangerous = _postgres_boolean(helper_row[1])
-            if api_projection is not None:
-                if (
-                    helper_row[0] != api_projection.owner_role
-                    or helper_owner_dangerous is not True
-                ):
-                    raise SchemaReconciliationError(
-                        "schema_reconciliation_membership_projection_invalid"
-                    )
-                helper_owner_dangerous = False
             helper = HelperRoutineCatalogIdentity(
                 signature=MISSING_HELPER_SIGNATURE,
                 owner=helper_row[0] or "",
@@ -2225,673 +1986,93 @@ def _old_contract_value(target: SchemaContract) -> Mapping[str, Any]:
     return value
 
 
-def _extract_mutation_sql(artifact: SealedSQLArtifact) -> str:
+CONTROL_FOUNDATION_CONTRACT_SCHEMA = (
+    "muncho-canonical-writer-schema-reconciliation-control-contract.v1"
+)
+
+
+def _control_foundation_contract_sha256(
+    install_artifact_sha256: str,
+    retire_artifact_sha256: str,
+) -> str:
+    """Bind the fixed inert role, routines, and both rollback artifacts."""
+
     if (
-        not isinstance(artifact, SealedSQLArtifact)
-        or artifact.name != BASE_ARTIFACT_NAME
-        or artifact.path.name != BASE_ARTIFACT_FILENAME
-        or not artifact.payload
-        or _sha256_bytes(artifact.payload) != artifact.sha256
-    ):
-        raise SchemaReconciliationError("schema_reconciliation_artifact_invalid")
-    try:
-        sql = artifact.payload.decode("utf-8", errors="strict")
-    except UnicodeDecodeError as exc:
-        raise SchemaReconciliationError("schema_reconciliation_artifact_invalid") from exc
-    marker = (
-        "CREATE OR REPLACE FUNCTION "
-        "canonical_brain._discord_guild_routeback_target_valid("
-    )
-    if sql.count(marker) != 1:
-        raise SchemaReconciliationError("schema_reconciliation_helper_definition_invalid")
-    start = sql.index(marker)
-    body_marker = "AS $function$"
-    body_start = sql.find(body_marker, start)
-    end_marker = "$function$;"
-    end = sql.find(end_marker, body_start + len(body_marker))
-    if body_start < start or end < body_start:
-        raise SchemaReconciliationError("schema_reconciliation_helper_definition_invalid")
-    end += len(end_marker)
-    definition = sql[start:end].replace(
-        "CREATE OR REPLACE FUNCTION",
-        "CREATE FUNCTION",
-        1,
-    )
-    required = (
-        "RETURNS boolean",
-        "LANGUAGE sql",
-        "IMMUTABLE",
-        "SET search_path = pg_catalog, canonical_brain",
-        "NOT canonical_brain._contains_forbidden_dm_ref(value)",
-    )
-    if any(item not in definition for item in required):
-        raise SchemaReconciliationError("schema_reconciliation_helper_definition_invalid")
-    sealed_owner = (
-        "ALTER FUNCTION canonical_brain."
-        "_discord_guild_routeback_target_valid(jsonb)\n"
-        "    OWNER TO canonical_brain_migration_owner;"
-    )
-    if sql.count(sealed_owner) != 1:
-        raise SchemaReconciliationError("schema_reconciliation_helper_owner_invalid")
-    trampoline_marker = (
-        "CREATE OR REPLACE FUNCTION canonical_brain._deterministic_uuid(value text)"
-    )
-    if sql.count(trampoline_marker) != 1:
-        raise SchemaReconciliationError(
-            "schema_reconciliation_trampoline_definition_invalid"
-        )
-    trampoline_start = sql.index(trampoline_marker)
-    trampoline_body_start = sql.find(body_marker, trampoline_start)
-    trampoline_end = sql.find(
-        end_marker,
-        trampoline_body_start + len(body_marker),
-    )
-    if (
-        trampoline_body_start < trampoline_start
-        or trampoline_end < trampoline_body_start
+        not isinstance(install_artifact_sha256, str)
+        or _SHA256.fullmatch(install_artifact_sha256) is None
+        or not isinstance(retire_artifact_sha256, str)
+        or _SHA256.fullmatch(retire_artifact_sha256) is None
     ):
         raise SchemaReconciliationError(
-            "schema_reconciliation_trampoline_definition_invalid"
+            "schema_reconciliation_control_contract_invalid"
         )
-    trampoline_end += len(end_marker)
-    trampoline_restore = sql[trampoline_start:trampoline_end]
-    if any(
-        item not in trampoline_restore
-        for item in (
-            "RETURNS uuid",
-            "LANGUAGE plpgsql",
-            "IMMUTABLE",
-            "STRICT",
-            "SET search_path = pg_catalog, canonical_brain",
-            "digest_hex text := canonical_brain._sha256_text(value)",
+    return _sha256_json(
+        {
+            "schema": CONTROL_FOUNDATION_CONTRACT_SCHEMA,
+            "database": DATABASE,
+            "executor_role": "canonical_brain_schema_reconciler",
+            "control_schema": "canonical_brain_reconciliation",
+            "observer_signature": (
+                "canonical_brain_reconciliation."
+                "observe_missing_discord_routeback_helper_v1()"
+            ),
+            "apply_signature": (
+                "canonical_brain_reconciliation."
+                "apply_missing_discord_routeback_helper_v1()"
+            ),
+            "control_install_artifact_sha256": install_artifact_sha256,
+            "control_retire_artifact_sha256": retire_artifact_sha256,
+            "helper_catalog_identity_sha256": (
+                EXPECTED_MISSING_HELPER_CATALOG_IDENTITY.sha256
+            ),
+        }
+    )
+
+
+def _load_control_artifact(
+    revision: str,
+    *,
+    name: str,
+    filename: str,
+) -> SealedSQLArtifact:
+    """Load one exact control artifact from the root-sealed release only."""
+
+    manifest, _raw = load_release_manifest(revision)
+    root = Path(manifest.artifact_root)
+    if root != Path("/opt/muncho-canary-releases") / revision:
+        raise SchemaReconciliationError(
+            "schema_reconciliation_release_invalid"
         )
+    relative = f"scripts/sql/{filename}"
+    entries = {entry.path: entry for entry in manifest.entries}
+    entry = entries.get(relative)
+    if (
+        entry is None
+        or entry.kind != "file"
+        or entry.mode != "0444"
+        or entry.size <= 0
+        or _SHA256.fullmatch(entry.sha256) is None
     ):
         raise SchemaReconciliationError(
-            "schema_reconciliation_trampoline_definition_invalid"
+            "schema_reconciliation_release_invalid"
         )
-    exact_api_role_graph = r"""
-(
-    SELECT pg_catalog.count(*) = 2
-           AND pg_catalog.count(DISTINCT membership.roleid) = 2
-           AND COALESCE(pg_catalog.bool_and(
-               member.rolname = SESSION_USER
-               AND granted.rolname IN (
-                   'canonical_brain_writer',
-                   'canonical_brain_migration_owner'
-               )
-               AND grantor.rolname = 'cloudsqladmin'
-               AND membership.admin_option IS FALSE
-               AND membership.inherit_option IS TRUE
-               AND membership.set_option IS FALSE
-           ), false)
-      FROM pg_catalog.pg_auth_members AS membership
-      JOIN pg_catalog.pg_roles AS granted ON granted.oid = membership.roleid
-      JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
-      JOIN pg_catalog.pg_roles AS grantor ON grantor.oid = membership.grantor
-     WHERE member.rolname = SESSION_USER
-        OR granted.rolname = SESSION_USER
-        OR grantor.rolname = SESSION_USER
-        OR member.rolname = 'canonical_brain_migration_owner'
-        OR granted.rolname = 'canonical_brain_migration_owner'
-        OR grantor.rolname = 'canonical_brain_migration_owner'
-)
-""".strip()
-    temporary_login_has_zero_shared_dependencies = r"""
-NOT EXISTS (
-    SELECT 1
-      FROM pg_catalog.pg_shdepend AS dependency
-      JOIN pg_catalog.pg_roles AS temporary_login
-        ON temporary_login.oid = dependency.refobjid
-     WHERE dependency.refclassid =
-           'pg_catalog.pg_authid'::pg_catalog.regclass
-       AND temporary_login.rolname = SESSION_USER
-)
-""".strip()
-    no_foreign_temporary_login_sessions = r"""
-NOT EXISTS (
-    SELECT 1 FROM pg_catalog.pg_stat_activity AS activity
-     WHERE activity.datname = pg_catalog.current_database()
-       AND activity.backend_type = 'client backend'
-       AND activity.pid <> pg_catalog.pg_backend_pid()
-)
-""".strip()
-    exact_trampoline = (
-        r"""
-EXISTS (
-    SELECT 1
-      FROM pg_catalog.pg_proc AS routine
-      JOIN pg_catalog.pg_namespace AS namespace
-        ON namespace.oid = routine.pronamespace
-      JOIN pg_catalog.pg_language AS language ON language.oid = routine.prolang
-      JOIN pg_catalog.pg_roles AS owner ON owner.oid = routine.proowner
-     WHERE routine.oid = pg_catalog.to_regprocedure(
-           'canonical_brain._deterministic_uuid(text)'
-       )
-       AND namespace.nspname = 'canonical_brain'
-       AND owner.rolname = 'canonical_brain_migration_owner'
-       AND routine.prokind = 'f'
-       AND routine.prosecdef IS FALSE
-       AND routine.provolatile = 'i'
-       AND routine.proparallel = 'u'
-       AND routine.proleakproof IS FALSE
-       AND routine.proisstrict IS TRUE
-       AND routine.proretset IS FALSE
-       AND language.lanname = 'plpgsql'
-       AND pg_catalog.oidvectortypes(routine.proargtypes) = 'text'
-       AND pg_catalog.format_type(routine.prorettype, NULL) = 'uuid'
-       AND routine.proconfig = ARRAY[
-           'search_path=pg_catalog, canonical_brain'
-       ]::text[]
-       AND pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
-           pg_catalog.pg_get_functiondef(routine.oid), 'UTF8'
-       )), 'hex') = '"""
-        + _EXPECTED_TRAMPOLINE_DEFINITION_SHA256
-        + r"""'
-       AND (
-            SELECT pg_catalog.count(*) = 1
-                   AND COALESCE(pg_catalog.bool_and(
-                       acl.grantee = routine.proowner
-                       AND acl.grantor = routine.proowner
-                       AND acl.privilege_type = 'EXECUTE'
-                       AND acl.is_grantable IS FALSE
-                   ), false)
-              FROM pg_catalog.aclexplode(COALESCE(
-                  routine.proacl,
-                  pg_catalog.acldefault('f', routine.proowner)
-              )) AS acl
-       )
-       AND pg_catalog.obj_description(
-           routine.oid,
-           'pg_proc'
-       ) IS NULL
-       AND NOT EXISTS (
-           SELECT 1 FROM pg_catalog.pg_seclabel AS security_label
-            WHERE security_label.classoid =
-                  'pg_catalog.pg_proc'::pg_catalog.regclass
-              AND security_label.objoid = routine.oid
-       )
-)
-"""
-    ).strip()
-    trampoline_semantic_snapshot = r"""
-SELECT routine.oid::text AS routine_oid,
-       pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
-           pg_catalog.jsonb_build_object(
-               'owner', owner.rolname,
-               'kind', routine.prokind::text,
-               'security_definer', routine.prosecdef,
-               'volatility', routine.provolatile::text,
-               'parallel', routine.proparallel::text,
-               'leakproof', routine.proleakproof,
-               'strict', routine.proisstrict,
-               'returns_set', routine.proretset,
-               'language', language.lanname,
-               'argument_types',
-                   pg_catalog.oidvectortypes(routine.proargtypes),
-               'return_type',
-                   pg_catalog.format_type(routine.prorettype, NULL),
-               'configuration', COALESCE(
-                   pg_catalog.to_jsonb(routine.proconfig), '[]'::jsonb
-               ),
-               'prosrc_sha256', pg_catalog.encode(pg_catalog.sha256(
-                   pg_catalog.convert_to(routine.prosrc, 'UTF8')
-               ), 'hex'),
-               'definition_sha256', pg_catalog.encode(pg_catalog.sha256(
-                   pg_catalog.convert_to(
-                       pg_catalog.pg_get_functiondef(routine.oid), 'UTF8'
-                   )
-               ), 'hex'),
-               'acl', COALESCE((
-                   SELECT pg_catalog.jsonb_agg(
-                       pg_catalog.jsonb_build_object(
-                           'grantor', acl.grantor::text,
-                           'grantee', acl.grantee::text,
-                           'privilege', acl.privilege_type,
-                           'grantable', acl.is_grantable
-                       ) ORDER BY acl.grantor, acl.grantee,
-                                  acl.privilege_type, acl.is_grantable
-                   ) FROM pg_catalog.aclexplode(COALESCE(
-                       routine.proacl,
-                       pg_catalog.acldefault('f', routine.proowner)
-                   )) AS acl
-               ), '[]'::jsonb),
-               'comment', pg_catalog.obj_description(
-                   routine.oid, 'pg_proc'
-               ),
-               'security_labels', COALESCE((
-                   SELECT pg_catalog.jsonb_agg(
-                       pg_catalog.jsonb_build_object(
-                           'provider', security_label.provider,
-                           'label', security_label.label,
-                           'object_subid', security_label.objsubid
-                       ) ORDER BY security_label.provider,
-                                  security_label.objsubid,
-                                  security_label.label
-                   ) FROM pg_catalog.pg_seclabel AS security_label
-                    WHERE security_label.classoid =
-                          'pg_catalog.pg_proc'::pg_catalog.regclass
-                      AND security_label.objoid = routine.oid
-               ), '[]'::jsonb),
-               'dependencies', COALESCE((
-                   SELECT pg_catalog.jsonb_agg(
-                       pg_catalog.jsonb_build_object(
-                           'refclassid', dependency.refclassid::text,
-                           'refobjid', dependency.refobjid::text,
-                           'refobjsubid', dependency.refobjsubid,
-                           'deptype', dependency.deptype::text
-                       ) ORDER BY dependency.refclassid,
-                                  dependency.refobjid,
-                                  dependency.refobjsubid,
-                                  dependency.deptype
-                   ) FROM pg_catalog.pg_depend AS dependency
-                    WHERE dependency.classid =
-                          'pg_catalog.pg_proc'::pg_catalog.regclass
-                      AND dependency.objid = routine.oid
-                      AND dependency.objsubid = 0
-               ), '[]'::jsonb),
-               'shared_dependencies', COALESCE((
-                   SELECT pg_catalog.jsonb_agg(
-                       pg_catalog.jsonb_build_object(
-                           'database', dependency.dbid::text,
-                           'refclassid', dependency.refclassid::text,
-                           'refobjid', dependency.refobjid::text,
-                           'deptype', dependency.deptype::text
-                       ) ORDER BY dependency.dbid,
-                                  dependency.refclassid,
-                                  dependency.refobjid,
-                                  dependency.deptype
-                   ) FROM pg_catalog.pg_shdepend AS dependency
-                    WHERE dependency.classid =
-                          'pg_catalog.pg_proc'::pg_catalog.regclass
-                      AND dependency.objid = routine.oid
-                      AND dependency.objsubid = 0
-               ), '[]'::jsonb)
-           )::text,
-           'UTF8'
-       )), 'hex') AS semantic_sha256
-  FROM pg_catalog.pg_proc AS routine
-  JOIN pg_catalog.pg_language AS language ON language.oid = routine.prolang
-  JOIN pg_catalog.pg_roles AS owner ON owner.oid = routine.proowner
- WHERE routine.oid = pg_catalog.to_regprocedure(
-       'canonical_brain._deterministic_uuid(text)'
- )
-""".strip()
-    authority_open = f"""
-SET LOCAL search_path = pg_catalog;
-
-DO $reconcile_discord_routeback_helper_authority_open$
-DECLARE
-    trampoline_oid text;
-    trampoline_semantic_sha256 text;
-BEGIN
-    IF CURRENT_USER <> SESSION_USER
-       OR pg_catalog.current_database() <> 'muncho_canary_brain'
-       OR pg_catalog.current_setting('server_version_num')::integer / 10000 <> 18
-       OR EXISTS (SELECT 1 FROM pg_catalog.pg_event_trigger)
-       OR NOT pg_catalog.has_language_privilege(
-           SESSION_USER, 'plpgsql', 'USAGE'
-       )
-       OR (
-            pg_catalog.current_setting('max_prepared_transactions')::integer <> 0
-            AND EXISTS (
-                SELECT 1 FROM pg_catalog.pg_prepared_xacts AS prepared
-                 WHERE prepared.database = pg_catalog.current_database()
-                   AND prepared.owner = SESSION_USER
-            )
-       )
-       OR (
-            SELECT pg_catalog.pg_get_userbyid(database.datdba)
-              FROM pg_catalog.pg_database AS database
-             WHERE database.datname = pg_catalog.current_database()
-       ) <> 'cloudsqlsuperuser'
-       OR SESSION_USER !~ '^muncho_canary_admin_[0-9a-f]{{16}}$'
-       OR (
-            SELECT pg_catalog.count(*)
-              FROM pg_catalog.pg_roles AS temporary_login
-             WHERE temporary_login.rolname
-                   ~ '^muncho_canary_admin_[0-9a-f]{{16}}$'
-       ) <> 1
-       OR NOT EXISTS (
-            SELECT 1 FROM pg_catalog.pg_roles AS temporary_login
-             WHERE temporary_login.rolname = SESSION_USER
-               AND temporary_login.rolcanlogin
-               AND temporary_login.rolinherit
-               AND NOT temporary_login.rolsuper
-               AND NOT temporary_login.rolcreatedb
-               AND NOT temporary_login.rolcreaterole
-               AND NOT temporary_login.rolreplication
-               AND NOT temporary_login.rolbypassrls
-               AND temporary_login.rolconnlimit = -1
-               AND temporary_login.rolvaliduntil IS NULL
-               AND temporary_login.rolconfig IS NULL
-       )
-       OR NOT EXISTS (
-            SELECT 1 FROM pg_catalog.pg_roles AS owner
-             WHERE owner.rolname = 'canonical_brain_migration_owner'
-               AND NOT owner.rolcanlogin
-               AND NOT owner.rolinherit
-               AND NOT owner.rolsuper
-               AND NOT owner.rolcreatedb
-               AND NOT owner.rolcreaterole
-               AND NOT owner.rolreplication
-               AND NOT owner.rolbypassrls
-               AND owner.rolconnlimit = -1
-               AND owner.rolvaliduntil IS NULL
-               AND owner.rolconfig IS NULL
-       )
-       OR NOT EXISTS (
-            SELECT 1 FROM pg_catalog.pg_roles AS writer
-             WHERE writer.rolname = 'canonical_brain_writer'
-               AND NOT writer.rolcanlogin
-               AND writer.rolinherit
-               AND NOT writer.rolsuper
-               AND NOT writer.rolcreatedb
-               AND NOT writer.rolcreaterole
-               AND NOT writer.rolreplication
-               AND NOT writer.rolbypassrls
-               AND writer.rolconnlimit = -1
-               AND writer.rolvaliduntil IS NULL
-               AND writer.rolconfig IS NULL
-       )
-       OR NOT ({exact_api_role_graph})
-       OR NOT pg_catalog.pg_has_role(
-           SESSION_USER, 'canonical_brain_migration_owner', 'MEMBER'
-       )
-       OR NOT pg_catalog.pg_has_role(
-           SESSION_USER, 'canonical_brain_migration_owner', 'USAGE'
-       )
-       OR pg_catalog.pg_has_role(
-           SESSION_USER, 'canonical_brain_migration_owner', 'SET'
-       )
-       OR NOT pg_catalog.pg_has_role(
-           SESSION_USER, 'canonical_brain_writer', 'MEMBER'
-       )
-       OR NOT pg_catalog.pg_has_role(
-           SESSION_USER, 'canonical_brain_writer', 'USAGE'
-       )
-       OR pg_catalog.pg_has_role(
-           SESSION_USER, 'canonical_brain_writer', 'SET'
-       )
-       OR NOT ({no_foreign_temporary_login_sessions})
-       OR NOT ({temporary_login_has_zero_shared_dependencies})
-       OR NOT ({exact_trampoline})
-    THEN
-        RAISE EXCEPTION 'canonical route-back helper authority preflight failed';
-    END IF;
-    SELECT snapshot.routine_oid, snapshot.semantic_sha256
-      INTO STRICT trampoline_oid, trampoline_semantic_sha256
-      FROM ({trampoline_semantic_snapshot}) AS snapshot;
-    PERFORM pg_catalog.set_config(
-        'muncho.schema_reconciliation_trampoline_oid',
-        trampoline_oid,
-        true
-    );
-    PERFORM pg_catalog.set_config(
-        'muncho.schema_reconciliation_trampoline_semantic_sha256',
-        trampoline_semantic_sha256,
-        true
-    );
-END
-$reconcile_discord_routeback_helper_authority_open$;
-""".strip()
-    installer_request = (
-        "install_missing_discord_guild_routeback_target_valid_v1"
+    return _read_sealed_artifact(
+        name,
+        root / relative,
+        expected_sha256=entry.sha256,
+        expected_size=entry.size,
+        require_root_sealed=True,
     )
-    installer_response = "00000000-0000-5000-8000-000000000001"
-    trampoline_source = f"""
-DECLARE
-    helper_oid oid;
-BEGIN
-    IF CURRENT_USER <> 'canonical_brain_migration_owner'
-       OR SESSION_USER !~ '^muncho_canary_admin_[0-9a-f]{{16}}$'
-       OR value <> '{installer_request}'::text
-       OR pg_catalog.to_regprocedure(
-           'canonical_brain._discord_guild_routeback_target_valid(jsonb)'
-       ) IS NOT NULL
-    THEN
-        RAISE EXCEPTION 'canonical route-back helper installer admission failed';
-    END IF;
-    EXECUTE $reconcile_helper_definition$
-{definition}
-$reconcile_helper_definition$;
-    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION '
-            'canonical_brain._discord_guild_routeback_target_valid(jsonb) '
-            'FROM PUBLIC';
-    helper_oid := pg_catalog.to_regprocedure(
-        'canonical_brain._discord_guild_routeback_target_valid(jsonb)'
-    );
-    IF helper_oid IS NULL
-       OR pg_catalog.pg_get_userbyid((
-           SELECT routine.proowner FROM pg_catalog.pg_proc AS routine
-            WHERE routine.oid = helper_oid
-       )) <> 'canonical_brain_migration_owner'
-    THEN
-        RAISE EXCEPTION 'canonical route-back helper installer failed';
-    END IF;
-    RETURN '{installer_response}'::uuid;
-END
-""".strip()
-    trampoline_source_sha256 = _sha256_bytes(
-        ("\n" + trampoline_source + "\n").encode("utf-8")
-    )
-    trampoline_install = f"""
-CREATE OR REPLACE FUNCTION canonical_brain._deterministic_uuid(value text)
-RETURNS uuid
-LANGUAGE plpgsql
-VOLATILE
-STRICT
-SECURITY DEFINER
-SET search_path = pg_catalog, canonical_brain
-AS $reconcile_discord_routeback_helper_installer$
-{trampoline_source}
-$reconcile_discord_routeback_helper_installer$;
-
-DO $reconcile_discord_routeback_helper_invoke$
-DECLARE
-    installer_result uuid;
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-          FROM pg_catalog.pg_proc AS routine
-          JOIN pg_catalog.pg_language AS language ON language.oid = routine.prolang
-          JOIN pg_catalog.pg_roles AS owner ON owner.oid = routine.proowner
-         WHERE routine.oid = pg_catalog.to_regprocedure(
-               'canonical_brain._deterministic_uuid(text)'
-           )
-           AND owner.rolname = 'canonical_brain_migration_owner'
-           AND routine.prosecdef IS TRUE
-           AND routine.provolatile = 'v'
-           AND routine.proparallel = 'u'
-           AND routine.proleakproof IS FALSE
-           AND routine.proisstrict IS TRUE
-           AND routine.proretset IS FALSE
-           AND language.lanname = 'plpgsql'
-           AND routine.proconfig = ARRAY[
-               'search_path=pg_catalog, canonical_brain'
-           ]::text[]
-           AND pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
-               routine.prosrc, 'UTF8'
-           )), 'hex') = '{trampoline_source_sha256}'
-    ) THEN
-        RAISE EXCEPTION 'canonical route-back helper trampoline mismatch';
-    END IF;
-    SELECT canonical_brain._deterministic_uuid('{installer_request}'::text)
-      INTO STRICT installer_result;
-    IF installer_result <> '{installer_response}'::uuid THEN
-        RAISE EXCEPTION 'canonical route-back helper installer receipt mismatch';
-    END IF;
-END
-$reconcile_discord_routeback_helper_invoke$;
-
-{trampoline_restore}
-""".strip()
-    terminal_validation = f"""
-DO $reconcile_discord_routeback_helper_terminal_validation$
-DECLARE
-    helper_oid oid := pg_catalog.to_regprocedure(
-        'canonical_brain._discord_guild_routeback_target_valid(jsonb)'
-    );
-    restored_trampoline_oid text;
-    restored_trampoline_semantic_sha256 text;
-BEGIN
-    SELECT snapshot.routine_oid, snapshot.semantic_sha256
-      INTO STRICT restored_trampoline_oid,
-                  restored_trampoline_semantic_sha256
-      FROM ({trampoline_semantic_snapshot}) AS snapshot;
-    IF helper_oid IS NULL
-       OR NOT ({exact_trampoline})
-       OR NOT ({no_foreign_temporary_login_sessions})
-       OR NOT ({temporary_login_has_zero_shared_dependencies})
-       OR restored_trampoline_oid <> pg_catalog.current_setting(
-           'muncho.schema_reconciliation_trampoline_oid'
-       )
-       OR restored_trampoline_semantic_sha256 <> pg_catalog.current_setting(
-           'muncho.schema_reconciliation_trampoline_semantic_sha256'
-       )
-       OR NOT EXISTS (
-        SELECT 1
-          FROM pg_catalog.pg_proc AS routine
-          JOIN pg_catalog.pg_namespace AS namespace
-            ON namespace.oid = routine.pronamespace
-          JOIN pg_catalog.pg_language AS language
-            ON language.oid = routine.prolang
-          JOIN pg_catalog.pg_roles AS owner ON owner.oid = routine.proowner
-         WHERE routine.oid = helper_oid
-           AND namespace.nspname = 'canonical_brain'
-           AND pg_catalog.format(
-               '%I.%I(%s)', namespace.nspname, routine.proname,
-               pg_catalog.oidvectortypes(routine.proargtypes)
-           ) = 'canonical_brain._discord_guild_routeback_target_valid(jsonb)'
-           AND owner.rolname = 'canonical_brain_migration_owner'
-           AND NOT (
-               owner.rolcanlogin OR owner.rolsuper OR owner.rolcreatedb
-               OR owner.rolcreaterole OR owner.rolreplication
-               OR owner.rolbypassrls
-           )
-           AND routine.prokind = 'f'
-           AND routine.prosecdef IS FALSE
-           AND routine.provolatile = 'i'
-           AND routine.proparallel = 'u'
-           AND routine.proleakproof IS FALSE
-           AND routine.proisstrict IS FALSE
-           AND routine.proretset IS FALSE
-           AND language.lanname = 'sql'
-           AND pg_catalog.oidvectortypes(routine.proargtypes) = 'jsonb'
-           AND pg_catalog.format_type(routine.prorettype, NULL) = 'boolean'
-           AND routine.proconfig = ARRAY[
-               'search_path=pg_catalog, canonical_brain'
-           ]::text[]
-           AND pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
-               routine.prosrc, 'UTF8'
-           )), 'hex') = '{_EXPECTED_HELPER_PROSRC_SHA256}'
-           AND pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
-               pg_catalog.pg_get_functiondef(routine.oid), 'UTF8'
-           )), 'hex') = '{_EXPECTED_HELPER_DEFINITION_SHA256}'
-           AND (
-                SELECT pg_catalog.count(*) = 1
-                       AND COALESCE(pg_catalog.bool_and(
-                           acl.grantee = routine.proowner
-                           AND acl.grantor = routine.proowner
-                           AND acl.privilege_type = 'EXECUTE'
-                           AND acl.is_grantable IS FALSE
-                       ), false)
-                  FROM pg_catalog.aclexplode(COALESCE(
-                      routine.proacl,
-                      pg_catalog.acldefault('f', routine.proowner)
-                  )) AS acl
-           )
-           AND NOT pg_catalog.has_function_privilege(
-               'canonical_brain_writer', routine.oid, 'EXECUTE'
-           )
-           AND NOT pg_catalog.has_function_privilege(
-               'muncho_canary_writer_login', routine.oid, 'EXECUTE'
-           )
-       )
-    THEN
-        RAISE EXCEPTION 'canonical route-back helper terminal contract mismatch';
-    END IF;
-END
-$reconcile_discord_routeback_helper_terminal_validation$;
-""".strip()
-    authority_close = f"""
-DO $reconcile_discord_routeback_helper_authority_close$
-BEGIN
-    IF CURRENT_USER <> SESSION_USER
-       OR SESSION_USER !~ '^muncho_canary_admin_[0-9a-f]{{16}}$'
-       OR EXISTS (SELECT 1 FROM pg_catalog.pg_event_trigger)
-       OR NOT pg_catalog.has_language_privilege(
-           SESSION_USER, 'plpgsql', 'USAGE'
-       )
-       OR (
-            pg_catalog.current_setting('max_prepared_transactions')::integer <> 0
-            AND EXISTS (
-                SELECT 1 FROM pg_catalog.pg_prepared_xacts AS prepared
-                 WHERE prepared.database = pg_catalog.current_database()
-                   AND prepared.owner = SESSION_USER
-            )
-       )
-       OR NOT ({exact_api_role_graph})
-       OR NOT ({no_foreign_temporary_login_sessions})
-       OR NOT ({temporary_login_has_zero_shared_dependencies})
-       OR NOT ({exact_trampoline})
-       OR pg_catalog.to_regprocedure(
-           'canonical_brain._discord_guild_routeback_target_valid(jsonb)'
-       ) IS NULL
-    THEN
-        RAISE EXCEPTION 'canonical route-back helper authority close failed';
-    END IF;
-END
-$reconcile_discord_routeback_helper_authority_close$;
-""".strip()
-    mutation = (
-        f"{authority_open}\n\n{trampoline_install}\n\n"
-        f"{terminal_validation}\n\n{authority_close}\n"
-    )
-    if (
-        mutation.count(
-            "CREATE FUNCTION canonical_brain."
-            "_discord_guild_routeback_target_valid("
-        )
-        != 1
-        or mutation.count(
-            "CREATE OR REPLACE FUNCTION canonical_brain."
-            "_deterministic_uuid(value text)"
-        )
-        != 2
-        or "ALTER FUNCTION" in mutation
-        or "CREATE TABLE" in mutation
-        or mutation.count("SET LOCAL search_path = pg_catalog;") != 1
-        or "SET ROLE" in mutation
-        or "RESET ROLE" in mutation
-        or "GRANT canonical_brain_migration_owner" in mutation
-        or "REVOKE canonical_brain_migration_owner" in mutation
-        or "cloudsqlsuperuser'\n               AND member.rolname" in mutation
-        or mutation.count(
-            "REVOKE ALL PRIVILEGES ON FUNCTION '\n"
-            "            'canonical_brain."
-            "_discord_guild_routeback_target_valid(jsonb) '\n"
-            "            'FROM PUBLIC'"
-        )
-        != 1
-        or "ALTER ROLE" in mutation
-        or "DROP " in mutation
-        or "CASCADE" in mutation
-    ):
-        raise SchemaReconciliationError("schema_reconciliation_mutation_not_bounded")
-    return mutation
 
 
 @dataclass(frozen=True)
 class SchemaReconciliationPlan:
     value: Mapping[str, Any]
-    mutation_sql: str = dataclasses.field(repr=False, compare=False)
 
     @classmethod
     def from_mapping(
         cls,
         value: Mapping[str, Any],
-        *,
-        mutation_sql: str,
     ) -> "SchemaReconciliationPlan":
         if not isinstance(value, Mapping) or set(value) != _PLAN_FIELDS:
             raise SchemaReconciliationError("schema_reconciliation_plan_invalid")
@@ -2908,7 +2089,9 @@ class SchemaReconciliationPlan:
                 for name in (
                     "base_artifact_sha256",
                     "target_asset_sha256",
-                    "mutation_sql_sha256",
+                    "control_install_artifact_sha256",
+                    "control_retire_artifact_sha256",
+                    "control_foundation_contract_sha256",
                     "helper_catalog_identity_sha256",
                     "expected_old_contract_sha256",
                     "target_contract_sha256",
@@ -2921,15 +2104,15 @@ class SchemaReconciliationPlan:
             or raw["transaction_isolation"] != "SERIALIZABLE"
             or raw["canonical_truth_lock"] != CANONICAL_TRUTH_LOCK_SQL
             or raw["canonical_truth_preservation_required"] is not True
-            or _sha256_bytes(mutation_sql.encode("utf-8"))
-            != raw["mutation_sql_sha256"]
+            or raw["control_foundation_contract_sha256"]
+            != _control_foundation_contract_sha256(
+                raw["control_install_artifact_sha256"],
+                raw["control_retire_artifact_sha256"],
+            )
             or raw["plan_sha256"] != _sha256_json(unsigned)
         ):
             raise SchemaReconciliationError("schema_reconciliation_plan_invalid")
-        return cls(
-            json.loads(_canonical_bytes(raw).decode("utf-8")),
-            mutation_sql,
-        )
+        return cls(json.loads(_canonical_bytes(raw).decode("utf-8")))
 
     @property
     def sha256(self) -> str:
@@ -2946,6 +2129,8 @@ def _build_plan_from_artifact(
     artifact: SealedSQLArtifact,
     *,
     target_asset_sha256: str = "0" * 64,
+    control_install_artifact_sha256: str,
+    control_retire_artifact_sha256: str,
     postgresql_major: int = POSTGRESQL_MAJOR,
 ) -> SchemaReconciliationPlan:
     if not isinstance(revision, str) or _REVISION.fullmatch(revision) is None:
@@ -2955,11 +2140,28 @@ def _build_plan_from_artifact(
     if (
         not isinstance(target_asset_sha256, str)
         or _SHA256.fullmatch(target_asset_sha256) is None
+        or not isinstance(control_install_artifact_sha256, str)
+        or _SHA256.fullmatch(control_install_artifact_sha256) is None
+        or not isinstance(control_retire_artifact_sha256, str)
+        or _SHA256.fullmatch(control_retire_artifact_sha256) is None
         or type(postgresql_major) is not int
         or postgresql_major != POSTGRESQL_MAJOR
     ):
         raise SchemaReconciliationError("schema_reconciliation_target_asset_invalid")
-    mutation = _extract_mutation_sql(artifact)
+    if (
+        not isinstance(artifact, SealedSQLArtifact)
+        or artifact.name != BASE_ARTIFACT_NAME
+        or artifact.path.name != BASE_ARTIFACT_FILENAME
+        or not artifact.payload
+        or _sha256_bytes(artifact.payload) != artifact.sha256
+    ):
+        raise SchemaReconciliationError(
+            "schema_reconciliation_artifact_invalid"
+        )
+    control_contract_sha256 = _control_foundation_contract_sha256(
+        control_install_artifact_sha256,
+        control_retire_artifact_sha256,
+    )
     unsigned = {
         "schema": RECONCILIATION_PLAN_SCHEMA,
         "release_revision": revision,
@@ -2968,7 +2170,13 @@ def _build_plan_from_artifact(
         "base_artifact_sha256": artifact.sha256,
         "target_asset_sha256": target_asset_sha256,
         "postgresql_major": postgresql_major,
-        "mutation_sql_sha256": _sha256_bytes(mutation.encode("utf-8")),
+        "control_install_artifact_sha256": (
+            control_install_artifact_sha256
+        ),
+        "control_retire_artifact_sha256": (
+            control_retire_artifact_sha256
+        ),
+        "control_foundation_contract_sha256": control_contract_sha256,
         "helper_catalog_identity_sha256": (
             EXPECTED_MISSING_HELPER_CATALOG_IDENTITY.sha256
         ),
@@ -2980,8 +2188,7 @@ def _build_plan_from_artifact(
         "canonical_truth_preservation_required": True,
     }
     return SchemaReconciliationPlan.from_mapping(
-        {**unsigned, "plan_sha256": _sha256_json(unsigned)},
-        mutation_sql=mutation,
+        {**unsigned, "plan_sha256": _sha256_json(unsigned)}
     )
 
 
@@ -2993,6 +2200,16 @@ def build_schema_reconciliation_plan(
     try:
         target_asset = load_release_schema_contract_asset(revision)
         artifact = _load_sealed_artifacts(revision)[BASE_ARTIFACT_NAME]
+        control_install = _load_control_artifact(
+            revision,
+            name="schema_reconciliation_control_install",
+            filename=CONTROL_INSTALL_ARTIFACT_FILENAME,
+        )
+        control_retire = _load_control_artifact(
+            revision,
+            name="schema_reconciliation_control_retire",
+            filename=CONTROL_RETIRE_ARTIFACT_FILENAME,
+        )
     except BaseException as exc:
         raise SchemaReconciliationError("schema_reconciliation_release_invalid") from exc
     if artifact.sha256 != target_asset.base_artifact_sha256:
@@ -3004,6 +2221,8 @@ def build_schema_reconciliation_plan(
         target_asset.contract,
         artifact,
         target_asset_sha256=target_asset.sha256,
+        control_install_artifact_sha256=control_install.sha256,
+        control_retire_artifact_sha256=control_retire.sha256,
         postgresql_major=target_asset.postgresql_major,
     )
 
@@ -3054,7 +2273,15 @@ def preflight_schema_reconciliation(
         "base_artifact_sha256": plan.value["base_artifact_sha256"],
         "target_asset_sha256": plan.value["target_asset_sha256"],
         "postgresql_major": plan.value["postgresql_major"],
-        "mutation_sql_sha256": plan.value["mutation_sql_sha256"],
+        "control_install_artifact_sha256": plan.value[
+            "control_install_artifact_sha256"
+        ],
+        "control_retire_artifact_sha256": plan.value[
+            "control_retire_artifact_sha256"
+        ],
+        "control_foundation_contract_sha256": plan.value[
+            "control_foundation_contract_sha256"
+        ],
         "observed_contract_sha256": observed.sha256,
         "truth_receipt_sha256": truth.sha256,
         "expected_old_contract_sha256": plan.value[
@@ -3101,8 +2328,14 @@ def _validate_preflight(
         or value.get("target_asset_sha256")
         != plan.value["target_asset_sha256"]
         or value.get("postgresql_major") != plan.value["postgresql_major"]
-        or value.get("mutation_sql_sha256")
-        != plan.value["mutation_sql_sha256"]
+        or any(
+            value.get(name) != plan.value[name]
+            for name in (
+                "control_install_artifact_sha256",
+                "control_retire_artifact_sha256",
+                "control_foundation_contract_sha256",
+            )
+        )
         or value.get("observed_contract_sha256") != expected_contract
         or not isinstance(value.get("truth_receipt_sha256"), str)
         or _SHA256.fullmatch(str(value.get("truth_receipt_sha256"))) is None
@@ -3126,7 +2359,11 @@ class SchemaReconciliationTransaction(Protocol):
 
     def observe_canonical_truth(self) -> CanonicalTruthReceipt: ...
 
-    def execute_sql(self, sql: str) -> None: ...
+    def apply_missing_helper(
+        self,
+        *,
+        authorized_intent_sha256: str,
+    ) -> None: ...
 
 
 class SchemaReconciliationDatabase(Protocol):
@@ -3538,7 +2775,15 @@ class AppendOnlySchemaReconciliationJournal:
             "base_artifact_sha256": plan.value["base_artifact_sha256"],
             "target_asset_sha256": plan.value["target_asset_sha256"],
             "postgresql_major": plan.value["postgresql_major"],
-            "mutation_sql_sha256": plan.value["mutation_sql_sha256"],
+            "control_install_artifact_sha256": plan.value[
+                "control_install_artifact_sha256"
+            ],
+            "control_retire_artifact_sha256": plan.value[
+                "control_retire_artifact_sha256"
+            ],
+            "control_foundation_contract_sha256": plan.value[
+                "control_foundation_contract_sha256"
+            ],
             "expected_old_contract_sha256": plan.value[
                 "expected_old_contract_sha256"
             ],
@@ -3642,7 +2887,15 @@ class AppendOnlySchemaReconciliationJournal:
             "base_artifact_sha256": plan.value["base_artifact_sha256"],
             "target_asset_sha256": plan.value["target_asset_sha256"],
             "postgresql_major": plan.value["postgresql_major"],
-            "mutation_sql_sha256": plan.value["mutation_sql_sha256"],
+            "control_install_artifact_sha256": plan.value[
+                "control_install_artifact_sha256"
+            ],
+            "control_retire_artifact_sha256": plan.value[
+                "control_retire_artifact_sha256"
+            ],
+            "control_foundation_contract_sha256": plan.value[
+                "control_foundation_contract_sha256"
+            ],
             "expected_old_contract_sha256": plan.value[
                 "expected_old_contract_sha256"
             ],
@@ -3737,7 +2990,14 @@ def _validate_authorized_intent(
         or value.get("base_artifact_sha256") != plan.value["base_artifact_sha256"]
         or value.get("target_asset_sha256") != plan.value["target_asset_sha256"]
         or value.get("postgresql_major") != plan.value["postgresql_major"]
-        or value.get("mutation_sql_sha256") != plan.value["mutation_sql_sha256"]
+        or any(
+            value.get(name) != plan.value[name]
+            for name in (
+                "control_install_artifact_sha256",
+                "control_retire_artifact_sha256",
+                "control_foundation_contract_sha256",
+            )
+        )
         or value.get("expected_old_contract_sha256")
         != plan.value["expected_old_contract_sha256"]
         or value.get("target_contract_sha256")
@@ -3793,7 +3053,14 @@ def _validate_terminal(plan: SchemaReconciliationPlan, value: Mapping[str, Any])
         or value.get("base_artifact_sha256") != plan.value["base_artifact_sha256"]
         or value.get("target_asset_sha256") != plan.value["target_asset_sha256"]
         or value.get("postgresql_major") != plan.value["postgresql_major"]
-        or value.get("mutation_sql_sha256") != plan.value["mutation_sql_sha256"]
+        or any(
+            value.get(name) != plan.value[name]
+            for name in (
+                "control_install_artifact_sha256",
+                "control_retire_artifact_sha256",
+                "control_foundation_contract_sha256",
+            )
+        )
         or value.get("expected_old_contract_sha256")
         != plan.value["expected_old_contract_sha256"]
         or value.get("target_contract_sha256")
@@ -4027,7 +3294,13 @@ def execute_schema_reconciliation(
                         "schema_reconciliation_intent_contract_drifted"
                     )
                 try:
-                    transaction.execute_sql(plan.mutation_sql)
+                    transaction.apply_missing_helper(
+                        authorized_intent_sha256=intent[
+                            "authorized_intent_sha256"
+                        ],
+                    )
+                except SchemaReconciliationError:
+                    raise
                 except BaseException as exc:
                     raise SchemaReconciliationError(
                         "schema_reconciliation_database_apply_failed"

@@ -1071,18 +1071,65 @@ def test_schema_reconciliation_remote_exchange_rejects_wrong_frame_shape():
         )
 
 
+def test_schema_reconciliation_control_frames_are_two_stage_and_exact():
+    credential = bytearray(b"q" * 64)
+    install = launcher._schema_reconciliation_control_frame(
+        launcher.SCHEMA_RECONCILIATION_CONTROL_INSTALL_MAGIC,
+        {"ok": True},
+        credential=credential,
+    )
+    cleanup = launcher._schema_reconciliation_control_frame(
+        launcher.SCHEMA_RECONCILIATION_CONTROL_CLEANUP_MAGIC,
+        {"ok": True},
+    )
+
+    launcher._IapRemoteSession._validate_schema_reconciliation_control_frame(
+        install,
+        sequence=0,
+    )
+    launcher._IapRemoteSession._validate_schema_reconciliation_control_frame(
+        cleanup,
+        sequence=1,
+    )
+    assert install[:4] == b"MCB1"
+    assert cleanup[:4] == b"MCC1"
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="schema_reconciliation_control_remote_frame_invalid",
+    ):
+        launcher._IapRemoteSession._validate_schema_reconciliation_control_frame(
+            install,
+            sequence=1,
+        )
+
+
 def test_schema_reconciliation_transport_and_signatures_are_domain_separated():
     assert launcher.IapSchemaReconciliationTransport._MODULE == (
         "gateway.canonical_writer_schema_reconciliation_bootstrap"
     )
     assert launcher.IapSchemaReconciliationTransport._COMMANDS == {"run"}
     namespaces = {
-        launcher.SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_SSHSIG_NAMESPACE,
+        launcher.SCHEMA_RECONCILIATION_EXECUTOR_PREFLIGHT_SSHSIG_NAMESPACE,
         launcher.SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_SSHSIG_NAMESPACE,
-        launcher.SCHEMA_RECONCILIATION_ADMIN_CLEANUP_SSHSIG_NAMESPACE,
+        launcher.SCHEMA_RECONCILIATION_EXECUTOR_CLEANUP_SSHSIG_NAMESPACE,
     }
     assert len(namespaces) == 3
-    assert all(value.endswith("-v2") for value in namespaces)
+    assert all(value.endswith(("-v2", "-v3")) for value in namespaces)
+    assert {
+        launcher.SCHEMA_RECONCILIATION_CONTROL_INSTALL_SSHSIG_NAMESPACE,
+        launcher.SCHEMA_RECONCILIATION_CONTROL_CLEANUP_SSHSIG_NAMESPACE,
+    } == {
+        "muncho-canonical-writer-schema-reconciliation-control-install-owner-v1",
+        "muncho-canonical-writer-schema-reconciliation-control-cleanup-owner-v1",
+    }
+    assert (
+        launcher.IapSchemaReconciliationControlBootstrapTransport._MODULE
+        == "gateway.canonical_writer_schema_reconciliation_control_bootstrap"
+    )
+    assert (
+        launcher.IapSchemaReconciliationControlBootstrapTransport._COMMANDS
+        == {"install"}
+    )
 
 
 def test_schema_reconciliation_cli_action_is_mutually_exclusive():
@@ -1093,6 +1140,7 @@ def test_schema_reconciliation_cli_action_is_mutually_exclusive():
     ])
 
     assert arguments.reconcile_legacy_canary_db is True
+    assert arguments.bootstrap_schema_reconciliation_control is False
     assert arguments.publish_writer_preflight is False
     assert arguments.apply_phase_b_foundation is False
     with pytest.raises(SystemExit):
@@ -1101,6 +1149,20 @@ def test_schema_reconciliation_cli_action_is_mutually_exclusive():
             RELEASE_SHA,
             "--reconcile-legacy-canary-db",
             "--publish-writer-preflight",
+        ])
+    control_arguments = launcher._cli_parser().parse_args([
+        "--release-sha",
+        RELEASE_SHA,
+        "--bootstrap-schema-reconciliation-control",
+    ])
+    assert control_arguments.bootstrap_schema_reconciliation_control is True
+    assert control_arguments.reconcile_legacy_canary_db is False
+    with pytest.raises(SystemExit):
+        launcher._cli_parser().parse_args([
+            "--release-sha",
+            RELEASE_SHA,
+            "--bootstrap-schema-reconciliation-control",
+            "--reconcile-legacy-canary-db",
         ])
 
 
@@ -1205,8 +1267,116 @@ def test_schema_reconciliation_cli_dispatches_exact_owner_boundaries(monkeypatch
     )
 
 
+def test_schema_reconciliation_control_cli_dispatches_separate_bootstrap(
+    monkeypatch,
+):
+    calls = []
+    emitted = []
+    owner_identity = object()
+    gcloud_configuration = object()
+    database_client = object()
+    transport = object()
+    receipt = {"ok": True, "terminal_sha256": "e" * 64}
+
+    class _TrustedExecutable:
+        def trusted_command_prefix(self):
+            calls.append("trusted_command_prefix")
+            return ("/trusted/python",)
+
+    executable = _TrustedExecutable()
+    monkeypatch.setattr(
+        launcher,
+        "require_trusted_owner_runtime",
+        lambda release: calls.append(("runtime", release)) or executable,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "activate_trusted_owner_support",
+        lambda runtime, *, release_sha: calls.append(
+            ("support_activate", runtime, release_sha)
+        ),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "require_trusted_owner_support_activation",
+        lambda runtime, *, release_sha: calls.append(
+            ("support_revalidate", runtime, release_sha)
+        ),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "require_local_launcher_provenance",
+        lambda release: calls.append(("provenance", release)) or "f" * 64,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_validate_owner_interpreter_invocation",
+        lambda path: calls.append(("interpreter", path)),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "PinnedGcloudConfiguration",
+        lambda: gcloud_configuration,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "GcloudOwnerAccessToken",
+        lambda **kwargs: calls.append(("identity", kwargs)) or owner_identity,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "IapSchemaReconciliationControlBootstrapTransport",
+        lambda identity, **kwargs: (
+            calls.append(("control_transport", identity, kwargs)) or transport
+        ),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "GoogleRestClient",
+        lambda identity: (
+            calls.append(("database_client", identity)) or database_client
+        ),
+    )
+
+    def bootstrap(**kwargs):
+        calls.append(("control_bootstrap", kwargs))
+        kwargs["provenance_guard"](kwargs["release_sha"])
+        return receipt
+
+    monkeypatch.setattr(
+        launcher,
+        "bootstrap_schema_reconciliation_control",
+        bootstrap,
+    )
+    monkeypatch.setattr(launcher, "_emit_canonical_line", emitted.append)
+
+    result = launcher.main([
+        "--release-sha",
+        RELEASE_SHA,
+        "--bootstrap-schema-reconciliation-control",
+    ])
+
+    assert result == 0
+    assert emitted == [receipt]
+    call = next(item for item in calls if item[0] == "control_bootstrap")
+    assert call[1]["release_sha"] == RELEASE_SHA
+    assert call[1]["transport"] is transport
+    assert call[1]["cloud_sql_client"] is database_client
+    assert call[1]["owner_identity"] is owner_identity
+    assert ("support_activate", executable, RELEASE_SHA) in calls
+    assert ("support_revalidate", executable, RELEASE_SHA) in calls
+
+
+@pytest.mark.parametrize(
+    "action",
+    (
+        "--reconcile-legacy-canary-db",
+        "--bootstrap-schema-reconciliation-control",
+    ),
+)
 def test_schema_reconciliation_cli_rejects_external_iam_before_runtime(
     monkeypatch,
+    action,
 ):
     emitted = []
     monkeypatch.setattr(
@@ -1219,7 +1389,7 @@ def test_schema_reconciliation_cli_rejects_external_iam_before_runtime(
     result = launcher.main([
         "--release-sha",
         RELEASE_SHA,
-        "--reconcile-legacy-canary-db",
+        action,
         "--external-iam-policy-sha256",
         "f" * 64,
     ])
@@ -1244,7 +1414,7 @@ def _schema_reconciliation_gate():
         "gate_sha256": "1" * 64,
         "release_revision": RELEASE_SHA,
         "plan_sha256": "2" * 64,
-        "temporary_admin_username_sha256": "3" * 64,
+        "temporary_executor_username_sha256": "3" * 64,
         "owner_subject_sha256": OWNER_SHA,
         "owner_key_id": "4" * 64,
         "journal_head": {
@@ -1373,12 +1543,12 @@ class _RoleBoundReconciliationClient:
 
 def _role_bound_schema_reconciliation_cloud_boundary(
     database_roles: list[str],
-) -> launcher.CloudSqlSchemaReconciliationAdmin:
-    username = "muncho_canary_admin_" + "a" * 16
+) -> launcher.CloudSqlSchemaReconciliationExecutor:
+    username = "muncho_canary_reconciler_" + "a" * 16
     operation = ("CREATE_USER", "DONE", OWNER_SHA, True)
     operations = {"authority-operation": operation}
     client = _RoleBoundReconciliationClient(username, database_roles)
-    boundary = launcher.CloudSqlSchemaReconciliationAdmin(client)
+    boundary = launcher.CloudSqlSchemaReconciliationExecutor(client)
     boundary._mutation_operation_baseline = frozenset()
     boundary._mutation_relevant_baseline = {}
     boundary._confirmed_authority_operation_name = "authority-operation"
@@ -1391,7 +1561,7 @@ def _role_bound_schema_reconciliation_cloud_boundary(
 
 
 def test_schema_reconciliation_cloud_boundary_uses_fenced_describes_for_partial_list() -> None:
-    username = "muncho_canary_admin_" + "a" * 16
+    username = "muncho_canary_reconciler_" + "a" * 16
     boundary = _role_bound_schema_reconciliation_cloud_boundary(
         list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES)
     )
@@ -1426,7 +1596,7 @@ def test_schema_reconciliation_cloud_boundary_uses_fenced_describes_for_partial_
 
 
 def test_schema_reconciliation_cloud_boundary_accepts_explicit_built_in_type() -> None:
-    username = "muncho_canary_admin_" + "a" * 16
+    username = "muncho_canary_reconciler_" + "a" * 16
     boundary = _role_bound_schema_reconciliation_cloud_boundary(
         list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES)
     )
@@ -1460,7 +1630,7 @@ def test_schema_reconciliation_cloud_boundary_accepts_explicit_built_in_type() -
 def test_schema_reconciliation_cloud_boundary_rejects_explicit_non_built_in_type(
     resource_type: object,
 ) -> None:
-    username = "muncho_canary_admin_" + "a" * 16
+    username = "muncho_canary_reconciler_" + "a" * 16
     boundary = _role_bound_schema_reconciliation_cloud_boundary(
         list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES)
     )
@@ -1470,7 +1640,7 @@ def test_schema_reconciliation_cloud_boundary_rejects_explicit_non_built_in_type
 
     with pytest.raises(
         launcher.OwnerLauncherError,
-        match="cloud_sql_schema_reconciliation_admin_resource_invalid",
+        match="cloud_sql_schema_reconciliation_executor_resource_invalid",
     ):
         boundary._role_bound_resource(
             username,
@@ -1492,7 +1662,7 @@ def test_schema_reconciliation_cloud_boundary_keeps_etag_mandatory_when_type_omi
     etag_present: bool,
     etag: object,
 ) -> None:
-    username = "muncho_canary_admin_" + "a" * 16
+    username = "muncho_canary_reconciler_" + "a" * 16
     boundary = _role_bound_schema_reconciliation_cloud_boundary(
         list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES)
     )
@@ -1505,7 +1675,7 @@ def test_schema_reconciliation_cloud_boundary_keeps_etag_mandatory_when_type_omi
 
     with pytest.raises(
         launcher.OwnerLauncherError,
-        match="cloud_sql_schema_reconciliation_admin_resource_invalid",
+        match="cloud_sql_schema_reconciliation_executor_resource_invalid",
     ):
         boundary._role_bound_resource(
             username,
@@ -1514,7 +1684,7 @@ def test_schema_reconciliation_cloud_boundary_keeps_etag_mandatory_when_type_omi
 
 
 def test_schema_reconciliation_cloud_boundary_rejects_describe_drift() -> None:
-    username = "muncho_canary_admin_" + "a" * 16
+    username = "muncho_canary_reconciler_" + "a" * 16
     boundary = _role_bound_schema_reconciliation_cloud_boundary(
         list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES)
     )
@@ -1536,7 +1706,7 @@ def test_schema_reconciliation_cloud_boundary_rejects_describe_drift() -> None:
 
     with pytest.raises(
         launcher.OwnerLauncherError,
-        match="cloud_sql_schema_reconciliation_admin_resource_drifted",
+        match="cloud_sql_schema_reconciliation_executor_resource_drifted",
     ):
         boundary._role_bound_resource(
             username,
@@ -1545,11 +1715,17 @@ def test_schema_reconciliation_cloud_boundary_rejects_describe_drift() -> None:
 
 
 def test_schema_reconciliation_cloud_boundary_is_exact_custom_role_only() -> None:
-    username = "muncho_canary_admin_" + "a" * 16
+    username = "muncho_canary_reconciler_" + "a" * 16
     boundary = _role_bound_schema_reconciliation_cloud_boundary(
         list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES)
     )
 
+    assert launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES == (
+        "canonical_brain_schema_reconciler",
+    )
+    assert launcher.SCHEMA_RECONCILIATION_EXECUTOR_USERNAME_PREFIX == (
+        "muncho_canary_reconciler_"
+    )
     assert boundary._create_user_body(username, "q" * 64) == {
         "databaseRoles": list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES),
         "instance": launcher.SQL_INSTANCE,
@@ -1564,8 +1740,10 @@ def test_schema_reconciliation_cloud_boundary_is_exact_custom_role_only() -> Non
         "name": username,
         "revokeExistingRoles": "true",
     }
-    receipt = boundary.temporary_admin_authority_receipt(username)
-    assert receipt["schema"] == launcher.TEMPORARY_ADMIN_AUTHORITY_RECEIPT_SCHEMA
+    receipt = boundary.temporary_executor_authority_receipt(username)
+    assert receipt["schema"] == (
+        launcher.SCHEMA_RECONCILIATION_EXECUTOR_AUTHORITY_RECEIPT_SCHEMA
+    )
     assert receipt["type"] == "BUILT_IN"
     assert receipt["database_roles"] == list(
         launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES
@@ -1574,13 +1752,19 @@ def test_schema_reconciliation_cloud_boundary_is_exact_custom_role_only() -> Non
     assert receipt["resource_etag_sha256"] == hashlib.sha256(
         b"exact-etag-v1"
     ).hexdigest()
+    assert boundary._absence_evidence_identity() == {
+        "schema": (
+            launcher.SCHEMA_RECONCILIATION_EXECUTOR_ABSENCE_RECEIPT_SCHEMA
+        ),
+        "temporary_executor_absent": True,
+    }
     assert receipt["receipt_sha256"] == hashlib.sha256(
         _canonical({key: value for key, value in receipt.items() if key != "receipt_sha256"})
     ).hexdigest()
 
 
 def test_schema_reconciliation_cloud_boundary_rejects_extra_cloudsqlsuperuser() -> None:
-    username = "muncho_canary_admin_" + "a" * 16
+    username = "muncho_canary_reconciler_" + "a" * 16
     boundary = _role_bound_schema_reconciliation_cloud_boundary([
         *launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES,
         "cloudsqlsuperuser",
@@ -1588,13 +1772,13 @@ def test_schema_reconciliation_cloud_boundary_rejects_extra_cloudsqlsuperuser() 
 
     with pytest.raises(
         launcher.OwnerLauncherError,
-        match="cloud_sql_schema_reconciliation_admin_resource_invalid",
+        match="cloud_sql_schema_reconciliation_executor_resource_invalid",
     ):
-        boundary.temporary_admin_authority_receipt(username)
+        boundary.temporary_executor_authority_receipt(username)
 
 
 def test_schema_reconciliation_cloud_update_revokes_every_stale_role_in_query() -> None:
-    username = "muncho_canary_admin_" + "a" * 16
+    username = "muncho_canary_reconciler_" + "a" * 16
 
     class Client:
         def __init__(self) -> None:
@@ -1605,7 +1789,7 @@ def test_schema_reconciliation_cloud_update_revokes_every_stale_role_in_query() 
             return {"name": "role-replacement-operation"}
 
     client = Client()
-    boundary = launcher.CloudSqlSchemaReconciliationAdmin(client)
+    boundary = launcher.CloudSqlSchemaReconciliationExecutor(client)
     boundary._fixed_update_etag = "stale-user-etag"
     boundary._ensure_mutation_observation = lambda: None
     boundary._settle_user_presence = lambda *_args, **_kwargs: True
@@ -1633,11 +1817,57 @@ def test_schema_reconciliation_cloud_update_revokes_every_stale_role_in_query() 
     assert body["revokeExistingRoles"] is True
 
 
+def test_schema_reconciliation_control_admin_is_separate_broad_one_time_login():
+    username = "muncho_canary_control_" + "a" * 16
+    operation = ("CREATE_USER", "DONE", OWNER_SHA, True)
+    boundary = launcher.CloudSqlSchemaReconciliationControlAdmin(object())
+    boundary._mutation_operation_baseline = frozenset()
+    boundary._mutation_relevant_baseline = {}
+    boundary._confirmed_authority_operation_name = "authority-operation"
+    boundary._confirmed_authority_operation_type = "CREATE_USER"
+    boundary._expected_owner_subject_sha256 = OWNER_SHA
+    boundary._expected_mutation_context_sha256 = "f" * 64
+    boundary._stable_instance_operations = lambda: {
+        "authority-operation": operation
+    }
+    boundary.require_current_authority = lambda value: (
+        None if value == username else pytest.fail("wrong control username")
+    )
+
+    assert boundary._create_user_body(username, "q" * 64) == {
+        "instance": launcher.SQL_INSTANCE,
+        "name": username,
+        "password": "q" * 64,
+        "project": launcher.PROJECT,
+        "type": "BUILT_IN",
+    }
+    receipt = boundary.temporary_control_admin_authority_receipt(username)
+    assert receipt["schema"] == (
+        launcher.SCHEMA_RECONCILIATION_CONTROL_ADMIN_AUTHORITY_RECEIPT_SCHEMA
+    )
+    assert receipt["broad_bootstrap_authority"] is True
+    assert receipt["database_roles_requested"] == []
+    assert receipt["normal_reconciliation_executor"] is False
+    assert receipt["receipt_sha256"] == hashlib.sha256(
+        _canonical({
+            key: value
+            for key, value in receipt.items()
+            if key != "receipt_sha256"
+        })
+    ).hexdigest()
+    assert boundary._absence_evidence_identity() == {
+        "schema": (
+            launcher.SCHEMA_RECONCILIATION_CONTROL_ADMIN_ABSENCE_RECEIPT_SCHEMA
+        ),
+        "temporary_control_admin_absent": True,
+    }
+
+
 def test_schema_reconciliation_uses_role_bound_cloud_boundary_by_default() -> None:
     default = inspect.signature(
         launcher.reconcile_legacy_canary_schema
     ).parameters["boundary_factory"].default
-    assert default is launcher.CloudSqlSchemaReconciliationAdmin
+    assert default is launcher.CloudSqlSchemaReconciliationExecutor
 
 
 def test_schema_reconciliation_owner_builders_bind_all_three_signed_frames():
@@ -1646,7 +1876,7 @@ def test_schema_reconciliation_owner_builders_bind_all_three_signed_frames():
     gate = _schema_reconciliation_gate()
     credential = bytearray(b"c" * 64)
     cloud_authority = {"receipt_sha256": "6" * 64}
-    admin = launcher.build_schema_reconciliation_admin_preflight(
+    admin = launcher.build_schema_reconciliation_executor_preflight(
         gate=gate,
         cloud_sql_authority_receipt=cloud_authority,
         credential=credential,
@@ -1663,11 +1893,13 @@ def test_schema_reconciliation_owner_builders_bind_all_three_signed_frames():
     assert admin["authority_claim_sha256"] == hashlib.sha256(
         _canonical(admin_unsigned)
     ).hexdigest()
+    assert admin["action"] == "authorize_temporary_executor_locked_preflight"
+    assert admin["temporary_executor_username_sha256"] == "3" * 64
     assert signer.calls[-1][0] == (
         reconciliation_bootstrap.admin_preflight_signature_payload(admin)
     )
     assert signer.calls[-1][1] == (
-        reconciliation_bootstrap.ADMIN_PREFLIGHT_OWNER_SSHSIG_NAMESPACE
+        launcher.SCHEMA_RECONCILIATION_EXECUTOR_PREFLIGHT_SSHSIG_NAMESPACE
     )
 
     challenge = {
@@ -1683,6 +1915,7 @@ def test_schema_reconciliation_owner_builders_bind_all_three_signed_frames():
         gate=gate,
         admin_preflight=admin,
         challenge=challenge,
+        post_hba_temporary_executor_authority_receipt=cloud_authority,
         signer=signer,
         owner_authority=authority,
         now_unix=NOW + 1,
@@ -1694,6 +1927,12 @@ def test_schema_reconciliation_owner_builders_bind_all_three_signed_frames():
         if key not in {"preflight_authorization_claim_sha256", "signature_sshsig"}
     }
     assert authorization["execution_mode"] == "reconcile_missing_helper"
+    assert authorization[
+        "post_hba_temporary_executor_authority_receipt"
+    ] == cloud_authority
+    assert authorization[
+        "post_hba_temporary_executor_authority_receipt_sha256"
+    ] == cloud_authority["receipt_sha256"]
     assert authorization["preflight_authorization_claim_sha256"] == hashlib.sha256(
         _canonical(authorization_unsigned)
     ).hexdigest()
@@ -1705,7 +1944,7 @@ def test_schema_reconciliation_owner_builders_bind_all_three_signed_frames():
 
     intermediate = {"database_intermediate_sha256": "b" * 64}
     absence = {"evidence_sha256": "c" * 64}
-    cleanup = launcher.build_schema_reconciliation_admin_cleanup(
+    cleanup = launcher.build_schema_reconciliation_executor_cleanup(
         gate=gate,
         admin_preflight=admin,
         challenge=challenge,
@@ -1725,13 +1964,15 @@ def test_schema_reconciliation_owner_builders_bind_all_three_signed_frames():
     assert cleanup["cleanup_claim_sha256"] == hashlib.sha256(
         _canonical(cleanup_unsigned)
     ).hexdigest()
+    assert cleanup["action"] == "confirm_temporary_executor_absence"
+    assert cleanup["temporary_executor_username_sha256"] == "3" * 64
     assert signer.calls[-1][0] == (
         reconciliation_bootstrap.admin_cleanup_signature_payload(cleanup)
     )
     assert [call[1] for call in signer.calls] == [
-        reconciliation_bootstrap.ADMIN_PREFLIGHT_OWNER_SSHSIG_NAMESPACE,
+        launcher.SCHEMA_RECONCILIATION_EXECUTOR_PREFLIGHT_SSHSIG_NAMESPACE,
         reconciliation_bootstrap.PREFLIGHT_AUTHORIZATION_OWNER_SSHSIG_NAMESPACE,
-        reconciliation_bootstrap.ADMIN_CLEANUP_OWNER_SSHSIG_NAMESPACE,
+        launcher.SCHEMA_RECONCILIATION_EXECUTOR_CLEANUP_SSHSIG_NAMESPACE,
     ]
 
 
@@ -1828,7 +2069,7 @@ class _SchemaReconciliationBoundary:
         if self.create_fails:
             raise launcher.OwnerLauncherError("cloud_sql_operation_failed")
 
-    def temporary_admin_authority_receipt(self, username):
+    def temporary_executor_authority_receipt(self, username):
         self.events.append(("authority", username))
         return {"receipt_sha256": "6" * 64}
 
@@ -1991,8 +2232,9 @@ def _schema_reconciliation_owner_case(
         "owner_public_key_ed25519_hex": authority.public_key_ed25519_hex,
         "owner_key_id": authority.key_id,
         "owner_public_fingerprint": authority.public_fingerprint,
-        "temporary_admin_username": (
-            launcher.ADMIN_USERNAME_PREFIX + ("2" * 64)[:16]
+        "temporary_executor_username": (
+            launcher.SCHEMA_RECONCILIATION_EXECUTOR_USERNAME_PREFIX
+            + ("2" * 64)[:16]
         ),
         "expires_at_unix": NOW + 1_200,
     }
@@ -2054,6 +2296,34 @@ def test_schema_reconciliation_owner_orchestrates_and_cleans_before_c3(monkeypat
 
     assert receipt == case["session"].terminal
     assert credential == bytearray(64)
+    authority_indexes = [
+        index
+        for index, item in enumerate(events)
+        if isinstance(item, tuple) and item[0] == "authority"
+    ]
+    assert len(authority_indexes) == 2
+    p1_index = next(
+        index
+        for index, item in enumerate(events)
+        if isinstance(item, tuple) and item[0] == "a1"
+    )
+    a2_index = next(
+        index
+        for index, item in enumerate(events)
+        if isinstance(item, tuple)
+        and item[:3]
+        == (
+            "exchange",
+            1,
+            launcher.SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_MAGIC,
+        )
+    )
+    require_index = max(
+        index
+        for index, item in enumerate(events[: authority_indexes[1]])
+        if isinstance(item, tuple) and item[0] == "require"
+    )
+    assert p1_index < require_index < authority_indexes[1] < a2_index
     delete_index = next(i for i, item in enumerate(events) if item[0] == "delete")
     c3_index = next(
         i
@@ -2068,6 +2338,55 @@ def test_schema_reconciliation_owner_orchestrates_and_cleans_before_c3(monkeypat
     )
     assert delete_index < c3_index
     assert events[-2:] == ["validated", "closed"]
+
+
+def test_schema_reconciliation_owner_rejects_post_hba_authority_drift_before_a2(
+    monkeypatch,
+):
+    _patch_schema_reconciliation_owner_validators(monkeypatch)
+    events = []
+    case = _schema_reconciliation_owner_case(events)
+    authority_call_count = 0
+
+    def changed_authority_receipt(username):
+        nonlocal authority_call_count
+        authority_call_count += 1
+        events.append(("authority", username))
+        digest = "6" * 64 if authority_call_count == 1 else "7" * 64
+        return {"receipt_sha256": digest}
+
+    case["boundary"].temporary_executor_authority_receipt = (
+        changed_authority_receipt
+    )
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="schema_reconciliation_owner_frame_invalid",
+    ):
+        launcher.reconcile_legacy_canary_schema(
+            release_sha=RELEASE_SHA,
+            transport=case["transport"],
+            cloud_sql_client=object(),
+            owner_identity=case["identity"],
+            now=lambda: NOW,
+            password_factory=lambda: bytearray(b"w" * 64),
+            nonce_factory=lambda size: b"n" * size,
+            signer=_FixedSchemaReconciliationSigner(case["authority"]),
+            boundary_factory=lambda _client: case["boundary"],
+            secret_hardener=lambda: None,
+            provenance_guard=lambda _revision: None,
+        )
+
+    assert authority_call_count == 2
+    assert not any(
+        isinstance(item, tuple) and item[0] == "exchange"
+        for item in events
+    )
+    assert "aborted" in events
+    assert any(
+        isinstance(item, tuple) and item[0] == "delete"
+        for item in events
+    )
 
 
 @pytest.mark.parametrize(
@@ -2116,7 +2435,7 @@ def test_schema_reconciliation_owner_validates_phase_failure_before_cleanup(
         assert validated_index < delete_index
 
 
-def test_schema_reconciliation_owner_failure_still_deletes_admin(monkeypatch):
+def test_schema_reconciliation_owner_failure_still_deletes_executor(monkeypatch):
     _patch_schema_reconciliation_owner_validators(monkeypatch)
     events = []
     case = _schema_reconciliation_owner_case(events, fail_a2=True)
@@ -2143,7 +2462,7 @@ def test_schema_reconciliation_owner_failure_still_deletes_admin(monkeypatch):
     assert abort_index < delete_index
 
 
-def test_schema_reconciliation_unconfirmed_abort_defers_admin_delete(monkeypatch):
+def test_schema_reconciliation_unconfirmed_abort_defers_executor_delete(monkeypatch):
     _patch_schema_reconciliation_owner_validators(monkeypatch)
     events = []
     case = _schema_reconciliation_owner_case(
@@ -2270,5 +2589,5 @@ def test_schema_reconciliation_cleanup_state_failure_does_not_skip_session_close
 
     assert events[-1] == "closed"
     assert launcher._attached_cleanup_failure_codes(error.value) == (
-        "schema_reconciliation_admin_cleanup_state_failed",
+        "schema_reconciliation_executor_cleanup_state_failed",
     )

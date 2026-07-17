@@ -34,7 +34,7 @@ from gateway.canonical_writer_schema_reconciliation_db import (
 NOW = 1_000
 REVISION = "a" * 40
 CREDENTIAL = b"C" * bootstrap.OPAQUE_CREDENTIAL_BYTES
-ADMIN_USERNAME = "muncho_canary_admin_" + "b" * 16
+EXECUTOR_USERNAME = "muncho_canary_reconciler_" + "b" * 16
 
 
 def _canonical(value: Any) -> bytes:
@@ -146,7 +146,7 @@ def _gate(
     unsigned = {
         "schema": bootstrap.GATE_SCHEMA,
         "ok": True,
-        "state": "stopped_release_admin_preflight_ready",
+        "state": "stopped_release_executor_preflight_ready",
         "release_revision": REVISION,
         "release_manifest_sha256": _digest("manifest"),
         "stopped_release_receipt_file_sha256": _digest(
@@ -162,8 +162,9 @@ def _gate(
         "target_asset_sha256": _digest("target-asset"),
         "expected_old_contract_sha256": _digest("old-contract"),
         "target_contract_sha256": _digest("target-contract"),
-        "mutation_sql_sha256": _digest("mutation-sql"),
-        "preflight_bridge_sql_sha256": _digest("preflight-bridge-sql"),
+        "control_install_artifact_sha256": _digest("control-install"),
+        "control_retire_artifact_sha256": _digest("control-retire"),
+        "control_foundation_contract_sha256": _digest("control-contract"),
         "advisory_lock_key": 7_307_818_649,
         "host_identity_sha256": _digest("host-identity"),
         "services_stopped_sha256": _digest("services-stopped-state"),
@@ -173,9 +174,9 @@ def _gate(
         "postgresql_major": bootstrap.EXPECTED_POSTGRESQL_MAJOR,
         "tls_server_name": "canary-pg18.example.invalid",
         "ca_file_sha256": _digest("ca-file"),
-        "temporary_admin_username": ADMIN_USERNAME,
-        "temporary_admin_username_sha256": hashlib.sha256(
-            ADMIN_USERNAME.encode("ascii")
+        "temporary_executor_username": EXECUTOR_USERNAME,
+        "temporary_executor_username_sha256": hashlib.sha256(
+            EXECUTOR_USERNAME.encode("ascii")
         ).hexdigest(),
         "owner_subject_sha256": _digest("owner-subject"),
         "owner_public_key_ed25519_hex": public.hex(),
@@ -185,7 +186,7 @@ def _gate(
         "run_nonce_sha256": _digest(f"run-nonce-{journal_state}"),
         "issued_at_unix": 900,
         "expires_at_unix": 1_100,
-        "temporary_admin_required": True,
+        "temporary_executor_required": True,
         "secret_material_recorded": False,
     }
     return _hashed(unsigned, "gate_sha256")
@@ -207,10 +208,10 @@ def _cloud_authority(gate: Mapping[str, Any]) -> dict[str, Any]:
         True,
     ]
     unsigned = {
-        "schema": bootstrap.CLOUD_ADMIN_AUTHORITY_SCHEMA,
+        "schema": bootstrap.CLOUD_EXECUTOR_AUTHORITY_SCHEMA,
         "project": gate["project"],
         "instance": gate["sql_instance"],
-        "username_sha256": gate["temporary_admin_username_sha256"],
+        "username_sha256": gate["temporary_executor_username_sha256"],
         "host": "",
         "type": "BUILT_IN",
         "user_present": True,
@@ -232,20 +233,20 @@ def _admin_preflight(
     key: Ed25519PrivateKey,
     gate: Mapping[str, Any],
     *,
-    namespace: str = bootstrap.ADMIN_PREFLIGHT_OWNER_SSHSIG_NAMESPACE,
+    namespace: str = bootstrap.EXECUTOR_PREFLIGHT_OWNER_SSHSIG_NAMESPACE,
     changes: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     authority = _cloud_authority(gate)
     unsigned = {
-        "schema": bootstrap.OWNER_ADMIN_PREFLIGHT_SCHEMA,
-        "frame_schema": bootstrap.ADMIN_PREFLIGHT_FRAME_SCHEMA,
-        "action": "authorize_temporary_admin_locked_preflight",
+        "schema": bootstrap.OWNER_EXECUTOR_PREFLIGHT_SCHEMA,
+        "frame_schema": bootstrap.EXECUTOR_PREFLIGHT_FRAME_SCHEMA,
+        "action": "authorize_temporary_executor_locked_preflight",
         "approved": True,
         "gate_sha256": gate["gate_sha256"],
         "release_revision": gate["release_revision"],
         "plan_sha256": gate["plan_sha256"],
-        "temporary_admin_username_sha256": gate[
-            "temporary_admin_username_sha256"
+        "temporary_executor_username_sha256": gate[
+            "temporary_executor_username_sha256"
         ],
         "owner_subject_sha256": gate["owner_subject_sha256"],
         "owner_key_id": gate["owner_key_id"],
@@ -267,7 +268,7 @@ def _admin_preflight(
     }
     frame["signature_sshsig"] = _sshsig(
         key,
-        bootstrap.admin_preflight_signature_payload(frame),
+        bootstrap.executor_preflight_signature_payload(frame),
         namespace=namespace,
     )
     return frame
@@ -323,7 +324,15 @@ def _core_preflight(
         "base_artifact_sha256": gate["base_artifact_sha256"],
         "target_asset_sha256": gate["target_asset_sha256"],
         "postgresql_major": gate["postgresql_major"],
-        "mutation_sql_sha256": gate["mutation_sql_sha256"],
+        "control_install_artifact_sha256": gate[
+            "control_install_artifact_sha256"
+        ],
+        "control_retire_artifact_sha256": gate[
+            "control_retire_artifact_sha256"
+        ],
+        "control_foundation_contract_sha256": gate[
+            "control_foundation_contract_sha256"
+        ],
         "observed_contract_sha256": observed,
         "truth_receipt_sha256": _truth().sha256,
         "expected_old_contract_sha256": gate["expected_old_contract_sha256"],
@@ -335,26 +344,77 @@ def _core_preflight(
     return _hashed(unsigned, "preflight_sha256")
 
 
-def _bridge(observed_at_unix: int = 990) -> dict[str, Any]:
+def _executor_managed_hba(
+    gate: Mapping[str, Any],
+    *,
+    observed_at_unix: int = 990,
+) -> dict[str, Any]:
+    user = gate["temporary_executor_username"]
+    database = "cloudsqladmin"
+    return {
+        "version": "managed-cloudsqladmin-hba-rejection-v2",
+        "host": bootstrap.phase_b.SQL_HOST,
+        "tls_server_name": gate["tls_server_name"],
+        "port": bootstrap.phase_b.SQL_PORT,
+        "server_certificate_sha256": _digest("tls-peer"),
+        "database": database,
+        "user": user,
+        "observed_at_unix": observed_at_unix,
+        "expires_at_unix": observed_at_unix + 300,
+        "sqlstate": "28000",
+        "server_message": (
+            f'no pg_hba.conf entry for host "{bootstrap.phase_b.SQL_HOST}", '
+            f'user "{user}", database "{database}", SSL encryption'
+        ),
+        "result": "pg_hba_rejected",
+        "tls_peer_verified": True,
+    }
+
+
+def _bridge(
+    gate: Mapping[str, Any],
+    observed_at_unix: int = 990,
+) -> dict[str, Any]:
     unsigned = {
-        "schema": bootstrap.TEMPORARY_OWNER_BRIDGE_SCHEMA,
+        "schema": bootstrap.TEMPORARY_EXECUTOR_BOUNDARY_SCHEMA,
         "transaction_isolation": "SERIALIZABLE",
         "database_roles": list(
             bootstrap.SCHEMA_RECONCILIATION_DATABASE_ROLES
         ),
-        "provider_membership_count": 2,
+        "provider_membership_count": 1,
         "admin_option": False,
         "inherit_option": True,
-        "set_option": False,
+        "set_option": True,
         "cloudsqlsuperuser_absent": True,
         "canonical_truth_share_lock": True,
-        "owner_authority_active_during_locked_collection": True,
-        "current_user_remained_temporary_login": True,
-        "exact_provider_memberships_during_locked_collection": True,
+        "caller_has_no_owner_membership_or_set_path": True,
+        "owner_writer_system_roles_unreachable": True,
+        "executor_owns_zero_objects_clusterwide": True,
+        "executor_cross_database_authority_hba_bounded": True,
+        "connectable_database_inventory_exact": True,
+        "connectable_non_template_database_inventory_exact": True,
+        "connectable_template_authority_absent": True,
+        "prepared_transactions_disabled_and_empty": True,
+        "executor_managed_hba_receipt_sha256": hashlib.sha256(
+            _canonical(_executor_managed_hba(gate))
+        ).hexdigest(),
+        "latent_provider_exception_databases": ["cloudsqladmin"],
+        "latent_provider_exception_hba_receipt_sha256s": [
+            hashlib.sha256(
+                _canonical(_executor_managed_hba(gate))
+            ).hexdigest()
+        ],
+        "roles_and_fence_recheck_required_before_authorization": True,
+        "control_foundation_contract_sha256": gate[
+            "control_foundation_contract_sha256"
+        ],
+        "current_user_observed_as_temporary_login_before_and_after_locked_collection": True,
+        "exact_provider_memberships_observed_before_and_after_locked_collection": True,
         "contract_collected_while_truth_lock_held": True,
         "canonical_truth_collected_while_truth_lock_held": True,
         "temporary_login_owned_objects": False,
-        "memberships_remain_until_cloud_user_cleanup": True,
+        "temporary_login_has_zero_shared_dependencies": True,
+        "memberships_observed_present_in_committed_preflight_snapshot_and_cleanup_required": True,
         "transaction_committed": True,
         "observed_at_unix": observed_at_unix,
         "secret_material_recorded": False,
@@ -367,12 +427,17 @@ def _collection(
     *,
     state: str,
 ) -> dict[str, Any]:
+    executor_hba = _executor_managed_hba(gate)
     return {
         "database_identity_sha256": _digest("database-identity"),
         "tls_peer_certificate_sha256": _digest("tls-peer"),
         "managed_hba_receipt_sha256": _digest("managed-hba"),
+        "executor_managed_hba_receipt": executor_hba,
+        "executor_managed_hba_receipt_sha256": hashlib.sha256(
+            _canonical(executor_hba)
+        ).hexdigest(),
         "postgresql_major": gate["postgresql_major"],
-        "temporary_owner_bridge_receipt": _bridge(),
+        "temporary_executor_boundary_receipt": _bridge(gate),
         "preflight": _core_preflight(gate, state=state),
         "canonical_truth_receipt": _truth().value,
         "observed_at_unix": 990,
@@ -422,6 +487,9 @@ def _preflight_authorization(
         challenge["preflight"]["state"],
     )]
     nonce_sha256 = _digest(f"preflight-authorization-{mode}")
+    post_hba_authority = copy.deepcopy(
+        dict(admin["cloud_sql_authority_receipt"])
+    )
     frame: dict[str, Any] = {
         "schema": bootstrap.OWNER_PREFLIGHT_AUTHORIZATION_SCHEMA,
         "frame_schema": bootstrap.PREFLIGHT_AUTHORIZATION_FRAME_SCHEMA,
@@ -432,6 +500,12 @@ def _preflight_authorization(
         "preflight_challenge_sha256": challenge[
             "preflight_challenge_sha256"
         ],
+        "post_hba_temporary_executor_authority_receipt": (
+            post_hba_authority
+        ),
+        "post_hba_temporary_executor_authority_receipt_sha256": (
+            post_hba_authority["receipt_sha256"]
+        ),
         "release_revision": gate["release_revision"],
         "plan_sha256": gate["plan_sha256"],
         "journal_head_sha256": journal["head_sha256"],
@@ -517,7 +591,15 @@ def _core_terminal(
         "base_artifact_sha256": gate["base_artifact_sha256"],
         "target_asset_sha256": gate["target_asset_sha256"],
         "postgresql_major": gate["postgresql_major"],
-        "mutation_sql_sha256": gate["mutation_sql_sha256"],
+        "control_install_artifact_sha256": gate[
+            "control_install_artifact_sha256"
+        ],
+        "control_retire_artifact_sha256": gate[
+            "control_retire_artifact_sha256"
+        ],
+        "control_foundation_contract_sha256": gate[
+            "control_foundation_contract_sha256"
+        ],
         "expected_old_contract_sha256": gate["expected_old_contract_sha256"],
         "target_contract_sha256": gate["target_contract_sha256"],
         "initial_contract_sha256": initial_contract,
@@ -553,12 +635,12 @@ def _database_attestation(
         "observed_contract_sha256": gate["target_contract_sha256"],
         "canonical_truth_receipt": challenge["canonical_truth_receipt"],
         "transaction_committed": True,
-        "temporary_owner_memberships_present": True,
         "temporary_login_owns_zero_objects": True,
-        "trampoline_restored_before_commit": True,
+        "fixed_control_routines_re_attested_before_commit": True,
+        "inert_executor_membership_present": True,
         "cloud_user_cleanup_required": True,
         "database_session_closed": True,
-        "re_attested_before_temporary_admin_delete": True,
+        "re_attested_before_temporary_executor_delete": True,
         "observed_at_unix": NOW,
         "secret_material_recorded": False,
     }
@@ -630,11 +712,11 @@ def _cloud_absence(
         key=lambda row: row[0],
     )
     unsigned = {
-        "schema": bootstrap.CLOUD_ADMIN_ABSENCE_SCHEMA,
-        "temporary_admin_absent": True,
+        "schema": bootstrap.CLOUD_EXECUTOR_ABSENCE_SCHEMA,
+        "temporary_executor_absent": True,
         "project": gate["project"],
         "instance": gate["sql_instance"],
-        "username_sha256": gate["temporary_admin_username_sha256"],
+        "username_sha256": gate["temporary_executor_username_sha256"],
         "owner_subject_sha256": gate["owner_subject_sha256"],
         "mutation_context_sha256": gate["gate_sha256"],
         "user_absent": True,
@@ -661,14 +743,14 @@ def _cleanup(
     authorization: Mapping[str, Any],
     intermediate: Mapping[str, Any],
     *,
-    namespace: str = bootstrap.ADMIN_CLEANUP_OWNER_SSHSIG_NAMESPACE,
+    namespace: str = bootstrap.EXECUTOR_CLEANUP_OWNER_SSHSIG_NAMESPACE,
     changes: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     absence = _cloud_absence(gate, admin)
     unsigned = {
-        "schema": bootstrap.OWNER_ADMIN_CLEANUP_SCHEMA,
-        "frame_schema": bootstrap.ADMIN_CLEANUP_FRAME_SCHEMA,
-        "action": "confirm_temporary_admin_absence",
+        "schema": bootstrap.OWNER_EXECUTOR_CLEANUP_SCHEMA,
+        "frame_schema": bootstrap.EXECUTOR_CLEANUP_FRAME_SCHEMA,
+        "action": "confirm_temporary_executor_absence",
         "approved": True,
         "gate_sha256": gate["gate_sha256"],
         "authority_claim_sha256": admin["authority_claim_sha256"],
@@ -683,8 +765,8 @@ def _cleanup(
         ],
         "release_revision": gate["release_revision"],
         "plan_sha256": gate["plan_sha256"],
-        "temporary_admin_username_sha256": gate[
-            "temporary_admin_username_sha256"
+        "temporary_executor_username_sha256": gate[
+            "temporary_executor_username_sha256"
         ],
         "owner_subject_sha256": gate["owner_subject_sha256"],
         "owner_key_id": gate["owner_key_id"],
@@ -704,7 +786,7 @@ def _cleanup(
     }
     frame["signature_sshsig"] = _sshsig(
         key,
-        bootstrap.admin_cleanup_signature_payload(frame),
+        bootstrap.executor_cleanup_signature_payload(frame),
         namespace=namespace,
     )
     return frame
@@ -754,16 +836,31 @@ def _post_delete_terminal(
             plan_sha256=gate["plan_sha256"],
             database=gate["database"],
             writer_login=WRITER_LOGIN,
-            temporary_login=gate["temporary_admin_username"],
-            temporary_login_sha256=gate[
-                "temporary_admin_username_sha256"
+            temporary_executor_login=gate["temporary_executor_username"],
+            temporary_executor_login_sha256=gate[
+                "temporary_executor_username_sha256"
+            ],
+            control_foundation_contract_sha256=gate[
+                "control_foundation_contract_sha256"
             ],
             target_contract_sha256=gate["target_contract_sha256"],
             observed_contract_sha256=gate["target_contract_sha256"],
             writer_session_identity_exact=True,
-            temporary_login_absent=True,
-            temporary_login_inventory_empty=True,
-            migration_owner_memberships_absent=True,
+            temporary_executor_absent=True,
+            temporary_executor_inventory_empty=True,
+            prepared_transactions_disabled_and_empty=True,
+            persistent_executor_role_attributes_exact=True,
+            persistent_executor_memberships_empty=True,
+            persistent_executor_owns_zero_objects_clusterwide=True,
+            persistent_executor_acl_dependencies_exact=True,
+            connectable_database_inventory_exact=True,
+            connectable_non_template_database_inventory_exact=True,
+            persistent_executor_database_acl_exact=True,
+            persistent_executor_database_effective_privileges_exact=True,
+            routeback_helper_name_inventory_exact=True,
+            control_schema_identity_acl_exact=True,
+            control_namespace_other_object_inventory_empty=True,
+            control_routine_identity_acl_exact=True,
             writer_authority_exact=True,
             writer_ping_verified=True,
             writer_ping_request_id=request_id,
@@ -1022,7 +1119,7 @@ def test_v2_success_flushes_gate_then_emits_g0_p1_i2_t3_and_zeroizes() -> None:
     assert captured[0] == bytearray(bootstrap.OPAQUE_CREDENTIAL_BYTES)
     assert CREDENTIAL not in output.getvalue()
     assert terminal[
-        "database_re_attested_before_temporary_admin_delete"
+        "database_re_attested_before_temporary_executor_delete"
     ] is True
     assert terminal[
         "fresh_writer_post_delete_authority_contract_and_behavior_proven"
@@ -1372,6 +1469,61 @@ def test_fixed_transition_table_rejects_wrong_mode(
     ):
         bootstrap._validate_preflight_authorization(
             frame,
+            gate=gate,
+            admin_preflight=admin,
+            challenge=challenge,
+            now_unix=NOW,
+        )
+
+
+@pytest.mark.parametrize("tamper", ("receipt", "receipt_sha256"))
+def test_a2_rejects_post_hba_authority_receipt_tamper(
+    tamper: str,
+) -> None:
+    key = Ed25519PrivateKey.generate()
+    gate = _gate(key)
+    admin = _admin_preflight(key, gate)
+    challenge = _challenge(
+        gate,
+        admin,
+        state="exact_old_missing_one_helper",
+    )
+    changes: dict[str, Any]
+    if tamper == "receipt":
+        authority = copy.deepcopy(dict(admin["cloud_sql_authority_receipt"]))
+        unsigned = {
+            name: item
+            for name, item in authority.items()
+            if name != "receipt_sha256"
+        }
+        unsigned["resource_etag_sha256"] = _digest("post-hba-drift")
+        authority = _hashed(unsigned, "receipt_sha256")
+        changes = {
+            "post_hba_temporary_executor_authority_receipt": authority,
+            "post_hba_temporary_executor_authority_receipt_sha256": authority[
+                "receipt_sha256"
+            ],
+        }
+    else:
+        changes = {
+            "post_hba_temporary_executor_authority_receipt_sha256": _digest(
+                "post-hba-wrong-hash"
+            )
+        }
+    authorization = _preflight_authorization(
+        key,
+        gate,
+        admin,
+        challenge,
+        changes=changes,
+    )
+
+    with pytest.raises(
+        bootstrap.SchemaReconciliationBootstrapError,
+        match="schema_reconciliation_preflight_authorization_invalid",
+    ):
+        bootstrap._validate_preflight_authorization(
+            authorization,
             gate=gate,
             admin_preflight=admin,
             challenge=challenge,
@@ -1914,15 +2066,115 @@ def test_gate_has_long_operation_ttl_but_owner_frames_remain_short_lived() -> No
         )
 
 
-def test_bridge_receipt_states_truthful_collection_then_revoke_order() -> None:
-    bridge = _bridge()
+def test_executor_boundary_states_truthful_collection_then_cleanup_order() -> None:
+    case = _case()
+    bridge = _bridge(case.gate)
 
-    assert bridge["owner_authority_active_during_locked_collection"] is True
-    assert bridge["exact_provider_memberships_during_locked_collection"] is True
-    assert bridge["current_user_remained_temporary_login"] is True
-    assert bridge["memberships_remain_until_cloud_user_cleanup"] is True
+    assert bridge["caller_has_no_owner_membership_or_set_path"] is True
+    assert bridge["owner_writer_system_roles_unreachable"] is True
+    assert bridge["executor_owns_zero_objects_clusterwide"] is True
+    assert bridge["executor_cross_database_authority_hba_bounded"] is True
+    assert bridge["connectable_database_inventory_exact"] is True
+    assert bridge["connectable_non_template_database_inventory_exact"] is True
+    assert bridge["connectable_template_authority_absent"] is True
+    assert bridge["prepared_transactions_disabled_and_empty"] is True
+    assert bridge["executor_managed_hba_receipt_sha256"] == hashlib.sha256(
+        _canonical(_executor_managed_hba(case.gate))
+    ).hexdigest()
+    assert bridge["latent_provider_exception_databases"] == ["cloudsqladmin"]
+    assert bridge["latent_provider_exception_hba_receipt_sha256s"] == [
+        bridge["executor_managed_hba_receipt_sha256"]
+    ]
+    assert bridge["roles_and_fence_recheck_required_before_authorization"] is True
+    assert bridge["temporary_login_has_zero_shared_dependencies"] is True
+    assert (
+        bridge[
+            "exact_provider_memberships_observed_before_and_after_locked_collection"
+        ]
+        is True
+    )
+    assert (
+        bridge[
+            "current_user_observed_as_temporary_login_before_and_after_locked_collection"
+        ]
+        is True
+    )
+    assert (
+        bridge[
+            "memberships_observed_present_in_committed_preflight_snapshot_and_cleanup_required"
+        ]
+        is True
+    )
     assert "role_reset_before_contract_collection" not in bridge
     assert "membership_absent_before_contract_collection" not in bridge
+
+
+@pytest.mark.parametrize("tamper", ("projection", "boundary", "receipt"))
+def test_executor_specific_hba_proof_is_bound_into_locked_preflight(
+    tamper: str,
+) -> None:
+    case = _case()
+    collection = _collection(case.gate, state="exact_old_missing_one_helper")
+    if tamper == "projection":
+        collection["executor_managed_hba_receipt_sha256"] = _digest(
+            "wrong-executor-managed-hba"
+        )
+    elif tamper == "boundary":
+        boundary = copy.deepcopy(
+            collection["temporary_executor_boundary_receipt"]
+        )
+        boundary["executor_cross_database_authority_hba_bounded"] = False
+        unsigned = {
+            key: value
+            for key, value in boundary.items()
+            if key != "receipt_sha256"
+        }
+        collection["temporary_executor_boundary_receipt"] = _hashed(
+            unsigned,
+            "receipt_sha256",
+        )
+    else:
+        executor_hba = copy.deepcopy(
+            collection["executor_managed_hba_receipt"]
+        )
+        executor_hba["user"] = bootstrap.phase_b.SQL_USER
+        executor_hba["server_message"] = (
+            f'no pg_hba.conf entry for host "{bootstrap.phase_b.SQL_HOST}", '
+            f'user "{bootstrap.phase_b.SQL_USER}", database '
+            '"cloudsqladmin", SSL encryption'
+        )
+        executor_hba_sha256 = hashlib.sha256(
+            _canonical(executor_hba)
+        ).hexdigest()
+        collection["executor_managed_hba_receipt"] = executor_hba
+        collection["executor_managed_hba_receipt_sha256"] = (
+            executor_hba_sha256
+        )
+        boundary = copy.deepcopy(
+            collection["temporary_executor_boundary_receipt"]
+        )
+        boundary["executor_managed_hba_receipt_sha256"] = (
+            executor_hba_sha256
+        )
+        boundary["latent_provider_exception_hba_receipt_sha256s"] = [
+            executor_hba_sha256
+        ]
+        collection["temporary_executor_boundary_receipt"] = _hashed(
+            {
+                key: value
+                for key, value in boundary.items()
+                if key != "receipt_sha256"
+            },
+            "receipt_sha256",
+        )
+
+    with pytest.raises(bootstrap.SchemaReconciliationBootstrapError):
+        bootstrap._build_preflight_challenge(
+            gate=case.gate,
+            admin_preflight=case.admin,
+            collection=collection,
+            issued_at_unix=NOW,
+        )
 
 
 def test_public_owner_validators_accept_exact_p1_i2_t3_chain() -> None:
@@ -1966,6 +2218,21 @@ def test_public_owner_validators_accept_exact_p1_i2_t3_chain() -> None:
 
     assert validated == terminal
     assert validated["post_cleanup_observation"] == post_cleanup
+    expected_authority_sha256 = case.authorization[
+        "post_hba_temporary_executor_authority_receipt_sha256"
+    ]
+    assert (
+        intermediate[
+            "post_hba_temporary_executor_authority_receipt_sha256"
+        ]
+        == expected_authority_sha256
+    )
+    assert (
+        validated[
+            "post_hba_temporary_executor_authority_receipt_sha256"
+        ]
+        == expected_authority_sha256
+    )
 
 
 @pytest.mark.parametrize("stage", ["p1", "i2", "t3"])

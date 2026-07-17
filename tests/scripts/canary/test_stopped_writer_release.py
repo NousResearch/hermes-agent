@@ -428,6 +428,8 @@ def _completed_release(tmp_path: Path, monkeypatch):
         spec.schema_reconciliation_db_module_origin,
         spec.schema_reconciliation_bootstrap_module_origin,
         spec.schema_reconciliation_runtime_module_origin,
+        spec.schema_reconciliation_control_module_origin,
+        spec.schema_reconciliation_control_bootstrap_module_origin,
     ):
         module_path.write_text(
             f"{module_path.stem} = True\n",

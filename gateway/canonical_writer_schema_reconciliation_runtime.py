@@ -3,14 +3,14 @@
 The module is deliberately not a migration runner.  Every selectable value is
 derived from the sealed interpreter, the stopped-release receipt, or the one
 reviewed reconciliation plan.  The only secret crossing this boundary is the
-64-byte owner-created temporary administrator credential.  It is copied to a
+64-byte owner-created temporary executor credential.  It is copied to a
 root-owned 0400 memfd, used to authenticate one bounded PostgreSQL session,
 and then zeroized before the signed preflight challenge is returned.
 
 Cloud SQL user creation/deletion remains owner-side.  This runtime performs no
-Cloud mutation.  After the owner proves that the temporary administrator was
+Cloud mutation.  After the owner proves that the temporary executor was
 deleted, it opens a distinct fixed-writer session which can prove the terminal
-authority and schema contract without reusing the administrator credential or
+authority and schema contract without reusing the executor credential or
 broadening the writer's permanent Canonical Brain data-read authority.
 """
 
@@ -67,7 +67,6 @@ from gateway.canonical_writer_schema_reconciliation import (
 from gateway.canonical_writer_schema_reconciliation_db import (
     PostDeleteTerminalReceipt,
     PostgresSchemaReconciliationDatabase,
-    _split_sealed_mutation_sql,
     collect_post_delete_terminal_receipt,
     validate_post_delete_terminal_receipt,
 )
@@ -82,7 +81,7 @@ OWNER_SUBJECT_SHA256 = (
     "d75f30ec2d057e67b14ed88bc7e8bcebb429b1a40a4171030fe809908d93491a"
 )
 
-RUNTIME_SCHEMA = "muncho-canonical-writer-schema-reconciliation-runtime.v2"
+RUNTIME_SCHEMA = "muncho-canonical-writer-schema-reconciliation-runtime.v3"
 DATABASE_IDENTITY_SCHEMA = (
     "muncho-canonical-writer-schema-reconciliation-database-identity.v1"
 )
@@ -93,7 +92,7 @@ SERVICES_STATE_SCHEMA = (
 
 EVIDENCE_ROOT = Path("/var/lib/muncho-writer-canary-evidence/schema-reconciliation")
 GATE_TTL_SECONDS = bootstrap.MAX_GATE_TTL_SECONDS
-TEMPORARY_ADMIN_PREFIX = "muncho_canary_admin_"
+TEMPORARY_EXECUTOR_PREFIX = "muncho_canary_reconciler_"
 OPAQUE_CREDENTIAL_BYTES = 64
 EXPECTED_PYTHON_VERSION = "3.11.15"
 _ROOT_UID = 0
@@ -107,11 +106,15 @@ _PACKAGED_RELEASE_FILES: Mapping[str, str] = {
     "gateway/canonical_writer_schema_reconciliation_db.py": "0444",
     "gateway/canonical_writer_schema_reconciliation_bootstrap.py": "0444",
     "gateway/canonical_writer_schema_reconciliation_runtime.py": "0444",
+    "gateway/canonical_writer_schema_reconciliation_control.py": "0444",
+    "gateway/canonical_writer_schema_reconciliation_control_bootstrap.py": "0444",
     "gateway/assets/canonical_writer_schema_contract_v1.json": "0444",
 }
 _ROOT_RELEASE_FILES: Mapping[str, str] = {
     "gateway/assets/canonical_writer_schema_contract_v1.json": "0444",
     "scripts/sql/canonical_writer_v1.sql": "0444",
+    "scripts/sql/canonical_writer_schema_reconciliation_control_v1.sql": "0444",
+    "scripts/sql/canonical_writer_schema_reconciliation_control_retire_v1.sql": "0444",
 }
 
 
@@ -489,15 +492,6 @@ def _journal_head(
     return _hashed(unsigned, "head_sha256")
 
 
-def _bridge_sql_sha256(plan: SchemaReconciliationPlan) -> str:
-    segments = _split_sealed_mutation_sql(plan)
-    return _sha256_bytes(
-        (segments.authority_open + "\n\n" + segments.authority_close).encode(
-            "utf-8", errors="strict"
-        )
-    )
-
-
 class _Session(Protocol):
     username: str
     tls_peer_certificate_sha256: str
@@ -624,26 +618,49 @@ def _database_identity(session: _Session) -> Mapping[str, Any]:
     return _hashed(unsigned, "identity_sha256")
 
 
-def _temporary_owner_bridge_receipt(observed_at_unix: int) -> Mapping[str, Any]:
+def _temporary_executor_boundary_receipt(
+    plan: SchemaReconciliationPlan,
+    observed_at_unix: int,
+    executor_managed_hba_receipt_sha256: str,
+) -> Mapping[str, Any]:
     unsigned = {
-        "schema": bootstrap.TEMPORARY_OWNER_BRIDGE_SCHEMA,
+        "schema": bootstrap.TEMPORARY_EXECUTOR_BOUNDARY_SCHEMA,
         "transaction_isolation": "SERIALIZABLE",
         "database_roles": list(
             bootstrap.SCHEMA_RECONCILIATION_DATABASE_ROLES
         ),
-        "provider_membership_count": 2,
+        "provider_membership_count": 1,
         "admin_option": False,
         "inherit_option": True,
-        "set_option": False,
+        "set_option": True,
         "cloudsqlsuperuser_absent": True,
         "canonical_truth_share_lock": True,
-        "owner_authority_active_during_locked_collection": True,
-        "current_user_remained_temporary_login": True,
-        "exact_provider_memberships_during_locked_collection": True,
+        "caller_has_no_owner_membership_or_set_path": True,
+        "owner_writer_system_roles_unreachable": True,
+        "executor_owns_zero_objects_clusterwide": True,
+        "executor_cross_database_authority_hba_bounded": True,
+        "connectable_database_inventory_exact": True,
+        "connectable_non_template_database_inventory_exact": True,
+        "connectable_template_authority_absent": True,
+        "prepared_transactions_disabled_and_empty": True,
+        "executor_managed_hba_receipt_sha256": (
+            executor_managed_hba_receipt_sha256
+        ),
+        "latent_provider_exception_databases": ["cloudsqladmin"],
+        "latent_provider_exception_hba_receipt_sha256s": [
+            executor_managed_hba_receipt_sha256
+        ],
+        "roles_and_fence_recheck_required_before_authorization": True,
+        "control_foundation_contract_sha256": plan.value[
+            "control_foundation_contract_sha256"
+        ],
+        "current_user_observed_as_temporary_login_before_and_after_locked_collection": True,
+        "exact_provider_memberships_observed_before_and_after_locked_collection": True,
         "contract_collected_while_truth_lock_held": True,
         "canonical_truth_collected_while_truth_lock_held": True,
         "temporary_login_owned_objects": False,
-        "memberships_remain_until_cloud_user_cleanup": True,
+        "temporary_login_has_zero_shared_dependencies": True,
+        "memberships_observed_present_in_committed_preflight_snapshot_and_cleanup_required": True,
         "transaction_committed": True,
         "observed_at_unix": observed_at_unix,
         "secret_material_recorded": False,
@@ -667,12 +684,12 @@ def _database_commit_attestation(
         "observed_contract_sha256": contract.sha256,
         "canonical_truth_receipt": truth.value,
         "transaction_committed": True,
-        "temporary_owner_memberships_present": True,
+        "inert_executor_membership_present": True,
         "temporary_login_owns_zero_objects": True,
-        "trampoline_restored_before_commit": True,
+        "fixed_control_routines_re_attested_before_commit": True,
         "cloud_user_cleanup_required": True,
         "database_session_closed": True,
-        "re_attested_before_temporary_admin_delete": True,
+        "re_attested_before_temporary_executor_delete": True,
         "observed_at_unix": observed_at_unix,
         "secret_material_recorded": False,
     }
@@ -743,12 +760,12 @@ class _RuntimeContext:
     truth: CanonicalTruthReceipt | None = None
     database_identity: Mapping[str, Any] | None = None
     writer_config: WriterDBConfig | None = None
-    temporary_admin_database_closed_before_cleanup: bool = False
+    temporary_executor_database_closed_before_cleanup: bool = False
 
-    def close_temporary_admin_database(self) -> None:
+    def close_temporary_executor_database(self) -> None:
         if self.lease is not None:
             self.lease.close()
-        self.temporary_admin_database_closed_before_cleanup = True
+        self.temporary_executor_database_closed_before_cleanup = True
 
 
 def _collect_stopped_boundary(
@@ -832,6 +849,21 @@ def _revalidate_stopped_boundary(
     return observation
 
 
+def _require_pre_begin_stopped_boundary(context: _RuntimeContext) -> None:
+    """Re-admit the stopped release after the session lock wait.
+
+    This callback is intentionally zero-argument at the database boundary and
+    returns exactly ``None``.  It performs no semantic routing: it only proves
+    that the already selected sealed release, host, and service fence are
+    still byte-identical immediately before PostgreSQL opens a transaction.
+    """
+
+    _revalidate_stopped_boundary(
+        context,
+        code="schema_reconciliation_runtime_pre_begin_stopped_boundary_drifted",
+    )
+
+
 def _prepare_runtime(dependencies: _RuntimeDependencies) -> _RuntimeContext:
     dependencies.harden()
     owner = _derived_owner_identity()
@@ -888,7 +920,7 @@ def _prepare_runtime(dependencies: _RuntimeDependencies) -> _RuntimeContext:
         ) from exc
 
     journal_head = _journal_head(plan, journal)
-    admin_username = TEMPORARY_ADMIN_PREFIX + plan.sha256[:16]
+    executor_username = TEMPORARY_EXECUTOR_PREFIX + plan.sha256[:16]
     issued_at = dependencies.now()
     nonce = dependencies.random_bytes(32)
     if (
@@ -901,7 +933,7 @@ def _prepare_runtime(dependencies: _RuntimeDependencies) -> _RuntimeContext:
     unsigned_gate = {
         "schema": bootstrap.GATE_SCHEMA,
         "ok": True,
-        "state": "stopped_release_admin_preflight_ready",
+        "state": "stopped_release_executor_preflight_ready",
         "release_revision": revision,
         **release_binding,
         "plan_sha256": plan.sha256,
@@ -909,8 +941,15 @@ def _prepare_runtime(dependencies: _RuntimeDependencies) -> _RuntimeContext:
         "target_asset_sha256": plan.value["target_asset_sha256"],
         "expected_old_contract_sha256": plan.value["expected_old_contract_sha256"],
         "target_contract_sha256": plan.value["target_contract_sha256"],
-        "mutation_sql_sha256": plan.value["mutation_sql_sha256"],
-        "preflight_bridge_sql_sha256": _bridge_sql_sha256(plan),
+        "control_install_artifact_sha256": plan.value[
+            "control_install_artifact_sha256"
+        ],
+        "control_retire_artifact_sha256": plan.value[
+            "control_retire_artifact_sha256"
+        ],
+        "control_foundation_contract_sha256": plan.value[
+            "control_foundation_contract_sha256"
+        ],
         "advisory_lock_key": plan.value["advisory_lock_key"],
         "host_identity_sha256": host_state["state_sha256"],
         "services_stopped_sha256": services_state["state_sha256"],
@@ -920,9 +959,9 @@ def _prepare_runtime(dependencies: _RuntimeDependencies) -> _RuntimeContext:
         "postgresql_major": bootstrap.EXPECTED_POSTGRESQL_MAJOR,
         "tls_server_name": foundation.SQL_TLS_SERVER_NAME,
         "ca_file_sha256": _sha256_bytes(ca_raw),
-        "temporary_admin_username": admin_username,
-        "temporary_admin_username_sha256": _sha256_bytes(
-            admin_username.encode("ascii")
+        "temporary_executor_username": executor_username,
+        "temporary_executor_username_sha256": _sha256_bytes(
+            executor_username.encode("ascii")
         ),
         "owner_subject_sha256": owner["owner_subject_sha256"],
         "owner_public_key_ed25519_hex": owner["owner_public_key_ed25519_hex"],
@@ -932,7 +971,7 @@ def _prepare_runtime(dependencies: _RuntimeDependencies) -> _RuntimeContext:
         "run_nonce_sha256": _sha256_bytes(nonce),
         "issued_at_unix": issued_at,
         "expires_at_unix": issued_at + GATE_TTL_SECONDS,
-        "temporary_admin_required": True,
+        "temporary_executor_required": True,
         "secret_material_recorded": False,
     }
     gate = _hashed(unsigned_gate, "gate_sha256")
@@ -950,10 +989,12 @@ def _prepare_runtime(dependencies: _RuntimeDependencies) -> _RuntimeContext:
     )
 
 
-def _open_admin_config(
+def _open_executor_config(
     context: _RuntimeContext,
     credential: bytearray,
-) -> tuple[WriterDBConfig, _Session]:
+    *,
+    observed_at_unix: int,
+) -> tuple[WriterDBConfig, _Session, ManagedCloudSQLAdminHBAReceipt]:
     try:
         if (
             not isinstance(credential, bytearray)
@@ -962,27 +1003,32 @@ def _open_admin_config(
         ):
             _fail("schema_reconciliation_runtime_credential_invalid")
         with phase_b_runtime._secret_descriptor(credential) as descriptor:
-            admin_config = phase_b_runtime._database_config(
-                str(context.gate["temporary_admin_username"]),
+            executor_config = phase_b_runtime._database_config(
+                str(context.gate["temporary_executor_username"]),
                 credential=CredentialSource(
                     fd=descriptor,
                     expected_uid=_ROOT_UID,
                     expected_gid=_ROOT_GID,
                     allowed_modes=frozenset({0o400}),
                 ),
-                application_name="muncho-schema-reconciliation-admin",
+                application_name="muncho-schema-reconciliation-executor",
             )
-            session = context.dependencies.open_session(admin_config)
-        return admin_config, session
+            executor_hba = context.dependencies.collect_hba(
+                executor_config,
+                now_unix=observed_at_unix,
+                ttl_seconds=300,
+            )
+            session = context.dependencies.open_session(executor_config)
+        return executor_config, session, executor_hba
     except SchemaReconciliationRuntimeError:
         raise
     except phase_b_runtime.PhaseBRuntimeError as exc:
         raise SchemaReconciliationRuntimeError(
-            "schema_reconciliation_runtime_admin_secret_transport_failed"
+            "schema_reconciliation_runtime_executor_secret_transport_failed"
         ) from exc
     except BaseException as exc:
         raise SchemaReconciliationRuntimeError(
-            "schema_reconciliation_runtime_admin_authentication_failed"
+            "schema_reconciliation_runtime_executor_authentication_failed"
         ) from exc
     finally:
         _zeroize(credential)
@@ -998,9 +1044,10 @@ def _preflight_callback(
         _fail("schema_reconciliation_runtime_preflight_state_invalid")
     writer_config = context.dependencies.writer_config()
     try:
+        hba_observed_at = context.dependencies.now()
         hba = context.dependencies.collect_hba(
             writer_config,
-            now_unix=context.dependencies.now(),
+            now_unix=hba_observed_at,
             ttl_seconds=300,
         )
         _revalidate_stopped_boundary(
@@ -1009,21 +1056,33 @@ def _preflight_callback(
                 "schema_reconciliation_runtime_preflight_stopped_boundary_drifted"
             ),
         )
-        admin_config, raw_session = _open_admin_config(context, credential)
-        lease = _AuthenticatedSessionLease(raw_session, admin_config)
+        executor_config, raw_session, executor_hba = _open_executor_config(
+            context,
+            credential,
+            observed_at_unix=hba_observed_at,
+        )
+        lease = _AuthenticatedSessionLease(raw_session, executor_config)
         context.lease = lease
         identity = _database_identity(raw_session)
         if (
-            raw_session.username != context.gate["temporary_admin_username"]
+            raw_session.username
+            != context.gate["temporary_executor_username"]
             or identity["tls_peer_certificate_sha256"] != hba.server_certificate_sha256
+            or executor_hba.user != executor_config.user
+            or executor_hba.server_certificate_sha256
+            != identity["tls_peer_certificate_sha256"]
         ):
             _fail("schema_reconciliation_runtime_database_identity_invalid")
         database = PostgresSchemaReconciliationDatabase(
             plan=context.plan,
             target=context.target,
-            admin_config=admin_config,
+            executor_config=executor_config,
             writer_config=writer_config,
             managed_hba_receipt=hba,
+            executor_managed_hba_receipt=executor_hba,
+            pre_begin_admission=lambda: _require_pre_begin_stopped_boundary(
+                context
+            ),
             _session_factory=lease.borrow,
         )
         with database.transaction(
@@ -1049,9 +1108,15 @@ def _preflight_callback(
             "database_identity_sha256": identity["identity_sha256"],
             "tls_peer_certificate_sha256": identity["tls_peer_certificate_sha256"],
             "managed_hba_receipt_sha256": hba.sha256,
+            "executor_managed_hba_receipt": executor_hba.as_dict(),
+            "executor_managed_hba_receipt_sha256": executor_hba.sha256,
             "postgresql_major": identity["postgresql_major"],
-            "temporary_owner_bridge_receipt": (
-                _temporary_owner_bridge_receipt(observed_at)
+            "temporary_executor_boundary_receipt": (
+                _temporary_executor_boundary_receipt(
+                    context.plan,
+                    observed_at,
+                    executor_hba.sha256,
+                )
             ),
             "preflight": preflight,
             "canonical_truth_receipt": truth.value,
@@ -1059,7 +1124,7 @@ def _preflight_callback(
         }
     except BaseException as exc:
         _zeroize(credential)
-        context.close_temporary_admin_database()
+        context.close_temporary_executor_database()
         if isinstance(exc, SchemaReconciliationRuntimeError):
             raise
         if isinstance(exc, SchemaReconciliationError):
@@ -1181,7 +1246,7 @@ def _apply_callback(
         ):
             _fail("schema_reconciliation_runtime_database_reattestation_failed")
         observed_at = context.dependencies.now()
-        context.close_temporary_admin_database()
+        context.close_temporary_executor_database()
         return {
             "authorized_intent_sha256": terminal["authorized_intent_sha256"],
             "core_terminal_receipt": terminal,
@@ -1193,7 +1258,7 @@ def _apply_callback(
             ),
         }
     except BaseException as exc:
-        context.close_temporary_admin_database()
+        context.close_temporary_executor_database()
         if isinstance(exc, SchemaReconciliationRuntimeError):
             raise
         if isinstance(exc, SchemaReconciliationError):
@@ -1215,7 +1280,7 @@ def _post_cleanup_callback(
     )
     if (
         gate != context.gate
-        or not context.temporary_admin_database_closed_before_cleanup
+        or not context.temporary_executor_database_closed_before_cleanup
         or context.lease is None
         or not context.lease.closed
         or context.truth is None
@@ -1225,9 +1290,9 @@ def _post_cleanup_callback(
         or not isinstance(intermediate, Mapping)
         or not isinstance(cleanup, Mapping)
         or not isinstance(absence, Mapping)
-        or absence.get("temporary_admin_absent") is not True
-        or cleanup.get("temporary_admin_username_sha256")
-        != gate["temporary_admin_username_sha256"]
+        or absence.get("temporary_executor_absent") is not True
+        or cleanup.get("temporary_executor_username_sha256")
+        != gate["temporary_executor_username_sha256"]
     ):
         _fail("schema_reconciliation_runtime_cleanup_order_invalid")
 
@@ -1274,7 +1339,7 @@ def _post_cleanup_callback(
         collected = context.dependencies.collect_post_delete_terminal(
             plan=context.plan,
             target=context.target,
-            temporary_login=gate["temporary_admin_username"],
+            temporary_executor_login=gate["temporary_executor_username"],
             writer_config=writer_config,
             managed_hba_receipt=fresh_hba,
             pre_delete_canonical_truth=pre_delete_truth,
@@ -1290,7 +1355,7 @@ def _post_cleanup_callback(
             collected_value,
             plan=context.plan,
             target=context.target,
-            temporary_login=gate["temporary_admin_username"],
+            temporary_executor_login=gate["temporary_executor_username"],
             managed_hba_receipt=fresh_hba,
             pre_delete_canonical_truth=pre_delete_truth,
         )
@@ -1397,7 +1462,7 @@ def run(
             now=dependencies.now,
         )
     finally:
-        context.close_temporary_admin_database()
+        context.close_temporary_executor_database()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

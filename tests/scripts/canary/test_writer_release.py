@@ -53,6 +53,8 @@ EXPECTED_TRACKED_RELEASE_ARTIFACTS = (
     "scripts/sql/canonical_writer_foundation_login_v1.sql",
     "scripts/sql/canonical_writer_foundation_membership_v1.sql",
     "scripts/sql/canonical_writer_foundation_retire_v1.sql",
+    "scripts/sql/canonical_writer_schema_reconciliation_control_v1.sql",
+    "scripts/sql/canonical_writer_schema_reconciliation_control_retire_v1.sql",
 )
 
 
@@ -163,6 +165,8 @@ def _write_schema_reconciliation_modules(spec: ReleaseBuildSpec) -> None:
         spec.schema_reconciliation_db_module_origin,
         spec.schema_reconciliation_bootstrap_module_origin,
         spec.schema_reconciliation_runtime_module_origin,
+        spec.schema_reconciliation_control_module_origin,
+        spec.schema_reconciliation_control_bootstrap_module_origin,
     )
     for module_path in module_paths:
         module_path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,6 +233,13 @@ def test_tracked_release_artifact_inventory_is_exact_and_complete():
         Path("scripts/sql") / filename
         for filename in canonical_writer_foundation._ARTIFACT_FILENAMES.values()
     } <= set(writer_release._TRACKED_RELEASE_ARTIFACTS)
+    assert tuple(
+        path.name
+        for path in writer_release.CANONICAL_WRITER_SCHEMA_RECONCILIATION_CONTROL_SQL_RELATIVE_PATHS
+    ) == (
+        "canonical_writer_schema_reconciliation_control_v1.sql",
+        "canonical_writer_schema_reconciliation_control_retire_v1.sql",
+    )
 
 
 def test_release_commands_pin_managed_copied_frozen_noneditable_install(tmp_path):
@@ -1261,6 +1272,8 @@ def test_tree_manifest_is_canonical_and_binds_installed_module_origins(tmp_path)
         spec.schema_reconciliation_db_module_origin,
         spec.schema_reconciliation_bootstrap_module_origin,
         spec.schema_reconciliation_runtime_module_origin,
+        spec.schema_reconciliation_control_module_origin,
+        spec.schema_reconciliation_control_bootstrap_module_origin,
     ):
         module_entry = next(
             entry
@@ -1648,6 +1661,8 @@ def test_installed_runtime_requires_packaged_canonical_writer_foundation(
         "schema_reconciliation_db_module_origin",
         "schema_reconciliation_bootstrap_module_origin",
         "schema_reconciliation_runtime_module_origin",
+        "schema_reconciliation_control_module_origin",
+        "schema_reconciliation_control_bootstrap_module_origin",
     ),
 )
 @pytest.mark.parametrize("mutation", ("missing", "symlink", "mode", "empty"))

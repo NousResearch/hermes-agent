@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -35,6 +36,12 @@ from gateway.canonical_writer_postgres_backend import (
 
 
 REVISION = "a" * 40
+CONTROL_INSTALL_SHA256 = (
+    "5519c3510c6211b995aec4ca39057c552869501474fab4dea88e6bb21f090ac5"
+)
+CONTROL_RETIRE_SHA256 = (
+    "ec3ebe8713a378f7c721a20a303074ae99211855a9925ba108f57e8c84606de8"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -172,7 +179,13 @@ def _old() -> reconciliation.SchemaContract:
 
 def _plan() -> reconciliation.SchemaReconciliationPlan:
     artifact = _load_source_artifacts_for_tests()["base_migration"]
-    return reconciliation._build_plan_from_artifact(REVISION, _target(), artifact)
+    return reconciliation._build_plan_from_artifact(
+        REVISION,
+        _target(),
+        artifact,
+        control_install_artifact_sha256=CONTROL_INSTALL_SHA256,
+        control_retire_artifact_sha256=CONTROL_RETIRE_SHA256,
+    )
 
 
 def _truth_receipt(
@@ -242,63 +255,6 @@ def test_canonical_truth_parser_rejects_equal_comparing_type_substitution(
         reconciliation.CanonicalTruthReceipt.from_mapping(tampered)
 
 
-def test_api_projection_rejects_duplicate_writer_inheritor_path() -> None:
-    base = _attestation()
-    owner = CANONICAL_EVENT_LOG_OWNER
-    private = base.canonical_private_schema_identity
-    assert private is not None
-    dangerous = dataclasses.replace(
-        base,
-        routine_identities=tuple(
-            dataclasses.replace(identity, owner_dangerous=True)
-            for identity in base.routine_identities
-        ),
-        dependency_routine_identities=tuple(
-            dataclasses.replace(identity, owner_dangerous=True)
-            for identity in base.dependency_routine_identities
-        ),
-        canonical_writer_role_inheritors=(
-            "muncho_canary_writer_login:1:t:f",
-            "muncho_canary_writer_login:1:t:f",
-            "muncho_canary_admin_aaaaaaaaaaaaaaaa:1:t:f",
-        ),
-        canonical_event_log_identity=dataclasses.replace(
-            base.canonical_event_log_identity,
-            owner_dangerous=True,
-        ),
-        canonical_private_schema_identity=dataclasses.replace(
-            private,
-            owner_dangerous=True,
-            relations=tuple(
-                dataclasses.replace(
-                    relation,
-                    owner_dangerous=True,
-                    index_owners=tuple(
-                        f"{owner}:t" for _ in relation.index_owners
-                    ),
-                )
-                for relation in private.relations
-            ),
-        ),
-    )
-    projection = (
-        reconciliation._ExactApiAssignedReconciliationMembershipProjection(
-            owner_role=owner,
-            writer_role="canonical_brain_writer",
-            session_user="muncho_canary_admin_aaaaaaaaaaaaaaaa",
-        )
-    )
-
-    with pytest.raises(
-        reconciliation.SchemaReconciliationError,
-        match="schema_reconciliation_membership_projection_invalid",
-    ):
-        reconciliation._project_exact_api_assigned_owner_membership(
-            dangerous,
-            projection,
-        )
-
-
 def test_plan_binds_the_exact_ten_relation_lock_manifest() -> None:
     plan = _plan()
 
@@ -322,10 +278,7 @@ def test_plan_binds_the_exact_ten_relation_lock_manifest() -> None:
         reconciliation.SchemaReconciliationError,
         match="schema_reconciliation_plan_invalid",
     ):
-        reconciliation.SchemaReconciliationPlan.from_mapping(
-            tampered,
-            mutation_sql=plan.mutation_sql,
-        )
+        reconciliation.SchemaReconciliationPlan.from_mapping(tampered)
 
 
 class _Transaction:
@@ -354,9 +307,15 @@ class _Transaction:
             return self.database.after_execute_truth
         return self.database.truth
 
-    def execute_sql(self, sql: str) -> None:
+    def apply_missing_helper(
+        self,
+        *,
+        authorized_intent_sha256: str,
+    ) -> None:
         assert self.truth_locked
-        assert sql == self.database.plan.mutation_sql
+        assert re.fullmatch(r"[0-9a-f]{64}", authorized_intent_sha256)
+        if self.database.apply_error is not None:
+            raise self.database.apply_error
         self.database.execute_calls += 1
         self.current = self.database.after_execute
 
@@ -372,6 +331,7 @@ class _Database:
         self.current = current
         self.after_execute = target
         self.observation_override: reconciliation.SchemaContract | None = None
+        self.apply_error: reconciliation.SchemaReconciliationError | None = None
         self.execute_calls = 0
         self.lock_keys: list[int] = []
         self.truth_lock_calls = 0
@@ -456,84 +416,24 @@ def _approval(
     return preflight, authorization, owner_frame
 
 
-def test_plan_seals_exact_api_authority_trampoline_helper_and_restore() -> None:
+def test_plan_binds_fixed_control_artifacts_without_mutation_sql() -> None:
     plan = _plan()
-    sql = plan.mutation_sql
 
-    assert plan.value["base_artifact_sha256"] == _load_source_artifacts_for_tests()[
-        "base_migration"
-    ].sha256
-    assert sql.count("CREATE FUNCTION") == 1
-    assert sql.count(
-        "CREATE OR REPLACE FUNCTION "
-        "canonical_brain._deterministic_uuid(value text)"
-    ) == 2
-    assert "ALTER FUNCTION" not in sql
-    assert "_discord_guild_routeback_target_valid(jsonb)" in sql
-    assert "SET LOCAL search_path = pg_catalog" in sql
-    assert "current_database() <> 'muncho_canary_brain'" in sql
-    assert "current_setting('server_version_num')::integer / 10000 <> 18" in sql
-    assert ") <> 'cloudsqlsuperuser'" in sql
-    assert "grantor.rolname = 'cloudsqladmin'" in sql
-    assert "admin_option IS FALSE" in sql
-    assert "inherit_option IS TRUE" in sql
-    assert "set_option IS FALSE" in sql
-    assert "'canonical_brain_migration_owner', 'USAGE'" in sql
-    assert "'canonical_brain_migration_owner', 'SET'" in sql
-    assert "pg_catalog.pg_event_trigger" in sql
-    assert "max_prepared_transactions" in sql
-    assert "pg_catalog.pg_prepared_xacts" in sql
-    assert "pg_catalog.pg_shdepend" in sql
-    assert "pg_catalog.pg_seclabel" in sql
-    assert "pg_catalog.obj_description" in sql
-    assert "muncho.schema_reconciliation_trampoline_oid" in sql
-    assert "muncho.schema_reconciliation_trampoline_semantic_sha256" in sql
-    assert "REVOKE ALL PRIVILEGES ON FUNCTION" in sql
-    open_index = sql.index(
-        "DO $reconcile_discord_routeback_helper_authority_open$"
+    assert plan.value["base_artifact_sha256"] == (
+        _load_source_artifacts_for_tests()["base_migration"].sha256
     )
-    trampoline_index = sql.index(
-        "CREATE OR REPLACE FUNCTION "
-        "canonical_brain._deterministic_uuid(value text)"
+    assert plan.value["control_install_artifact_sha256"] == (
+        CONTROL_INSTALL_SHA256
     )
-    helper_index = sql.index(
-        "CREATE FUNCTION canonical_brain."
-        "_discord_guild_routeback_target_valid("
+    assert plan.value["control_retire_artifact_sha256"] == (
+        CONTROL_RETIRE_SHA256
     )
-    restore_index = sql.index(
-        "CREATE OR REPLACE FUNCTION "
-        "canonical_brain._deterministic_uuid(value text)",
-        trampoline_index + 1,
+    assert re.fullmatch(
+        r"[0-9a-f]{64}",
+        plan.value["control_foundation_contract_sha256"],
     )
-    terminal_index = sql.index(
-        "DO $reconcile_discord_routeback_helper_terminal_validation$"
-    )
-    close_index = sql.index(
-        "DO $reconcile_discord_routeback_helper_authority_close$"
-    )
-    assert (
-        open_index
-        < trampoline_index
-        < helper_index
-        < restore_index
-        < terminal_index
-        < close_index
-    )
-    for forbidden in (
-        "SET ROLE",
-        "RESET ROLE",
-        "GRANT canonical_brain_migration_owner",
-        "REVOKE canonical_brain_migration_owner",
-        "GRANT EXECUTE",
-        "GRANT ALL",
-        "CREATE TABLE",
-        "ALTER ROLE",
-        "DROP ",
-        "CASCADE",
-        "writer_routeback_claim(request",
-    ):
-        assert forbidden not in sql
-
+    assert "mutation_sql" not in plan.value
+    assert "mutation_sql_sha256" not in plan.value
 
 def test_public_plan_builder_uses_only_revision_bound_sealed_loader(
     monkeypatch: pytest.MonkeyPatch,
@@ -553,15 +453,40 @@ def test_public_plan_builder_uses_only_revision_bound_sealed_loader(
         seen.append(("target", revision))
         return target_asset
 
+    def load_control(
+        revision: str,
+        *,
+        name: str,
+        filename: str,
+    ):
+        seen.append((name, revision))
+        digest = (
+            CONTROL_INSTALL_SHA256
+            if filename == reconciliation.CONTROL_INSTALL_ARTIFACT_FILENAME
+            else CONTROL_RETIRE_SHA256
+        )
+        return dataclasses.replace(
+            artifact,
+            name=name,
+            path=Path(filename),
+            sha256=digest,
+        )
+
     monkeypatch.setattr(reconciliation, "_load_sealed_artifacts", load)
     monkeypatch.setattr(
         reconciliation,
         "load_release_schema_contract_asset",
         load_target,
     )
+    monkeypatch.setattr(reconciliation, "_load_control_artifact", load_control)
     plan = reconciliation.build_schema_reconciliation_plan(REVISION)
 
-    assert seen == [("target", REVISION), ("sql", REVISION)]
+    assert seen == [
+        ("target", REVISION),
+        ("sql", REVISION),
+        ("schema_reconciliation_control_install", REVISION),
+        ("schema_reconciliation_control_retire", REVISION),
+    ]
     assert plan.value["base_artifact_sha256"] == artifact.sha256
     assert plan.value["target_asset_sha256"] == target_asset.sha256
     assert plan.value["postgresql_major"] == 18
@@ -748,7 +673,9 @@ def test_exact_old_contract_reconciles_once_and_terminal_replay_reattests(
         "base_artifact_sha256",
         "target_asset_sha256",
         "postgresql_major",
-        "mutation_sql_sha256",
+        "control_install_artifact_sha256",
+        "control_retire_artifact_sha256",
+        "control_foundation_contract_sha256",
         "expected_old_contract_sha256",
         "target_contract_sha256",
         "preflight",
@@ -892,6 +819,41 @@ def test_invalid_post_apply_contract_rolls_back_and_retry_is_safe(
     )
     assert receipt["ok"] is True
     assert database.execute_calls == 2
+
+
+def test_control_apply_domain_error_is_preserved_without_reclassification(
+    tmp_path: Path,
+) -> None:
+    plan = _plan()
+    target = _target()
+    old = _old()
+    database = _Database(plan, old, target)
+    expected = reconciliation.SchemaReconciliationError(
+        "schema_reconciliation_control_apply_receipt_invalid"
+    )
+    database.apply_error = expected
+    preflight, authorization, owner_frame = _approval(
+        plan, target, old, database.truth
+    )
+
+    with pytest.raises(reconciliation.SchemaReconciliationError) as caught:
+        reconciliation.execute_schema_reconciliation(
+            plan,
+            target=target,
+            preflight=preflight,
+            authorization=authorization,
+            owner_authorization_frame=owner_frame,
+            database=database,
+            journal=_journal(tmp_path),
+            now=lambda: 425,
+        )
+
+    assert caught.value is expected
+    assert caught.value.code == (
+        "schema_reconciliation_control_apply_receipt_invalid"
+    )
+    assert database.execute_calls == 0
+    assert database.current == old
 
 
 def test_canonical_truth_change_rolls_back_before_terminal(tmp_path: Path) -> None:

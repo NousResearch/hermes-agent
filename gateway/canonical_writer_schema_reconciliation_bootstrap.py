@@ -73,60 +73,74 @@ from gateway.canonical_writer_schema_reconciliation_db import (
 )
 
 
-ADMIN_PREFLIGHT_OWNER_SSHSIG_NAMESPACE = (
-    "muncho-canonical-writer-schema-reconciliation-admin-preflight-owner-v2"
+EXECUTOR_PREFLIGHT_OWNER_SSHSIG_NAMESPACE = (
+    "muncho-canonical-writer-schema-reconciliation-executor-preflight-owner-v3"
 )
 PREFLIGHT_AUTHORIZATION_OWNER_SSHSIG_NAMESPACE = (
     RECONCILIATION_OWNER_SIGNATURE_NAMESPACE
 )
-ADMIN_CLEANUP_OWNER_SSHSIG_NAMESPACE = (
-    "muncho-canonical-writer-schema-reconciliation-admin-cleanup-owner-v2"
+EXECUTOR_CLEANUP_OWNER_SSHSIG_NAMESPACE = (
+    "muncho-canonical-writer-schema-reconciliation-executor-cleanup-owner-v3"
 )
 
-ADMIN_PREFLIGHT_MAGIC = b"MSA2"
+EXECUTOR_PREFLIGHT_MAGIC = b"MSA2"
 PREFLIGHT_AUTHORIZATION_MAGIC = b"MSP2"
-ADMIN_CLEANUP_MAGIC = b"MSC2"
-ADMIN_PREFLIGHT_FRAME_SCHEMA = "MSA2-u32be-canonical-json-64byte-opaque.v1"
+EXECUTOR_CLEANUP_MAGIC = b"MSC2"
+EXECUTOR_PREFLIGHT_FRAME_SCHEMA = "MSA2-u32be-canonical-json-64byte-opaque.v1"
 PREFLIGHT_AUTHORIZATION_FRAME_SCHEMA = RECONCILIATION_OWNER_A2_FRAME_SCHEMA
-ADMIN_CLEANUP_FRAME_SCHEMA = "MSC2-u32be-canonical-json-no-secret-eof.v1"
+EXECUTOR_CLEANUP_FRAME_SCHEMA = "MSC2-u32be-canonical-json-no-secret-eof.v1"
 
-GATE_SCHEMA = "muncho-canonical-writer-schema-reconciliation-gate.v2"
+# Compatibility aliases for already-packaged v2 launcher imports.  The active
+# protocol values and validators are the executor-v3 contracts above.
+ADMIN_PREFLIGHT_OWNER_SSHSIG_NAMESPACE = (
+    EXECUTOR_PREFLIGHT_OWNER_SSHSIG_NAMESPACE
+)
+ADMIN_CLEANUP_OWNER_SSHSIG_NAMESPACE = EXECUTOR_CLEANUP_OWNER_SSHSIG_NAMESPACE
+ADMIN_PREFLIGHT_MAGIC = EXECUTOR_PREFLIGHT_MAGIC
+ADMIN_CLEANUP_MAGIC = EXECUTOR_CLEANUP_MAGIC
+ADMIN_PREFLIGHT_FRAME_SCHEMA = EXECUTOR_PREFLIGHT_FRAME_SCHEMA
+ADMIN_CLEANUP_FRAME_SCHEMA = EXECUTOR_CLEANUP_FRAME_SCHEMA
+
+GATE_SCHEMA = "muncho-canonical-writer-schema-reconciliation-gate.v3"
 JOURNAL_HEAD_SCHEMA = "muncho-canonical-writer-schema-reconciliation-journal-head.v1"
 OWNER_ADMIN_PREFLIGHT_SCHEMA = (
-    "muncho-canonical-writer-schema-reconciliation-owner-admin-preflight-authority.v2"
+    "muncho-canonical-writer-schema-reconciliation-owner-executor-preflight-authority.v3"
 )
+OWNER_EXECUTOR_PREFLIGHT_SCHEMA = OWNER_ADMIN_PREFLIGHT_SCHEMA
 PREFLIGHT_CHALLENGE_SCHEMA = (
     "muncho-canonical-writer-schema-reconciliation-locked-preflight-challenge.v2"
 )
-TEMPORARY_OWNER_BRIDGE_SCHEMA = (
-    "muncho-canonical-writer-schema-reconciliation-temporary-owner-bridge.v2"
+TEMPORARY_EXECUTOR_BOUNDARY_SCHEMA = (
+    "muncho-canonical-writer-schema-reconciliation-temporary-executor-boundary.v3"
 )
 OWNER_PREFLIGHT_AUTHORIZATION_SCHEMA = (
     "muncho-canonical-writer-schema-reconciliation-owner-preflight-authorization.v2"
 )
 DATABASE_COMMIT_ATTESTATION_SCHEMA = (
-    "muncho-canonical-writer-schema-reconciliation-database-commit-attestation.v2"
+    "muncho-canonical-writer-schema-reconciliation-database-commit-attestation.v3"
 )
 DATABASE_INTERMEDIATE_SCHEMA = (
-    "muncho-canonical-writer-schema-reconciliation-database-terminal-awaiting-admin-cleanup.v2"
+    "muncho-canonical-writer-schema-reconciliation-database-terminal-awaiting-executor-cleanup.v3"
 )
 OWNER_ADMIN_CLEANUP_SCHEMA = (
-    "muncho-canonical-writer-schema-reconciliation-owner-admin-cleanup.v2"
+    "muncho-canonical-writer-schema-reconciliation-owner-executor-cleanup.v3"
 )
+OWNER_EXECUTOR_CLEANUP_SCHEMA = OWNER_ADMIN_CLEANUP_SCHEMA
 POST_CLEANUP_OBSERVATION_SCHEMA = (
-    "muncho-canonical-writer-schema-reconciliation-post-cleanup-observation.v3"
+    "muncho-canonical-writer-schema-reconciliation-post-cleanup-observation.v4"
 )
-TERMINAL_SCHEMA = "muncho-canonical-writer-schema-reconciliation-terminal.v4"
+TERMINAL_SCHEMA = "muncho-canonical-writer-schema-reconciliation-terminal.v5"
 REMOTE_FAILURE_SCHEMA = (
     "muncho-canonical-writer-schema-reconciliation-remote-failure.v1"
 )
 
-CLOUD_ADMIN_AUTHORITY_SCHEMA = "muncho-cloud-sql-temporary-admin-authority.v2"
+CLOUD_EXECUTOR_AUTHORITY_SCHEMA = "muncho-cloud-sql-temporary-executor-authority.v3"
+CLOUD_ADMIN_AUTHORITY_SCHEMA = CLOUD_EXECUTOR_AUTHORITY_SCHEMA
 SCHEMA_RECONCILIATION_DATABASE_ROLES = (
-    "canonical_brain_migration_owner",
-    "canonical_brain_writer",
+    "canonical_brain_schema_reconciler",
 )
-CLOUD_ADMIN_ABSENCE_SCHEMA = "muncho-cloud-sql-admin-absence-evidence.v1"
+CLOUD_EXECUTOR_ABSENCE_SCHEMA = "muncho-cloud-sql-executor-absence-evidence.v2"
+CLOUD_ADMIN_ABSENCE_SCHEMA = CLOUD_EXECUTOR_ABSENCE_SCHEMA
 
 EXPECTED_PROJECT = phase_b.PROJECT
 EXPECTED_SQL_INSTANCE = phase_b.SQL_INSTANCE
@@ -142,7 +156,7 @@ MIN_CLOUD_ABSENCE_QUIET_WINDOW_SECONDS = 180
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
-_ADMIN = re.compile(r"^muncho_canary_admin_[0-9a-f]{16}$")
+_ADMIN = re.compile(r"^muncho_canary_reconciler_[0-9a-f]{16}$")
 _FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 _SAFE_OPERATION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~:/+\-]{0,511}$")
 
@@ -170,8 +184,9 @@ _GATE_FIELDS = frozenset({
     "target_asset_sha256",
     "expected_old_contract_sha256",
     "target_contract_sha256",
-    "mutation_sql_sha256",
-    "preflight_bridge_sql_sha256",
+    "control_install_artifact_sha256",
+    "control_retire_artifact_sha256",
+    "control_foundation_contract_sha256",
     "advisory_lock_key",
     "host_identity_sha256",
     "services_stopped_sha256",
@@ -181,8 +196,8 @@ _GATE_FIELDS = frozenset({
     "postgresql_major",
     "tls_server_name",
     "ca_file_sha256",
-    "temporary_admin_username",
-    "temporary_admin_username_sha256",
+    "temporary_executor_username",
+    "temporary_executor_username_sha256",
     "owner_subject_sha256",
     "owner_public_key_ed25519_hex",
     "owner_key_id",
@@ -191,7 +206,7 @@ _GATE_FIELDS = frozenset({
     "run_nonce_sha256",
     "issued_at_unix",
     "expires_at_unix",
-    "temporary_admin_required",
+    "temporary_executor_required",
     "secret_material_recorded",
     "gate_sha256",
 })
@@ -221,7 +236,7 @@ _ADMIN_PREFLIGHT_UNSIGNED_FIELDS = frozenset({
     "gate_sha256",
     "release_revision",
     "plan_sha256",
-    "temporary_admin_username_sha256",
+    "temporary_executor_username_sha256",
     "owner_subject_sha256",
     "owner_key_id",
     "cloud_sql_authority_receipt",
@@ -248,13 +263,26 @@ _BRIDGE_FIELDS = frozenset({
     "set_option",
     "cloudsqlsuperuser_absent",
     "canonical_truth_share_lock",
-    "owner_authority_active_during_locked_collection",
-    "current_user_remained_temporary_login",
-    "exact_provider_memberships_during_locked_collection",
+    "caller_has_no_owner_membership_or_set_path",
+    "owner_writer_system_roles_unreachable",
+    "executor_owns_zero_objects_clusterwide",
+    "executor_cross_database_authority_hba_bounded",
+    "connectable_database_inventory_exact",
+    "connectable_non_template_database_inventory_exact",
+    "connectable_template_authority_absent",
+    "prepared_transactions_disabled_and_empty",
+    "executor_managed_hba_receipt_sha256",
+    "latent_provider_exception_databases",
+    "latent_provider_exception_hba_receipt_sha256s",
+    "roles_and_fence_recheck_required_before_authorization",
+    "control_foundation_contract_sha256",
+    "current_user_observed_as_temporary_login_before_and_after_locked_collection",
+    "exact_provider_memberships_observed_before_and_after_locked_collection",
     "contract_collected_while_truth_lock_held",
     "canonical_truth_collected_while_truth_lock_held",
     "temporary_login_owned_objects",
-    "memberships_remain_until_cloud_user_cleanup",
+    "temporary_login_has_zero_shared_dependencies",
+    "memberships_observed_present_in_committed_preflight_snapshot_and_cleanup_required",
     "transaction_committed",
     "observed_at_unix",
     "secret_material_recorded",
@@ -264,8 +292,10 @@ _PREFLIGHT_COLLECTION_FIELDS = frozenset({
     "database_identity_sha256",
     "tls_peer_certificate_sha256",
     "managed_hba_receipt_sha256",
+    "executor_managed_hba_receipt",
+    "executor_managed_hba_receipt_sha256",
     "postgresql_major",
-    "temporary_owner_bridge_receipt",
+    "temporary_executor_boundary_receipt",
     "preflight",
     "canonical_truth_receipt",
     "observed_at_unix",
@@ -278,7 +308,9 @@ _CORE_PREFLIGHT_FIELDS = frozenset({
     "base_artifact_sha256",
     "target_asset_sha256",
     "postgresql_major",
-    "mutation_sql_sha256",
+    "control_install_artifact_sha256",
+    "control_retire_artifact_sha256",
+    "control_foundation_contract_sha256",
     "observed_contract_sha256",
     "truth_receipt_sha256",
     "expected_old_contract_sha256",
@@ -301,8 +333,10 @@ _PREFLIGHT_CHALLENGE_FIELDS = frozenset({
     "database_identity_sha256",
     "tls_peer_certificate_sha256",
     "managed_hba_receipt_sha256",
+    "executor_managed_hba_receipt",
+    "executor_managed_hba_receipt_sha256",
     "postgresql_major",
-    "temporary_owner_bridge_receipt",
+    "temporary_executor_boundary_receipt",
     "preflight",
     "canonical_truth_receipt",
     "mutation_required",
@@ -319,6 +353,8 @@ _PREFLIGHT_AUTHORIZATION_UNSIGNED_FIELDS = frozenset({
     "gate_sha256",
     "authority_claim_sha256",
     "preflight_challenge_sha256",
+    "post_hba_temporary_executor_authority_receipt",
+    "post_hba_temporary_executor_authority_receipt_sha256",
     "release_revision",
     "plan_sha256",
     "journal_head_sha256",
@@ -349,7 +385,9 @@ _CORE_TERMINAL_FIELDS = frozenset({
     "base_artifact_sha256",
     "target_asset_sha256",
     "postgresql_major",
-    "mutation_sql_sha256",
+    "control_install_artifact_sha256",
+    "control_retire_artifact_sha256",
+    "control_foundation_contract_sha256",
     "expected_old_contract_sha256",
     "target_contract_sha256",
     "initial_contract_sha256",
@@ -397,12 +435,12 @@ _DATABASE_ATTESTATION_FIELDS = frozenset({
     "observed_contract_sha256",
     "canonical_truth_receipt",
     "transaction_committed",
-    "temporary_owner_memberships_present",
     "temporary_login_owns_zero_objects",
-    "trampoline_restored_before_commit",
+    "fixed_control_routines_re_attested_before_commit",
+    "inert_executor_membership_present",
     "cloud_user_cleanup_required",
     "database_session_closed",
-    "re_attested_before_temporary_admin_delete",
+    "re_attested_before_temporary_executor_delete",
     "observed_at_unix",
     "secret_material_recorded",
     "attestation_sha256",
@@ -420,6 +458,7 @@ _DATABASE_INTERMEDIATE_FIELDS = frozenset({
     "authority_claim_sha256",
     "preflight_challenge_sha256",
     "preflight_authorization_claim_sha256",
+    "post_hba_temporary_executor_authority_receipt_sha256",
     "release_revision",
     "plan_sha256",
     "execution_mode",
@@ -430,7 +469,7 @@ _DATABASE_INTERMEDIATE_FIELDS = frozenset({
     "database_commit_attestation_sha256",
     "initial_canonical_truth",
     "final_canonical_truth",
-    "temporary_admin_cleanup_required",
+    "temporary_executor_cleanup_required",
     "database_session_closed",
     "applied_at_unix",
     "secret_material_recorded",
@@ -438,7 +477,7 @@ _DATABASE_INTERMEDIATE_FIELDS = frozenset({
 })
 _CLOUD_ABSENCE_FIELDS = frozenset({
     "schema",
-    "temporary_admin_absent",
+    "temporary_executor_absent",
     "project",
     "instance",
     "username_sha256",
@@ -470,7 +509,7 @@ _ADMIN_CLEANUP_UNSIGNED_FIELDS = frozenset({
     "database_intermediate_sha256",
     "release_revision",
     "plan_sha256",
-    "temporary_admin_username_sha256",
+    "temporary_executor_username_sha256",
     "owner_subject_sha256",
     "owner_key_id",
     "cloud_sql_absence_receipt",
@@ -514,6 +553,7 @@ _TERMINAL_FIELDS = frozenset({
     "authority_claim_sha256",
     "preflight_challenge_sha256",
     "preflight_authorization_claim_sha256",
+    "post_hba_temporary_executor_authority_receipt_sha256",
     "database_intermediate_sha256",
     "cleanup_claim_sha256",
     "release_revision",
@@ -531,7 +571,7 @@ _TERMINAL_FIELDS = frozenset({
     "core_terminal_receipt_sha256",
     "database_commit_attestation_sha256",
     "final_canonical_truth",
-    "temporary_admin_absence_receipt_sha256",
+    "temporary_executor_absence_receipt_sha256",
     "fresh_managed_hba_receipt_sha256",
     "post_delete_terminal_receipt_sha256",
     "post_cleanup_observation",
@@ -542,7 +582,7 @@ _TERMINAL_FIELDS = frozenset({
     "post_cleanup_observation_sha256",
     "owner_subject_sha256",
     "owner_key_id",
-    "database_re_attested_before_temporary_admin_delete",
+    "database_re_attested_before_temporary_executor_delete",
     "fresh_writer_post_delete_authority_contract_and_behavior_proven",
     "post_delete_canonical_truth_observed",
     "secret_material_recorded",
@@ -849,7 +889,7 @@ def validate_gate(
     if (
         raw.get("schema") != GATE_SCHEMA
         or raw.get("ok") is not True
-        or raw.get("state") != "stopped_release_admin_preflight_ready"
+        or raw.get("state") != "stopped_release_executor_preflight_ready"
         or not isinstance(raw.get("release_revision"), str)
         or _REVISION.fullmatch(raw["release_revision"]) is None
         or raw.get("project") != EXPECTED_PROJECT
@@ -860,16 +900,18 @@ def validate_gate(
         or not isinstance(raw.get("tls_server_name"), str)
         or not raw["tls_server_name"]
         or len(raw["tls_server_name"]) > 253
-        or not isinstance(raw.get("temporary_admin_username"), str)
-        or _ADMIN.fullmatch(raw["temporary_admin_username"]) is None
-        or raw.get("temporary_admin_username_sha256")
-        != _sha256_bytes(raw["temporary_admin_username"].encode("ascii"))
+        or not isinstance(raw.get("temporary_executor_username"), str)
+        or _ADMIN.fullmatch(raw["temporary_executor_username"]) is None
+        or raw.get("temporary_executor_username_sha256")
+        != _sha256_bytes(
+            raw["temporary_executor_username"].encode("ascii")
+        )
         or raw.get("owner_public_key_ed25519_hex")
         != owner_public_key_ed25519_hex
         or raw.get("owner_key_id") != key_id
         or raw.get("owner_public_fingerprint") != owner_public_fingerprint
         or fingerprint != owner_public_fingerprint
-        or raw.get("temporary_admin_required") is not True
+        or raw.get("temporary_executor_required") is not True
         or raw.get("secret_material_recorded") is not False
         or raw.get("journal_head") != journal
         or type(raw.get("advisory_lock_key")) is not int
@@ -887,12 +929,13 @@ def validate_gate(
         "target_asset_sha256",
         "expected_old_contract_sha256",
         "target_contract_sha256",
-        "mutation_sql_sha256",
-        "preflight_bridge_sql_sha256",
+        "control_install_artifact_sha256",
+        "control_retire_artifact_sha256",
+        "control_foundation_contract_sha256",
         "host_identity_sha256",
         "services_stopped_sha256",
         "ca_file_sha256",
-        "temporary_admin_username_sha256",
+        "temporary_executor_username_sha256",
         "owner_subject_sha256",
         "owner_public_key_ed25519_hex",
         "owner_key_id",
@@ -977,7 +1020,7 @@ def _validate_cloud_authority(
         or raw.get("project") != gate["project"]
         or raw.get("instance") != gate["sql_instance"]
         or raw.get("username_sha256")
-        != gate["temporary_admin_username_sha256"]
+        != gate["temporary_executor_username_sha256"]
         or raw.get("host") != ""
         or raw.get("type") != "BUILT_IN"
         or raw.get("user_present") is not True
@@ -1008,6 +1051,9 @@ def admin_preflight_signature_payload(value: Mapping[str, Any]) -> bytes:
     return _canonical_bytes({
         key: item for key, item in raw.items() if key != "signature_sshsig"
     })
+
+
+executor_preflight_signature_payload = admin_preflight_signature_payload
 
 
 def _verify_signature(
@@ -1049,13 +1095,14 @@ def _validate_admin_preflight(
     if (
         raw.get("schema") != OWNER_ADMIN_PREFLIGHT_SCHEMA
         or raw.get("frame_schema") != ADMIN_PREFLIGHT_FRAME_SCHEMA
-        or raw.get("action") != "authorize_temporary_admin_locked_preflight"
+        or raw.get("action")
+        != "authorize_temporary_executor_locked_preflight"
         or raw.get("approved") is not True
         or raw.get("gate_sha256") != gate["gate_sha256"]
         or raw.get("release_revision") != gate["release_revision"]
         or raw.get("plan_sha256") != gate["plan_sha256"]
-        or raw.get("temporary_admin_username_sha256")
-        != gate["temporary_admin_username_sha256"]
+        or raw.get("temporary_executor_username_sha256")
+        != gate["temporary_executor_username_sha256"]
         or raw.get("owner_subject_sha256") != gate["owner_subject_sha256"]
         or raw.get("owner_key_id") != gate["owner_key_id"]
         or raw.get("cloud_sql_authority_receipt") != authority
@@ -1078,7 +1125,7 @@ def _validate_admin_preflight(
         raw.get("signature_sshsig"),
         message=admin_preflight_signature_payload(raw),
         public_key_ed25519_hex=gate["owner_public_key_ed25519_hex"],
-        namespace=ADMIN_PREFLIGHT_OWNER_SSHSIG_NAMESPACE,
+        namespace=EXECUTOR_PREFLIGHT_OWNER_SSHSIG_NAMESPACE,
         code="schema_reconciliation_admin_preflight_signature_invalid",
     )
     _require_secret_free(raw)
@@ -1120,7 +1167,14 @@ def _validate_core_preflight(
         or raw.get("base_artifact_sha256") != gate["base_artifact_sha256"]
         or raw.get("target_asset_sha256") != gate["target_asset_sha256"]
         or raw.get("postgresql_major") != gate["postgresql_major"]
-        or raw.get("mutation_sql_sha256") != gate["mutation_sql_sha256"]
+        or any(
+            raw.get(name) != gate[name]
+            for name in (
+                "control_install_artifact_sha256",
+                "control_retire_artifact_sha256",
+                "control_foundation_contract_sha256",
+            )
+        )
         or raw.get("observed_contract_sha256") != expected_contract
         or raw.get("truth_receipt_sha256") != truth.sha256
         or raw.get("expected_old_contract_sha256")
@@ -1135,7 +1189,7 @@ def _validate_core_preflight(
     return json.loads(_canonical_bytes(raw).decode("utf-8"))
 
 
-def _validate_bridge(
+def _validate_executor_boundary(
     value: Any,
     *,
     observed_at_unix: int,
@@ -1144,31 +1198,65 @@ def _validate_bridge(
         value,
         fields=_BRIDGE_FIELDS,
         digest_field="receipt_sha256",
-        code="schema_reconciliation_temporary_owner_bridge_invalid",
+        code="schema_reconciliation_temporary_executor_boundary_invalid",
     )
     if (
-        raw.get("schema") != TEMPORARY_OWNER_BRIDGE_SCHEMA
+        raw.get("schema") != TEMPORARY_EXECUTOR_BOUNDARY_SCHEMA
         or raw.get("transaction_isolation") != "SERIALIZABLE"
         or raw.get("database_roles")
         != list(SCHEMA_RECONCILIATION_DATABASE_ROLES)
-        or raw.get("provider_membership_count") != 2
+        or raw.get("provider_membership_count") != 1
         or raw.get("admin_option") is not False
         or raw.get("inherit_option") is not True
-        or raw.get("set_option") is not False
+        or raw.get("set_option") is not True
         or raw.get("cloudsqlsuperuser_absent") is not True
         or raw.get("canonical_truth_share_lock") is not True
-        or raw.get("owner_authority_active_during_locked_collection") is not True
-        or raw.get("current_user_remained_temporary_login") is not True
-        or raw.get("exact_provider_memberships_during_locked_collection") is not True
+        or raw.get("caller_has_no_owner_membership_or_set_path") is not True
+        or raw.get("owner_writer_system_roles_unreachable") is not True
+        or raw.get("executor_owns_zero_objects_clusterwide") is not True
+        or raw.get("executor_cross_database_authority_hba_bounded") is not True
+        or raw.get("connectable_database_inventory_exact") is not True
+        or raw.get("connectable_non_template_database_inventory_exact")
+        is not True
+        or raw.get("connectable_template_authority_absent") is not True
+        or raw.get("prepared_transactions_disabled_and_empty") is not True
+        or not isinstance(
+            raw.get("executor_managed_hba_receipt_sha256"), str
+        )
+        or _SHA256.fullmatch(
+            raw["executor_managed_hba_receipt_sha256"]
+        ) is None
+        or raw.get("latent_provider_exception_databases")
+        != ["cloudsqladmin"]
+        or raw.get("latent_provider_exception_hba_receipt_sha256s")
+        != [raw["executor_managed_hba_receipt_sha256"]]
+        or raw.get("roles_and_fence_recheck_required_before_authorization")
+        is not True
+        or not isinstance(raw.get("control_foundation_contract_sha256"), str)
+        or _SHA256.fullmatch(
+            raw["control_foundation_contract_sha256"]
+        ) is None
+        or raw.get(
+            "current_user_observed_as_temporary_login_before_and_after_locked_collection"
+        )
+        is not True
+        or raw.get(
+            "exact_provider_memberships_observed_before_and_after_locked_collection"
+        )
+        is not True
         or raw.get("contract_collected_while_truth_lock_held") is not True
         or raw.get("canonical_truth_collected_while_truth_lock_held") is not True
         or raw.get("temporary_login_owned_objects") is not False
-        or raw.get("memberships_remain_until_cloud_user_cleanup") is not True
+        or raw.get("temporary_login_has_zero_shared_dependencies") is not True
+        or raw.get(
+            "memberships_observed_present_in_committed_preflight_snapshot_and_cleanup_required"
+        )
+        is not True
         or raw.get("transaction_committed") is not True
         or raw.get("observed_at_unix") != observed_at_unix
         or raw.get("secret_material_recorded") is not False
     ):
-        _fail("schema_reconciliation_temporary_owner_bridge_invalid")
+        _fail("schema_reconciliation_temporary_executor_boundary_invalid")
     _require_secret_free(raw)
     return json.loads(_canonical_bytes(raw).decode("utf-8"))
 
@@ -1201,8 +1289,31 @@ def _build_preflight_challenge(
         "database_identity_sha256",
         "tls_peer_certificate_sha256",
         "managed_hba_receipt_sha256",
+        "executor_managed_hba_receipt_sha256",
     ):
         _digest(raw.get(name), "schema_reconciliation_preflight_collection_invalid")
+    try:
+        executor_hba = managed_cloudsqladmin_hba_receipt_from_mapping(
+            raw.get("executor_managed_hba_receipt")
+        )
+    except (TypeError, ValueError) as exc:
+        raise SchemaReconciliationBootstrapError(
+            "schema_reconciliation_preflight_collection_invalid"
+        ) from exc
+    if (
+        raw.get("executor_managed_hba_receipt") != executor_hba.as_dict()
+        or raw.get("executor_managed_hba_receipt_sha256") != executor_hba.sha256
+        or executor_hba.user != gate["temporary_executor_username"]
+        or executor_hba.host != phase_b.SQL_HOST
+        or executor_hba.tls_server_name != gate["tls_server_name"]
+        or executor_hba.port != phase_b.SQL_PORT
+        or executor_hba.database != "cloudsqladmin"
+        or executor_hba.server_certificate_sha256
+        != raw["tls_peer_certificate_sha256"]
+        or executor_hba.observed_at_unix > raw["observed_at_unix"]
+        or not executor_hba.is_fresh(issued_at_unix)
+    ):
+        _fail("schema_reconciliation_preflight_collection_invalid")
     truth = _canonical_truth(
         raw.get("canonical_truth_receipt"),
         "schema_reconciliation_preflight_collection_invalid",
@@ -1210,10 +1321,17 @@ def _build_preflight_challenge(
     preflight = _validate_core_preflight(raw.get("preflight"), gate=gate, truth=truth)
     if preflight["observed_at_unix"] != raw["observed_at_unix"]:
         _fail("schema_reconciliation_preflight_collection_invalid")
-    bridge = _validate_bridge(
-        raw.get("temporary_owner_bridge_receipt"),
+    boundary = _validate_executor_boundary(
+        raw.get("temporary_executor_boundary_receipt"),
         observed_at_unix=raw["observed_at_unix"],
     )
+    if (
+        boundary["control_foundation_contract_sha256"]
+        != gate["control_foundation_contract_sha256"]
+        or boundary["executor_managed_hba_receipt_sha256"]
+        != raw["executor_managed_hba_receipt_sha256"]
+    ):
+        _fail("schema_reconciliation_temporary_executor_boundary_invalid")
     unsigned = {
         "schema": PREFLIGHT_CHALLENGE_SCHEMA,
         "ok": True,
@@ -1229,8 +1347,12 @@ def _build_preflight_challenge(
         "database_identity_sha256": raw["database_identity_sha256"],
         "tls_peer_certificate_sha256": raw["tls_peer_certificate_sha256"],
         "managed_hba_receipt_sha256": raw["managed_hba_receipt_sha256"],
+        "executor_managed_hba_receipt": executor_hba.as_dict(),
+        "executor_managed_hba_receipt_sha256": raw[
+            "executor_managed_hba_receipt_sha256"
+        ],
         "postgresql_major": raw["postgresql_major"],
-        "temporary_owner_bridge_receipt": bridge,
+        "temporary_executor_boundary_receipt": boundary,
         "preflight": preflight,
         "canonical_truth_receipt": truth.value,
         "mutation_required": preflight["mutation_required"],
@@ -1288,9 +1410,15 @@ def validate_preflight_challenge_for_owner(
         "database_identity_sha256": raw["database_identity_sha256"],
         "tls_peer_certificate_sha256": raw["tls_peer_certificate_sha256"],
         "managed_hba_receipt_sha256": raw["managed_hba_receipt_sha256"],
+        "executor_managed_hba_receipt": raw[
+            "executor_managed_hba_receipt"
+        ],
+        "executor_managed_hba_receipt_sha256": raw[
+            "executor_managed_hba_receipt_sha256"
+        ],
         "postgresql_major": raw["postgresql_major"],
-        "temporary_owner_bridge_receipt": raw[
-            "temporary_owner_bridge_receipt"
+        "temporary_executor_boundary_receipt": raw[
+            "temporary_executor_boundary_receipt"
         ],
         "preflight": preflight,
         "canonical_truth_receipt": raw["canonical_truth_receipt"],
@@ -1342,6 +1470,10 @@ def _validate_preflight_authorization(
         challenge["canonical_truth_receipt"],
         "schema_reconciliation_preflight_authorization_invalid",
     )
+    post_hba_authority = _validate_cloud_authority(
+        raw.get("post_hba_temporary_executor_authority_receipt"),
+        gate=gate,
+    )
     expected_mode = _TRANSITIONS.get((journal["state"], preflight["state"]))
     if (
         expected_mode is None
@@ -1354,6 +1486,14 @@ def _validate_preflight_authorization(
         != admin_preflight["authority_claim_sha256"]
         or raw.get("preflight_challenge_sha256")
         != challenge["preflight_challenge_sha256"]
+        or post_hba_authority
+        != admin_preflight["cloud_sql_authority_receipt"]
+        or raw.get("post_hba_temporary_executor_authority_receipt")
+        != post_hba_authority
+        or raw.get(
+            "post_hba_temporary_executor_authority_receipt_sha256"
+        )
+        != post_hba_authority["receipt_sha256"]
         or raw.get("release_revision") != gate["release_revision"]
         or raw.get("plan_sha256") != gate["plan_sha256"]
         or raw.get("journal_head_sha256") != journal["head_sha256"]
@@ -1539,7 +1679,14 @@ def _validate_core_terminal(
         or raw.get("base_artifact_sha256") != gate["base_artifact_sha256"]
         or raw.get("target_asset_sha256") != gate["target_asset_sha256"]
         or raw.get("postgresql_major") != gate["postgresql_major"]
-        or raw.get("mutation_sql_sha256") != gate["mutation_sql_sha256"]
+        or any(
+            raw.get(name) != gate[name]
+            for name in (
+                "control_install_artifact_sha256",
+                "control_retire_artifact_sha256",
+                "control_foundation_contract_sha256",
+            )
+        )
         or raw.get("expected_old_contract_sha256")
         != gate["expected_old_contract_sha256"]
         or raw.get("target_contract_sha256") != gate["target_contract_sha256"]
@@ -1638,12 +1785,13 @@ def _validate_database_attestation(
         or raw.get("observed_contract_sha256") != gate["target_contract_sha256"]
         or truth != final_truth
         or raw.get("transaction_committed") is not True
-        or raw.get("temporary_owner_memberships_present") is not True
         or raw.get("temporary_login_owns_zero_objects") is not True
-        or raw.get("trampoline_restored_before_commit") is not True
+        or raw.get("fixed_control_routines_re_attested_before_commit")
+        is not True
+        or raw.get("inert_executor_membership_present") is not True
         or raw.get("cloud_user_cleanup_required") is not True
         or raw.get("database_session_closed") is not True
-        or raw.get("re_attested_before_temporary_admin_delete") is not True
+        or raw.get("re_attested_before_temporary_executor_delete") is not True
         or type(raw.get("observed_at_unix")) is not int
         or not challenge["issued_at_unix"] <= raw["observed_at_unix"] <= now_unix
         or raw.get("secret_material_recorded") is not False
@@ -1700,7 +1848,7 @@ def _build_database_intermediate(
     unsigned = {
         "schema": DATABASE_INTERMEDIATE_SCHEMA,
         "ok": True,
-        "state": "database_target_re_attested_awaiting_admin_cleanup",
+        "state": "database_target_re_attested_awaiting_executor_cleanup",
         "gate_sha256": gate["gate_sha256"],
         "authority_claim_sha256": admin_preflight["authority_claim_sha256"],
         "preflight_challenge_sha256": challenge[
@@ -1709,6 +1857,11 @@ def _build_database_intermediate(
         "preflight_authorization_claim_sha256": authorization[
             "preflight_authorization_claim_sha256"
         ],
+        "post_hba_temporary_executor_authority_receipt_sha256": (
+            authorization[
+                "post_hba_temporary_executor_authority_receipt_sha256"
+            ]
+        ),
         "release_revision": gate["release_revision"],
         "plan_sha256": gate["plan_sha256"],
         "execution_mode": authorization["execution_mode"],
@@ -1721,7 +1874,7 @@ def _build_database_intermediate(
         ],
         "initial_canonical_truth": core_terminal["initial_canonical_truth"],
         "final_canonical_truth": core_terminal["final_canonical_truth"],
-        "temporary_admin_cleanup_required": True,
+        "temporary_executor_cleanup_required": True,
         "database_session_closed": True,
         "applied_at_unix": applied_at_unix,
         "secret_material_recorded": False,
@@ -1818,7 +1971,7 @@ def validate_database_intermediate_for_owner(
         raw.get("schema") != DATABASE_INTERMEDIATE_SCHEMA
         or raw.get("ok") is not True
         or raw.get("state")
-        != "database_target_re_attested_awaiting_admin_cleanup"
+        != "database_target_re_attested_awaiting_executor_cleanup"
         or raw.get("gate_sha256") != gate["gate_sha256"]
         or raw.get("authority_claim_sha256")
         != admin_preflight["authority_claim_sha256"]
@@ -1826,6 +1979,12 @@ def validate_database_intermediate_for_owner(
         != validated_challenge["preflight_challenge_sha256"]
         or raw.get("preflight_authorization_claim_sha256")
         != validated_authorization["preflight_authorization_claim_sha256"]
+        or raw.get(
+            "post_hba_temporary_executor_authority_receipt_sha256"
+        )
+        != validated_authorization[
+            "post_hba_temporary_executor_authority_receipt_sha256"
+        ]
         or raw.get("release_revision") != gate["release_revision"]
         or raw.get("plan_sha256") != gate["plan_sha256"]
         or raw.get("execution_mode")
@@ -1835,7 +1994,7 @@ def validate_database_intermediate_for_owner(
             and raw.get("authorized_intent_sha256")
             != journal["authorized_intent_sha256"]
         )
-        or raw.get("temporary_admin_cleanup_required") is not True
+        or raw.get("temporary_executor_cleanup_required") is not True
         or raw.get("database_session_closed") is not True
         or raw.get("secret_material_recorded") is not False
     ):
@@ -1922,11 +2081,12 @@ def _validate_cloud_absence(
     }
     quiet_window = raw.get("quiet_window_seconds")
     if (
-        raw.get("schema") != CLOUD_ADMIN_ABSENCE_SCHEMA
-        or raw.get("temporary_admin_absent") is not True
+        raw.get("schema") != CLOUD_EXECUTOR_ABSENCE_SCHEMA
+        or raw.get("temporary_executor_absent") is not True
         or raw.get("project") != gate["project"]
         or raw.get("instance") != gate["sql_instance"]
-        or raw.get("username_sha256") != gate["temporary_admin_username_sha256"]
+        or raw.get("username_sha256")
+        != gate["temporary_executor_username_sha256"]
         or raw.get("owner_subject_sha256") != gate["owner_subject_sha256"]
         or raw.get("mutation_context_sha256") != gate["gate_sha256"]
         or raw.get("user_absent") is not True
@@ -1972,6 +2132,9 @@ def admin_cleanup_signature_payload(value: Mapping[str, Any]) -> bytes:
     })
 
 
+executor_cleanup_signature_payload = admin_cleanup_signature_payload
+
+
 def _validate_admin_cleanup(
     value: Mapping[str, Any],
     *,
@@ -1995,9 +2158,9 @@ def _validate_admin_cleanup(
         authority=admin_preflight["cloud_sql_authority_receipt"],
     )
     if (
-        raw.get("schema") != OWNER_ADMIN_CLEANUP_SCHEMA
-        or raw.get("frame_schema") != ADMIN_CLEANUP_FRAME_SCHEMA
-        or raw.get("action") != "confirm_temporary_admin_absence"
+        raw.get("schema") != OWNER_EXECUTOR_CLEANUP_SCHEMA
+        or raw.get("frame_schema") != EXECUTOR_CLEANUP_FRAME_SCHEMA
+        or raw.get("action") != "confirm_temporary_executor_absence"
         or raw.get("approved") is not True
         or raw.get("gate_sha256") != gate["gate_sha256"]
         or raw.get("authority_claim_sha256")
@@ -2010,8 +2173,8 @@ def _validate_admin_cleanup(
         != intermediate["database_intermediate_sha256"]
         or raw.get("release_revision") != gate["release_revision"]
         or raw.get("plan_sha256") != gate["plan_sha256"]
-        or raw.get("temporary_admin_username_sha256")
-        != gate["temporary_admin_username_sha256"]
+        or raw.get("temporary_executor_username_sha256")
+        != gate["temporary_executor_username_sha256"]
         or raw.get("owner_subject_sha256") != gate["owner_subject_sha256"]
         or raw.get("owner_key_id") != gate["owner_key_id"]
         or raw.get("cloud_sql_absence_receipt") != absence
@@ -2032,7 +2195,7 @@ def _validate_admin_cleanup(
         raw.get("signature_sshsig"),
         message=admin_cleanup_signature_payload(raw),
         public_key_ed25519_hex=gate["owner_public_key_ed25519_hex"],
-        namespace=ADMIN_CLEANUP_OWNER_SSHSIG_NAMESPACE,
+        namespace=EXECUTOR_CLEANUP_OWNER_SSHSIG_NAMESPACE,
         code="schema_reconciliation_admin_cleanup_signature_invalid",
     )
     _require_secret_free(raw)
@@ -2090,10 +2253,12 @@ def _validate_post_cleanup_observation(
         or post_delete_terminal.release_revision != gate["release_revision"]
         or post_delete_terminal.plan_sha256 != gate["plan_sha256"]
         or post_delete_terminal.database != gate["database"]
-        or post_delete_terminal.temporary_login
-        != gate["temporary_admin_username"]
-        or post_delete_terminal.temporary_login_sha256
-        != gate["temporary_admin_username_sha256"]
+        or post_delete_terminal.temporary_executor_login
+        != gate["temporary_executor_username"]
+        or post_delete_terminal.temporary_executor_login_sha256
+        != gate["temporary_executor_username_sha256"]
+        or post_delete_terminal.control_foundation_contract_sha256
+        != gate["control_foundation_contract_sha256"]
         or post_delete_terminal.target_contract_sha256
         != gate["target_contract_sha256"]
         or post_delete_terminal.observed_contract_sha256
@@ -2164,7 +2329,7 @@ def _build_terminal(
         "schema": TERMINAL_SCHEMA,
         "ok": True,
         "state": (
-            "pre_delete_full_truth_re_attested_then_temporary_admin_absence_"
+            "pre_delete_full_truth_re_attested_then_temporary_executor_absence_"
             "and_fresh_writer_authority_contract_behavior_proven"
         ),
         "gate_sha256": gate["gate_sha256"],
@@ -2175,6 +2340,11 @@ def _build_terminal(
         "preflight_authorization_claim_sha256": authorization[
             "preflight_authorization_claim_sha256"
         ],
+        "post_hba_temporary_executor_authority_receipt_sha256": (
+            intermediate[
+                "post_hba_temporary_executor_authority_receipt_sha256"
+            ]
+        ),
         "database_intermediate_sha256": intermediate[
             "database_intermediate_sha256"
         ],
@@ -2204,7 +2374,7 @@ def _build_terminal(
             "database_commit_attestation_sha256"
         ],
         "final_canonical_truth": intermediate["final_canonical_truth"],
-        "temporary_admin_absence_receipt_sha256": cleanup[
+        "temporary_executor_absence_receipt_sha256": cleanup[
             "cloud_sql_absence_receipt_sha256"
         ],
         "fresh_managed_hba_receipt_sha256": post_cleanup[
@@ -2225,7 +2395,7 @@ def _build_terminal(
         "post_cleanup_observation_sha256": post_cleanup["observation_sha256"],
         "owner_subject_sha256": gate["owner_subject_sha256"],
         "owner_key_id": gate["owner_key_id"],
-        "database_re_attested_before_temporary_admin_delete": True,
+        "database_re_attested_before_temporary_executor_delete": True,
         "fresh_writer_post_delete_authority_contract_and_behavior_proven": True,
         "post_delete_canonical_truth_observed": False,
         "secret_material_recorded": False,
@@ -2533,7 +2703,7 @@ def run_protocol_v2(
     try:
         admin_frame = _read_mapping_frame(
             source,
-            magic=ADMIN_PREFLIGHT_MAGIC,
+            magic=EXECUTOR_PREFLIGHT_MAGIC,
             code="schema_reconciliation_admin_preflight_frame_invalid",
         )
         validated_admin = _validate_admin_preflight(
@@ -2613,7 +2783,7 @@ def run_protocol_v2(
 
         cleanup_frame = _read_mapping_frame(
             source,
-            magic=ADMIN_CLEANUP_MAGIC,
+            magic=EXECUTOR_CLEANUP_MAGIC,
             code="schema_reconciliation_admin_cleanup_frame_invalid",
         )
         if source.read(1) != b"":

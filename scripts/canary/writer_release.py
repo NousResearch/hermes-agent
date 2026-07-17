@@ -121,6 +121,12 @@ _PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_BOOTSTRAP_MODULE = Path(
 _PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_RUNTIME_MODULE = Path(
     "gateway/canonical_writer_schema_reconciliation_runtime.py"
 )
+_PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_CONTROL_MODULE = Path(
+    "gateway/canonical_writer_schema_reconciliation_control.py"
+)
+_PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_CONTROL_BOOTSTRAP_MODULE = Path(
+    "gateway/canonical_writer_schema_reconciliation_control_bootstrap.py"
+)
 CANONICAL_WRITER_BASE_MIGRATION_SQL_RELATIVE_PATH = Path(
     "scripts/sql/canonical_writer_v1.sql"
 )
@@ -138,6 +144,13 @@ CANONICAL_WRITER_FOUNDATION_SQL_RELATIVE_PATHS = (
     Path("scripts/sql/canonical_writer_foundation_membership_v1.sql"),
     Path("scripts/sql/canonical_writer_foundation_retire_v1.sql"),
 )
+CANONICAL_WRITER_SCHEMA_RECONCILIATION_CONTROL_SQL_RELATIVE_PATHS = (
+    Path("scripts/sql/canonical_writer_schema_reconciliation_control_v1.sql"),
+    Path(
+        "scripts/sql/"
+        "canonical_writer_schema_reconciliation_control_retire_v1.sql"
+    ),
+)
 RUNTIME_DEPENDENCY_LOCK_RELATIVE_PATHS = (
     Path("pyproject.toml"),
     Path("uv.lock"),
@@ -150,6 +163,7 @@ _TRACKED_RELEASE_ARTIFACTS = (
     CANONICAL_WRITER_BASE_MIGRATION_SQL_RELATIVE_PATH,
     CANONICAL_WRITER_SCHEMA_CONTRACT_ASSET_RELATIVE_PATH,
     *CANONICAL_WRITER_FOUNDATION_SQL_RELATIVE_PATHS,
+    *CANONICAL_WRITER_SCHEMA_RECONCILIATION_CONTROL_SQL_RELATIVE_PATHS,
 )
 _MAX_TRACKED_RELEASE_ARTIFACT_BYTES = 1024 * 1024
 _SCHEMA_CONTRACT_ASSET_FILE_SHA256 = (
@@ -367,6 +381,20 @@ class ReleaseBuildSpec:
         return (
             self.site_packages
             / _PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_RUNTIME_MODULE
+        )
+
+    @property
+    def schema_reconciliation_control_module_origin(self) -> Path:
+        return (
+            self.site_packages
+            / _PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_CONTROL_MODULE
+        )
+
+    @property
+    def schema_reconciliation_control_bootstrap_module_origin(self) -> Path:
+        return (
+            self.site_packages
+            / _PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_CONTROL_BOOTSTRAP_MODULE
         )
 
     @property
@@ -930,6 +958,8 @@ def create_release_manifest(spec: ReleaseBuildSpec) -> ReleaseManifest:
         spec.schema_reconciliation_db_module_origin,
         spec.schema_reconciliation_bootstrap_module_origin,
         spec.schema_reconciliation_runtime_module_origin,
+        spec.schema_reconciliation_control_module_origin,
+        spec.schema_reconciliation_control_bootstrap_module_origin,
         spec.schema_contract_asset_origin,
         spec.runtime_dependency_module_origin,
         spec.release_root / SOURCE_COMMIT_MARKER_RELATIVE_PATH,
@@ -1725,6 +1755,8 @@ def _validate_installed_runtime(
         spec.schema_reconciliation_db_module_origin,
         spec.schema_reconciliation_bootstrap_module_origin,
         spec.schema_reconciliation_runtime_module_origin,
+        spec.schema_reconciliation_control_module_origin,
+        spec.schema_reconciliation_control_bootstrap_module_origin,
     )
     for module_path in schema_reconciliation_module_paths:
         try:

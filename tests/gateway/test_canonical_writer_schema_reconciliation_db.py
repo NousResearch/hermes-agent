@@ -1,30 +1,37 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-import dataclasses
+import copy
 import hashlib
 import json
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from gateway import canonical_writer_schema_reconciliation as reconciliation
-from gateway import canonical_writer_schema_reconciliation_db as reconciliation_db
+from gateway import canonical_writer_schema_reconciliation_db as database_module
+from gateway import canonical_writer_schema_reconciliation_control as control
 from gateway.canonical_writer_db import (
     CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY,
     CredentialSource,
     ManagedCloudSQLAdminHBAReceipt,
-    PrivilegeAttestationError,
     QueryResult,
     WriterDBConfig,
-    _collect_privilege_attestation,
 )
 from gateway.canonical_writer_foundation import _load_source_artifacts_for_tests
 
 
 REVISION = "a" * 40
+EXECUTOR_LOGIN = "muncho_canary_reconciler_" + "a" * 16
+CONTROL_INSTALL_SHA256 = (
+    "5519c3510c6211b995aec4ca39057c552869501474fab4dea88e6bb21f090ac5"
+)
+CONTROL_RETIRE_SHA256 = (
+    "ec3ebe8713a378f7c721a20a303074ae99211855a9925ba108f57e8c84606de8"
+)
 ASSET = (
     Path(__file__).parents[2]
     / "gateway"
@@ -44,8 +51,16 @@ def _target_and_plan() -> tuple[
         asset.contract,
         artifact,
         target_asset_sha256=asset.sha256,
+        control_install_artifact_sha256=CONTROL_INSTALL_SHA256,
+        control_retire_artifact_sha256=CONTROL_RETIRE_SHA256,
     )
     return asset.contract, plan
+
+
+def _old(target: reconciliation.SchemaContract) -> reconciliation.SchemaContract:
+    return reconciliation.SchemaContract.from_mapping(
+        reconciliation._old_contract_value(target)
+    )
 
 
 def _config(user: str) -> WriterDBConfig:
@@ -53,7 +68,7 @@ def _config(user: str) -> WriterDBConfig:
         host="127.0.0.1",
         tls_server_name="localhost",
         port=5432,
-        database="muncho_canary_brain",
+        database=reconciliation.DATABASE,
         user=user,
         ca_file=Path("/tmp/muncho-canary-test-ca.pem"),
         credential=CredentialSource(fd=0, expected_uid=os.getuid()),
@@ -61,42 +76,43 @@ def _config(user: str) -> WriterDBConfig:
     )
 
 
-def _receipt(config: WriterDBConfig) -> ManagedCloudSQLAdminHBAReceipt:
+def _managed_hba(
+    config: WriterDBConfig,
+    *,
+    certificate_sha256: str = "e" * 64,
+) -> ManagedCloudSQLAdminHBAReceipt:
     now = int(time.time())
     return ManagedCloudSQLAdminHBAReceipt(
         version="managed-cloudsqladmin-hba-rejection-v2",
         host=config.host,
         tls_server_name=config.tls_server_name,
         port=config.port,
-        server_certificate_sha256="e" * 64,
+        server_certificate_sha256=certificate_sha256,
         database="cloudsqladmin",
         user=config.user,
         observed_at_unix=now,
         expires_at_unix=now + 300,
         sqlstate="28000",
         server_message=(
-            f'no pg_hba.conf entry for host "127.0.0.1", user "{config.user}", '
-            'database "cloudsqladmin", SSL encryption'
+            f'no pg_hba.conf entry for host "{config.host}", user '
+            f'"{config.user}", database "cloudsqladmin", SSL encryption'
         ),
         result="pg_hba_rejected",
         tls_peer_verified=True,
     )
 
 
-def _truth_receipt(
-    row_count: int = 3,
-    canonical14_sha256: str = "d" * 64,
-) -> reconciliation.CanonicalTruthReceipt:
+def _truth() -> reconciliation.CanonicalTruthReceipt:
     return reconciliation.CanonicalTruthReceipt(
-        row_count=row_count,
-        canonical14_sha256=canonical14_sha256,
+        row_count=3,
+        canonical14_sha256="d" * 64,
         relation_receipts=tuple(
             reconciliation.CanonicalRelationTruthReceipt(
                 relation=relation,
-                row_count=row_count if index == 0 else 0,
-                chunk_count=1 if index == 0 and row_count else 0,
+                row_count=3 if index == 0 else 0,
+                chunk_count=1 if index == 0 else 0,
                 chunk_manifest_sha256=hashlib.sha256(
-                    f"{relation}:{row_count}:{canonical14_sha256}".encode()
+                    f"{relation}:{index}".encode()
                 ).hexdigest(),
             )
             for index, relation in enumerate(
@@ -106,7 +122,7 @@ def _truth_receipt(
         quarantine_anchor_receipts=tuple(
             reconciliation.CanonicalQuarantineAnchorReceipt(
                 anchor=anchor,
-                object_oid=9000 + index,
+                object_oid=9_000 + index,
                 owner="postgres",
                 kind="n" if index == 1 else "r",
                 persistence="" if index == 1 else "p",
@@ -120,215 +136,732 @@ def _truth_receipt(
     )
 
 
-class _FakeSession:
+def _observer_result(truth: reconciliation.CanonicalTruthReceipt) -> QueryResult:
+    relations = json.dumps(
+        truth.value["relation_receipts"],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    quarantine = json.dumps(
+        truth.value["quarantine_anchors"],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    observation = hashlib.sha256(
+        "\n".join(
+            (
+                "canonical-writer-schema-reconciliation-control-observation-v1",
+                str(truth.row_count),
+                truth.canonical14_sha256,
+                relations,
+                quarantine,
+            )
+        ).encode()
+    ).hexdigest()
+    return QueryResult(
+        (
+            "row_count",
+            "canonical14_sha256",
+            "relation_receipts",
+            "quarantine_anchor_receipts",
+            "observation_sha256",
+        ),
+        ((str(truth.row_count), truth.canonical14_sha256, relations, quarantine, observation),),
+        "SELECT 1",
+    )
+
+
+class _ExecutorSession:
     def __init__(
         self,
         plan: reconciliation.SchemaReconciliationPlan,
         *,
-        username: str = "muncho_canary_admin_aaaaaaaaaaaaaaaa",
-        open_receipt_valid: bool = True,
-        close_receipt_valid: bool = True,
-        open_preflight_failure: str | None = None,
-        open_postflight_failure: str | None = None,
-        authority_open_server_preflight_failure: bool = False,
+        authority_failure: str | None = None,
+        postflight_failure: str | None = None,
         stabilization_failures: tuple[tuple[str, ...], ...] = (),
+        apply_applied: bool = True,
+        username: str = EXECUTOR_LOGIN,
     ) -> None:
         self.plan = plan
-        self.segments = reconciliation_db._split_sealed_mutation_sql(plan)
         self.username = username
         self.tls_peer_certificate_sha256 = "e" * 64
-        self.queries: list[tuple[str, int]] = []
+        self.authority_failure = authority_failure
+        self.postflight_failure = postflight_failure
+        self.stabilization_failures = stabilization_failures
+        self.apply_applied = apply_applied
+        self.queries: list[str] = []
         self.closed = False
         self.transaction_open = False
-        self.authority_present = True
-        self.body_present = False
-        self.committed_with_authority = False
-        self.open_receipt_valid = open_receipt_valid
-        self.close_receipt_valid = close_receipt_valid
-        self.open_preflight_failure = open_preflight_failure
-        self.open_postflight_failure = open_postflight_failure
-        self.authority_open_server_preflight_failure = (
-            authority_open_server_preflight_failure
-        )
-        self.stabilization_failures = stabilization_failures
-        self.stabilization_receipt_count = 0
+        self.session_lock_held = False
+        self.stabilization_count = 0
         self.transaction_receipt_count = 0
-        self.quarantine_flags = ("t", "t", "t")
-        self.quarantine_receipts: object = _truth_receipt().value[
-            "quarantine_anchors"
-        ]
+        self.applied = False
+        self.bindings: dict[str, str] = {}
+        self.observer_result = _observer_result(_truth())
+
+    def _authority_result(self) -> QueryResult:
+        values = ["t"] * len(database_module._AUTHORITY_OPEN_RECEIPT_COLUMNS)
+        failures: tuple[str, ...] = ()
+        if not self.transaction_open:
+            self.stabilization_count += 1
+            if self.stabilization_failures:
+                failures = self.stabilization_failures[
+                    min(
+                        self.stabilization_count - 1,
+                        len(self.stabilization_failures) - 1,
+                    )
+                ]
+        else:
+            self.transaction_receipt_count += 1
+            if self.transaction_receipt_count == 1 and self.authority_failure:
+                failures = (self.authority_failure,)
+            elif self.transaction_receipt_count > 1 and self.postflight_failure:
+                failures = (self.postflight_failure,)
+        for failure in failures:
+            values[
+                database_module._AUTHORITY_OPEN_RECEIPT_COLUMNS.index(failure)
+            ] = "f"
+        return QueryResult(
+            database_module._AUTHORITY_OPEN_RECEIPT_COLUMNS,
+            (tuple(values),),
+            "SELECT 1",
+        )
+
+    def _apply_result(self) -> QueryResult:
+        observation = self.observer_result.rows[0][-1]
+        plan = self.bindings[control.PLAN_GUC]
+        intent = self.bindings[control.AUTHORIZED_INTENT_GUC]
+        truth = self.bindings[control.TRUTH_RECEIPT_GUC]
+        applied_text = "true" if self.apply_applied else "false"
+        helper = (
+            reconciliation.EXPECTED_MISSING_HELPER_CATALOG_IDENTITY
+            .definition_sha256
+        )
+        receipt = hashlib.sha256(
+            "\n".join(
+                (
+                    "canonical-writer-schema-reconciliation-control-apply-v1",
+                    applied_text,
+                    plan,
+                    intent,
+                    truth,
+                    observation,
+                    helper,
+                )
+            ).encode()
+        ).hexdigest()
+        self.applied = self.apply_applied
+        return QueryResult(
+            (
+                "applied",
+                "plan_sha256",
+                "authorized_intent_sha256",
+                "canonical_truth_receipt_sha256",
+                "observation_sha256",
+                "helper_definition_sha256",
+                "receipt_sha256",
+            ),
+            ((applied_text, plan, intent, truth, observation, helper, receipt),),
+            "SELECT 1",
+        )
 
     def query(self, sql: str, *, maximum_rows: int) -> QueryResult:
-        self.queries.append((sql, maximum_rows))
+        self.queries.append(sql)
         if sql.startswith("SELECT pg_catalog.pg_advisory_lock("):
             return QueryResult(("pg_advisory_lock",), (("",),), "SELECT 1")
-        if sql.startswith("SELECT pg_catalog.pg_advisory_xact_lock("):
-            return QueryResult(
-                ("pg_advisory_xact_lock",),
-                (("",),),
-                "SELECT 1",
-            )
         if sql.startswith("SELECT pg_catalog.pg_advisory_unlock("):
             return QueryResult(("pg_advisory_unlock",), (("t",),), "SELECT 1")
         if sql == "BEGIN ISOLATION LEVEL SERIALIZABLE":
             self.transaction_open = True
             return QueryResult((), (), "BEGIN")
-        if sql == self.segments.authority_open:
-            assert self.transaction_open
-            assert self.authority_present
-            if self.authority_open_server_preflight_failure:
-                raise reconciliation_db.PostgresServerError(
-                    sqlstate="P0001",
-                    server_message=(
-                        reconciliation_db._AUTHORITY_OPEN_PREFLIGHT_SERVER_MESSAGE
-                    ),
-                )
-            return QueryResult((), (), "DO")
-        if sql == reconciliation_db._AUTHORITY_OPEN_RECEIPT_SQL:
-            values = [
-                "t" if self.authority_present else "f"
-                for _column in reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS
-            ]
-            failures: tuple[str, ...] = ()
-            if not self.transaction_open:
-                self.stabilization_receipt_count += 1
-                if self.stabilization_failures:
-                    failures = self.stabilization_failures[
-                        min(
-                            self.stabilization_receipt_count - 1,
-                            len(self.stabilization_failures) - 1,
-                        )
-                    ]
-            else:
-                self.transaction_receipt_count += 1
-                if (
-                    self.transaction_receipt_count == 1
-                    and self.open_preflight_failure is not None
-                ):
-                    failures = (self.open_preflight_failure,)
-                if (
-                    self.transaction_receipt_count > 1
-                    and self.open_postflight_failure is not None
-                ):
-                    failures = (self.open_postflight_failure,)
-            for failure in failures:
-                values[
-                    reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS.index(
-                        failure
-                    )
-                ] = "f"
-            if not self.open_receipt_valid:
-                values = ["f" for _value in values]
-            return QueryResult(
-                reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS,
-                (tuple(values),),
-                "SELECT 1",
-            )
-        if sql == self.segments.body:
-            assert self.authority_present
-            self.body_present = True
-            return QueryResult((), (), "DO")
-        if sql == self.segments.authority_close:
-            assert self.authority_present
-            return QueryResult((), (), "DO")
-        if sql == reconciliation_db._AUTHORITY_CLOSE_RECEIPT_SQL:
-            value = (
-                "t"
-                if self.close_receipt_valid and self.authority_present
-                else "f"
-            )
-            return QueryResult(
-                reconciliation_db._AUTHORITY_CLOSE_RECEIPT_COLUMNS,
-                ((value,) * len(reconciliation_db._AUTHORITY_CLOSE_RECEIPT_COLUMNS),),
-                "SELECT 1",
-            )
-        if sql.startswith("SET LOCAL "):
+        if sql == database_module._AUTHORITY_OPEN_RECEIPT_SQL:
+            return self._authority_result()
+        if sql == control.OBSERVER_CALL_SQL:
+            return self.observer_result
+        if sql.startswith("SET LOCAL muncho.schema_reconciliation_"):
+            name, value = sql.removeprefix("SET LOCAL ").split(" = ", 1)
+            self.bindings[name] = value.strip("'")
             return QueryResult((), (), "SET")
-        if sql == reconciliation_db._CANONICAL_DATA_LOCK_SQL:
-            return QueryResult((), (), "LOCK TABLE")
-        if sql == reconciliation_db._CANONICAL_TRUTH_SQL:
-            return QueryResult(
-                ("row_count", "canonical14_sha256", "relation_receipts"),
-                (
-                    (
-                        "3",
-                        "d" * 64,
-                        json.dumps(_truth_receipt().value["relation_receipts"]),
-                    ),
-                ),
-                "SELECT 1",
-            )
-        if sql == reconciliation_db._QUARANTINE_ANCHOR_SQL:
-            return QueryResult(
-                reconciliation_db._QUARANTINE_ANCHOR_COLUMNS,
-                ((
-                    *self.quarantine_flags,
-                    json.dumps(self.quarantine_receipts),
-                ),),
-                "SELECT 1",
-            )
+        if sql == control.APPLY_CALL_SQL:
+            return self._apply_result()
+        if sql.startswith("SET "):
+            return QueryResult((), (), "SET")
         if sql == "COMMIT":
-            self.committed_with_authority = self.authority_present
             self.transaction_open = False
             return QueryResult((), (), "COMMIT")
         if sql == "ROLLBACK":
             self.transaction_open = False
-            self.body_present = False
+            self.applied = False
             return QueryResult((), (), "ROLLBACK")
-        raise AssertionError(f"unexpected SQL: {sql[:80]}")
+        raise AssertionError(f"unexpected SQL: {sql[:120]}")
 
     def close(self) -> None:
-        if self.transaction_open:
-            self.transaction_open = False
-            self.body_present = False
+        self.transaction_open = False
         self.closed = True
 
 
-class _FreshWriterSession:
+def _database(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    initial_target: bool = False,
+    session: _ExecutorSession | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    admission: Callable[[], None] = lambda: None,
+) -> tuple[
+    database_module.PostgresSchemaReconciliationDatabase,
+    _ExecutorSession,
+    reconciliation.SchemaContract,
+    reconciliation.SchemaReconciliationPlan,
+]:
+    target, plan = _target_and_plan()
+    executor_config = _config(EXECUTOR_LOGIN)
+    writer_config = _config(database_module.WRITER_LOGIN)
+    active = session or _ExecutorSession(plan)
+
+    def collect(*_args: Any, **_kwargs: Any) -> reconciliation.SchemaContract:
+        if initial_target or active.applied:
+            return target
+        return _old(target)
+
+    monkeypatch.setattr(database_module, "collect_schema_contract", collect)
+    database = database_module.PostgresSchemaReconciliationDatabase(
+        plan=plan,
+        target=target,
+        executor_config=executor_config,
+        writer_config=writer_config,
+        managed_hba_receipt=_managed_hba(writer_config),
+        executor_managed_hba_receipt=_managed_hba(executor_config),
+        pre_begin_admission=admission,
+        _session_factory=lambda config: (
+            active
+            if config == executor_config
+            else (_ for _ in ()).throw(AssertionError("wrong config"))
+        ),
+        _stabilization_sleep=sleep,
+    )
+    return database, active, target, plan
+
+
+def test_transaction_calls_only_fixed_observer_and_apply_routines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, session, target, plan = _database(monkeypatch)
+    intent = "f" * 64
+
+    with database.transaction(
+        advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+    ) as transaction:
+        transaction.lock_canonical_truth()
+        assert transaction.observe_contract() == _old(target)
+        assert transaction.observe_canonical_truth() == _truth()
+        transaction.apply_missing_helper(authorized_intent_sha256=intent)
+        assert transaction.observe_contract() == target
+        assert transaction.observe_canonical_truth() == _truth()
+
+    assert session.queries.count(control.OBSERVER_CALL_SQL) == 2
+    assert session.queries.count(control.APPLY_CALL_SQL) == 1
+    assert session.bindings == {
+        control.PLAN_GUC: plan.sha256,
+        control.AUTHORIZED_INTENT_GUC: intent,
+        control.TRUTH_RECEIPT_GUC: _truth().sha256,
+    }
+    assert session.queries.count(database_module._AUTHORITY_OPEN_RECEIPT_SQL) == 3
+    assert "COMMIT" in session.queries
+    assert session.closed is True
+    assert all("CREATE FUNCTION" not in sql for sql in session.queries)
+
+
+def test_exact_target_commits_without_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, session, target, _plan = _database(
+        monkeypatch,
+        initial_target=True,
+    )
+    with database.transaction(
+        advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+    ) as transaction:
+        transaction.lock_canonical_truth()
+        assert transaction.observe_contract() == target
+        assert transaction.observe_canonical_truth() == _truth()
+
+    assert control.APPLY_CALL_SQL not in session.queries
+    assert "COMMIT" in session.queries
+
+
+def test_apply_false_receipt_fails_closed_and_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _target, plan = _target_and_plan()
+    session = _ExecutorSession(plan, apply_applied=False)
+    database, _, _, _ = _database(monkeypatch, session=session)
+
+    with pytest.raises(
+        reconciliation.SchemaReconciliationError,
+        match="schema_reconciliation_control_apply_not_performed",
+    ):
+        with database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ) as transaction:
+            transaction.lock_canonical_truth()
+            transaction.apply_missing_helper(authorized_intent_sha256="f" * 64)
+
+    assert "ROLLBACK" in session.queries
+    assert "COMMIT" not in session.queries
+
+
+def test_transaction_exception_rolls_back_and_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, session, _target, _plan = _database(monkeypatch)
+    with pytest.raises(RuntimeError, match="injected"):
+        with database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ) as transaction:
+            transaction.lock_canonical_truth()
+            raise RuntimeError("injected")
+    assert "ROLLBACK" in session.queries
+    assert "COMMIT" not in session.queries
+    assert session.closed is True
+
+
+def test_session_lock_wait_is_bounded_before_admission_or_begin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _target, plan = _target_and_plan()
+
+    class _BlockedExecutorSession(_ExecutorSession):
+        def query(self, sql: str, *, maximum_rows: int) -> QueryResult:
+            if sql.startswith("SELECT pg_catalog.pg_advisory_lock("):
+                self.queries.append(sql)
+                raise database_module.PostgresProtocolError(
+                    "database_error_sqlstate:55P03"
+                )
+            return super().query(sql, maximum_rows=maximum_rows)
+
+    session = _BlockedExecutorSession(plan)
+    admissions: list[str] = []
+    database, _, _, _ = _database(
+        monkeypatch,
+        session=session,
+        admission=lambda: admissions.append("admitted"),
+    )
+
+    with pytest.raises(
+        database_module.PostgresProtocolError,
+        match="database_error_sqlstate:55P03",
+    ):
+        with database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ):
+            pytest.fail("scope opened")
+
+    assert session.queries[:2] == [
+        "SET lock_timeout = '15s'",
+        "SET statement_timeout = '2min'",
+    ]
+    assert admissions == []
+    assert "BEGIN ISOLATION LEVEL SERIALIZABLE" not in session.queries
+    assert control.APPLY_CALL_SQL not in session.queries
+    assert "COMMIT" not in session.queries
+    assert session.closed is True
+
+
+def test_post_lock_admission_is_immediately_before_begin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _target, plan = _target_and_plan()
+    session = _ExecutorSession(plan)
+
+    def admit() -> None:
+        assert session.queries[-1] == database_module._AUTHORITY_OPEN_RECEIPT_SQL
+        assert "BEGIN ISOLATION LEVEL SERIALIZABLE" not in session.queries
+        session.queries.append("trusted-pre-begin-admission")
+
+    database, _, _, _ = _database(
+        monkeypatch,
+        initial_target=True,
+        session=session,
+        admission=admit,
+    )
+    with database.transaction(
+        advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+    ) as transaction:
+        transaction.lock_canonical_truth()
+
+    marker = session.queries.index("trusted-pre-begin-admission")
+    assert session.queries[marker - 1] == database_module._AUTHORITY_OPEN_RECEIPT_SQL
+    assert session.queries[marker + 1] == "BEGIN ISOLATION LEVEL SERIALIZABLE"
+
+
+def test_post_lock_admission_failure_unlocks_without_begin_or_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    code = "schema_reconciliation_runtime_pre_begin_stopped_boundary_drifted"
+
+    def reject() -> None:
+        raise reconciliation.SchemaReconciliationError(code)
+
+    database, session, _, _ = _database(
+        monkeypatch,
+        admission=reject,
+    )
+    with pytest.raises(reconciliation.SchemaReconciliationError, match=code):
+        with database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ):
+            pytest.fail("scope opened")
+
+    assert "BEGIN ISOLATION LEVEL SERIALIZABLE" not in session.queries
+    assert control.APPLY_CALL_SQL not in session.queries
+    assert "COMMIT" not in session.queries
+    assert any(
+        sql.startswith("SELECT pg_catalog.pg_advisory_unlock(")
+        for sql in session.queries
+    )
+    assert session.closed is True
+
+
+@pytest.mark.parametrize("awaitable", (False, True))
+def test_post_lock_admission_rejects_non_exact_none_return(
+    monkeypatch: pytest.MonkeyPatch,
+    awaitable: bool,
+) -> None:
+    async def async_result() -> None:
+        return None
+
+    callback = async_result if awaitable else lambda: object()
+    database, session, _, _ = _database(
+        monkeypatch,
+        admission=callback,
+    )
+    with pytest.raises(
+        reconciliation.SchemaReconciliationError,
+        match="schema_reconciliation_database_admission_invalid",
+    ):
+        with database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ):
+            pytest.fail("scope opened")
+    assert "BEGIN ISOLATION LEVEL SERIALIZABLE" not in session.queries
+    assert session.closed is True
+
+
+@pytest.mark.parametrize(
+    ("column", "error_code"),
+    tuple(database_module._AUTHORITY_PREFLIGHT_FAILURE_CODES.items()),
+)
+def test_each_authority_invariant_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    column: str,
+    error_code: str,
+) -> None:
+    _target, plan = _target_and_plan()
+    session = _ExecutorSession(plan, authority_failure=column)
+    database, _, _, _ = _database(monkeypatch, session=session)
+    with pytest.raises(reconciliation.SchemaReconciliationError, match=error_code):
+        with database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ):
+            pytest.fail("scope opened")
+    assert "ROLLBACK" in session.queries
+
+
+def test_only_missing_provider_edge_is_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _target, plan = _target_and_plan()
+    session = _ExecutorSession(
+        plan,
+        stabilization_failures=(("provider_executor_edge_exact",), ()),
+    )
+    sleeps: list[float] = []
+    database, _, _, _ = _database(
+        monkeypatch,
+        initial_target=True,
+        session=session,
+        sleep=sleeps.append,
+    )
+    with database.transaction(
+        advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+    ) as transaction:
+        transaction.lock_canonical_truth()
+    assert sleeps == [database_module._ROLE_GRAPH_STABILIZATION_INTERVAL_SECONDS]
+
+
+def test_unsafe_authority_drift_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _target, plan = _target_and_plan()
+    session = _ExecutorSession(
+        plan,
+        stabilization_failures=(("control_schema_acl_surface_exact",),),
+    )
+    database, _, _, _ = _database(
+        monkeypatch,
+        session=session,
+        sleep=lambda _seconds: pytest.fail("unsafe drift retried"),
+    )
+    with pytest.raises(
+        reconciliation.SchemaReconciliationError,
+        match="schema_reconciliation_authority_control_schema_acl_surface_exact",
+    ):
+        with database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ):
+            pytest.fail("scope opened")
+
+
+def test_postflight_authority_drift_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _target, plan = _target_and_plan()
+    session = _ExecutorSession(
+        plan,
+        postflight_failure="temporary_executor_has_zero_shared_dependencies",
+    )
+    database, _, _, _ = _database(monkeypatch, session=session)
+    with pytest.raises(
+        reconciliation.SchemaReconciliationError,
+        match="schema_reconciliation_authority_preflight_changed",
+    ):
+        with database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ) as transaction:
+            transaction.lock_canonical_truth()
+    assert "ROLLBACK" in session.queries
+
+
+def test_non_boolean_authority_receipt_does_not_reflect_server_value() -> None:
+    result = QueryResult(
+        database_module._AUTHORITY_OPEN_RECEIPT_COLUMNS,
+        (("secret-server-value",) * len(database_module._AUTHORITY_OPEN_RECEIPT_COLUMNS),),
+        "SELECT 1",
+    )
+    with pytest.raises(
+        database_module.PostgresProtocolError,
+        match="schema_reconciliation_database_authority_preflight_invalid",
+    ) as raised:
+        database_module._require_authority_preflight_receipt(result)
+    assert "secret-server-value" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "required_fragment",
+    (
+        "owner_role.rolconnlimit = -1",
+        "writer_role.rolvaliduntil IS NULL",
+        "objsubid = 0",
+        "deptype = 'a' AND objsubid = 0",
+        "executor_shared_dependencies",
+        "dbid = 0",
+        "has_database_privilege",
+        "managed_actual_database_acl",
+        "managed_expected_database_acl",
+        "managed_cloudsqladmin_exception",
+        "database.datname = 'cloudsqladmin'",
+        "cloudsqladmin,muncho_canary_brain,postgres",
+        "cloudsqladmin,muncho_canary_brain,postgres,template1",
+        "connectable_database_inventory_exact",
+        "connectable_non_template_database_inventory_exact",
+        "actual_control_schema_acl",
+        "expected_control_schema_acl",
+        "actual_control_routine_acl",
+        "expected_control_routine_acl",
+        "pg_catalog.pg_constraint",
+        "pg_catalog.pg_extension",
+        "pg_catalog.pg_default_acl",
+        "pg_catalog.pg_publication_namespace",
+        "control_namespace_other_object_inventory_empty",
+        "temporary_executor_has_zero_shared_dependencies",
+        "routeback_helper_name_inventory_bounded",
+        "proargtypes[0]",
+    ),
+)
+def test_active_authority_sql_binds_hardened_surface(
+    required_fragment: str,
+) -> None:
+    assert required_fragment in database_module._AUTHORITY_OPEN_RECEIPT_SQL
+
+
+def test_active_authority_requires_prepared_transactions_disabled_and_empty() -> None:
+    sql = database_module._AUTHORITY_OPEN_RECEIPT_SQL
+    assert "current_setting('max_prepared_transactions')::integer = 0" in sql
+    assert "NOT EXISTS (SELECT 1 FROM pg_catalog.pg_prepared_xacts)" in sql
+
+
+def test_authority_helper_identity_does_not_require_schema_usage() -> None:
+    active_sql = database_module._AUTHORITY_OPEN_RECEIPT_SQL
+    post_delete_sql = database_module._post_delete_authority_absence_sql(
+        EXECUTOR_LOGIN
+    )
+    for sql in (active_sql, post_delete_sql):
+        assert "to_regprocedure" not in sql
+        assert "prokind = 'f' AND pronargs = 1" in sql
+        assert "proargtypes[0]" in sql
+        assert "argument_type.typname = 'jsonb'" in sql
+
+
+def test_active_authority_rejects_executor_sessions_cross_database() -> None:
+    sql = database_module._AUTHORITY_OPEN_RECEIPT_SQL
+    assert "activity.usesysid = temporary_login.oid" in sql
+    assert "activity.pid <> pg_catalog.pg_backend_pid()" in sql
+
+
+def test_verified_cloud_shape_database_inventory_is_exact_and_fail_closed() -> None:
+    non_template_shape = (
+        "cloudsqladmin",
+        "muncho_canary_brain",
+        "postgres",
+    )
+    all_connectable_shape = (*non_template_shape, "template1")
+    active_sql = database_module._AUTHORITY_OPEN_RECEIPT_SQL
+    post_delete_sql = database_module._post_delete_authority_absence_sql(
+        EXECUTOR_LOGIN
+    )
+    for expected_inventory in (
+        ",".join(sorted(non_template_shape)),
+        ",".join(sorted(all_connectable_shape)),
+    ):
+        assert expected_inventory in active_sql
+        assert expected_inventory in post_delete_sql
+    for sql, end_marker in (
+        (active_sql, "AS executor_schema_acl_exact"),
+        (post_delete_sql, "AS routeback_helper_name_inventory_exact"),
+    ):
+        effective_scan = sql.split(
+            "AS connectable_non_template_database_inventory_exact,", 1
+        )[1].split(end_marker, 1)[0]
+        assert "WHERE database.datallowconn\n" in effective_scan
+        assert "WHERE database.datallowconn AND NOT database.datistemplate" not in (
+            effective_scan
+        )
+
+    values = ["t"] * len(database_module._AUTHORITY_OPEN_RECEIPT_COLUMNS)
+    values[
+        database_module._AUTHORITY_OPEN_RECEIPT_COLUMNS.index(
+            "connectable_database_inventory_exact"
+        )
+    ] = "f"
+    result = QueryResult(
+        database_module._AUTHORITY_OPEN_RECEIPT_COLUMNS,
+        (tuple(values),),
+        "SELECT 1",
+    )
+    with pytest.raises(
+        reconciliation.SchemaReconciliationError,
+        match=(
+            "schema_reconciliation_authority_"
+            "connectable_database_inventory_exact"
+        ),
+    ):
+        database_module._require_authority_preflight_receipt(result)
+
+
+def test_constructor_rejects_old_admin_or_owner_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target, plan = _target_and_plan()
+    writer = _config(database_module.WRITER_LOGIN)
+    with pytest.raises(
+        reconciliation.SchemaReconciliationError,
+        match="schema_reconciliation_database_authority_invalid",
+    ):
+        database_module.PostgresSchemaReconciliationDatabase(
+            plan=plan,
+            target=target,
+            executor_config=_config("muncho_canary_admin_" + "a" * 16),
+            writer_config=writer,
+            managed_hba_receipt=_managed_hba(writer),
+            executor_managed_hba_receipt=_managed_hba(
+                _config("muncho_canary_admin_" + "a" * 16)
+            ),
+            pre_begin_admission=lambda: None,
+            _session_factory=lambda _config: pytest.fail("opened"),
+        )
+
+
+@pytest.mark.parametrize("drift", ("user", "certificate"))
+def test_constructor_requires_executor_specific_managed_hba_proof(
+    drift: str,
+) -> None:
+    target, plan = _target_and_plan()
+    executor = _config(EXECUTOR_LOGIN)
+    writer = _config(database_module.WRITER_LOGIN)
+    executor_hba = (
+        _managed_hba(writer)
+        if drift == "user"
+        else _managed_hba(executor, certificate_sha256="f" * 64)
+    )
+
+    with pytest.raises(
+        reconciliation.SchemaReconciliationError,
+        match="schema_reconciliation_database_hba_receipt_invalid",
+    ):
+        database_module.PostgresSchemaReconciliationDatabase(
+            plan=plan,
+            target=target,
+            executor_config=executor,
+            writer_config=writer,
+            managed_hba_receipt=_managed_hba(writer),
+            executor_managed_hba_receipt=executor_hba,
+            pre_begin_admission=lambda: None,
+            _session_factory=lambda _config: pytest.fail("opened"),
+        )
+
+
+class _WriterSession:
     def __init__(
         self,
         *,
-        ping_response: object | None = None,
-        username: str = reconciliation_db.WRITER_LOGIN,
-        tls_peer_certificate_sha256: str = "e" * 64,
         authority_flags: tuple[str, ...] | None = None,
+        ping_response: Any | None = None,
+        username: str = database_module.WRITER_LOGIN,
+        tls_peer: str = "e" * 64,
     ) -> None:
         self.username = username
-        self.tls_peer_certificate_sha256 = tls_peer_certificate_sha256
+        self.tls_peer_certificate_sha256 = tls_peer
+        self.authority_flags = authority_flags or (
+            ("t",) * len(database_module._POST_DELETE_AUTHORITY_COLUMNS)
+        )
         self.ping_response = (
-            reconciliation_db._POST_DELETE_WRITER_PING_RESPONSE
+            database_module._POST_DELETE_WRITER_PING_RESPONSE
             if ping_response is None
             else ping_response
         )
-        self.queries: list[tuple[str, int]] = []
+        self.queries: list[str] = []
         self.closed = False
         self.transaction_open = False
-        self.authority_flags = authority_flags or (
-            ("t",) * len(reconciliation_db._POST_DELETE_AUTHORITY_COLUMNS)
-        )
 
     def query(self, sql: str, *, maximum_rows: int) -> QueryResult:
-        self.queries.append((sql, maximum_rows))
+        self.queries.append(sql)
         if sql == "BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY":
             self.transaction_open = True
             return QueryResult((), (), "BEGIN")
-        if sql.startswith("SET LOCAL "):
+        if sql.startswith("SET "):
             return QueryResult((), (), "SET")
-        if sql.startswith("SELECT pg_catalog.pg_advisory_xact_lock_shared("):
+        if sql.startswith("SELECT pg_catalog.pg_advisory_lock_shared("):
+            self.session_lock_held = True
             return QueryResult(
-                ("pg_advisory_xact_lock_shared",),
-                (("",),),
+                ("pg_advisory_lock_shared",), (("",),), "SELECT 1"
+            )
+        if sql.startswith("SELECT pg_catalog.pg_advisory_unlock_shared("):
+            was_held = self.session_lock_held
+            self.session_lock_held = False
+            return QueryResult(
+                ("pg_advisory_unlock_shared",),
+                (("t" if was_held else "f",),),
                 "SELECT 1",
             )
-        if sql.startswith(
-            "SELECT CURRENT_USER = 'muncho_canary_writer_login'"
-        ):
+        if sql.startswith("WITH executor AS ("):
             return QueryResult(
-                reconciliation_db._POST_DELETE_AUTHORITY_COLUMNS,
+                database_module._POST_DELETE_AUTHORITY_COLUMNS,
                 (self.authority_flags,),
                 "SELECT 1",
             )
-        if sql == reconciliation_db._POST_DELETE_WRITER_PING_SQL:
+        if sql == database_module._POST_DELETE_WRITER_PING_SQL:
             return QueryResult(
                 ("writer_ping_response",),
                 ((json.dumps(self.ping_response),),),
@@ -340,1022 +873,171 @@ class _FreshWriterSession:
         if sql == "ROLLBACK":
             self.transaction_open = False
             return QueryResult((), (), "ROLLBACK")
-        raise AssertionError(f"unexpected SQL: {sql[:80]}")
+        raise AssertionError(f"unexpected SQL: {sql[:120]}")
 
     def close(self) -> None:
         self.transaction_open = False
         self.closed = True
 
 
-def _database(
+def _collect_post_delete(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    session: _FakeSession | None = None,
-    stabilization_sleep: Callable[[float], None] = time.sleep,
+    session: _WriterSession | None = None,
 ) -> tuple[
-    reconciliation_db.PostgresSchemaReconciliationDatabase,
-    _FakeSession,
-    reconciliation.SchemaContract,
+    database_module.PostDeleteTerminalReceipt,
+    _WriterSession,
     reconciliation.SchemaReconciliationPlan,
-    list[dict[str, object]],
 ]:
     target, plan = _target_and_plan()
-    writer = _config(reconciliation_db.WRITER_LOGIN)
-    admin = _config("muncho_canary_admin_aaaaaaaaaaaaaaaa")
-    active_session = session or _FakeSession(plan)
-    observations: list[dict[str, object]] = []
-
-    def collect(_session, **kwargs):
-        observations.append(kwargs)
-        return target
-
-    monkeypatch.setattr(reconciliation_db, "collect_schema_contract", collect)
-    database = reconciliation_db.PostgresSchemaReconciliationDatabase(
-        plan=plan,
-        target=target,
-        admin_config=admin,
-        writer_config=writer,
-        managed_hba_receipt=_receipt(writer),
-        _session_factory=lambda config: (
-            active_session
-            if config == admin
-            else (_ for _ in ()).throw(AssertionError("wrong config"))
-        ),
-        _stabilization_sleep=stabilization_sleep,
-    )
-    return database, active_session, target, plan, observations
-
-
-def _plan_with_mutation(
-    plan: reconciliation.SchemaReconciliationPlan,
-    mutation_sql: str,
-) -> reconciliation.SchemaReconciliationPlan:
-    value = dict(plan.value)
-    value["mutation_sql_sha256"] = hashlib.sha256(
-        mutation_sql.encode("utf-8")
-    ).hexdigest()
-    unsigned = {key: item for key, item in value.items() if key != "plan_sha256"}
-    value["plan_sha256"] = reconciliation._sha256_json(unsigned)
-    return reconciliation.SchemaReconciliationPlan.from_mapping(
-        value,
-        mutation_sql=mutation_sql,
-    )
-
-
-def test_transaction_proves_api_authority_and_restored_trampoline_before_commit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    database, session, target, plan, observations = _database(monkeypatch)
-
-    with database.transaction(
-        advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-    ) as transaction:
-        transaction.lock_canonical_truth()
-        assert transaction.observe_contract() == target
-        assert transaction.observe_canonical_truth() == _truth_receipt()
-        transaction.execute_sql(plan.mutation_sql)
-        assert transaction.observe_contract() == target
-        assert transaction.observe_canonical_truth() == _truth_receipt()
-
-    sql = [item[0] for item in session.queries]
-    session_lock = next(
-        index
-        for index, statement in enumerate(sql)
-        if statement.startswith("SELECT pg_catalog.pg_advisory_lock(")
-    )
-    begin = sql.index("BEGIN ISOLATION LEVEL SERIALIZABLE")
-    authority_open_receipts = [
-        index
-        for index, statement in enumerate(sql)
-        if statement == reconciliation_db._AUTHORITY_OPEN_RECEIPT_SQL
-    ]
-    assert len(authority_open_receipts) == 3
-    (
-        authority_stabilization,
-        authority_preflight,
-        authority_open_receipt,
-    ) = authority_open_receipts
-    authority_open = sql.index(session.segments.authority_open)
-    table_lock = sql.index(reconciliation_db._CANONICAL_DATA_LOCK_SQL)
-    xact_lock = next(
-        index
-        for index, statement in enumerate(sql)
-        if statement.startswith("SELECT pg_catalog.pg_advisory_xact_lock(")
-    )
-    truths = [
-        index
-        for index, statement in enumerate(sql)
-        if statement == reconciliation_db._CANONICAL_TRUTH_SQL
-    ]
-    mutation_body = sql.index(session.segments.body)
-    authority_close = sql.index(session.segments.authority_close)
-    authority_close_receipt = sql.index(
-        reconciliation_db._AUTHORITY_CLOSE_RECEIPT_SQL
-    )
-    commit = sql.index("COMMIT")
-    unlock = next(
-        index
-        for index, statement in enumerate(sql)
-        if statement.startswith("SELECT pg_catalog.pg_advisory_unlock(")
-    )
-    assert len(truths) == 2
-    assert (
-        session_lock
-        < authority_stabilization
-        < begin
-        < authority_preflight
-        < authority_open
-        < authority_open_receipt
-        < table_lock
-        < xact_lock
-        < truths[0]
-        < mutation_body
-        < truths[1]
-        < authority_close
-        < authority_close_receipt
-        < commit
-        < unlock
-    )
-    assert session.closed
-    assert session.authority_present is True
-    assert session.committed_with_authority is True
-    assert observations[0]["config"].user == reconciliation_db.WRITER_LOGIN
-    assert observations[0]["subject_user"] == reconciliation_db.WRITER_LOGIN
-    assert observations[0]["allow_missing_helper"] is True
-    assert dataclasses.asdict(observations[0]["owner_membership_projection"]) == {
-        "owner_role": "canonical_brain_migration_owner",
-        "writer_role": "canonical_brain_writer",
-        "session_user": "muncho_canary_admin_aaaaaaaaaaaaaaaa",
-    }
-
-
-@pytest.mark.parametrize("failed_index", (0, 1, 2))
-def test_quarantine_identity_acl_inventory_and_reachability_fail_closed(
-    monkeypatch: pytest.MonkeyPatch,
-    failed_index: int,
-) -> None:
-    _, plan = _target_and_plan()
-    session = _FakeSession(plan)
-    flags = ["t", "t", "t"]
-    flags[failed_index] = "f"
-    session.quarantine_flags = tuple(flags)
-    database, _, _, _, _ = _database(monkeypatch, session=session)
-
-    with pytest.raises(
-        reconciliation_db.PostgresProtocolError,
-        match="schema_reconciliation_quarantine_anchor_invalid",
-    ):
-        with database.transaction(
-            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-        ) as transaction:
-            transaction.lock_canonical_truth()
-            transaction.observe_canonical_truth()
-
-    assert session.closed is True
-    assert any(statement == "ROLLBACK" for statement, _ in session.queries)
-
-
-def test_quarantine_anchor_oid_and_acl_are_bound_into_canonical_truth(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    database, session, _, _, _ = _database(monkeypatch)
-
-    with database.transaction(
-        advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-    ) as transaction:
-        transaction.lock_canonical_truth()
-        before = transaction.observe_canonical_truth()
-        changed = [dict(item) for item in session.quarantine_receipts]
-        changed[1]["object_oid"] += 1
-        changed[2]["acl_sha256"] = "0" * 64
-        session.quarantine_receipts = changed
-        after = transaction.observe_canonical_truth()
-
-    assert after != before
-    assert after.quarantine_anchors_sha256 != before.quarantine_anchors_sha256
-    assert after.sha256 != before.sha256
-
-
-def test_quarantine_anchor_projection_rejects_missing_or_reordered_objects(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _, plan = _target_and_plan()
-    session = _FakeSession(plan)
-    session.quarantine_receipts = list(
-        reversed(session.quarantine_receipts)
-    )[:-1]
-    database, _, _, _, _ = _database(monkeypatch, session=session)
-
-    with pytest.raises(
-        reconciliation.SchemaReconciliationError,
-        match="schema_reconciliation_canonical_truth_invalid",
-    ):
-        with database.transaction(
-            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-        ) as transaction:
-            transaction.lock_canonical_truth()
-            transaction.observe_canonical_truth()
-
-
-def test_transaction_executes_only_the_byte_identical_plan_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    database, session, _, plan, _ = _database(monkeypatch)
-
-    with database.transaction(
-        advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-    ) as transaction:
-        transaction.lock_canonical_truth()
-        with pytest.raises(
-            reconciliation.SchemaReconciliationError,
-            match="schema_reconciliation_database_sql_not_sealed",
-        ):
-            transaction.execute_sql(plan.mutation_sql + "\n")
-        transaction.execute_sql(plan.mutation_sql)
-        with pytest.raises(
-            reconciliation.SchemaReconciliationError,
-            match="schema_reconciliation_database_apply_repeated",
-        ):
-            transaction.execute_sql(plan.mutation_sql)
-
-    sql = [statement for statement, _ in session.queries]
-    assert plan.mutation_sql not in sql
-    assert sql.count(session.segments.authority_open) == 1
-    assert sql.count(session.segments.body) == 1
-    assert sql.count(session.segments.authority_close) == 1
-    assert session.segments.mutation_sql == plan.mutation_sql
-    assert hashlib.sha256(session.segments.mutation_sql.encode()).hexdigest() == (
-        plan.value["mutation_sql_sha256"]
-    )
-    assert session.authority_present is True
-    assert session.committed_with_authority is True
-
-
-def test_transaction_failure_never_commits_and_releases_by_rollback_or_close(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    database, session, _, _, _ = _database(monkeypatch)
-
-    with pytest.raises(RuntimeError, match="injected failure"):
-        with database.transaction(
-            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-        ) as transaction:
-            transaction.lock_canonical_truth()
-            raise RuntimeError("injected failure")
-
-    sql = [item[0] for item in session.queries]
-    assert "COMMIT" not in sql
-    assert "ROLLBACK" in sql
-    assert any(
-        statement.startswith("SELECT pg_catalog.pg_advisory_unlock(")
-        for statement in sql
-    )
-    assert session.closed
-    assert session.authority_present is True
-    assert session.body_present is False
-    assert session.committed_with_authority is False
-
-
-def test_transaction_rolls_back_sealed_body_without_mutating_api_authority(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    database, session, _, plan, _ = _database(monkeypatch)
-
-    with pytest.raises(RuntimeError, match="post-apply failure"):
-        with database.transaction(
-            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-        ) as transaction:
-            transaction.lock_canonical_truth()
-            transaction.execute_sql(plan.mutation_sql)
-            raise RuntimeError("post-apply failure")
-
-    sql = [item[0] for item in session.queries]
-    assert session.segments.authority_open in sql
-    assert session.segments.body in sql
-    assert session.segments.authority_close not in sql
-    assert "COMMIT" not in sql
-    assert "ROLLBACK" in sql
-    assert session.authority_present is True
-    assert session.body_present is False
-    assert session.committed_with_authority is False
-    assert session.closed
-
-
-def test_exact_target_scope_commits_no_helper_or_role_mutation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    database, session, target, _, _ = _database(monkeypatch)
-
-    with database.transaction(
-        advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-    ) as transaction:
-        transaction.lock_canonical_truth()
-        assert transaction.observe_contract() == target
-        assert transaction.observe_canonical_truth() == _truth_receipt()
-
-    sql = [item[0] for item in session.queries]
-    assert session.segments.authority_open in sql
-    assert session.segments.body not in sql
-    assert session.segments.authority_close in sql
-    assert "COMMIT" in sql
-    assert "ROLLBACK" not in sql
-    assert session.authority_present is True
-    assert session.committed_with_authority is True
-    assert session.body_present is False
-    assert session.closed
-
-
-def test_exact_target_authority_close_failure_rolls_back_net_zero(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _, plan = _target_and_plan()
-    session = _FakeSession(plan, close_receipt_valid=False)
-    database, _, target, _, _ = _database(monkeypatch, session=session)
-
-    with pytest.raises(
-        reconciliation_db.PostgresProtocolError,
-        match="schema_reconciliation_database_authority_survived",
-    ):
-        with database.transaction(
-            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-        ) as transaction:
-            transaction.lock_canonical_truth()
-            assert transaction.observe_contract() == target
-
-    sql = [item[0] for item in session.queries]
-    assert session.segments.authority_open in sql
-    assert session.segments.body not in sql
-    assert session.segments.authority_close in sql
-    assert "COMMIT" not in sql
-    assert "ROLLBACK" in sql
-    assert session.authority_present is True
-    assert session.body_present is False
-    assert session.committed_with_authority is False
-    assert session.closed
-
-
-@pytest.mark.parametrize("receipt", ("open", "close"))
-def test_transaction_rejects_unverified_api_authority_and_rolls_back(
-    monkeypatch: pytest.MonkeyPatch,
-    receipt: str,
-) -> None:
-    target, plan = _target_and_plan()
-    session = _FakeSession(
-        plan,
-        open_receipt_valid=receipt != "open",
-        close_receipt_valid=receipt != "close",
-    )
-    database, _, _, _, _ = _database(monkeypatch, session=session)
-
-    expected_error = (
-        reconciliation.SchemaReconciliationError
-        if receipt == "open"
-        else reconciliation_db.PostgresProtocolError
-    )
-    expected_code = (
-        reconciliation_db._AUTHORITY_PREFLIGHT_FAILURE_CODES[
-            "current_user_is_session_user"
-        ]
-        if receipt == "open"
-        else "schema_reconciliation_database_authority_survived"
-    )
-    with pytest.raises(expected_error, match=expected_code):
-        with database.transaction(
-            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-        ) as transaction:
-            if receipt == "open":
-                raise AssertionError("scope opened with invalid authority")
-            transaction.lock_canonical_truth()
-            transaction.execute_sql(plan.mutation_sql)
-
-    assert session.committed_with_authority is False
-    assert session.authority_present is True
-    assert session.closed
-
-
-@pytest.mark.parametrize(
-    ("column", "error_code"),
-    tuple(reconciliation_db._AUTHORITY_PREFLIGHT_FAILURE_CODES.items()),
-)
-def test_transaction_names_first_failed_authority_preflight_invariant(
-    monkeypatch: pytest.MonkeyPatch,
-    column: str,
-    error_code: str,
-) -> None:
-    target, plan = _target_and_plan()
-    session = _FakeSession(plan, open_preflight_failure=column)
-    database, _, _, _, _ = _database(monkeypatch, session=session)
-
-    with pytest.raises(reconciliation.SchemaReconciliationError, match=error_code):
-        with database.transaction(
-            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-        ):
-            raise AssertionError("scope opened with failed authority preflight")
-
-    sql = [item[0] for item in session.queries]
-    assert session.segments.authority_open not in sql
-    assert "COMMIT" not in sql
-    assert "ROLLBACK" in sql
-    assert session.closed
-
-
-def test_transaction_stabilizes_only_missing_role_edges_before_begin(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _, plan = _target_and_plan()
-    missing_owner_edge = (
-        "api_role_graph_forward_closure_exact",
-        "api_role_graph_owner_edge_present",
-        "api_role_graph_edge_count_exact",
-        "api_role_graph_distinct_roleids_exact",
-        "migration_owner_member",
-        "migration_owner_inherited",
-    )
-    session = _FakeSession(
-        plan,
-        stabilization_failures=(missing_owner_edge, ()),
-    )
-    sleeps: list[float] = []
-    database, _, _, _, _ = _database(
-        monkeypatch,
-        session=session,
-        stabilization_sleep=lambda seconds: sleeps.append(seconds),
-    )
-
-    with database.transaction(
-        advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-    ) as transaction:
-        transaction.lock_canonical_truth()
-
-    sql = [item[0] for item in session.queries]
-    begin = sql.index("BEGIN ISOLATION LEVEL SERIALIZABLE")
-    receipt_indexes = [
-        index
-        for index, statement in enumerate(sql)
-        if statement == reconciliation_db._AUTHORITY_OPEN_RECEIPT_SQL
-    ]
-    assert len(receipt_indexes) == 4
-    assert all(index < begin for index in receipt_indexes[:2])
-    assert begin < receipt_indexes[2] < sql.index(session.segments.authority_open)
-    assert sleeps == [
-        reconciliation_db._ROLE_GRAPH_STABILIZATION_INTERVAL_SECONDS
-    ]
-    assert session.segments.body not in sql
-    assert "COMMIT" in sql
-    assert session.closed
-
-
-def test_missing_role_edge_stabilization_times_out_without_mutation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _, plan = _target_and_plan()
-    missing_writer_edge = (
-        "api_role_graph_forward_closure_exact",
-        "api_role_graph_writer_edge_present",
-        "api_role_graph_edge_count_exact",
-        "api_role_graph_distinct_roleids_exact",
-        "writer_member_and_inherited",
-    )
-    session = _FakeSession(
-        plan,
-        stabilization_failures=(missing_writer_edge,),
-    )
-    sleeps: list[float] = []
+    writer = _config(database_module.WRITER_LOGIN)
+    hba = _managed_hba(writer)
+    active = session or _WriterSession()
     monkeypatch.setattr(
-        reconciliation_db,
-        "_ROLE_GRAPH_STABILIZATION_ATTEMPTS",
-        3,
-    )
-    database, _, _, _, _ = _database(
-        monkeypatch,
-        session=session,
-        stabilization_sleep=lambda seconds: sleeps.append(seconds),
-    )
-
-    with pytest.raises(
-        reconciliation.SchemaReconciliationError,
-        match=(
-            "schema_reconciliation_authority_role_graph_"
-            "stabilization_timeout"
-        ),
-    ):
-        with database.transaction(
-            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-        ):
-            raise AssertionError("scope opened after stabilization timeout")
-
-    sql = [item[0] for item in session.queries]
-    assert sql.count(reconciliation_db._AUTHORITY_OPEN_RECEIPT_SQL) == 3
-    assert sleeps == [
-        reconciliation_db._ROLE_GRAPH_STABILIZATION_INTERVAL_SECONDS,
-        reconciliation_db._ROLE_GRAPH_STABILIZATION_INTERVAL_SECONDS,
-    ]
-    assert "BEGIN ISOLATION LEVEL SERIALIZABLE" not in sql
-    assert session.segments.authority_open not in sql
-    assert session.segments.body not in sql
-    assert session.segments.authority_close not in sql
-    assert "COMMIT" not in sql
-    assert "ROLLBACK" not in sql
-    assert any(
-        statement.startswith("SELECT pg_catalog.pg_advisory_unlock(")
-        for statement in sql
-    )
-    assert session.closed
-
-
-@pytest.mark.parametrize(
-    ("failures", "error_code"),
-    (
-        (
-            ("api_role_graph_cloudsqlsuperuser_absent",),
-            "schema_reconciliation_authority_cloudsqlsuperuser_membership_present",
-        ),
-        (
-            (
-                "api_role_graph_forward_closure_no_unexpected_roles",
-                "api_role_graph_forward_closure_exact",
-            ),
-            "schema_reconciliation_authority_role_graph_"
-            "forward_closure_unexpected",
-        ),
-        (
-            ("api_role_graph_forward_closure_exact",),
-            "schema_reconciliation_authority_role_graph_"
-            "forward_closure_inexact",
-        ),
-        (
-            ("api_role_graph_member_identity_exact",),
-            "schema_reconciliation_authority_role_graph_member_invalid",
-        ),
-        (
-            ("api_role_graph_granted_roles_exact",),
-            "schema_reconciliation_authority_role_graph_granted_role_invalid",
-        ),
-        (
-            ("api_role_graph_grantor_exact",),
-            "schema_reconciliation_authority_role_graph_grantor_invalid",
-        ),
-        (
-            ("api_role_graph_admin_options_false",),
-            "schema_reconciliation_authority_role_graph_admin_option_present",
-        ),
-        (
-            ("api_role_graph_inherit_options_true",),
-            "schema_reconciliation_authority_role_graph_inherit_option_invalid",
-        ),
-        (
-            ("api_role_graph_set_options_false",),
-            "schema_reconciliation_authority_role_graph_set_option_present",
-        ),
-        (
-            (
-                "api_role_graph_edge_count_not_overbound",
-                "api_role_graph_edge_count_exact",
-            ),
-            "schema_reconciliation_authority_role_graph_edge_count_overbound",
-        ),
-        (
-            ("migration_owner_member",),
-            "schema_reconciliation_authority_owner_membership_missing",
-        ),
-    ),
-)
-def test_unsafe_or_non_missing_role_graph_shape_fails_without_retry(
-    monkeypatch: pytest.MonkeyPatch,
-    failures: tuple[str, ...],
-    error_code: str,
-) -> None:
-    _, plan = _target_and_plan()
-    session = _FakeSession(
-        plan,
-        stabilization_failures=(failures,),
-    )
-    database, _, _, _, _ = _database(
-        monkeypatch,
-        session=session,
-        stabilization_sleep=lambda _seconds: pytest.fail(
-            "unsafe role graph was retried"
-        ),
-    )
-
-    with pytest.raises(reconciliation.SchemaReconciliationError, match=error_code):
-        with database.transaction(
-            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-        ):
-            raise AssertionError("scope opened with unsafe role graph")
-
-    sql = [item[0] for item in session.queries]
-    assert sql.count(reconciliation_db._AUTHORITY_OPEN_RECEIPT_SQL) == 1
-    assert "BEGIN ISOLATION LEVEL SERIALIZABLE" not in sql
-    assert session.segments.authority_open not in sql
-    assert session.segments.body not in sql
-    assert "COMMIT" not in sql
-    assert "ROLLBACK" not in sql
-    assert session.closed
-
-
-def test_transaction_names_post_open_authority_drift_and_rolls_back(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    target, plan = _target_and_plan()
-    column = "api_role_graph_set_options_false"
-    session = _FakeSession(plan, open_postflight_failure=column)
-    database, _, _, _, _ = _database(monkeypatch, session=session)
-
-    with pytest.raises(
-        reconciliation.SchemaReconciliationError,
-        match="schema_reconciliation_authority_preflight_changed",
-    ):
-        with database.transaction(
-            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-        ):
-            raise AssertionError("scope opened with post-open authority drift")
-
-    sql = [item[0] for item in session.queries]
-    assert session.segments.authority_open in sql
-    assert "COMMIT" not in sql
-    assert "ROLLBACK" in sql
-    assert session.closed
-
-
-def test_transaction_maps_only_fixed_authority_server_preflight_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    target, plan = _target_and_plan()
-    session = _FakeSession(
-        plan,
-        authority_open_server_preflight_failure=True,
-    )
-    database, _, _, _, _ = _database(monkeypatch, session=session)
-
-    with pytest.raises(
-        reconciliation.SchemaReconciliationError,
-        match="schema_reconciliation_authority_preflight_changed",
-    ) as raised:
-        with database.transaction(
-            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-        ):
-            raise AssertionError("scope opened after server preflight failure")
-
-    assert raised.value.__cause__ is None
-    assert reconciliation_db._AUTHORITY_OPEN_PREFLIGHT_SERVER_MESSAGE not in str(
-        raised.value
-    )
-    sql = [item[0] for item in session.queries]
-    assert "COMMIT" not in sql
-    assert "ROLLBACK" in sql
-    assert session.closed
-
-
-def test_authority_preflight_rejects_non_boolean_receipt_without_reflection() -> None:
-    result = QueryResult(
-        reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS,
-        (
-            tuple(
-                "secret-server-value"
-                for _column in reconciliation_db._AUTHORITY_OPEN_RECEIPT_COLUMNS
-            ),
-        ),
-        "SELECT 1",
-    )
-
-    with pytest.raises(
-        reconciliation_db.PostgresProtocolError,
-        match="schema_reconciliation_database_authority_preflight_invalid",
-    ) as raised:
-        reconciliation_db._require_authority_preflight_receipt(result)
-
-    assert "secret-server-value" not in str(raised.value)
-
-
-@pytest.mark.parametrize("tamper", ("reordered", "split"))
-def test_constructor_rejects_reordered_or_split_tampered_plan_sql(
-    tamper: str,
-) -> None:
-    target, plan = _target_and_plan()
-    segments = reconciliation_db._split_sealed_mutation_sql(plan)
-    if tamper == "reordered":
-        mutation_sql = (
-            segments.body
-            + "\n\n"
-            + segments.authority_open
-            + "\n\n"
-            + segments.authority_close
-        )
-    else:
-        mutation_sql = plan.mutation_sql.replace(
-            "\n\n" + reconciliation_db._MUTATION_BODY_START,
-            "\n" + reconciliation_db._MUTATION_BODY_START,
-            1,
-        )
-    tampered = _plan_with_mutation(plan, mutation_sql)
-    writer = _config(reconciliation_db.WRITER_LOGIN)
-    admin = _config("muncho_canary_admin_aaaaaaaaaaaaaaaa")
-
-    with pytest.raises(
-        reconciliation.SchemaReconciliationError,
-        match="schema_reconciliation_database_sql_split_invalid",
-    ):
-        reconciliation_db.PostgresSchemaReconciliationDatabase(
-            plan=tampered,
-            target=target,
-            admin_config=admin,
-            writer_config=writer,
-            managed_hba_receipt=_receipt(writer),
-        )
-
-
-def test_constructor_and_session_reject_wrong_authority_identity(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    target, plan = _target_and_plan()
-    writer = _config(reconciliation_db.WRITER_LOGIN)
-    admin = _config("muncho_canary_admin_aaaaaaaaaaaaaaaa")
-    receipt = _receipt(writer)
-
-    with pytest.raises(
-        reconciliation.SchemaReconciliationError,
-        match="schema_reconciliation_database_authority_invalid",
-    ):
-        reconciliation_db.PostgresSchemaReconciliationDatabase(
-            plan=plan,
-            target=target,
-            admin_config=dataclasses.replace(admin, port=5433),
-            writer_config=writer,
-            managed_hba_receipt=receipt,
-        )
-
-    wrong = _FakeSession(plan, username="muncho_canary_admin_bbbbbbbbbbbbbbbb")
-    database, _, _, _, _ = _database(monkeypatch, session=wrong)
-    with pytest.raises(
-        reconciliation.SchemaReconciliationError,
-        match="schema_reconciliation_database_session_identity_invalid",
-    ):
-        with database.transaction(
-            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
-        ):
-            pass
-    assert wrong.closed
-
-
-def test_attestation_subject_and_hba_receipt_bind_to_writer_config() -> None:
-    writer = _config(reconciliation_db.WRITER_LOGIN)
-    other = dataclasses.replace(writer, user="different_writer")
-
-    with pytest.raises(
-        PrivilegeAttestationError,
-        match="attestation_subject_config_mismatch",
-    ):
-        _collect_privilege_attestation(
-            object(),
-            config=other,
-            policy=reconciliation._target_policy(_target_and_plan()[0].attestation),
-            managed_hba_receipt=_receipt(writer),
-            subject_user=reconciliation_db.WRITER_LOGIN,
-        )
-
-
-def test_post_delete_terminal_uses_fresh_writer_contract_and_exact_ping(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    target, plan = _target_and_plan()
-    writer = _config(reconciliation_db.WRITER_LOGIN)
-    managed_hba = _receipt(writer)
-    truth = _truth_receipt()
-    session = _FreshWriterSession()
-    observations: list[dict[str, object]] = []
-
-    def collect(_session, **kwargs):
-        observations.append(kwargs)
-        return target
-
-    monkeypatch.setattr(reconciliation_db, "collect_schema_contract", collect)
-    receipt = reconciliation_db.collect_post_delete_terminal_receipt(
-        plan=plan,
-        target=target,
-        temporary_login="muncho_canary_admin_aaaaaaaaaaaaaaaa",
-        writer_config=writer,
-        managed_hba_receipt=managed_hba,
-        pre_delete_canonical_truth=truth,
-        observed_at_unix=managed_hba.observed_at_unix,
-        _session_factory=lambda config: session,
-    )
-
-    assert receipt.writer_ping_verified is True
-    assert receipt.writer_ping_request_id == (
-        "schema-reconciliation-post-delete-terminal-v1"
-    )
-    assert receipt.writer_ping_response_sha256 == reconciliation._sha256_json(
-        reconciliation_db._POST_DELETE_WRITER_PING_RESPONSE
-    )
-    assert receipt.canonical_truth_observed is False
-    assert receipt.pre_delete_canonical_truth_receipt_sha256 == truth.sha256
-    assert session.closed is True
-    sql = [statement for statement, _ in session.queries]
-    assert sql.index(reconciliation_db._POST_DELETE_WRITER_PING_SQL) < sql.index(
-        "COMMIT"
-    )
-    assert observations == [
-        {
-            "config": writer,
-            "policy": reconciliation._target_policy(target.attestation),
-            "managed_hba_receipt": managed_hba,
-            "subject_user": reconciliation_db.WRITER_LOGIN,
-            "allow_missing_helper": False,
-        }
-    ]
-    assert reconciliation_db.parse_post_delete_terminal_receipt(
-        receipt.value
-    ) == receipt
-    assert reconciliation_db.validate_post_delete_terminal_receipt(
-        receipt.value,
-        plan=plan,
-        target=target,
-        temporary_login="muncho_canary_admin_aaaaaaaaaaaaaaaa",
-        managed_hba_receipt=managed_hba,
-        pre_delete_canonical_truth=truth,
-    ) == receipt
-
-
-def test_post_delete_terminal_rejects_ping_drift_and_closes_session(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    target, plan = _target_and_plan()
-    writer = _config(reconciliation_db.WRITER_LOGIN)
-    managed_hba = _receipt(writer)
-    session = _FreshWriterSession(
-        ping_response={
-            **reconciliation_db._POST_DELETE_WRITER_PING_RESPONSE,
-            "unexpected": True,
-        }
-    )
-    monkeypatch.setattr(
-        reconciliation_db,
+        database_module,
         "collect_schema_contract",
         lambda *_args, **_kwargs: target,
     )
+    receipt = database_module.collect_post_delete_terminal_receipt(
+        plan=plan,
+        target=target,
+        temporary_executor_login=EXECUTOR_LOGIN,
+        writer_config=writer,
+        managed_hba_receipt=hba,
+        pre_delete_canonical_truth=_truth(),
+        observed_at_unix=hba.observed_at_unix,
+        _session_factory=lambda config: (
+            active
+            if config == writer
+            else (_ for _ in ()).throw(AssertionError("wrong config"))
+        ),
+    )
+    return receipt, active, plan
 
-    with pytest.raises(
-        reconciliation_db.PostgresProtocolError,
-        match="schema_reconciliation_post_delete_writer_ping_invalid",
-    ):
-        reconciliation_db.collect_post_delete_terminal_receipt(
-            plan=plan,
-            target=target,
-            temporary_login="muncho_canary_admin_aaaaaaaaaaaaaaaa",
-            writer_config=writer,
-            managed_hba_receipt=managed_hba,
-            pre_delete_canonical_truth=_truth_receipt(),
-            observed_at_unix=managed_hba.observed_at_unix,
-            _session_factory=lambda config: session,
-        )
 
+def test_post_delete_terminal_proves_dormant_executor_and_writer_ping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt, session, plan = _collect_post_delete(monkeypatch)
+    assert receipt.temporary_executor_absent is True
+    assert receipt.temporary_executor_inventory_empty is True
+    assert receipt.prepared_transactions_disabled_and_empty is True
+    assert receipt.persistent_executor_memberships_empty is True
+    assert receipt.persistent_executor_owns_zero_objects_clusterwide is True
+    assert receipt.connectable_database_inventory_exact is True
+    assert receipt.connectable_non_template_database_inventory_exact is True
+    assert receipt.persistent_executor_database_effective_privileges_exact is True
+    assert receipt.routeback_helper_name_inventory_exact is True
+    assert receipt.control_schema_identity_acl_exact is True
+    assert receipt.control_namespace_other_object_inventory_empty is True
+    assert receipt.control_routine_identity_acl_exact is True
+    assert receipt.control_foundation_contract_sha256 == plan.value[
+        "control_foundation_contract_sha256"
+    ]
     assert session.closed is True
-    assert any(statement == "ROLLBACK" for statement, _ in session.queries)
+    assert "COMMIT" in session.queries
+    lock_index = next(
+        index
+        for index, sql in enumerate(session.queries)
+        if sql.startswith("SELECT pg_catalog.pg_advisory_lock_shared(")
+    )
+    begin_index = session.queries.index(
+        "BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY"
+    )
+    commit_index = session.queries.index("COMMIT")
+    unlock_index = next(
+        index
+        for index, sql in enumerate(session.queries)
+        if sql.startswith("SELECT pg_catalog.pg_advisory_unlock_shared(")
+    )
+    assert lock_index < begin_index < commit_index < unlock_index
+    assert session.session_lock_held is False
+
+
+def test_post_delete_shared_lock_wait_is_bounded_before_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BlockedWriterSession(_WriterSession):
+        def query(self, sql: str, *, maximum_rows: int) -> QueryResult:
+            if sql.startswith("SELECT pg_catalog.pg_advisory_lock_shared("):
+                self.queries.append(sql)
+                raise database_module.PostgresProtocolError(
+                    "database_error_sqlstate:55P03"
+                )
+            return super().query(sql, maximum_rows=maximum_rows)
+
+    session = _BlockedWriterSession()
+    with pytest.raises(
+        database_module.PostgresProtocolError,
+        match="database_error_sqlstate:55P03",
+    ):
+        _collect_post_delete(monkeypatch, session=session)
+
+    assert session.queries[:2] == [
+        "SET lock_timeout = '15s'",
+        "SET statement_timeout = '2min'",
+    ]
+    assert "BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY" not in session.queries
+    assert "COMMIT" not in session.queries
+    assert session.closed is True
 
 
 @pytest.mark.parametrize(
-    "failed_column",
-    reconciliation_db._POST_DELETE_AUTHORITY_COLUMNS,
+    "failed_index",
+    range(len(database_module._POST_DELETE_AUTHORITY_COLUMNS)),
 )
-def test_post_delete_terminal_rejects_each_authority_absence_drift(
+def test_post_delete_rejects_each_dormant_authority_drift(
     monkeypatch: pytest.MonkeyPatch,
-    failed_column: str,
+    failed_index: int,
 ) -> None:
-    target, plan = _target_and_plan()
-    writer = _config(reconciliation_db.WRITER_LOGIN)
-    managed_hba = _receipt(writer)
-    flags = ["t"] * len(reconciliation_db._POST_DELETE_AUTHORITY_COLUMNS)
-    flags[
-        reconciliation_db._POST_DELETE_AUTHORITY_COLUMNS.index(failed_column)
-    ] = "f"
-    session = _FreshWriterSession(authority_flags=tuple(flags))
-
+    flags = ["t"] * len(database_module._POST_DELETE_AUTHORITY_COLUMNS)
+    flags[failed_index] = "f"
+    session = _WriterSession(authority_flags=tuple(flags))
     with pytest.raises(
-        reconciliation_db.PostgresProtocolError,
+        database_module.PostgresProtocolError,
         match="schema_reconciliation_post_delete_authority_present",
     ):
-        reconciliation_db.collect_post_delete_terminal_receipt(
-            plan=plan,
-            target=target,
-            temporary_login="muncho_canary_admin_aaaaaaaaaaaaaaaa",
-            writer_config=writer,
-            managed_hba_receipt=managed_hba,
-            pre_delete_canonical_truth=_truth_receipt(),
-            observed_at_unix=managed_hba.observed_at_unix,
-            _session_factory=lambda config: session,
-        )
-
+        _collect_post_delete(monkeypatch, session=session)
+    assert "ROLLBACK" in session.queries
     assert session.closed is True
-    assert any(statement == "ROLLBACK" for statement, _ in session.queries)
+
+
+def test_post_delete_rejects_writer_ping_drift_and_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _WriterSession(ping_response={"ok": False})
+    with pytest.raises(
+        database_module.PostgresProtocolError,
+        match="schema_reconciliation_post_delete_writer_ping_invalid",
+    ):
+        _collect_post_delete(monkeypatch, session=session)
+    assert "ROLLBACK" in session.queries
+    assert session.closed is True
 
 
 @pytest.mark.parametrize("drift", ("username", "tls"))
-def test_post_delete_terminal_rejects_fresh_session_identity_or_tls_drift(
+def test_post_delete_rejects_writer_session_identity_drift(
+    monkeypatch: pytest.MonkeyPatch,
     drift: str,
 ) -> None:
-    target, plan = _target_and_plan()
-    writer = _config(reconciliation_db.WRITER_LOGIN)
-    managed_hba = _receipt(writer)
-    session = _FreshWriterSession(
-        username=("wrong_writer" if drift == "username" else writer.user),
-        tls_peer_certificate_sha256=(
-            "0" * 64
-            if drift == "tls"
-            else managed_hba.server_certificate_sha256
-        ),
+    session = _WriterSession(
+        username="wrong" if drift == "username" else database_module.WRITER_LOGIN,
+        tls_peer="f" * 64 if drift == "tls" else "e" * 64,
     )
-
     with pytest.raises(
         reconciliation.SchemaReconciliationError,
         match="schema_reconciliation_post_delete_terminal_session_invalid",
     ):
-        reconciliation_db.collect_post_delete_terminal_receipt(
-            plan=plan,
-            target=target,
-            temporary_login="muncho_canary_admin_aaaaaaaaaaaaaaaa",
-            writer_config=writer,
-            managed_hba_receipt=managed_hba,
-            pre_delete_canonical_truth=_truth_receipt(),
-            observed_at_unix=managed_hba.observed_at_unix,
-            _session_factory=lambda config: session,
-        )
-
+        _collect_post_delete(monkeypatch, session=session)
     assert session.closed is True
-    assert session.queries == []
 
 
-@pytest.mark.parametrize("failure", ("collector_exception", "contract_drift"))
-def test_post_delete_terminal_rolls_back_and_closes_on_contract_failure(
-    monkeypatch: pytest.MonkeyPatch,
-    failure: str,
-) -> None:
-    target, plan = _target_and_plan()
-    writer = _config(reconciliation_db.WRITER_LOGIN)
-    managed_hba = _receipt(writer)
-    session = _FreshWriterSession()
-    old_contract = reconciliation.SchemaContract.from_mapping(
-        reconciliation._old_contract_value(target)
-    )
-
-    def collect(*_args, **_kwargs):
-        if failure == "collector_exception":
-            raise RuntimeError("collector failed")
-        return old_contract
-
-    monkeypatch.setattr(reconciliation_db, "collect_schema_contract", collect)
-    expected = (
-        "collector failed"
-        if failure == "collector_exception"
-        else "schema_reconciliation_post_delete_contract_invalid"
-    )
-    error_type = (
-        RuntimeError
-        if failure == "collector_exception"
-        else reconciliation.SchemaReconciliationError
-    )
-    with pytest.raises(error_type, match=expected):
-        reconciliation_db.collect_post_delete_terminal_receipt(
-            plan=plan,
-            target=target,
-            temporary_login="muncho_canary_admin_aaaaaaaaaaaaaaaa",
-            writer_config=writer,
-            managed_hba_receipt=managed_hba,
-            pre_delete_canonical_truth=_truth_receipt(),
-            observed_at_unix=managed_hba.observed_at_unix,
-            _session_factory=lambda config: session,
-        )
-
-    assert session.closed is True
-    assert any(statement == "ROLLBACK" for statement, _ in session.queries)
-
-
-def test_post_delete_terminal_parser_rejects_resigned_ping_or_type_tamper(
+def test_post_delete_parser_rejects_resigned_boolean_tamper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    target, plan = _target_and_plan()
-    writer = _config(reconciliation_db.WRITER_LOGIN)
-    managed_hba = _receipt(writer)
-    truth = _truth_receipt()
-    session = _FreshWriterSession()
-    monkeypatch.setattr(
-        reconciliation_db,
-        "collect_schema_contract",
-        lambda *_args, **_kwargs: target,
-    )
-    receipt = reconciliation_db.collect_post_delete_terminal_receipt(
-        plan=plan,
-        target=target,
-        temporary_login="muncho_canary_admin_aaaaaaaaaaaaaaaa",
-        writer_config=writer,
-        managed_hba_receipt=managed_hba,
-        pre_delete_canonical_truth=truth,
-        observed_at_unix=managed_hba.observed_at_unix,
-        _session_factory=lambda config: session,
-    )
-
-    tampered = dict(receipt.value)
-    tampered["writer_ping_response_sha256"] = "0" * 64
+    receipt, _session, _plan = _collect_post_delete(monkeypatch)
+    tampered = copy.deepcopy(dict(receipt.value))
+    tampered["persistent_executor_memberships_empty"] = 1
     unsigned = {
         key: value for key, value in tampered.items() if key != "receipt_sha256"
     }
@@ -1364,12 +1046,46 @@ def test_post_delete_terminal_parser_rejects_resigned_ping_or_type_tamper(
         reconciliation.SchemaReconciliationError,
         match="schema_reconciliation_post_delete_terminal_invalid",
     ):
-        reconciliation_db.parse_post_delete_terminal_receipt(tampered)
+        database_module.parse_post_delete_terminal_receipt(tampered)
 
-    wrong_type = dict(receipt.value)
-    wrong_type["release_revision"] = None
-    with pytest.raises(
-        reconciliation.SchemaReconciliationError,
-        match="schema_reconciliation_post_delete_terminal_invalid",
-    ):
-        reconciliation_db.parse_post_delete_terminal_receipt(wrong_type)
+
+@pytest.mark.parametrize(
+    "required_fragment",
+    (
+        "temporary_executor_inventory_empty",
+        "prepared_transactions_disabled_and_empty",
+        "current_setting('max_prepared_transactions')::integer = 0",
+        "persistent_executor_memberships_empty",
+        "persistent_executor_owns_zero_objects_clusterwide",
+        "persistent_executor_acl_dependencies_exact",
+        "deptype = 'a' AND objsubid = 0",
+        "executor_shared_dependencies",
+        "persistent_executor_database_effective_privileges_exact",
+        "cloudsqladmin,muncho_canary_brain,postgres",
+        "cloudsqladmin,muncho_canary_brain,postgres,template1",
+        "connectable_database_inventory_exact",
+        "connectable_non_template_database_inventory_exact",
+        "managed_actual_database_acl",
+        "managed_expected_database_acl",
+        "managed_cloudsqladmin_exception",
+        "routeback_helper_name_inventory_exact",
+        "proargtypes[0]",
+        "control_schema_identity_acl_exact",
+        "pg_catalog.pg_constraint",
+        "pg_catalog.pg_extension",
+        "pg_catalog.pg_default_acl",
+        "pg_catalog.pg_publication_namespace",
+        "pg_catalog.pg_event_trigger",
+        "control_namespace_other_object_inventory_empty",
+        "control_routine_identity_acl_exact",
+        control.OBSERVER_PROSRC_SHA256,
+        control.OBSERVER_DEFINITION_SHA256,
+        control.APPLY_PROSRC_SHA256,
+        control.APPLY_DEFINITION_SHA256,
+    ),
+)
+def test_post_delete_sql_binds_complete_dormant_control_surface(
+    required_fragment: str,
+) -> None:
+    sql = database_module._post_delete_authority_absence_sql(EXECUTOR_LOGIN)
+    assert required_fragment in sql

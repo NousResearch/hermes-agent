@@ -32,6 +32,12 @@ from gateway.canonical_writer_foundation import _load_source_artifacts_for_tests
 
 
 REVISION = "a" * 40
+CONTROL_INSTALL_SHA256 = (
+    "5519c3510c6211b995aec4ca39057c552869501474fab4dea88e6bb21f090ac5"
+)
+CONTROL_RETIRE_SHA256 = (
+    "ec3ebe8713a378f7c721a20a303074ae99211855a9925ba108f57e8c84606de8"
+)
 ASSET = (
     Path(__file__).parents[2]
     / "gateway"
@@ -108,6 +114,8 @@ def _target_plan_asset():
         asset.contract,
         artifact,
         target_asset_sha256=asset.sha256,
+        control_install_artifact_sha256=CONTROL_INSTALL_SHA256,
+        control_retire_artifact_sha256=CONTROL_RETIRE_SHA256,
     )
     return asset.contract, plan, asset
 
@@ -373,9 +381,9 @@ def test_prepare_runtime_builds_secret_free_pre_database_gate(tmp_path: Path):
     context = runtime._prepare_runtime(dependencies)
 
     assert database_calls == []
-    assert context.gate["state"] == "stopped_release_admin_preflight_ready"
-    assert context.gate["temporary_admin_username"] == (
-        runtime.TEMPORARY_ADMIN_PREFIX + context.plan.sha256[:16]
+    assert context.gate["state"] == "stopped_release_executor_preflight_ready"
+    assert context.gate["temporary_executor_username"] == (
+        runtime.TEMPORARY_EXECUTOR_PREFIX + context.plan.sha256[:16]
     )
     assert context.gate["journal_head"]["state"] == "empty"
     assert (
@@ -428,12 +436,19 @@ def test_release_file_contract_matches_real_installed_layout() -> None:
         "venv/lib/python3.11/site-packages/"
         "gateway/canonical_writer_schema_reconciliation_bootstrap.py",
         "venv/lib/python3.11/site-packages/"
-        "gateway/canonical_writer_schema_reconciliation_runtime.py",
+            "gateway/canonical_writer_schema_reconciliation_runtime.py",
+            "venv/lib/python3.11/site-packages/"
+            "gateway/canonical_writer_schema_reconciliation_control.py",
+            "venv/lib/python3.11/site-packages/"
+            "gateway/canonical_writer_schema_reconciliation_control_bootstrap.py",
         "venv/lib/python3.11/site-packages/"
         "gateway/assets/canonical_writer_schema_contract_v1.json",
         "gateway/assets/canonical_writer_schema_contract_v1.json",
-        "scripts/sql/canonical_writer_v1.sql",
-    }
+            "scripts/sql/canonical_writer_v1.sql",
+            "scripts/sql/canonical_writer_schema_reconciliation_control_v1.sql",
+            "scripts/sql/"
+            "canonical_writer_schema_reconciliation_control_retire_v1.sql",
+        }
 
 
 def test_release_file_contract_rejects_source_tree_module_paths() -> None:
@@ -497,7 +512,7 @@ def test_preflight_revalidates_stopped_boundary_before_admin_database_open(
         tmp_path,
         state,
         writer_config=lambda: writer_config,
-        collect_hba=lambda *_args, **_kwargs: _managed_hba(writer_config),
+        collect_hba=lambda config, **_kwargs: _managed_hba(config),
         open_session=lambda config: database_opens.append(config),
     )
     context = runtime._prepare_runtime(dependencies)
@@ -562,7 +577,7 @@ def test_host_state_binds_boot_id_separately_from_machine_identity():
 
 
 class _IdentitySession:
-    def __init__(self, *, username: str = "muncho_canary_admin_aaaaaaaaaaaaaaaa"):
+    def __init__(self, *, username: str = "muncho_canary_reconciler_aaaaaaaaaaaaaaaa"):
         self.username = username
         self.tls_peer_certificate_sha256 = "e" * 64
         self.closed = False
@@ -694,7 +709,7 @@ def test_durable_replay_uses_byte_identical_stored_core_preflight(
     assert core_preflight != fresh_preflight
 
 
-def test_open_admin_config_uses_0400_memfd_and_zeroizes_input(
+def test_open_executor_config_uses_0400_memfd_and_zeroizes_input(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -722,21 +737,33 @@ def test_open_admin_config_uses_0400_memfd_and_zeroizes_input(
 
     monkeypatch.setattr(runtime.phase_b_runtime, "_secret_descriptor", descriptor)
     context = SimpleNamespace(
-        gate={"temporary_admin_username": "muncho_canary_admin_aaaaaaaaaaaaaaaa"},
-        dependencies=SimpleNamespace(open_session=open_session),
+        gate={
+            "temporary_executor_username": (
+                "muncho_canary_reconciler_aaaaaaaaaaaaaaaa"
+            )
+        },
+        dependencies=SimpleNamespace(
+            open_session=open_session,
+            collect_hba=lambda config, **_kwargs: _managed_hba(config),
+        ),
     )
     secret = bytearray(b"A" * 64)
-    config, session = runtime._open_admin_config(context, secret)
+    config, session, executor_hba = runtime._open_executor_config(
+        context,
+        secret,
+        observed_at_unix=100,
+    )
 
-    assert config.user == "muncho_canary_admin_aaaaaaaaaaaaaaaa"
+    assert config.user == "muncho_canary_reconciler_aaaaaaaaaaaaaaaa"
     assert session.username == config.user
     assert observed["secret"] == b"A" * 64
     assert observed["mode"] == 0o400
     assert observed["source"].path is None
+    assert executor_hba.user == config.user
     assert secret == bytearray(64)
 
 
-def test_open_admin_config_preserves_secret_transport_failure_class(
+def test_open_executor_config_preserves_secret_transport_failure_class(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     @contextmanager
@@ -748,7 +775,11 @@ def test_open_admin_config_preserves_secret_transport_failure_class(
 
     monkeypatch.setattr(runtime.phase_b_runtime, "_secret_descriptor", descriptor)
     context = SimpleNamespace(
-        gate={"temporary_admin_username": "muncho_canary_admin_aaaaaaaaaaaaaaaa"},
+        gate={
+            "temporary_executor_username": (
+                "muncho_canary_reconciler_aaaaaaaaaaaaaaaa"
+            )
+        },
         dependencies=SimpleNamespace(
             open_session=lambda _config: pytest.fail("DB session was opened")
         ),
@@ -757,9 +788,13 @@ def test_open_admin_config_preserves_secret_transport_failure_class(
 
     with pytest.raises(
         runtime.SchemaReconciliationRuntimeError,
-        match="schema_reconciliation_runtime_admin_secret_transport_failed",
+        match="schema_reconciliation_runtime_executor_secret_transport_failed",
     ):
-        runtime._open_admin_config(context, secret)
+        runtime._open_executor_config(
+            context,
+            secret,
+            observed_at_unix=100,
+        )
 
     assert secret == bytearray(64)
 
@@ -801,7 +836,7 @@ def test_preflight_preserves_safe_schema_error_after_closing_admin_session(
     dependencies = _dependencies(
         tmp_path,
         writer_config=lambda: writer_config,
-        collect_hba=lambda *_args, **_kwargs: _managed_hba(writer_config),
+        collect_hba=lambda config, **_kwargs: _managed_hba(config),
         open_session=open_session,
     )
     context = runtime._prepare_runtime(dependencies)
@@ -815,7 +850,7 @@ def test_preflight_preserves_safe_schema_error_after_closing_admin_session(
     assert secret == bytearray(64)
     assert len(opened) == 1
     assert opened[0].closed is True
-    assert context.temporary_admin_database_closed_before_cleanup is True
+    assert context.temporary_executor_database_closed_before_cleanup is True
 
 
 def test_apply_preserves_safe_schema_error_after_closing_admin_session(
@@ -834,7 +869,7 @@ def test_apply_preserves_safe_schema_error_after_closing_admin_session(
             self.truth = truth
             self.closed = False
 
-        def close_temporary_admin_database(self) -> None:
+        def close_temporary_executor_database(self) -> None:
             self.closed = True
 
     context = Context()
@@ -871,7 +906,10 @@ def test_preflight_apply_and_reattest_reuse_one_authenticated_socket(
     target, plan, _asset = _target_plan_asset()
     truth = _truth()
     sessions: list[_IdentitySession] = []
+    hba_users: list[str] = []
+    events: list[str] = []
     transaction_count = 0
+    admission_count = 0
 
     @contextmanager
     def descriptor(secret: bytearray) -> Iterator[int]:
@@ -885,6 +923,7 @@ def test_preflight_apply_and_reattest_reuse_one_authenticated_socket(
             os.close(fd)
 
     def open_session(config: WriterDBConfig):
+        events.append("session:" + config.user)
         assert config.credential.fd is not None
         assert os.pread(config.credential.fd, 64, 0) == b"A" * 64
         session = _IdentitySession(username=config.user)
@@ -892,7 +931,8 @@ def test_preflight_apply_and_reattest_reuse_one_authenticated_socket(
         return session
 
     def hba(config: WriterDBConfig, *, now_unix: int, ttl_seconds: int):
-        assert config.user == "muncho_canary_writer_login"
+        events.append("hba:" + config.user)
+        hba_users.append(config.user)
         return ManagedCloudSQLAdminHBAReceipt(
             version="managed-cloudsqladmin-hba-rejection-v2",
             host=config.host,
@@ -923,17 +963,27 @@ def test_preflight_apply_and_reattest_reuse_one_authenticated_socket(
             return truth
 
     class Database:
-        def __init__(self, *, _session_factory, admin_config, **_kwargs):
+        def __init__(
+            self,
+            *,
+            _session_factory,
+            executor_config,
+            pre_begin_admission,
+            **_kwargs,
+        ):
             self.session_factory = _session_factory
-            self.admin_config = admin_config
+            self.executor_config = executor_config
+            self.pre_begin_admission = pre_begin_admission
 
         @contextmanager
         def transaction(self, *, advisory_lock_key: int):
-            nonlocal transaction_count
+            nonlocal admission_count, transaction_count
             assert advisory_lock_key == plan.value["advisory_lock_key"]
             transaction_count += 1
-            borrowed = self.session_factory(self.admin_config)
+            borrowed = self.session_factory(self.executor_config)
             try:
+                assert self.pre_begin_admission() is None
+                admission_count += 1
                 yield Transaction()
             finally:
                 borrowed.close()
@@ -960,6 +1010,21 @@ def test_preflight_apply_and_reattest_reuse_one_authenticated_socket(
     secret = bytearray(b"A" * 64)
     collection = runtime._preflight_callback(context, context.gate, {}, secret)
     assert secret == bytearray(64)
+    assert hba_users == [
+        "muncho_canary_writer_login",
+        context.gate["temporary_executor_username"],
+    ]
+    assert events == [
+        "hba:muncho_canary_writer_login",
+        "hba:" + context.gate["temporary_executor_username"],
+        "session:" + context.gate["temporary_executor_username"],
+    ]
+    assert collection["executor_managed_hba_receipt_sha256"] != (
+        collection["managed_hba_receipt_sha256"]
+    )
+    assert collection["executor_managed_hba_receipt"]["user"] == (
+        context.gate["temporary_executor_username"]
+    )
     assert len(sessions) == 1
     assert transaction_count == 1
     authorization = reconciliation.SchemaReconciliationAuthorization.build(
@@ -998,9 +1063,10 @@ def test_preflight_apply_and_reattest_reuse_one_authenticated_socket(
 
     assert result["authorized_intent_sha256"] == "f" * 64
     assert transaction_count == 3
+    assert admission_count == 3
     assert len(sessions) == 1
     assert sessions[0].closed is True
-    assert context.temporary_admin_database_closed_before_cleanup is True
+    assert context.temporary_executor_database_closed_before_cleanup is True
     assert result["database_commit_attestation"]["database_session_closed"] is True
 
 
@@ -1065,7 +1131,7 @@ def test_apply_revalidates_stopped_boundary_before_schema_mutation(
         tmp_path,
         state,
         writer_config=lambda: writer_config,
-        collect_hba=lambda *_args, **_kwargs: _managed_hba(writer_config),
+        collect_hba=lambda config, **_kwargs: _managed_hba(config),
         open_session=open_session,
     )
     context = runtime._prepare_runtime(dependencies)
@@ -1117,31 +1183,94 @@ def test_apply_revalidates_stopped_boundary_before_schema_mutation(
     assert execute_calls == []
     assert len(sessions) == 1
     assert sessions[0].closed is True
-    assert context.temporary_admin_database_closed_before_cleanup is True
+    assert context.temporary_executor_database_closed_before_cleanup is True
+
+
+@pytest.mark.parametrize("drift", ("release", "host", "services"))
+def test_pre_begin_callback_rechecks_stopped_boundary_after_lock_wait(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    state: dict[str, str | None] = {"kind": None}
+    context = runtime._prepare_runtime(
+        _driftable_dependencies(tmp_path, state)
+    )
+    state["kind"] = drift
+
+    with pytest.raises(
+        runtime.SchemaReconciliationRuntimeError,
+        match=(
+            "schema_reconciliation_runtime_pre_begin_"
+            "stopped_boundary_drifted"
+        ),
+    ):
+        runtime._require_pre_begin_stopped_boundary(context)
 
 
 @pytest.mark.parametrize(
     "secret",
     [bytearray(b"A" * 63), bytearray(b"+" * 64), bytearray(b"A" * 65)],
 )
-def test_open_admin_config_rejects_non_exact_urlsafe_64_bytes(secret: bytearray):
+def test_open_executor_config_rejects_non_exact_urlsafe_64_bytes(secret: bytearray):
     context = SimpleNamespace(
-        gate={"temporary_admin_username": "muncho_canary_admin_aaaaaaaaaaaaaaaa"},
+        gate={
+            "temporary_executor_username": (
+                "muncho_canary_reconciler_aaaaaaaaaaaaaaaa"
+            )
+        },
         dependencies=SimpleNamespace(open_session=lambda _config: None),
     )
     with pytest.raises(
         runtime.SchemaReconciliationRuntimeError,
         match="schema_reconciliation_runtime_credential_invalid",
     ):
-        runtime._open_admin_config(context, secret)
+        runtime._open_executor_config(
+            context,
+            secret,
+            observed_at_unix=100,
+        )
 
 
-def test_bridge_receipt_truthfully_describes_owner_collection_then_cleanup():
-    receipt = runtime._temporary_owner_bridge_receipt(123)
-    assert receipt["owner_authority_active_during_locked_collection"] is True
-    assert receipt["exact_provider_memberships_during_locked_collection"] is True
-    assert receipt["current_user_remained_temporary_login"] is True
-    assert receipt["memberships_remain_until_cloud_user_cleanup"] is True
+def test_executor_boundary_receipt_describes_inert_collection_then_cleanup():
+    _target, plan, _asset = _target_plan_asset()
+    receipt = runtime._temporary_executor_boundary_receipt(
+        plan,
+        123,
+        "f" * 64,
+    )
+    assert receipt["caller_has_no_owner_membership_or_set_path"] is True
+    assert receipt["owner_writer_system_roles_unreachable"] is True
+    assert receipt["executor_owns_zero_objects_clusterwide"] is True
+    assert receipt["executor_cross_database_authority_hba_bounded"] is True
+    assert receipt["connectable_database_inventory_exact"] is True
+    assert receipt["connectable_non_template_database_inventory_exact"] is True
+    assert receipt["connectable_template_authority_absent"] is True
+    assert receipt["prepared_transactions_disabled_and_empty"] is True
+    assert receipt["executor_managed_hba_receipt_sha256"] == "f" * 64
+    assert receipt["latent_provider_exception_databases"] == ["cloudsqladmin"]
+    assert receipt["latent_provider_exception_hba_receipt_sha256s"] == [
+        "f" * 64
+    ]
+    assert receipt["roles_and_fence_recheck_required_before_authorization"] is True
+    assert receipt["temporary_login_has_zero_shared_dependencies"] is True
+    assert (
+        receipt[
+            "exact_provider_memberships_observed_before_and_after_locked_collection"
+        ]
+        is True
+    )
+    assert (
+        receipt[
+            "current_user_observed_as_temporary_login_before_and_after_locked_collection"
+        ]
+        is True
+    )
+    assert (
+        receipt[
+            "memberships_observed_present_in_committed_preflight_snapshot_and_cleanup_required"
+        ]
+        is True
+    )
     assert receipt["transaction_committed"] is True
     assert receipt["secret_material_recorded"] is False
     assert receipt["receipt_sha256"] == _sha({
@@ -1197,16 +1326,31 @@ def _post_delete_terminal(
         plan_sha256=context.plan.sha256,
         database=foundation.SQL_DATABASE,
         writer_login=WRITER_LOGIN,
-        temporary_login=context.gate["temporary_admin_username"],
-        temporary_login_sha256=context.gate[
-            "temporary_admin_username_sha256"
+        temporary_executor_login=context.gate["temporary_executor_username"],
+        temporary_executor_login_sha256=context.gate[
+            "temporary_executor_username_sha256"
+        ],
+        control_foundation_contract_sha256=context.plan.value[
+            "control_foundation_contract_sha256"
         ],
         target_contract_sha256=context.target.sha256,
         observed_contract_sha256=context.target.sha256,
         writer_session_identity_exact=True,
-        temporary_login_absent=True,
-        temporary_login_inventory_empty=True,
-        migration_owner_memberships_absent=True,
+        temporary_executor_absent=True,
+        temporary_executor_inventory_empty=True,
+        prepared_transactions_disabled_and_empty=True,
+        persistent_executor_role_attributes_exact=True,
+        persistent_executor_memberships_empty=True,
+        persistent_executor_owns_zero_objects_clusterwide=True,
+        persistent_executor_acl_dependencies_exact=True,
+        connectable_database_inventory_exact=True,
+        connectable_non_template_database_inventory_exact=True,
+        persistent_executor_database_acl_exact=True,
+        persistent_executor_database_effective_privileges_exact=True,
+        routeback_helper_name_inventory_exact=True,
+        control_schema_identity_acl_exact=True,
+        control_namespace_other_object_inventory_empty=True,
+        control_routine_identity_acl_exact=True,
         writer_authority_exact=True,
         writer_ping_verified=True,
         writer_ping_request_id=request_id,
@@ -1233,7 +1377,7 @@ def _prepare_post_cleanup_context(
     context.writer_config = writer_config
     admin_session = _IdentitySession()
     context.lease = runtime._AuthenticatedSessionLease(admin_session, object())
-    context.close_temporary_admin_database()
+    context.close_temporary_executor_database()
     challenge = {
         "database_identity_sha256": context.database_identity[
             "identity_sha256"
@@ -1244,10 +1388,10 @@ def _prepare_post_cleanup_context(
     }
     intermediate = {"final_canonical_truth": context.truth.value}
     cleanup = {
-        "temporary_admin_username_sha256": context.gate[
-            "temporary_admin_username_sha256"
+        "temporary_executor_username_sha256": context.gate[
+            "temporary_executor_username_sha256"
         ],
-        "cloud_sql_absence_receipt": {"temporary_admin_absent": True},
+        "cloud_sql_absence_receipt": {"temporary_executor_absent": True},
         "issued_at_unix": 100,
     }
     return challenge, intermediate, cleanup, admin_session
@@ -1267,7 +1411,7 @@ def test_post_cleanup_uses_one_distinct_fresh_writer_session_and_rechecks_stoppe
     collector_calls: list[str] = []
 
     def collect_post_delete_terminal(**kwargs):
-        collector_calls.append(kwargs["temporary_login"])
+        collector_calls.append(kwargs["temporary_executor_login"])
         assert kwargs["writer_config"] == writer_config
         assert kwargs["managed_hba_receipt"] == hba
         assert kwargs["_session_factory"] is open_session
@@ -1296,7 +1440,7 @@ def test_post_cleanup_uses_one_distinct_fresh_writer_session_and_rechecks_stoppe
     )
 
     assert admin_session.query_calls == 0
-    assert collector_calls == [context.gate["temporary_admin_username"]]
+    assert collector_calls == [context.gate["temporary_executor_username"]]
     assert opened == [writer_config]
     assert receipt["host_identity_sha256"] == context.gate["host_identity_sha256"]
     assert receipt["services_stopped_sha256"] == context.gate["services_stopped_sha256"]

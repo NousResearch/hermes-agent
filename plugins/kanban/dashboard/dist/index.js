@@ -3085,6 +3085,22 @@
     // a status flip (may update title AND body AND emit an audit
     // comment — or fail with a human-readable reason that the UI
     // surfaces inline without treating it as an HTTP error).
+    const doRecover = function (reason) {
+      return SDK.fetchJSON(
+        withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/recover`, boardSlug),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: reason }),
+        }
+      ).then(function () {
+        load();
+        props.onRefresh();
+      }).catch(function (e) {
+        setPatchErr(parseApiErrorMessage(e));
+      });
+    };
+
     const doSpecify = function () {
       return SDK.fetchJSON(
         withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/specify`, boardSlug),
@@ -3209,6 +3225,7 @@
           assignees: props.assignees || [],
           boardSlug: boardSlug,
           onPatch: doPatch,
+          onRecover: doRecover,
           onSpecify: doSpecify,
           onDecompose: doDecompose,
           onAddParent: addLink,
@@ -3406,6 +3423,7 @@
       h(StatusActions, {
         task: t,
         onPatch: props.onPatch,
+        onRecover: props.onRecover,
         onSpecify: props.onSpecify,
         onDecompose: props.onDecompose,
       }),
@@ -3943,6 +3961,20 @@
       }, label);
     };
 
+    const recoverButton = (task.status === "blocked" && props.onRecover)
+      ? h(Button, {
+          onClick: function () {
+            const reason = window.prompt(
+              "Recovery reason (the existing workspace will be preserved):",
+              "resume preserved work",
+            );
+            if (reason && reason.trim()) props.onRecover(reason.trim());
+          },
+          size: "sm",
+          title: "Resume this terminal task as a controlled continuation",
+        }, "Recover")
+      : null;
+
     // "Specify" appears only when the task is in the Triage column — the
     // one column where an auxiliary LLM pass is meaningful. Elsewhere
     // the backend would return ok:false with "not in triage" anyway,
@@ -4028,6 +4060,7 @@
 
     return h("div", null,
       h("div", { className: "hermes-kanban-actions" },
+        recoverButton,
         specifyButton,
         decomposeButton,
         b("→ triage",  { status: "triage" },   task.status !== "triage"),

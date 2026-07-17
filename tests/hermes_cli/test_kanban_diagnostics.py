@@ -547,6 +547,18 @@ def test_stranded_in_ready_uses_latest_ready_transition():
     assert [d for d in diags if d.kind == "stranded_in_ready"] == []
 
 
+def test_stranded_in_ready_uses_recovery_transition():
+    """A just-recovered task gets a fresh stranded-work timer."""
+    now = 100_000
+    task = _task(status="ready", assignee="demo")
+    events = [
+        _event("created", ts=now - 6 * 3600),
+        _event("recovered", ts=now - 20 * 60),
+    ]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    assert [d for d in diags if d.kind == "stranded_in_ready"] == []
+
+
 def test_stranded_in_ready_severity_escalates_with_age():
     """warning → error → critical at 2x and 6x threshold."""
     now = 100_000

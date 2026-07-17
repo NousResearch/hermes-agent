@@ -200,6 +200,51 @@ def test_reassign_resets_failure_counter_for_new_profile(kanban_home, all_assign
         conn.close()
 
 
+def test_recover_resumes_blocked_exhausted_task_and_preserves_workspace(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="preserved WIP", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', consecutive_failures = 2, "
+                "last_failure_error = 'iteration budget exhausted' WHERE id = ?",
+                (tid,),
+            )
+
+        assert kb.recover_task(conn, tid, reason="resume preserved worktree") is True
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.assignee == "worker"
+        assert task.claim_lock is None
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+        assert any(
+            event.kind == "recovered"
+            and event.payload == {
+                "reason": "resume preserved worktree",
+                "preserve_workspace": True,
+                "status": "ready",
+            }
+            for event in kb.list_events(conn, tid)
+        )
+    finally:
+        conn.close()
+
+
+def test_recover_refuses_non_blocked_or_claimed_task(kanban_home):
+    conn = kb.connect()
+    try:
+        ready = kb.create_task(conn, title="already ready", assignee="worker")
+        assert kb.recover_task(conn, ready, reason="no-op") is False
+
+        blocked = kb.create_task(conn, title="claimed", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'blocked', claim_lock = 'live' WHERE id = ?", (blocked,))
+        assert kb.recover_task(conn, blocked, reason="must not steal") is False
+    finally:
+        conn.close()
+
+
 def test_per_task_max_retries_overrides_dispatcher_limit(kanban_home, all_assignees_spawnable):
     """Per-task ``max_retries`` overrides both the caller-supplied
     ``failure_limit`` (gateway config) and the hardcoded default.

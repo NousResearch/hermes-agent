@@ -60,6 +60,33 @@ def client(kanban_home):
     return TestClient(app)
 
 
+def test_recover_endpoint_resumes_terminal_blocked_task(client):
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="preserved WIP", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', consecutive_failures = 2, "
+                "last_failure_error = 'iteration budget exhausted' WHERE id = ?",
+                (task_id,),
+            )
+
+    response = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/recover",
+        json={"reason": "resume preserved worktree"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "ok": True,
+        "task_id": task_id,
+        "workspace_preserved": True,
+    }
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+        assert any(event.kind == "recovered" for event in kb.list_events(conn, task_id))
+
+
 # ---------------------------------------------------------------------------
 # GET /board on an empty DB
 # ---------------------------------------------------------------------------

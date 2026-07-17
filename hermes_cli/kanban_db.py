@@ -3924,6 +3924,81 @@ def reclaim_task(
     return True
 
 
+def recover_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+) -> bool:
+    """Resume a terminally blocked task as one explicit continuation.
+
+    Recovery is for a task whose worker ended (for example, iteration-budget
+    exhaustion) but whose task workspace and handoff must be preserved.  It
+    never touches the workspace, never kills a worker, and refuses a task with
+    an active claim.  Parent gating is re-evaluated before the task becomes
+    dispatchable, so an unfinished dependency returns it to ``todo`` instead
+    of bypassing the scheduler's invariant.
+    """
+    clean_reason = (reason or "").strip()
+    if not clean_reason:
+        raise ValueError("recovery reason is required")
+
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT current_run_id FROM tasks "
+            "WHERE id = ? AND status = 'blocked' AND claim_lock IS NULL",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+
+        # A terminal block normally closes its run.  Close a leaked pointer
+        # defensively, preserving the one-current-run invariant.
+        if row["current_run_id"]:
+            now = int(time.time())
+            conn.execute(
+                """
+                UPDATE task_runs
+                   SET status = 'reclaimed', outcome = 'reclaimed',
+                       summary = COALESCE(summary, 'invariant recovery on recover'),
+                       ended_at = ?, claim_lock = NULL, claim_expires = NULL,
+                       worker_pid = NULL
+                 WHERE id = ? AND ended_at IS NULL
+                """,
+                (now, int(row["current_run_id"])),
+            )
+
+        undone_parent = conn.execute(
+            "SELECT 1 FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        new_status = "todo" if undone_parent else "ready"
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status = ?, current_run_id = NULL, claim_expires = NULL,
+                   worker_pid = NULL, consecutive_failures = 0,
+                   last_failure_error = NULL
+             WHERE id = ? AND status = 'blocked' AND claim_lock IS NULL
+            """,
+            (new_status, task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "recovered",
+            {
+                "reason": clean_reason,
+                "preserve_workspace": True,
+                "status": new_status,
+            },
+        )
+    return True
+
+
 def reassign_task(
     conn: sqlite3.Connection,
     task_id: str,

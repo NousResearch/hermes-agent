@@ -602,6 +602,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_unblock.add_argument("task_ids", nargs="+")
 
+    p_recover = sub.add_parser(
+        "recover",
+        help="Resume a blocked, terminal task while preserving its workspace",
+    )
+    p_recover.add_argument("task_id")
+    p_recover.add_argument(
+        "reason",
+        nargs="+",
+        help="Required continuation reason, recorded in the recovery event",
+    )
+
     p_promote = sub.add_parser(
         "promote",
         help="Manually move one or more todo/blocked tasks to ready (recovery path)",
@@ -962,6 +973,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "show":     _cmd_show,
             "assign":   _cmd_assign,
             "reclaim":  _cmd_reclaim,
+            "recover":  _cmd_recover,
             "reassign": _cmd_reassign,
             "diagnostics": _cmd_diagnostics,
             "diag":     _cmd_diagnostics,
@@ -1660,6 +1672,20 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
         )
         return 1
     print(f"Reclaimed {args.task_id}")
+    return 0
+
+
+def _cmd_recover(args: argparse.Namespace) -> int:
+    reason = " ".join(args.reason).strip()
+    with kb.connect_closing() as conn:
+        ok = kb.recover_task(conn, args.task_id, reason=reason)
+    if not ok:
+        print(
+            f"cannot recover {args.task_id} (task must be blocked with no active claim)",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Recovered {args.task_id}; existing workspace preserved")
     return 0
 
 

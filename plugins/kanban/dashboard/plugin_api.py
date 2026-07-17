@@ -1641,6 +1641,36 @@ def specify_task_endpoint(
     }
 
 
+class RecoverBody(BaseModel):
+    reason: str
+
+
+@router.post("/tasks/{task_id}/recover")
+def recover_task_endpoint(
+    task_id: str,
+    payload: RecoverBody,
+    board: Optional[str] = Query(None),
+):
+    """Resume a terminally blocked task without replacing its workspace."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        try:
+            ok = kanban_db.recover_task(conn, task_id, reason=payload.reason)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"cannot recover {task_id}: it must be blocked with no active claim"
+                ),
+            )
+        return {"ok": True, "task_id": task_id, "workspace_preserved": True}
+    finally:
+        conn.close()
+
+
 class ReassignBody(BaseModel):
     profile: Optional[str] = None  # "" or None = unassign
     reclaim_first: bool = False

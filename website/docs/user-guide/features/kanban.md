@@ -147,6 +147,12 @@ matters.
   open.
 - **+ New board** — opens a modal asking for slug, display name,
   description, and icon. Option to auto-switch to the new board.
+- **Settings** — opens a modal for editing the current board's display
+  name, description, and **project directory** (`default_workdir`). The
+  project directory is the board-level workspace default every new task
+  inherits (git repo → preserved worktree, plain dir → preserved
+  directory); each task can still override it at creation time. Clearing
+  the field reverts new tasks to disposable scratch workspaces.
 - **Archive** — only shown on non-`default` boards. Confirms, then moves
   the board dir to `boards/_archived/`.
 
@@ -425,7 +431,7 @@ hermes kanban create "audit auth flow" \
     --skill github-code-review
 ```
 
-**From the dashboard**, type the skills comma-separated into the **skills** field of the inline create form.
+**From the dashboard**, type the skills comma-separated into the **skills** field of the create-task dialog.
 
 The dispatcher emits one `--skills <name>` flag per skill listed, so the worker spawns with all of them loaded on top of the auto-injected kanban guidance. The skill names must match skills that are actually installed on the assignee's profile (run `hermes skills list` to see what's available); there's no runtime install.
 
@@ -489,7 +495,7 @@ hermes dashboard        # "Kanban" tab appears in the nav, after "Skills"
 - **Per-profile lanes inside Running** — toolbar checkbox toggles sub-grouping of the Running column by assignee.
 - **Live updates via WebSocket** — the plugin tails the append-only `task_events` table on a short poll interval; the board reflects changes the instant any profile (CLI, gateway, or another dashboard tab) acts. Reloads are debounced so a burst of events triggers a single refetch.
 - **Drag-drop** cards between columns to change status. The drop sends `PATCH /api/plugins/kanban/tasks/:id` which routes through the same `kanban_db` code the CLI uses — the three surfaces can never drift. Moves into destructive statuses (`done`, `archived`, `blocked`) prompt for confirmation. Touch devices use a pointer-based fallback so the board is usable from a tablet.
-- **Inline create** — click `+` on any column header to type a title, assignee, priority, and (optionally) a parent task from a dropdown over every existing task. Press Enter to create the task, Shift+Enter to insert a newline in the title field, or Escape to cancel. Creating from the Triage column automatically parks the new task in triage.
+- **Create-task dialog** — click `+` on any column header to open a modal with labeled fields: title, assignee, priority, skills, workspace kind/path (seeded from the board's project directory; per-task override), goal mode, and (optionally) a parent task from a dropdown over every existing task. Press Enter to create the task, Shift+Enter to insert a newline in the title field, or Escape to cancel. Creating from the Triage column automatically parks the new task in triage.
 - **Multi-select with bulk actions** — shift/ctrl-click a card or tick its checkbox to add it to the selection. A bulk action bar appears at the top with batch status transitions, archive, and reassign (by profile dropdown, or "(unassign)"). Destructive batches confirm first. Per-id partial failures are reported without aborting the rest.
 - **Click a card** (without shift/ctrl) to open a side drawer (Escape or click-outside closes) with:
   - **Editable title** — click the heading to rename.

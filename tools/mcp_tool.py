@@ -2536,6 +2536,44 @@ class MCPServerTask:
             "(e.g. https://host/mcp, not https://host/)."
         )
 
+    def _reconnect_or_reraise_group(self, eg: BaseExceptionGroup) -> str:
+        """Map an SDK transport TaskGroup failure to a clean ``"reconnect"``.
+
+        Streamable-HTTP / SSE transports run their stream pump inside an anyio
+        TaskGroup. A transient stream drop (idle timeout, brief backend blip,
+        server-side TCP close) surfaces as a ``BaseExceptionGroup`` escaping the
+        transport context manager. Left unwrapped it reaches ``run()``'s error
+        path, which applies exponential backoff and eventually *parks* the
+        server for 300s and deregisters its tools — a multi-minute tool outage
+        for what is usually a sub-second glitch while the POST path stays
+        healthy (issue #66092).
+
+        Returning ``"reconnect"`` instead lets ``run()`` rebuild the session
+        immediately with no backoff, no park, and no tool deregistration.
+
+        Re-raise (rather than mask) when the failure is not a transient drop:
+        - shutdown is in progress (``shutdown()`` sets ``_shutdown_event``
+          before it ever cancels the task);
+        - the group carries a real ``CancelledError`` (task cancellation must
+          propagate to asyncio, mirroring the ``run()`` guard for #9930);
+        - we never reached a live session this attempt (``_ready`` unset) — a
+          connect/handshake failure SHOULD fall through to ``run()``'s backoff
+          rather than hot-loop reconnects against a broken endpoint.
+        """
+        if self._shutdown_event.is_set():
+            raise eg
+        cancelled, _rest = eg.split(asyncio.CancelledError)
+        if cancelled is not None:
+            raise eg
+        if not self._ready.is_set():
+            raise eg
+        logger.debug(
+            "MCP server '%s': transport TaskGroup exited after a live session "
+            "(%r) — reconnecting immediately instead of backing off",
+            self.name, eg,
+        )
+        return "reconnect"
+
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
         if not _MCP_HTTP_AVAILABLE:
@@ -2642,31 +2680,36 @@ class MCPServerTask:
                     return _httpx_mod.AsyncClient(**kwargs)
 
                 _sse_kwargs["httpx_client_factory"] = _mcp_http_client_factory
-            async with sse_client(**_sse_kwargs) as (read_stream, write_stream):
-                async with ClientSession(
-                    read_stream, write_stream, **sampling_kwargs
-                ) as session:
-                    # Bound the handshake — same orphaned-task hang as the
-                    # stdio path (#59349): an endpoint that accepts the
-                    # connection but never answers ``initialize`` parks this
-                    # coroutine forever on the background loop.
-                    self.initialize_result = await asyncio.wait_for(
-                        session.initialize(), timeout=float(connect_timeout)
-                    )
-                    self.session = session
-                    await self._discover_tools()
-                    self._ready.set()
-                    # Session is live again: clear any breaker state from a
-                    # prior outage so the first call after recovery isn't
-                    # gated on a stale consecutive-failure count (#16788).
-                    _reset_server_error(self.name)
-                    self._reconnect_retries = 0
-                    reason = await self._wait_for_lifecycle_event()
-                    if reason == "reconnect":
-                        logger.info(
-                            "MCP server '%s': reconnect requested — "
-                            "tearing down SSE session", self.name,
+            try:
+                async with sse_client(**_sse_kwargs) as (read_stream, write_stream):
+                    async with ClientSession(
+                        read_stream, write_stream, **sampling_kwargs
+                    ) as session:
+                        # Bound the handshake — same orphaned-task hang as the
+                        # stdio path (#59349): an endpoint that accepts the
+                        # connection but never answers ``initialize`` parks this
+                        # coroutine forever on the background loop.
+                        self.initialize_result = await asyncio.wait_for(
+                            session.initialize(), timeout=float(connect_timeout)
                         )
+                        self.session = session
+                        await self._discover_tools()
+                        self._ready.set()
+                        # Session is live again: clear any breaker state from a
+                        # prior outage so the first call after recovery isn't
+                        # gated on a stale consecutive-failure count (#16788).
+                        _reset_server_error(self.name)
+                        self._reconnect_retries = 0
+                        reason = await self._wait_for_lifecycle_event()
+                        if reason == "reconnect":
+                            logger.info(
+                                "MCP server '%s': reconnect requested — "
+                                "tearing down SSE session", self.name,
+                            )
+            except BaseExceptionGroup as _eg:
+                # SSE transport TaskGroup dropped (idle timeout / stream blip):
+                # reconnect immediately instead of backoff/park (#66092).
+                reason = self._reconnect_or_reraise_group(_eg)
             return reason
 
         if _MCP_NEW_HTTP:
@@ -2701,29 +2744,34 @@ class MCPServerTask:
 
             # Caller owns the client lifecycle — the SDK skips cleanup when
             # http_client is provided, so we wrap in async-with.
-            async with httpx.AsyncClient(**client_kwargs) as http_client:
-                async with streamable_http_client(url, http_client=http_client) as (
-                    read_stream, write_stream, _get_session_id,
-                ):
-                    async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
-                        # Bound the handshake (#59349) — see stdio path.
-                        self.initialize_result = await asyncio.wait_for(
-                            session.initialize(), timeout=float(connect_timeout)
-                        )
-                        self.session = session
-                        await self._discover_tools()
-                        self._ready.set()
-                        # Session is live again: clear any breaker state from
-                        # a prior outage so the first call after recovery
-                        # isn't gated on a stale failure count (#16788).
-                        _reset_server_error(self.name)
-                        self._reconnect_retries = 0
-                        reason = await self._wait_for_lifecycle_event()
-                        if reason == "reconnect":
-                            logger.info(
-                                "MCP server '%s': reconnect requested — "
-                                "tearing down HTTP session", self.name,
+            try:
+                async with httpx.AsyncClient(**client_kwargs) as http_client:
+                    async with streamable_http_client(url, http_client=http_client) as (
+                        read_stream, write_stream, _get_session_id,
+                    ):
+                        async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                            # Bound the handshake (#59349) — see stdio path.
+                            self.initialize_result = await asyncio.wait_for(
+                                session.initialize(), timeout=float(connect_timeout)
                             )
+                            self.session = session
+                            await self._discover_tools()
+                            self._ready.set()
+                            # Session is live again: clear any breaker state from
+                            # a prior outage so the first call after recovery
+                            # isn't gated on a stale failure count (#16788).
+                            _reset_server_error(self.name)
+                            self._reconnect_retries = 0
+                            reason = await self._wait_for_lifecycle_event()
+                            if reason == "reconnect":
+                                logger.info(
+                                    "MCP server '%s': reconnect requested — "
+                                    "tearing down HTTP session", self.name,
+                                )
+            except BaseExceptionGroup as _eg:
+                # Streamable-HTTP transport TaskGroup dropped: reconnect
+                # immediately instead of backoff/park (#66092).
+                reason = self._reconnect_or_reraise_group(_eg)
             return reason
         else:
             # Deprecated API (mcp < 1.24.0): manages httpx client internally.
@@ -2734,28 +2782,33 @@ class MCPServerTask:
             }
             if _oauth_auth is not None:
                 _http_kwargs["auth"] = _oauth_auth
-            async with streamablehttp_client(url, **_http_kwargs) as (
-                read_stream, write_stream, _get_session_id,
-            ):
-                async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
-                    # Bound the handshake (#59349) — see stdio path.
-                    self.initialize_result = await asyncio.wait_for(
-                        session.initialize(), timeout=float(connect_timeout)
-                    )
-                    self.session = session
-                    await self._discover_tools()
-                    self._ready.set()
-                    # Session is live again: clear any breaker state from a
-                    # prior outage so the first call after recovery isn't
-                    # gated on a stale consecutive-failure count (#16788).
-                    _reset_server_error(self.name)
-                    self._reconnect_retries = 0
-                    reason = await self._wait_for_lifecycle_event()
-                    if reason == "reconnect":
-                        logger.info(
-                            "MCP server '%s': reconnect requested — "
-                            "tearing down legacy HTTP session", self.name,
+            try:
+                async with streamablehttp_client(url, **_http_kwargs) as (
+                    read_stream, write_stream, _get_session_id,
+                ):
+                    async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                        # Bound the handshake (#59349) — see stdio path.
+                        self.initialize_result = await asyncio.wait_for(
+                            session.initialize(), timeout=float(connect_timeout)
                         )
+                        self.session = session
+                        await self._discover_tools()
+                        self._ready.set()
+                        # Session is live again: clear any breaker state from a
+                        # prior outage so the first call after recovery isn't
+                        # gated on a stale consecutive-failure count (#16788).
+                        _reset_server_error(self.name)
+                        self._reconnect_retries = 0
+                        reason = await self._wait_for_lifecycle_event()
+                        if reason == "reconnect":
+                            logger.info(
+                                "MCP server '%s': reconnect requested — "
+                                "tearing down legacy HTTP session", self.name,
+                            )
+            except BaseExceptionGroup as _eg:
+                # Legacy Streamable-HTTP transport TaskGroup dropped: reconnect
+                # immediately instead of backoff/park (#66092).
+                reason = self._reconnect_or_reraise_group(_eg)
             return reason
 
     async def _discover_tools(self):

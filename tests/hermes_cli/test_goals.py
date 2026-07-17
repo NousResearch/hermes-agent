@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import time
 from unittest.mock import patch, MagicMock
 
@@ -568,6 +571,9 @@ class TestGoalStateSubgoalsBackcompat:
         state = GoalState.from_json(legacy)
         assert state.goal == "do a thing"
         assert state.subgoals == []
+        assert state.smoke_verified_artifact_hash is None
+        assert state.smoke_verified_event_id is None
+        assert state.smoke_verified_event_hash is None
 
     def test_subgoals_round_trip(self):
         from hermes_cli.goals import GoalState
@@ -683,6 +689,41 @@ class TestGoalManagerSubgoals:
 
         mgr2 = GoalManager(session_id="sub-persist")
         assert mgr2.state.subgoals == ["first", "second"]
+
+    def test_subgoal_mutations_invalidate_persisted_smoke_cache(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="sub-smoke-cache")
+        mgr.set("g")
+        assert mgr.state is not None
+
+        def prime_cache():
+            assert mgr.state is not None
+            mgr.state.smoke_verified_artifact_hash = "sha256:accepted"
+            mgr.state.smoke_verified_event_id = 7
+            mgr.state.smoke_verified_event_hash = "sha256:event"
+            mgr.state.last_smoke_verdict = "PASS"
+            mgr.state.last_smoke_reason = "accepted old criteria"
+
+        prime_cache()
+        mgr.add_subgoal("first")
+        assert mgr.state.smoke_verified_artifact_hash is None
+
+        prime_cache()
+        mgr.remove_subgoal(1)
+        assert mgr.state.smoke_verified_artifact_hash is None
+
+        mgr.add_subgoal("second")
+        prime_cache()
+        assert mgr.clear_subgoals() == 1
+        assert mgr.state.smoke_verified_artifact_hash is None
+        assert mgr.state.last_smoke_verdict is None
+        assert mgr.state.last_smoke_reason is None
+
+        reloaded = GoalManager(session_id="sub-smoke-cache")
+        assert reloaded.state is not None
+        assert reloaded.state.smoke_verified_artifact_hash is None
+        assert reloaded.state.smoke_verified_event_id is None
 
 
 class TestContinuationPromptWithSubgoals:
@@ -1500,3 +1541,639 @@ class TestContractAndBackgroundCompose:
             )
         assert verdict == "done"
         assert wait_directive is None
+
+
+class TestPreviousDeliverableSmokeGate:
+    @pytest.mark.skipif(
+        sys.platform != "linux" or not os.access("/sys/fs/cgroup", os.W_OK),
+        reason="writable Linux cgroup-v2 boundary",
+    )
+    def test_smoke_runner_terminates_detached_descendants(self, tmp_path):
+        from hermes_cli import goals
+
+        sentinel = tmp_path / "late-child-write"
+        child_code = (
+            "import pathlib,time;"
+            "time.sleep(0.5);"
+            f"pathlib.Path({str(sentinel)!r}).write_text('escaped', encoding='utf-8')"
+        )
+        parent_code = (
+            "import subprocess,sys;"
+            f"subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True, "
+            "start_new_session=True)"
+        )
+
+        result = goals._run_smoke_command(
+            [sys.executable, "-c", parent_code],
+            cwd=tmp_path,
+            timeout=2,
+        )
+        assert result.returncode == 0
+        time.sleep(0.8)
+        assert not sentinel.exists()
+
+    def test_smoke_runner_fails_closed_on_output_overflow(self, tmp_path, monkeypatch):
+        from hermes_cli import goals
+
+        monkeypatch.setattr(goals, "_MAX_SMOKE_OUTPUT_BYTES", 128)
+        with pytest.raises(goals._SmokeOutputLimitExceeded):
+            goals._run_smoke_command(
+                [sys.executable, "-c", "print('x' * 10000)"],
+                cwd=tmp_path,
+                timeout=2,
+            )
+
+    @staticmethod
+    def _verification(artifact="sha256:artifact-a", status="passed"):
+        return {
+            "status": status,
+            "root": "/tmp/project",
+            "artifact_hash": artifact,
+            "current_artifact_hash": artifact,
+            "changed_paths": [],
+            "evidence": {
+                "id": 101,
+                "command": f"{sys.executable} -m pytest -q",
+                "cwd": "/tmp/project",
+                "root": "/tmp/project",
+                "changed_paths_json": "[]",
+                "canonical_command": "pytest",
+                "kind": "test",
+                "scope": "full",
+                "status": "passed" if status == "passed" else status,
+                "exit_code": 0 if status == "passed" else 1,
+                "output_summary": "42 passed",
+                "created_at": "2026-07-17T00:00:00+00:00",
+            },
+        }
+
+    @staticmethod
+    def _manager(hermes_home):
+        from hermes_cli.goals import GoalContract, GoalManager
+
+        mgr = GoalManager("smoke-session")
+        mgr.set(
+            "ship the artifact",
+            contract=GoalContract(
+                outcome="artifact is shipped",
+                verification="pytest -q passes",
+                constraints="keep public API stable",
+            ),
+        )
+        return mgr
+
+    def test_fresh_pass_allows_advancement_and_caches_artifact(self, hermes_home):
+        from hermes_cli import goals
+
+        mgr = self._manager(hermes_home)
+        with (
+            patch.object(goals, "judge_goal", return_value=("continue", "next unit", False, None)),
+            patch.object(
+                goals,
+                "smoke_test_previous_deliverable",
+                return_value=("PASS", "full suite exercises the criterion"),
+            ) as verifier,
+        ):
+            decision = mgr.evaluate_after_turn(
+                "pytest: 42 passed",
+                verification_state=self._verification(),
+            )
+
+        assert decision["should_continue"] is True
+        assert "Previous-deliverable smoke gate" not in decision["continuation_prompt"]
+        assert decision["smoke_gate"]["verdict"] == "PASS"
+        assert decision["smoke_gate"]["cached"] is False
+        assert mgr.state is not None
+        assert mgr.state.smoke_verified_artifact_hash == "sha256:artifact-a"
+        assert mgr.state.smoke_verified_event_id == 101
+        assert mgr.state.smoke_verified_event_hash == goals._verification_event_identity(
+            self._verification()["evidence"]
+        )
+        verifier.assert_called_once()
+
+    def test_unchanged_artifact_reuses_cached_pass_without_new_verifier(self, hermes_home):
+        from hermes_cli import goals
+
+        mgr = self._manager(hermes_home)
+        assert mgr.state is not None
+        current = self._verification()
+        mgr.state.smoke_verified_artifact_hash = "sha256:artifact-a"
+        mgr.state.smoke_verified_event_id = 101
+        mgr.state.smoke_verified_event_hash = goals._verification_event_identity(
+            current["evidence"]
+        )
+        mgr.state.last_smoke_verdict = "PASS"
+        with (
+            patch.object(goals, "judge_goal", return_value=("continue", "next unit", False, None)),
+            patch.object(
+                goals,
+                "smoke_test_previous_deliverable",
+                side_effect=AssertionError("cached artifact must not be re-reviewed"),
+            ),
+        ):
+            decision = mgr.evaluate_after_turn(
+                "still green",
+                verification_state=self._verification(),
+            )
+
+        assert decision["should_continue"] is True
+        assert decision["smoke_gate"]["verdict"] == "PASS"
+        assert decision["smoke_gate"]["cached"] is True
+
+    def test_mutated_event_payload_with_same_id_and_artifact_requires_fresh_review(
+        self, hermes_home
+    ):
+        from hermes_cli import goals
+
+        mgr = self._manager(hermes_home)
+        assert mgr.state is not None
+        original = self._verification()
+        mgr.state.smoke_verified_artifact_hash = "sha256:artifact-a"
+        mgr.state.smoke_verified_event_id = 101
+        mgr.state.smoke_verified_event_hash = goals._verification_event_identity(
+            original["evidence"]
+        )
+        mgr.state.last_smoke_verdict = "PASS"
+        mutated = self._verification()
+        mutated["evidence"]["command"] = "pytest tests/tampered.py -q"
+        with (
+            patch.object(
+                goals,
+                "judge_goal",
+                return_value=("continue", "next unit", False, None),
+            ),
+            patch.object(
+                goals,
+                "smoke_test_previous_deliverable",
+                return_value=("FAIL", "event payload changed"),
+            ) as verifier,
+        ):
+            decision = mgr.evaluate_after_turn(
+                "event row changed",
+                verification_state=mutated,
+            )
+
+        verifier.assert_called_once()
+        assert decision["smoke_gate"]["cached"] is False
+        assert decision["smoke_gate"]["verdict"] == "FAIL"
+
+    def test_new_verification_event_with_same_artifact_requires_fresh_review(self, hermes_home):
+        from hermes_cli import goals
+
+        mgr = self._manager(hermes_home)
+        assert mgr.state is not None
+        original = self._verification()
+        mgr.state.smoke_verified_artifact_hash = "sha256:artifact-a"
+        mgr.state.smoke_verified_event_id = 101
+        mgr.state.smoke_verified_event_hash = goals._verification_event_identity(
+            original["evidence"]
+        )
+        mgr.state.last_smoke_verdict = "PASS"
+        newer = self._verification()
+        newer["evidence"]["id"] = 102
+        newer["evidence"]["command"] = "pytest tests/new_acceptance.py -q"
+        with (
+            patch.object(goals, "judge_goal", return_value=("continue", "next unit", False, None)),
+            patch.object(
+                goals,
+                "smoke_test_previous_deliverable",
+                return_value=("FAIL", "new event did not satisfy the contract"),
+            ) as verifier,
+        ):
+            decision = mgr.evaluate_after_turn(
+                "new verification recorded",
+                verification_state=newer,
+            )
+
+        verifier.assert_called_once()
+        assert decision["smoke_gate"]["cached"] is False
+        assert decision["smoke_gate"]["verdict"] == "FAIL"
+        assert mgr.state.smoke_verified_artifact_hash is None
+        assert mgr.state.smoke_verified_event_id is None
+
+    def test_failed_review_blocks_done_and_routes_next_turn_to_repair(self, hermes_home):
+        from hermes_cli import goals
+
+        mgr = self._manager(hermes_home)
+        with (
+            patch.object(goals, "judge_goal", return_value=("done", "looks done", False, None)),
+            patch.object(
+                goals,
+                "smoke_test_previous_deliverable",
+                return_value=("FAIL", "test output does not cover the acceptance criterion"),
+            ),
+        ):
+            decision = mgr.evaluate_after_turn(
+                "done",
+                verification_state=self._verification("sha256:artifact-b"),
+            )
+
+        assert decision["status"] == "active"
+        assert decision["verdict"] == "continue"
+        assert decision["should_continue"] is True
+        assert "Previous-deliverable smoke gate: FAIL" in decision["continuation_prompt"]
+        assert "Do not advance to another subgoal" in decision["continuation_prompt"]
+        assert mgr.state is not None
+        assert mgr.state.smoke_verified_artifact_hash is None
+        assert mgr.state.status == "active"
+
+    def test_stale_artifact_fails_closed_without_calling_auxiliary_model(self, hermes_home):
+        from hermes_cli import goals
+
+        mgr = self._manager(hermes_home)
+        stale = self._verification("sha256:old", status="stale")
+        stale["current_artifact_hash"] = "sha256:new"
+        with (
+            patch.object(goals, "judge_goal", return_value=("continue", "next", False, None)),
+            patch("agent.auxiliary_client.call_llm", side_effect=AssertionError("stale is deterministic")),
+        ):
+            decision = mgr.evaluate_after_turn("edited again", verification_state=stale)
+
+        assert decision["smoke_gate"]["verdict"] == "FAIL"
+        assert "status is stale" in decision["reason"]
+        assert "sha256:new" in decision["continuation_prompt"]
+
+    def test_inconclusive_fresh_verifier_is_non_passing(self, hermes_home):
+        from hermes_cli import goals
+
+        mgr = self._manager(hermes_home)
+        with (
+            patch.object(goals, "judge_goal", return_value=("continue", "next", False, None)),
+            patch.object(
+                goals,
+                "smoke_test_previous_deliverable",
+                return_value=("INCONCLUSIVE", "verifier output was unreadable"),
+            ),
+        ):
+            decision = mgr.evaluate_after_turn(
+                "tests allegedly passed",
+                verification_state=self._verification(),
+            )
+
+        assert decision["smoke_gate"]["verdict"] == "INCONCLUSIVE"
+        assert decision["should_continue"] is True
+        assert "smoke gate: INCONCLUSIVE" in decision["continuation_prompt"]
+
+    def test_non_coding_goal_without_evidence_keeps_existing_behavior(self, hermes_home):
+        from hermes_cli import goals
+
+        mgr = self._manager(hermes_home)
+        with (
+            patch.object(goals, "judge_goal", return_value=("continue", "next", False, None)),
+            patch.object(
+                goals,
+                "smoke_test_previous_deliverable",
+                side_effect=AssertionError("not applicable"),
+            ),
+        ):
+            decision = mgr.evaluate_after_turn(
+                "research step",
+                verification_state={"status": "not_applicable", "evidence": None},
+            )
+
+        assert decision["should_continue"] is True
+        assert decision["smoke_gate"] is None
+        assert "[Continuing toward your standing goal]" in decision["continuation_prompt"]
+
+    def test_fresh_verifier_receives_contract_artifact_and_objective_evidence(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract
+
+        captured = {}
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = (
+            '{"verdict":"PASS","reason":"pytest covers the criterion"}'
+        )
+
+        def _call_llm(**kwargs):
+            captured.update(kwargs)
+            return response
+
+        verification = self._verification("sha256:exact-artifact")
+        verification["root"] = str(hermes_home.parent)
+        verification["evidence"]["root"] = str(hermes_home.parent)
+        verification["evidence"]["cwd"] = str(hermes_home.parent)
+        smoke_run = subprocess.CompletedProcess(
+            args=["pytest", "-q"], returncode=0, stdout="fresh smoke: 42 passed"
+        )
+        with (
+            patch("hermes_cli.goals._run_smoke_command", return_value=smoke_run),
+            patch(
+                "agent.verification_evidence.workspace_artifact_fingerprint",
+                return_value=("sha256:exact-artifact", []),
+            ),
+            patch("agent.auxiliary_client.call_llm", side_effect=_call_llm),
+        ):
+            verdict, reason = goals.smoke_test_previous_deliverable(
+                "ship the artifact",
+                "I think it is done",
+                contract=GoalContract(verification="pytest -q passes"),
+                verification_state=verification,
+            )
+
+        assert verdict == "PASS"
+        assert "covers" in reason
+        assert len(captured["messages"]) == 2
+        assert captured["messages"][0]["role"] == "system"
+        user_prompt = captured["messages"][1]["content"]
+        assert "pytest -q passes" in user_prompt
+        assert "sha256:exact-artifact" in user_prompt
+        assert "42 passed" in user_prompt
+        assert "fresh smoke" in user_prompt
+        assert "untrusted context" in user_prompt
+
+    def test_artifact_change_during_model_review_blocks_pass(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract
+
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = '{"verdict":"PASS","reason":"looks green"}'
+        verification = self._verification("sha256:before")
+        verification["root"] = str(hermes_home.parent)
+        verification["evidence"]["root"] = str(hermes_home.parent)
+        verification["evidence"]["cwd"] = str(hermes_home.parent)
+        smoke_run = subprocess.CompletedProcess(
+            args=["pytest", "-q"], returncode=0, stdout="42 passed"
+        )
+        with (
+            patch("hermes_cli.goals._run_smoke_command", return_value=smoke_run),
+            patch(
+                "agent.verification_evidence.workspace_artifact_fingerprint",
+                side_effect=[("sha256:before", []), ("sha256:during-review", [])],
+            ),
+            patch("agent.auxiliary_client.call_llm", return_value=response),
+        ):
+            verdict, reason = goals.smoke_test_previous_deliverable(
+                "ship",
+                "done",
+                contract=GoalContract(verification="pytest -q passes"),
+                verification_state=verification,
+            )
+
+        assert verdict == "FAIL"
+        assert "changed during fresh verifier review" in reason
+
+    def test_fresh_smoke_command_failure_blocks_without_model_review(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract
+
+        verification = self._verification()
+        verification["root"] = str(hermes_home.parent)
+        verification["evidence"]["cwd"] = str(hermes_home.parent)
+        failed = subprocess.CompletedProcess(
+            args=["pytest", "-q"], returncode=1, stdout="1 failed"
+        )
+        with (
+            patch("hermes_cli.goals._run_smoke_command", return_value=failed),
+            patch(
+                "agent.auxiliary_client.call_llm",
+                side_effect=AssertionError("failed smoke is already decisive"),
+            ),
+        ):
+            verdict, reason = goals.smoke_test_previous_deliverable(
+                "ship",
+                "done",
+                contract=GoalContract(verification="pytest -q passes"),
+                verification_state=verification,
+            )
+
+        assert verdict == "FAIL"
+        assert "exited 1" in reason
+        assert "1 failed" in reason
+
+    def test_shell_composition_is_inconclusive_and_never_executed(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract
+
+        verification = self._verification()
+        verification["evidence"]["command"] = "cd app && pytest -q"
+        with patch(
+            "hermes_cli.goals._run_smoke_command",
+            side_effect=AssertionError("shell composition must not execute"),
+        ):
+            verdict, reason = goals.smoke_test_previous_deliverable(
+                "ship",
+                "done",
+                contract=GoalContract(verification="pytest -q passes"),
+                verification_state=verification,
+            )
+
+        assert verdict == "INCONCLUSIVE"
+        assert "not safe to rerun" in reason
+
+    def test_explicit_shell_interpreter_is_inconclusive_and_never_executed(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract
+
+        verification = self._verification()
+        commands = (
+            "dash -c 'pytest -q'",
+            "env CI=1 pytest -q",
+            "env --chdir=/tmp pytest -q",
+            "env CI=1 bash -c 'pytest -q'",
+            "env -u PATH bash -c 'pytest -q'",
+            "env -S bash -c 'pytest -q'",
+            "env --split-string='bash -c pytest -q'",
+        )
+        with patch(
+            "hermes_cli.goals._run_smoke_command",
+            side_effect=AssertionError("shell interpreter must not execute"),
+        ):
+            for command in commands:
+                verification["evidence"]["command"] = command
+                verdict, reason = goals.smoke_test_previous_deliverable(
+                    "ship",
+                    "done",
+                    contract=GoalContract(verification="pytest -q passes"),
+                    verification_state=verification,
+                )
+
+                assert verdict == "INCONCLUSIVE"
+                assert "not safe to rerun" in reason
+
+    def test_external_test_path_is_inconclusive_and_never_executed(
+        self, hermes_home, monkeypatch
+    ):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract
+
+        project = hermes_home.parent / "project"
+        project.mkdir()
+        external_test = hermes_home.parent / "hermes-ad-hoc-review.py"
+        external_test.write_text("def test_external(): assert True\n", encoding="utf-8")
+        external_executable = hermes_home.parent / "pytest"
+        external_executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        external_executable.chmod(0o755)
+        external_config = hermes_home.parent / "outside-pytest.ini"
+        external_config.write_text("[pytest]\n", encoding="utf-8")
+        commands = [
+            f"pytest -q {external_test}",
+            f"{external_executable} -q",
+            f"pytest -c{external_config} -q",
+            f"pytest @{external_config}",
+        ]
+        if os.name == "posix":
+            artifact_symlink = project / "run-tests"
+            artifact_symlink.symlink_to("/usr/bin/true")
+            commands.append(f"{artifact_symlink} -q")
+        verification = self._verification()
+        verification["root"] = str(project)
+        verification["evidence"]["root"] = str(project)
+        verification["evidence"]["cwd"] = str(project)
+
+        with patch(
+            "hermes_cli.goals._run_smoke_command",
+            side_effect=AssertionError("external artifact must not execute"),
+        ):
+            for command in commands:
+                verification["evidence"]["command"] = command
+                verdict, reason = goals.smoke_test_previous_deliverable(
+                    "ship",
+                    "done",
+                    contract=GoalContract(verification="pytest -q passes"),
+                    verification_state=verification,
+                )
+                assert verdict == "INCONCLUSIVE"
+                assert "outside" in reason
+
+            monkeypatch.setenv("PATH", str(hermes_home.parent))
+            verification["evidence"]["command"] = "pytest -q"
+            verdict, reason = goals.smoke_test_previous_deliverable(
+                "ship",
+                "done",
+                contract=GoalContract(verification="pytest -q passes"),
+                verification_state=verification,
+            )
+            assert verdict == "INCONCLUSIVE"
+            assert "executable is unavailable or outside trusted roots" in reason
+
+    def test_smoke_that_changes_artifact_fingerprint_is_non_passing(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract
+
+        verification = self._verification("sha256:before")
+        verification["root"] = str(hermes_home.parent)
+        verification["evidence"]["cwd"] = str(hermes_home.parent)
+        passed = subprocess.CompletedProcess(
+            args=["pytest", "-q"], returncode=0, stdout="42 passed"
+        )
+        with (
+            patch("hermes_cli.goals._run_smoke_command", return_value=passed),
+            patch(
+                "agent.verification_evidence.workspace_artifact_fingerprint",
+                return_value=("sha256:after", []),
+            ),
+            patch(
+                "agent.auxiliary_client.call_llm",
+                side_effect=AssertionError("mutating smoke is already decisive"),
+            ),
+        ):
+            verdict, reason = goals.smoke_test_previous_deliverable(
+                "ship",
+                "done",
+                contract=GoalContract(verification="pytest -q passes"),
+                verification_state=verification,
+            )
+
+        assert verdict == "FAIL"
+        assert "changed the artifact fingerprint" in reason
+
+    def test_goal_manager_uses_real_ledger_and_real_smoke_rerun(self, hermes_home):
+        from agent.verification_evidence import mark_workspace_edited, record_terminal_result
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract, GoalManager
+
+        project = hermes_home.parent / "project"
+        project.mkdir()
+        (project / "pyproject.toml").write_text(
+            "[tool.pytest.ini_options]\ntestpaths = ['.']\n",
+            encoding="utf-8",
+        )
+        test_file = project / "test_smoke.py"
+        test_file.write_text("def test_deliverable():\n    assert 2 + 2 == 4\n", encoding="utf-8")
+        (project / ".gitignore").write_text(
+            ".pytest_cache/\n__pycache__/\n*.pyc\nignored-artifact.bin\n",
+            encoding="utf-8",
+        )
+        ignored_artifact = project / "ignored-artifact.bin"
+        ignored_artifact.write_bytes(b"version one")
+        subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+        subprocess.run(["git", "config", "user.name", "Hermes Test"], cwd=project, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "hermes@example.invalid"],
+            cwd=project,
+            check=True,
+        )
+        subprocess.run(["git", "add", "."], cwd=project, check=True)
+        subprocess.run(["git", "commit", "-qm", "initial"], cwd=project, check=True)
+        initial_run = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q"],
+            cwd=project,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+        assert initial_run.returncode == 0, initial_run.stdout
+        mark_workspace_edited(
+            session_id="real-smoke-session",
+            cwd=project,
+            paths=[str(test_file)],
+        )
+        event = record_terminal_result(
+            command=f"{sys.executable} -m pytest -q",
+            cwd=project,
+            session_id="real-smoke-session",
+            exit_code=initial_run.returncode,
+            output=initial_run.stdout,
+        )
+        assert event and event["artifact_hash"]
+
+        mgr = GoalManager("real-smoke-session")
+        mgr.set(
+            "ship tested artifact",
+            contract=GoalContract(verification="python -m pytest -q passes"),
+        )
+        fresh_review = MagicMock()
+        fresh_review.choices = [MagicMock()]
+        fresh_review.choices[0].message.content = (
+            '{"verdict":"PASS","reason":"fresh pytest rerun passed the criterion"}'
+        )
+        with (
+            patch.object(goals, "judge_goal", return_value=("continue", "next", False, None)),
+            patch("agent.auxiliary_client.call_llm", return_value=fresh_review),
+        ):
+            decision = mgr.evaluate_after_turn("initial pytest passed")
+
+        assert decision["should_continue"] is True
+        assert decision["smoke_gate"]["verdict"] == "PASS", decision
+        assert decision["smoke_gate"]["artifact_hash"] == event["artifact_hash"]
+        assert mgr.state is not None
+        assert mgr.state.smoke_verified_artifact_hash == event["artifact_hash"]
+
+        ignored_artifact.write_bytes(b"version two")
+
+        def _stale_smoke(*_args, verification_state, **_kwargs):
+            assert verification_state["status"] == "stale"
+            assert verification_state["artifact_hash"] != verification_state["current_artifact_hash"]
+            return "FAIL", "objective verification status is stale"
+
+        with (
+            patch.object(goals, "judge_goal", return_value=("continue", "next", False, None)),
+            patch.object(
+                goals,
+                "smoke_test_previous_deliverable",
+                side_effect=_stale_smoke,
+            ) as smoke_probe,
+        ):
+            stale_decision = mgr.evaluate_after_turn("start the next unit")
+
+        smoke_probe.assert_called_once()
+        assert stale_decision["should_continue"] is True
+        assert stale_decision["smoke_gate"]["verdict"] == "FAIL"
+        assert stale_decision["smoke_gate"]["cached"] is False
+        assert mgr.state is not None
+        assert mgr.state.smoke_verified_artifact_hash is None

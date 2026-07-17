@@ -13881,7 +13881,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             _bg_procs = None
 
-        decision = mgr.evaluate_after_turn(
+        decision = await asyncio.to_thread(
+            mgr.evaluate_after_turn,
             final_response or "",
             user_initiated=True,
             background_processes=_bg_procs,

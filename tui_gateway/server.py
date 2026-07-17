@@ -13176,7 +13176,7 @@ def _(rid, params: dict) -> dict:
         if not session:
             return _err(rid, 4001, "no active session")
         try:
-            from hermes_cli.goals import GoalManager
+            from hermes_cli.goals import GoalManager, parse_contract
         except Exception as exc:
             return _err(rid, 5030, f"goals unavailable: {exc}")
 
@@ -13225,7 +13225,10 @@ def _(rid, params: dict) -> dict:
 
         # Otherwise — treat the remaining text as the new goal.
         try:
-            state = mgr.set(arg)
+            headline, parsed = parse_contract(arg)
+            goal_text = headline or arg
+            contract = parsed if not parsed.is_empty() else None
+            state = mgr.set(goal_text, contract=contract)
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
 

@@ -67,6 +67,17 @@ A contract has five fields, all optional:
 
 When a contract is set, both prompts change: the **continuation prompt** tells the agent to target the verification surface and respect the constraints, and the **judge prompt** decides `done` *only when the verification criterion is met with concrete evidence* (a command result, file excerpt, test output) — not a loose "looks done" claim. This directly tightens the most common `/goal` failure mode (premature completion or endless over-continuation on an underspecified objective).
 
+### Previous-deliverable smoke gate
+
+For a structured coding goal with a non-empty `verification` field, Hermes also gates the transition to the next autonomous turn:
+
+1. a successful verification command is recorded with a SHA-256 fingerprint of the Git `HEAD`, initialized submodule `HEAD`s, and all tracked contents plus untracked, ignored, and explicitly changed artifact files;
+2. before the next turn, Hermes resolves the executable to the artifact or active toolchain, then reruns the command without a shell under a 30-second timeout, a 1 MiB output cap, and descendant-process fencing;
+3. a fresh `goal_judge` context reviews the contract, exact artifact fingerprint, and fresh command output;
+4. `PASS` is cached for that fingerprint and exact verification-ledger event, while `FAIL` or `INCONCLUSIVE` replaces the next continuation with a repair/re-verification prompt.
+
+Any later file change, Git commit, initialized submodule change, verification event/command, or `/subgoal` mutation invalidates the cached pass. Git index flags such as `assume-unchanged` and `skip-worktree` do not hide tracked content from the fingerprint. Explicit shell interpreters/composition, environment wrappers, `PATH`-resolved executables outside the artifact/toolchain, attached or separate external test/config/script paths, ad-hoc scripts, workspaces without a Git `HEAD`, failed Git inventory, more than 10,000 artifact paths, more than 512 MiB of artifact content, output overflow, timeouts, and unreadable verifier replies fail closed as `INCONCLUSIVE`. A nested runtime `HERMES_HOME` is excluded from the artifact inventory. Bare goals and non-coding goals without verification evidence retain the existing behavior.
+
 ### Two ways to set a contract
 
 **1. Let Hermes draft it** (recommended — adapted from Codex's "let the agent draft the goal" tip):

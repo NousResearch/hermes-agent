@@ -122,6 +122,32 @@ def test_goal_set_returns_send_with_notice(server, session):
     assert mgr.state.status == "active"
 
 
+def test_goal_set_parses_and_persists_structured_contract(server, session):
+    sid, session_key, _ = session
+    arg = (
+        "ship the feature\n"
+        "verify: pytest -q passes\n"
+        "constraints: preserve the public API"
+    )
+
+    response = _call(
+        server,
+        "command.dispatch",
+        name="goal",
+        arg=arg,
+        session_id=sid,
+    )
+
+    from hermes_cli.goals import GoalManager
+
+    state = GoalManager(session_key).state
+    assert response["result"]["message"] == "ship the feature"
+    assert state is not None
+    assert state.goal == "ship the feature"
+    assert state.contract.verification == "pytest -q passes"
+    assert state.contract.constraints == "preserve the public API"
+
+
 def test_goal_pause_after_set(server, session):
     sid, session_key, _ = session
     _call(server, "command.dispatch", name="goal", arg="write a story", session_id=sid)

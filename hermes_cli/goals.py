@@ -29,12 +29,21 @@ Nothing in this module touches the agent's system prompt or toolset.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
+import shlex
+import signal
+import shutil
+import subprocess
+import sys
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -46,6 +55,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TURNS = 20
 DEFAULT_JUDGE_TIMEOUT = 30.0
+DEFAULT_SMOKE_TEST_TIMEOUT = 30.0
+_MAX_SMOKE_OUTPUT_BYTES = 1024 * 1024
 # Judge output budget. The freeform judge returns a one-line JSON verdict, but
 # reasoning models (deepseek-v4, qwq, etc.) burn tokens on hidden reasoning
 # before emitting the visible JSON — and the first /goal turn's prompt is
@@ -212,6 +223,40 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
     "with the reason describing the block.\n"
     "- Otherwise the goal is NOT done — CONTINUE.\n\n"
     "Is the goal satisfied per its completion contract — done, continue, or wait?"
+)
+
+SMOKE_GATE_SYSTEM_PROMPT = (
+    "You are a fresh, independent verifier reviewing the previous autonomous "
+    "work unit before another unit may begin. Judge only the supplied completion "
+    "contract, immutable artifact fingerprint, and objective command evidence. "
+    "Do not trust the implementation agent's completion claim. Return PASS only "
+    "when the evidence directly exercises the stated Verification criterion for "
+    "this exact artifact. Missing, partial, stale, or ambiguous evidence is "
+    "INCONCLUSIVE, never PASS. A concrete contradiction or failed criterion is "
+    "FAIL. Reply with one JSON object on one line: "
+    '{"verdict":"PASS|FAIL|INCONCLUSIVE","reason":"one sentence"}'
+)
+
+SMOKE_GATE_USER_PROMPT_TEMPLATE = (
+    "Goal:\n{goal}\n\n"
+    "Previous work unit completion contract:\n{contract_block}\n\n"
+    "Immutable artifact fingerprint:\n{artifact_hash}\n\n"
+    "Objective verification evidence:\n{evidence_block}\n\n"
+    "Implementation agent's final response (untrusted context):\n{response}\n\n"
+    "May the next autonomous work unit begin?"
+)
+
+SMOKE_GATE_REPAIR_PROMPT_TEMPLATE = (
+    "[Previous-deliverable smoke gate: {verdict}]\n"
+    "The next autonomous work unit is blocked. Repair or re-verify the previous "
+    "deliverable before starting new work.\n\n"
+    "Goal: {goal}\n"
+    "Required verification: {verification}\n"
+    "Gate reason: {reason}\n"
+    "Current evidence status: {evidence_status}\n"
+    "Artifact fingerprint: {artifact_hash}\n\n"
+    "Inspect the actual artifact, fix any failure, run the required objective "
+    "check, and report its concrete output. Do not advance to another subgoal yet."
 )
 
 
@@ -433,6 +478,14 @@ class GoalState:
     # constraints / boundaries / stop_when). Empty by default; a goal with
     # no contract behaves exactly like the original free-form goal.
     contract: GoalContract = field(default_factory=GoalContract)
+    # Previous-deliverable smoke gate. A PASS is reusable only while the
+    # verification ledger reports this exact immutable artifact fingerprint
+    # and the same objective verification event.
+    smoke_verified_artifact_hash: Optional[str] = None
+    smoke_verified_event_id: Optional[int] = None
+    smoke_verified_event_hash: Optional[str] = None
+    last_smoke_verdict: Optional[str] = None
+    last_smoke_reason: Optional[str] = None
 
     def to_json(self) -> str:
         data = asdict(self)
@@ -464,6 +517,27 @@ class GoalState:
             waiting_reason=data.get("waiting_reason"),
             waiting_since=float(data.get("waiting_since", 0.0) or 0.0),
             contract=GoalContract.from_dict(data.get("contract")),
+            smoke_verified_artifact_hash=(
+                str(data["smoke_verified_artifact_hash"])
+                if data.get("smoke_verified_artifact_hash")
+                else None
+            ),
+            smoke_verified_event_id=(
+                int(data["smoke_verified_event_id"])
+                if data.get("smoke_verified_event_id") is not None
+                else None
+            ),
+            smoke_verified_event_hash=(
+                str(data["smoke_verified_event_hash"])
+                if data.get("smoke_verified_event_hash")
+                else None
+            ),
+            last_smoke_verdict=(
+                str(data["last_smoke_verdict"]) if data.get("last_smoke_verdict") else None
+            ),
+            last_smoke_reason=(
+                str(data["last_smoke_reason"]) if data.get("last_smoke_reason") else None
+            ),
         )
 
     # --- contract helpers -------------------------------------------------
@@ -957,6 +1031,563 @@ def judge_goal(
     return verdict, reason, parse_failed, wait_directive
 
 
+def _latest_goal_verification_status(session_id: str) -> Dict[str, Any]:
+    try:
+        from agent.verification_evidence import latest_verification_status
+
+        status = latest_verification_status(session_id=session_id)
+        return status if isinstance(status, dict) else {"status": "unknown"}
+    except Exception as exc:
+        logger.debug("goal smoke gate: verification status unavailable: %s", exc)
+        return {"status": "unknown", "evidence": None}
+
+
+def _smoke_gate_is_applicable(verification_state: Dict[str, Any]) -> bool:
+    status = str(verification_state.get("status") or "not_applicable")
+    return status in {"passed", "failed", "stale"} or bool(
+        verification_state.get("changed_paths")
+    )
+
+
+def _verification_event_identity(evidence: Any) -> Optional[str]:
+    """Return a stable identity for the exact immutable ledger event payload."""
+    if not isinstance(evidence, dict):
+        return None
+    try:
+        encoded = json.dumps(
+            evidence,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return None
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _smoke_command_tokens(command: str) -> Optional[List[str]]:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    shell_controls = {"&&", "||", ";", "|", ">", ">>", "<", "<<", "2>", "2>>"}
+    if any(token in shell_controls or "\n" in token or "\r" in token for token in tokens):
+        return None
+    shell_executables = {
+        "ash",
+        "bash",
+        "busybox",
+        "cmd",
+        "command.com",
+        "csh",
+        "dash",
+        "elvish",
+        "fish",
+        "ksh",
+        "mksh",
+        "nu",
+        "nushell",
+        "oil",
+        "osh",
+        "powershell",
+        "pwsh",
+        "sh",
+        "tcsh",
+        "xonsh",
+        "yash",
+        "zsh",
+    }
+    executable = Path(tokens[0]).name.lower().removesuffix(".exe")
+    if (
+        executable == "env"
+        or executable in shell_executables
+        or Path(tokens[0]).suffix.casefold() in {".bat", ".cmd", ".ps1"}
+    ):
+        return None
+    return tokens
+
+
+def _trusted_external_executable(path: Path) -> bool:
+    roots = {Path(sys.executable).resolve().parent, Path(sys.base_prefix).resolve()}
+    if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+        for variable in ("SystemRoot", "ProgramFiles", "ProgramFiles(x86)"):
+            if os.environ.get(variable):
+                roots.add(Path(os.environ[variable]).resolve())
+    else:
+        roots.update(Path(prefix) for prefix in ("/bin", "/sbin", "/usr", "/opt", "/nix/store"))
+    return any(path == prefix or prefix in path.parents for prefix in roots)
+
+
+def _command_paths_stay_within_root(tokens: List[str], *, root: Path, cwd: Path) -> bool:
+    """Reject test/config/script arguments that escape the fingerprinted tree."""
+    script_suffixes = {".bash", ".bat", ".cmd", ".js", ".pl", ".ps1", ".py", ".rb", ".sh"}
+    for index, token in enumerate(tokens):
+        if token.startswith("--") and "=" not in token and ("/" in token or "\\" in token):
+            return False
+        values = [token]
+        if token.startswith("-") and "=" in token:
+            values = [token.split("=", 1)[1]]
+        elif token.startswith("-"):
+            for offset in range(1, min(4, len(token))):
+                suffix = token[offset:]
+                suffix_path = Path(suffix).expanduser()
+                if (
+                    suffix_path.is_absolute()
+                    or suffix.startswith((".", "~"))
+                    or "/" in suffix
+                    or "\\" in suffix
+                ):
+                    values.append(suffix)
+        values.extend(
+            value[1:]
+            for value in tuple(values)
+            if value.startswith("@") and len(value) > 1
+        )
+        for value in values:
+            value = value.split("::", 1)[0]
+            if not value or value.startswith(("http://", "https://")):
+                continue
+            candidate = Path(value).expanduser()
+            path_like = (
+                candidate.is_absolute()
+                or value.startswith((".", "~"))
+                or "/" in value
+                or "\\" in value
+            )
+            if not path_like:
+                continue
+            try:
+                resolved = (
+                    (cwd / candidate).resolve()
+                    if not candidate.is_absolute()
+                    else candidate.resolve()
+                )
+            except (OSError, RuntimeError):
+                return False
+            if resolved == root or root in resolved.parents:
+                continue
+            # An absolute executable may live in a system/venv prefix outside
+            # the project. Every argument remains bound to the verified root.
+            if (
+                index == 0
+                and candidate.is_absolute()
+                and resolved.suffix.casefold() not in script_suffixes
+                and _trusted_external_executable(resolved)
+            ):
+                continue
+            return False
+    return True
+
+
+def _resolve_smoke_executable(tokens: List[str], *, root: Path, cwd: Path) -> Optional[List[str]]:
+    raw = tokens[0]
+    candidate = Path(raw).expanduser()
+    try:
+        if candidate.is_absolute():
+            launch_path = candidate.absolute()
+        elif "/" in raw or "\\" in raw:
+            launch_path = (cwd / candidate).absolute()
+        else:
+            found = shutil.which(raw)
+            if not found:
+                return None
+            launch_path = Path(found).absolute()
+        resolved = launch_path.resolve()
+    except (OSError, RuntimeError):
+        return None
+    launch_is_artifact_local = launch_path == root or root in launch_path.parents
+    resolved_is_artifact_local = resolved == root or root in resolved.parents
+    if launch_is_artifact_local and not resolved_is_artifact_local:
+        return None
+    if resolved.suffix.casefold() in {".bat", ".cmd", ".ps1"}:
+        return None
+    if resolved != root and root not in resolved.parents and not _trusted_external_executable(resolved):
+        return None
+    return [str(launch_path), *tokens[1:]]
+
+
+class _SmokeOutputLimitExceeded(subprocess.SubprocessError):
+    pass
+
+
+class _SmokeSandboxUnavailable(subprocess.SubprocessError):
+    pass
+
+
+def _create_linux_smoke_cgroup() -> Optional[Path]:
+    if sys.platform != "linux":
+        return None
+    root = Path("/sys/fs/cgroup")
+    if not (root / "cgroup.controllers").is_file() or not os.access(root, os.W_OK):
+        return None
+    path = root / f"hermes-smoke-{os.getpid()}-{time.monotonic_ns()}"
+    try:
+        path.mkdir(mode=0o700)
+        if not (path / "cgroup.procs").is_file() or not (path / "cgroup.kill").is_file():
+            raise OSError("required cgroup v2 controls are unavailable")
+    except OSError as exc:
+        try:
+            path.rmdir()
+        except OSError:
+            pass
+        raise _SmokeSandboxUnavailable(str(exc)) from exc
+    return path
+
+
+def _cleanup_linux_smoke_cgroup(path: Optional[Path]) -> bool:
+    if path is None:
+        return True
+    success = True
+    try:
+        (path / "cgroup.kill").write_text("1", encoding="ascii")
+    except OSError:
+        success = False
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        try:
+            if not (path / "cgroup.procs").read_text(encoding="ascii").strip():
+                break
+        except OSError:
+            break
+        time.sleep(0.02)
+    for _ in range(20):
+        try:
+            path.rmdir()
+            return success
+        except OSError:
+            time.sleep(0.02)
+    return False
+
+
+def _terminate_smoke_process_tree(process: subprocess.Popen[Any]) -> None:
+    """Best-effort fallback termination for non-cgroup platforms."""
+    if os.name == "posix":
+        kill_group = getattr(os, "killpg", None)
+        if not callable(kill_group):
+            return
+        sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+        for sig, grace in ((signal.SIGTERM, 0.5), (sigkill, 0.0)):
+            try:
+                kill_group(process.pid, sig)
+            except ProcessLookupError:
+                return
+            except OSError:
+                break
+            if grace:
+                deadline = time.monotonic() + grace
+                while time.monotonic() < deadline:
+                    try:
+                        kill_group(process.pid, 0)
+                    except ProcessLookupError:
+                        return
+                    except OSError:
+                        break
+                    time.sleep(0.02)
+        return
+    if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+        try:
+            os.kill(process.pid, signal.CTRL_BREAK_EVENT)
+        except (OSError, AttributeError):
+            pass
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+def _run_smoke_command(
+    tokens: List[str],
+    *,
+    cwd: Path,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run without a shell, cap output, and fence descendants before exec."""
+    cgroup = _create_linux_smoke_cgroup()
+    read_fd: Optional[int] = None
+    write_fd: Optional[int] = None
+    launch_tokens = list(tokens)
+    popen_kwargs: Dict[str, Any] = {
+        "cwd": str(cwd),
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+    }
+    if cgroup is not None:
+        read_fd, write_fd = os.pipe()
+        os.set_blocking(read_fd, False)
+        helper = (
+            "import os,sys\n"
+            "try:\n"
+            "    with open(os.path.join(sys.argv[1], 'cgroup.procs'), 'w', encoding='ascii') as f:\n"
+            "        f.write(str(os.getpid()))\n"
+            "    os.write(int(sys.argv[2]), b'1')\n"
+            "    os.close(int(sys.argv[2]))\n"
+            "except BaseException:\n"
+            "    os._exit(126)\n"
+            "os.execv(sys.argv[3], sys.argv[3:])\n"
+        )
+        launch_tokens = [
+            sys.executable,
+            "-c",
+            helper,
+            str(cgroup),
+            str(write_fd),
+            *tokens,
+        ]
+        popen_kwargs["pass_fds"] = (write_fd,)
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+    elif os.name == "nt":  # pragma: no cover - exercised on Windows CI
+        popen_kwargs["creationflags"] = getattr(
+            subprocess,
+            "CREATE_NEW_PROCESS_GROUP",
+            0,
+        )
+
+    try:
+        process = subprocess.Popen(launch_tokens, **popen_kwargs)
+    except OSError:
+        _cleanup_linux_smoke_cgroup(cgroup)
+        if read_fd is not None:
+            os.close(read_fd)
+        if write_fd is not None:
+            os.close(write_fd)
+        raise
+    if write_fd is not None:
+        os.close(write_fd)
+
+    chunks: list[bytes] = []
+    output_state = {"size": 0, "exceeded": False, "failed": False}
+
+    def _drain_stdout() -> None:
+        try:
+            assert process.stdout is not None
+            while True:
+                chunk = process.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                remaining = max(0, _MAX_SMOKE_OUTPUT_BYTES - output_state["size"])
+                if remaining:
+                    chunks.append(chunk[:remaining])
+                output_state["size"] += len(chunk)
+                if output_state["size"] > _MAX_SMOKE_OUTPUT_BYTES:
+                    output_state["exceeded"] = True
+        except (OSError, ValueError):
+            output_state["failed"] = True
+
+    reader = threading.Thread(target=_drain_stdout, daemon=True)
+    reader.start()
+    deadline = time.monotonic() + max(1.0, float(timeout))
+    ack_deadline = min(deadline, time.monotonic() + 2.0)
+    acknowledged = cgroup is None
+    stop_reason: Optional[str] = None
+    try:
+        while True:
+            if not acknowledged and read_fd is not None:
+                try:
+                    acknowledged = os.read(read_fd, 1) == b"1"
+                except BlockingIOError:
+                    pass
+                except OSError:
+                    stop_reason = "sandbox"
+                    break
+            if output_state["exceeded"]:
+                stop_reason = "output"
+                break
+            returncode = process.poll()
+            if returncode is not None:
+                if not acknowledged:
+                    stop_reason = "sandbox"
+                break
+            now = time.monotonic()
+            if not acknowledged and now >= ack_deadline:
+                stop_reason = "sandbox"
+                break
+            if now >= deadline:
+                stop_reason = "timeout"
+                break
+            time.sleep(0.01)
+    finally:
+        if read_fd is not None:
+            os.close(read_fd)
+
+    cleanup_ok = _cleanup_linux_smoke_cgroup(cgroup)
+    _terminate_smoke_process_tree(process)
+    if process.poll() is None:
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+    reader.join(timeout=1)
+    if reader.is_alive() or output_state["failed"]:
+        raise subprocess.SubprocessError("smoke output reader failed")
+    stdout = b"".join(chunks).decode("utf-8", errors="replace")
+    if not cleanup_ok or stop_reason == "sandbox":
+        raise _SmokeSandboxUnavailable("smoke descendant fence could not be established")
+    if stop_reason == "output":
+        raise _SmokeOutputLimitExceeded("smoke output exceeded limit")
+    if stop_reason == "timeout":
+        raise subprocess.TimeoutExpired(tokens, timeout, output=stdout)
+    return subprocess.CompletedProcess(tokens, process.returncode, stdout)
+
+
+def smoke_test_previous_deliverable(
+    goal: str,
+    last_response: str,
+    *,
+    contract: GoalContract,
+    verification_state: Dict[str, Any],
+    timeout: float = DEFAULT_JUDGE_TIMEOUT,
+    smoke_timeout: float = DEFAULT_SMOKE_TEST_TIMEOUT,
+) -> Tuple[str, str]:
+    """Rerun objective evidence, then review it in a fresh model context."""
+    artifact_hash = str(verification_state.get("artifact_hash") or "").strip()
+    if not artifact_hash:
+        return "INCONCLUSIVE", "verification evidence has no immutable artifact fingerprint"
+    if str(verification_state.get("status") or "") != "passed":
+        return (
+            "FAIL",
+            f"objective verification status is {verification_state.get('status') or 'unknown'}",
+        )
+
+    evidence = verification_state.get("evidence") or {}
+    if str(evidence.get("kind") or "") == "ad_hoc":
+        return "INCONCLUSIVE", "ad-hoc verification scripts are not safe to rerun automatically"
+    command = str(evidence.get("command") or "").strip()
+    tokens = _smoke_command_tokens(command)
+    if tokens is None:
+        return "INCONCLUSIVE", "recorded verification command is not safe to rerun without a shell"
+    try:
+        root = Path(str(verification_state.get("root") or evidence.get("root") or "")).resolve()
+        cwd = Path(str(evidence.get("cwd") or root)).resolve()
+    except Exception:
+        return "INCONCLUSIVE", "verification workspace path is invalid"
+    if not root.is_dir() or not cwd.is_dir() or (cwd != root and root not in cwd.parents):
+        return "INCONCLUSIVE", "verification workspace is unavailable or outside the artifact root"
+    if not _command_paths_stay_within_root(tokens, root=root, cwd=cwd):
+        return "INCONCLUSIVE", "recorded verification command references a path outside the artifact root"
+    resolved_tokens = _resolve_smoke_executable(tokens, root=root, cwd=cwd)
+    if resolved_tokens is None:
+        return "INCONCLUSIVE", "recorded verification executable is unavailable or outside trusted roots"
+    tokens = resolved_tokens
+
+    try:
+        smoke_run = _run_smoke_command(
+            tokens,
+            cwd=cwd,
+            timeout=smoke_timeout,
+        )
+    except _SmokeOutputLimitExceeded:
+        return "INCONCLUSIVE", "fresh smoke test exceeded the bounded output limit"
+    except _SmokeSandboxUnavailable:
+        return "INCONCLUSIVE", "fresh smoke test descendant fence is unavailable"
+    except subprocess.TimeoutExpired:
+        return "INCONCLUSIVE", f"fresh smoke test exceeded {int(smoke_timeout)}s timeout"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "INCONCLUSIVE", f"fresh smoke test could not run: {type(exc).__name__}"
+
+    smoke_output = _truncate(smoke_run.stdout or "", 3500)
+    if smoke_run.returncode != 0:
+        tail = _truncate(smoke_output.replace("\n", " "), 240)
+        return "FAIL", f"fresh smoke test exited {smoke_run.returncode}: {tail or 'no output'}"
+
+    try:
+        from agent.verification_evidence import workspace_artifact_fingerprint
+
+        event_paths = json.loads(evidence.get("changed_paths_json") or "[]")
+        if not isinstance(event_paths, list):
+            event_paths = []
+        post_smoke_hash, _ = workspace_artifact_fingerprint(root, event_paths)
+    except Exception as exc:
+        return "INCONCLUSIVE", f"artifact fingerprint recheck failed: {type(exc).__name__}"
+    if not post_smoke_hash:
+        return "INCONCLUSIVE", "artifact fingerprint could not be recomputed after smoke test"
+    if post_smoke_hash != artifact_hash:
+        return "FAIL", "fresh smoke test changed the artifact fingerprint"
+
+    evidence_block = json.dumps(
+        {
+            "recorded": {
+                key: evidence.get(key)
+                for key in (
+                    "command",
+                    "canonical_command",
+                    "kind",
+                    "scope",
+                    "status",
+                    "exit_code",
+                    "output_summary",
+                    "created_at",
+                )
+            },
+            "fresh_smoke_test": {
+                "command": command,
+                "exit_code": smoke_run.returncode,
+                "output": smoke_output,
+            },
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    prompt = SMOKE_GATE_USER_PROMPT_TEMPLATE.format(
+        goal=_truncate(goal, 2000),
+        contract_block=_truncate(contract.render_block(), 2500),
+        artifact_hash=artifact_hash,
+        evidence_block=_truncate(evidence_block, 3500),
+        response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+    )
+    try:
+        from agent.auxiliary_client import call_llm
+
+        response = call_llm(
+            task="goal_judge",
+            messages=[
+                {"role": "system", "content": SMOKE_GATE_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            max_tokens=_goal_judge_max_tokens(),
+            timeout=timeout,
+        )
+        raw = response.choices[0].message.content or ""
+    except Exception as exc:
+        logger.info("goal smoke gate: verifier call failed (%s)", exc)
+        return "INCONCLUSIVE", f"fresh verifier error: {type(exc).__name__}"
+
+    data = _extract_json_object(raw)
+    if not isinstance(data, dict):
+        return "INCONCLUSIVE", "fresh verifier returned unreadable output"
+    verdict = str(data.get("verdict") or "").strip().upper()
+    reason = str(data.get("reason") or "").strip() or "no reason provided"
+    if verdict not in {"PASS", "FAIL", "INCONCLUSIVE"}:
+        return "INCONCLUSIVE", "fresh verifier returned an invalid verdict"
+    if verdict == "PASS":
+        try:
+            final_hash, _ = workspace_artifact_fingerprint(root, event_paths)
+        except Exception as exc:
+            return "INCONCLUSIVE", f"final artifact fingerprint failed: {type(exc).__name__}"
+        if not final_hash:
+            return "INCONCLUSIVE", "artifact fingerprint could not be recomputed before caching PASS"
+        if final_hash != artifact_hash:
+            return "FAIL", "artifact changed during fresh verifier review"
+    logger.info(
+        "goal smoke gate: verdict=%s artifact=%s reason=%s",
+        verdict,
+        artifact_hash[:24],
+        _truncate(reason, 120),
+    )
+    return verdict, reason
+
+
 def gather_background_processes(task_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Return the live background-process snapshot for the goal judge.
 
@@ -1149,8 +1780,18 @@ class GoalManager:
         if self._state is None:
             return None
         self._state.contract = contract or GoalContract()
+        self._invalidate_smoke_cache()
         save_goal(self.session_id, self._state)
         return self._state
+
+    def _invalidate_smoke_cache(self) -> None:
+        if self._state is None:
+            return
+        self._state.smoke_verified_artifact_hash = None
+        self._state.smoke_verified_event_id = None
+        self._state.smoke_verified_event_hash = None
+        self._state.last_smoke_verdict = None
+        self._state.last_smoke_reason = None
 
     def pause(self, reason: str = "user-paused") -> Optional[GoalState]:
         if not self._state:
@@ -1211,6 +1852,7 @@ class GoalManager:
         if not text:
             raise ValueError("subgoal text is empty")
         self._state.subgoals.append(text)
+        self._invalidate_smoke_cache()
         save_goal(self.session_id, self._state)
         return text
 
@@ -1224,6 +1866,7 @@ class GoalManager:
                 f"index out of range (1..{len(self._state.subgoals)})"
             )
         removed = self._state.subgoals.pop(idx)
+        self._invalidate_smoke_cache()
         save_goal(self.session_id, self._state)
         return removed
 
@@ -1233,6 +1876,8 @@ class GoalManager:
             raise RuntimeError("no active goal")
         prev = len(self._state.subgoals)
         self._state.subgoals = []
+        if prev:
+            self._invalidate_smoke_cache()
         save_goal(self.session_id, self._state)
         return prev
 
@@ -1369,6 +2014,7 @@ class GoalManager:
         *,
         user_initiated: bool = True,
         background_processes: Optional[List[Dict[str, Any]]] = None,
+        verification_state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Run the judge and update state. Return a decision dict.
 
@@ -1468,6 +2114,90 @@ class GoalManager:
                 "message": f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}",
             }
 
+        # Previous-deliverable smoke gate. Structured goals already name their
+        # acceptance surface in ``contract.verification``. When this turn also
+        # produced coding verification evidence, a fresh auxiliary context must
+        # accept that evidence for the exact artifact fingerprint before DONE or
+        # a normal CONTINUE may cross the boundary. A cached PASS is valid only
+        # while ``verification_status`` recomputes the same fingerprint.
+        _smoke_repair_prompt: Optional[str] = None
+        _smoke_result: Optional[Dict[str, Any]] = None
+        if (
+            verdict in {"done", "continue"}
+            and state.has_contract()
+            and state.contract.verification.strip()
+        ):
+            _verification = (
+                verification_state
+                if isinstance(verification_state, dict)
+                else _latest_goal_verification_status(self.session_id)
+            )
+            if _smoke_gate_is_applicable(_verification):
+                _artifact_hash = str(_verification.get("artifact_hash") or "").strip()
+                _evidence = _verification.get("evidence")
+                _raw_event_id = _evidence.get("id") if isinstance(_evidence, dict) else None
+                try:
+                    _event_id = int(_raw_event_id) if _raw_event_id is not None else None
+                except (TypeError, ValueError):
+                    _event_id = None
+                _event_hash = _verification_event_identity(_evidence)
+                if (
+                    _verification.get("status") == "passed"
+                    and _artifact_hash
+                    and _event_id is not None
+                    and _event_hash
+                    and state.smoke_verified_artifact_hash == _artifact_hash
+                    and state.smoke_verified_event_id == _event_id
+                    and state.smoke_verified_event_hash == _event_hash
+                    and state.last_smoke_verdict == "PASS"
+                ):
+                    _smoke_verdict = "PASS"
+                    _smoke_reason = "cached PASS for unchanged artifact and verification event"
+                    _smoke_cached = True
+                else:
+                    _smoke_verdict, _smoke_reason = smoke_test_previous_deliverable(
+                        state.goal,
+                        last_response,
+                        contract=state.contract,
+                        verification_state=_verification,
+                    )
+                    _smoke_cached = False
+
+                state.last_smoke_verdict = _smoke_verdict
+                state.last_smoke_reason = _smoke_reason
+                _smoke_result = {
+                    "verdict": _smoke_verdict,
+                    "reason": _smoke_reason,
+                    "artifact_hash": _artifact_hash or None,
+                    "verification_event_id": _event_id,
+                    "verification_event_hash": _event_hash,
+                    "cached": _smoke_cached,
+                }
+                if _smoke_verdict == "PASS":
+                    state.smoke_verified_artifact_hash = _artifact_hash
+                    state.smoke_verified_event_id = _event_id
+                    state.smoke_verified_event_hash = _event_hash
+                else:
+                    state.smoke_verified_artifact_hash = None
+                    state.smoke_verified_event_id = None
+                    state.smoke_verified_event_hash = None
+                    verdict = "continue"
+                    reason = f"previous-deliverable smoke gate {_smoke_verdict}: {_smoke_reason}"
+                    state.last_verdict = verdict
+                    state.last_reason = reason
+                    _smoke_repair_prompt = SMOKE_GATE_REPAIR_PROMPT_TEMPLATE.format(
+                        verdict=_smoke_verdict,
+                        goal=state.goal,
+                        verification=state.contract.verification,
+                        reason=_smoke_reason,
+                        evidence_status=_verification.get("status") or "unknown",
+                        artifact_hash=(
+                            _verification.get("current_artifact_hash")
+                            or _artifact_hash
+                            or "unavailable"
+                        ),
+                    )
+
         if verdict == "done":
             state.status = "done"
             save_goal(self.session_id, state)
@@ -1530,12 +2260,15 @@ class GoalManager:
         return {
             "status": "active",
             "should_continue": True,
-            "continuation_prompt": self.next_continuation_prompt(),
+            "continuation_prompt": _smoke_repair_prompt or self.next_continuation_prompt(),
             "verdict": "continue",
             "reason": reason,
             "message": (
-                f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}"
+                f"↺ Previous-deliverable smoke gate blocked advancement: {reason}"
+                if _smoke_repair_prompt
+                else f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}"
             ),
+            "smoke_gate": _smoke_result,
         }
 
     def next_continuation_prompt(self) -> Optional[str]:

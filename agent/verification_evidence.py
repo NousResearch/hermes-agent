@@ -7,10 +7,14 @@ blocks completion, and never upgrades targeted checks into "repo green".
 
 from __future__ import annotations
 
+import configparser
+import hashlib
 import json
+import os
 import re
 import shlex
 import sqlite3
+import subprocess
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -26,8 +30,11 @@ _MAX_OUTPUT_SUMMARY_CHARS = 2000
 _MAX_EVIDENCE_AGE_DAYS = 30
 _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
+_MAX_ARTIFACT_PATHS = 10_000
+_MAX_ARTIFACT_HASH_BYTES = 512 * 1024 * 1024
+_MAX_GIT_QUERY_BYTES = 64 * 1024 * 1024
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
-_VERIFY_SCHEMA_VERSION = 1
+_VERIFY_SCHEMA_VERSION = 2
 _SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
 
 
@@ -93,10 +100,22 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             scope TEXT NOT NULL,
             status TEXT NOT NULL,
             exit_code INTEGER NOT NULL,
-            output_summary TEXT NOT NULL
+            output_summary TEXT NOT NULL,
+            artifact_hash TEXT,
+            changed_paths_json TEXT NOT NULL DEFAULT '[]'
         )
         """
     )
+    event_columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(verification_events)")
+    }
+    if "artifact_hash" not in event_columns:
+        conn.execute("ALTER TABLE verification_events ADD COLUMN artifact_hash TEXT")
+    if "changed_paths_json" not in event_columns:
+        conn.execute(
+            "ALTER TABLE verification_events "
+            "ADD COLUMN changed_paths_json TEXT NOT NULL DEFAULT '[]'"
+        )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS verification_state (
@@ -205,8 +224,18 @@ def _find_canonical_match(command: str, canonical_commands: list[str]) -> Option
             continue
         for tokens in segments:
             candidate_tokens = _strip_command_prefix(tokens)
+            normalized_tokens = list(candidate_tokens)
+            if normalized_tokens:
+                executable = normalized_tokens[0]
+                is_absolute_executable = Path(executable).is_absolute() or bool(
+                    re.match(r"^[A-Za-z]:[\\/]", executable)
+                )
+                if is_absolute_executable:
+                    normalized_tokens[0] = executable.replace("\\", "/").rsplit("/", 1)[-1]
+                    if normalized_tokens[0].casefold().endswith(".exe"):
+                        normalized_tokens[0] = normalized_tokens[0][:-4]
             for candidate in _equivalent_needles(needle):
-                if candidate_tokens[:len(candidate)] == candidate:
+                if normalized_tokens[:len(candidate)] == candidate:
                     return canonical, candidate_tokens[len(candidate):]
     return None
 
@@ -316,6 +345,351 @@ def _summarize_output(output: str) -> str:
         + f"\n... [{len(text) - _MAX_OUTPUT_SUMMARY_CHARS} chars omitted] ...\n"
         + text[-tail:]
     )
+
+
+def _git_capture(root: Path, *args: str) -> Optional[bytes]:
+    """Run a time- and output-bounded, non-shell Git identity query."""
+    try:
+        process = subprocess.Popen(
+            ["git", "-C", str(root), *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
+    chunks: list[bytes] = []
+    state = {"size": 0, "exceeded": False, "failed": False}
+
+    def _drain_stdout() -> None:
+        try:
+            assert process.stdout is not None
+            while True:
+                chunk = process.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                state["size"] += len(chunk)
+                if state["size"] <= _MAX_GIT_QUERY_BYTES:
+                    chunks.append(chunk)
+                else:
+                    state["exceeded"] = True
+        except (OSError, ValueError):
+            state["failed"] = True
+
+    reader = threading.Thread(target=_drain_stdout, daemon=True)
+    reader.start()
+    try:
+        returncode = process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        reader.join(timeout=1)
+        return None
+    reader.join(timeout=1)
+    if reader.is_alive() or state["failed"] or state["exceeded"] or returncode != 0:
+        return None
+    return b"".join(chunks)
+
+
+def _git_workspace_paths(root: Path) -> Optional[set[str]]:
+    """Return every Git-visible and ignored workspace path, or fail closed."""
+    paths: set[str] = set()
+    for args in (
+        ("ls-files", "-z"),
+        ("diff", "--name-only", "-z", "HEAD"),
+        ("diff", "--cached", "--name-only", "-z", "HEAD"),
+        ("ls-files", "--others", "--exclude-standard", "-z"),
+        ("ls-files", "--others", "--ignored", "--exclude-standard", "-z"),
+    ):
+        raw = _git_capture(root, *args)
+        if raw is None:
+            return None
+        for item in raw.split(b"\0"):
+            if item:
+                paths.add(os.fsdecode(item))
+                if len(paths) > _MAX_ARTIFACT_PATHS:
+                    return None
+    return paths
+
+
+def _parse_submodule_paths(text: str) -> Optional[set[str]]:
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        parser.read_string(text)
+    except (configparser.Error, UnicodeError):
+        return None
+    paths: set[str] = set()
+    for section in parser.sections():
+        if not section.casefold().startswith("submodule "):
+            continue
+        value = parser.get(section, "path", fallback="").strip()
+        if value:
+            paths.add(value)
+            if len(paths) > _MAX_ARTIFACT_PATHS:
+                return None
+    return paths
+
+
+def _declared_submodule_roots(root: Path, top_root: Path) -> Optional[list[Path]]:
+    """Resolve initialized submodules declared by worktree or HEAD metadata."""
+    declarations: set[str] = set()
+    current = root / ".gitmodules"
+    if current.exists():
+        try:
+            parsed = _parse_submodule_paths(current.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError):
+            return None
+        if parsed is None:
+            return None
+        declarations.update(parsed)
+        if len(declarations) > _MAX_ARTIFACT_PATHS:
+            return None
+
+    tracked = _git_capture(root, "ls-tree", "--name-only", "HEAD", "--", ".gitmodules")
+    if tracked is None:
+        return None
+    if tracked.strip():
+        historical = _git_capture(root, "show", "HEAD:.gitmodules")
+        if historical is None:
+            return None
+        try:
+            historical_text = historical.decode("utf-8", errors="strict")
+        except UnicodeError:
+            return None
+        parsed = _parse_submodule_paths(historical_text)
+        if parsed is None:
+            return None
+        declarations.update(parsed)
+        if len(declarations) > _MAX_ARTIFACT_PATHS:
+            return None
+
+    roots: list[Path] = []
+    for raw in declarations:
+        try:
+            candidate = (root / raw).resolve()
+        except (OSError, RuntimeError):
+            return None
+        if candidate == top_root or top_root not in candidate.parents:
+            return None
+        if (candidate / ".git").exists():
+            roots.append(candidate)
+    return roots
+
+
+def _collect_submodule_state(
+    root: Path,
+    top_root: Path,
+    *,
+    seen: set[Path],
+) -> Optional[tuple[list[tuple[str, bytes]], set[Path]]]:
+    identities: list[tuple[str, bytes]] = []
+    candidates: set[Path] = set()
+    submodule_roots = _declared_submodule_roots(root, top_root)
+    if submodule_roots is None:
+        return None
+    for submodule_root in submodule_roots:
+        if submodule_root in seen:
+            return None
+        seen.add(submodule_root)
+        if len(seen) > _MAX_ARTIFACT_PATHS:
+            return None
+        head = _git_capture(submodule_root, "rev-parse", "--verify", "HEAD")
+        paths = _git_workspace_paths(submodule_root)
+        if not head or not head.strip() or paths is None:
+            return None
+        label = str(submodule_root.relative_to(top_root))
+        identities.append((label, head.strip()))
+        for raw in paths:
+            candidates.add(Path(os.path.abspath(submodule_root / raw)))
+        nested = _collect_submodule_state(
+            submodule_root,
+            top_root,
+            seen=seen,
+        )
+        if nested is None:
+            return None
+        nested_identities, nested_candidates = nested
+        identities.extend(nested_identities)
+        candidates.update(nested_candidates)
+        if len(identities) + len(candidates) > _MAX_ARTIFACT_PATHS:
+            return None
+    return identities, candidates
+
+
+def workspace_artifact_fingerprint(
+    root: str | Path,
+    changed_paths: list[str] | tuple[str, ...] | None = None,
+) -> tuple[Optional[str], list[str]]:
+    """Hash Git and submodule HEADs plus tracked, untracked, ignored, or explicit paths.
+
+    The returned path list is persisted with the verification event so the
+    exact fingerprint can be recomputed later. Git-discovered paths catch edits
+    made by terminal commands that bypass the file-tool mutation hook. Missing
+    HEAD, inventory errors, and bounded-resource overflow return no identity.
+    """
+    try:
+        root_path = Path(root).expanduser().resolve()
+    except Exception:
+        return None, []
+
+    head = _git_capture(root_path, "rev-parse", "--verify", "HEAD")
+    if not head or not head.strip():
+        return None, []
+    explicit_candidates: set[Path] = set()
+    for raw in changed_paths or []:
+        try:
+            path = Path(raw).expanduser()
+            candidate = root_path / path if not path.is_absolute() else path
+            explicit_candidate = Path(os.path.abspath(candidate))
+            if (
+                explicit_candidate != root_path
+                and root_path not in explicit_candidate.parents
+            ):
+                return None, []
+            explicit_candidates.add(explicit_candidate)
+        except Exception:
+            continue
+    candidates = set(explicit_candidates)
+    git_paths = _git_workspace_paths(root_path)
+    if git_paths is None:
+        return None, []
+    for raw in git_paths:
+        try:
+            candidates.add(Path(os.path.abspath(root_path / raw)))
+        except Exception:
+            continue
+
+    submodule_state = _collect_submodule_state(
+        root_path,
+        root_path,
+        seen={root_path},
+    )
+    if submodule_state is None:
+        return None, []
+    submodule_identities, submodule_candidates = submodule_state
+    candidates.update(submodule_candidates)
+
+    digest = hashlib.sha256()
+    digest.update(b"hermes-workspace-artifact-v1\0")
+    digest.update(str(root_path).encode("utf-8", errors="surrogateescape"))
+    digest.update(b"\0head\0")
+    digest.update(head.strip())
+    for label, submodule_head in sorted(submodule_identities):
+        digest.update(b"\0submodule\0")
+        digest.update(label.encode("utf-8", errors="surrogateescape"))
+        digest.update(b"\0head\0")
+        digest.update(submodule_head)
+
+    try:
+        candidate_hermes_home = get_hermes_home().expanduser().resolve()
+        hermes_home = (
+            candidate_hermes_home
+            if candidate_hermes_home != root_path and root_path in candidate_hermes_home.parents
+            else None
+        )
+    except Exception:
+        hermes_home = None
+    artifact_candidates = []
+    for path in candidates:
+        if path != root_path and root_path not in path.parents:
+            continue
+        if hermes_home is not None and (path == hermes_home or hermes_home in path.parents):
+            continue
+        artifact_candidates.append(path)
+
+    serialized_paths: list[str] = []
+    if len(artifact_candidates) + len(submodule_identities) > _MAX_ARTIFACT_PATHS:
+        return None, []
+    total_hashed_bytes = 0
+    for path in sorted(artifact_candidates, key=lambda item: str(item))[:_MAX_ARTIFACT_PATHS]:
+        try:
+            label = str(path.relative_to(root_path))
+        except ValueError:
+            label = str(path)
+        serialized_paths.append(label)
+        digest.update(b"\0path\0")
+        digest.update(label.encode("utf-8", errors="surrogateescape"))
+        try:
+            stat = path.lstat()
+        except OSError:
+            digest.update(b"\0missing")
+            continue
+        digest.update(f"\0mode={stat.st_mode:o}\0size={stat.st_size}".encode())
+        if path.is_symlink():
+            try:
+                target = os.readlink(path)
+                digest.update(
+                    b"\0symlink\0" + target.encode("utf-8", errors="surrogateescape")
+                )
+            except OSError:
+                return None, serialized_paths
+            continue
+        if not path.is_file():
+            digest.update(b"\0non-file")
+            continue
+        try:
+            with path.open("rb") as handle:
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total_hashed_bytes += len(chunk)
+                    if total_hashed_bytes > _MAX_ARTIFACT_HASH_BYTES:
+                        # No partial fingerprints: callers must treat an
+                        # oversized artifact as inconclusive, never cache PASS.
+                        return None, serialized_paths
+                    digest.update(chunk)
+        except OSError:
+            return None, serialized_paths
+        try:
+            final_stat = path.lstat()
+        except OSError:
+            return None, serialized_paths
+        if (
+            final_stat.st_size != stat.st_size
+            or final_stat.st_mtime_ns != stat.st_mtime_ns
+            or final_stat.st_ctime_ns != stat.st_ctime_ns
+            or final_stat.st_mode != stat.st_mode
+            or final_stat.st_dev != stat.st_dev
+            or final_stat.st_ino != stat.st_ino
+        ):
+            return None, serialized_paths
+
+    final_head = _git_capture(root_path, "rev-parse", "--verify", "HEAD")
+    if not final_head or final_head.strip() != head.strip():
+        return None, serialized_paths
+    final_git_paths = _git_workspace_paths(root_path)
+    if final_git_paths is None:
+        return None, serialized_paths
+    final_candidates = set(explicit_candidates)
+    for raw in final_git_paths:
+        try:
+            final_candidates.add(Path(os.path.abspath(root_path / raw)))
+        except Exception:
+            continue
+    final_submodule_state = _collect_submodule_state(
+        root_path,
+        root_path,
+        seen={root_path},
+    )
+    if final_submodule_state is None:
+        return None, serialized_paths
+    final_submodule_identities, final_submodule_candidates = final_submodule_state
+    final_candidates.update(final_submodule_candidates)
+    final_artifact_candidates = {
+        path
+        for path in final_candidates
+        if (path == root_path or root_path in path.parents)
+        and not (
+            hermes_home is not None
+            and (path == hermes_home or hermes_home in path.parents)
+        )
+    }
+    if (
+        final_artifact_candidates != set(artifact_candidates)
+        or sorted(final_submodule_identities) != sorted(submodule_identities)
+    ):
+        return None, serialized_paths
+    return f"sha256:{digest.hexdigest()}", serialized_paths
 
 
 def _prune_old_events(conn: sqlite3.Connection, *, session_id: str, root: str) -> None:
@@ -450,12 +824,31 @@ def record_terminal_result(
     created_at = _utc_now()
     with _DB_LOCK:
         with _connect() as conn:
+            state_row = conn.execute(
+                """
+                SELECT changed_paths_json FROM verification_state
+                WHERE session_id = ? AND root = ?
+                """,
+                (evidence.session_id, evidence.root),
+            ).fetchone()
+            changed_paths: list[str] = []
+            if state_row is not None:
+                try:
+                    parsed_paths = json.loads(state_row["changed_paths_json"] or "[]")
+                    if isinstance(parsed_paths, list):
+                        changed_paths = [str(path) for path in parsed_paths if path]
+                except (TypeError, ValueError):
+                    changed_paths = []
+            artifact_hash, fingerprint_paths = workspace_artifact_fingerprint(
+                evidence.root, changed_paths
+            )
             cur = conn.execute(
                 """
                 INSERT INTO verification_events(
                     created_at, session_id, cwd, root, command, canonical_command,
-                    kind, scope, status, exit_code, output_summary
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    kind, scope, status, exit_code, output_summary,
+                    artifact_hash, changed_paths_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     created_at,
@@ -469,6 +862,8 @@ def record_terminal_result(
                     evidence.status,
                     evidence.exit_code,
                     evidence.output_summary,
+                    artifact_hash,
+                    json.dumps(fingerprint_paths),
                 ),
             )
             if cur.lastrowid is None:
@@ -489,7 +884,13 @@ def record_terminal_result(
             _prune_old_events(conn, session_id=evidence.session_id, root=evidence.root)
             conn.commit()
 
-    return {"id": event_id, **evidence.__dict__, "created_at": created_at}
+    return {
+        "id": event_id,
+        **evidence.__dict__,
+        "created_at": created_at,
+        "artifact_hash": artifact_hash,
+        "changed_paths": fingerprint_paths,
+    }
 
 
 def mark_workspace_edited(
@@ -605,7 +1006,23 @@ def verification_status(
         }
 
     evidence = dict(event)
+    stored_artifact_hash = evidence.get("artifact_hash")
+    event_paths: list[str] = []
+    try:
+        parsed_event_paths = json.loads(evidence.get("changed_paths_json") or "[]")
+        if isinstance(parsed_event_paths, list):
+            event_paths = [str(path) for path in parsed_event_paths if path]
+    except (TypeError, ValueError):
+        event_paths = []
+    current_artifact_hash: Optional[str] = None
+    if stored_artifact_hash:
+        current_artifact_hash, _ = workspace_artifact_fingerprint(root, event_paths)
+
     if state["last_edit_at"] and state["last_edit_at"] > evidence["created_at"]:
+        status = "stale"
+    elif stored_artifact_hash and current_artifact_hash != stored_artifact_hash:
+        # Catches edits made outside Hermes' file tools, Git commits after the
+        # verification run, and untracked artifacts that changed in place.
         status = "stale"
     else:
         status = evidence["status"]
@@ -615,4 +1032,27 @@ def verification_status(
         "root": root,
         "session_id": sid,
         "changed_paths": changed_paths,
+        "artifact_hash": stored_artifact_hash,
+        "current_artifact_hash": current_artifact_hash,
     }
+
+
+def latest_verification_status(*, session_id: str | None) -> dict[str, Any]:
+    """Return verification for the session's most recently active workspace."""
+    sid = str(session_id or "default")
+    with _DB_LOCK:
+        with _connect() as conn:
+            row = conn.execute(
+                """
+                SELECT s.root
+                FROM verification_state AS s
+                LEFT JOIN verification_events AS e ON e.id = s.last_event_id
+                WHERE s.session_id = ?
+                ORDER BY COALESCE(s.last_edit_at, e.created_at, '') DESC
+                LIMIT 1
+                """,
+                (sid,),
+            ).fetchone()
+    if row is None:
+        return {"status": "not_applicable", "evidence": None, "session_id": sid}
+    return verification_status(session_id=sid, cwd=str(row["root"]))

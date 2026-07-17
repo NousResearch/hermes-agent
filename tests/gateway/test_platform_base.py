@@ -385,6 +385,38 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_two_tags_on_one_line_are_not_glued(self):
+        """Two MEDIA tags separated by prose on one line must yield two
+        separate paths. The spaced-continuation repeat in
+        MEDIA_TAG_CLEANUP_RE used to glue everything between the first
+        path and the second tag's extension into one bogus path."""
+        content = "Files: MEDIA:/tmp/a.docx and MEDIA:/tmp/b.pdf"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/a.docx", False), ("/tmp/b.pdf", False)]
+        assert "MEDIA:" not in cleaned
+        assert "Files:" in cleaned
+
+    def test_two_tags_separated_by_a_single_space(self):
+        content = "MEDIA:/tmp/a.docx MEDIA:/tmp/b.pdf"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/a.docx", False), ("/tmp/b.pdf", False)]
+
+    def test_second_tag_quoted_on_same_line_is_not_glued(self):
+        content = 'MEDIA:/tmp/a.docx and "MEDIA:/tmp/b.pdf"'
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/a.docx", False), ("/tmp/b.pdf", False)]
+
+    def test_adjacency_guard_keeps_unquoted_filenames_with_spaces(self):
+        """The lookahead only refuses continuation segments that start
+        another MEDIA tag — unquoted filenames with spaces still work,
+        including when another tag follows on the same line."""
+        content = "MEDIA:/docs/my report final.docx and MEDIA:/tmp/b.pdf"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            ("/docs/my report final.docx", False),
+            ("/tmp/b.pdf", False),
+        ]
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the

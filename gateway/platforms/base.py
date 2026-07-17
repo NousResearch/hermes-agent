@@ -1496,10 +1496,14 @@ _MEDIA_EXT_ALTERNATION = "|".join(
 # consumer so both behave identically.
 # Path anchors: ``~/`` (Unix home-relative), ``/`` (Unix absolute),
 # ``X:\\`` or ``X:/`` (Windows drive-letter absolute — #34632).
+# The unquoted-path branch accepts spaces inside a filename, so its
+# space-separated continuation repeat must refuse to start a segment at
+# another ``MEDIA:`` tag opener (negative lookahead) — otherwise two tags
+# on one line are glued into a single bogus path.
 MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''[`"']?MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
-    r'''(?:~/|/|[A-Za-z]:[/\\])\S+(?:[^\S\n]+\S+)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
+    r'''(?:~/|/|[A-Za-z]:[/\\])\S+(?:[^\S\n]+(?![`"']?MEDIA:)\S+)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
     r'''(?=[\s`"',;:)\]}]|$)[`"']?''',
     re.IGNORECASE,
 )

@@ -137,7 +137,7 @@ export const sessionCommands: SlashCommand[] = [
       // because the TUI has an interactive picker for bare `/sessions`.
       if (['list', 'ls', 'browse', 'delete', 'rename', 'prune'].includes(subcommand ?? '')) {
         return ctx.gateway.gw
-          .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+          .request<SlashExecResponse>('slash.exec', { command: `sessions ${trimmed}`, session_id: ctx.sid })
           .then(
             ctx.guarded<SlashExecResponse>(r => {
               const body = r.output || '/sessions: no output'

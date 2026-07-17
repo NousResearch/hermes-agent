@@ -123,6 +123,17 @@ class TestHandleSessionsCommandDelete:
 
         obj._session_db.delete_session.assert_called_once()
 
+    def test_delete_with_yes_resolves_only_the_target(self):
+        obj = _make_mixin()
+        obj._confirm_destructive_slash = MagicMock(return_value=True)
+
+        with patch("cli._cprint", create=True), patch("cli._DIM", "", create=True), patch("cli._RST", "", create=True), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock(__truediv__=lambda s, x: MagicMock()), create=True):
+            obj._handle_sessions_command("/sessions delete abc123 --yes")
+
+        obj._session_db.resolve_session_id.assert_called_once_with("abc123")
+        obj._session_db.delete_session.assert_called_once()
+
     def test_delete_current_session_blocked(self):
         obj = _make_mixin()
         obj._list_recent_sessions = MagicMock(return_value=[])
@@ -238,6 +249,16 @@ class TestResolveSessionsTarget:
 
         result = obj._resolve_sessions_target("2")
         assert result == "second-id"
+
+    def test_resolve_number_uses_last_displayed_snapshot(self):
+        obj = _make_mixin()
+        obj._pending_resume_sessions = [{"id": "displayed-first"}, {"id": "displayed-second"}]
+        obj._list_recent_sessions = MagicMock(return_value=[{"id": "refetched-first"}, {"id": "refetched-second"}])
+
+        result = obj._resolve_sessions_target("2")
+
+        assert result == "displayed-second"
+        obj._list_recent_sessions.assert_not_called()
 
     def test_resolve_number_out_of_range(self):
         obj = _make_mixin()

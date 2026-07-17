@@ -866,10 +866,14 @@ class CLICommandsMixin:
 
         # /sessions delete <n|id>
         if subcommand == "delete":
-            target_raw = parts[2].strip() if len(parts) > 2 else ""
-            if not target_raw:
+            target_parts = parts[2].strip().split() if len(parts) > 2 else []
+            # Confirmation flags belong to the destructive-command helper, not
+            # the session target (the TUI routes them through the slash worker).
+            target_parts = [part for part in target_parts if part.lower() not in {"--yes", "-y"}]
+            if len(target_parts) != 1:
                 _cprint("  Usage: /sessions delete <number|session_id>")
                 return
+            target_raw = target_parts[0]
 
             target_id = self._resolve_sessions_target(target_raw)
             if not target_id:
@@ -965,7 +969,7 @@ class CLICommandsMixin:
     def _resolve_sessions_target(self, target: str) -> "Optional[str]":
         """Resolve a /sessions target (number or session ID/title) to a session ID."""
         if target.isdigit():
-            sessions = self._list_recent_sessions(limit=20)
+            sessions = getattr(self, "_pending_resume_sessions", None) or self._list_recent_sessions(limit=20)
             idx = int(target)
             if 1 <= idx <= len(sessions):
                 return sessions[idx - 1]["id"]

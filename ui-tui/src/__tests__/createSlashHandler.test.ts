@@ -57,6 +57,18 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('canonicalizes a session-manager alias before routing it through the slash worker', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/resume list')).toBe(true)
+
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+      command: 'sessions list',
+      session_id: 'sid-abc'
+    })
+  })
+
   it('resumes a prior session by id when /resume has an argument', () => {
     const ctx = buildCtx()
 

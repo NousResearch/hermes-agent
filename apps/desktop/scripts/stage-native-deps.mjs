@@ -16,6 +16,7 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -36,14 +37,17 @@ function makeExecutable(filePath) {
 
 // ─── libuv-safe fs primitives ────────────────────────────────────────
 //
-// Node 24's native rewrite of fs.cpSync/fs.rmSync mishandles non-ASCII
-// Windows paths (observed on v24.11.1 with an accented Windows user name,
-// i.e. a default %LOCALAPPDATA%\hermes home): a recursive cpSync fails
-// with EIO "Access is denied" or hard-crashes the process, an overwriting
-// cpSync fails with a bogus errno-0 unlink error, and rmSync silently
-// deletes nothing — leaving a half-staged tree that breaks every retry.
-// copyFileSync/unlinkSync/rmdirSync/readdirSync go through libuv and
-// handle those paths correctly, so staging uses them exclusively.
+// Node's native (non-libuv) rewrite of fs.cpSync/fs.rmSync mishandles
+// non-ASCII Windows paths (observed on v24.11.1 with an accented Windows
+// user name, i.e. a default %LOCALAPPDATA%\hermes home): a recursive
+// cpSync fails with EIO "Access is denied" or hard-crashes the process,
+// an overwriting cpSync fails with a bogus errno-0 unlink error, and
+// rmSync silently deletes nothing — leaving a half-staged tree that
+// breaks every retry. Fixed upstream (nodejs/node#61878 → v24.15.0;
+// nodejs/node#56049 → v24.13.1), but the installer builds on whatever
+// Node the user already has, so staging sticks to libuv-backed
+// primitives (copyFileSync/unlinkSync/rmdirSync/readdirSync), which
+// handle those paths correctly on every affected version.
 
 /** Recursively copy a directory without fs.cpSync. */
 function copyDirSync(srcDir, destDir) {
@@ -60,12 +64,25 @@ function copyDirSync(srcDir, destDir) {
 }
 
 /**
- * Recursively delete a directory without fs.rmSync (missing dir is fine),
- * then verify the tree is actually gone — a silent no-op here surfaces
- * later as an inexplicable staging failure, so fail loudly instead.
+ * Recursively delete a path without fs.rmSync — missing paths are fine,
+ * a plain file or symlink at the path is unlinked (rm -rf semantics).
+ * Verifies the tree is actually gone afterwards: a silent no-op here
+ * surfaces later as an inexplicable staging failure, so fail loudly.
+ *
+ * Also used by before-pack.mjs as the fallback when the native rmSync
+ * silently leaves the stale unpacked dir behind.
  */
-function removeDirSync(dir) {
-  if (!existsSync(dir)) return
+export function removeDirSync(dir) {
+  let stats
+  try {
+    stats = lstatSync(dir)
+  } catch {
+    return
+  }
+  if (!stats.isDirectory()) {
+    unlinkSync(dir)
+    return
+  }
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name)
     if (entry.isDirectory()) {

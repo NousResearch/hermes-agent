@@ -303,6 +303,20 @@ export function mergeFinalAssistantText(
     return Boolean(r) && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference))
   }
 
+  // Reasoning dedup is stricter than text-part matching: a reasoning block is a
+  // restatement ONLY when the final text fully covers it (reasoning ⊆ final).
+  // We deliberately do NOT use the reverse "final is a prefix of reasoning"
+  // direction here — a short/generic closing line ("Done." / "OK" / "Yes.")
+  // would otherwise swallow a longer reasoning block that carries substantive
+  // content the final never restates. (The reverse direction is only needed for
+  // the terminal-TEXT in-place upgrade below, where a truncated stream is later
+  // extended by the final — reasoning has no such case.)
+  const reasoningRestatedByFinal = (candidate: string): boolean => {
+    const r = normalizeWhitespace(candidate)
+
+    return Boolean(r) && dedupeReference.startsWith(r)
+  }
+
   // Lean mode: drop ALL text parts, drop reasoning the final text restates,
   // keep everything else, then re-append the final text. Byte-identical to the
   // pre-fix behavior.
@@ -316,7 +330,7 @@ export function mergeFinalAssistantText(
         return true
       }
 
-      return !restatesReference((part as { text: string }).text)
+      return !reasoningRestatedByFinal((part as { text: string }).text)
     })
 
     return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
@@ -329,7 +343,7 @@ export function mergeFinalAssistantText(
       return true
     }
 
-    return !restatesReference((part as { text: string }).text)
+    return !reasoningRestatedByFinal((part as { text: string }).text)
   })
 
   if (!visibleFinalText) {

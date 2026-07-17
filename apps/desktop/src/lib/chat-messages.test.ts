@@ -828,6 +828,46 @@ describe('mergeFinalAssistantText', () => {
       expect(textParts(merged)).toEqual(['Intermediate note.', 'The answer is 42.'])
     })
 
+    // Regression: reasoning dedup must NOT drop a reasoning block merely because
+    // the (often short/generic) final text is a PREFIX of it. A closing "Done."
+    // / "Yes." / "OK" must not swallow a longer reasoning block that carries
+    // substantive content the final never restates. Only reasoning the final
+    // fully covers (reasoning ⊆ final) is a true restatement and may be dropped.
+    it('keeps a longer reasoning block when the final text is only a short prefix of it', () => {
+      const parts: ChatMessagePart[] = appendReasoningPart(
+        [],
+        'Done. Note: the API key in config is expired and needs rotation within 24h.'
+      )
+
+      const merged = mergeFinalAssistantText(parts, 'Done.', true)
+
+      expect(merged.map(p => p.type)).toEqual(['reasoning', 'text'])
+      expect(merged.some(p => p.type === 'reasoning')).toBe(true)
+      expect(textParts(merged)).toEqual(['Done.'])
+    })
+
+    it('keeps non-restating reasoning in lean mode too (final is a short prefix)', () => {
+      const parts: ChatMessagePart[] = appendReasoningPart(
+        [],
+        'OK — but first we must migrate the schema, then backfill, then flip the flag.'
+      )
+
+      const merged = mergeFinalAssistantText(parts, 'OK', false)
+
+      expect(merged.some(p => p.type === 'reasoning')).toBe(true)
+      expect(textParts(merged)).toEqual(['OK'])
+    })
+
+    it('still drops reasoning that is fully covered by the final text', () => {
+      // reasoning ⊆ final (final restates and extends it) → genuine restatement.
+      const parts: ChatMessagePart[] = appendReasoningPart([], 'The fix is a retry.')
+
+      const merged = mergeFinalAssistantText(parts, 'The fix is a retry. It ships today.', true)
+
+      expect(merged.some(p => p.type === 'reasoning')).toBe(false)
+      expect(textParts(merged)).toEqual(['The fix is a retry. It ships today.'])
+    })
+
     it('returns kept parts unchanged when the final text is empty', () => {
       let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Only narration.')
       parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1' }, 'running')

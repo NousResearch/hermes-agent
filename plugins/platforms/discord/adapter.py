@@ -2023,10 +2023,20 @@ class DiscordAdapter(BasePlatformAdapter):
                 self.name,
             )
             return
-        scan_id = self._record_recovery_scan_start(channels)
+        scan_id = await asyncio.to_thread(
+            self._record_recovery_scan_start,
+            channels,
+        )
         if not channels:
             logger.info("[%s] Missed-message backfill enabled but no channels configured", self.name)
-            self._record_recovery_scan_complete(scan_id, status="skipped", scanned=0, missed=0, dispatched=0)
+            await asyncio.to_thread(
+                self._record_recovery_scan_complete,
+                scan_id,
+                status="skipped",
+                scanned=0,
+                missed=0,
+                dispatched=0,
+            )
             return
 
         max_dispatches = self._missed_message_backfill_max_dispatches()
@@ -2067,7 +2077,14 @@ class DiscordAdapter(BasePlatformAdapter):
                     raise
                 if dispatched >= max_dispatches:
                     break
-            self._record_recovery_scan_complete(scan_id, status="success", scanned=scanned, missed=missed, dispatched=dispatched)
+            await asyncio.to_thread(
+                self._record_recovery_scan_complete,
+                scan_id,
+                status="success",
+                scanned=scanned,
+                missed=missed,
+                dispatched=dispatched,
+            )
             logger.info(
                 "[%s] Missed-message backfill complete: scanned=%d missed=%d dispatched=%d",
                 self.name,
@@ -2076,10 +2093,25 @@ class DiscordAdapter(BasePlatformAdapter):
                 dispatched,
             )
         except asyncio.CancelledError:
-            self._record_recovery_scan_complete(scan_id, status="cancelled", scanned=scanned, missed=missed, dispatched=dispatched)
+            await asyncio.to_thread(
+                self._record_recovery_scan_complete,
+                scan_id,
+                status="cancelled",
+                scanned=scanned,
+                missed=missed,
+                dispatched=dispatched,
+            )
             raise
         except Exception as exc:  # pragma: no cover - defensive logging
-            self._record_recovery_scan_complete(scan_id, status="failed", scanned=scanned, missed=missed, dispatched=dispatched, error=str(exc))
+            await asyncio.to_thread(
+                self._record_recovery_scan_complete,
+                scan_id,
+                status="failed",
+                scanned=scanned,
+                missed=missed,
+                dispatched=dispatched,
+                error=str(exc),
+            )
             logger.warning("[%s] Missed-message backfill failed: %s", self.name, exc, exc_info=True)
 
     async def _dispatch_recovered_message(self, message: Any) -> bool:
@@ -2825,7 +2857,8 @@ class DiscordAdapter(BasePlatformAdapter):
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
                 result = await self._send_to_forum(channel, content)
-                self._record_discord_response(
+                await asyncio.to_thread(
+                    self._record_discord_response,
                     reply_to=reply_to,
                     result=result,
                     content=content,
@@ -2900,7 +2933,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 message_id=message_ids[0] if message_ids else None,
                 raw_response={"message_ids": message_ids}
             )
-            self._record_discord_response(
+            await asyncio.to_thread(
+                self._record_discord_response,
                 reply_to=reply_to,
                 result=result,
                 content=content,
@@ -2911,7 +2945,8 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             result = SendResult(success=False, error=str(e))
-            self._record_discord_response(
+            await asyncio.to_thread(
+                self._record_discord_response,
                 reply_to=reply_to,
                 result=result,
                 content=content,
@@ -3124,7 +3159,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     raise
             result = SendResult(success=True, message_id=message_id)
             if finalize:
-                self._record_discord_response(
+                await asyncio.to_thread(
+                    self._record_discord_response,
                     reply_to=(metadata or {}).get("reply_to_message_id"),
                     result=result,
                     content=content,

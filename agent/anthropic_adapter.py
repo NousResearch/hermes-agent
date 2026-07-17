@@ -502,13 +502,14 @@ def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> 
     return False
 
 
-def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
+def _is_deepseek_anthropic_endpoint(base_url: str | None, model: str | None = None) -> bool:
     """Return True for DeepSeek's Anthropic-compatible endpoint.
 
-    DeepSeek's ``/anthropic`` route speaks the Anthropic Messages protocol
-    but, when thinking mode is enabled, requires the ``thinking`` blocks
-    from prior assistant turns to round-trip on subsequent requests — the
-    generic third-party path strips them and triggers HTTP 400::
+    DeepSeek's ``/anthropic`` route and proxied endpoints (e.g. Raketa
+    LiteLLM) speak the Anthropic Messages protocol but, when thinking mode
+    is enabled, require the ``thinking`` blocks from prior assistant turns
+    to round-trip on subsequent requests — the generic third-party path
+    strips them and triggers HTTP 400::
 
         The content[].thinking in the thinking mode must be passed back
         to the API.
@@ -519,14 +520,20 @@ def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
     policy used for Kimi's ``/coding`` endpoint.  The match is pinned to
     the ``/anthropic`` path so the OpenAI-compatible ``api.deepseek.com``
     base URL (which never reaches this adapter) is not misclassified.
+
+    When the base_url does not match api.deepseek.com, fall back to
+    model-name detection so proxied endpoints (e.g. Raketa LiteLLM) that
+    front DeepSeek models preserve unsigned thinking blocks.  Model-based
+    detection follows the same pattern as Kimi's ``_model_name_is_kimi_family``.
     See hermes-agent#16748.
     """
-    if not base_url_host_matches(base_url or "", "api.deepseek.com"):
-        return False
-    normalized = _normalize_base_url_text(base_url)
-    if not normalized:
-        return False
-    return "/anthropic" in normalized.rstrip("/").lower()
+    if base_url_host_matches(base_url or "", "api.deepseek.com"):
+        normalized = _normalize_base_url_text(base_url)
+        if normalized and "/anthropic" in normalized.rstrip("/").lower():
+            return True
+    if model and "deepseek" in model.lower():
+        return True
+    return False
 
 
 def _requires_bearer_auth(base_url: str | None) -> bool:
@@ -2275,7 +2282,7 @@ def _manage_thinking_signatures(
     # ones synthesised from reasoning_content.  See #13848, #16748.
     _preserve_unsigned_thinking = (
         _is_kimi_family_endpoint(base_url, model)
-        or _is_deepseek_anthropic_endpoint(base_url)
+        or _is_deepseek_anthropic_endpoint(base_url, model)
     )
 
     last_assistant_idx = None

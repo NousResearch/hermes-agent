@@ -2706,6 +2706,12 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
+        # Optional absolute directory for the complete cron store (jobs,
+        # locks, ticker liveness markers, and output). Leave empty to keep the
+        # per-profile default at <HERMES_HOME>/cron. This is useful when a
+        # single-profile gateway has an ephemeral runtime home but a durable
+        # shared volume available for scheduling state.
+        "store_dir": "",
         # Active cron SCHEDULER provider (Axis B — the trigger that decides
         # WHEN a due job fires). Empty string = the built-in in-process 60s
         # ticker (default). Name an installed provider (plugins/cron_providers/<name>/ or

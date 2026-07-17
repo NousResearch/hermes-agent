@@ -1,8 +1,9 @@
 """
 Cron job storage and management.
 
-Jobs are stored in ~/.hermes/cron/jobs.json
-Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
+Jobs are stored in ``<HERMES_HOME>/cron/jobs.json`` by default.
+When ``cron.store_dir`` is configured, jobs, locks, ticker state, and output
+are stored together under that absolute directory instead.
 """
 
 import contextlib
@@ -115,11 +116,46 @@ _cron_store_override: ContextVar[Optional[_CronStorePaths]] = ContextVar(
 )
 
 
+def _configured_cron_store() -> Optional[_CronStorePaths]:
+    """Return the configured durable cron store, if one is requested.
+
+    ``cron.store_dir`` keeps the definition file, locks, run state, and output
+    in one coherent store. It is intended for a single profile gateway whose
+    normal ``HERMES_HOME`` is ephemeral (for example, a container with SQLite
+    on local disk). A profile-scoped ``use_cron_store()`` context takes
+    precedence in ``_current_cron_store`` below, preserving profile isolation
+    for callers which intentionally execute work for another profile.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cron_config = (load_config() or {}).get("cron") or {}
+    except Exception:
+        # A missing/unreadable config retains the historical default store.
+        return None
+    raw = cron_config.get("store_dir")
+    if raw is None or not str(raw).strip():
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("cron.store_dir must be an absolute path string")
+    cron_dir = Path(raw).expanduser()
+    if not cron_dir.is_absolute():
+        raise ValueError("cron.store_dir must be an absolute path")
+    cron_dir = cron_dir.resolve()
+    return _CronStorePaths(
+        cron_dir=cron_dir,
+        jobs_file=cron_dir / "jobs.json",
+        output_dir=cron_dir / "output",
+    )
+
+
 def _current_cron_store() -> _CronStorePaths:
     """Return paths pinned to this execution context's profile."""
     override = _cron_store_override.get()
     if override is not None:
         return override
+    configured = _configured_cron_store()
+    if configured is not None:
+        return configured
     return _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
 
 
@@ -138,6 +174,11 @@ def use_cron_store(home: Union[str, Path]):
         yield
     finally:
         _cron_store_override.reset(token)
+
+
+def get_cron_store_dir() -> Path:
+    """Return the current store directory for jobs, locks, and ticker state."""
+    return _current_cron_store().cron_dir
 
 
 def get_cron_output_dir() -> Path:
@@ -789,12 +830,12 @@ def record_ticker_heartbeat(success: bool = False) -> None:
     Best-effort: a write failure must never disrupt the tick loop.
     """
     try:
-        _atomic_write_epoch(TICKER_HEARTBEAT_FILE)
+        _atomic_write_epoch(_current_cron_store().cron_dir / "ticker_heartbeat")
     except Exception:
         pass
     if success:
         try:
-            _atomic_write_epoch(TICKER_SUCCESS_FILE)
+            _atomic_write_epoch(_current_cron_store().cron_dir / "ticker_last_success")
         except Exception:
             pass
 
@@ -813,12 +854,12 @@ def get_ticker_heartbeat_age() -> Optional[float]:
     None = heartbeat file missing/unreadable (older build, never ran, or a
     torn read). Callers treat None as "cannot determine", not "dead".
     """
-    return _epoch_file_age(TICKER_HEARTBEAT_FILE)
+    return _epoch_file_age(_current_cron_store().cron_dir / "ticker_heartbeat")
 
 
 def get_ticker_success_age() -> Optional[float]:
     """Seconds since the ticker last completed a tick WITHOUT raising, or None."""
-    return _epoch_file_age(TICKER_SUCCESS_FILE)
+    return _epoch_file_age(_current_cron_store().cron_dir / "ticker_last_success")
 
 
 # =============================================================================

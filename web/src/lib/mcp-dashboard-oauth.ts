@@ -6,6 +6,7 @@ type CompleteOptions = {
   status: (flowId: string) => Promise<McpOAuthFlow>;
   open: (url?: string | URL, target?: string, features?: string) => unknown;
   sleep?: (milliseconds: number) => Promise<void>;
+  maxPollFailures?: number;
 };
 
 const defaultSleep = (milliseconds: number) =>
@@ -17,6 +18,7 @@ export async function completeMcpDashboardOAuth({
   status,
   open,
   sleep = defaultSleep,
+  maxPollFailures = 3,
 }: CompleteOptions): Promise<McpOAuthFlow> {
   // Open synchronously from the click handler, before the first await. Browsers
   // otherwise classify the later OAuth popup as unsolicited and block it.
@@ -40,8 +42,18 @@ export async function completeMcpDashboardOAuth({
     throw error;
   }
 
+  let pollFailures = 0;
   for (;;) {
-    const current = await status(started.flow_id);
+    let current: McpOAuthFlow;
+    try {
+      current = await status(started.flow_id);
+      pollFailures = 0;
+    } catch (error) {
+      pollFailures += 1;
+      if (pollFailures >= maxPollFailures) throw error;
+      await sleep(1000);
+      continue;
+    }
     if (current.status === "approved") return current;
     if (current.status === "error") {
       throw new Error(current.error || "OAuth authorization failed");

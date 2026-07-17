@@ -13,6 +13,7 @@ interface CompleteOptions {
   status: (flowId: string) => Promise<McpOAuthFlow>
   openExternal: (url: string) => Promise<void>
   sleep?: (milliseconds: number) => Promise<void>
+  maxPollFailures?: number
 }
 
 const defaultSleep = (milliseconds: number) =>
@@ -23,7 +24,8 @@ export async function completeMcpDesktopOAuth({
   start,
   status,
   openExternal,
-  sleep = defaultSleep
+  sleep = defaultSleep,
+  maxPollFailures = 3
 }: CompleteOptions): Promise<McpOAuthFlow> {
   const started = await start(serverName)
 
@@ -37,8 +39,25 @@ export async function completeMcpDesktopOAuth({
 
   await openExternal(started.authorization_url)
 
+  let pollFailures = 0
+
   for (;;) {
-    const current = await status(started.flow_id)
+    let current: McpOAuthFlow
+
+    try {
+      current = await status(started.flow_id)
+      pollFailures = 0
+    } catch (error) {
+      pollFailures += 1
+
+      if (pollFailures >= maxPollFailures) {
+        throw error
+      }
+
+      await sleep(1000)
+
+      continue
+    }
 
     if (current.status === 'approved') {
       return current

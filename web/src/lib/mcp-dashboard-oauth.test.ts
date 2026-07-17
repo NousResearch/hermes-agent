@@ -111,4 +111,36 @@ describe("completeMcpDashboardOAuth", () => {
       }),
     ).rejects.toThrow("authorization window was closed");
   });
+
+  it("retries a transient status failure", async () => {
+    const authWindow = { location: { href: "" }, opener: {}, closed: false } as unknown as Window;
+    const status = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("temporary network failure"))
+      .mockResolvedValueOnce({
+        flow_id: "flow-retry",
+        server_name: "reports",
+        status: "approved",
+        authorization_url: "https://idp.example/authorize",
+        error: null,
+        tools: [],
+      });
+
+    const result = await completeMcpDashboardOAuth({
+      serverName: "reports",
+      start: async () => ({
+        flow_id: "flow-retry",
+        server_name: "reports",
+        status: "authorization_required",
+        authorization_url: "https://idp.example/authorize",
+        error: null,
+      }),
+      status,
+      open: vi.fn().mockReturnValue(authWindow),
+      sleep: async () => {},
+    });
+
+    expect(result.status).toBe("approved");
+    expect(status).toHaveBeenCalledTimes(2);
+  });
 });

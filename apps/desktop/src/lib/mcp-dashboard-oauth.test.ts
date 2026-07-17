@@ -32,4 +32,28 @@ describe('completeMcpDesktopOAuth', () => {
     expect(openExternal).toHaveBeenCalledWith('https://idp.example/authorize')
     expect(result.status).toBe('approved')
   })
+
+  it('retries a transient status failure', async () => {
+    const status = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('temporary network failure'))
+      .mockResolvedValueOnce({
+        flow_id: 'flow-2', server_name: 'reports', status: 'approved',
+        authorization_url: 'https://idp.example/authorize', error: null, tools: []
+      })
+
+    const result = await completeMcpDesktopOAuth({
+      serverName: 'reports',
+      start: vi.fn().mockResolvedValue({
+        flow_id: 'flow-2', server_name: 'reports', status: 'authorization_required',
+        authorization_url: 'https://idp.example/authorize', error: null
+      }),
+      status,
+      openExternal: vi.fn().mockResolvedValue(undefined),
+      sleep: async () => {}
+    })
+
+    expect(result.status).toBe('approved')
+    expect(status).toHaveBeenCalledTimes(2)
+  })
 })

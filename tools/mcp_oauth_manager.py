@@ -597,7 +597,7 @@ class MCPOAuthManager:
             self._entries.pop(self._key(server_name, hermes_home), None)
 
         from tools.mcp_oauth import remove_oauth_tokens
-        remove_oauth_tokens(server_name)
+        remove_oauth_tokens(server_name, hermes_home=hermes_home)
         logger.info(
             "MCP OAuth '%s': evicted from cache and removed from disk",
             server_name,
@@ -636,7 +636,7 @@ class MCPOAuthManager:
             return False
 
         async with entry.lock:
-            tokens_path = _get_token_dir() / f"{_safe_filename(server_name)}.json"
+            tokens_path = _get_token_dir(hermes_home) / f"{_safe_filename(server_name)}.json"
             try:
                 mtime_ns = tokens_path.stat().st_mtime_ns
             except (FileNotFoundError, OSError):

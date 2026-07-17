@@ -64,6 +64,7 @@ The picker shows each entry with its current status:
 ```
 n8n          available              Manage and inspect n8n workflows from Hermes
 linear       enabled                Linear issue/project management (remote OAuth)
+tigris       available              Tigris object storage: buckets, objects, share links
 github       installed (disabled)   GitHub repo + PR tools
 ```
 
@@ -211,7 +212,7 @@ Use HTTP servers when:
 
 ### OAuth-authenticated HTTP servers
 
-Most hosted MCP servers (Linear, Sentry, Atlassian, Asana, Figma, Stripe, …) require OAuth 2.1 instead of a static bearer token. Set `auth: oauth` and Hermes handles discovery, dynamic client registration, PKCE, token exchange, refresh, and step-up auth via the MCP Python SDK.
+Most hosted MCP servers (Linear, Sentry, Atlassian, Asana, Figma, Stripe, Tigris, …) require OAuth 2.1 instead of a static bearer token. Set `auth: oauth` and Hermes handles discovery, dynamic client registration, PKCE, token exchange, refresh, and step-up auth via the MCP Python SDK.
 
 ```yaml
 mcp_servers:

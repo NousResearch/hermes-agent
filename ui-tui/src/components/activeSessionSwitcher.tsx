@@ -89,6 +89,37 @@ export const resumableHistory = (history: readonly SessionListItem[], live: read
   return history.filter(h => !liveIds.has(h.id))
 }
 
+const sessionSearchText = (session: SessionActiveItem | SessionListItem) =>
+  [
+    session.id,
+    session.title,
+    session.preview,
+    'model' in session ? session.model : '',
+    'source' in session ? session.source : '',
+    'status' in session ? session.status : '',
+    'session_key' in session ? session.session_key : ''
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+
+export const filterSessionsOverlayRows = (
+  live: readonly SessionActiveItem[],
+  history: readonly SessionListItem[],
+  query: string
+) => {
+  const needle = query.trim().toLowerCase()
+
+  if (!needle) {
+    return { history: [...history], live: [...live] }
+  }
+
+  return {
+    history: history.filter(session => sessionSearchText(session).includes(needle)),
+    live: live.filter(session => sessionSearchText(session).includes(needle))
+  }
+}
+
 export const resumeRowContextHintSegments: OrchestratorHintSegment[] = [
   { role: 'label', text: 'Resumable:' },
   { role: 'text', text: ' ' },
@@ -127,6 +158,8 @@ export const orchestratorContextHintSegments = (newSelected: boolean): Orchestra
 export const orchestratorGlobalHotkeyHintSegments: OrchestratorHintSegment[] = [
   { role: 'hotkey', text: '↑↓' },
   { role: 'text', text: ' move · ' },
+  { role: 'hotkey', text: '/' },
+  { role: 'text', text: ' filter · ' },
   { role: 'hotkey', text: 'Ctrl+N' },
   { role: 'text', text: ' new · ' },
   { role: 'hotkey', text: 'Ctrl+R' },
@@ -298,6 +331,8 @@ export function ActiveSessionSwitcher({
   const [loading, setLoading] = useState(true)
   const [draft, setDraft] = useState('')
   const [draftModel, setDraftModel] = useState('')
+  const [filter, setFilter] = useState('')
+  const [filterActive, setFilterActive] = useState(false)
   const [pickingModel, setPickingModel] = useState(false)
   const [closingId, setClosingId] = useState('')
   // When non-null, the user pressed `d` on this (history) session and we await
@@ -324,8 +359,12 @@ export function ActiveSessionSwitcher({
   // Rows are [new][live…][history…]: the "+ new" row is pinned first (index 0,
   // always rendered) and the live+history list is windowed below it. `total`
   // is the count of selectable rows (incl. the new row).
-  const liveCount = items.length
-  const histCount = history.length
+  const displayed = filterSessionsOverlayRows(items, history, filter)
+  const displayItems = displayed.live
+  const displayHistory = displayed.history
+  const filtering = filterActive || Boolean(filter.trim())
+  const liveCount = displayItems.length
+  const histCount = displayHistory.length
   const listLen = liveCount + histCount
   const total = listLen + 1
   const rowKind = useCallback((index: number) => sessionRowKindAt(index, liveCount), [liveCount])
@@ -436,6 +475,10 @@ export function ActiveSessionSwitcher({
   }, [items, history])
 
   useEffect(() => {
+    setSel(s => Math.max(0, Math.min(s, total - 1)))
+  }, [total])
+
+  useEffect(() => {
     void load()
     const timer = setInterval(() => void load(true, false), 1500)
 
@@ -457,7 +500,7 @@ export function ActiveSessionSwitcher({
   )
 
   const closeSelected = useCallback(async () => {
-    const target = items[sel - 1]
+    const target = displayItems[sel - 1]
 
     if (!target || rowKind(sel) !== 'live' || closingId) {
       return
@@ -491,7 +534,7 @@ export function ActiveSessionSwitcher({
     } finally {
       setClosingId('')
     }
-  }, [closingId, currentSessionId, history.length, items, load, onClose, onNew, onSelect, rowKind, sel])
+  }, [closingId, currentSessionId, displayItems, history.length, load, onClose, onNew, onSelect, rowKind, sel])
 
   const performDelete = useCallback(
     (id: string) => {
@@ -535,21 +578,21 @@ export function ActiveSessionSwitcher({
 
       if (kind === 'live') {
         setSel(clamped)
-        onSelect(items[index - 1]!.id)
+        onSelect(displayItems[index - 1]!.id)
 
         return
       }
 
       if (kind === 'history') {
         setSel(clamped)
-        onResume(history[index - 1 - items.length]!.id)
+        onResume(displayHistory[index - 1 - displayItems.length]!.id)
 
         return
       }
 
       setSel(0)
     },
-    [history, items, onResume, onSelect, rowKind, total]
+    [displayHistory, displayItems, onResume, onSelect, rowKind, total]
   )
 
   const selectedKind = rowKind(sel)
@@ -579,7 +622,44 @@ export function ActiveSessionSwitcher({
     const isCtrl = (letter: string) => key.ctrl && (lower === letter || ch === ctrlChar(letter))
 
     if (key.escape) {
+      if (filtering) {
+        setFilter('')
+        setFilterActive(false)
+
+        return
+      }
+
       return onCancel()
+    }
+
+    if (filterActive) {
+      if (key.return) {
+        setFilterActive(false)
+
+        return
+      }
+
+      if (key.backspace || key.delete) {
+        setFilter(value => value.slice(0, -1))
+
+        return
+      }
+
+      if (ch && !key.ctrl && !key.meta) {
+        setFilter(value => value + ch)
+        setSel(0)
+
+        return
+      }
+
+      return
+    }
+
+    if (ch === '/' && !key.ctrl && !key.meta) {
+      setFilterActive(true)
+      setSel(0)
+
+      return
     }
 
     if (isCtrl('n')) {
@@ -611,7 +691,7 @@ export function ActiveSessionSwitcher({
     // `d` arms deletion on a resumable history row. (On the New row `d` is
     // captured by the prompt's TextInput, so it never reaches here.)
     if (lower === 'd' && !key.ctrl && selectedKind === 'history') {
-      setConfirmDelete(history[sel - 1 - items.length]?.id ?? null)
+      setConfirmDelete(displayHistory[sel - 1 - displayItems.length]?.id ?? null)
 
       return
     }
@@ -637,12 +717,12 @@ export function ActiveSessionSwitcher({
         return
       }
 
-      if (selectedKind === 'live' && items[sel - 1]) {
-        return onSelect(items[sel - 1]!.id)
+      if (selectedKind === 'live' && displayItems[sel - 1]) {
+        return onSelect(displayItems[sel - 1]!.id)
       }
 
-      if (selectedKind === 'history' && history[sel - 1 - items.length]) {
-        return onResume(history[sel - 1 - items.length]!.id)
+      if (selectedKind === 'history' && displayHistory[sel - 1 - displayItems.length]) {
+        return onResume(displayHistory[sel - 1 - displayItems.length]!.id)
       }
     }
   })
@@ -685,7 +765,11 @@ export function ActiveSessionSwitcher({
       <Text bold color={t.color.accent}>
         Sessions
       </Text>
-      <Text color={t.color.muted}>{sessionsCountLabel(items.length, history.length)}</Text>
+      <Text color={filtering ? t.color.accent : t.color.muted}>
+        {filtering
+          ? `filter /${filter}${filter ? '' : '…'} · ${listLen}/${items.length + history.length} matches`
+          : sessionsCountLabel(items.length, history.length)}
+      </Text>
 
       {err && <Text color={t.color.label}>error: {err}</Text>}
 
@@ -726,7 +810,11 @@ export function ActiveSessionSwitcher({
       </Box>
 
       {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
-      {!listLen && <Text color={t.color.muted}>no other sessions — Enter on +new to start one</Text>}
+      {!listLen && (
+        <Text color={t.color.muted}>
+          {filtering ? `no sessions match /${filter}` : 'no other sessions — Enter on +new to start one'}
+        </Text>
+      )}
 
       {visibleRows.map(i => {
         const selected = sel === i
@@ -735,7 +823,7 @@ export function ActiveSessionSwitcher({
         const kind = rowKind(i)
 
         if (kind === 'history') {
-          const h = history[i - 1 - items.length]!
+          const h = displayHistory[i - 1 - displayItems.length]!
           const pendingDelete = confirmDelete === h.id
 
           const title = pendingDelete
@@ -793,7 +881,7 @@ export function ActiveSessionSwitcher({
           )
         }
 
-        const s = items[i - 1]!
+        const s = displayItems[i - 1]!
         const status = s.status ?? 'idle'
         const current = s.current || s.id === currentSessionId
         const title = closingId === s.id ? 'closing…' : s.title || s.preview || '(untitled)'

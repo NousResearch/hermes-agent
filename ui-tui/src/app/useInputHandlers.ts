@@ -2,6 +2,12 @@ import { forceRedraw, useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
+import {
+  clearHistoryTimelineFilter,
+  historyTimelinePageSize,
+  moveHistoryTimelineSelection,
+  updateHistoryTimelineFilter
+} from '../components/historyTimelineOverlay.js'
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import type {
@@ -11,6 +17,8 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
+import { writeClipboardText } from '../lib/clipboard.js'
+import { writeOsc52Clipboard } from '../lib/osc52.js'
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
@@ -30,6 +38,8 @@ import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
+
+export const shouldOpenHistoryTimelineHotkey = (key: { ctrl: boolean }, ch: string): boolean => isCtrl(key, ch, 'h')
 
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
@@ -214,6 +224,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     if (overlay.journey) {
       return patchOverlayState({ journey: false })
     }
+
+    if (overlay.historyTimeline) {
+      return patchOverlayState({ historyTimeline: null })
+    }
   }
 
   const cycleQueue = (dir: 1 | -1) => {
@@ -395,6 +409,152 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
+      if (overlay.historyTimeline) {
+        const timeline = overlay.historyTimeline
+        const setTimeline = (next: typeof timeline) => patchOverlayState({ historyTimeline: next })
+
+        const updateFilter = (nextQuery: string) =>
+          patchOverlayState(prev =>
+            prev.historyTimeline ? { ...prev, historyTimeline: updateHistoryTimelineFilter(prev.historyTimeline, nextQuery) } : prev
+          )
+
+        const clearFilter = () =>
+          patchOverlayState(prev =>
+            prev.historyTimeline ? { ...prev, historyTimeline: clearHistoryTimelineFilter(prev.historyTimeline) } : prev
+          )
+
+        const closeTimeline = () => patchOverlayState({ historyTimeline: null })
+        const page = historyTimelinePageSize(terminal.stdout?.rows ?? 24)
+
+        const move = (delta: number | 'bottom' | 'top') =>
+          patchOverlayState(prev =>
+            prev.historyTimeline
+              ? { ...prev, historyTimeline: moveHistoryTimelineSelection(prev.historyTimeline, delta) }
+              : prev
+          )
+
+        const selected = timeline.items[timeline.selected]
+        const queryMode = timeline.filterActive || timeline.query.length > 0
+
+        if (key.escape || isCtrl(key, ch, 'c') || ch === 'q') {
+          if (queryMode) {
+            return clearFilter()
+          }
+
+          return closeTimeline()
+        }
+
+        if (ch === '/' && !timeline.filterActive) {
+          return updateFilter(timeline.query)
+        }
+
+        if (timeline.filterActive) {
+          if (key.backspace || key.delete) {
+            return updateFilter(timeline.query.slice(0, -1))
+          }
+
+          if (key.tab) {
+            return move(key.shift ? -1 : 1)
+          }
+
+          if (ch === 'n' || ch === 'N') {
+            return move(ch === 'n' ? 1 : -1)
+          }
+
+          if (key.return) {
+            return setTimeline({ ...timeline, filterActive: false })
+          }
+
+          if (ch.length === 1 && !key.ctrl) {
+            return updateFilter(`${timeline.query}${ch}`)
+          }
+
+          return
+        }
+
+        if (key.upArrow || ch === 'k') {
+          return move(-1)
+        }
+
+        if (key.downArrow || ch === 'j') {
+          return move(1)
+        }
+
+        if (key.pageUp) {
+          return move(-page)
+        }
+
+        if (key.pageDown) {
+          return move(page)
+        }
+
+        if (ch === 'g') {
+          return move('top')
+        }
+
+        if (ch === 'G') {
+          return move('bottom')
+        }
+
+        if (ch === 'c') {
+          if (!selected?.actionable) {
+            return actions.sys('history timeline: copy is only enabled for user/assistant messages')
+          }
+
+          void writeClipboardText(selected.fullText)
+            .then(ok => {
+              if (ok) {
+                actions.sys(`history timeline: copied #${selected.ordinal} (${selected.fullText.length} characters)`)
+              } else {
+                writeOsc52Clipboard(selected.fullText)
+                actions.sys('history timeline: sent OSC52 copy sequence (terminal support required)')
+              }
+            })
+            .catch(error => actions.sys(`history timeline copy failed: ${String(error)}`))
+
+          return
+        }
+
+        const selectedOriginLabel = selected
+          ? `${selected.role === 'user' ? 'You' : selected.role === 'assistant' ? 'Hermes' : selected.role} #${selected.ordinal}`
+          : ''
+
+        if (key.return) {
+          if (!selected?.actionable || typeof selected.dbId !== 'number') {
+            return actions.sys('history timeline: branch requires a persisted user/assistant message')
+          }
+
+          closeTimeline()
+          actions.branchAtHistoryItem(selected.dbId, undefined, selectedOriginLabel)
+
+          return actions.sys(`history timeline: branching from ${selectedOriginLabel} (${selected.identity})`)
+        }
+
+        if (ch === 'b' || ch === 'e') {
+          if (!selected?.actionable || typeof selected.dbId !== 'number') {
+            return actions.sys('history timeline: branch requires a persisted user/assistant message')
+          }
+
+          closeTimeline()
+          actions.branchAtHistoryItem(selected.dbId, undefined, selectedOriginLabel)
+
+          return actions.sys(`history timeline: branching from ${selectedOriginLabel} (${selected.identity})`)
+        }
+
+        if (ch === 'r') {
+          if (!selected?.actionable || selected.role !== 'user' || typeof selected.dbId !== 'number') {
+            return actions.sys('history timeline: retry branch requires a persisted user message')
+          }
+
+          closeTimeline()
+          actions.branchAtHistoryItem(selected.dbId, 'user_retry_include', selectedOriginLabel)
+
+          return actions.sys(`history timeline: retrying from ${selectedOriginLabel} (${selected.identity}) in a branch`)
+        }
+
+        return
+      }
+
       if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo))) {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.sessions) {
@@ -537,6 +697,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (isCtrl(key, ch, 'x')) {
       return patchOverlayState({ sessions: true })
+    }
+
+    if (shouldOpenHistoryTimelineHotkey(key, ch)) {
+      return void actions.openHistoryTimeline()
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {

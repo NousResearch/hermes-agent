@@ -1392,8 +1392,8 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         def reopen_session(self, target):
             captured["reopened"] = target
 
-        def get_messages_as_conversation(self, target, include_ancestors=False):
-            captured.setdefault("history_calls", []).append((target, include_ancestors))
+        def get_messages_as_conversation(self, target, include_ancestors=False, include_ids=False):
+            captured.setdefault("history_calls", []).append((target, include_ancestors, include_ids))
             return (
                 [
                     {"role": "user", "content": "root prompt"},
@@ -1437,7 +1437,7 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         {"role": "user", "text": "root prompt"},
         {"role": "assistant", "text": "root answer"},
     ]
-    assert captured["history_calls"] == [("tip", False), ("tip", True)]
+    assert captured["history_calls"] == [("tip", False, False), ("tip", True, True)]
 
 
 def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
@@ -1528,7 +1528,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
         def reopen_session(self, target):
             pass
 
-        def get_messages_as_conversation(self, target, include_ancestors=False):
+        def get_messages_as_conversation(self, target, include_ancestors=False, include_ids=False):
             return [{"role": "user", "content": "hello"}]
 
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
@@ -1588,7 +1588,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         def reopen_session(self, _target):
             captured["reopened"] = _target
 
-        def get_messages_as_conversation(self, _target, include_ancestors=False):
+        def get_messages_as_conversation(self, _target, include_ancestors=False, include_ids=False):
             return [{"role": "user", "content": "hello"}]
 
         def update_session_cwd(self, *_args):

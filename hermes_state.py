@@ -4228,6 +4228,238 @@ class SessionDB:
 
         self._execute_write(_do)
 
+    def branch_at_message(
+        self,
+        source_session_id: str,
+        source_message_id: int,
+        *,
+        new_session_id: str,
+        cut_mode: Optional[str] = None,
+        source: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a non-destructive branch from a persisted message boundary.
+
+        Cut semantics:
+        - user message (default ``user_prefill_before``): copy messages before
+          the target user message and return that user's content as ``prefill``.
+        - user message with ``user_retry_include``: copy through the selected
+          user message so a caller can immediately regenerate the assistant
+          answer on the new branch.
+        - assistant message (default ``assistant_after``): copy through the
+          target assistant message and wait for the next user prompt.
+
+        The source session is never modified. Branch rows carry both the parent
+        link and stable audit metadata in ``model_config`` so session pickers can
+        list the child independently of the parent's later lifecycle.
+        """
+        if not source_session_id:
+            raise ValueError("source_session_id is required")
+        if not new_session_id:
+            raise ValueError("new_session_id is required")
+
+        def _do(conn: sqlite3.Connection) -> Dict[str, Any]:
+            if conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ?", (new_session_id,)
+            ).fetchone():
+                raise ValueError(f"branch session {new_session_id!r} already exists")
+
+            source_row = conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (source_session_id,)
+            ).fetchone()
+            if source_row is None:
+                raise ValueError(f"source session {source_session_id!r} not found")
+            target_row = conn.execute(
+                "SELECT * FROM messages WHERE id = ? AND session_id = ? AND active = 1",
+                (source_message_id, source_session_id),
+            ).fetchone()
+            if target_row is None:
+                raise ValueError(
+                    f"message {source_message_id} not found in session {source_session_id}"
+                )
+            source_rows = conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                (source_session_id,),
+            ).fetchall()
+
+            target = dict(target_row)
+            role = target.get("role")
+            if role == "tool":
+                raise ValueError("cannot branch at tool message cut point")
+            if role not in {"user", "assistant"}:
+                raise ValueError(f"cannot branch at {role!r} message cut point")
+
+            selected_cut_mode = cut_mode
+            if selected_cut_mode is None:
+                selected_cut_mode = "user_prefill_before" if role == "user" else "assistant_after"
+            valid_modes = {
+                "user": {"user_prefill_before", "user_retry_include"},
+                "assistant": {"assistant_after"},
+            }
+            if selected_cut_mode not in valid_modes[role]:
+                raise ValueError(f"cut mode {selected_cut_mode!r} is invalid for {role} message")
+
+            if role == "assistant":
+                target_tool_calls = self._decode_json_field(target.get("tool_calls"), fallback=None)
+                if target_tool_calls:
+                    raise ValueError(
+                        "cannot branch at tool-call-only assistant message; choose a complete assistant answer"
+                    )
+
+            copied_rows = []
+            prefill = None
+            for row in source_rows:
+                row_id = row["id"]
+                if role == "user":
+                    if row_id >= source_message_id:
+                        break
+                    copied_rows.append(row)
+                    continue
+                copied_rows.append(row)
+                if row_id == source_message_id:
+                    break
+            if role == "user" and selected_cut_mode in {"user_prefill_before", "user_retry_include"}:
+                prefill = self._decode_content(target.get("content"))
+
+            copied_messages = [self._row_to_replay_message(row) for row in copied_rows]
+
+            raw_model_config = source_row["model_config"] if "model_config" in source_row.keys() else None
+            model_config: Dict[str, Any] = {}
+            if raw_model_config:
+                try:
+                    loaded = json.loads(raw_model_config)
+                    if isinstance(loaded, dict):
+                        model_config.update(loaded)
+                except (json.JSONDecodeError, TypeError):
+                    logger.debug("Ignoring invalid source model_config during branch")
+            model_config.update(
+                {
+                    "_branched_from": source_session_id,
+                    "_branch_from_message_id": source_message_id,
+                    "_branch_cut_mode": selected_cut_mode,
+                }
+            )
+
+            conn.execute(
+                """INSERT INTO sessions (
+                   id, source, user_id, session_key, chat_id, chat_type, thread_id,
+                   model, model_config, system_prompt, parent_session_id, cwd, started_at,
+                   message_count, tool_call_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)""",
+                (
+                    new_session_id,
+                    source or source_row["source"],
+                    source_row["user_id"] if "user_id" in source_row.keys() else None,
+                    None,
+                    source_row["chat_id"] if "chat_id" in source_row.keys() else None,
+                    source_row["chat_type"] if "chat_type" in source_row.keys() else None,
+                    source_row["thread_id"] if "thread_id" in source_row.keys() else None,
+                    source_row["model"] if "model" in source_row.keys() else None,
+                    json.dumps(model_config),
+                    source_row["system_prompt"] if "system_prompt" in source_row.keys() else None,
+                    source_session_id,
+                    source_row["cwd"] if "cwd" in source_row.keys() else None,
+                    time.time(),
+                ),
+            )
+            total_messages, total_tool_calls = self._insert_message_rows(
+                conn, new_session_id, copied_messages
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                (total_messages, total_tool_calls, new_session_id),
+            )
+            return {
+                "session_id": new_session_id,
+                "parent_session_id": source_session_id,
+                "source_session_id": source_session_id,
+                "source_message_id": source_message_id,
+                "cut_mode": selected_cut_mode,
+                "copied_message_count": len(copied_messages),
+                "prefill": prefill,
+            }
+
+        return self._execute_write(_do)
+
+    @staticmethod
+    def _decode_json_field(value: Any, *, fallback: Any = None) -> Any:
+        if value is None:
+            return fallback
+        if not isinstance(value, str):
+            return value
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return fallback
+
+    def _row_to_replay_message(self, row: Any) -> Dict[str, Any]:
+        msg = dict(row)
+        replay: Dict[str, Any] = {
+            "role": msg.get("role", "unknown"),
+            "content": self._decode_content(msg.get("content")),
+        }
+        passthrough_keys = (
+            "tool_call_id",
+            "tool_name",
+            "token_count",
+            "finish_reason",
+            "reasoning",
+            "reasoning_content",
+            "platform_message_id",
+            "timestamp",
+        )
+        for key in passthrough_keys:
+            value = msg.get(key)
+            if value is not None:
+                replay[key] = value
+        for key in ("tool_calls", "reasoning_details", "codex_reasoning_items", "codex_message_items"):
+            value = self._decode_json_field(msg.get(key), fallback=None)
+            if value is not None:
+                replay[key] = value
+        if msg.get("observed"):
+            replay["observed"] = True
+        return replay
+
+    def replace_messages(self, session_id: str, messages: List[Dict[str, Any]], active_only: bool = False) -> None:
+        """Atomically replace the stored messages for a session.
+
+        Used by transcript-rewrite flows such as /retry, /undo, and /compress.
+        The delete + reinsert sequence must commit as one transaction so a
+        mid-rewrite failure does not leave SQLite with a partial transcript.
+
+        DESTRUCTIVE by default: every row for the session is DELETEd (and drops
+        out of the FTS index). For compaction that must preserve the
+        pre-compaction transcript under the same id, use
+        :meth:`archive_and_compact` instead.
+
+        Pass ``active_only=True`` to replace ONLY the live (``active = 1``) rows,
+        leaving soft-archived rows (``active = 0``) untouched. Callers that
+        share a session id with an agent already running in-place compaction
+        must use this so a full-history rewrite doesn't wipe the rows the agent
+        deliberately archived. ``message_count``/``tool_call_count`` then track
+        the live set, matching :meth:`archive_and_compact`.
+        """
+
+        active_clause = " AND active = 1" if active_only else ""
+
+        def _do(conn):
+            conn.execute(
+                f"DELETE FROM messages WHERE session_id = ?{active_clause}",
+                (session_id,),
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
+                (session_id,),
+            )
+            total_messages, total_tool_calls = self._insert_message_rows(
+                conn, session_id, messages
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                (total_messages, total_tool_calls, session_id),
+            )
+
+        self._execute_write(_do)
+
     def has_archived_messages(self, session_id: str) -> bool:
         """Return True if the session has any soft-archived (``active = 0``) rows.
 
@@ -4637,6 +4869,7 @@ class SessionDB:
         session_id: str,
         include_ancestors: bool = False,
         include_inactive: bool = False,
+        include_ids: bool = False,
         repair_alternation: bool = False,
     ) -> List[Dict[str, Any]]:
         """
@@ -4646,6 +4879,10 @@ class SessionDB:
         By default only active messages are returned. Pass
         ``include_inactive=True`` to load soft-deleted (rewound) rows
         as well. See :meth:`rewind_to_message`.
+
+        ``include_ids=True`` is for UI/timeline display paths that need to
+        reference persisted rows. Provider replay callers should keep the
+        default so database-only message ids do not leak into model schemas.
 
         ``repair_alternation=True`` runs ``repair_message_sequence`` over the
         loaded list before returning it. Callers that restore a session for
@@ -4665,8 +4902,8 @@ class SessionDB:
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
-                "SELECT role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
-                "finish_reason, reasoning, reasoning_content, reasoning_details, "
+                "SELECT id, session_id, role, content, tool_call_id, tool_calls, tool_name, "
+                "effect_disposition, finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
@@ -4687,6 +4924,9 @@ class SessionDB:
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
+            if include_ids:
+                msg["id"] = row["id"]
+                msg["session_id"] = row["session_id"]
             if row["timestamp"]:
                 msg["timestamp"] = row["timestamp"]
             if row["tool_call_id"]:

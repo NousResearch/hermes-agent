@@ -6,6 +6,7 @@ import {
   clampOrchestratorSelection,
   closeFallbackAfterClose,
   currentSessionSelectionIndex,
+  filterSessionsOverlayRows,
   draftModelArgFromPickerValue,
   draftModelDisplayLabel,
   draftTitleFromPrompt,
@@ -41,8 +42,8 @@ describe('session orchestrator helpers', () => {
   it('keeps session orchestrator hotkey hints short and contextual', () => {
     expect(orchestratorContextHint(false)).toBe('Session row: Enter switch · Ctrl+D close')
     expect(orchestratorContextHint(true)).toBe('New row: type prompt · Enter start · Tab model')
-    expect(orchestratorGlobalHotkeyHint).toBe('↑↓ move · Ctrl+N new · Ctrl+R refresh · Esc close')
-    expect(orchestratorGlobalHotkeyHint.length).toBeLessThanOrEqual(56)
+    expect(orchestratorGlobalHotkeyHint).toBe('↑↓ move · / filter · Ctrl+N new · Ctrl+R refresh · Esc close')
+    expect(orchestratorGlobalHotkeyHint.length).toBeLessThanOrEqual(68)
   })
 
   it('assigns themed colors consistently to orchestrator labels and hotkeys', () => {
@@ -64,6 +65,7 @@ describe('session orchestrator helpers', () => {
     ])
     expect(orchestratorGlobalHotkeyHintSegments.filter(s => s.role === 'hotkey').map(s => s.text)).toEqual([
       '↑↓',
+      '/',
       'Ctrl+N',
       'Ctrl+R',
       'Esc'
@@ -196,6 +198,23 @@ describe('unified Sessions overlay helpers', () => {
   it('labels live + resumable counts compactly', () => {
     expect(sessionsCountLabel(0, 0)).toBe('0 live · 0 resumable')
     expect(sessionsCountLabel(2, 7)).toBe('2 live · 7 resumable')
+  })
+
+  it('filters live and resumable session rows by id, title, preview, model, source, and status', () => {
+    const live = [
+      { id: 'live-a', model: 'anthropic/claude', preview: 'debug gateway issue', status: 'working', title: 'Gateway Debug' },
+      { id: 'live-b', model: 'openai/gpt-5.6', preview: 'write docs', status: 'idle', title: 'Docs Draft' }
+    ] satisfies SessionActiveItem[]
+    const history = [
+      { id: 'hist-a', message_count: 3, preview: 'kanban branch review', source: 'tui', started_at: 0, title: 'TUI History' },
+      { id: 'hist-b', message_count: 4, preview: 'pricing table', source: 'telegram', started_at: 0, title: 'Research' }
+    ] satisfies SessionListItem[]
+
+    expect(filterSessionsOverlayRows(live, history, 'gateway')).toEqual({ history: [], live: [live[0]] })
+    expect(filterSessionsOverlayRows(live, history, 'telegram')).toEqual({ history: [history[1]], live: [] })
+    expect(filterSessionsOverlayRows(live, history, 'gpt-5.6')).toEqual({ history: [], live: [live[1]] })
+    expect(filterSessionsOverlayRows(live, history, 'branch')).toEqual({ history: [history[0]], live: [] })
+    expect(filterSessionsOverlayRows(live, history, '   ')).toEqual({ history, live })
   })
 
   it('renders relative session age, blank when unknown', () => {

@@ -223,6 +223,7 @@ _LONG_HANDLERS = frozenset(
         "setup.runtime_check",
         "setup.status",
         "session.branch",
+        "session.branch_at",
         "session.compress",
         "session.list",
         "session.resume",
@@ -1945,6 +1946,10 @@ def _ensure_session_db_row(session: dict) -> None:
     parent_session_id = session.get("parent_session_id") or None
     if parent_session_id:
         model_config["_branched_from"] = parent_session_id
+        if session.get("branch_from_message_id") is not None:
+            model_config["_branch_from_message_id"] = session.get("branch_from_message_id")
+        if session.get("branch_cut_mode"):
+            model_config["_branch_cut_mode"] = session.get("branch_cut_mode")
     try:
         db.create_session(
             key,
@@ -1974,6 +1979,12 @@ def _persist_branch_seed(session: dict) -> None:
     parent link are written by ``_ensure_session_db_row`` just before this.
     """
     if not session.get("parent_session_id") or session.get("_branch_seed_persisted"):
+        return
+    # Branch-at and full-session branch RPCs already persisted the copied
+    # transcript before creating the live TUI session. Only draft branches
+    # created with in-memory history need this first-turn seed flush.
+    if session.get("branch_from_message_id") is not None or session.get("branch_cut_mode") == "full_session":
+        session["_branch_seed_persisted"] = True
         return
     key = session.get("session_key")
     if not key:
@@ -5273,9 +5284,14 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             tc_info = tool_call_args.get(tc_id) if tc_id else None
             name = (tc_info[0] if tc_info else None) or m.get("tool_name") or "tool"
             args = (tc_info[1] if tc_info else None) or {}
-            messages.append(
-                {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
-            )
+            msg = {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
+            db_id = m.get("id") if isinstance(m.get("id"), int) else m.get("db_id")
+            if isinstance(db_id, int):
+                msg["db_id"] = db_id
+            owner_session_id = m.get("session_id") or m.get("db_session_id")
+            if isinstance(owner_session_id, str) and owner_session_id:
+                msg["db_session_id"] = owner_session_id
+            messages.append(msg)
             continue
         # An assistant turn may carry only reasoning/thinking content with no
         # visible text (extended-thinking turns, thinking-only recovery
@@ -5296,6 +5312,12 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if not content_text.strip() and not has_reasoning:
             continue
         msg = {"role": role, "text": content_text}
+        db_id = m.get("id") if isinstance(m.get("id"), int) else m.get("db_id")
+        if isinstance(db_id, int):
+            msg["db_id"] = db_id
+        owner_session_id = m.get("session_id") or m.get("db_session_id")
+        if isinstance(owner_session_id, str) and owner_session_id:
+            msg["db_session_id"] = owner_session_id
         if role == "assistant":
             for key in reasoning_keys:
                 if key in m and m.get(key) is not None:
@@ -6001,6 +6023,7 @@ def _(rid, params: dict) -> dict:
             # The child's OWN conversation only — include_ancestors would prepend
             # the parent's transcript onto the subagent's branch.
             history = db.get_messages_as_conversation(target)
+            display_history = db.get_messages_as_conversation(target, include_ids=True)
         except Exception as e:
             if lease is not None:
                 lease.release()
@@ -6022,7 +6045,7 @@ def _(rid, params: dict) -> dict:
         # A delegated child mid-run emits no session events of its own — report
         # its liveness from the relay registry so the window shows a busy turn.
         child_running = _child_run_active(target)
-        messages = _history_to_messages(history)
+        messages = _history_to_messages(display_history)
         return _ok(
             rid,
             {
@@ -6066,7 +6089,9 @@ def _(rid, params: dict) -> dict:
         try:
             db.reopen_session(target)
             raw_history = db.get_messages_as_conversation(target)
-            display_history = db.get_messages_as_conversation(target, include_ancestors=True)
+            display_history = db.get_messages_as_conversation(
+                target, include_ancestors=True, include_ids=True
+            )
         except Exception as e:
             if lease is not None:
                 lease.release()
@@ -6141,7 +6166,7 @@ def _(rid, params: dict) -> dict:
         db.reopen_session(target)
         raw_history = db.get_messages_as_conversation(target)
         display_history = db.get_messages_as_conversation(
-            target, include_ancestors=True
+            target, include_ancestors=True, include_ids=True
         )
         # The display transcript keeps every row so the user still sees their
         # full history.  The model-fed history is sanitized: a session whose
@@ -8170,7 +8195,7 @@ def _(rid, params: dict) -> dict:
     if db is not None and session.get("session_key"):
         try:
             history = db.get_messages_as_conversation(
-                session["session_key"], include_ancestors=True
+                session["session_key"], include_ancestors=True, include_ids=True
             )
         except Exception:
             pass
@@ -8398,11 +8423,64 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"closed": _close_session_by_id(sid, end_reason="tui_close")})
 
 
+def _resolve_branch_message_ref(db, source_session_id: str, params: dict) -> tuple[str, int] | None:
+    raw_message_id = (
+        params.get("message_id")
+        or params.get("from_message_id")
+        or params.get("branch_from_message_id")
+    )
+    if raw_message_id is not None:
+        try:
+            message_id = int(raw_message_id)
+        except (TypeError, ValueError):
+            raise ValueError(f"invalid branch message id: {raw_message_id!r}")
+        messages = db.get_messages_as_conversation(
+            source_session_id, include_ancestors=True, include_ids=True
+        )
+        for msg in messages:
+            if msg.get("id") == message_id:
+                owner = msg.get("session_id") or source_session_id
+                return str(owner), message_id
+        raise ValueError(
+            f"message {message_id} not found in session lineage {source_session_id}"
+        )
+
+    raw_ordinal = params.get("ordinal")
+    if raw_ordinal is None:
+        return None
+    try:
+        ordinal = int(raw_ordinal)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid branch ordinal: {raw_ordinal!r}")
+    if ordinal < 1:
+        raise ValueError("branch ordinal must be >= 1")
+    messages = db.get_messages_as_conversation(
+        source_session_id, include_ancestors=True, include_ids=True
+    )
+    if ordinal > len(messages):
+        raise ValueError(
+            f"message ordinal {ordinal} not found in session {source_session_id}"
+        )
+    message_id = messages[ordinal - 1].get("id")
+    if message_id is None:
+        raise ValueError(f"message ordinal {ordinal} has no persisted id")
+    owner = messages[ordinal - 1].get("session_id") or source_session_id
+    return str(owner), int(message_id)
+
+
 @method("session.branch")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    sid = params.get("session_id") or ""
+    session, err = _sess_nowait(params, rid)
     if err:
         return err
+    assert session is not None
+    if session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the running turn before /branch")
+    _start_agent_build(sid, session)
+    wait_err = _wait_agent(session, rid)
+    if wait_err:
+        return wait_err
     db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5008)
@@ -8421,41 +8499,73 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4090, limit_message)
     branch_name = params.get("name", "")
     try:
+        branch_ref = _resolve_branch_message_ref(db, old_key, params)
+    except ValueError as e:
+        if lease is not None:
+            lease.release()
+        return _err(rid, 4008, str(e))
+    source_key, from_message_id = branch_ref if branch_ref is not None else (old_key, None)
+    cut_mode = params.get("cut_mode") or params.get("mode") or None
+    branch_result = None
+    prefill = None
+    try:
         if branch_name:
             title = branch_name
         else:
-            current = db.get_session_title(old_key) or "branch"
+            current = db.get_session_title(source_key) or db.get_session_title(old_key) or "branch"
             title = (
                 db.get_next_title_in_lineage(current)
                 if hasattr(db, "get_next_title_in_lineage")
                 else f"{current} (branch)"
             )
-        db.create_session(
-            new_key,
-            source=source,
-            model=_resolve_model(),
-            # Stable _branched_from marker so list_sessions_rich() keeps the
-            # branch visible in /resume and /sessions. The TUI branch leaves
-            # the parent live (no end_reason='branched'), so the legacy
-            # end_reason heuristic never matches it — the marker is the only
-            # thing that surfaces TUI branches. See issue #20856.
-            model_config={"_branched_from": old_key},
-            parent_session_id=old_key,
-            cwd=_session_cwd(session),
-        )
-        for msg in history:
-            db.append_message(
-                session_id=new_key,
-                role=msg.get("role", "user"),
-                content=msg.get("content"),
+        if from_message_id is not None:
+            branch_result = db.branch_at_message(
+                source_key,
+                from_message_id,
+                new_session_id=new_key,
+                cut_mode=cut_mode,
+                source=_session_source(session),
             )
+            prefill = branch_result.get("prefill")
+        else:
+            db.create_session(
+                new_key,
+                source=_session_source(session),
+                model=_resolve_model(),
+                # Stable _branched_from marker so list_sessions_rich() keeps the
+                # branch visible in /resume and /sessions. The TUI branch leaves
+                # the parent live (no end_reason='branched'), so the legacy
+                # end_reason heuristic never matches it — the marker is the only
+                # thing that surfaces TUI branches. See issue #20856.
+                model_config={"_branched_from": old_key, "_branch_cut_mode": "full_session"},
+                parent_session_id=old_key,
+                cwd=_session_cwd(session),
+            )
+            # Preserve replay fields when cloning the whole live transcript; do
+            # not reduce messages to role/content or provider replay can break.
+            db.replace_messages(new_key, history)
+            branch_result = {
+                "session_id": new_key,
+                "parent_session_id": old_key,
+                "source_session_id": old_key,
+                "source_message_id": None,
+                "cut_mode": "full_session",
+                "copied_message_count": len(history),
+                "prefill": None,
+            }
         db.set_session_title(new_key, title)
+        branch_history = db.get_messages_as_conversation(new_key, include_ids=True)
+    except ValueError as e:
+        if lease is not None:
+            lease.release()
+        return _err(rid, 4008, str(e))
     except Exception as e:
         if lease is not None:
             lease.release()
         return _err(rid, 5008, f"branch failed: {e}")
     try:
-        tokens = _set_session_context(new_key)
+        branch_cwd = _session_cwd(session)
+        tokens = _set_session_context(new_key, cwd=branch_cwd)
         try:
             agent = _make_agent(
                 new_sid,
@@ -8469,17 +8579,168 @@ def _(rid, params: dict) -> dict:
             new_sid,
             new_key,
             agent,
-            list(history),
+            list(branch_history),
             cols=session.get("cols", 80),
-            source=source,
+            cwd=branch_cwd,
         )
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = lease
+            _sessions[new_sid]["_branch_seed_persisted"] = True
+            _sessions[new_sid]["branch_from_message_id"] = branch_result.get("source_message_id") if branch_result else None
+            _sessions[new_sid]["branch_cut_mode"] = branch_result.get("cut_mode") if branch_result else None
     except Exception as e:
         if lease is not None:
             lease.release()
         return _err(rid, 5000, f"agent init failed on branch: {e}")
-    return _ok(rid, {"session_id": new_sid, "title": title, "parent": old_key})
+    branch_from_message_id = branch_result.get("source_message_id") if branch_result else None
+    copied_count = branch_result.get("copied_message_count") if branch_result else len(branch_history)
+    return _ok(rid, {
+        "session_id": new_sid,
+        "title": title,
+        "parent": old_key,
+        "db_session_id": new_key,
+        "branch_from_message_id": branch_from_message_id,
+        "prefill": prefill,
+        "copied_count": copied_count,
+        "branch": branch_result,
+    })
+
+
+@method("session.branch_at")
+def _(rid, params: dict) -> dict:
+    if not (
+        params.get("message_id")
+        or params.get("from_message_id")
+        or params.get("branch_from_message_id")
+        or params.get("ordinal")
+    ):
+        return _err(rid, 4008, "message_id or ordinal is required")
+
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    assert session is not None
+    if session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the running turn before /branch")
+
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5008)
+    old_key = session["session_key"]
+    with session["history_lock"]:
+        history = [dict(msg) for msg in session.get("history", [])]
+    if not history:
+        return _err(rid, 4008, "nothing to branch — send a message first")
+
+    new_key = _new_session_key()
+    new_sid = uuid.uuid4().hex[:8]
+    lease, limit_message = _claim_active_session_slot(new_key, live_session_id=new_sid)
+    if limit_message is not None:
+        return _err(rid, 4090, limit_message)
+
+    branch_name = params.get("name", "")
+    try:
+        branch_ref = _resolve_branch_message_ref(db, old_key, params)
+    except ValueError as e:
+        if lease is not None:
+            lease.release()
+        return _err(rid, 4008, str(e))
+    source_key, from_message_id = branch_ref if branch_ref is not None else (old_key, None)
+
+    cut_mode = params.get("cut_mode") or params.get("mode") or None
+    branch_result = None
+    prefill = None
+    try:
+        if branch_name:
+            title = branch_name
+        else:
+            current = db.get_session_title(source_key) or db.get_session_title(old_key) or "branch"
+            title = (
+                db.get_next_title_in_lineage(current)
+                if hasattr(db, "get_next_title_in_lineage")
+                else f"{current} (branch)"
+            )
+        if from_message_id is not None:
+            branch_result = db.branch_at_message(
+                source_key,
+                from_message_id,
+                new_session_id=new_key,
+                cut_mode=cut_mode,
+                source=_session_source(session),
+            )
+            prefill = branch_result.get("prefill")
+        else:
+            db.create_session(
+                new_key,
+                source=_session_source(session),
+                model=_resolve_model(),
+                # Stable _branched_from marker so list_sessions_rich() keeps the
+                # branch visible in /resume and /sessions. The TUI branch leaves
+                # the parent live (no end_reason='branched'), so the legacy
+                # end_reason heuristic never matches it — the marker is the only
+                # thing that surfaces TUI branches. See issue #20856.
+                model_config={"_branched_from": old_key, "_branch_cut_mode": "full_session"},
+                parent_session_id=old_key,
+                cwd=_session_cwd(session),
+            )
+            # Preserve replay fields when cloning the whole live transcript; do
+            # not reduce messages to role/content or provider replay can break.
+            db.replace_messages(new_key, history)
+            branch_result = {
+                "session_id": new_key,
+                "parent_session_id": old_key,
+                "source_session_id": old_key,
+                "source_message_id": None,
+                "cut_mode": "full_session",
+                "copied_message_count": len(history),
+                "prefill": None,
+            }
+        db.set_session_title(new_key, title)
+        branch_history = db.get_messages_as_conversation(new_key, include_ids=True)
+    except ValueError as e:
+        if lease is not None:
+            lease.release()
+        return _err(rid, 4008, str(e))
+    except Exception as e:
+        if lease is not None:
+            lease.release()
+        return _err(rid, 5008, f"branch failed: {e}")
+    try:
+        branch_cwd = _session_cwd(session)
+        tokens = _set_session_context(new_key, cwd=branch_cwd)
+        try:
+            agent = _make_agent(new_sid, new_key, session_id=new_key)
+        finally:
+            _clear_session_context(tokens)
+        _init_session(
+            new_sid,
+            new_key,
+            agent,
+            list(branch_history),
+            cols=session.get("cols", 80),
+            cwd=branch_cwd,
+        )
+        if new_sid in _sessions:
+            _sessions[new_sid]["active_session_lease"] = lease
+            _sessions[new_sid]["_branch_seed_persisted"] = True
+            _sessions[new_sid]["branch_from_message_id"] = branch_result.get("source_message_id") if branch_result else None
+            _sessions[new_sid]["branch_cut_mode"] = branch_result.get("cut_mode") if branch_result else None
+    except Exception as e:
+        if lease is not None:
+            lease.release()
+        return _err(rid, 5000, f"agent init failed on branch: {e}")
+    branch_from_message_id = branch_result.get("source_message_id") if branch_result else None
+    copied_count = branch_result.get("copied_message_count") if branch_result else len(branch_history)
+    return _ok(rid, {
+        "session_id": new_sid,
+        "title": title,
+        "parent": old_key,
+        "db_session_id": new_key,
+        "branch_from_message_id": branch_from_message_id,
+        "prefill": prefill,
+        "copied_count": copied_count,
+        "branch": branch_result,
+    })
 
 
 @method("session.interrupt")
@@ -12333,12 +12594,32 @@ def _resolve_name(name: str) -> str:
         return name
 
 
+def _resolve_bundle_command_key_for_dispatch(name: str) -> Optional[str]:
+    """Resolve a slash/bundle command key using the live bundle mapping.
+
+    Keep this local to the gateway so hot-reload tests that patch
+    ``agent.skill_bundles.get_skill_bundles`` see the same mapping used here.
+    """
+    if not name:
+        return None
+    try:
+        from hermes_cli.commands import resolve_command
+
+        if resolve_command(name.lstrip("/")) is not None:
+            return None
+
+        from agent import skill_bundles
+
+        cmd_key = f"/{name.lstrip('/').replace('_', '-')}"
+        return cmd_key if cmd_key in skill_bundles.get_skill_bundles() else None
+    except Exception:
+        return None
+
+
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
-    name, arg = params.get("name", "").lstrip("/"), params.get("arg", "")
-    resolved = _resolve_name(name)
-    if resolved != name:
-        name = resolved
+    raw_name, arg = params.get("name", "").lstrip("/"), params.get("arg", "")
+    name = raw_name
     session = _sessions.get(params.get("session_id", ""))
 
     qcmds = _load_cfg().get("quick_commands", {})
@@ -12391,25 +12672,15 @@ def _(rid, params: dict) -> dict:
         pass
 
     try:
-        from agent.skill_bundles import (
-            build_bundle_invocation_message,
-            get_skill_bundles,
-            resolve_bundle_command_key,
-        )
+        from agent import skill_bundles
 
-        from hermes_cli.commands import resolve_command
-
-        bundle_key = (
-            resolve_bundle_command_key(name)
-            if resolve_command(name) is None
-            else None
-        )
+        bundle_key = _resolve_bundle_command_key_for_dispatch(name)
     except Exception:
         bundle_key = None
 
     if bundle_key is not None:
         try:
-            bundle_result = build_bundle_invocation_message(
+            bundle_result = skill_bundles.build_bundle_invocation_message(
                 bundle_key,
                 arg,
                 task_id=session.get("session_key", "") if session else "",
@@ -12422,7 +12693,7 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4018, f"failed to load bundle: {bundle_key}")
 
         msg, loaded_names, missing = bundle_result
-        bundle_info = get_skill_bundles().get(bundle_key, {})
+        bundle_info = skill_bundles.get_skill_bundles().get(bundle_key, {})
         bundle_name = bundle_info.get("name", bundle_key.lstrip("/"))
         notice = f"⚡ Loading bundle: {bundle_name} ({len(loaded_names)} skills)"
         if missing:
@@ -12437,15 +12708,12 @@ def _(rid, params: dict) -> dict:
         )
 
     try:
-        from agent.skill_commands import (
-            scan_skill_commands,
-            build_skill_invocation_message,
-        )
+        import agent.skill_commands as skill_commands
 
-        cmds = scan_skill_commands()
+        cmds = skill_commands.get_skill_commands()
         key = f"/{name}"
         if key in cmds:
-            msg = build_skill_invocation_message(
+            msg = skill_commands.build_skill_invocation_message(
                 key, arg, task_id=session.get("session_key", "") if session else ""
             )
             if msg:
@@ -13973,14 +14241,7 @@ def _(rid, params: dict) -> dict:
             )
 
     try:
-        from agent.skill_bundles import resolve_bundle_command_key
-        from hermes_cli.commands import resolve_command
-
-        _bundle_key = (
-            resolve_bundle_command_key(_cmd_base)
-            if resolve_command(_cmd_base) is None
-            else None
-        )
+        _bundle_key = _resolve_bundle_command_key_for_dispatch(_cmd_base)
         if _bundle_key is not None:
             return _methods["command.dispatch"](
                 rid,

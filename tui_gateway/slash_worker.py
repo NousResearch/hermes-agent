@@ -20,6 +20,7 @@ import argparse
 import contextlib
 import io
 import json
+import logging
 import os
 import sys
 import threading
@@ -49,6 +50,7 @@ def _env_float(name: str, default: float) -> float:
 _WATCHDOG_POLL_S = max(0.05, _env_float("HERMES_SLASH_WATCHDOG_POLL_S", 2.0))
 _ORPHAN_GRACE_S = max(0.0, _env_float("HERMES_SLASH_WATCHDOG_GRACE_S", 5.0))
 _in_flight = threading.Event()  # set while a command is executing
+logger = logging.getLogger(__name__)
 
 
 def _is_orphaned(original_ppid, parent_create_time, getppid=os.getppid) -> bool:
@@ -173,6 +175,19 @@ def main():
             sys.stdout.flush()
         finally:
             _in_flight.clear()
+            # Workers persist for the TUI session, so release allocator pages at
+            # the same command boundary as other long-lived gateway processes.
+            # trim_memory's shared cooldown coalesces this with nearby activity.
+            try:
+                from hermes_cli.mem_trim import trim_memory
+
+                trim_memory(reason="slash worker command completion")
+            except Exception as exc:
+                logger.warning(
+                    "slash worker memory trim failed: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
 
 
 if __name__ == "__main__":

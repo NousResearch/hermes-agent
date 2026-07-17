@@ -33,6 +33,51 @@ export interface UsageModelData {
   topup_bar?: null | UsageBarData
 }
 
+/**
+ * Refusal/error codes the gateway serializes today (`_serialize_billing_error`
+ * preserves the raw NAS code where one exists). The `(string & {})` arm keeps
+ * unknown future codes (e.g. the NAS W3 card-health family) assignable —
+ * consumers must keep an unknown-code fallback branch.
+ */
+export type BillingRefusalCode =
+  | 'auto_top_up_disabled_failures'
+  | 'cli_billing_disabled'
+  | 'consent_required'
+  | 'endpoint_unavailable'
+  | 'idempotency_conflict'
+  | 'idempotency_key_required'
+  | 'insufficient_scope'
+  | 'internal_error'
+  | 'invalid_charge_id'
+  | 'invalid_request'
+  | 'monthly_cap_exceeded'
+  | 'no_payment_method'
+  | 'org_access_denied'
+  | 'preview_rejected'
+  | 'rate_limited'
+  | 'remote_spending_disabled'
+  | 'remote_spending_revoked'
+  | 'role_required'
+  | 'session_revoked'
+  | 'stripe_unavailable'
+  | 'temporarily_unavailable'
+  | 'upgrade_cap_exceeded'
+  | 'validation_failed'
+  | (string & {})
+
+/**
+ * Terminal reasons a settled-poll charge can fail with (NAS
+ * `cli-charge-failure-reason.ts` — all four values), plus the raw Stripe code
+ * NAS pre-#711 leaks for SCA-on-upgrade. Unknown reasons must degrade safely.
+ */
+export type ChargeFailureReason =
+  | 'authentication_required'
+  | 'card_declined'
+  | 'payment_method_expired'
+  | 'processing_error'
+  | 'subscription_payment_intent_requires_action'
+  | (string & {})
+
 export interface BillingCardInfo {
   brand: string
   last4: string
@@ -72,6 +117,8 @@ export interface BillingStateResponse {
   auto_reload: BillingAutoReload | null
   balance_display: string
   balance_usd: string | null
+  // NAS capability (canChangePlan) when the server sends it; legacy role fallback otherwise
+  can_change_plan?: boolean
   can_charge: boolean
   card: BillingCardInfo | null
   charge_presets: string[]
@@ -106,7 +153,7 @@ export interface BillingChargeResponse {
   actor?: string
   charge_id?: string
   code?: string
-  error?: string
+  error?: BillingRefusalCode
   idempotency_key?: string
   message?: string
   ok: boolean
@@ -118,12 +165,12 @@ export interface BillingChargeResponse {
 
 export interface BillingChargeStatusResponse {
   amount_usd?: string | null
-  error?: string
+  error?: BillingRefusalCode
   message?: string
   ok: boolean
   payload?: BillingErrorPayload
   portal_url?: string | null
-  reason?: string | null
+  reason?: ChargeFailureReason | null
   retry_after?: number | null
   settled_at?: string | null
   status?: string
@@ -132,7 +179,7 @@ export interface BillingChargeStatusResponse {
 export interface BillingMutationResponse {
   actor?: string
   code?: string
-  error?: string
+  error?: BillingRefusalCode
   granted?: boolean
   message?: string
   ok: boolean
@@ -161,7 +208,7 @@ export interface SubscriptionStateResponse {
   ok: boolean
   logged_in: boolean
   is_admin: boolean
-  can_change_plan: boolean        // role gate (ADMIN/OWNER), from NAS
+  can_change_plan: boolean        // NAS capability (canChangePlan: OWNER/ADMIN/FINANCE_ADMIN); legacy role fallback when the server omits it
   org_name: string | null
   org_id: string | null           // org.id from the NAS response
   role: string | null
@@ -202,7 +249,7 @@ export interface SubscriptionPreviewResponse {
   amount_due_now_cents?: number | null  // the prorated upfront charge for an upgrade
   effective_at?: string | null          // ISO, when a scheduled change lands
   // typed-error envelope (present when ok=false)
-  error?: string
+  error?: BillingRefusalCode
   message?: string
   portal_url?: string | null
   retry_after?: number | null
@@ -220,10 +267,10 @@ export interface SubscriptionUpgradeResponse {
   status?: 'upgraded' | 'already_on_tier' | 'requires_action' | 'payment_failed'
   target_tier_name?: string | null
   recovery_url?: string | null
-  reason?: string | null
+  reason?: ChargeFailureReason | null
   idempotency_key?: string
   // typed-error envelope (present when ok=false)
-  error?: string
+  error?: BillingRefusalCode
   message?: string
   portal_url?: string | null
   retry_after?: number | null

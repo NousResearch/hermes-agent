@@ -5479,12 +5479,22 @@ class DiscordAdapter(BasePlatformAdapter):
         is_dm = isinstance(interaction.channel, discord.DMChannel)
         is_thread = isinstance(interaction.channel, discord.Thread)
         thread_id = None
+        parent_chat_id = None
 
         if is_dm:
             chat_type = "dm"
         elif is_thread:
             chat_type = "thread"
             thread_id = str(interaction.channel_id)
+            # Required for /branch (and other thread-aware features) so a
+            # sibling thread can be created under the real parent channel.
+            # Without this, chat_id == thread_id and parent resolution fails.
+            raw_parent = getattr(interaction.channel, "parent_id", None)
+            if raw_parent is None:
+                parent_obj = getattr(interaction.channel, "parent", None)
+                raw_parent = getattr(parent_obj, "id", None)
+            if raw_parent is not None:
+                parent_chat_id = str(raw_parent)
         else:
             chat_type = "group"
 
@@ -5506,11 +5516,15 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            parent_chat_id=parent_chat_id,
+            guild_id=str(interaction.guild_id) if getattr(interaction, "guild_id", None) else None,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
-        parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
+        parent_id = parent_chat_id or str(
+            getattr(getattr(interaction, "channel", None), "parent_id", "") or ""
+        )
         return MessageEvent(
             text=text,
             message_type=msg_type,

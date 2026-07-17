@@ -4131,6 +4131,12 @@ class GatewaySlashCommandsMixin:
             create_thread = getattr(thread_adapter, "create_handoff_thread", None) if thread_adapter else None
             thread_parent_id = _branch_thread_parent_id(source)
             if not callable(create_thread) or not thread_parent_id:
+                logger.info(
+                    "Branch: falling back to in-place (platform=%s parent=%s adapter=%s)",
+                    getattr(source.platform, "value", source.platform),
+                    thread_parent_id,
+                    bool(thread_adapter),
+                )
                 want_thread = False  # ponytail: fall back to --here semantics
 
         # Generate the new session ID

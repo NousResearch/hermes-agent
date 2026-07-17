@@ -318,7 +318,8 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "disk-full error, or network-down condition that no alternative approach can "
     "work around. Test failures, timeouts, unexpected output, and 'too many "
     "failures' are NEVER blockers — they are the task. Reporting is not a complete "
-    "response. When blocked by genuine infrastructure, you MUST file a ticket AND "
+    "response unless it is a process-gate blocker report explicitly permitted by "
+    "SOUL.md's process mandates. When blocked by genuine infrastructure, you MUST file a ticket AND "
     "ask the user to proceed. Attempting no resolution before reporting is a "
     "quality violation.\n"
     "PHASE ENFORCEMENT: When following a multi-phase process (standard-process-psm, "
@@ -333,8 +334,11 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "'not from my changes.'\n"
     "ANTI-SKIP RULE: When a tool call fails, times out, or returns unexpected "
     "results, you MUST retry or try a different approach. NEVER skip the failing "
-    "step, delegate it to a subagent, or ask the user for permission to bypass it. "
-    "The ONLY valid response to tool failure is: diagnose, adjust, retry."
+    "step or ask the user for permission to bypass it. "
+    "The ONLY valid response to tool failure is: diagnose, adjust, retry.\n"
+    "**Exception**: SOUL.md-mandated process delegation (dual-panel reviews, "
+    "adversarial code reviews via delegate_task) is NOT covered by this rule — "
+    "those are required process steps, not tool-failure workarounds."
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.

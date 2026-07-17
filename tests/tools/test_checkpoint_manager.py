@@ -22,6 +22,8 @@ from tools.checkpoint_manager import (
     _ref_name,
     _project_meta_path,
     _touch_project,
+    _try_checkpoint_maintenance_lock,
+    _release_checkpoint_maintenance_lock,
     format_checkpoint_list,
     prune_checkpoints,
     maybe_auto_prune_checkpoints,
@@ -183,6 +185,35 @@ class TestTakeCheckpoint:
     def test_first_checkpoint(self, mgr, work_dir):
         result = mgr.ensure_checkpoint(str(work_dir), "initial")
         assert result is True
+
+    def test_contended_maintenance_does_not_fail_checkpoint(self, mgr, work_dir):
+        with (
+            patch(
+                "tools.checkpoint_manager._try_checkpoint_maintenance_lock",
+                return_value=None,
+            ),
+            patch.object(mgr, "_prune") as prune,
+            patch.object(mgr, "_enforce_size_cap") as size_cap,
+        ):
+            assert mgr.ensure_checkpoint(str(work_dir), "contended") is True
+        prune.assert_not_called()
+        size_cap.assert_not_called()
+
+    def test_maintenance_lock_is_nonblocking_and_reusable(
+        self, checkpoint_base,
+    ):
+        store = _store_path(checkpoint_base)
+        store.parent.mkdir(parents=True)
+        first = _try_checkpoint_maintenance_lock(store)
+        assert first is not None
+        try:
+            assert _try_checkpoint_maintenance_lock(store) is None
+        finally:
+            _release_checkpoint_maintenance_lock(first)
+
+        second = _try_checkpoint_maintenance_lock(store)
+        assert second is not None
+        _release_checkpoint_maintenance_lock(second)
 
     def test_dedup_same_turn(self, mgr, work_dir):
         r1 = mgr.ensure_checkpoint(str(work_dir), "first")

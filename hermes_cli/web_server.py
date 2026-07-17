@@ -11425,7 +11425,6 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
 
                         reconnect_mcp_server(flow.server_name)
                 except Exception:
-                    manager.evict(flow.server_name, hermes_home=flow.hermes_home)
                     storage.restore(backup, only_if_absent=True)
                     manager.restore_entry(
                         flow.server_name,

@@ -513,13 +513,12 @@ async def test_allowed_native_queue_management_returns_structured_result_mid_run
         )
     )
 
-    assert result == {
-        "type": "queue_management",
-        "action": "list",
-        "ok": True,
-        "session_key": build_session_key(src),
-        "items": [],
-    }
+    assert result["type"] == "queue_management"
+    assert result["action"] == "list"
+    assert result["ok"] is True
+    assert result["session_key"] == build_session_key(src)
+    assert result["items"] == []
+    assert isinstance(result["snapshot_id"], str) and result["snapshot_id"]
     running_agent.interrupt.assert_not_called()
 
 

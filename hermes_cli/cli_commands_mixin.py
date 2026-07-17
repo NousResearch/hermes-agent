@@ -15,6 +15,7 @@ Import discipline (mirrors gateway/slash_commands.py, PR #41886):
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import threading
@@ -47,6 +48,19 @@ class CLICommandsMixin:
     lazy ``from cli import ...`` lines, so they compose cleanly onto
     ``HermesCLI`` via the MRO.
     """
+
+    def _invalidate_cli_queue_snapshot(self) -> None:
+        """Revoke the local queue view when its session boundary changes."""
+        queue_snapshot_store = getattr(self, "_queue_snapshot_store", None)
+        if queue_snapshot_store is None:
+            return
+        try:
+            queue_snapshot_store.invalidate("cli", "local-user")
+        except Exception:
+            logging.debug(
+                "Failed to invalidate CLI queue view at session boundary",
+                exc_info=True,
+            )
 
     def _handle_rollback_command(self, command: str):
         """Handle /rollback — list, diff, or restore filesystem checkpoints.
@@ -754,6 +768,7 @@ class CLICommandsMixin:
             return
 
         old_session_id = self.session_id
+        self._invalidate_cli_queue_snapshot()
         # Flush un-persisted messages before ending the old session (#47202).
         if self.agent:
             try:
@@ -980,6 +995,7 @@ class CLICommandsMixin:
             pass
 
         # Switch to the new session
+        self._invalidate_cli_queue_snapshot()
         self._transfer_session_yolo(self.session_id, new_session_id)
         self.session_id = new_session_id
         self.session_start = now

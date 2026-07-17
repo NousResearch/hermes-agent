@@ -648,6 +648,7 @@ class SlackAdapter(BasePlatformAdapter):
     # .setStatus), so the gateway feeds it live per-tool phrases.
     supports_status_text = True
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    supports_private_notice = True  # chat_postEphemeral stays caller-visible in shared channels
     # Slack blocks typed native slash commands inside threads ("/approve is
     # not supported in threads. Sorry!").  The adapter rewrites a leading
     # "!" to "/" for known commands (see _handle_slack_message), so "!" is

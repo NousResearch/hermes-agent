@@ -4121,7 +4121,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # These must exist before any direct chat() call because single-query
         # mode does not go through run().
         self._agent_running = False
-        self._pending_input = queue.Queue()
+        from hermes_cli.queue_management import ManagedPromptQueue
+
+        self._pending_input = ManagedPromptQueue()
         self._interrupt_queue = queue.Queue()
         # Tracks whether the turn that just finished was interrupted via
         # Ctrl+C. Consumed by _maybe_continue_goal_after_turn so /goal loops
@@ -7241,6 +7243,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         old_session_id = self.session_id
+        self._invalidate_cli_queue_snapshot()
         _boundary_snapshot = None
         if self.agent and self.conversation_history:
             # Deliver the context-engine boundary synchronously and get back
@@ -9255,13 +9258,70 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             parts = cmd_original.split(None, 1)
             payload = parts[1].strip() if len(parts) > 1 else ""
             if not payload:
-                _cprint("  Usage: /queue <prompt>")
+                from hermes_cli.queue_management import QueueSnapshotStore, format_queue_snapshot
+
+                store = getattr(self, "_queue_snapshot_store", None)
+                if store is None:
+                    store = QueueSnapshotStore()
+                    self._queue_snapshot_store = store
+                snapshot = store.open(
+                    "cli",
+                    "local-user",
+                    getattr(self, "session_id", "cli-session") or "cli-session",
+                    self._pending_input.snapshot_items(),
+                    source_label="CLI",
+                )
+                _cprint(format_queue_snapshot(snapshot))
             else:
                 self._pending_input.put(payload)
                 if self._agent_running:
                     _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
                 else:
                     _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+        elif canonical == "dequeue":
+            from hermes_cli.queue_management import QueueSnapshotStore, format_queue_snapshot
+
+            parts = cmd_original.split(None, 1)
+            selector = parts[1].strip() if len(parts) > 1 else ""
+            store = getattr(self, "_queue_snapshot_store", None)
+            if store is None:
+                store = QueueSnapshotStore()
+                self._queue_snapshot_store = store
+            current_target = getattr(self, "session_id", "cli-session") or "cli-session"
+            selection = store.resolve("cli", "local-user", selector)
+            if (
+                selection.status in {"missing", "expired", "superseded"}
+                or selection.target_key != current_target
+            ):
+                _cprint("  No active queue view. Run `/queue` first, then use `/dequeue N`.")
+            elif selection.status == "invalid_selector":
+                _cprint("  Usage: /dequeue <N|all> (short form: /dq <N|all>)")
+            elif selection.status == "out_of_range":
+                _cprint("  That number is not in the latest queue view. Run `/queue` to refresh.")
+            else:
+                removed = (
+                    self._pending_input.remove_ids(selection.queue_ids)
+                    if selection.status == "ok"
+                    else 0
+                )
+                snapshot = store.open(
+                    "cli",
+                    "local-user",
+                    getattr(self, "session_id", "cli-session") or "cli-session",
+                    self._pending_input.snapshot_items(),
+                    source_label="CLI",
+                )
+                refreshed = format_queue_snapshot(snapshot)
+                if selection.status == "empty":
+                    _cprint(refreshed)
+                elif removed:
+                    noun = "turn" if removed == 1 else "turns"
+                    _cprint(f"  Removed {removed} queued {noun}.\n\n{refreshed}")
+                else:
+                    _cprint(
+                        "  That queued turn already started or is no longer queued. "
+                        f"No other turn was removed.\n\n{refreshed}"
+                    )
         elif canonical == "steer":
             # Inject a message after the next tool call without interrupting.
             # If the agent is actively running, push the text into the agent's
@@ -9607,7 +9667,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
-            self._pending_input.put(synthetic_message)
+            put_system = getattr(self._pending_input, "put_system", self._pending_input.put)
+            put_system(synthetic_message)
             complete_event_delivery(event, claim)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
@@ -9676,7 +9737,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 try:
                     # Queue.queue is the underlying deque — direct peek
                     # without disturbing FIFO order.
-                    for entry in list(pending.queue):
+                    payloads = (
+                        pending.snapshot_payloads()
+                        if hasattr(pending, "snapshot_payloads")
+                        else list(pending.queue)
+                    )
+                    for entry in payloads:
                         # Bundled payloads are (text, images) tuples;
                         # unpack for inspection.
                         if isinstance(entry, tuple) and entry:
@@ -9757,7 +9823,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             prompt = decision.get("continuation_prompt")
             if prompt:
                 try:
-                    self._pending_input.put(prompt)
+                    put_system = getattr(self._pending_input, "put_system", self._pending_input.put)
+                    put_system(prompt)
                 except Exception as exc:
                     logging.debug("goal continuation enqueue failed: %s", exc)
 
@@ -13251,7 +13318,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         
         # State for async operation
         self._agent_running = False
-        self._pending_input = queue.Queue()     # For normal input (commands + new queries)
+        from hermes_cli.queue_management import ManagedPromptQueue
+
+        self._pending_input = ManagedPromptQueue()  # Normal input (commands + new queries)
         self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
         # See constructor note. Mirrored here for the run() path that skips
         # the earlier __init__ branch.

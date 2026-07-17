@@ -4905,6 +4905,7 @@ class DiscordAdapter(BasePlatformAdapter):
         *,
         queue_ids: Optional[List[str]] = None,
         session_key: Optional[str] = None,
+        snapshot_id: Optional[str] = None,
     ) -> Any:
         """Dispatch one native queue-manager action through the gateway handler.
 
@@ -4925,6 +4926,8 @@ class DiscordAdapter(BasePlatformAdapter):
             marker["queue_ids"] = [str(item) for item in queue_ids]
         if session_key is not None:
             marker["session_key"] = session_key
+        if snapshot_id is not None:
+            marker["snapshot_id"] = snapshot_id
         metadata = dict(event.metadata or {})
         metadata["_hermes_native_discord_queue_management"] = marker
         event.metadata = metadata
@@ -4932,14 +4935,14 @@ class DiscordAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _queue_manager_items(result: Any) -> List[Dict[str, Any]]:
-        """Validate and project the gateway's structured list response."""
+        """Validate and project a successful gateway queue snapshot result."""
         if not (
             isinstance(result, dict)
             and result.get("type") == "queue_management"
-            and result.get("action") == "list"
+            and result.get("action") in {"list", "remove", "clear"}
             and result.get("ok") is True
         ):
-            raise RuntimeError("Invalid queue manager list response")
+            raise RuntimeError("Invalid queue manager snapshot response")
         raw_items = result.get("items")
         if not isinstance(raw_items, list):
             raise RuntimeError("Invalid queue manager item list")
@@ -4973,6 +4976,16 @@ class DiscordAdapter(BasePlatformAdapter):
         if not isinstance(session_key, str) or not session_key:
             raise RuntimeError("Invalid queue manager session key")
         return session_key
+
+    @staticmethod
+    def _queue_manager_snapshot_id(result: Any) -> str:
+        """Read the private active-snapshot token from a list response."""
+        if not isinstance(result, dict):
+            raise RuntimeError("Invalid queue manager snapshot response")
+        snapshot_id = result.get("snapshot_id")
+        if not isinstance(snapshot_id, str) or not snapshot_id:
+            raise RuntimeError("Invalid queue manager snapshot key")
+        return snapshot_id
 
     def _queue_manager_allowed_mentions(self) -> Any:
         """Keep all queue-manager interaction output mention-safe."""
@@ -5029,12 +5042,14 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             session_key = self._queue_manager_session_key(result)
             items = self._queue_manager_items(result)
+            snapshot_id = self._queue_manager_snapshot_id(result)
             view = QueueManagerView(
                 adapter=self,
                 owner_user_id=str(interaction.user.id),
                 typed_command=typed_command,
                 items=items,
                 session_key=session_key,
+                snapshot_id=snapshot_id,
                 original_interaction=interaction,
             )
             message = await interaction.edit_original_response(
@@ -8035,6 +8050,7 @@ def _define_discord_view_classes() -> None:
             typed_command: str,
             items: List[Dict[str, Any]],
             session_key: Optional[str] = None,
+            snapshot_id: Optional[str] = None,
             original_interaction: Optional[discord.Interaction] = None,
         ) -> None:
             super().__init__(timeout=self.TIMEOUT_SECONDS)
@@ -8044,6 +8060,7 @@ def _define_discord_view_classes() -> None:
                 typed_command if typed_command in {"/queue", "/q"} else "/queue"
             )
             self.session_key = str(session_key or "")
+            self.snapshot_id = str(snapshot_id or "")
             self.original_interaction = original_interaction
             self.page = 0
             self.selected_queue_id: Optional[str] = None
@@ -8280,9 +8297,17 @@ def _define_discord_view_classes() -> None:
                 interaction, self.typed_command
             )
 
-        async def _edit(self, interaction: discord.Interaction) -> None:
+        async def _edit(
+            self,
+            interaction: discord.Interaction,
+            *,
+            notice: Optional[str] = None,
+        ) -> None:
+            content = self.render_content()
+            if notice:
+                content = f"{notice}\n\n{content}"
             await interaction.response.edit_message(
-                content=self.render_content(),
+                content=content,
                 view=self,
                 allowed_mentions=self.adapter._queue_manager_allowed_mentions(),
             )
@@ -8301,7 +8326,23 @@ def _define_discord_view_classes() -> None:
                 queue_id,
                 queue_ids=queue_ids,
                 session_key=self.session_key or None,
+                snapshot_id=self.snapshot_id or None,
             )
+
+        async def _apply_snapshot_result(self, result: Any) -> bool:
+            """Apply the latest private snapshot returned by the gateway."""
+            try:
+                session_key = self.adapter._queue_manager_session_key(result)
+                snapshot_id = self.adapter._queue_manager_snapshot_id(result)
+                if self.session_key and session_key != self.session_key:
+                    return False
+                self.session_key = session_key
+                self.snapshot_id = snapshot_id
+                self._set_items(self.adapter._queue_manager_items(result))
+                return True
+            except Exception:
+                logger.exception("[Discord] Queue manager snapshot response failed")
+                return False
 
         async def _refresh_items(self, interaction: discord.Interaction) -> bool:
             result = await self._dispatch_action(interaction, "list")
@@ -8310,24 +8351,12 @@ def _define_discord_view_classes() -> None:
                     interaction, "Queue management is not permitted for this user."
                 )
                 return False
-            try:
-                session_key = self.adapter._queue_manager_session_key(result)
-                if self.session_key and session_key != self.session_key:
-                    await self._send_neutral(
-                        interaction,
-                        "This queue manager no longer matches the current session. Open a fresh one.",
-                    )
-                    return False
-                if not self.session_key:
-                    self.session_key = session_key
-                items = self.adapter._queue_manager_items(result)
-            except Exception:
-                logger.exception("[Discord] Queue manager refresh failed")
+            if not await self._apply_snapshot_result(result):
                 await self._send_neutral(
-                    interaction, "Queue manager is temporarily unavailable."
+                    interaction,
+                    "This queue manager no longer matches the current view. Open a fresh one.",
                 )
                 return False
-            self._set_items(items)
             return True
 
         async def _on_select(self, interaction: discord.Interaction) -> None:
@@ -8396,12 +8425,16 @@ def _define_discord_view_classes() -> None:
                     interaction, "Queue management is not permitted for this user."
                 )
                 return
+            removed = result.get("removed") if isinstance(result, dict) else None
             if not (
                 isinstance(result, dict)
                 and result.get("type") == "queue_management"
                 and result.get("action") == "remove"
                 and result.get("ok") is True
-                and result.get("removed") is True
+                and (
+                    removed is True
+                    or (removed is False and result.get("error") == "not_found")
+                )
             ):
                 await self._send_neutral(
                     interaction,
@@ -8409,9 +8442,19 @@ def _define_discord_view_classes() -> None:
                 )
                 return
             self.selected_queue_id = None
-            if not await self._refresh_items(interaction):
+            if not await self._apply_snapshot_result(result):
+                await self._send_neutral(
+                    interaction,
+                    "The queue changed before the updated view could be loaded. Open a fresh manager.",
+                )
                 return
-            await self._edit(interaction)
+            notice = None
+            if removed is False:
+                notice = (
+                    "That queued prompt already started or is no longer queued. "
+                    "No other queued turn was removed."
+                )
+            await self._edit(interaction, notice=notice)
 
         async def _on_clear(self, interaction: discord.Interaction) -> None:
             if not await self._authorized(interaction):
@@ -8478,17 +8521,23 @@ def _define_discord_view_classes() -> None:
                     interaction, "Your queue could not be cleared. No change was made."
                 )
                 return
-            if int(result.get("removed_count", 0) or 0) <= 0:
-                await self._send_neutral(
-                    interaction, "Your queue was already empty. No change was made."
-                )
-                return
+            removed_count = int(result.get("removed_count", 0) or 0)
             self.confirming_clear = False
             self._clear_queue_ids = None
             self.selected_queue_id = None
-            if not await self._refresh_items(interaction):
+            if not await self._apply_snapshot_result(result):
+                await self._send_neutral(
+                    interaction,
+                    "The queue changed before the updated view could be loaded. Open a fresh manager.",
+                )
                 return
-            await self._edit(interaction)
+            notice = None
+            if removed_count <= 0:
+                notice = (
+                    "Those queued prompts already started or are no longer queued. "
+                    "No other queued turn was removed."
+                )
+            await self._edit(interaction, notice=notice)
 
         async def _on_refresh(self, interaction: discord.Interaction) -> None:
             if not await self._authorized(interaction):

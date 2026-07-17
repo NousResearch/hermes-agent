@@ -20,6 +20,8 @@ class StubQueueRunner:
         self.handler_calls: list = []
         self.refusal: str | None = None
         self.session_key = "session:456"
+        self.snapshot_id = ""
+        self._snapshot_counter = 0
         self._session_key_for_source = MagicMock(return_value="session:456")
         self.list_explicit_queue_items = MagicMock(side_effect=self._direct_list)
         self.remove_explicit_queue_item = MagicMock(side_effect=self._direct_remove)
@@ -46,8 +48,31 @@ class StubQueueRunner:
         self.items.clear()
         return removed
 
+    def _fresh_snapshot(self, action: str, **extra):
+        self._snapshot_counter += 1
+        self.snapshot_id = f"snapshot-{self._snapshot_counter}"
+        return {
+            "type": "queue_management",
+            "action": action,
+            "ok": True,
+            "session_key": self.session_key,
+            "snapshot_id": self.snapshot_id,
+            "items": [
+                {
+                    "id": item.get("queue_id") or item.get("id"),
+                    "position": index,
+                    "created_at": item.get("created_at"),
+                    "origin": "explicit",
+                    "preview": item.get("preview", ""),
+                    "has_media": bool(item.get("has_media")),
+                }
+                for index, item in enumerate(self.items, start=1)
+            ],
+            **extra,
+        }
+
     async def handle(self, event):
-        """Model GatewayRunner._handle_message's native-manager contract."""
+        """Model GatewayRunner's snapshot-bound native-manager contract."""
         self.handler_calls.append(event)
         if self.refusal is not None:
             return self.refusal
@@ -62,62 +87,39 @@ class StubQueueRunner:
                 "ok": False,
                 "error": "session_changed",
             }
-        if action == "list":
+        snapshot_id = request.get("snapshot_id")
+        if session_key is not None and snapshot_id != self.snapshot_id:
             return {
                 "type": "queue_management",
-                "action": "list",
-                "ok": True,
-                "session_key": self.session_key,
-                "items": [
-                    {
-                        "id": item.get("queue_id") or item.get("id"),
-                        "position": index,
-                        "created_at": item.get("created_at"),
-                        "origin": "explicit",
-                        "preview": item.get("preview", ""),
-                        "has_media": bool(item.get("has_media")),
-                    }
-                    for index, item in enumerate(self.items, start=1)
-                ],
+                "action": action,
+                "ok": False,
+                "error": "snapshot_stale",
             }
+        if action == "list":
+            return self._fresh_snapshot("list")
         if action == "remove":
             queue_id = request.get("queue_id")
             for index, item in enumerate(self.items):
                 if (item.get("queue_id") or item.get("id")) == queue_id:
                     self.items.pop(index)
-                    return {
-                        "type": "queue_management",
-                        "action": "remove",
-                        "ok": True,
-                        "removed": True,
-                        "queue_id": queue_id,
-                    }
-            return {
-                "type": "queue_management",
-                "action": "remove",
-                "ok": False,
-                "error": "not_found",
-            }
+                    return self._fresh_snapshot(
+                        "remove", removed=True, queue_id=queue_id
+                    )
+            return self._fresh_snapshot(
+                "remove",
+                removed=False,
+                queue_id=queue_id,
+                error="not_found",
+            )
         if action == "clear":
-            selected_ids = request.get("queue_ids")
-            if selected_ids is None:
-                removed_count = len(self.items)
-                self.items.clear()
-            else:
-                selected_ids = {str(queue_id) for queue_id in selected_ids}
-                before = len(self.items)
-                self.items = [
-                    item
-                    for item in self.items
-                    if (item.get("queue_id") or item.get("id")) not in selected_ids
-                ]
-                removed_count = before - len(self.items)
-            return {
-                "type": "queue_management",
-                "action": "clear",
-                "ok": True,
-                "removed_count": removed_count,
-            }
+            selected_ids = {str(queue_id) for queue_id in request.get("queue_ids") or []}
+            before = len(self.items)
+            self.items = [
+                item
+                for item in self.items
+                if (item.get("queue_id") or item.get("id")) not in selected_ids
+            ]
+            return self._fresh_snapshot("clear", removed_count=before - len(self.items))
         raise AssertionError(f"unexpected queue-manager action: {action}")
 
     def assert_no_direct_calls(self):
@@ -196,6 +198,7 @@ def _assert_management_event(
     queue_id=None,
     queue_ids=None,
     session_key=None,
+    snapshot_id=None,
 ):
     assert event.text == typed_command
     assert event.raw_message is interaction
@@ -211,6 +214,10 @@ def _assert_management_event(
         actual_marker.pop("session_key", None)
     else:
         marker["session_key"] = session_key
+    if snapshot_id is None:
+        actual_marker.pop("snapshot_id", None)
+    else:
+        marker["snapshot_id"] = snapshot_id
     assert actual_marker == marker
 
 
@@ -340,21 +347,26 @@ async def test_queue_manager_delete_clear_and_refresh_dispatch_through_gateway(a
     await _component(view, "queue_manager_refresh").callback(refreshing)
 
     expected = [
-        (opening, "list", None, None),
-        (selecting, "list", None, None),
-        (deleting, "remove", "opaque-2", None),
-        (deleting, "list", None, None),
-        (starting_clear, "list", None, None),
-        (confirming, "clear", None, ["opaque-1"]),
-        (confirming, "list", None, None),
-        (refreshing, "list", None, None),
+        (opening, "list", None, None, None, None),
+        (selecting, "list", None, None, "session:456", "snapshot-1"),
+        (deleting, "remove", "opaque-2", None, "session:456", "snapshot-2"),
+        (starting_clear, "list", None, None, "session:456", "snapshot-3"),
+        (confirming, "clear", None, ["opaque-1"], "session:456", "snapshot-4"),
+        (refreshing, "list", None, None, "session:456", "snapshot-5"),
     ]
     assert len(runner.handler_calls) == len(expected)
-    for event, (interaction, action, queue_id, queue_ids) in zip(
+    for event, (interaction, action, queue_id, queue_ids, session_key, snapshot_id) in zip(
         runner.handler_calls, expected
     ):
         _assert_management_event(
-            event, interaction, "/q", action, queue_id, queue_ids
+            event,
+            interaction,
+            "/q",
+            action,
+            queue_id,
+            queue_ids,
+            session_key=session_key,
+            snapshot_id=snapshot_id,
         )
     assert adapter._message_handler.await_count == len(expected)
     _assert_no_public_delivery(adapter, runner)
@@ -452,25 +464,57 @@ async def test_queue_manager_rechecks_live_authorization_on_every_component(adap
 
 
 @pytest.mark.asyncio
-async def test_queue_manager_stale_delete_is_neutral_and_has_no_ui_side_effect(adapter):
+async def test_queue_manager_consumed_delete_refreshes_view_without_removing_another_item(adapter):
     runner = _install_runner(adapter, StubQueueRunner([_queue_item(1)]))
     opening = _interaction()
     await adapter._open_queue_manager_slash(opening, "/queue")
     view = _edited_view(opening)
     view.selected_queue_id = "opaque-1"
     view._build_components()
-    prior_items = list(view._items)
     runner.items.clear()
 
     stale = _interaction()
     await _component(view, "queue_manager_delete").callback(stale)
 
-    assert view.selected_queue_id == "opaque-1"
-    assert view._items == prior_items
-    stale.response.edit_message.assert_not_awaited()
-    stale.response.send_message.assert_awaited_once()
-    assert stale.response.send_message.await_args.kwargs["ephemeral"] is True
-    _assert_management_event(runner.handler_calls[-1], stale, "/queue", "remove", "opaque-1")
+    assert view.selected_queue_id is None
+    assert view._items == []
+    stale.response.edit_message.assert_awaited_once()
+    assert "no other queued turn was removed" in (
+        stale.response.edit_message.await_args.kwargs["content"].lower()
+    )
+    stale.response.send_message.assert_not_awaited()
+    _assert_management_event(
+        runner.handler_calls[-1],
+        stale,
+        "/queue",
+        "remove",
+        "opaque-1",
+        session_key="session:456",
+        snapshot_id="snapshot-1",
+    )
+    _assert_no_public_delivery(adapter, runner)
+
+
+@pytest.mark.asyncio
+async def test_queue_manager_consumed_clear_refreshes_view_without_removing_new_arrivals(adapter):
+    runner = _install_runner(adapter, StubQueueRunner([_queue_item(1)]))
+    opening = _interaction()
+    await adapter._open_queue_manager_slash(opening, "/queue")
+    view = _edited_view(opening)
+
+    await _component(view, "queue_manager_clear").callback(_interaction())
+    runner.items.clear()
+    runner.items.append(_queue_item(2))
+    confirm = _interaction()
+    await _component(view, "queue_manager_clear_confirm").callback(confirm)
+
+    assert view.confirming_clear is False
+    assert [item["queue_id"] for item in view._items] == ["opaque-2"]
+    confirm.response.edit_message.assert_awaited_once()
+    assert "no other queued turn was removed" in (
+        confirm.response.edit_message.await_args.kwargs["content"].lower()
+    )
+    confirm.response.send_message.assert_not_awaited()
     _assert_no_public_delivery(adapter, runner)
 
 
@@ -498,7 +542,7 @@ async def test_queue_manager_clear_requires_confirmation_and_cancel_has_no_queue
 
 
 @pytest.mark.asyncio
-async def test_queue_manager_clear_confirm_dispatches_clear_then_refresh(adapter):
+async def test_queue_manager_clear_confirm_applies_returned_snapshot(adapter):
     runner = _install_runner(adapter, StubQueueRunner([_queue_item(1), _queue_item(2)]))
     opening = _interaction()
     await adapter._open_queue_manager_slash(opening, "/queue")
@@ -512,13 +556,15 @@ async def test_queue_manager_clear_confirm_dispatches_clear_then_refresh(adapter
     assert view.confirming_clear is False
     assert "empty" in view.render_content().lower()
     _assert_management_event(
-        runner.handler_calls[-2],
+        runner.handler_calls[-1],
         confirm,
         "/queue",
         "clear",
         queue_ids=["opaque-1", "opaque-2"],
+        session_key="session:456",
+        snapshot_id="snapshot-2",
     )
-    _assert_management_event(runner.handler_calls[-1], confirm, "/queue", "list")
+    assert len(runner.handler_calls) == 3
     _assert_no_public_delivery(adapter, runner)
 
 
@@ -538,12 +584,15 @@ async def test_queue_manager_clear_preserves_items_added_after_confirmation(adap
     assert [item["queue_id"] for item in runner.items] == ["opaque-3"]
     assert [item["queue_id"] for item in view._items] == ["opaque-3"]
     _assert_management_event(
-        runner.handler_calls[-2],
+        runner.handler_calls[-1],
         confirm,
         "/queue",
         "clear",
         queue_ids=["opaque-1", "opaque-2"],
+        session_key="session:456",
+        snapshot_id="snapshot-2",
     )
+    assert len(runner.handler_calls) == 3
     _assert_no_public_delivery(adapter, runner)
 
 

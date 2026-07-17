@@ -4901,6 +4901,214 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _queue_storage_available(adapter: Any) -> bool:
         return isinstance(getattr(adapter, "_pending_messages", None), dict)
 
+    def _queue_snapshot_store_instance(self):
+        """Return the process-local store for short-lived queue views."""
+        store = getattr(self, "_queue_snapshot_store", None)
+        if store is None:
+            from hermes_cli.queue_management import QueueSnapshotStore
+
+            store = QueueSnapshotStore()
+            self._queue_snapshot_store = store
+        return store
+
+    @staticmethod
+    def _queue_source_label(source: Any) -> str:
+        name = " ".join(str(getattr(source, "chat_name", None) or "").split())
+        if name:
+            return name
+        chat_type = str(getattr(source, "chat_type", None) or "").lower()
+        return "Direct message" if chat_type in {"dm", "private"} else "Current conversation"
+
+    @staticmethod
+    def _queue_control_key(source: Any) -> Optional[str]:
+        """Build a private operator namespace shared across that user's chats."""
+        owner = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
+        owner = str(owner or "").strip()
+        if not owner:
+            return None
+        platform = getattr(getattr(source, "platform", None), "value", None)
+        platform = str(platform or getattr(source, "platform", "") or "").strip()
+        scope = str(getattr(source, "scope_id", None) or "").strip()
+        profile = str(getattr(source, "profile", None) or "").strip()
+        return f"gateway:{profile}:{platform}:{scope}:{owner}"
+
+    @staticmethod
+    def _queue_control_is_private_surface(source: Any) -> bool:
+        return str(getattr(source, "chat_type", "") or "").lower() in {
+            "dm",
+            "private",
+        }
+
+    def _queue_control_delivery_available(self, source: Any, adapter: Any) -> bool:
+        """Whether this source can receive queue details without public leakage."""
+        if self._queue_control_is_private_surface(source):
+            return True
+        return bool(
+            getattr(adapter, "supports_private_notice", False)
+            and str(getattr(source, "user_id", None) or "").strip()
+        )
+
+    @staticmethod
+    def _queue_control_private_delivery_hint() -> str:
+        return (
+            "Queue details are private. Open a direct chat with this bot, "
+            "then retry `/queue` here."
+        )
+
+    async def _deliver_queue_control_text(
+        self,
+        event: "MessageEvent",
+        content: str,
+        adapter: Any,
+    ) -> Optional[str]:
+        """Keep queue previews private on shared chat surfaces."""
+        source = event.source
+        if self._queue_control_is_private_surface(source):
+            return content
+        if not self._queue_control_delivery_available(source, adapter):
+            return self._queue_control_private_delivery_hint()
+        try:
+            result = await adapter.send_private_notice(
+                source.chat_id,
+                source.user_id,
+                content,
+                reply_to=self._reply_anchor_for_event(event),
+                metadata=self._thread_metadata_for_source(source),
+            )
+        except Exception:
+            logger.debug("Private queue-manager delivery failed", exc_info=True)
+            result = None
+        if getattr(result, "success", False):
+            return (
+                "Queue details were sent privately. Continue managing them "
+                "in that private view."
+            )
+        # A text snapshot is an authorization capability. If its private view
+        # did not reach the user, revoke it before returning the public-safe
+        # retry hint so a guessed position cannot mutate a hidden queue.
+        snapshot_store = getattr(self, "_queue_snapshot_store", None)
+        owner = self._queue_owner_for_source(source)
+        control_key = self._queue_control_key(source)
+        if snapshot_store is not None and owner and control_key:
+            snapshot_store.invalidate(control_key, owner)
+        return (
+            "I couldn't deliver the private queue manager. Open a direct chat "
+            "with this bot, then retry `/queue` here."
+        )
+
+    def _remember_queue_snapshot_target(
+        self,
+        session_key: str,
+        source: Any,
+        adapter: Any,
+    ) -> None:
+        targets = getattr(self, "_queue_snapshot_targets", None)
+        if targets is None:
+            targets = {}
+            self._queue_snapshot_targets = targets
+        try:
+            stored_source = dataclasses.replace(source)
+        except Exception:
+            stored_source = source
+        targets[session_key] = (stored_source, adapter)
+
+    def _open_text_queue_snapshot(
+        self,
+        source: Any,
+        session_key: str,
+        adapter: Any,
+        *,
+        control_key: Optional[str] = None,
+    ) -> str:
+        """Freeze displayed positions and render a text manager without IDs."""
+        from hermes_cli.queue_management import format_queue_snapshot
+
+        owner = self._queue_owner_for_source(source)
+        if owner is None or not self._queue_storage_available(adapter):
+            return "Queue management is unavailable for this conversation."
+        if not self._queue_control_delivery_available(source, adapter):
+            return self._queue_control_private_delivery_hint()
+        control_key = str(control_key or self._queue_control_key(source) or session_key)
+        items = self._list_owned_explicit_queue_items(
+            session_key,
+            owner,
+            adapter=adapter,
+        )
+        self._remember_queue_snapshot_target(session_key, source, adapter)
+        snapshot = self._queue_snapshot_store_instance().open(
+            control_key,
+            owner,
+            session_key,
+            items,
+            source_label=self._queue_source_label(source),
+        )
+        return format_queue_snapshot(snapshot)
+
+    def _handle_text_dequeue(
+        self,
+        event: "MessageEvent",
+        control_key: str,
+        selector: str,
+        adapter: Any,
+    ) -> str:
+        """Remove only IDs frozen in the latest text view, then refresh it."""
+        from hermes_cli.queue_management import format_queue_snapshot
+
+        owner = self._queue_owner_for_source(event.source)
+        if owner is None:
+            return "Queue management is unavailable for this conversation."
+        if not self._queue_control_delivery_available(event.source, adapter):
+            return self._queue_control_private_delivery_hint()
+        selection = self._queue_snapshot_store_instance().resolve(
+            control_key,
+            owner,
+            selector,
+        )
+        if selection.status in {"missing", "expired", "superseded"}:
+            return "No active queue view. Run `/queue` first, then use `/dequeue N`."
+        if selection.status == "invalid_selector":
+            return "Usage: `/dequeue <N|all>` (short form: `/dq <N|all>`)."
+        if selection.status == "out_of_range":
+            return "That number is not in the latest queue view. Run `/queue` to refresh."
+
+        target_key = str(selection.target_key or "")
+        targets = getattr(self, "_queue_snapshot_targets", None) or {}
+        target_source, target_adapter = targets.get(target_key, (event.source, adapter))
+        if not target_key or not self._queue_storage_available(target_adapter):
+            return "The queue source is no longer available. Run `/queue` again."
+
+        removed = 0
+        if selection.status == "ok":
+            removed = self._clear_owned_explicit_queue_items(
+                target_key,
+                owner,
+                adapter=target_adapter,
+                queue_ids=list(selection.queue_ids),
+            )
+        items = self._list_owned_explicit_queue_items(
+            target_key,
+            owner,
+            adapter=target_adapter,
+        )
+        snapshot = self._queue_snapshot_store_instance().open(
+            control_key,
+            owner,
+            target_key,
+            items,
+            source_label=self._queue_source_label(target_source),
+        )
+        refreshed = format_queue_snapshot(snapshot)
+        if selection.status == "empty":
+            return refreshed
+        if removed <= 0:
+            return (
+                "That queued turn already started or is no longer queued. "
+                "No other turn was removed.\n\n"
+                f"{refreshed}"
+            )
+        noun = "turn" if removed == 1 else "turns"
+        return f"Removed {removed} queued {noun}.\n\n{refreshed}"
+
     def _snapshot_fifo_events(
         self, session_key: str, adapter: Any
     ) -> List["MessageEvent"]:
@@ -4945,7 +5153,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _explicit_queue_metadata(event: "MessageEvent") -> Optional[Dict[str, Any]]:
         metadata = getattr(event, "metadata", None)
         marker = metadata.get(_EXPLICIT_QUEUE_METADATA_KEY) if isinstance(metadata, dict) else None
-        if not isinstance(marker, dict) or marker.get("origin") != "explicit":
+        if not isinstance(marker, dict) or marker.get("origin") not in {"explicit", "busy"}:
             return None
         queue_id = marker.get("id")
         if not isinstance(queue_id, str) or not queue_id:
@@ -4958,6 +5166,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
         owner = str(owner_user_id).strip()
         return owner or None
+
+    @classmethod
+    def _queue_owner_for_source(cls, source: Any) -> Optional[str]:
+        """Resolve the stable sender identity used by queue ownership."""
+        return cls._normalize_queue_owner(
+            getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
+        )
 
     @classmethod
     def _owned_explicit_queue_metadata(
@@ -5000,7 +5215,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "id": marker["id"],
                     "position": len(items) + 1,
                     "created_at": marker.get("created_at"),
-                    "origin": "explicit",
+                    "origin": marker.get("origin", "explicit"),
                     "preview": self._queue_item_preview(event),
                     "has_media": bool(getattr(event, "media_urls", None)),
                 }
@@ -5080,6 +5295,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         owner_user_id: Any,
         *,
         adapter: Any,
+        origin: str = "explicit",
     ) -> Dict[str, Any]:
         """Create a process-local opaque ID unique among live session items."""
         live_ids = set()
@@ -5095,8 +5311,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "id": queue_id,
             "owner_user_id": self._normalize_queue_owner(owner_user_id),
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "origin": "explicit",
+            "origin": origin if origin in {"explicit", "busy"} else "busy",
         }
+
+    def _ensure_user_queue_metadata(
+        self,
+        event: "MessageEvent",
+        session_key: str,
+        *,
+        adapter: Any,
+        origin: str = "busy",
+    ) -> "MessageEvent":
+        """Attach one stable owner/ID to a queued human turn."""
+        if getattr(event, "internal", False):
+            return event
+        owner = self._queue_owner_for_source(getattr(event, "source", None))
+        if owner is None or self._explicit_queue_metadata(event) is not None:
+            return event
+        metadata = copy.deepcopy(getattr(event, "metadata", None) or {})
+        metadata[_EXPLICIT_QUEUE_METADATA_KEY] = self._new_explicit_queue_metadata(
+            session_key,
+            owner,
+            adapter=adapter,
+            origin=origin,
+        )
+        event.metadata = metadata
+        return event
 
     @staticmethod
     def _native_discord_queue_management(event: "MessageEvent") -> Optional[Dict[str, Any]]:
@@ -5125,9 +5365,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter: Any,
         request: Dict[str, Any],
     ) -> PrivateInteractionResult:
-        """Return an owner-safe result for a Discord ephemeral View."""
+        """Return a snapshot-bound result for a Discord ephemeral View."""
         action = str(request.get("action") or "list").strip().lower()
-        owner = self._normalize_queue_owner(getattr(event.source, "user_id", None))
+        owner = self._queue_owner_for_source(event.source)
         base = {"type": "queue_management", "action": action}
         if action not in {"list", "remove", "clear"}:
             return PrivateInteractionResult(
@@ -5154,48 +5394,103 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return PrivateInteractionResult(
                 {**base, "ok": False, "error": "invalid_action"}
             )
-        if action == "list":
+
+        control_key = self._queue_control_key(event.source) or session_key
+        snapshot_store = self._queue_snapshot_store_instance()
+        snapshot_id = request.get("snapshot_id")
+
+        def _refreshed_snapshot_result(extra: Optional[Dict[str, Any]] = None) -> PrivateInteractionResult:
+            """Replace the active view after every successful native operation."""
+            items = self._list_owned_explicit_queue_items(
+                session_key, owner, adapter=adapter
+            )
+            self._remember_queue_snapshot_target(session_key, event.source, adapter)
+            snapshot = snapshot_store.open(
+                control_key,
+                owner,
+                session_key,
+                items,
+                source_label=self._queue_source_label(event.source),
+            )
             return PrivateInteractionResult(
                 {
                     **base,
                     "ok": True,
-                    # Private adapter-only routing token. It is never rendered
-                    # or returned through normal chat delivery.
+                    # Private adapter-only routing tokens. They are never
+                    # rendered or returned through normal chat delivery.
                     "session_key": session_key,
-                    "items": self._list_owned_explicit_queue_items(
-                        session_key, owner, adapter=adapter
-                    ),
+                    "snapshot_id": snapshot.snapshot_id,
+                    "items": items,
+                    **(extra or {}),
                 }
             )
+
+        if action == "list":
+            # An initial slash open carries neither session nor snapshot. Every
+            # later View action carries both, and must prove its card is still
+            # the active view rather than silently reactivating a stale card.
+            if expected_session_key is not None:
+                active_snapshot = snapshot_store.get(control_key, owner)
+                if (
+                    not isinstance(snapshot_id, str)
+                    or not snapshot_id
+                    or active_snapshot is None
+                    or active_snapshot.snapshot_id != snapshot_id
+                    or active_snapshot.target_key != session_key
+                ):
+                    return PrivateInteractionResult(
+                        {**base, "ok": False, "error": "snapshot_stale"}
+                    )
+            return _refreshed_snapshot_result()
+
+        if not isinstance(snapshot_id, str) or not snapshot_id:
+            return PrivateInteractionResult(
+                {**base, "ok": False, "error": "snapshot_stale"}
+            )
         if action == "remove":
-            queue_id = request.get("queue_id") or request.get("id")
+            requested_ids: List[Any] = [
+                request.get("queue_id") or request.get("id")
+            ]
+        else:
+            requested_ids = list(request.get("queue_ids") or [])
+        selection = snapshot_store.resolve_ids(
+            control_key,
+            owner,
+            requested_ids,
+            snapshot_id=snapshot_id,
+        )
+        if selection.status != "ok" or selection.target_key != session_key:
+            error = (
+                "snapshot_stale"
+                if selection.status in {"missing", "expired", "superseded"}
+                or selection.target_key != session_key
+                else "not_found"
+            )
+            return PrivateInteractionResult({**base, "ok": False, "error": error})
+
+        if action == "remove":
+            queue_id = selection.queue_ids[0]
             removed = self._remove_owned_explicit_queue_item(
                 session_key, owner, queue_id, adapter=adapter
             )
             if not removed:
-                return PrivateInteractionResult(
-                    {**base, "ok": False, "error": "not_found"}
+                return _refreshed_snapshot_result(
+                    {
+                        "removed": False,
+                        "queue_id": queue_id,
+                        "error": "not_found",
+                    }
                 )
-            return PrivateInteractionResult(
-                {
-                    **base,
-                    "ok": True,
-                    "removed": True,
-                    "queue_id": str(queue_id),
-                }
+            return _refreshed_snapshot_result(
+                {"removed": True, "queue_id": queue_id}
             )
-        return PrivateInteractionResult(
-            {
-                **base,
-                "ok": True,
-                "removed_count": self._clear_owned_explicit_queue_items(
-                    session_key,
-                    owner,
-                    adapter=adapter,
-                    queue_ids=request.get("queue_ids"),
-                ),
-            }
+        removed_count = self._clear_owned_explicit_queue_items(
+            session_key,
+            owner,
+            adapter=adapter,
+            queue_ids=list(selection.queue_ids),
         )
+        return _refreshed_snapshot_result({"removed_count": removed_count})
 
     def _promote_queued_event(
         self,
@@ -6129,13 +6424,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # semantics); everything else appends to the overflow tail.
         pending_slot = getattr(adapter, "_pending_messages", None)
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
-        if existing is not None and (
+        if existing is not None:
+            existing = self._ensure_user_queue_metadata(
+                existing,
+                session_key,
+                adapter=adapter,
+                origin="busy",
+            )
+        event = self._ensure_user_queue_metadata(
+            event,
+            session_key,
+            adapter=adapter,
+            origin="busy",
+        )
+
+        existing_marker = self._explicit_queue_metadata(existing) if existing is not None else None
+        event_marker = self._explicit_queue_metadata(event)
+        same_owner = bool(
+            existing_marker
+            and event_marker
+            and existing_marker.get("owner_user_id") == event_marker.get("owner_user_id")
+        )
+        if existing is not None and same_owner and (
             getattr(existing, "message_type", None) == MessageType.PHOTO
             or event.message_type == MessageType.PHOTO
             or bool(getattr(existing, "media_urls", None))
             or bool(getattr(event, "media_urls", None))
         ):
             # Preserve photo-burst / media-merge semantics for the head slot.
+            # The merge mutates ``existing`` and therefore keeps its stable ID.
             merge_pending_message_event(
                 adapter._pending_messages,
                 session_key,
@@ -6302,6 +6619,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and busy_text_mode == "queue"
             and effective_mode != "steer"
         ):
+            # BasePlatformAdapter owns debounce/merge timing for this path, but
+            # its flush writes directly into ``_pending_messages``. Stamp the
+            # original human turn before delegating so the merged next-turn
+            # event keeps one stable owner/ID for snapshot-bound management.
+            self._ensure_user_queue_metadata(
+                event,
+                session_key,
+                adapter=adapter,
+                origin="busy",
+            )
             return False
 
         # Steer mode: inject mid-run via running_agent.steer() instead of
@@ -10958,6 +11285,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _queue_management_request,
                 )
 
+            # Text queue management is a control-plane action and remains
+            # available while the agent is running.  Positions resolve only
+            # against the latest five-minute snapshot; they never address the
+            # live queue directly.
+            if _cmd_def_inner and _cmd_def_inner.name == "dequeue":
+                adapter = self._adapter_for_source(source)
+                content = self._handle_text_dequeue(
+                    event,
+                    self._queue_control_key(source) or _quick_key,
+                    event.get_command_args().strip(),
+                    adapter,
+                )
+                return await self._deliver_queue_control_text(event, content, adapter)
+
             # Telegram sends /start for bot launches/deep-links. Treat it as a
             # platform ping, not a user command: no help dump, no agent
             # interrupt, no queued text.
@@ -11014,7 +11355,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # fields silently lost the attachment when the queued turn ran.
                 has_media = bool(getattr(event, "media_urls", None))
                 if not queued_text and not has_media:
-                    return "Usage: /queue <prompt>"
+                    adapter = self._adapter_for_source(source)
+                    content = self._open_text_queue_snapshot(
+                        source,
+                        _quick_key,
+                        adapter,
+                    )
+                    return await self._deliver_queue_control_text(event, content, adapter)
                 adapter = self._adapter_for_source(source)
                 if adapter:
                     queued_metadata = copy.deepcopy(
@@ -11023,7 +11370,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     queued_metadata[_EXPLICIT_QUEUE_METADATA_KEY] = (
                         self._new_explicit_queue_metadata(
                             _quick_key,
-                            getattr(source, "user_id", None),
+                            self._queue_owner_for_source(source),
                             adapter=adapter,
                         )
                     )
@@ -11398,6 +11745,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _queue_management_request,
             )
 
+        if canonical == "dequeue":
+            adapter = self._adapter_for_source(source)
+            content = self._handle_text_dequeue(
+                event,
+                self._queue_control_key(source) or _quick_key,
+                event.get_command_args().strip(),
+                adapter,
+            )
+            return await self._deliver_queue_control_text(event, content, adapter)
+
         # Fire the ``command:<canonical>`` hook for any recognized slash
         # command — built-in OR plugin-registered. Handlers can return a
         # dict with ``{"decision": "deny" | "handled" | "rewrite", ...}``
@@ -11682,7 +12039,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             queue_payload = event.get_command_args().strip()
             has_media = bool(getattr(event, "media_urls", None))
             if not queue_payload and not has_media:
-                return "Usage: /queue <prompt>"
+                adapter = self._adapter_for_source(source)
+                content = self._open_text_queue_snapshot(
+                    source,
+                    _quick_key,
+                    adapter,
+                )
+                return await self._deliver_queue_control_text(event, content, adapter)
             try:
                 event.text = queue_payload
             except Exception:
@@ -18457,6 +18820,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         update_prompt_pending = getattr(self, "_update_prompt_pending", None)
         if isinstance(update_prompt_pending, dict):
             update_prompt_pending.pop(session_key, None)
+
+        queue_snapshot_store = getattr(self, "_queue_snapshot_store", None)
+        if queue_snapshot_store is not None:
+            try:
+                queue_snapshot_store.invalidate_target(session_key)
+            except Exception:
+                logger.debug(
+                    "Failed to invalidate queue views for session boundary %s",
+                    session_key,
+                    exc_info=True,
+                )
+        queue_snapshot_targets = getattr(self, "_queue_snapshot_targets", None)
+        if isinstance(queue_snapshot_targets, dict):
+            queue_snapshot_targets.pop(session_key, None)
 
         try:
             from tools import slash_confirm as _slash_confirm_mod

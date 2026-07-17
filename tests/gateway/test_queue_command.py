@@ -87,7 +87,7 @@ def _running(runner):
     return sk
 
 
-def test_queue_registry_contract_is_unchanged():
+def test_queue_registry_supports_management_without_reserving_prompt_words():
     from hermes_cli.commands import resolve_command
 
     queue = resolve_command("queue")
@@ -95,8 +95,16 @@ def test_queue_registry_contract_is_unchanged():
     assert queue is not None and alias is queue
     assert queue.name == "queue"
     assert queue.aliases == ("q",)
-    assert queue.args_hint == "<prompt>"
+    assert queue.args_hint == "[prompt]"
     assert not queue.subcommands
+
+    dequeue = resolve_command("dequeue")
+    short = resolve_command("dq")
+    assert dequeue is not None and short is dequeue
+    assert dequeue.name == "dequeue"
+    assert dequeue.aliases == ("dq",)
+    assert dequeue.args_hint == "<N|all>"
+    assert not dequeue.subcommands
 
 
 @pytest.mark.asyncio
@@ -119,6 +127,347 @@ async def test_queue_text_only_queues_and_does_not_interrupt():
     queued = adapter._pending_messages[sk]
     assert queued.text == "do this next"
     assert queued.message_type == MessageType.TEXT
+
+
+@pytest.mark.asyncio
+async def test_empty_queue_opens_text_snapshot_and_dequeue_removes_snapshot_position():
+    runner, adapter = _make_runner(_session_entry())
+    sk = _running(runner)
+
+    await runner._handle_message(
+        MessageEvent(text="/queue first turn", source=_make_source(), message_id="q1")
+    )
+    await runner._handle_message(
+        MessageEvent(text="/queue second turn", source=_make_source(), message_id="q2")
+    )
+
+    view = await runner._handle_message(
+        MessageEvent(text="/queue", source=_make_source(), message_id="list")
+    )
+    assert "1. first turn" in view
+    assert "2. second turn" in view
+    assert "/dequeue 2" in view
+    assert "q-" not in view
+
+    removed = await runner._handle_message(
+        MessageEvent(text="/dequeue 2", source=_make_source(), message_id="remove")
+    )
+    assert "removed" in removed.lower()
+    assert "1. first turn" in removed
+    assert "second turn" not in removed
+    assert [event.text for event in runner._snapshot_fifo_events(sk, adapter)] == [
+        "first turn"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dequeue_all_only_removes_ids_frozen_in_latest_snapshot():
+    runner, adapter = _make_runner(_session_entry())
+    sk = _running(runner)
+    for index, text in enumerate(("old one", "old two"), start=1):
+        await runner._handle_message(
+            MessageEvent(text=f"/queue {text}", source=_make_source(), message_id=f"q{index}")
+        )
+    await runner._handle_message(
+        MessageEvent(text="/queue", source=_make_source(), message_id="list")
+    )
+    await runner._handle_message(
+        MessageEvent(text="/queue new arrival", source=_make_source(), message_id="q3")
+    )
+
+    result = await runner._handle_message(
+        MessageEvent(text="/dq all", source=_make_source(), message_id="clear")
+    )
+
+    assert "removed 2" in result.lower()
+    assert [event.text for event in runner._snapshot_fifo_events(sk, adapter)] == [
+        "new arrival"
+    ]
+    assert "1. new arrival" in result
+
+
+@pytest.mark.asyncio
+async def test_dequeue_requires_recent_snapshot_and_never_uses_live_position():
+    runner, adapter = _make_runner(_session_entry())
+    _running(runner)
+    await runner._handle_message(
+        MessageEvent(text="/queue only item", source=_make_source(), message_id="q1")
+    )
+
+    result = await runner._handle_message(
+        MessageEvent(text="/dequeue 1", source=_make_source(), message_id="remove")
+    )
+
+    assert "run `/queue`" in result.lower()
+    assert len(adapter._pending_messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_dequeue_consumed_snapshot_item_fails_safely_and_refreshes():
+    runner, adapter = _make_runner(_session_entry())
+    sk = _running(runner)
+    await runner._handle_message(
+        MessageEvent(text="/queue soon running", source=_make_source(), message_id="q1")
+    )
+    await runner._handle_message(
+        MessageEvent(text="/queue", source=_make_source(), message_id="list")
+    )
+    adapter._pending_messages.pop(sk)
+
+    result = await runner._handle_message(
+        MessageEvent(text="/dequeue 1", source=_make_source(), message_id="remove")
+    )
+
+    assert "already started" in result.lower() or "no longer queued" in result.lower()
+    assert "no queued turns" in result.lower()
+
+
+def test_busy_user_turn_is_manageable_but_internal_turn_is_hidden():
+    runner, adapter = _make_runner(_session_entry())
+    source = _make_source()
+    sk = build_session_key(source)
+    runner._queue_or_replace_pending_event(
+        sk,
+        MessageEvent(text="busy follow-up", source=source, message_id="busy"),
+    )
+    runner._enqueue_fifo(
+        sk,
+        MessageEvent(text="internal completion", source=source, internal=True),
+        adapter,
+    )
+
+    items = runner._list_owned_explicit_queue_items(sk, "u1", adapter=adapter)
+
+    assert [item["preview"] for item in items] == ["busy follow-up"]
+    marker = adapter._pending_messages[sk].metadata["_hermes_explicit_queue"]
+    assert marker["owner_user_id"] == "u1"
+    assert marker["origin"] == "busy"
+
+
+def test_queue_management_uses_stable_alt_user_identity():
+    runner, adapter = _make_runner(_session_entry())
+    source = _make_source()
+    source.user_id = None
+    source.user_id_alt = "stable-user"
+    session_key = build_session_key(source)
+
+    runner._queue_or_replace_pending_event(
+        session_key,
+        MessageEvent(text="alt-owned turn", source=source, message_id="alt-1"),
+    )
+    rendered = runner._open_text_queue_snapshot(source, session_key, adapter)
+
+    assert "1. alt-owned turn" in rendered
+    marker = adapter._pending_messages[session_key].metadata[
+        "_hermes_explicit_queue"
+    ]
+    assert marker["owner_user_id"] == "stable-user"
+
+
+@pytest.mark.asyncio
+async def test_explicit_queue_uses_stable_alt_user_identity_for_management():
+    runner, adapter = _make_runner(_session_entry())
+    source = _make_source()
+    source.user_id = "transient-user"
+    source.user_id_alt = "stable-user"
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = MagicMock()
+
+    await runner._handle_message(
+        MessageEvent(text="/queue alt-owned turn", source=source, message_id="q-alt")
+    )
+    rendered = await runner._handle_message(
+        MessageEvent(text="/queue", source=source, message_id="list-alt")
+    )
+
+    assert "1. alt-owned turn" in rendered
+    marker = adapter._pending_messages[session_key].metadata[
+        "_hermes_explicit_queue"
+    ]
+    assert marker["owner_user_id"] == "stable-user"
+
+
+@pytest.mark.asyncio
+async def test_group_text_queue_management_without_private_delivery_never_opens_or_mutates_view():
+    runner, adapter = _make_runner(_session_entry())
+    adapter.supports_private_notice = False
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="u1",
+        chat_id="group-1",
+        user_name="tester",
+        chat_type="group",
+        scope_id="workspace-1",
+    )
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = MagicMock()
+
+    await runner._handle_message(
+        MessageEvent(text="/queue confidential turn", source=source, message_id="q1")
+    )
+    listed = await runner._handle_message(
+        MessageEvent(text="/queue", source=source, message_id="list")
+    )
+    removed = await runner._handle_message(
+        MessageEvent(text="/dequeue 1", source=source, message_id="remove")
+    )
+
+    assert "private" in listed.lower()
+    assert "confidential" not in listed
+    assert "1." not in listed
+    assert "private" in removed.lower()
+    assert "confidential" not in removed
+    assert [event.text for event in runner._snapshot_fifo_events(session_key, adapter)] == [
+        "confidential turn"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_group_text_queue_management_private_delivery_returns_only_safe_public_hint():
+    runner, adapter = _make_runner(_session_entry())
+    adapter.supports_private_notice = True
+    adapter.send_private_notice = AsyncMock(return_value=SimpleNamespace(success=True))
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="u1",
+        chat_id="group-1",
+        user_name="tester",
+        chat_type="group",
+        scope_id="workspace-1",
+    )
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = MagicMock()
+
+    await runner._handle_message(
+        MessageEvent(text="/queue confidential turn", source=source, message_id="q1")
+    )
+    listed = await runner._handle_message(
+        MessageEvent(text="/queue", source=source, message_id="list")
+    )
+
+    adapter.send_private_notice.assert_awaited_once()
+    private_content = adapter.send_private_notice.await_args.args[2]
+    assert "1. confidential turn" in private_content
+    assert isinstance(listed, str)
+    assert "private" in listed.lower()
+    assert "confidential" not in listed
+    assert "1." not in listed
+
+
+@pytest.mark.asyncio
+async def test_group_text_queue_management_private_delivery_failure_invalidates_snapshot():
+    runner, adapter = _make_runner(_session_entry())
+    adapter.supports_private_notice = True
+    adapter.send_private_notice = AsyncMock(return_value=SimpleNamespace(success=False))
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="u1",
+        chat_id="group-1",
+        user_name="tester",
+        chat_type="group",
+        scope_id="workspace-1",
+    )
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = MagicMock()
+
+    await runner._handle_message(
+        MessageEvent(text="/queue confidential turn", source=source, message_id="q1")
+    )
+    listed = await runner._handle_message(
+        MessageEvent(text="/queue", source=source, message_id="list")
+    )
+    removed = runner._handle_text_dequeue(
+        MessageEvent(text="/dequeue 1", source=source, message_id="remove"),
+        runner._queue_control_key(source) or "",
+        "1",
+        adapter,
+    )
+
+    assert "couldn't deliver" in listed.lower()
+    assert "confidential" not in listed
+    assert "run `/queue`" in removed.lower()
+    assert [event.text for event in runner._snapshot_fifo_events(session_key, adapter)] == [
+        "confidential turn"
+    ]
+
+
+def test_queue_snapshot_can_be_managed_from_another_chat_in_same_scope():
+    runner, adapter = _make_runner(_session_entry())
+    adapter.supports_private_notice = True
+    source_a = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="u1",
+        chat_id="group-a",
+        chat_name="Group A",
+        user_name="tester",
+        chat_type="group",
+        scope_id="workspace-1",
+    )
+    source_b = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="u1",
+        chat_id="group-b",
+        chat_name="Group B",
+        user_name="tester",
+        chat_type="group",
+        scope_id="workspace-1",
+    )
+    session_a = build_session_key(source_a)
+    runner._queue_or_replace_pending_event(
+        session_a,
+        MessageEvent(text="only in group a", source=source_a, message_id="q-a"),
+    )
+    runner._open_text_queue_snapshot(source_a, session_a, adapter)
+
+    result = runner._handle_text_dequeue(
+        MessageEvent(text="/dequeue 1", source=source_b, message_id="remove-b"),
+        runner._queue_control_key(source_b) or "",
+        "1",
+        adapter,
+    )
+
+    assert "removed 1" in result.lower()
+    assert "Group A" in result
+    assert runner._snapshot_fifo_events(session_a, adapter) == []
+
+
+def test_queue_snapshot_isolated_from_another_scope():
+    runner, adapter = _make_runner(_session_entry())
+    adapter.supports_private_notice = True
+    source_a = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="u1",
+        chat_id="group-a",
+        user_name="tester",
+        chat_type="group",
+        scope_id="workspace-1",
+    )
+    source_b = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="u1",
+        chat_id="group-b",
+        user_name="tester",
+        chat_type="group",
+        scope_id="workspace-2",
+    )
+    session_a = build_session_key(source_a)
+    runner._queue_or_replace_pending_event(
+        session_a,
+        MessageEvent(text="only in group a", source=source_a, message_id="q-a"),
+    )
+    runner._open_text_queue_snapshot(source_a, session_a, adapter)
+
+    result = runner._handle_text_dequeue(
+        MessageEvent(text="/dequeue 1", source=source_b, message_id="remove-b"),
+        runner._queue_control_key(source_b) or "",
+        "1",
+        adapter,
+    )
+
+    assert "run `/queue`" in result.lower()
+    assert [event.text for event in runner._snapshot_fifo_events(session_a, adapter)] == [
+        "only in group a"
+    ]
 
 
 @pytest.mark.asyncio
@@ -452,13 +801,84 @@ async def test_native_discord_bare_queue_management_works_without_active_agent()
         )
     )
 
+    assert result["type"] == "queue_management"
+    assert result["action"] == "list"
+    assert result["ok"] is True
+    assert result["session_key"] == build_session_key(source)
+    assert result["items"] == []
+    assert isinstance(result["snapshot_id"], str) and result["snapshot_id"]
+
+
+@pytest.mark.asyncio
+async def test_native_discord_card_snapshot_is_superseded_by_new_text_view():
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        user_id="u1",
+        chat_id="c1",
+        user_name="tester",
+        chat_type="dm",
+    )
+    session_key = build_session_key(source)
+    session_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-discord",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.DISCORD,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner, adapter = _make_runner(session_entry)
+    runner.config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
+    )
+    runner.adapters = {Platform.DISCORD: adapter}
+    queued = MessageEvent(
+        text="owned",
+        source=source,
+        metadata={
+            "_hermes_explicit_queue": {
+                "id": "q-owned",
+                "owner_user_id": "u1",
+                "created_at": "2026-07-17T00:00:00+00:00",
+                "origin": "explicit",
+            }
+        },
+    )
+    runner._enqueue_fifo(session_key, queued, adapter)
+
+    card_view = await runner._handle_message(
+        MessageEvent(
+            text="/queue",
+            source=source,
+            metadata={"_hermes_native_discord_queue_management": {"action": "list"}},
+        )
+    )
+    old_snapshot_id = card_view["snapshot_id"]
+    runner._open_text_queue_snapshot(source, session_key, adapter)
+
+    result = await runner._handle_message(
+        MessageEvent(
+            text="/queue",
+            source=source,
+            metadata={
+                "_hermes_native_discord_queue_management": {
+                    "action": "remove",
+                    "queue_id": "q-owned",
+                    "session_key": session_key,
+                    "snapshot_id": old_snapshot_id,
+                }
+            },
+        )
+    )
+
     assert result == {
         "type": "queue_management",
-        "action": "list",
-        "ok": True,
-        "session_key": build_session_key(source),
-        "items": [],
+        "action": "remove",
+        "ok": False,
+        "error": "snapshot_stale",
     }
+    assert runner._snapshot_fifo_events(session_key, adapter) == [queued]
 
 
 @pytest.mark.asyncio
@@ -509,6 +929,13 @@ async def test_native_discord_remove_and_clear_are_owner_scoped_and_structured()
     for item in (owned_one, other, ordinary, owned_two):
         runner._enqueue_fifo(sk, item, adapter)
 
+    opened_view = await runner._handle_message(
+        MessageEvent(
+            text="/q",
+            source=source,
+            metadata={"_hermes_native_discord_queue_management": {"action": "list"}},
+        )
+    )
     remove_result = await runner._handle_message(
         MessageEvent(
             text="/q",
@@ -518,6 +945,7 @@ async def test_native_discord_remove_and_clear_are_owner_scoped_and_structured()
                     "action": "remove",
                     "queue_id": "q-owned-1",
                     "session_key": sk,
+                    "snapshot_id": opened_view["snapshot_id"],
                 }
             },
         )
@@ -531,6 +959,7 @@ async def test_native_discord_remove_and_clear_are_owner_scoped_and_structured()
                     "action": "remove",
                     "queue_id": "q-other",
                     "session_key": sk,
+                    "snapshot_id": remove_result["snapshot_id"],
                 }
             },
         )
@@ -544,27 +973,30 @@ async def test_native_discord_remove_and_clear_are_owner_scoped_and_structured()
                     "action": "clear",
                     "queue_ids": ["q-owned-2"],
                     "session_key": sk,
+                    "snapshot_id": remove_result["snapshot_id"],
                 }
             },
         )
     )
 
-    assert remove_result == {
-        "type": "queue_management",
-        "action": "remove",
-        "ok": True,
-        "removed": True,
-        "queue_id": "q-owned-1",
-    }
+    assert [item["id"] for item in opened_view["items"]] == [
+        "q-owned-1",
+        "q-owned-2",
+    ]
+    assert remove_result["ok"] is True
+    assert remove_result["removed"] is True
+    assert remove_result["queue_id"] == "q-owned-1"
+    assert remove_result["session_key"] == sk
+    assert isinstance(remove_result["snapshot_id"], str)
+    assert [item["id"] for item in remove_result["items"]] == ["q-owned-2"]
     assert hidden_remove["ok"] is False
     assert hidden_remove["error"] == "not_found"
     assert "q-other" not in str(hidden_remove)
-    assert clear_result == {
-        "type": "queue_management",
-        "action": "clear",
-        "ok": True,
-        "removed_count": 1,
-    }
+    assert clear_result["ok"] is True
+    assert clear_result["removed_count"] == 1
+    assert clear_result["session_key"] == sk
+    assert clear_result["items"] == []
+    assert isinstance(clear_result["snapshot_id"], str)
     assert runner._snapshot_fifo_events(sk, adapter) == [other, ordinary]
     running_agent.interrupt.assert_not_called()
 
@@ -804,7 +1236,7 @@ async def test_native_management_marker_requires_discord_bare_no_media_event():
 
 
 @pytest.mark.asyncio
-async def test_plain_gateway_bare_q_still_returns_usage_without_native_marker():
+async def test_plain_gateway_bare_q_opens_text_manager_without_native_marker():
     runner, adapter = _make_runner(_session_entry())
     _running(runner)
 
@@ -812,7 +1244,8 @@ async def test_plain_gateway_bare_q_still_returns_usage_without_native_marker():
         MessageEvent(text="/q", source=_make_source(), message_id="plain-q")
     )
 
-    assert result == "Usage: /queue <prompt>"
+    assert "No queued turns" in result
+    assert "q-" not in result
     assert adapter._pending_messages == {}
 
 
@@ -856,14 +1289,15 @@ async def test_idle_bare_queue_with_media_remains_a_normal_agent_turn():
 
 
 @pytest.mark.asyncio
-async def test_queue_no_text_no_media_returns_usage():
+async def test_queue_no_text_no_media_opens_empty_snapshot():
     runner, adapter = _make_runner(_session_entry())
     _running(runner)
 
     event = MessageEvent(text="/queue", source=_make_source(), message_id="q-empty")
     result = await runner._handle_message(event)
 
-    assert result is not None and "Usage" in result
+    assert result is not None and "No queued turns" in result
+    assert "expires in 5 minutes" in result
     assert adapter._pending_messages == {}
 
 

@@ -257,6 +257,17 @@ def test_clear_session_boundary_security_state_is_scoped():
         "[USER INITIATED SKILLS RELOAD: other]"
     )
 
+    from hermes_cli.queue_management import QueueSnapshotStore
+
+    runner._queue_snapshot_store = QueueSnapshotStore(clock=lambda: 1.0)
+    target_snapshot = runner._queue_snapshot_store.open(
+        "queue-control", "u1", session_key, [{"id": "q-target", "preview": "target"}]
+    )
+    other_snapshot = runner._queue_snapshot_store.open(
+        "queue-control-other", "u2", other_key, [{"id": "q-other", "preview": "other"}]
+    )
+    runner._queue_snapshot_targets = {session_key: (source, MagicMock())}
+
     async def _target_handler(choice):
         return f"target:{choice}"
 
@@ -275,6 +286,10 @@ def test_clear_session_boundary_security_state_is_scoped():
     assert session_key not in runner._update_prompt_pending
     assert session_key not in runner._pending_skills_reload_notes
     assert slash_confirm_mod.get_pending(session_key) is None
+    assert runner._queue_snapshot_store.resolve(
+        "queue-control", "u1", "1", snapshot_id=target_snapshot.snapshot_id
+    ).status == "missing"
+    assert session_key not in runner._queue_snapshot_targets
     # Other session untouched
     assert is_approved(other_key, "recursive delete") is True
     assert is_session_yolo_enabled(other_key) is True
@@ -282,6 +297,9 @@ def test_clear_session_boundary_security_state_is_scoped():
     assert other_key in runner._update_prompt_pending
     assert other_key in runner._pending_skills_reload_notes
     assert slash_confirm_mod.get_pending(other_key) is not None
+    assert runner._queue_snapshot_store.resolve(
+        "queue-control-other", "u2", "1", snapshot_id=other_snapshot.snapshot_id
+    ).status == "ok"
 
     # Empty session_key is a no-op
     runner._clear_session_boundary_security_state("")

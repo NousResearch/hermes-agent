@@ -2395,6 +2395,12 @@ class BasePlatformAdapter(ABC):
     # set this to False to stay correct-by-default.
     supports_async_delivery: bool = True
 
+    # Whether ``send_private_notice`` is guaranteed to remain visible only to
+    # the addressed user on a shared surface.  The base method intentionally
+    # stays a public-send fallback for legacy operational notices, so callers
+    # handling sensitive content must check this explicit capability first.
+    supports_private_notice: bool = False
+
     # Whether this adapter's ``send()`` splits long content into multiple
     # messages via ``truncate_message()``.  When True, the delivery router
     # (gateway/delivery.py) skips gateway-level truncation and lets the

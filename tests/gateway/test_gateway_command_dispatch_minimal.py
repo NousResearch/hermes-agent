@@ -130,7 +130,7 @@ async def test_idle_queue_sends_payload_as_next_turn(command_text):
 
 
 @pytest.mark.asyncio
-async def test_idle_queue_without_payload_returns_usage():
+async def test_idle_queue_without_payload_opens_empty_view_without_starting_agent():
     runner, _adapter = _make_runner()
     called = False
 
@@ -143,6 +143,8 @@ async def test_idle_queue_without_payload_returns_usage():
 
     result = await runner._handle_message(_make_event("/queue"))
 
-    assert result == "Usage: /queue <prompt>"
+    assert "Queued turns" in result
+    assert "No queued turns" in result
+    assert "expires in 5 minutes" in result
     assert called is False
     assert runner._running_agents == {}

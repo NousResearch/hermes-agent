@@ -107,8 +107,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Session", aliases=("learning", "memory-graph"), cli_only=True,
                args_hint="[list|delete <id>|edit <id>]",
                subcommands=("list", "delete", "edit")),
-    CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
-               aliases=("q",), args_hint="<prompt>"),
+    CommandDef("queue", "Queue a prompt, or show queued turns when empty", "Session",
+               aliases=("q",), args_hint="[prompt]"),
+    CommandDef("dequeue", "Remove a turn from the latest queue view", "Session",
+               aliases=("dq",), args_hint="<N|all>"),
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
                args_hint="<prompt>"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
@@ -1167,7 +1169,11 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug"})
+#   - version: low-frequency metadata query; reached via /hermes version on
+#     Slack so the queue-management command keeps a native, discoverable slot.
+_SLACK_VIA_HERMES_ONLY = frozenset(
+    {"credits", "billing", "topup", "moa", "debug", "version"}
+)
 
 
 def _sanitize_slack_name(raw: str) -> str:

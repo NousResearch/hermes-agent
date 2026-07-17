@@ -107,6 +107,7 @@ class TestResolveCommand:
         assert resolve_command("bg").name == "background"
         assert resolve_command("reset").name == "new"
         assert resolve_command("q").name == "queue"
+        assert resolve_command("dq").name == "dequeue"
         assert resolve_command("exit").name == "quit"
         assert resolve_command("gateway").name == "platforms"
         assert resolve_command("set-home").name == "sethome"
@@ -151,6 +152,7 @@ class TestDerivedDicts:
         assert "/bg" in COMMANDS
         assert "/reset" in COMMANDS
         assert "/q" in COMMANDS
+        assert "/dq" in COMMANDS
         assert "/exit" in COMMANDS
         assert "/reload_mcp" in COMMANDS
         assert "/gateway" in COMMANDS
@@ -192,6 +194,10 @@ class TestGatewayKnownCommands:
     def test_bg_alias_in_gateway(self):
         assert "bg" in GATEWAY_KNOWN_COMMANDS
         assert "background" in GATEWAY_KNOWN_COMMANDS
+
+    def test_dequeue_and_short_alias_are_gateway_commands(self):
+        assert "dequeue" in GATEWAY_KNOWN_COMMANDS
+        assert "dq" in GATEWAY_KNOWN_COMMANDS
 
     def test_is_frozenset(self):
         assert isinstance(GATEWAY_KNOWN_COMMANDS, frozenset)
@@ -254,6 +260,7 @@ class TestTelegramBotCommands:
         names = {name for name, _ in telegram_bot_commands()}
         assert "background" in names
         assert "queue" in names
+        assert "dequeue" in names
         assert "steer" in names
 
     def test_hyphenated_codex_runtime_is_exposed_as_underscore_command(self):
@@ -277,6 +284,7 @@ class TestSlackSubcommandMap:
         mapping = slack_subcommand_map()
         assert "bg" in mapping
         assert "reset" in mapping
+        assert mapping["dq"] == "/dq"
 
     def test_excludes_cli_only_without_config_gate(self):
         mapping = slack_subcommand_map()

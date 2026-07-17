@@ -2790,6 +2790,201 @@ class TestAdapterBehavior(unittest.TestCase):
             ],
         )
 
+    @patch.dict(os.environ, {"HERMES_HOME": os.path.join(tempfile.gettempdir(), "hermes-feishu-table-split-test")}, clear=False)
+    def test_split_content_at_tables_returns_markdown_only_without_tables(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "可以用 **粗体** 和 *斜体*。"
+
+        segments = adapter._split_content_at_tables(content)
+
+        self.assertEqual(segments, [("markdown", content)])
+
+    @patch.dict(os.environ, {"HERMES_HOME": os.path.join(tempfile.gettempdir(), "hermes-feishu-table-split-test")}, clear=False)
+    def test_split_content_at_tables_tags_bold_table_cells_as_table(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        table = "| **Name** | Value |\n|---|---|\n| foo | bar |"
+
+        segments = adapter._split_content_at_tables(table)
+
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0][0], "table")
+        self.assertIn("**Name**", segments[0][1])
+
+    @patch.dict(os.environ, {"HERMES_HOME": os.path.join(tempfile.gettempdir(), "hermes-feishu-table-split-test")}, clear=False)
+    def test_split_content_at_tables_ignores_pipe_lines_inside_fence(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = (
+            "before\n"
+            "```python\n"
+            "| a | b |\n"
+            "|---|---|\n"
+            "```\n"
+            "after"
+        )
+
+        segments = adapter._split_content_at_tables(content)
+
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0][0], "markdown")
+        self.assertIn("| a | b |", segments[0][1])
+        self.assertIn("after", segments[0][1])
+
+    @patch.dict(os.environ, {"HERMES_HOME": os.path.join(tempfile.gettempdir(), "hermes-feishu-table-split-test")}, clear=False)
+    def test_split_content_at_tables_splits_mixed_markdown_table_markdown(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = (
+            "**before**\n"
+            "| Col | Val |\n"
+            "|---|---|\n"
+            "| a | b |\n"
+            "**after**"
+        )
+
+        segments = adapter._split_content_at_tables(content)
+
+        self.assertEqual([tag for tag, _ in segments], ["markdown", "table", "markdown"])
+        self.assertIn("**before**", segments[0][1])
+        self.assertIn("| a | b |", segments[1][1])
+        self.assertIn("**after**", segments[2][1])
+
+    @patch.dict(os.environ, {"HERMES_HOME": os.path.join(tempfile.gettempdir(), "hermes-feishu-table-split-test")}, clear=False)
+    def test_build_outbound_payloads_table_with_bold_stays_text(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "| **Name** | Value |\n|---|---|\n| foo | bar |"
+
+        payloads = adapter._build_outbound_payloads(content)
+
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0][0], "text")
+        self.assertIn("**Name**", payloads[0][1])
+
+    @patch.dict(os.environ, {"HERMES_HOME": os.path.join(tempfile.gettempdir(), "hermes-feishu-table-split-test")}, clear=False)
+    def test_build_outbound_payloads_mixed_segments_use_post_and_text(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = (
+            "**before**\n"
+            "| Col | Val |\n"
+            "|---|---|\n"
+            "| a | b |\n"
+            "**after**"
+        )
+
+        payloads = adapter._build_outbound_payloads(content)
+
+        self.assertEqual(len(payloads), 3)
+        self.assertEqual([msg_type for msg_type, _, _ in payloads], ["post", "text", "post"])
+
+    @patch.dict(os.environ, {"HERMES_HOME": os.path.join(tempfile.gettempdir(), "hermes-feishu-table-split-test")}, clear=False)
+    def test_send_splits_mixed_table_and_markdown_into_multiple_messages(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["calls"].append(request)
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id=f"om_{len(captured['calls'])}"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = (
+            "**before**\n"
+            "| Col | Val |\n"
+            "|---|---|\n"
+            "| a | b |\n"
+            "**after**"
+        )
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(captured["calls"]), 3)
+        self.assertEqual(
+            [call.request_body.msg_type for call in captured["calls"]],
+            ["post", "text", "post"],
+        )
+
+    @patch.dict(os.environ, {"HERMES_HOME": os.path.join(tempfile.gettempdir(), "hermes-feishu-table-split-test")}, clear=False)
+    def test_send_falls_back_to_text_for_rejected_post_segment_only(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["calls"].append(request)
+                if len(captured["calls"]) == 1:
+                    raise RuntimeError("content format of the post type is incorrect")
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id=f"om_{len(captured['calls'])}"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = (
+            "**before**\n"
+            "| Col | Val |\n"
+            "|---|---|\n"
+            "| a | b |\n"
+            "**after**"
+        )
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(captured["calls"]), 4)
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "post")
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
+        self.assertIn("before", captured["calls"][1].request_body.content)
+        self.assertEqual(captured["calls"][2].request_body.msg_type, "text")
+        self.assertEqual(captured["calls"][3].request_body.msg_type, "post")
+
     @patch.dict(os.environ, {}, clear=True)
     def test_send_falls_back_to_text_when_post_payload_is_rejected(self):
         from gateway.config import PlatformConfig

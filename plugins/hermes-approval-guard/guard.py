@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # ── Always-safe tools (read-only, skip all review) ─────────────────
 _SAFE_TOOLS = frozenset({
     "read_file", "search_files", "web_search", "web_extract",
-    "session_search", "browser_snapshot", "browser_console",
+    "session_search", "browser_snapshot",
     "browser_get_images", "vision_analyze", "clarify",
     "skills_list", "skill_view", "hindsight_recall", "hindsight_reflect",
     "lcm_grep", "lcm_describe", "lcm_expand", "lcm_expand_query",
@@ -48,13 +48,10 @@ _SAFE_TOOLS = frozenset({
 _config_cache: Optional[Dict[str, Any]] = None
 _config_cache_time: float = 0
 _config_cache_ttl: float = 30  # seconds — refresh config periodically
-_config_disable: bool = False
 
 
 def _load_config() -> Dict[str, Any]:
-    global _config_cache, _config_disable, _config_cache_time
-    if _config_disable:
-        return {"enabled": False}
+    global _config_cache, _config_cache_time
     # Refresh cache if TTL expired — allows config changes without gateway restart
     if _config_cache is not None and (time.monotonic() - _config_cache_time) < _config_cache_ttl:
         return _config_cache
@@ -66,12 +63,9 @@ def _load_config() -> Dict[str, Any]:
             guard_cfg = {}
         _config_cache = guard_cfg
         _config_cache_time = time.monotonic()
-        _config_disable = False  # reset on refresh — don't carry stale disable state
-        if not guard_cfg.get("enabled", False):
-            _config_disable = True
         return guard_cfg
     except Exception:
-        _config_disable = True
+        # Return disabled config but don't cache the failure — allows retry on next TTL
         return {"enabled": False}
 
 
@@ -271,11 +265,16 @@ def pre_tool_call_handler(
             tool_name, tool_args, cfg, context, session_ctx, task_id, session_id
         )
     except Exception as exc:
-        logger.warning("Stage2 ACP failed: %s (fail_open=%s)",
-                       exc, cfg.get("fail_open", True))
-        if cfg.get("fail_open", True):
+        fail_open = cfg.get("fail_open", True)
+        logger.warning("Stage2 ACP failed: %s (fail_open=%s)", exc, fail_open)
+        if fail_open:
             return None
-        return None
+        from .feedback import build_deny_message
+        return build_deny_message(
+            tool_name, tool_args,
+            f"stage2_exception:{type(exc).__name__}",
+            "DENY",
+        )
 
     if verdict == "ALLOW":
         return None

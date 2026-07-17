@@ -250,13 +250,13 @@ def acp_agent_review(
             [
                 "hermes", "chat", "-q", review_prompt,
                 "--profile", profile,
-                "-t", "file,memory,session_search",
+                "-t", "session_search",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
-            env={**_os.environ, "HERMES_YOLO_MODE": "1"},
+            env={**_os.environ},  # No YOLO_MODE — reviewer must not bypass approval
         )
         try:
             stdout, stderr = proc.communicate(timeout=timeout + 5)

@@ -385,6 +385,109 @@ async def health() -> dict:
 # /api/plugins/*. Streamed so both JSON and SSE responses pass through.
 # ---------------------------------------------------------------------------
 
+# Custom-widget asset headers the sidecar sets and the proxy MUST preserve verbatim —
+# the Content-Security-Policy is the widget sandbox's no-network jail (SPEC §11) and
+# stripping it at the proxy would un-jail every custom widget in the browser.
+_WIDGET_FWD_RESP_HEADERS = (
+    "content-type",
+    "content-security-policy",
+    "x-content-type-options",
+    "referrer-policy",
+    "cache-control",
+)
+
+
+def _safe_asset_path(asset_path: str) -> Optional[str]:
+    """Validate + re-encode an asset path for the upstream URL. Rejects traversal
+    (`.`/`..`), backslashes, and empty segments so a crafted path can never normalize
+    outside `/widgets` upstream; each accepted segment is percent-encoded."""
+    from urllib.parse import quote
+
+    segments = asset_path.split("/")
+    if not segments or any(s in ("", ".", "..") or "\\" in s for s in segments):
+        return None
+    return "/".join(quote(s, safe="") for s in segments)
+
+
+async def _proxy_widget_asset(asset_path: str) -> "Response":
+    """Proxy one approved-custom-widget asset from the sidecar's `/widgets` route. The
+    sidecar serves approved widgets only, with a uniform 404 for pending / rejected /
+    unknown (they do not exist as far as any client can tell), and stamps the sandbox
+    CSP on every asset — both properties pass through unchanged. Read-only."""
+    safe_path = _safe_asset_path(asset_path)
+    if safe_path is None:
+        return Response(status_code=http_status.HTTP_404_NOT_FOUND)
+    try:
+        port, _nonce = await _ensure_sidecar()
+    except Exception as exc:  # defensive: never crash the dashboard worker
+        log.warning("boardstate: sidecar unavailable for widget assets: %s", exc)
+        return Response(status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE)
+    url = f"http://127.0.0.1:{port}/widgets/{safe_path}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            upstream = await client.get(url)
+    except Exception as exc:
+        log.warning("boardstate: widget asset upstream error: %s", exc)
+        return Response(status_code=http_status.HTTP_502_BAD_GATEWAY)
+    headers = {k: v for k, v in upstream.headers.items() if k.lower() in _WIDGET_FWD_RESP_HEADERS}
+    return Response(content=upstream.content, status_code=upstream.status_code, headers=headers)
+
+
+@router.get("/widgets/{asset_path:path}")
+async def widget_assets(asset_path: str) -> "Response":
+    """Header-authed asset access (tests, tooling). Browser mounts can't send headers on
+    iframe/fetch loads — they use the tokenized root route below via /assets-base."""
+    return await _proxy_widget_asset(asset_path)
+
+
+# ── Browser-loadable asset base (iframes and in-page fetches cannot carry auth
+# headers, and the dashboard's /api gate has no per-plugin public-path hook) ──
+# A per-boot capability token EMBEDDED IN THE PATH gates a root-level route that the
+# /api middleware doesn't cover. The token is random per process, compared in constant
+# time, scoped to read-only APPROVED-widget static assets (uniform 404 otherwise, CSP
+# preserved), and handed out only by the session-authed /assets-base endpoint — the
+# same exposure class as the WS ?token= URL the dashboard already uses.
+_ASSET_TOKEN = secrets.token_urlsafe(24)
+_ASSET_ROUTE_PREFIX = "/boardstate-widget-assets"
+
+
+async def _tokenized_widget_assets(asset_token: str, asset_path: str) -> "Response":
+    import hmac as _hmac
+
+    if not _hmac.compare_digest(asset_token.encode(), _ASSET_TOKEN.encode()):
+        return Response(status_code=http_status.HTTP_404_NOT_FOUND)
+    return await _proxy_widget_asset(asset_path)
+
+
+def _register_asset_route() -> None:
+    """Best-effort root-level mount on the dashboard app (outside the /api gate).
+    Unavailable (older dashboard / import failure) ⇒ custom widgets simply don't mount;
+    the board and every builtin are unaffected."""
+    try:
+        from hermes_cli.web_server import app as _app  # local import: load-order coupling
+
+        _app.add_api_route(
+            _ASSET_ROUTE_PREFIX + "/{asset_token}/widgets/{asset_path:path}",
+            _tokenized_widget_assets,
+            methods=["GET"],
+        )
+        log.info("boardstate: widget asset route mounted at %s/<token>/widgets/*", _ASSET_ROUTE_PREFIX)
+    except Exception as exc:  # pragma: no cover - dashboard internals unavailable
+        log.info("boardstate: widget asset route unavailable (%s); custom widgets off", exc)
+
+
+_register_asset_route()
+
+
+@router.get("/assets-base")
+async def assets_base(request: "Request") -> "Response":
+    """The browser's custom-widget asset base (session-authed; the SDK fetch carries the
+    credential). The returned base composes with the client's `${base}/widgets/...`."""
+    # Same session posture as the operator route's loopback check: this endpoint rides
+    # the dashboard's own /api gate (session token in loopback, cookie in gated mode).
+    return JSONResponse({"base": f"{_ASSET_ROUTE_PREFIX}/{_ASSET_TOKEN}"})
+
+
 _MCP_FWD_REQ_HEADERS = ("content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id")
 _MCP_FWD_RESP_HEADERS = ("content-type", "mcp-session-id")
 

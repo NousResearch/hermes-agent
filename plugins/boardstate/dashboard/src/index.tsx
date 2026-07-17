@@ -163,9 +163,22 @@ function BoardPage() {
         view.transport = transport;
         view.connected = true;
         view.operator = true;
-        // Built-in widgets resolve from the bundle; approved custom widgets would
-        // resolve under the sidecar's own /widgets route (out of scope for v1).
-        view.basePath = "";
+        // Approved custom-widget assets resolve to `${basePath}/widgets/<name>/<file>`.
+        // Iframe/fetch loads can't carry auth headers, so the backend hands the browser
+        // a tokenized root-level base (session-authed fetch here; capability token in
+        // the path there; sidecar CSP preserved) — sandboxed custom widgets (games,
+        // tools) then mount inside the dashboard. No base ⇒ builtins-only, no errors.
+        try {
+          const fetchJson =
+            (SDK as { fetchJSON?: (p: string) => Promise<unknown> }).fetchJSON ??
+            (async (p: string) => (await fetch(p, { headers: { "X-Hermes-Session-Token": localStorage.getItem("hermes_session_token") ?? "" } })).json());
+          const ab = (await fetchJson("/api/plugins/boardstate/assets-base")) as { base?: string };
+          // No tokenized base ⇒ builtins-only ("" — iframe loads can't present the
+          // session header, so pointing at the header-authed route would just stall).
+          view.basePath = ab?.base || "";
+        } catch {
+          view.basePath = "";
+        }
         // Follow the active Hermes palette (light/dark base + `--bs-*` aliases)
         // and keep following it across live palette swaps.
         applyHermesTheme(view);

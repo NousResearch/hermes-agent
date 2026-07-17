@@ -319,6 +319,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.training_data_cmd import build_training_data_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -14929,6 +14930,11 @@ def main():
     # claw command  (parser built in hermes_cli/subcommands/claw.py)
     # =========================================================================
     build_claw_parser(subparsers, cmd_claw=cmd_claw)
+
+    # =========================================================================
+    # training-data command  (parser built in hermes_cli/training_data_cmd.py)
+    # =========================================================================
+    build_training_data_parser(subparsers)
 
     # =========================================================================
     # version command  (parser built in hermes_cli/subcommands/version.py)

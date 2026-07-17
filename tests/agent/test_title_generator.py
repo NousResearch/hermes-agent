@@ -256,6 +256,50 @@ class TestAutoTitleSession:
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_session_title.assert_not_called()
 
+    def test_never_raises_when_body_throws(self):
+        """Daemon-thread target must swallow ALL exceptions (e.g. the
+        post-update stale-module ImportError) instead of spraying a raw
+        traceback into the terminal via the default threading excepthook."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+
+        with patch(
+            "agent.title_generator._auto_title_session",
+            side_effect=ImportError(
+                "cannot import name 'set_conversation_context' from 'agent.portal_tags'"
+            ),
+        ):
+            auto_title_session(db, "sess-1", "hi", "hello")  # must not raise
+
+    def test_body_exception_routed_to_failure_callback(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        seen = []
+
+        boom = ImportError("stale module")
+        with patch("agent.title_generator._auto_title_session", side_effect=boom):
+            auto_title_session(
+                db,
+                "sess-1",
+                "hi",
+                "hello",
+                failure_callback=lambda task, exc: seen.append((task, exc)),
+            )
+        assert seen == [("title generation", boom)]
+
+    def test_failure_callback_errors_also_swallowed(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+
+        def bad_cb(task, exc):
+            raise RuntimeError("callback itself broke")
+
+        with patch(
+            "agent.title_generator._auto_title_session",
+            side_effect=ImportError("stale module"),
+        ):
+            auto_title_session(db, "sess-1", "hi", "hello", failure_callback=bad_cb)
+
 
 class TestMaybeAutoTitle:
     """Tests for maybe_auto_title() — the fire-and-forget entry point."""

@@ -16,7 +16,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
-from agent.runtime_cwd import resolve_agent_cwd
+from agent.runtime_cwd import resolve_agent_cwd, resolve_tool_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS,
     SKILL_SUPPORT_DIRS,
@@ -948,7 +948,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
     per process. Used only for non-local backends where the agent's tools
     operate on a different machine than the host Hermes runs on.
     """
-    cwd_hint = os.getenv("TERMINAL_CWD", "")
+    cwd_hint = resolve_tool_cwd()
     cache_key = (env_type, cwd_hint)
     cached = _BACKEND_PROBE_CACHE.get(cache_key)
     if cached is not None:

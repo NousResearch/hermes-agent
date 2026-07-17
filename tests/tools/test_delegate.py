@@ -361,6 +361,97 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "error")
         self.assertIn("Something broke", result["results"][0]["error"])
 
+    def test_child_tools_inherit_authoritative_parent_cwd(self):
+        import tempfile
+        from agent.runtime_cwd import (
+            reset_authoritative_session_cwd,
+            resolve_authoritative_tool_cwd,
+            set_authoritative_session_cwd,
+        )
+        import tools.terminal_tool as terminal_tool
+
+        parent = _make_mock_parent(depth=0)
+        parent._current_task_id = "default"
+        seen = {}
+        with tempfile.TemporaryDirectory() as cron_cwd, tempfile.TemporaryDirectory() as stale_cwd:
+            with patch.object(
+                terminal_tool,
+                "_session_cwd",
+                {"default": stale_cwd},
+                create=False,
+            ), patch("run_agent.AIAgent") as MockAgent:
+                mock_child = MagicMock()
+
+                def run_child(**kwargs):
+                    seen["authoritative"] = resolve_authoritative_tool_cwd()
+                    seen["command_cwd"] = terminal_tool._resolve_command_cwd(
+                        workdir=None,
+                        default_cwd="/default",
+                        session_key=kwargs["task_id"],
+                    )
+                    return {
+                        "final_response": "done",
+                        "completed": True,
+                        "api_calls": 1,
+                    }
+
+                mock_child.run_conversation.side_effect = run_child
+                MockAgent.return_value = mock_child
+                tokens = set_authoritative_session_cwd(cron_cwd)
+                try:
+                    result = json.loads(
+                        delegate_task(goal="Check cwd", parent_agent=parent)
+                    )
+                finally:
+                    reset_authoritative_session_cwd(tokens)
+
+        self.assertEqual(result["results"][0]["status"], "completed")
+        self.assertEqual(seen["authoritative"], cron_cwd)
+        self.assertEqual(seen["command_cwd"], cron_cwd)
+
+    def test_child_inherits_interactive_parent_live_cwd(self):
+        import tempfile
+        import agent.runtime_cwd as runtime_cwd
+        from agent.runtime_cwd import set_session_cwd
+        import tools.terminal_tool as terminal_tool
+
+        parent = _make_mock_parent(depth=0)
+        parent._current_task_id = "parent-task"
+        seen = {}
+        with tempfile.TemporaryDirectory() as configured_cwd, tempfile.TemporaryDirectory() as live_cwd:
+            with patch.object(
+                terminal_tool,
+                "_session_cwd",
+                {"parent-task": live_cwd},
+                create=False,
+            ), patch("run_agent.AIAgent") as MockAgent:
+                mock_child = MagicMock()
+
+                def run_child(**kwargs):
+                    seen["command_cwd"] = terminal_tool._resolve_command_cwd(
+                        workdir=None,
+                        default_cwd="/default",
+                        session_key=kwargs["task_id"],
+                    )
+                    return {
+                        "final_response": "done",
+                        "completed": True,
+                        "api_calls": 1,
+                    }
+
+                mock_child.run_conversation.side_effect = run_child
+                MockAgent.return_value = mock_child
+                token = set_session_cwd(configured_cwd)
+                try:
+                    result = json.loads(
+                        delegate_task(goal="Check live cwd", parent_agent=parent)
+                    )
+                finally:
+                    runtime_cwd._SESSION_CWD.reset(token)
+
+        self.assertEqual(result["results"][0]["status"], "completed")
+        self.assertEqual(seen["command_cwd"], live_cwd)
+
     def test_depth_increments(self):
         """Verify child gets parent's depth + 1."""
         parent = _make_mock_parent(depth=0)
@@ -3153,6 +3244,53 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
+
+
+def test_workspace_hint_prefers_task_local_cwd(monkeypatch, tmp_path):
+    import agent.runtime_cwd as runtime_cwd
+    from agent.runtime_cwd import set_session_cwd
+    from tools.delegate_tool import _resolve_workspace_hint
+
+    process_dir = tmp_path / "process"
+    session_dir = tmp_path / "session"
+    process_dir.mkdir()
+    session_dir.mkdir()
+    monkeypatch.setenv("TERMINAL_CWD", str(process_dir))
+    parent = MagicMock()
+    parent._subdirectory_hints = None
+    parent.terminal_cwd = None
+    parent.cwd = None
+
+    token = set_session_cwd(str(session_dir))
+    try:
+        assert _resolve_workspace_hint(parent) == str(session_dir)
+    finally:
+        runtime_cwd._SESSION_CWD.reset(token)
+
+
+def test_workspace_hint_does_not_fall_back_from_missing_authoritative_cwd(
+    monkeypatch, tmp_path
+):
+    from agent.runtime_cwd import (
+        reset_authoritative_session_cwd,
+        set_authoritative_session_cwd,
+    )
+    from tools.delegate_tool import _resolve_workspace_hint
+
+    stale_dir = tmp_path / "stale"
+    stale_dir.mkdir()
+    missing_dir = tmp_path / "deleted"
+    monkeypatch.setenv("TERMINAL_CWD", str(stale_dir))
+    parent = MagicMock()
+    parent._subdirectory_hints = None
+    parent.terminal_cwd = str(stale_dir)
+    parent.cwd = str(stale_dir)
+
+    tokens = set_authoritative_session_cwd(str(missing_dir))
+    try:
+        assert _resolve_workspace_hint(parent) is None
+    finally:
+        reset_authoritative_session_cwd(tokens)
 
 
 if __name__ == "__main__":

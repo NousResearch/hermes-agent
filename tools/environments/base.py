@@ -1011,6 +1011,10 @@ class BaseEnvironment(ABC):
         cwd_path = output[first + len(marker) : last].strip()
         if cwd_path:
             self.cwd = cwd_path
+            # Carry the cwd parsed from THIS command alongside its result. The
+            # shared environment's mutable self.cwd may be overwritten by a
+            # concurrent session before the caller records session state.
+            result["cwd"] = cwd_path
 
         # Strip the marker line AND the \n we injected before it.
         # The wrapper emits: printf '\n__MARKER__%s__MARKER__\n'
@@ -1100,7 +1104,12 @@ class BaseEnvironment(ABC):
         result = self._wait_for_process(
             proc, timeout=effective_timeout, bounded_capture=bounded_capture
         )
+        # Keep the command's own starting cwd available to backend-specific
+        # normalization. A shared environment's mutable self.cwd may already
+        # belong to another concurrent session by the time parsing runs.
+        result["_hermes_previous_cwd"] = effective_cwd
         self._update_cwd(result)
+        result.pop("_hermes_previous_cwd", None)
 
         return result
 

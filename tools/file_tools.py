@@ -240,14 +240,10 @@ def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
 
 
 def _configured_terminal_cwd() -> str | None:
-    """Return ``$TERMINAL_CWD`` only when it names a real directory anchor.
+    """Return a task-local or configured cwd when it is an absolute anchor."""
+    from agent.runtime_cwd import resolve_tool_cwd
 
-    Sentinel values (see ``_TERMINAL_CWD_SENTINELS``) and relative paths are
-    rejected — a relative anchor is meaningless without knowing which cwd it is
-    relative to, which is exactly the ambiguity that misroutes worktree edits.
-    Only an absolute, sentinel-free value is honored.
-    """
-    return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+    return _sentinel_free_abs_cwd(resolve_tool_cwd())
 
 
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:
@@ -270,25 +266,18 @@ def _registered_task_cwd_override(task_id: str = "default") -> str | None:
 
 
 def _authoritative_workspace_root(task_id: str = "default") -> str | None:
-    """Best-effort absolute workspace root for divergence checks.
+    """Resolve workspace: live fixed scope, cron root, session, override, config."""
+    from agent.runtime_cwd import resolve_authoritative_tool_cwd
+    from tools.terminal_tool import get_authoritative_session_cwd
 
-    Resolution:
-
-      1. The session's own cwd RECORD (``terminal_tool.get_session_cwd``) —
-         written on every completed terminal command and seeded by workspace
-         registration, keyed by the raw session id. Because the record is
-         per-session, one session's ``cd`` can never leak into another
-         session's resolution.
-      2. A registered task/session cwd override (TUI/Desktop/ACP sessions
-         register a raw-keyed cwd before any tool runs). Normally already
-         mirrored into the record at registration; kept as a direct fallback
-         so a cleared/never-written record still resolves the workspace.
-      3. A sentinel-free absolute ``$TERMINAL_CWD`` (the worktree path set by
-         ``cli.py``/``main.py`` for ``-w`` sessions).
-
-    Returns ``None`` only when there is genuinely no reliable anchor, in which
-    case callers fall back to the process cwd.
-    """
+    live_context_root = _sentinel_free_abs_cwd(
+        get_authoritative_session_cwd(task_id)
+    )
+    if live_context_root:
+        return live_context_root
+    context_root = _sentinel_free_abs_cwd(resolve_authoritative_tool_cwd())
+    if context_root:
+        return context_root
     try:
         from tools.terminal_tool import get_session_cwd
 

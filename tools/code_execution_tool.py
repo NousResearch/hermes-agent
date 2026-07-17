@@ -1810,6 +1810,18 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
     """
     if mode != "project":
         return staging_dir
+    from agent.runtime_cwd import resolve_authoritative_tool_cwd
+    from tools.terminal_tool import get_authoritative_session_cwd
+
+    live_authoritative_cwd = get_authoritative_session_cwd(task_id)
+    if live_authoritative_cwd:
+        return live_authoritative_cwd
+    authoritative_cwd = resolve_authoritative_tool_cwd()
+    if authoritative_cwd:
+        # Keep the intended cron path even if it disappears mid-run. Passing a
+        # missing cwd fails closed in Popen instead of executing in another
+        # session's recorded workspace.
+        return os.path.expanduser(authoritative_cwd)
     if task_id:
         # 1. The session's cwd record — IS the session's `cd` state.
         try:
@@ -1829,6 +1841,11 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
             session_cwd = None
         if session_cwd and os.path.isdir(session_cwd):
             return session_cwd
+    from agent.runtime_cwd import resolve_session_cwd
+
+    context_cwd = resolve_session_cwd()
+    if context_cwd is not None:
+        return str(context_cwd)
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         expanded = os.path.expanduser(raw)

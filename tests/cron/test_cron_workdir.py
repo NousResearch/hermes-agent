@@ -192,6 +192,68 @@ class TestCronjobToolWorkdir:
         assert "absolute" in desc.lower()
 
 
+class TestNoAgentWorkdirIsolation:
+    def test_no_agent_passes_subprocess_cwd_without_chdir(self, tmp_path, monkeypatch):
+        import os
+        import cron.scheduler as sched
+
+        process_cwd = tmp_path / "gateway"
+        workdir = tmp_path / "script-workdir"
+        process_cwd.mkdir()
+        workdir.mkdir()
+        monkeypatch.chdir(process_cwd)
+        observed = {}
+
+        def fake_script(job, script_path, *, cwd=None):
+            observed["process_cwd"] = os.getcwd()
+            observed["subprocess_cwd"] = cwd
+            return True, "ok"
+
+        monkeypatch.setattr(sched, "_run_job_script_with_claim_heartbeat", fake_script)
+        job = {
+            "id": "script-job",
+            "name": "script-job",
+            "no_agent": True,
+            "script": "watchdog.py",
+            "workdir": str(workdir),
+        }
+
+        success, *_ = sched.run_job(job)
+        assert success is True
+        assert observed["process_cwd"] == str(process_cwd)
+        assert observed["subprocess_cwd"] == str(workdir)
+        assert os.getcwd() == str(process_cwd)
+
+    def test_script_child_uses_explicit_cwd_without_changing_process_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        import os
+        import cron.scheduler as sched
+
+        process_cwd = tmp_path / "gateway"
+        workdir = tmp_path / "script-workdir"
+        process_cwd.mkdir()
+        workdir.mkdir()
+        monkeypatch.chdir(process_cwd)
+        result_path = tmp_path / "child-cwd.txt"
+        scripts_dir = sched._get_hermes_home() / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        script_path = scripts_dir / "record_cwd.py"
+        script_path.write_text(
+            "import os\n"
+            f"open({str(result_path)!r}, 'w', encoding='utf-8').write(os.getcwd())\n",
+            encoding="utf-8",
+        )
+
+        success, output = sched._run_job_script(
+            str(script_path), cwd=str(workdir)
+        )
+
+        assert success is True, output
+        assert result_path.read_text(encoding="utf-8") == str(workdir)
+        assert os.getcwd() == str(process_cwd)
+
+
 # ---------------------------------------------------------------------------
 # scheduler.tick(): workdir partition
 # ---------------------------------------------------------------------------
@@ -272,15 +334,33 @@ class TestRunJobTerminalCwd:
 
         class FakeAgent:
             def __init__(self, **kwargs):
+                from agent.runtime_cwd import (
+                    resolve_agent_cwd,
+                    resolve_authoritative_tool_cwd,
+                )
+
                 observed["skip_context_files"] = kwargs.get("skip_context_files")
                 observed["load_soul_identity"] = kwargs.get("load_soul_identity")
                 observed["terminal_cwd_during_init"] = os.environ.get(
                     "TERMINAL_CWD", "_UNSET_"
                 )
+                observed["resolved_cwd_during_init"] = str(resolve_agent_cwd())
+                observed["authoritative_cwd_during_init"] = (
+                    resolve_authoritative_tool_cwd()
+                )
 
             def run_conversation(self, *_a, **_kw):
+                from agent.runtime_cwd import (
+                    resolve_agent_cwd,
+                    resolve_authoritative_tool_cwd,
+                )
+
                 observed["terminal_cwd_during_run"] = os.environ.get(
                     "TERMINAL_CWD", "_UNSET_"
+                )
+                observed["resolved_cwd_during_run"] = str(resolve_agent_cwd())
+                observed["authoritative_cwd_during_run"] = (
+                    resolve_authoritative_tool_cwd()
                 )
                 return {"final_response": "done", "messages": []}
 
@@ -318,16 +398,24 @@ class TestRunJobTerminalCwd:
         import dotenv
         monkeypatch.setattr(dotenv, "load_dotenv", lambda *_a, **_kw: True)
 
-    def test_workdir_sets_and_restores_terminal_cwd(
+    def test_workdir_is_task_local_and_does_not_mutate_process_env(
         self, tmp_path, monkeypatch
     ):
         import os
+        import threading
         import cron.scheduler as sched
+        from agent.runtime_cwd import resolve_agent_cwd, set_session_cwd
 
-        # Make sure the test's TERMINAL_CWD starts at a known non-workdir value.
-        # Use monkeypatch.setenv so it's restored on teardown regardless of
-        # whatever other tests in this xdist worker have left behind.
-        monkeypatch.setenv("TERMINAL_CWD", "/original/cwd")
+        # Simulate a concurrent gateway session whose logical workspace is
+        # already pinned in its own context. The cron run must temporarily see
+        # its job workdir without changing process-global environment state.
+        gateway_cwd = tmp_path / "gateway"
+        cron_cwd = tmp_path / "cron"
+        gateway_cwd.mkdir()
+        cron_cwd.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", "/gateway-process-cwd")
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        gateway_token = set_session_cwd(str(gateway_cwd))
 
         observed: dict = {}
         self._install_stubs(monkeypatch, observed)
@@ -335,22 +423,129 @@ class TestRunJobTerminalCwd:
         job = {
             "id": "abc",
             "name": "wd-job",
-            "workdir": str(tmp_path),
+            "workdir": str(cron_cwd),
             "schedule_display": "manual",
         }
 
-        success, _output, response, error = sched.run_job(job)
+        result = []
+
+        def run_cron_job():
+            from agent.runtime_cwd import resolve_authoritative_tool_cwd
+
+            result.append(sched.run_job(job))
+            observed["authoritative_cwd_after_run"] = (
+                resolve_authoritative_tool_cwd()
+            )
+
+        worker = threading.Thread(target=run_cron_job)
+        worker.start()
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+        success, _output, response, error = result[0]
         assert success is True, f"run_job failed: error={error!r} response={response!r}"
 
-        # AIAgent was built with skip_context_files=False (feature ON).
         assert observed["skip_context_files"] is False
         assert observed["load_soul_identity"] is True
-        # TERMINAL_CWD was pointing at the job workdir while the agent ran.
-        assert observed["terminal_cwd_during_init"] == str(tmp_path.resolve())
-        assert observed["terminal_cwd_during_run"] == str(tmp_path.resolve())
+        assert observed["resolved_cwd_during_init"] == str(cron_cwd.resolve())
+        assert observed["resolved_cwd_during_run"] == str(cron_cwd.resolve())
+        assert observed["authoritative_cwd_during_init"] == str(cron_cwd.resolve())
+        assert observed["authoritative_cwd_during_run"] == str(cron_cwd.resolve())
+        assert observed["authoritative_cwd_after_run"] == ""
 
-        # And it was restored to the original value in finally.
-        assert os.environ["TERMINAL_CWD"] == "/original/cwd"
+        # A per-job workdir must never leak through process-global state. A
+        # sibling gateway task can otherwise inherit a persona/repository cwd.
+        assert observed["terminal_cwd_during_init"] == "/gateway-process-cwd"
+        assert observed["terminal_cwd_during_run"] == "/gateway-process-cwd"
+        assert os.environ["TERMINAL_CWD"] == "/gateway-process-cwd"
+        assert "HERMES_CRON_SESSION" not in os.environ
+        assert resolve_agent_cwd() == gateway_cwd
+        gateway_token.var.reset(gateway_token)
+
+    def test_nested_run_restores_outer_session_cwd(self, tmp_path, monkeypatch):
+        import cron.scheduler as sched
+        from agent.runtime_cwd import resolve_session_cwd
+        from gateway.session_context import (
+            clear_session_vars,
+            get_session_env,
+            set_session_vars,
+        )
+
+        outer_cwd = tmp_path / "outer"
+        cron_cwd = tmp_path / "cron"
+        outer_cwd.mkdir()
+        cron_cwd.mkdir()
+        observed: dict = {}
+        self._install_stubs(monkeypatch, observed)
+        outer_tokens = set_session_vars(
+            source="slack",
+            platform="slack",
+            chat_id="outer-chat",
+            cwd=str(outer_cwd),
+        )
+        try:
+            success, *_ = sched.run_job(
+                {
+                    "id": "nested",
+                    "name": "nested-wd-job",
+                    "workdir": str(cron_cwd),
+                    "schedule_display": "manual",
+                }
+            )
+            assert success is True
+            assert resolve_session_cwd() == outer_cwd
+            assert get_session_env("HERMES_SESSION_SOURCE") == "slack"
+            assert get_session_env("HERMES_SESSION_PLATFORM") == "slack"
+            assert get_session_env("HERMES_SESSION_CHAT_ID") == "outer-chat"
+        finally:
+            clear_session_vars(outer_tokens)
+
+    def test_lock_acquire_failure_does_not_bind_cron_cwd(self, tmp_path, monkeypatch):
+        import cron.scheduler as sched
+        from agent.runtime_cwd import resolve_session_cwd, set_session_cwd
+
+        outer_cwd = tmp_path / "outer"
+        cron_cwd = tmp_path / "cron"
+        outer_cwd.mkdir()
+        cron_cwd.mkdir()
+        observed: dict = {}
+        self._install_stubs(monkeypatch, observed)
+        outer_token = set_session_cwd(str(outer_cwd))
+        monkeypatch.setattr(
+            sched._terminal_cwd_lock,
+            "acquire_write",
+            lambda: (_ for _ in ()).throw(RuntimeError("lock interrupted")),
+        )
+        try:
+            with pytest.raises(RuntimeError, match="lock interrupted"):
+                sched.run_job(
+                    {
+                        "id": "lock-failure",
+                        "name": "lock-failure-job",
+                        "workdir": str(cron_cwd),
+                        "schedule_display": "manual",
+                    }
+                )
+            assert resolve_session_cwd() == outer_cwd
+        finally:
+            outer_token.var.reset(outer_token)
+
+    def test_missing_workdir_fails_closed(self, tmp_path):
+        import cron.scheduler as sched
+
+        missing = tmp_path / "deleted-workspace"
+        success, _output, _response, error = sched.run_job(
+            {
+                "id": "missing-workdir",
+                "name": "missing-workdir-job",
+                "workdir": str(missing),
+                "schedule_display": "manual",
+            }
+        )
+
+        assert success is False
+        assert error is not None
+        assert str(missing) in error
+        assert "does not exist" in error
 
     def test_no_workdir_leaves_terminal_cwd_untouched(self, monkeypatch):
         """When workdir is absent, run_job must not touch TERMINAL_CWD at all —

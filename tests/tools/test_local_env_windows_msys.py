@@ -283,6 +283,54 @@ class TestExtractCwdFromOutputWindowsMsys:
 
         assert env.cwd == str(new_dir)
 
+    def test_command_result_survives_interleaved_shared_cwd_mutation(
+        self, monkeypatch, tmp_path
+    ):
+        """Normalization must use this command's marker, never shared self.cwd."""
+        original = tmp_path / "starting"
+        original.mkdir()
+        expected = tmp_path / "expected"
+        expected.mkdir()
+        foreign = tmp_path / "foreign"
+        foreign.mkdir()
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        with patch.object(
+            LocalEnvironment, "init_session", autospec=True, return_value=None
+        ):
+            env = LocalEnvironment(cwd=str(original), timeout=10)
+
+        base_extract = BaseEnvironment._extract_cwd_from_output
+
+        def extract_then_interleave(instance, result):
+            base_extract(instance, result)
+            # Deterministic interleaving: another command mutates the shared
+            # environment after this command's marker has been captured.
+            instance.cwd = str(foreign)
+
+        marker = env._cwd_marker
+        result = {
+            "output": f"x\n{marker}/c/right{marker}\n",
+            "returncode": 0,
+            "_hermes_previous_cwd": str(original),
+        }
+
+        def normalize(path):
+            return str(expected) if path == "/c/right" else str(foreign)
+
+        with (
+            patch.object(
+                BaseEnvironment,
+                "_extract_cwd_from_output",
+                new=extract_then_interleave,
+            ),
+            patch.object(local_mod, "_msys_to_windows_path", side_effect=normalize),
+        ):
+            env._extract_cwd_from_output(result)
+
+        assert result["cwd"] == str(expected)
+        assert env.cwd == str(expected)
+
 
 # ---------------------------------------------------------------------------
 # MSYS_NO_PATHCONV — native Windows command flags (#56700)

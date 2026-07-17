@@ -266,6 +266,31 @@ class TestResolveChildCwd(unittest.TestCase):
                         _resolve_child_cwd("project", "/tmp/staging", task_id=task_id), cded
                     )
 
+    def test_project_authoritative_context_beats_task_record(self):
+        import tempfile
+        from agent.runtime_cwd import (
+            reset_authoritative_session_cwd,
+            set_authoritative_session_cwd,
+        )
+        import tools.terminal_tool as terminal_tool
+
+        with tempfile.TemporaryDirectory() as cron_cwd, tempfile.TemporaryDirectory() as stale_cwd:
+            task_id = "default"
+            with patch.object(
+                terminal_tool,
+                "_session_cwd",
+                {task_id: stale_cwd},
+                create=False,
+            ):
+                tokens = set_authoritative_session_cwd(cron_cwd)
+                try:
+                    self.assertEqual(
+                        _resolve_child_cwd("project", "/tmp/staging", task_id=task_id),
+                        cron_cwd,
+                    )
+                finally:
+                    reset_authoritative_session_cwd(tokens)
+
     def test_project_stale_record_falls_through_to_override(self):
         """A recorded directory that no longer exists is skipped; the
         registered override is the next rung."""

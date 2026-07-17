@@ -27,6 +27,8 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     _should_parallelize_tool_batch,
 )
+from agent.prompt_builder import STEER_MARKER_OPEN
+from tools.budget_config import BudgetConfig
 
 
 def _tc(name="web_search", arguments="{}", call_id=None):
@@ -378,9 +380,8 @@ class TestSegmentedDispatchIntegration:
             assert "cancelled" in m["content"] or "skipped" in m["content"]
 
     def test_steer_lands_exactly_once_in_mixed_batch(self, agent):
-        """Steer is drained once (per-tool drains + one dispatcher-level
-        finalize) — the marker must appear exactly once across the batch,
-        never duplicated by segment boundaries."""
+        """The whole-batch finalizer drains steer once, so the marker cannot
+        be duplicated by segment boundaries."""
         calls = [
             _tc("web_search", '{"query":"a"}', call_id="s1"),
             _tc("web_search", '{"query":"b"}', call_id="s2"),
@@ -399,6 +400,80 @@ class TestSegmentedDispatchIntegration:
         contents = [m["content"] for m in messages]
         hits = [c for c in contents if "focus on the tests" in c]
         assert len(hits) == 1
+
+    @pytest.mark.parametrize(
+        ("calls", "expected_segment_kinds"),
+        [
+            (
+                [
+                    _tc("web_search", '{"query":"large"}', call_id="parallel-large"),
+                    _tc("web_search", '{"query":"small"}', call_id="parallel-small"),
+                ],
+                ["parallel"],
+            ),
+            (
+                [
+                    _tc("terminal", '{"command":"large"}', call_id="sequential-large"),
+                    _tc("terminal", '{"command":"small"}', call_id="sequential-small"),
+                ],
+                ["sequential"],
+            ),
+            (
+                [
+                    _tc("web_search", '{"query":"large"}', call_id="mixed-large"),
+                    _tc("web_search", '{"query":"small"}', call_id="mixed-search-small"),
+                    _tc("terminal", '{"command":"small"}', call_id="mixed-terminal-small"),
+                ],
+                ["parallel", "sequential"],
+            ),
+            (
+                [
+                    _tc("web_search", '{"query":"small"}', call_id="mixed-search-first-small"),
+                    _tc("web_search", '{"query":"small"}', call_id="mixed-search-second-small"),
+                    _tc("terminal", '{"command":"large"}', call_id="mixed-terminal-large"),
+                ],
+                ["parallel", "sequential"],
+            ),
+        ],
+        ids=["parallel", "sequential", "mixed-parallel-large", "mixed-sequential-large"],
+    )
+    def test_steer_survives_turn_budget_in_every_dispatch_path(
+        self, agent, calls, expected_segment_kinds
+    ):
+        """A steer must be appended after aggregate budgeting in direct
+        concurrent, direct sequential, and segmented mixed batches.
+
+        The large result forces ``enforce_turn_budget()`` to replace it.
+        Before the fix, the per-tool drain consumed the steer first, so that
+        replacement silently discarded the canonical marker.
+        """
+        messages = []
+        msg = SimpleNamespace(content="", tool_calls=calls)
+        budget = BudgetConfig(
+            default_result_size=10_000,
+            turn_budget=48,
+            preview_size=16,
+        )
+
+        assert _kinds(_plan_tool_batch_segments(calls)) == expected_segment_kinds
+
+        def fake_handle(name, args, task_id, **kwargs):
+            if kwargs["tool_call_id"].endswith("large"):
+                assert agent.steer("preserve this steer after budget enforcement")
+                return "L" * 1_000
+            return "small"
+
+        with (
+            patch("run_agent.handle_function_call", side_effect=fake_handle),
+            patch("agent.tool_executor._budget_for_agent", return_value=budget),
+        ):
+            agent._execute_tool_calls(msg, messages, "task-1")
+
+        large_result_index = next(i for i, call in enumerate(calls) if call.id.endswith("large"))
+        assert "Truncated:" in messages[large_result_index]["content"]
+        steer_messages = [m for m in messages if STEER_MARKER_OPEN in m["content"]]
+        assert steer_messages == [messages[-1]]
+        assert "preserve this steer after budget enforcement" in steer_messages[0]["content"]
 
 
 class TestPathCanonicalization:

@@ -1005,12 +1005,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             stage=f"tool result {name}",
         )
 
-        # ── Per-tool /steer drain ───────────────────────────────────
-        # Same as the sequential path: drain between each collected
-        # result so the steer lands as early as possible.
-        agent._apply_pending_steer_to_tool_results(messages, 1)
-
     # ── Per-turn aggregate budget enforcement ─────────────────────────
+    # Keep /steer pending until the final post-budget drain below.  The model
+    # cannot observe a partial batch, while an early drain can be discarded
+    # when aggregate budget enforcement replaces that tool result.
     num_tools = len(parsed_calls)
     if finalize and num_tools > 0:
         turn_tool_msgs = messages[-num_tools:]
@@ -1075,7 +1073,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 messages,
                 stage=f"invalid tool arguments {function_name}",
             )
-            agent._apply_pending_steer_to_tool_results(messages, 1)
             continue
 
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
@@ -1689,12 +1686,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             stage=f"tool result {function_name}",
         )
 
-        # ── Per-tool /steer drain ───────────────────────────────────
-        # Drain pending steer BETWEEN individual tool calls so the
-        # injection lands as soon as a tool finishes — not after the
-        # entire batch.  The model sees it on the next API iteration.
-        agent._apply_pending_steer_to_tool_results(messages, 1)
-
         if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
             if agent.verbose_logging:
                 print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
@@ -1726,6 +1717,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             time.sleep(agent.tool_delay)
 
     # ── Per-turn aggregate budget enforcement ─────────────────────────
+    # Keep /steer pending until the final post-budget drain below.  The model
+    # only receives this batch after all calls finish, and an early drain can
+    # be discarded when aggregate budget enforcement replaces a tool result.
     num_tools_seq = len(assistant_message.tool_calls)
     if finalize and num_tools_seq > 0:
         enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)

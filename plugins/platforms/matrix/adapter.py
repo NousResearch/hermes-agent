@@ -960,8 +960,6 @@ class MatrixAdapter(BasePlatformAdapter):
             "✅": "once",
             "♾️": "always",
             "♾": "always",
-            "\u267e\ufe0f": "always",
-            "\u267e": "always",
             "❌": "deny",
             "❎": "deny",
         }

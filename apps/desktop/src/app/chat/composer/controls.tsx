@@ -10,7 +10,8 @@ import { cn } from '@/lib/utils'
 
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
-import type { ChatBarState, VoiceStatus } from './types'
+import { ReasoningPill } from './reasoning-pill'
+import type { ChatBarProps, ChatBarState, VoiceStatus } from './types'
 
 export const ICON_BTN = 'size-(--composer-control-size) shrink-0 rounded-md'
 export const GHOST_ICON_BTN = cn(
@@ -44,9 +45,10 @@ export function ComposerControls({
   busyAction,
   canSteer,
   canSubmit,
-  compactModelPill = false,
+  compactControls = false,
   conversation,
   disabled,
+  gateway,
   hasComposerPayload,
   state,
   voiceStatus,
@@ -59,9 +61,15 @@ export function ComposerControls({
   busyAction: 'queue' | 'stop'
   canSteer: boolean
   canSubmit: boolean
-  compactModelPill?: boolean
+  /** Pop-out / floating composer mode — both pills render as a square
+   *  chevron-only button. Matches the prop forwarded to `ModelPill` and
+   *  `ReasoningPill`. */
+  compactControls?: boolean
   conversation: ConversationProps
   disabled: boolean
+  /** Gateway for the reasoning pill's `config.set` RPC. `null` is treated as
+   *  "no live transport" — preset/atom still update, RPC is skipped. */
+  gateway: ChatBarProps['gateway']
   hasComposerPayload: boolean
   state: ChatBarState
   voiceStatus: VoiceStatus
@@ -89,7 +97,13 @@ export function ComposerControls({
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
-      <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
+      <ModelPill compact={compactControls} disabled={disabled} model={state.model} />
+      <ReasoningPill
+        compact={compactControls}
+        disabled={disabled}
+        gateway={gateway}
+        reasoningCapable={state.model.reasoningCapable}
+      />
       {/* While the agent runs and the user is typing, steer takes over the mic's
           slot rather than crowding the row with an extra button. */}
       {canSteer ? (

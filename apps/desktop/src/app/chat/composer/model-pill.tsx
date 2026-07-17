@@ -8,15 +8,9 @@ import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
-import { formatModelStatusLabel } from '@/lib/model-status-label'
+import { formatModelPillLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
-import {
-  $currentFastMode,
-  $currentModel,
-  $currentProvider,
-  $currentReasoningEffort,
-  setModelPickerOpen
-} from '@/store/session'
+import { $currentFastMode, $currentModel, $currentProvider, setModelPickerOpen } from '@/store/session'
 
 import type { ChatBarState } from './types'
 
@@ -43,7 +37,6 @@ export function ModelPill({
   const currentModel = useStore($currentModel)
   const currentProvider = useStore($currentProvider)
   const fastMode = useStore($currentFastMode)
-  const reasoningEffort = useStore($currentReasoningEffort)
   const [open, setOpen] = useState(false)
 
   // The model resolves a beat after the gateway/session comes up. Rather than
@@ -54,7 +47,7 @@ export function ModelPill({
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">{formatModelStatusLabel(currentModel, { fastMode, reasoningEffort })}</span>
+        <span className="truncate">{formatModelPillLabel(currentModel, { fastMode })}</span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}

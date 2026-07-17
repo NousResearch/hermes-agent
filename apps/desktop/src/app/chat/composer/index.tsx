@@ -705,7 +705,7 @@ export function ChatBar({
       busyAction={busyAction}
       canSteer={canSteer}
       canSubmit={canSubmit}
-      compactModelPill={poppedOut || compactPill}
+      compactControls={poppedOut}
       conversation={{
         active: voiceConversationActive,
         level: conversation.level,
@@ -717,6 +717,7 @@ export function ChatBar({
         status: conversation.status
       }}
       disabled={disabled}
+      gateway={gateway}
       hasComposerPayload={hasComposerPayload}
       onDictate={dictate}
       onSteer={steerDraft}

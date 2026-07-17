@@ -5123,7 +5123,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "queue"
         if mode == "steer":
             return "steer"
+        if mode == "reject":
+            return "reject"
         return "interrupt"
+
+    @staticmethod
+    def _busy_ack_enabled() -> bool:
+        """Return whether visible busy acknowledgments are enabled."""
+        return os.environ.get(
+            "HERMES_GATEWAY_BUSY_ACK_ENABLED", "true"
+        ).lower() == "true"
+
+    @staticmethod
+    def _busy_reject_message(status_detail: str = "") -> str:
+        """Build the deterministic notice for discarded busy input."""
+        return (
+            f"⏳ Hermes is still working on the current turn{status_detail}. "
+            "This message was not accepted. "
+            "Please resend it after the current response finishes."
+        )
 
     @staticmethod
     def _load_busy_text_mode() -> str:
@@ -5133,8 +5151,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``interrupt``). The legacy ``busy_text_mode`` knob is honored only
         when a user explicitly set it, so existing queue setups keep
         working; new installs follow ``busy_input_mode``. Returns one of
-        ``interrupt`` | ``queue`` (``steer`` is handled upstream by
-        ``busy_input_mode`` and maps to non-queue text handling here).
+        ``interrupt`` | ``queue`` (``steer`` and ``reject`` are handled upstream
+        by ``busy_input_mode`` and map to non-queue text handling here).
         """
         # Legacy explicit override wins for backward compat.
         legacy = os.getenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "").strip().lower()
@@ -5653,7 +5671,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
-            and effective_mode != "steer"
+            and effective_mode not in {"steer", "reject"}
         ):
             return False
 
@@ -5710,9 +5728,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
 
-        # Store the message so it's processed as the next turn after the
-        # current run finishes (or is interrupted).  Skip this for a
-        # successful steer — the text already landed inside the run and
+        # Store accepted follow-up input for the next turn after the current
+        # run finishes (or is interrupted). Skip this for reject mode and for a
+        # successful steer, where the text already landed inside the run and
         # must NOT also be replayed as a next-turn user message.
         #
         # Route through _queue_or_replace_pending_event (the same FIFO
@@ -5725,36 +5743,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # turn (#43066 sub-bug 2). The FIFO path gives each text its own
         # turn in arrival order while still preserving photo-burst / album
         # merge semantics for media.
-        if not steered:
+        is_reject_mode = effective_mode == "reject"
+        if not steered and not is_reject_mode:
             self._queue_or_replace_pending_event(session_key, event)
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
 
-        # If not in queue/steer mode, interrupt the running agent immediately.
-        # This aborts in-flight tool calls and causes the agent loop to exit
-        # at the next check point.
+        # Interrupt mode aborts the running agent immediately. This aborts
+        # in-flight tool calls and causes the agent loop to exit at the next
+        # check point. Reject mode deliberately leaves it unchanged.
         if effective_mode == "interrupt" and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             try:
                 running_agent.interrupt(event.text)
             except Exception:
                 pass  # don't let interrupt failure block the ack
 
-        # Check if busy ack is disabled — skip sending but still process the input.
+        # Check if busy ack is disabled — skip sending but still apply the mode.
         # Placed before debounce so we don't stamp a "last ack" timestamp that was
         # never actually delivered.
-        busy_ack_enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
+        busy_ack_enabled = self._busy_ack_enabled()
         if not busy_ack_enabled:
             logger.debug("Busy ack suppressed for session %s", session_key)
-            return True  # input still processed, just no ack sent
+            return True  # policy applied, just no ack sent
 
         # Debounce before consulting config-heavy display settings. Rapid
-        # follow-ups should be processed but should not trigger another config
-        # read just to discover that no ack will be sent.
+        # follow-ups should have their policy applied without triggering another
+        # config read just to discover that no ack will be sent.
         _BUSY_ACK_COOLDOWN = 30
         now = time.time()
         last_ack = self._busy_ack_ts.get(session_key, 0)
-        if now - last_ack < _BUSY_ACK_COOLDOWN:
+        if not is_reject_mode and now - last_ack < _BUSY_ACK_COOLDOWN:
             return True  # interrupt sent (if not queue), ack already delivered recently
 
         from gateway.display_config import resolve_display_setting
@@ -5815,7 +5834,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        if is_steer_mode:
+        if is_reject_mode:
+            message = self._busy_reject_message(status_detail)
+        elif is_steer_mode:
             message = (
                 f"⏩ Steered into current run{status_detail}. "
                 f"Your message arrives after the next tool call."
@@ -5856,7 +5877,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 mark_seen,
             )
             _user_cfg = _load_gateway_config()
-            if not is_seen(_user_cfg, BUSY_INPUT_FLAG):
+            if not is_reject_mode and not is_seen(_user_cfg, BUSY_INPUT_FLAG):
                 if is_steer_mode:
                     _hint_mode = "steer"
                 elif is_queue_mode:
@@ -9875,6 +9896,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
                     f"mid-turn. Wait for the current response or `/stop` first."
                 )
+
+            if not is_internal and self._busy_input_mode == "reject":
+                logger.debug("PRIORITY reject follow-up for session %s", _quick_key)
+                if not self._busy_ack_enabled():
+                    return None
+                return self._busy_reject_message()
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)

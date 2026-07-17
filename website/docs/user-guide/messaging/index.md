@@ -316,22 +316,23 @@ Send any message while the agent is working to interrupt it. Key behaviors:
 - **Multiple messages are combined** — messages sent during interruption are joined into one prompt
 - **`/stop` command** — interrupts without queuing a follow-up message
 
-### Queue vs interrupt vs steer (busy-input mode)
+### Queue vs interrupt vs steer vs reject (busy-input mode)
 
-By default, messaging a busy agent interrupts it. Two other modes are available:
+By default, messaging a busy agent interrupts it. Three other modes are available:
 
 - `queue` — follow-up messages wait and run as the next turn after the current task finishes.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
+- `reject` — ordinary follow-up input is discarded while the current turn continues unchanged. Hermes sends an explicit notice telling the user to resend after the response finishes. Slash commands keep their existing mid-turn behavior.
 
 ```yaml
 display:
-  busy_input_mode: steer   # or queue, or interrupt (default)
+  busy_input_mode: reject  # or steer, queue, or interrupt (default)
   busy_ack_enabled: true   # set to false to suppress the ⚡/⏳/⏩ chat reply entirely
 ```
 
-The first time you message a busy agent on any platform, Hermes appends a one-line reminder to the busy-ack explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
+For `queue`, `steer`, and `interrupt`, the first busy message appends a one-line reminder explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again. `reject` uses its explicit refusal notice without consuming this onboarding flag.
 
-If you find the busy-ack noisy — especially with voice input or rapid-fire messages — set `display.busy_ack_enabled: false`. Your input is still queued/steered/interrupts as normal, only the chat reply is silenced.
+If you find the busy-ack noisy — especially with voice input or rapid-fire messages — set `display.busy_ack_enabled: false`. In `queue`, `steer`, and `interrupt` modes, only the chat reply is silenced. In `reject` mode, input is still discarded, so disabling the acknowledgment removes the user's confirmation that it was refused.
 
 ## Tool Progress Notifications
 

@@ -1043,6 +1043,12 @@ export interface MemoryContentResponse {
   user: string
 }
 
+/** `POST /api/memory/content` — request body for updating memory files. */
+export interface MemoryContentUpdate {
+  memory: string
+  user: string
+}
+
 /** `GET /api/curator` — background skill-curator status. */
 export interface CuratorStatusResponse {
   enabled: boolean

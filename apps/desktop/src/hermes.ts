@@ -23,6 +23,7 @@ import type {
   McpCatalogResponse,
   McpServerSummary,
   MemoryContentResponse,
+  MemoryContentUpdate,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
   MemoryStatusResponse,
@@ -1275,6 +1276,16 @@ export function getMemoryContent(): Promise<MemoryContentResponse> {
     path: '/api/memory/content'
   })
 }
+
+export function saveMemoryContent(body: MemoryContentUpdate): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    method: 'POST',
+    path: '/api/memory/content',
+    body
+  })
+}
+
 
 export function getCuratorStatus(): Promise<CuratorStatusResponse> {
   return window.hermesDesktop.api<CuratorStatusResponse>({

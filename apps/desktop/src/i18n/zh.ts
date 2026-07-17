@@ -1162,7 +1162,12 @@ export const zh: Translations = {
     emptyTitle: '暂无内容',
     memoryEmpty: '代理尚未创建任何记忆。在对话中代理会自动积累经验。',
     userEmpty: '尚未建立用户档案。代理会在对话中逐步了解你的偏好。',
-    entryCount: count => `${count} 条记录`
+    entryCount: count => `${count} 条记录`,
+    edit: '编辑',
+    save: '保存',
+    saving: '保存中…',
+    cancel: '取消',
+    discardConfirm: '有未保存的更改，确定要放弃吗？'
   },
   agents: {
     close: '关闭代理',

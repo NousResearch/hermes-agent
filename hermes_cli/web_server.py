@@ -884,6 +884,11 @@ class MemoryProviderConfigUpdate(BaseModel):
     values: Dict[str, Any] = {}
 
 
+class MemoryContentUpdate(BaseModel):
+    memory: str = ""
+    user: str = ""
+
+
 class MemoryProviderSetupRequest(BaseModel):
     values: Dict[str, Any] = {}
 
@@ -12217,6 +12222,25 @@ async def get_memory_content():
         else:
             result[key] = ""
     return result
+
+
+@app.post("/api/memory/content")
+async def update_memory_content(body: MemoryContentUpdate):
+    """Write updated text content to the built-in MEMORY.md and USER.md files.
+
+    Files are created if they do not already exist. Empty strings are written
+    as empty files rather than deleting them, so the UI can clear content
+    without changing the memory layout.
+    """
+    mem_dir = get_hermes_home() / "memories"
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    for fname, key in (("MEMORY.md", "memory"), ("USER.md", "user")):
+        path = mem_dir / fname
+        try:
+            path.write_text(getattr(body, key), encoding="utf-8")
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to write {fname}: {exc}") from exc
+    return {"ok": True}
 
 
 @app.put("/api/memory/provider")

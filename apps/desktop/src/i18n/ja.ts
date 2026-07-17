@@ -943,7 +943,12 @@ export const ja = defineLocale({
     emptyTitle: 'まだ内容はありません',
     memoryEmpty: 'エージェントはまだメモリを作成していません。会話を通じて自動的に蓄積されます。',
     userEmpty: 'ユーザープロファイルはまだありません。エージェントは会話を通じてあなたの好みを学習します。',
-    entryCount: count => `${count} 件`
+    entryCount: count => `${count} 件`,
+    edit: '編集',
+    save: '保存',
+    saving: '保存中…',
+    cancel: 'キャンセル',
+    discardConfirm: '保存していない変更があります。破棄しますか？'
   },
   agents: {
     close: 'エージェントを閉じる',

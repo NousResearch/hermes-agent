@@ -859,6 +859,11 @@ export interface Translations {
     memoryEmpty: string
     userEmpty: string
     entryCount: (count: number) => string
+    edit: string
+    save: string
+    saving: string
+    cancel: string
+    discardConfirm: string
   }
   agents: {
     close: string

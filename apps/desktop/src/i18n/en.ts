@@ -980,7 +980,12 @@ export const en: Translations = {
     emptyTitle: 'No content yet',
     memoryEmpty: 'The agent has not created any memories. Memories accumulate as you chat.',
     userEmpty: 'No user profile yet. The agent learns your preferences over time.',
-    entryCount: count => `${count} ${count === 1 ? 'entry' : 'entries'}`
+    entryCount: count => `${count} ${count === 1 ? 'entry' : 'entries'}`,
+    edit: 'Edit',
+    save: 'Save',
+    saving: 'Saving…',
+    cancel: 'Cancel',
+    discardConfirm: 'You have unsaved changes. Discard them?'
   },
   agents: {
     close: 'Close agents',

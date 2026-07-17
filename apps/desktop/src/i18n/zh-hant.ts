@@ -915,7 +915,12 @@ export const zhHant = defineLocale({
     emptyTitle: '暫無內容',
     memoryEmpty: '代理尚未建立任何記憶。在對話中代理會自動累積經驗。',
     userEmpty: '尚未建立使用者檔案。代理會在對話中逐步了解你的偏好。',
-    entryCount: count => `${count} 筆記錄`
+    entryCount: count => `${count} 筆記錄`,
+    edit: '編輯',
+    save: '儲存',
+    saving: '儲存中…',
+    cancel: '取消',
+    discardConfirm: '有未儲存的變更，確定要放棄嗎？'
   },
   agents: {
     close: '關閉代理',

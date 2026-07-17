@@ -31,7 +31,8 @@ Usage:
     a literal ``--`` is also passed through, and stacks with bare flags.
 
 Environment:
-    HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
+    HERMES_TEST_WORKERS  Override worker count (default: cpu_count*2, capped
+                         to the process's RLIMIT_NOFILE budget)
     HERMES_TEST_PATHS    Override discovery roots (colon-sep, default: 'tests')
 
 Exit code: 0 if every file's pytest exited 0; 1 otherwise.
@@ -89,6 +90,39 @@ _DEFAULT_FILE_TIMEOUT_SECONDS = 300.0
 # wall-clock seconds. Used by ``--slice`` to distribute files across
 # CI jobs by estimated total time, so no one job gets all the slow files.
 _DURATIONS_FILE = "test_durations.json"
+
+# Conservative per-worker file-descriptor allowance used to cap the default
+# worker count against RLIMIT_NOFILE. Each worker is a full pytest subprocess
+# whose fixtures (tempfile dirs, asyncio event loops, aiohttp test sockets)
+# can hold several dozen fds at once; 64 leaves headroom under common soft
+# limits (e.g. macOS default 256) while still permitting real parallelism.
+_FD_BUDGET_PER_WORKER = 64
+
+
+def _default_worker_count() -> int:
+    """Default parallel worker count: cpu_count*2, capped to the process's
+    file-descriptor budget.
+
+    macOS defaults to a soft RLIMIT_NOFILE of 256, far below cpu_count*2 on
+    a many-core box. Running the full suite at an uncapped worker count can
+    exhaust descriptors mid-run (``OSError: [Errno 24] Too many open
+    files``), which then surfaces as unrelated collection/test failures
+    instead of a clear infrastructure signal. This doesn't fix descriptor
+    leaks within a single file's test run — it only keeps the *default*
+    worker count from making exhaustion more likely than necessary.
+    """
+    cpu_based = (os.cpu_count() or 4) * 2
+    try:
+        import resource
+
+        soft_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ImportError, AttributeError, ValueError, OSError):
+        # No RLIMIT_NOFILE concept (e.g. Windows) — fall back to cpu-based.
+        return cpu_based
+    if soft_limit <= 0:
+        return cpu_based
+    fd_capped = max(1, soft_limit // _FD_BUDGET_PER_WORKER)
+    return max(1, min(cpu_based, fd_capped))
 
 
 def _approximately_count_tests(
@@ -599,8 +633,11 @@ def main() -> int:
         "-j",
         "--jobs",
         type=int,
-        default=int(os.environ.get("HERMES_TEST_WORKERS") or (os.cpu_count() or 4) * 2),
-        help="Parallel worker count (default: $HERMES_TEST_WORKERS or cpu_count*2)",
+        default=int(os.environ.get("HERMES_TEST_WORKERS") or _default_worker_count()),
+        help=(
+            "Parallel worker count (default: $HERMES_TEST_WORKERS or "
+            "cpu_count*2, capped to the process's file-descriptor budget)"
+        ),
     )
     parser.add_argument(
         "--paths",

@@ -20,6 +20,7 @@ POSIX-only: Windows has its own grandchild lifecycle (no shared session,
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -29,6 +30,57 @@ import time
 from pathlib import Path
 
 import pytest
+
+
+def _load_runner_module():
+    repo_root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "run_tests_parallel", repo_root / "scripts" / "run_tests_parallel.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="RLIMIT_NOFILE is POSIX-only")
+def test_default_worker_count_capped_by_fd_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A low RLIMIT_NOFILE soft limit caps the default worker count.
+
+    Regression test for #65219: on a box with a low descriptor budget
+    (e.g. macOS's default 256), cpu_count*2 workers can exhaust file
+    descriptors mid-suite. The default should shrink to fit the budget
+    instead of blindly scaling with CPU count.
+    """
+    import resource
+
+    module = _load_runner_module()
+    monkeypatch.setattr(os, "cpu_count", lambda: 10)
+
+    original = resource.getrlimit(resource.RLIMIT_NOFILE)
+    monkeypatch.setattr(
+        resource, "getrlimit",
+        lambda which: (256, original[1]) if which == resource.RLIMIT_NOFILE else original,
+    )
+    # 256 // 64 (fd budget per worker) == 4, well under cpu_count*2 == 20.
+    assert module._default_worker_count() == 4
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="RLIMIT_NOFILE is POSIX-only")
+def test_default_worker_count_not_capped_when_fd_budget_is_generous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A high RLIMIT_NOFILE soft limit leaves cpu_count*2 unaffected."""
+    import resource
+
+    module = _load_runner_module()
+    monkeypatch.setattr(os, "cpu_count", lambda: 4)
+
+    original = resource.getrlimit(resource.RLIMIT_NOFILE)
+    monkeypatch.setattr(
+        resource, "getrlimit",
+        lambda which: (65536, original[1]) if which == resource.RLIMIT_NOFILE else original,
+    )
+    assert module._default_worker_count() == 8
 
 
 # Both tests share the same handoff file: the leaker writes here, the

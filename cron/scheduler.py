@@ -2155,15 +2155,19 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     try:
         from tools.environments.local import _sanitize_subprocess_env
 
-        popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+        popen_kwargs = {}
+        if sys.platform == "win32":
+            popen_kwargs = {
+                "creationflags": windows_hide_flags(),
+                "encoding": "utf-8",
+                "errors": "replace",
+            }
         env = _sanitize_subprocess_env(os.environ.copy())
         env.update(env_overlay)
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=script_timeout,
             cwd=str(path.parent),
             env=env,

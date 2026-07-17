@@ -21,6 +21,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from hermes_cli.main import (
+    _finish_dashboard_update_cleanup,
     _find_stale_dashboard_pids,
     _kill_stale_dashboard_processes,
     _warn_stale_dashboard_processes,  # back-compat alias
@@ -45,6 +46,7 @@ def _refresh_bindings_against_live_module():
     ordering within the worker.  The fix lives in the test module because
     the two pollutants above are load-bearing for their own tests.
     """
+    global _finish_dashboard_update_cleanup
     global _find_stale_dashboard_pids
     global _kill_stale_dashboard_processes
     global _warn_stale_dashboard_processes
@@ -53,6 +55,7 @@ def _refresh_bindings_against_live_module():
     if live is None:
         live = importlib.import_module("hermes_cli.main")
 
+    _finish_dashboard_update_cleanup = live._finish_dashboard_update_cleanup
     _find_stale_dashboard_pids = live._find_stale_dashboard_pids
     _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
     _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
@@ -234,8 +237,9 @@ class TestKillStaleDashboardPosix:
 
     def test_no_stale_processes_is_a_noop(self, capsys):
         with patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[]):
-            _kill_stale_dashboard_processes()
+            result = _kill_stale_dashboard_processes()
         assert capsys.readouterr().out == ""
+        assert result == {"matched": [], "killed": [], "failed": []}
 
     def test_sigterm_graceful_exit(self, capsys):
         """Processes that exit on SIGTERM (the probe gets ProcessLookupError)
@@ -255,13 +259,16 @@ class TestKillStaleDashboardPosix:
                    return_value=[12345, 12346]), \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
-            _kill_stale_dashboard_processes()
+            result = _kill_stale_dashboard_processes()
 
         # Both got SIGTERM.
         sigterms = [pid for pid, sig in killed_signals if sig == _signal.SIGTERM]
         assert sorted(sigterms) == [12345, 12346]
         # No SIGKILL was needed.
         assert not any(sig == _signal.SIGKILL for _, sig in killed_signals)
+        assert result["matched"] == [12345, 12346]
+        assert result["killed"] == [12345, 12346]
+        assert result["failed"] == []
 
         out = capsys.readouterr().out
         assert "Stopping 2 dashboard" in out
@@ -384,6 +391,30 @@ class TestBackCompatAlias:
 
     def test_alias_is_the_kill_function(self):
         assert _warn_stale_dashboard_processes is _kill_stale_dashboard_processes
+
+
+class TestDashboardUpdateCleanup:
+    """The git and Windows ZIP update paths share this final cleanup."""
+
+    def test_all_failed_stops_do_not_claim_the_dashboard_was_stopped(self, capsys):
+        with patch(
+            "hermes_cli.main._kill_stale_dashboard_processes",
+            return_value={"matched": [12345], "killed": [], "failed": [(12345, "denied")]},
+        ):
+            _finish_dashboard_update_cleanup([])
+
+        assert "web dashboard server was stopped" not in capsys.readouterr().out
+
+    def test_successful_stop_prints_shared_update_notice(self, capsys):
+        with patch(
+            "hermes_cli.main._kill_stale_dashboard_processes",
+            return_value={"matched": [12345], "killed": [12345], "failed": []},
+        ):
+            _finish_dashboard_update_cleanup([])
+
+        out = capsys.readouterr().out
+        assert "web dashboard server was stopped during update" in out
+        assert "hermes dashboard --port <port>" in out
 
 
 class TestWindowsWmicEncoding:

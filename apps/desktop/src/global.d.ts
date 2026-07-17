@@ -55,6 +55,10 @@ declare global {
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
+      gatewayTunnel: {
+        activate: () => Promise<DesktopGatewayTunnelResult>
+        deactivate: () => Promise<DesktopGatewayTunnelResult>
+      }
       // Hermes Cloud: one portal login powers discovery + silent per-agent
       // sign-in (cloud-auto-discovery Phase 3).
       cloud: {
@@ -412,6 +416,12 @@ export interface DesktopActiveProfile {
   // The desktop's stored profile preference, or null when unset (legacy launch
   // that defers to the sticky active_profile / default).
   profile: string | null
+}
+
+export interface DesktopGatewayTunnelResult {
+  active: boolean
+  output: string
+  url: string
 }
 
 export interface DesktopConnectionConfig {

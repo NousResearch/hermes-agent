@@ -29,8 +29,10 @@ export interface DesktopThemeCommandOption {
  * keyed by the id.
  */
 export type DesktopActionId =
+  | 'activate-gateway'
   | 'branch'
   | 'browser'
+  | 'deactivate-gateway'
   | 'handoff'
   | 'hatch'
   | 'help'
@@ -107,6 +109,16 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: action('branch')
   },
   { name: '/yolo', description: 'Toggle YOLO — auto-approve dangerous commands', surface: action('yolo') },
+  {
+    name: '/activate-gateway',
+    description: 'Start the Azure tunnel and connect this app to the remote gateway',
+    surface: action('activate-gateway')
+  },
+  {
+    name: '/deactivate-gateway',
+    description: 'Return to the local gateway and stop the managed Azure tunnel',
+    surface: action('deactivate-gateway')
+  },
   {
     name: '/handoff',
     description: 'Hand off this session to a messaging platform',

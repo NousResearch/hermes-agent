@@ -54,7 +54,7 @@ import {
   resolveTestWsUrl,
   tokenPreview
 } from './connection-config'
-import { adoptServedDashboardToken } from './dashboard-token'
+import { adoptServedDashboardToken, resolveServedDashboardToken } from './dashboard-token'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -66,6 +66,7 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
+import { createGatewayTunnelCleanup, createGatewayTunnelManager } from './gateway-tunnel'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -382,6 +383,20 @@ const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.hermes-bootstr
 const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
+const GATEWAY_TUNNEL_SCRIPT_PATH = path.join(HERMES_HOME, 'mcp-workspaces', 'gateway', 'hermes-tunnel.sh')
+const GATEWAY_TUNNEL_MARKER_PATH = path.join(app.getPath('userData'), 'managed-gateway-tunnel.json')
+
+const gatewayTunnel = createGatewayTunnelManager({
+  markerPath: GATEWAY_TUNNEL_MARKER_PATH,
+  scriptPath: GATEWAY_TUNNEL_SCRIPT_PATH
+})
+
+const cleanupManagedGatewayTunnel = createGatewayTunnelCleanup({
+  manager: gatewayTunnel,
+  onError: error => rememberLog(`[gateway-tunnel] cleanup failed: ${String(error)}`),
+  writeLocalConfig: () => writeDesktopConnectionConfig(coerceDesktopConnectionConfig({ mode: 'local' }))
+})
+
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
 // active-profile.json records which Hermes profile the desktop launches its
@@ -7330,7 +7345,10 @@ function createWindow() {
   mainWindow.on('moved', schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  mainWindow.on('close', () => {
+    schedulePersistWindowState.flush()
+    cleanupManagedGatewayTunnel()
+  })
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   const createdMainWindow = mainWindow
@@ -7759,6 +7777,70 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   }
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
+})
+
+ipcMain.handle('hermes:gateway-tunnel:activate', async () => {
+  if (process.env.HERMES_DESKTOP_REMOTE_URL) {
+    throw new Error('HERMES_DESKTOP_REMOTE_URL overrides desktop gateway settings; unset it before using /activate-gateway.')
+  }
+
+  const result = gatewayTunnel.activate()
+  let payload
+
+  try {
+    const probe = await probeRemoteAuthMode(result.url)
+
+    if (probe.authMode === 'oauth') {
+      payload = {
+        mode: 'remote',
+        remoteAuthMode: 'oauth',
+        remoteUrl: result.url
+      }
+    } else {
+      const remoteToken = await resolveServedDashboardToken(result.url, null, { rememberLog })
+
+      if (!remoteToken) {
+        throw new Error('Le dashboard distant ne fournit aucun token de session.')
+      }
+
+      payload = {
+        mode: 'remote',
+        remoteAuthMode: 'token',
+        remoteToken,
+        remoteUrl: result.url
+      }
+    }
+
+    await testDesktopConnectionConfig(payload)
+    const config = coerceDesktopConnectionConfig(payload)
+    writeDesktopConnectionConfig(config)
+    await teardownPrimaryBackendAndWait({ soft: true })
+    sendConnectionApplied()
+
+    return result
+  } catch (error) {
+    try {
+      gatewayTunnel.deactivate()
+    } catch (cleanupError) {
+      rememberLog(`Gateway tunnel cleanup after failed activation: ${String(cleanupError)}`)
+    }
+
+    throw error
+  }
+})
+
+ipcMain.handle('hermes:gateway-tunnel:deactivate', async () => {
+  if (process.env.HERMES_DESKTOP_REMOTE_URL) {
+    throw new Error('HERMES_DESKTOP_REMOTE_URL overrides desktop gateway settings; unset it before using /deactivate-gateway.')
+  }
+
+  const config = coerceDesktopConnectionConfig({ mode: 'local' })
+  writeDesktopConnectionConfig(config)
+  await teardownPrimaryBackendAndWait({ soft: true })
+  const result = gatewayTunnel.deactivate()
+  sendConnectionApplied()
+
+  return result
 })
 
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
@@ -9149,6 +9231,9 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  // Recover a managed tunnel left by a crash or force-quit.
+  cleanupManagedGatewayTunnel()
+
   if (IS_MAC) {
     Menu.setApplicationMenu(buildApplicationMenu())
   } else {
@@ -9207,6 +9292,9 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  // Electron does not await arbitrary async quit handlers; cleanup is synchronous.
+  cleanupManagedGatewayTunnel()
+
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()

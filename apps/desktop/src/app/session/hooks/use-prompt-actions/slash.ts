@@ -237,6 +237,24 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         branch: async () => {
           await branchCurrentSession()
         },
+        'activate-gateway': async () => {
+          notify({ kind: 'success', message: 'Démarrage du tunnel Hermes Cloud…' })
+
+          try {
+            const result = await window.hermesDesktop.gatewayTunnel.activate()
+            notify({ kind: 'success', message: `Gateway distante activée via ${result.url}` })
+          } catch (err) {
+            notifyError(err, "Impossible d'activer la gateway distante")
+          }
+        },
+        'deactivate-gateway': async () => {
+          try {
+            await window.hermesDesktop.gatewayTunnel.deactivate()
+            notify({ kind: 'success', message: 'Gateway locale réactivée et tunnel arrêté.' })
+          } catch (err) {
+            notifyError(err, "Impossible d'arrêter le tunnel de gateway")
+          }
+        },
         // /yolo maps to the status-bar YOLO control — a per-session approval
         // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
         // it locally; the session-create path applies it on the first message.

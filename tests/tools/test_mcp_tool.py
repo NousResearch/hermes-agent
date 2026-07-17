@@ -1429,6 +1429,35 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    def test_parked_shutdown_on_no_current_event_loop_does_not_raise(self):
+        """If the event loop is already gone (no current loop in the thread),
+        the parked cleanup must return 'shutdown' instead of re-raising
+        asyncio.get_event_loop()'s 'no current event loop' error (#65111).
+
+        This is the failure mode seen when one Hermes session closes and the
+        loop is torn down before the parked _wait_for_reconnect_or_shutdown
+        finally-block runs.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("srv")
+
+            real_get = asyncio.get_event_loop
+
+            def _raises_no_loop():
+                raise RuntimeError("no current event loop in thread 'MainThread'")
+
+            asyncio.get_event_loop = _raises_no_loop  # type: ignore[assignment]
+            try:
+                reason = await server._wait_for_reconnect_or_shutdown(timeout=0.01)
+            finally:
+                asyncio.get_event_loop = real_get  # type: ignore[assignment]
+
+            assert reason == "shutdown"
+
+        asyncio.run(_test())
+
 
 # ---------------------------------------------------------------------------
 # discover_mcp_tools toolset injection

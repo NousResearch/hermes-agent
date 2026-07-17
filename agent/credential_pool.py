@@ -2169,7 +2169,6 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     def _get_env_prefer_dotenv(key: str) -> str:
         env_file = load_env()
         raw = env_file.get(key, "").strip()
-        env_val = os.environ.get(key, "").strip()
         # If .env contains an unresolved op:// reference, prefer the
         # already-resolved value from os.environ (set by
         # load_hermes_dotenv() -> apply_onepassword_secrets()).  The raw
@@ -2177,11 +2176,16 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         # provider auth attempt would receive a URL instead of a key.  This
         # happens during a partial migration, or when the user wrote op://
         # references straight into .env rather than the secrets.onepassword
-        # config block.  For every non-op:// value the original
-        # .env-takes-precedence behaviour is preserved unchanged.
-        if raw.startswith("op://") and env_val:
-            return env_val
-        return raw or _get_secret(key, "") or env_val
+        # config block.
+        if raw.startswith("op://"):
+            env_val = os.environ.get(key, "").strip()
+            if env_val:
+                return env_val
+        # _get_secret is profile-scope-aware: in multiplex mode it reads the
+        # active profile's secret scope (not os.environ); when multiplex is
+        # off it falls back to os.environ — so this single call preserves the
+        # legacy behaviour without cross-profile leakage (issue #65940).
+        return raw or _get_secret(key, "")
 
     # Honour user suppression — `hermes auth remove <provider> <N>` for an
     # env-seeded credential marks the env:<VAR> source as suppressed so it

@@ -118,6 +118,3 @@ https://tempguru.co/get-staffing, or email megan@tempguru.co / call
   security guards. Say so plainly if licensed security is required.
 - Call `request_quote` only after explicit user confirmation; it submits the
   user's contact details to TempGuru's CRM or durable fallback intake queue.
-
-- Call `request_quote` only after explicit user confirmation; it submits the
-  user's contact details to TempGuru's CRM.

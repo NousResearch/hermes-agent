@@ -5147,6 +5147,10 @@ class SessionDB:
         if not query or not query.strip():
             return []
 
+        # Save the raw (unsanitized) query for title search supplement.
+        # The sanitized form is safe for FTS5 MATCH but strips/preserves
+        # syntax that title LIKE won't understand.
+        raw_query = query.strip()
         query = self._sanitize_fts5_query(query)
         if not query:
             return []
@@ -5354,6 +5358,73 @@ class SessionDB:
                     return []
                 else:
                     matches = [dict(row) for row in cursor.fetchall()]
+
+        # ── Title search supplement ──────────────────────────────────
+        # Session titles are not in the FTS5 index (the triggers only
+        # cover messages.content/tool_name/tool_calls).  Run a separate
+        # LIKE pass over sessions.title so renamed sessions are findable
+        # by their title (#66242).
+        if raw_query:
+            # Extract search terms for title LIKE matching.  Skip
+            # FTS5 boolean operators and single-character noise.
+            _FTS5_BOOLS = {"AND", "OR", "NOT"}
+            title_terms = [
+                t for t in re.sub(r"[^\w\s]", " ", raw_query).split()
+                if len(t) >= 2 and t.upper() not in _FTS5_BOOLS
+            ]
+            if title_terms:
+                existing_ids = {m["id"] for m in matches if m.get("id") is not None}
+                with self._lock:
+                    for term in title_terms[:5]:  # cap to 5 terms
+                        esc = (
+                            term.replace("\\", "\\\\")
+                            .replace("%", "\\%")
+                            .replace("_", "\\_")
+                        )
+                        try:
+                            title_cursor = self._conn.execute(
+                                """
+                                SELECT s.id AS session_id,
+                                       (SELECT m2.id FROM messages m2
+                                        WHERE m2.session_id = s.id
+                                        ORDER BY m2.timestamp DESC
+                                        LIMIT 1) AS msg_id
+                                FROM sessions s
+                                WHERE s.title IS NOT NULL
+                                  AND s.title LIKE ? ESCAPE '\\'
+                                LIMIT ?
+                                """,
+                                (f"%{esc}%", limit),
+                            )
+                        except sqlite3.OperationalError:
+                            continue
+                        for row in title_cursor.fetchall():
+                            msg_id = row["msg_id"]
+                            if msg_id is None or msg_id in existing_ids:
+                                continue
+                            try:
+                                msg_cursor = self._conn.execute(
+                                    """
+                                    SELECT m.id, m.session_id, m.role,
+                                           m.content, m.timestamp, m.tool_name,
+                                           s.source, s.model, s.started_at AS session_started
+                                    FROM messages m
+                                    JOIN sessions s ON s.id = m.session_id
+                                    WHERE m.id = ?
+                                    """,
+                                    (msg_id,),
+                                )
+                                msg_row = msg_cursor.fetchone()
+                            except sqlite3.OperationalError:
+                                continue
+                            if msg_row is None:
+                                continue
+                            match = dict(msg_row)
+                            match["snippet"] = (
+                                (match.get("content") or "")[:120]
+                            )
+                            matches.append(match)
+                            existing_ids.add(msg_id)
 
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.

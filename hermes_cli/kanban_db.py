@@ -2408,6 +2408,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    _trusted_project_id: bool = False,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2462,7 +2463,7 @@ def create_task(
     project_repo: Optional[str] = None
     if project_id is not None:
         project_id = str(project_id).strip() or None
-    if project_id:
+    if project_id and not _trusted_project_id:
         try:
             from hermes_cli import projects_db as _pdb
 

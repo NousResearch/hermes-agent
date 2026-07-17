@@ -1036,6 +1036,46 @@ def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
         conn.close()
 
 
+def test_create_inherits_worker_project_and_branch_without_local_registry(monkeypatch, worker_env):
+    """An inherited opaque project id is already trusted by the parent task.
+
+    Worker profiles do not own the operator profile's per-profile projects.db,
+    so resolving the id again would silently drop a valid shared binding.
+    """
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        self_tid = kb.create_task(
+            conn,
+            title="project worker",
+            assignee="test-worker",
+            workspace_kind="worktree",
+            workspace_path="/home/teknium/proj/.worktrees/delivery",
+            branch_name="delivery/spec-42",
+            project_id="p_existing",
+            _trusted_project_id=True,
+        )
+        kb.claim_task(conn, self_tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", self_tid)
+
+    d = json.loads(kt._handle_create({"title": "follow-up", "assignee": "peer"}))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child is not None
+        assert child.workspace_kind == "worktree"
+        assert child.workspace_path == "/home/teknium/proj/.worktrees/delivery"
+        assert child.branch_name == "delivery/spec-42"
+        assert child.project_id == "p_existing"
+    finally:
+        conn.close()
+
+
 def test_create_explicit_workspace_beats_inheritance(monkeypatch, worker_env):
     """An explicit workspace arg overrides worker-task inheritance."""
     from tools import kanban_tools as kt

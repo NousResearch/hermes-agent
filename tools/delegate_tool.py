@@ -2386,18 +2386,31 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
+    workflow: Optional[List[Dict[str, Any]]] = None,
+    synthesis: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
-    Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+    Supports four modes:
+      - Single:  provide goal (+ optional context, toolsets, role)
+      - Batch:   provide tasks array [{goal, context, toolsets, role}, ...]
+      - Workflow: provide workflow array [{id, goal, needs, ...}, ...]
+                 for dependency-aware DAG execution (+ optional synthesis)
+      - Convoy:  provide tasks array + synthesis for parallel aggregation
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    Workflow mode (workflow=):
+      Each step must have an 'id' (unique) and 'goal'. Steps declare
+      dependencies via 'needs': [other_step_id, ...]. Steps with no
+      dependencies run first, in parallel. Downstream steps receive
+      upstream results injected into their context automatically.
+      If synthesis= is also provided, a final aggregator sub-agent
+      runs after all steps complete.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2465,6 +2478,59 @@ def delegate_task(
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return tool_error(str(exc))
+
+    # ------------------------------------------------------------------
+    # Workflow DAG mode — dependency-aware multi-step task graph
+    # ------------------------------------------------------------------
+    # Resolve ACP command/args from parent agent for workflow steps
+    _wf_acp_command = getattr(parent_agent, "acp_command", None) or creds.get("command")
+    _wf_acp_args = getattr(parent_agent, "acp_args", None) or creds.get("args") or []
+    _wf_toolsets = getattr(parent_agent, "_enabled_toolsets", None) or getattr(parent_agent, "toolsets", [])
+
+    if workflow and isinstance(workflow, list) and len(workflow) > 0:
+        from tools.workflow_engine import run_workflow as _run_workflow
+
+        # If model also provided tasks alongside workflow, warn and ignore tasks
+        if tasks:
+            logger.warning(
+                "delegate_task: both workflow and tasks provided; "
+                "ignoring tasks (workflow takes precedence)"
+            )
+
+        return _run_workflow(
+            workflow=workflow,
+            synthesis=synthesis,
+            parent_agent=parent_agent,
+            toolsets=_wf_toolsets,
+            acp_command=_wf_acp_command,
+            acp_args=_wf_acp_args,
+            role=top_role,
+            max_iterations=effective_max_iter,
+            creds=creds,
+            build_child_fn=_build_child_agent,
+            run_child_fn=_run_single_child,
+            max_concurrent=_get_max_concurrent_children(),
+            agent_name=getattr(parent_agent, "profile_name", "neo"),
+        )
+
+    # Synthesis-only mode: parallel tasks + aggregator
+    if synthesis and tasks and isinstance(tasks, list) and len(tasks) > 0:
+        from tools.workflow_engine import run_synthesis as _run_synthesis
+
+        return _run_synthesis(
+            synthesis=synthesis,
+            tasks=tasks,
+            parent_agent=parent_agent,
+            toolsets=_wf_toolsets,
+            acp_command=_wf_acp_command,
+            acp_args=_wf_acp_args,
+            role=top_role,
+            max_iterations=effective_max_iter,
+            creds=creds,
+            build_child_fn=_build_child_agent,
+            run_child_fn=_run_single_child,
+            max_concurrent=_get_max_concurrent_children(),
+        )
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()

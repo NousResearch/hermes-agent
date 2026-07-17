@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getSession, getSessionMessages } from '@/hermes'
-import { textPart } from '@/lib/chat-messages'
+import { textPart, toChatMessages } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
@@ -1361,6 +1361,61 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
       },
       1_800_000
     )
+  })
+
+  it('does not block when raw SessionMessage count is higher only because tools fold into ChatMessages', async () => {
+    // user + assistant(tool_calls) + tool + assistant → fewer ChatMessages after
+    // toChatMessages. Comparing raw SessionMessage length would false-positive
+    // forever after a "refresh" and soft-lock every send.
+    const remoteSessionMessages = [
+      { content: 'check the repo', role: 'user' as const, timestamp: 1 },
+      {
+        content: 'Looking.',
+        role: 'assistant' as const,
+        timestamp: 2,
+        tool_calls: [{ id: 'tc-1', function: { name: 'terminal', arguments: '{"command":"ls"}' } }]
+      },
+      {
+        content: '{"output":"ok"}',
+        role: 'tool' as const,
+        tool_call_id: 'tc-1',
+        tool_name: 'terminal',
+        timestamp: 3
+      },
+      { content: 'Done.', role: 'assistant' as const, timestamp: 4 }
+    ]
+
+    const localChat = toChatMessages(remoteSessionMessages)
+    expect(remoteSessionMessages.length).toBeGreaterThan(localChat.length)
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      session_id: RUNTIME_SESSION_ID,
+      messages: remoteSessionMessages
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={localChat}
+        storedSessionId={RUNTIME_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('follow-up after tools')).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'follow-up after tools'
+      },
+      1_800_000
+    )
+    expect($notifications.get().some(n => n.kind === 'warning')).toBe(false)
   })
 })
 

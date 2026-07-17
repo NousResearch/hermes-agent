@@ -526,9 +526,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               return abortForSessionSwitch(sessionId)
             }
 
-            if (remote.messages.length > localCount) {
+            // Compare ChatMessage lengths (tools are folded by toChatMessages),
+            // not raw SessionMessage counts — otherwise a tool-using transcript
+            // looks "ahead" forever and soft-locks every subsequent send.
+            const remoteChat = toChatMessages(remote.messages)
+
+            if (remoteChat.length > localCount) {
               const refreshed = preserveLocalAssistantErrors(
-                toChatMessages(remote.messages),
+                remoteChat,
                 localSnapshot.messages.filter(message => message.id !== optimisticId)
               )
 

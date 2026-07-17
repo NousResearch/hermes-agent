@@ -5,7 +5,9 @@
 // an out-of-date context (#65047). Distinct from hermes:sessions (sidebar list).
 
 export type TranscriptChangedPayload = {
+  /** Stored session id shared across Desktop windows. */
   sessionId: string
+  /** ChatMessage-normalized length (after toChatMessages), not raw SessionMessage count. */
   messageCount: number
   updatedAt?: number
 }

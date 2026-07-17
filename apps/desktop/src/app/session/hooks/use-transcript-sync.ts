@@ -58,11 +58,13 @@ export function useTranscriptSync({
           return
         }
 
-        if (latest.messages.length <= localCount) {
+        // Normalize through toChatMessages before comparing lengths: raw
+        // SessionMessage rows include tool roles that the UI folds away.
+        const messages = toChatMessages(latest.messages)
+
+        if (messages.length <= localCount) {
           return
         }
-
-        const messages = toChatMessages(latest.messages)
 
         updateSessionState(
           runtimeSessionId,

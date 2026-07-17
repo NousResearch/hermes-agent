@@ -316,17 +316,25 @@ echo ""
 read -p "请选择 [1/2]（直接回车默认 1）：" IMAGE_SOURCE </dev/tty
 echo ""
 
-# ---------- 确保 curl 或 wget 可用（获取版本列表用）----------
+# ---------- 确保有工具能下载（curl / wget / python3 三选一）----------
 DL_QUERY=""
+DOWNLOADER=""
 if command -v curl &>/dev/null; then
     DL_QUERY="curl -sL --connect-timeout 10"
+    DOWNLOADER="curl"
 elif command -v wget &>/dev/null; then
     DL_QUERY="wget -qO- --timeout=10"
+    DOWNLOADER="wget"
+elif command -v python3 &>/dev/null; then
+    DL_QUERY="python3 -c \"import urllib.request; import sys; print(urllib.request.urlopen(sys.argv[1]).read().decode())\""
+    DOWNLOADER="python3"
 else
-    err "既没有 curl 也没有 wget，无法查询版本列表"
-    err "请手动选择版本后重试"
+    err "你的系统没有 curl、wget 或 python3，无法下载镜像"
+    err "请手动安装 curl：apt-get install -y curl"
+    err "安装后重试即可"
     exit 1
 fi
+info "下载工具：$DOWNLOADER"
 
 # ---------- 方案 A：从魔塔下载 ----------
 if [ "$IMAGE_SOURCE" != "2" ]; then

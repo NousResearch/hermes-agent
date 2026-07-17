@@ -5,6 +5,12 @@ description: >-
   the sub-workflows a PR can affect. Outputs are always "true" on push/dispatch
   events and fail open (everything "true") when the diff cannot be computed.
 
+inputs:
+  github-token:
+    description: Token for the GitHub API (gh CLI). Pass secrets.AUTOFIX_BOT_PAT from the calling workflow.
+    required: false
+    default: ${{ github.token }}
+
 outputs:
   python:
     description: Run Python tests / ruff / ty / windows-footguns.
@@ -41,7 +47,7 @@ runs:
       id: classify
       shell: bash
       env:
-        GH_TOKEN: ${{ github.token }}
+        GH_TOKEN: ${{ inputs.github-token }}
         REPO: ${{ github.repository }}
         EVENT_NAME: ${{ github.event_name }}
         BASE_SHA: ${{ github.event.pull_request.base.sha }}

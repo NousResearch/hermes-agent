@@ -53,7 +53,7 @@ jobs:
       - name: Scan diff for critical patterns
         id: scan
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
         run: |
           set -euo pipefail
 
@@ -142,7 +142,7 @@ jobs:
       - name: Post critical finding comment
         if: steps.scan.outputs.found == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
         run: |
           BODY="## 🚨 CRITICAL Supply Chain Risk Detected
 
@@ -203,7 +203,7 @@ jobs:
       - name: Post unbounded dep warning
         if: steps.bounds.outputs.found == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
         run: |
           BODY="## ⚠️ Unbounded PyPI Dependency Detected
 
@@ -238,27 +238,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Fetch PR labels
+        id: pr-labels
+        uses: ./.github/actions/retry
+        env:
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+        with:
+          command: gh pr view "${{ github.event.pull_request.number }}" --json labels --jq '.labels[].name'
       - name: Require explicit MCP catalog review label
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
         run: |
           set -euo pipefail
           PR="${{ github.event.pull_request.number }}"
-          # Retry the label fetch so an API blip doesn't read as "label
-          # absent" and falsely block the PR.
-          LABELS=""
-          for i in 1 2 3; do
-            if LABELS=$(gh pr view "$PR" --json labels --jq '.labels[].name'); then
-              break
-            fi
-            if [ "$i" = 3 ]; then
-              echo "::error::Could not fetch PR labels after 3 attempts (GitHub API failure — re-run this job)."
-              exit 1
-            fi
-            echo "::warning::gh pr view failed (attempt $i); retrying in 10s"
-            sleep 10
-          done
-          if echo "$LABELS" | grep -Fxq 'mcp-catalog-reviewed'; then
+          if echo "${{ steps.pr-labels.outputs.stdout }}" | grep -Fxq 'mcp-catalog-reviewed'; then
             echo "MCP catalog review label present."
             exit 0
           fi

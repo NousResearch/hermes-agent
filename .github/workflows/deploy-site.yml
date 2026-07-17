@@ -73,8 +73,8 @@ jobs:
 
       - name: Prepare skills index (unified multi-source catalog)
         env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
           SKILLS_INDEX_RUN_ID: ${{ github.event.inputs.skills_index_run_id || '' }}
           REBUILD_SKILLS_INDEX: ${{ github.event.inputs.rebuild_skills_index || 'false' }}
         run: |

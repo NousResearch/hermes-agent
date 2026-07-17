@@ -111,7 +111,7 @@ jobs:
       - name: Open issue on degraded / failed probe
         if: steps.probe.outputs.status != 'ok'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
           STATUS: ${{ steps.probe.outputs.status }}
           DETAIL: ${{ steps.probe.outputs.detail }}
         run: |

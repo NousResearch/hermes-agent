@@ -145,7 +145,7 @@ jobs:
 
       - name: Wait for GitHub Release to exist
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
         # release.py creates the GitHub Release after pushing the tag,
         # but this workflow starts from the tag push — wait for it.
         run: |
@@ -171,7 +171,7 @@ jobs:
       - name: Attach signed artifacts to GitHub Release
         if: env.skip_sign != 'true'
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
         # release.py already created the GitHub Release — just upload
         # the Sigstore signatures alongside the existing assets.
         run: >-

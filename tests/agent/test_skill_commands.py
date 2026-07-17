@@ -179,6 +179,28 @@ class TestScanSkillCommands:
         assert matched[0] == "/fx-watch"
         assert matched[2] == "EUR/USD"
 
+    def test_longest_overlapping_trigger_wins(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "market-watch",
+                frontmatter_extra="triggers: [market]\n",
+            )
+            _make_skill(
+                tmp_path,
+                "market-analysis",
+                frontmatter_extra="triggers: [market analysis]\n",
+            )
+            scan_skill_commands()
+
+            matched = find_triggered_skill_command(
+                "Please run a market analysis for today."
+            )
+
+        assert matched is not None
+        assert matched[0] == "/market-analysis"
+        assert matched[2] == "market analysis"
+
     @pytest.mark.parametrize(
         ("trigger", "message"),
         [

@@ -15,7 +15,9 @@ fail-closed migration: Hermes does not fall back to SQLite when
   `HERMES_STATE_POSTGRES_DSN`. Do not put a DSN in `config.yaml`, shell
   history, tickets, or logs.
 - Choose an explicit lowercase schema name, unique to this profile, such as
-  `hermes_default_state`. Do not share a state schema across profiles.
+  `hermes_default_state`. The target schema must not already exist; Hermes
+  creates and owns it during publication. Do not share a state schema across
+  profiles.
 - Retain a tested SQLite backup and confirm PostgreSQL backup/PITR coverage
   before beginning. The migration itself creates a temporary SQLite backup
   through SQLite's backup API; it never copies WAL or SHM sidecars.
@@ -37,8 +39,9 @@ hermes migrate state-postgres \
 4. Check the JSON report. It must finish in `dry_run`, identify only the
    intended schema and DSN environment-variable name, and expose no
    credentials.
-5. Verify the target schema is empty. The migration refuses a destructive
-   replacement of an occupied target schema.
+5. Verify the target schema does not exist. The migration refuses every
+   pre-existing target namespace, including an empty schema, rather than
+   trusting inherited ownership, ACLs, defaults, routines, or types.
 
 ## Apply And Validate
 
@@ -77,8 +80,10 @@ If publication completed but config cutover or report persistence was
 interrupted, keep writers stopped and rerun the exact `--apply` command with
 the same `--run-id`. Hermes reads the durable publish marker and verifies the
 current fenced SQLite snapshot against the published counts and digests before
-finishing cutover. A changed SQLite source requires a new migration run ID;
-do not force a stale run through.
+finishing cutover. Recovery also revalidates the published schema's ownership,
+ACLs, and executable objects; any post-publication namespace change blocks
+cutover for investigation. A changed SQLite source requires a new migration
+run ID; do not force a stale run through.
 
 If the PostgreSQL backend is unhealthy after cutover:
 

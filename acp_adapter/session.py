@@ -143,7 +143,8 @@ def _expand_acp_enabled_toolsets(
 ) -> List[str]:
     """Return ACP toolsets plus explicit MCP server toolsets for this session."""
     expanded: List[str] = []
-    for name in list(toolsets or ["hermes-acp"]):
+    base_toolsets = ["hermes-acp"] if toolsets is None else toolsets
+    for name in list(base_toolsets):
         if name and name not in expanded:
             expanded.append(name)
 
@@ -625,12 +626,25 @@ class SessionManager:
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
 
+        raw_agent_cfg = config.get("agent")
+        agent_cfg: dict = raw_agent_cfg if isinstance(raw_agent_cfg, dict) else {}
+        acp_toolsets = (
+            agent_cfg.get("acp_toolsets")
+            if "acp_toolsets" in agent_cfg
+            else ["hermes-acp"]
+        )
+        if isinstance(acp_toolsets, str):
+            acp_toolsets = [name.strip() for name in acp_toolsets.split(",") if name.strip()]
+        max_turns = agent_cfg.get("max_turns", config.get("max_turns", 90))
+
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
+                list(acp_toolsets or []),
                 mcp_server_names=configured_mcp_servers,
             ),
+            "disabled_toolsets": list(agent_cfg.get("disabled_toolsets") or []),
+            "max_iterations": int(max_turns),
             "quiet_mode": True,
             "session_id": session_id,
             "session_db": self._get_db(),

@@ -29,6 +29,45 @@ def manager():
 
 
 class TestCreateSession:
+    def test_expand_acp_toolsets_preserves_explicit_empty_base(self):
+        assert acp_session._expand_acp_enabled_toolsets([]) == []
+        assert acp_session._expand_acp_enabled_toolsets([], ["pin-tools"]) == ["mcp-pin-tools"]
+
+    def test_make_agent_honors_acp_toolsets_and_max_turns(self, monkeypatch):
+        class FakeAgent:
+            model = "fake-model"
+
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        config = {
+            "model": {"default": "fake-model", "provider": "fake-provider"},
+            "agent": {
+                "acp_toolsets": [],
+                "max_turns": 3,
+                "disabled_toolsets": ["browser"],
+            },
+            "mcp_servers": {},
+        }
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {
+                "provider": requested,
+                "api_mode": "codex_app_server",
+                "base_url": "https://example.invalid",
+                "api_key": "test-key",
+            },
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+
+        state = SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        assert state.agent.kwargs["enabled_toolsets"] == []
+        assert state.agent.kwargs["max_iterations"] == 3
+        assert state.agent.kwargs["disabled_toolsets"] == ["browser"]
+
     def test_create_session_returns_state(self, manager):
         state = manager.create_session(cwd="/tmp/work")
         assert isinstance(state, SessionState)

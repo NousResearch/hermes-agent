@@ -238,6 +238,11 @@ class DirectAlias(NamedTuple):
     model: str
     provider: str
     base_url: str
+    # Optional per-alias credentials. A custom ``base_url`` (e.g. a proxy) may
+    # require auth; ``api_key`` inlines it, ``key_env`` names an env var to read
+    # it from. Both default empty so existing aliases are unaffected.
+    api_key: str = ""
+    key_env: str = ""
 
 
 # Built-in direct aliases (can be extended via config.yaml model_aliases:)
@@ -281,9 +286,12 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                 model = entry.get("model", "")
                 provider = entry.get("provider", "custom")
                 base_url = entry.get("base_url", "")
+                api_key = entry.get("api_key", "")
+                key_env = entry.get("key_env", "") or entry.get("api_key_env", "")
                 if model:
                     merged[name.strip().lower()] = DirectAlias(
                         model=model, provider=provider, base_url=base_url,
+                        api_key=api_key, key_env=key_env,
                     )
 
         # --- model.aliases (string-based format, from config set) ---
@@ -1253,7 +1261,16 @@ def switch_model(
             base_url = _da.base_url
             api_mode = ""  # clear so determine_api_mode re-detects from URL
             if not api_key:
-                api_key = "no-key-required"
+                # A custom base_url (e.g. a LiteLLM proxy) usually DOES require a
+                # key. Prefer one the alias declares — inline ``api_key:`` or a
+                # ``key_env:`` naming an env var — before the no-auth placeholder,
+                # which otherwise 401s on attempt-1. Mirrors the named-custom-
+                # provider key resolution in auxiliary_client.resolve_provider_client.
+                import os
+                alias_key = _da.api_key.strip() or (
+                    os.environ.get(_da.key_env, "").strip() if _da.key_env else ""
+                )
+                api_key = alias_key or "no-key-required"
 
     # --- Normalize model name for target provider ---
     new_model = normalize_model_for_provider(new_model, target_provider)

@@ -44,7 +44,6 @@ class _DreamThread(threading.Thread):
                 if _schedule.dream_check(
                     min_hours=sched["min_hours"],
                     min_sessions=sched["min_sessions"],
-                    cfg=cfg,
                 ):
                     _schedule.dream_run(cfg=cfg)
             except Exception:
@@ -57,13 +56,29 @@ class _DreamThread(threading.Thread):
 _thread: _DreamThread | None = None
 
 
-def _on_session_end(ctx) -> None:
-    """Enqueue the completed session's transcript for consolidation."""
-    transcript = getattr(ctx, "transcript", None) or []
-    if not transcript:
+def _on_post_llm_call(
+    *,
+    user_message: str = "",
+    assistant_response: str = "",
+    **_: object,
+) -> None:
+    """Persist transcript-bearing turns without counting each as a session."""
+    transcript = [
+        {"role": "user", "content": user_message},
+        {"role": "assistant", "content": assistant_response},
+    ]
+    if not user_message and not assistant_response:
         return
     try:
-        _schedule.enqueue_session(transcript)
+        _schedule.enqueue_session(transcript, count_session=False)
+    except Exception:
+        pass
+
+
+def _on_session_end(**_: object) -> None:
+    """Record the session boundary after its turns have been staged."""
+    try:
+        _schedule.mark_session_complete()
     except Exception:
         pass
 
@@ -77,12 +92,11 @@ def _disabled_message() -> str:
     )
 
 
-def _handle_slash(argv: list[str], ctx) -> str:
-    sub = argv[0].lstrip("/") if argv else "dream"
-    args = argv[1:] if len(argv) > 1 else []
+def _handle_slash(raw_args: str) -> str:
+    args = raw_args.split() if raw_args else []
     cfg = _config.load_config()
 
-    if sub in ("dream",) and not args:
+    if not args:
         state = _schedule._read_state()
         hours_ago = (time.time() - state["last_dream_at"]) / 3600
         sessions = state.get("sessions_since_dream", 0)
@@ -116,7 +130,6 @@ def _handle_slash(argv: list[str], ctx) -> str:
         ready = _schedule.dream_check(
             min_hours=sched["min_hours"],
             min_sessions=sched["min_sessions"],
-            cfg=cfg,
         )
         return (
             f"Enabled: {'yes' if _config.is_enabled(cfg) else 'no'}\n"
@@ -147,6 +160,7 @@ def register(ctx) -> None:
     if not _config.is_enabled(cfg):
         return
 
+    ctx.register_hook("post_llm_call", _on_post_llm_call)
     ctx.register_hook("on_session_end", _on_session_end)
 
     sched = _config.schedule(cfg)

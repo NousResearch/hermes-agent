@@ -768,23 +768,61 @@ class AIAgent:
             except Exception as exc:
                 logger.debug("context engine bind_session_state during reset: %s", exc)
 
-    def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
+    def _ensure_lmstudio_runtime_loaded(
+        self,
+        config_context_length: Optional[int] = None,
+        previous_model: Optional[str] = None,
+    ) -> None:
         """
         Preload the LM Studio model unless configured to rely on LM Studio JIT loading.
         """
-        if (self.provider or "").strip().lower() != "lmstudio":
-            return
+        # ``jit`` hands loading to LM Studio's just-in-time / Auto-Evict path.
+        # Check it before the endpoint detection below: the opt-out applies
+        # however LM Studio was reached, and short-circuits the network probe.
         if (getattr(self, "lmstudio_load_mode", "explicit") or "explicit").strip().lower() == "jit":
             logger.debug("LM Studio explicit preload skipped: lmstudio_load_mode=jit")
             return
+        provider_key = (self.provider or "").strip().lower()
+        api_key = getattr(self, "api_key", "")
+        probe_api_key = api_key if isinstance(api_key, str) else ""
+        if provider_key not in {"lmstudio", "lm-studio", "lm studio"}:
+            try:
+                from agent.model_metadata import detect_local_server_type, is_local_endpoint
+                if not (
+                    self.base_url
+                    and is_local_endpoint(self.base_url)
+                    and detect_local_server_type(self.base_url, api_key=probe_api_key) == "lm-studio"
+                ):
+                    return
+            except Exception:
+                return
         try:
             from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
-            from hermes_cli.models import ensure_lmstudio_model_loaded
+            from hermes_cli.models import (
+                ensure_lmstudio_model_loaded,
+                normalize_lmstudio_unload_policy,
+            )
             if config_context_length is None:
                 config_context_length = getattr(self, "_config_context_length", None)
             target_ctx = max(config_context_length or 0, MINIMUM_CONTEXT_LENGTH)
+            unload_policy = "always"
+            try:
+                from hermes_cli.config import load_config_readonly
+                cfg = load_config_readonly() or {}
+                model_cfg = cfg.get("model") if isinstance(cfg, dict) else None
+                if isinstance(model_cfg, dict):
+                    unload_policy = normalize_lmstudio_unload_policy(
+                        model_cfg.get("lmstudio_unload_policy")
+                    )
+            except Exception:
+                unload_policy = "always"
             loaded_ctx = ensure_lmstudio_model_loaded(
-                self.model, self.base_url, getattr(self, "api_key", ""), target_ctx,
+                self.model,
+                self.base_url,
+                api_key,
+                target_ctx,
+                unload_policy=unload_policy,
+                previous_model=previous_model,
             )
             if loaded_ctx:
                 # Push into the live compressor so the status bar reflects the

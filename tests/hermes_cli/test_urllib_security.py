@@ -554,7 +554,9 @@ def test_lmstudio_load_post_drops_bearer_on_redirect(monkeypatch):
         source.shutdown()
         sink.shutdown()
 
-    assert loaded == 4096
+    # A load answered by an off-origin redirect is never confirmed by the
+    # load echo or a catalog refresh, so it must not be reported as loaded.
+    assert loaded is None
     method, headers = _RecordingHandler.requests[-1]
     assert method == "GET"
     assert "authorization" not in headers

@@ -36,6 +36,53 @@ def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: floa
     return open_credentialed_url(req, timeout=timeout)
 
 
+LMSTUDIO_UNLOAD_POLICY_ALWAYS = "always"
+LMSTUDIO_UNLOAD_POLICY_NEVER = "never"
+LMSTUDIO_UNLOAD_POLICIES = {
+    LMSTUDIO_UNLOAD_POLICY_ALWAYS,
+    LMSTUDIO_UNLOAD_POLICY_NEVER,
+}
+
+# Instance IDs of LM Studio models this process loaded itself, keyed by
+# (server root, catalog model key). In-memory only: a persisted claim could
+# collide with a later user-loaded instance that reuses the bare model key
+# as its instance id.
+_lmstudio_owned_instances: dict[tuple[str, str], str] = {}
+
+
+def normalize_lmstudio_unload_policy(value: Any) -> str:
+    """Normalize the LM Studio model-switch unload policy.
+
+    ``always`` is the conservative default: unload the previous Hermes-selected
+    LM Studio chat model before loading the selected model. ``never`` is an
+    explicit opt-out for users who intentionally keep that previous model
+    resident while switching.
+    """
+    if isinstance(value, bool):
+        return LMSTUDIO_UNLOAD_POLICY_ALWAYS if value else LMSTUDIO_UNLOAD_POLICY_NEVER
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in {"", "auto", "safe", "unload", "unload_first", "always_unload", "on", "yes", "true", "1"}:
+        return LMSTUDIO_UNLOAD_POLICY_ALWAYS
+    # Accept the obvious "turn this off" spellings — a user reaching for any of
+    # these must not get the opposite (an unload) out of a typo'd enum value.
+    if normalized in {
+        "never",
+        "keep",
+        "keep_loaded",
+        "keep_others",
+        "preserve",
+        "off",
+        "no",
+        "none",
+        "false",
+        "disabled",
+        "disable",
+        "0",
+    }:
+        return LMSTUDIO_UNLOAD_POLICY_NEVER
+    return LMSTUDIO_UNLOAD_POLICY_ALWAYS
+
+
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
@@ -3096,6 +3143,74 @@ def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
     return root or None
 
 
+def _lmstudio_model_aliases(value: Any) -> set[str]:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return set()
+    aliases = {raw}
+    if "/" in raw:
+        aliases.add(raw.rsplit("/", 1)[1])
+    for alias in tuple(aliases):
+        if alias.endswith("-mtp"):
+            aliases.add(alias[: -len("-mtp")])
+    return aliases
+
+
+def _lmstudio_raw_model_matches(raw: dict, model: str) -> bool:
+    wanted = _lmstudio_model_aliases(model)
+    if not wanted:
+        return False
+    aliases: set[str] = set()
+    for key in ("key", "id", "selected_variant"):
+        aliases.update(_lmstudio_model_aliases(raw.get(key)))
+    variants = raw.get("variants")
+    if isinstance(variants, list):
+        for variant in variants:
+            if isinstance(variant, dict):
+                for key in ("key", "id", "name", "path"):
+                    aliases.update(_lmstudio_model_aliases(variant.get(key)))
+            else:
+                aliases.update(_lmstudio_model_aliases(variant))
+    return bool(wanted & aliases)
+
+
+def _lmstudio_entry_exact_keys(raw: dict) -> set[str]:
+    """The catalog entry's literal identifiers (lowered), for exact matching."""
+    return {
+        str(raw.get(key) or "").strip().lower()
+        for key in ("key", "id", "selected_variant")
+        if str(raw.get(key) or "").strip()
+    }
+
+
+def _lmstudio_entry_basenames(raw: dict) -> set[str]:
+    """The entry identifiers with the ``publisher/`` namespace stripped."""
+    return {key.rsplit("/", 1)[-1] for key in _lmstudio_entry_exact_keys(raw)}
+
+
+def _lmstudio_namespace_embedded_matches(raw: dict, model: str) -> bool:
+    """Tie-breaker for ambiguous previous-model matches.
+
+    When several catalog entries share a basename (``qwen/qwen3.6-...`` vs
+    ``draft/qwen3.6-...``), prefer the one whose slug embeds its own publisher
+    prefix — for LM Studio catalogs that is the canonical upstream entry, while
+    mirrors/drafts sit under an unrelated namespace.
+    """
+    wanted = _lmstudio_model_aliases(model)
+    if not wanted:
+        return False
+    for key in _lmstudio_entry_exact_keys(raw):
+        if "/" not in key:
+            continue
+        namespace, name = key.rsplit("/", 1)
+        namespace_tail = namespace.rsplit("/", 1)[-1]
+        if not (namespace_tail and name.startswith(namespace_tail)):
+            continue
+        if _lmstudio_model_aliases(name) & wanted:
+            return True
+    return False
+
+
 def _lmstudio_request_headers(api_key: Optional[str] = None) -> dict:
     """Build HTTP headers for LM Studio native API requests."""
     headers = {"User-Agent": _HERMES_USER_AGENT}
@@ -3211,13 +3326,18 @@ def ensure_lmstudio_model_loaded(
     api_key: Optional[str],
     target_context_length: int,
     timeout: float = 120.0,
+    unload_policy: str = LMSTUDIO_UNLOAD_POLICY_ALWAYS,
+    previous_model: Optional[str] = None,
 ) -> Optional[int]:
-    """Ensure LM Studio has ``model`` loaded with at least ``target_context_length``.
+    """Ensure LM Studio has ``model`` loaded with sufficient context.
 
-    No-op when an instance is already loaded with sufficient context. Otherwise
-    POSTs ``/api/v1/models/load`` to (re)load with the target context, capped
-    at the model's ``max_context_length``. Returns the resolved loaded context
-    length, or ``None`` when the probe / load failed.
+    LM Studio stores downloaded models in its native ``/api/v1/models`` API,
+    while the OpenAI-compatible ``/v1/models`` surface may only expose the
+    currently loaded instance.  This helper uses the native API, optionally
+    unloads the previous Hermes-selected LM Studio model when requested before
+    loading a new target, lets LM Studio try its saved load settings first, and
+    only forces ``target_context_length`` when the loaded instance reports a
+    smaller context window.
     """
     server_root = _lmstudio_server_root(base_url)
     if not server_root:
@@ -3225,51 +3345,347 @@ def ensure_lmstudio_model_loaded(
 
     headers = _lmstudio_request_headers(api_key)
 
-    try:
-        raw_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=10)
-    except Exception:
-        raw_models = None
-    if raw_models is None:
+    def fetch_models() -> Optional[list[dict]]:
+        try:
+            raw_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=10)
+        except Exception:
+            raw_models = None
+        if raw_models is None:
+            return None
+        return [raw for raw in raw_models if isinstance(raw, dict)]
+
+    def find_target(raw_models: list[dict]) -> Optional[dict]:
+        # Alias matching strips the publisher namespace and the ``-mtp``
+        # suffix, so a bare configured name can match several catalog entries
+        # (e.g. a model and its ``-mtp`` sibling) and list order would pick
+        # the winner. Prefer an exact key/id match, then an exact basename
+        # match, before falling back to the loose alias intersection.
+        wanted = str(model or "").strip().lower()
+        if wanted:
+            for raw in raw_models:
+                if wanted in _lmstudio_entry_exact_keys(raw):
+                    return raw
+            for raw in raw_models:
+                if wanted in _lmstudio_entry_basenames(raw):
+                    return raw
+        for raw in raw_models:
+            if _lmstudio_raw_model_matches(raw, model):
+                return raw
         return None
 
-    target_entry = None
-    for raw in raw_models:
-        if not isinstance(raw, dict):
-            continue
-        if raw.get("key") == model or raw.get("id") == model:
-            target_entry = raw
-            break
+    def loaded_contexts(entry: dict) -> list[int]:
+        contexts: list[int] = []
+        for inst in entry.get("loaded_instances") or []:
+            cfg = inst.get("config") if isinstance(inst, dict) else None
+            loaded_ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
+            if isinstance(loaded_ctx, int) and loaded_ctx > 0:
+                contexts.append(loaded_ctx)
+        return contexts
+
+    def loaded_instance_ids(entry: dict) -> list[str]:
+        ids: list[str] = []
+        for inst in entry.get("loaded_instances") or []:
+            if not isinstance(inst, dict):
+                continue
+            instance_id = str(inst.get("id") or "").strip()
+            if instance_id:
+                ids.append(instance_id)
+        return list(dict.fromkeys(ids))
+
+    def model_key(entry: dict) -> str:
+        return str(entry.get("key") or entry.get("id") or "").strip()
+
+    def owned_instance_id(model_id: str) -> Optional[str]:
+        return _lmstudio_owned_instances.get((server_root, model_id))
+
+    def record_owned_instance(model_id: str, instance_id: str) -> None:
+        _lmstudio_owned_instances[(server_root, model_id)] = instance_id
+
+    def drop_owned_instance(model_id: str) -> None:
+        _lmstudio_owned_instances.pop((server_root, model_id), None)
+
+    def unload_instance(instance_id: str) -> None:
+        body = json.dumps({"instance_id": instance_id}).encode()
+        unload_headers = dict(headers)
+        unload_headers["Content-Type"] = "application/json"
+        with _urlopen_model_catalog_request(
+            urllib.request.Request(
+                server_root + "/api/v1/models/unload",
+                data=body,
+                headers=unload_headers,
+                method="POST",
+            ),
+            timeout=min(timeout, 30.0),
+        ) as resp:
+            resp.read()
+
+    def unload_instances(instance_ids: list[str], *, strict: bool = False) -> bool:
+        success = True
+        for instance_id in instance_ids:
+            try:
+                unload_instance(instance_id)
+            except urllib.error.HTTPError as exc:
+                # 404 means the instance is already gone (unloaded via the LM
+                # Studio UI, or a race) — that IS the goal, not a failure.
+                if exc.code == 404:
+                    continue
+                success = False
+                if strict:
+                    break
+            except Exception:
+                success = False
+                if strict:
+                    break
+        return success
+
+    def load_model(model_id: str, context_length: Optional[int]) -> Optional[int]:
+        payload: dict[str, Any] = {"model": model_id, "echo_load_config": True}
+        if context_length is not None:
+            payload["context_length"] = context_length
+        body = json.dumps(payload).encode()
+        load_headers = dict(headers)
+        load_headers["Content-Type"] = "application/json"
+        try:
+            with _urlopen_model_catalog_request(
+                urllib.request.Request(
+                    server_root + "/api/v1/models/load",
+                    data=body,
+                    headers=load_headers,
+                    method="POST",
+                ),
+                timeout=timeout,
+            ) as resp:
+                raw = resp.read()
+        except Exception:
+            return None
+        if raw:
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+                if isinstance(parsed, dict):
+                    echoed_instance = str(parsed.get("instance_id") or "").strip()
+                    if echoed_instance:
+                        record_owned_instance(model_id, echoed_instance)
+                load_config = parsed.get("load_config") if isinstance(parsed, dict) else None
+                loaded_ctx = load_config.get("context_length") if isinstance(load_config, dict) else None
+                if isinstance(loaded_ctx, int) and loaded_ctx > 0:
+                    return loaded_ctx
+            except Exception:
+                pass
+        refreshed = fetch_models()
+        if refreshed:
+            for entry in refreshed:
+                if _lmstudio_raw_model_matches(entry, model_id):
+                    contexts = loaded_contexts(entry)
+                    if contexts:
+                        return max(contexts)
+                    break
+        # Neither the load echo nor a catalog refresh confirmed a loaded
+        # instance. LM Studio can reply 200 with an error body on a soft
+        # failure (e.g. out of VRAM), so reporting the *requested* context as
+        # loaded here would make Hermes assume a window that doesn't exist.
+        return None
+
+    def restore_previous_loaded_model(candidates: list[tuple[str, Optional[int]]]) -> None:
+        for previous_model, previous_context in candidates:
+            if not previous_model:
+                continue
+            try:
+                if load_model(previous_model, previous_context) is not None:
+                    return
+            except Exception:
+                pass
+
+    raw_models = fetch_models()
+    if raw_models is None:
+        return None
+    target_entry = find_target(raw_models)
     if target_entry is None:
         return None
 
+    target_model_id = model_key(target_entry) or model
+
+    # Never request more context than the model supports. Depending on the
+    # LM Studio version, an over-ask is either rejected (and the retry path
+    # below would first unload a perfectly working instance) or accepted —
+    # loading the model beyond its trained window, where output silently
+    # degrades. A model whose max is below Hermes' minimum stays usable at
+    # its own max — matching pre-PR behavior.
     max_ctx = target_entry.get("max_context_length")
-    if isinstance(max_ctx, int) and max_ctx > 0:
-        target_context_length = min(target_context_length, max_ctx)
+    trained_max = max_ctx if isinstance(max_ctx, int) and max_ctx > 0 else None
+    if trained_max:
+        target_context_length = min(target_context_length, trained_max)
 
-    for inst in target_entry.get("loaded_instances") or []:
-        cfg = inst.get("config") if isinstance(inst, dict) else None
-        loaded_ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
-        if isinstance(loaded_ctx, int) and loaded_ctx >= target_context_length:
+    def note_overtrained_context(ctx: Optional[int]) -> Optional[int]:
+        # Someone (saved per-model settings, another client, or the user via
+        # the LM Studio UI) configured this model beyond its reported trained
+        # max. Hermes respects the resident window — it may be a deliberate
+        # RoPE-scaled setup — but the degradation risk should be visible.
+        if trained_max and isinstance(ctx, int) and ctx > trained_max:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "LM Studio has %s loaded with a %d-token context, beyond the "
+                "model's reported max of %d; output past the trained window "
+                "may degrade unless the model is context-extended (e.g. RoPE "
+                "scaling).",
+                target_model_id,
+                ctx,
+                trained_max,
+            )
+        return ctx
+
+    unload_policy = normalize_lmstudio_unload_policy(unload_policy)
+    unloaded_previous_model = False
+
+    previous_loaded_ids: list[str] = []
+    restore_candidates: list[tuple[str, Optional[int]]] = []
+    previous_model_key = str(previous_model or "").strip()
+    if unload_policy == LMSTUDIO_UNLOAD_POLICY_ALWAYS and previous_model_key:
+        wanted_previous = previous_model_key.lower()
+        previous_matches: list[dict] = []
+        for raw in raw_models:
+            if raw is target_entry:
+                continue
+            if str(raw.get("type") or "").strip().lower() == "embedding":
+                continue
+            if not _lmstudio_raw_model_matches(raw, previous_model_key):
+                continue
+            if _lmstudio_raw_model_matches(raw, model):
+                # The entry also alias-matches the *target's* name (e.g. the
+                # target's ``-mtp`` sibling). Only treat it as the previous
+                # model when the previous id names it precisely — never evict
+                # something that may just be another alias of the target.
+                if wanted_previous not in _lmstudio_entry_exact_keys(raw) and (
+                    wanted_previous not in _lmstudio_entry_basenames(raw)
+                ):
+                    continue
+            previous_matches.append(raw)
+        if len(previous_matches) > 1:
+            # Alias matching strips the publisher namespace, so two different
+            # models can collide on a basename. Disambiguate: an exact key/id
+            # match wins, then the namespace-embedded canonical entry; if it's
+            # still ambiguous, leave every resident model alone rather than
+            # evicting a stranger.
+            exact_matches = [
+                raw for raw in previous_matches if wanted_previous in _lmstudio_entry_exact_keys(raw)
+            ]
+            if len(exact_matches) == 1:
+                previous_matches = exact_matches
+            else:
+                embedded_matches = [
+                    raw
+                    for raw in previous_matches
+                    if _lmstudio_namespace_embedded_matches(raw, previous_model_key)
+                ]
+                previous_matches = embedded_matches if len(embedded_matches) == 1 else []
+        owned_unload_keys: list[str] = []
+        for raw in previous_matches:
+            instance_ids = loaded_instance_ids(raw)
+            entry_key = model_key(raw)
+            owned = owned_instance_id(entry_key)
+            if owned and owned not in instance_ids:
+                # The instance this process loaded is gone (LM Studio restart
+                # or a manual unload) — the ownership claim is stale.
+                drop_owned_instance(entry_key)
+                owned = None
+            if owned:
+                # Hermes loaded this exact instance earlier in the session, so
+                # it can be evicted precisely even when sibling instances of
+                # the same model are resident.
+                entry_unload_ids = [owned]
+                owned_unload_keys.append(entry_key)
+            elif len(instance_ids) > 1:
+                # ``previous_model`` names a catalog model, not an LM Studio
+                # instance. With several resident instances of that model and
+                # no ownership claim, Hermes cannot tell which one it was
+                # serving — leave them all loaded rather than evicting one
+                # the user loaded.
+                continue
+            else:
+                entry_unload_ids = instance_ids
+            previous_loaded_ids.extend(entry_unload_ids)
+            if entry_unload_ids:
+                contexts_for_restore = loaded_contexts(raw)
+                restore_candidates.append((
+                    entry_key,
+                    max(contexts_for_restore) if contexts_for_restore else None,
+                ))
+        unique_previous_loaded_ids = list(dict.fromkeys(previous_loaded_ids))
+        if unique_previous_loaded_ids and not unload_instances(
+            unique_previous_loaded_ids, strict=True
+        ):
+            return None
+        unloaded_previous_model = bool(unique_previous_loaded_ids)
+        for entry_key in owned_unload_keys:
+            drop_owned_instance(entry_key)
+
+    contexts = loaded_contexts(target_entry)
+    note_overtrained_context(max(contexts) if contexts else None)
+    if contexts and max(contexts) >= target_context_length:
+        return max(contexts)
+
+    previous_target_ctx = max(contexts) if contexts else None
+    target_loaded_ids = loaded_instance_ids(target_entry)
+    if target_loaded_ids:
+        if unload_policy == LMSTUDIO_UNLOAD_POLICY_NEVER:
+            # ``never`` means Hermes doesn't evict resident models even to
+            # win a bigger context window — run with what's loaded.
+            return previous_target_ctx
+        if len(target_loaded_ids) > 1:
+            # Same ambiguity as the previous-model guard: several resident
+            # copies and only a name to go on. Evicting them all could take
+            # out instances other clients are using; run with the largest
+            # resident window instead.
+            return previous_target_ctx
+        if not unload_instances(target_loaded_ids, strict=True):
+            return previous_target_ctx
+        drop_owned_instance(target_model_id)
+
+    loaded_ctx = note_overtrained_context(load_model(target_model_id, None))
+    if loaded_ctx is None and target_loaded_ids:
+        # The fresh load failed after we unloaded the resident instance — try
+        # to put it back at its previous context so a transient failure doesn't
+        # strand the model fully unloaded.
+        loaded_ctx = load_model(target_model_id, previous_target_ctx)
+    if loaded_ctx is not None and loaded_ctx >= target_context_length:
+        return loaded_ctx
+
+    if loaded_ctx is not None and loaded_ctx < target_context_length:
+        resize_ids: list[str] = []
+        owned_target = owned_instance_id(target_model_id)
+        if owned_target:
+            # The load echo told us exactly which instance we created — resize
+            # that one and leave any concurrently loaded siblings alone.
+            resize_ids = [owned_target]
+        elif unload_policy == LMSTUDIO_UNLOAD_POLICY_ALWAYS:
+            refreshed = fetch_models()
+            if refreshed:
+                refreshed_target = find_target(refreshed)
+                if refreshed_target:
+                    resize_ids = loaded_instance_ids(refreshed_target)
+        else:
+            # ``never`` without an ownership claim (no instance id in the load
+            # echo): resizing would mean guessing at instances Hermes may not
+            # have loaded. Keep the window that resolved.
             return loaded_ctx
+        if resize_ids and not unload_instances(resize_ids, strict=True):
+            return loaded_ctx
+        if resize_ids:
+            drop_owned_instance(target_model_id)
+        forced_ctx = load_model(target_model_id, target_context_length)
+        if forced_ctx is None:
+            # Forced reload failed (e.g. not enough VRAM at the larger
+            # context). Reload at saved settings so the model isn't left
+            # unloaded, and put the evicted previous model back.
+            recovered_ctx = note_overtrained_context(load_model(target_model_id, None))
+            if unloaded_previous_model:
+                restore_previous_loaded_model(restore_candidates)
+            return recovered_ctx
+        return forced_ctx
 
-    body = json.dumps({
-        "model": model,
-        "context_length": target_context_length,
-    }).encode()
-    load_headers = dict(headers)
-    load_headers["Content-Type"] = "application/json"
-    try:
-        load_request = urllib.request.Request(
-            server_root + "/api/v1/models/load",
-            data=body,
-            headers=load_headers,
-            method="POST",
-        )
-        with _urlopen_model_catalog_request(load_request, timeout=timeout) as resp:
-            resp.read()
-    except Exception:
-        return None
-    return target_context_length
+    if unloaded_previous_model:
+        restore_previous_loaded_model(restore_candidates)
+    return loaded_ctx
 
 
 def lmstudio_model_reasoning_options(

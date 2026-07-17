@@ -117,8 +117,13 @@ _ENDPOINT_MODEL_CACHE_TTL = 300
 # Entries expire after _ENDPOINT_PROBE_TTL_SECONDS so a server swap on the
 # same port (stop Ollama, start LM Studio) is eventually re-detected instead
 # of being pinned to the stale type for the whole process lifetime.
-# Values are (server_type, monotonic_timestamp).
+# Values are (server_type_or_None, monotonic_timestamp). Failed probes are
+# cached too (as None) with a much shorter TTL: an offline/unknown endpoint
+# must not re-run the full probe waterfall on every context lookup (it is
+# consulted from hot paths like get_model_context_length), but a server that
+# comes up moments later should still be detected promptly.
 _ENDPOINT_PROBE_TTL_SECONDS = 3600.0
+_ENDPOINT_PROBE_NEGATIVE_TTL_SECONDS = 30.0
 _endpoint_probe_path_cache: Dict[str, tuple] = {}
 
 
@@ -562,13 +567,21 @@ def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
     return None
 
 
-def _skip_persistent_context_cache(base_url: str, provider: str) -> bool:
+def _skip_persistent_context_cache(base_url: str, provider: str, api_key: str = "") -> bool:
     """Return True when the on-disk context cache must not short-circuit probing.
 
     LM Studio excludes caching because loaded context is transient — the user
     can reload the model with a different context_length at any time.
    """
-    return provider == "lmstudio"
+    provider_key = (provider or "").strip().lower()
+    if provider_key in {"lmstudio", "lm-studio", "lm studio"}:
+        return True
+    if base_url and is_local_endpoint(base_url):
+        try:
+            return detect_local_server_type(base_url, api_key=api_key) == "lm-studio"
+        except Exception:
+            return False
+    return False
 
 
 def _maybe_cache_local_context_length(
@@ -727,8 +740,10 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     lmstudio_url = _lmstudio_server_root(normalized)
 
     cached = _endpoint_probe_path_cache.get(server_url)
-    if cached is not None and (time.monotonic() - cached[1]) < _ENDPOINT_PROBE_TTL_SECONDS:
-        return cached[0]
+    if cached is not None:
+        ttl = _ENDPOINT_PROBE_TTL_SECONDS if cached[0] is not None else _ENDPOINT_PROBE_NEGATIVE_TTL_SECONDS
+        if (time.monotonic() - cached[1]) < ttl:
+            return cached[0]
 
     headers = _auth_headers(api_key)
 
@@ -780,8 +795,9 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     except Exception:
         pass
 
-    if result is not None:
-        _endpoint_probe_path_cache[server_url] = (result, time.monotonic())
+    # Cache failures too (short TTL, see above) so offline endpoints don't pay
+    # the probe waterfall on every call from the context-length hot path.
+    _endpoint_probe_path_cache[server_url] = (result, time.monotonic())
     return result
 
 
@@ -1458,6 +1474,19 @@ def is_output_cap_error(error_msg: str) -> bool:
     return not input_overflow_signal
 
 
+def _model_id_aliases(value: str) -> set[str]:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return set()
+    aliases = {raw}
+    if "/" in raw:
+        aliases.add(raw.rsplit("/", 1)[1])
+    for alias in tuple(aliases):
+        if alias.endswith("-mtp"):
+            aliases.add(alias[: -len("-mtp")])
+    return aliases
+
+
 def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     """Return True if *candidate_id* (from server) matches *lookup_model* (configured).
 
@@ -1465,16 +1494,12 @@ def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     - Exact match:  "nvidia-nemotron-super-49b-v1" == "nvidia-nemotron-super-49b-v1"
     - Slug match:   "nvidia/nvidia-nemotron-super-49b-v1" matches "nvidia-nemotron-super-49b-v1"
                     (the part after the last "/" equals lookup_model)
+    - Local MTP alias: "qwen/qwen3.6-35b-a3b" matches "qwen3.6-35b-a3b-mtp"
 
     This covers LM Studio's native API which stores models as "publisher/slug"
     while users typically configure only the slug after the "local:" prefix.
     """
-    if candidate_id == lookup_model:
-        return True
-    # Slug match: basename of candidate equals the lookup name
-    if "/" in candidate_id and candidate_id.rsplit("/", 1)[1] == lookup_model:
-        return True
-    return False
+    return bool(_model_id_aliases(candidate_id) & _model_id_aliases(lookup_model))
 
 
 def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Optional[int]:
@@ -1797,15 +1822,38 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                 resp = client.get(f"{lmstudio_url}/api/v1/models")
                 if resp.status_code == 200:
                     data = resp.json()
-                    for m in data.get("models", []):
-                        if _model_id_matches(m.get("key", ""), model) or _model_id_matches(m.get("id", ""), model):
-                            # Prefer loaded instance context (actual runtime value)
-                            for inst in m.get("loaded_instances", []):
-                                cfg = inst.get("config", {})
-                                ctx = cfg.get("context_length")
-                                if ctx and isinstance(ctx, (int, float)):
-                                    return int(ctx)
-                            break
+                    models_list = data.get("models", [])
+                    # Exact key/id match first — alias matching strips the
+                    # publisher namespace and "-mtp", so a bare configured name
+                    # can match several entries and list order would pick the
+                    # winner (adopting the wrong model's context).
+                    wanted = str(model or "").strip().lower()
+                    matched = next(
+                        (
+                            m
+                            for m in models_list
+                            if wanted
+                            and wanted in {str(m.get("key", "")).strip().lower(), str(m.get("id", "")).strip().lower()}
+                        ),
+                        None,
+                    )
+                    if matched is None:
+                        matched = next(
+                            (
+                                m
+                                for m in models_list
+                                if _model_id_matches(m.get("key", ""), model)
+                                or _model_id_matches(m.get("id", ""), model)
+                            ),
+                            None,
+                        )
+                    if matched is not None:
+                        # Prefer loaded instance context (actual runtime value)
+                        for inst in matched.get("loaded_instances", []):
+                            cfg = inst.get("config", {})
+                            ctx = cfg.get("context_length")
+                            if ctx and isinstance(ctx, (int, float)):
+                                return int(ctx)
 
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
             resp = client.get(f"{server_url}/v1/models/{model}")
@@ -1821,12 +1869,17 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
             resp = client.get(f"{server_url}/v1/models")
             if resp.status_code == 200:
                 data = resp.json()
-                models_list = data.get("data", [])
-                for m in models_list:
-                    if _model_id_matches(m.get("id", ""), model):
-                        ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
-                        if ctx and isinstance(ctx, (int, float)):
-                            return int(ctx)
+                openai_models = data.get("data", [])
+                wanted = str(model or "").strip().lower()
+                # Exact id match first; fall back to alias matching only when
+                # nothing matches exactly (see the namespace-collision note above).
+                candidates = [m for m in openai_models if str(m.get("id", "")).strip().lower() == wanted] or [
+                    m for m in openai_models if _model_id_matches(m.get("id", ""), model)
+                ]
+                for m in candidates:
+                    ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
+                    if ctx and isinstance(ctx, (int, float)):
+                        return int(ctx)
     except Exception:
         pass
 
@@ -2176,7 +2229,7 @@ def get_model_context_length(
     # LM Studio is excluded — its loaded context length is transient (the
     # user can reload the model with a different context_length at any time
     # via /api/v1/models/load), so a stale cached value would mask reloads.
-    if base_url and not _skip_persistent_context_cache(base_url, provider):
+    if base_url and not _skip_persistent_context_cache(base_url, provider, api_key=api_key):
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
             # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
@@ -2289,14 +2342,14 @@ def get_model_context_length(
             # 404/405 quickly.  Fall through on failure.
             ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
             if ctx is not None:
-                if not _skip_persistent_context_cache(base_url, provider):
+                if not _skip_persistent_context_cache(base_url, provider, api_key=api_key):
                     save_context_length(model, base_url, ctx)
                 return ctx
             # 3. Try querying local server directly
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
                 if local_ctx and local_ctx > 0:
-                    if not _skip_persistent_context_cache(base_url, provider):
+                    if not _skip_persistent_context_cache(base_url, provider, api_key=api_key):
                         _maybe_cache_local_context_length(model, base_url, local_ctx)
                     return local_ctx
             logger.info(
@@ -2411,7 +2464,7 @@ def get_model_context_length(
         if not _skip_ollama_probe:
             ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
             if ctx is not None:
-                if not _skip_persistent_context_cache(base_url, provider):
+                if not _skip_persistent_context_cache(base_url, provider, api_key=api_key):
                     save_context_length(model, base_url, ctx)
                 return ctx
     # 5f. OpenRouter live /models metadata — authoritative for OpenRouter-routed
@@ -2477,7 +2530,7 @@ def get_model_context_length(
     if base_url and is_local_endpoint(base_url):
         local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
         if local_ctx and local_ctx > 0:
-            if not _skip_persistent_context_cache(base_url, provider):
+            if not _skip_persistent_context_cache(base_url, provider, api_key=api_key):
                 _maybe_cache_local_context_length(model, base_url, local_ctx)
             return local_ctx
 

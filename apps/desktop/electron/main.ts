@@ -8052,6 +8052,11 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
   return `data:${mimeTypeForPath(resolvedPath)};base64,${data.toString('base64')}`
 })
 
+// The LOCAL hermes home, for features that live on the desktop's own disk.
+// Runtime plugins need it when the gateway's public /api/status withholds
+// `hermes_home` (auth-gated remote binds strip it) — see runtime-loader.ts.
+ipcMain.handle('hermes:getHermesHome', () => HERMES_HOME)
+
 ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
     maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,

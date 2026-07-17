@@ -54,43 +54,10 @@ import {
   transferMayContainImage,
   uploadChatImage,
 } from "@/lib/chatImagePaste";
+import { ptyAttachToken } from "@/lib/pty-token";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
-
-// Stable per-browser token identifying THIS chat tab's keep-alive PTY session.
-// Sent as ?attach=; lets a refresh/disconnect reattach to the same live process
-// instead of spawning a fresh one. Per-localStorage, so other devices can't grab it.
-// ``rotate`` mints a new token — used when the user explicitly starts a fresh
-// session so the old keep-alive PTY is NOT reattached (the registry reaps it).
-// ``scope`` (e.g. "profile\0resume") scopes the token to a profile+session
-// combination so switching either one forces a new PTY spawn instead of
-// reattaching to a stale PTY with the wrong HERMES_HOME / session.
-const PTY_ATTACH_TOKEN_BASE = "hermes.pty.token";
-function ptyAttachToken(rotate = false, scope = ""): string {
-  const key = scope
-    ? `${PTY_ATTACH_TOKEN_BASE}.${scope}`
-    : `${PTY_ATTACH_TOKEN_BASE}.chat`;
-  let t = "";
-  if (!rotate) {
-    try {
-      t = window.localStorage.getItem(key) ?? "";
-    } catch {
-      /* private mode / storage blocked */
-    }
-  }
-  if (!t) {
-    const a = new Uint8Array(16);
-    crypto.getRandomValues(a);
-    t = Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
-    try {
-      window.localStorage.setItem(key, t);
-    } catch {
-      /* ignore */
-    }
-  }
-  return t;
-}
 
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
 // (subscriber).  Generated once per mount so a tab refresh starts a fresh

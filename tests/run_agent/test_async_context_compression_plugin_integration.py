@@ -15,6 +15,7 @@ from unittest.mock import patch
 from agent.async_context_compression import (
     BackgroundCompressionConfig,
     PreparedCompressionCandidate,
+    PrepareResult,
     maybe_prepare_background_compression,
 )
 from agent.context_compressor import SUMMARY_PREFIX, ContextCompressor
@@ -154,8 +155,11 @@ class TestBuiltinCompressorPreparation:
         ):
             prepared = comp.prepare_compression(msgs, current_tokens=150_000)
 
-        assert prepared is not None
-        assert len(prepared) < len(msgs)
+        assert isinstance(prepared, PrepareResult)
+        # No aux provider means the deterministic fallback summary was used —
+        # surfaced as candidate metadata, not hidden.
+        assert prepared.used_fallback is True
+        assert len(prepared.messages) < len(msgs)
         # The live input list and its dicts are untouched.
         assert msgs == snapshot
         # The live compressor never ran compress(): every mutable field is

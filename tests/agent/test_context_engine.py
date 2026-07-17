@@ -130,6 +130,20 @@ class TestDefaults:
         assert status["last_prompt_tokens"] == 0
         assert status["usage_percent"] >= 0
 
+    def test_default_background_preparation_hooks_are_noop(self):
+        """Engines written before background compression must stay inert:
+        can_prepare_compression defaults False (never scheduled), and the
+        prepare/adopt hooks default to None-returning no-ops."""
+        engine = StubEngine()
+        msgs = [{"role": "user", "content": "hi"}]
+        assert engine.can_prepare_compression(msgs) is False
+        assert engine.can_prepare_compression(msgs, current_tokens=120_000) is False
+        assert engine.prepare_compression(msgs) is None
+        assert engine.prepare_compression(
+            msgs, current_tokens=120_000, focus_topic="x"
+        ) is None
+        assert engine.adopt_prepared_state(object()) is None
+
     def test_on_session_reset(self):
         engine = StubEngine()
         engine.last_prompt_tokens = 999

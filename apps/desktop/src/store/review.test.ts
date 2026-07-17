@@ -377,6 +377,7 @@ describe('refreshShipInfo', () => {
       ghReady: true,
       pr: { url: 'https://example.com/pr/3' }
     } as HermesReviewShipInfo
+
     stubReview({ shipInfo: vi.fn(async () => info) })
 
     await refreshShipInfo()

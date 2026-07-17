@@ -1946,7 +1946,17 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
                 api_msg.pop(internal_key, None)
             if _needs_sanitize:
-                agent._sanitize_tool_calls_for_strict_api(api_msg, model=agent.model)
+                # In MoA mode, agent.model is the virtual preset name,
+                # not the actual aggregator model.  Resolve the real
+                # aggregator model so Gemini preserves thought_signature.
+                _sanitize_model = agent.model
+                if agent.provider == "moa":
+                    _moa_client = getattr(agent, "client", None)
+                    if _moa_client is not None:
+                        _agg_slot = getattr(_moa_client, "last_aggregator_slot", None)
+                        if _agg_slot and _agg_slot.get("model"):
+                            _sanitize_model = _agg_slot["model"]
+                agent._sanitize_tool_calls_for_strict_api(api_msg, model=_sanitize_model)
             api_messages.append(api_msg)
 
         effective_system = agent._cached_system_prompt or ""

@@ -1103,7 +1103,16 @@ def run_conversation(
             # Uses new dicts so the internal messages list retains the fields
             # for Codex Responses compatibility.
             if agent._should_sanitize_tool_calls():
-                agent._sanitize_tool_calls_for_strict_api(api_msg, model=agent.model)
+                # In MoA mode, agent.model is the virtual preset name
+                # (e.g. "closed"), not the actual aggregator model.  Use
+                # the resolved aggregator model so Gemini aggregators
+                # correctly preserve thought_signature (extra_content).
+                _sanitize_model = agent.model
+                if agent.provider == "moa" and moa_config:
+                    _agg = moa_config.get("aggregator") or {}
+                    if _agg.get("model"):
+                        _sanitize_model = _agg["model"]
+                agent._sanitize_tool_calls_for_strict_api(api_msg, model=_sanitize_model)
             # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
             # The signature field helps maintain reasoning continuity
             api_messages.append(api_msg)

@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.session import SessionSource
 
 # The matrix adapter module is importable without mautrix installed
 # (module-level imports use try/except with stubs).  No need for
@@ -15,17 +17,20 @@ from gateway.config import PlatformConfig
 # needing real mautrix APIs mock them individually.
 
 
-def _make_adapter(tmp_path=None):
+def _make_adapter(tmp_path=None, extra=None):
     """Create a MatrixAdapter with mocked config."""
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
+    config_extra = {
+        "homeserver": "https://matrix.example.org",
+        "user_id": "@hermes:example.org",
+    }
+    if extra:
+        config_extra.update(extra)
     config = PlatformConfig(
         enabled=True,
         token="syt_test_token",
-        extra={
-            "homeserver": "https://matrix.example.org",
-            "user_id": "@hermes:example.org",
-        },
+        extra=config_extra,
     )
     adapter = MatrixAdapter(config)
     adapter._text_batch_delay_seconds = 0  # disable batching for tests
@@ -46,6 +51,7 @@ def _make_event(
     room_id="!room1:example.org",
     formatted_body=None,
     thread_id=None,
+    relates_to=None,
     mention_user_ids=None,
 ):
     """Create a fake room message event.
@@ -62,7 +68,7 @@ def _make_event(
     if mention_user_ids is not None:
         content["m.mentions"] = {"user_ids": mention_user_ids}
 
-    relates_to = {}
+    relates_to = dict(relates_to or {})
     if thread_id:
         relates_to["rel_type"] = "m.thread"
         relates_to["event_id"] = thread_id
@@ -76,6 +82,23 @@ def _make_event(
         timestamp=int(time.time() * 1000),
         content=content,
     )
+
+
+class _FakeSessionEntry:
+    session_id = "matrix-room-session"
+
+
+class _FakeSessionStore:
+    def __init__(self):
+        self.sources = []
+        self.messages = []
+
+    def get_or_create_session(self, source):
+        self.sources.append(source)
+        return _FakeSessionEntry()
+
+    def append_to_transcript(self, session_id, message, skip_db=False):
+        self.messages.append((session_id, message, skip_db))
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +299,604 @@ async def test_require_mention_default_ignores_unmentioned(monkeypatch):
 
     await adapter._on_room_message(event)
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unmentioned_room_messages_can_be_observed_without_dispatching(monkeypatch):
+    """Observed Matrix room chatter is persisted but does not dispatch the agent."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
+
+    adapter = _make_adapter(extra={
+        "allowed_rooms": ["!room1:example.org"],
+        "observe_unmentioned_group_messages": True,
+    })
+    store = _FakeSessionStore()
+    adapter._session_store = store
+    event = _make_event("side chatter", sender="@alice:example.org", event_id="$evt-observed")
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_not_awaited()
+    assert len(store.messages) == 1
+    session_id, message, skip_db = store.messages[0]
+    assert session_id == "matrix-room-session"
+    assert skip_db is False
+    assert message["role"] == "user"
+    assert message["content"] == "[alice|@alice:example.org]\nside chatter"
+    assert message["observed"] is True
+    assert message["message_id"] == "$evt-observed"
+    assert store.sources[0].chat_id == "!room1:example.org"
+    assert store.sources[0].chat_type == "group"
+    assert store.sources[0].user_id is None
+    assert store.sources[0].user_name is None
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_room_messages_are_not_observed(monkeypatch):
+    """Direct transcript persistence must use the gateway's full user allowlist."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    adapter = _make_adapter(
+        extra={
+            "allowed_rooms": ["!room1:example.org"],
+            "observe_unmentioned_group_messages": True,
+        }
+    )
+    store = _FakeSessionStore()
+    adapter._session_store = store
+    adapter.set_authorization_check(lambda _user, _chat_type, _chat_id: False)
+
+    await adapter._on_room_message(
+        _make_event("private side chatter", sender="@mallory:example.org")
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    assert store.sources == []
+    assert store.messages == []
+
+
+@pytest.mark.asyncio
+async def test_observe_setting_does_not_override_disabled_mention_gate(monkeypatch):
+    """When mention gating is off, messages remain normal dispatched turns."""
+    monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
+    adapter = _make_adapter(
+        extra={
+            "allowed_rooms": ["!room1:example.org"],
+            "observe_unmentioned_group_messages": True,
+        }
+    )
+    store = _FakeSessionStore()
+    adapter._session_store = store
+
+    await adapter._on_room_message(_make_event("ordinary room request"))
+
+    adapter.handle_message.assert_awaited_once()
+    message = adapter.handle_message.await_args.args[0]
+    assert message.text == "ordinary room request"
+    assert message.channel_prompt is None
+    assert store.messages == []
+
+
+@pytest.mark.asyncio
+async def test_unmentioned_bot_thread_message_is_observed_when_thread_mentions_required(
+    monkeypatch,
+):
+    """The stricter thread mention gate stores context without dispatching."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    adapter = _make_adapter(
+        extra={
+            "allowed_rooms": ["!room1:example.org"],
+            "observe_unmentioned_group_messages": True,
+            "thread_require_mention": True,
+        }
+    )
+    adapter._threads.mark("$thread-root")
+    store = _FakeSessionStore()
+    adapter._session_store = store
+
+    await adapter._on_room_message(
+        _make_event("thread side chatter", thread_id="$thread-root")
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    assert len(store.messages) == 1
+    assert store.sources[0].thread_id == "$thread-root"
+    assert store.messages[0][1]["observed"] is True
+
+
+@pytest.mark.asyncio
+async def test_observed_room_context_respects_group_session_isolation(monkeypatch):
+    """Addressed users share observed context only when group sessions are shared."""
+    from gateway.session import build_session_key
+
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter(extra={
+        "allowed_rooms": ["!room1:example.org"],
+        "observe_unmentioned_group_messages": True,
+    })
+    await adapter._on_room_message(
+        _make_event(
+            "@hermes:example.org what did Alice say?",
+            sender="@bob:example.org",
+            event_id="$bob",
+        )
+    )
+    await adapter._on_room_message(
+        _make_event(
+            "@hermes:example.org summarize that",
+            sender="@alice:example.org",
+            event_id="$alice",
+        )
+    )
+
+    bob_event, alice_event = [call.args[0] for call in adapter.handle_message.await_args_list]
+    identity = await adapter._resolve_room_identity("!room1:example.org")
+    observed_source = adapter._matrix_observe_shared_source(identity, "group", None)
+
+    bob_isolated = build_session_key(
+        bob_event.source, group_sessions_per_user=True
+    )
+    alice_isolated = build_session_key(
+        alice_event.source, group_sessions_per_user=True
+    )
+    observed_key = build_session_key(
+        observed_source, group_sessions_per_user=True
+    )
+    assert len({bob_isolated, alice_isolated, observed_key}) == 3
+
+    bob_shared = build_session_key(
+        bob_event.source, group_sessions_per_user=False
+    )
+    alice_shared = build_session_key(
+        alice_event.source, group_sessions_per_user=False
+    )
+    assert bob_shared == alice_shared == observed_key
+    assert bob_event.source.user_id == "@bob:example.org"
+    assert alice_event.source.user_id == "@alice:example.org"
+    assert bob_event.text == "[bob|@bob:example.org]\nwhat did Alice say?"
+    assert "observed Matrix room context" in bob_event.channel_prompt
+    assert "current addressed message" in bob_event.channel_prompt
+    assert "Your own Matrix identity is @hermes:example.org" in bob_event.channel_prompt
+
+
+@pytest.mark.asyncio
+async def test_observed_room_context_respects_thread_session_isolation(monkeypatch):
+    """Thread isolation wins even when root group sessions are shared."""
+    from gateway.session import build_session_key
+
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    adapter = _make_adapter(extra={
+        "allowed_rooms": ["!room1:example.org"],
+        "observe_unmentioned_group_messages": True,
+    })
+    await adapter._on_room_message(
+        _make_event(
+            "@hermes:example.org first",
+            sender="@bob:example.org",
+            event_id="$bob-thread",
+            thread_id="$thread-root",
+        )
+    )
+    await adapter._on_room_message(
+        _make_event(
+            "@hermes:example.org second",
+            sender="@alice:example.org",
+            event_id="$alice-thread",
+            thread_id="$thread-root",
+        )
+    )
+
+    bob_event, alice_event = [call.args[0] for call in adapter.handle_message.await_args_list]
+    identity = await adapter._resolve_room_identity("!room1:example.org")
+    observed_source = adapter._matrix_observe_shared_source(
+        identity, "group", "$thread-root"
+    )
+
+    bob_isolated = build_session_key(
+        bob_event.source,
+        group_sessions_per_user=False,
+        thread_sessions_per_user=True,
+    )
+    alice_isolated = build_session_key(
+        alice_event.source,
+        group_sessions_per_user=False,
+        thread_sessions_per_user=True,
+    )
+    observed_key = build_session_key(
+        observed_source,
+        group_sessions_per_user=False,
+        thread_sessions_per_user=True,
+    )
+    assert len({bob_isolated, alice_isolated, observed_key}) == 3
+
+    bob_shared = build_session_key(
+        bob_event.source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
+    alice_shared = build_session_key(
+        alice_event.source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
+    shared_observed_key = build_session_key(
+        observed_source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
+    assert bob_shared == alice_shared == shared_observed_key
+
+
+@pytest.mark.asyncio
+async def test_observed_room_sources_keep_profile_and_project_boundaries(monkeypatch):
+    """Shared observation never collapses distinct rooms or multiplexed profiles."""
+    from gateway.session import build_session_key
+
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    adapter = _make_adapter(
+        extra={
+            "allowed_rooms": ["!project-a:example.org", "!project-b:example.org"],
+            "observe_unmentioned_group_messages": True,
+        }
+    )
+    adapter._gateway_profile = "coder"
+
+    identity_a = await adapter._resolve_room_identity("!project-a:example.org")
+    identity_b = await adapter._resolve_room_identity("!project-b:example.org")
+    source_a = adapter._matrix_observe_shared_source(identity_a, "group", None)
+    source_b = adapter._matrix_observe_shared_source(identity_b, "group", None)
+
+    key_a = build_session_key(source_a, profile=source_a.profile)
+    key_b = build_session_key(source_b, profile=source_b.profile)
+    assert source_a.profile == source_b.profile == "coder"
+    assert key_a.startswith("agent:coder:matrix:group:")
+    assert key_a != key_b
+
+
+@pytest.mark.asyncio
+async def test_observed_room_context_marker_does_not_double_prefix_sender():
+    """The context marker suppresses only redundant display attribution."""
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(group_sessions_per_user=False)
+    runner.adapters = {}
+
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id="!room1:example.org",
+        chat_type="group",
+        user_id="@bob:example.org",
+        user_name="bob",
+    )
+    event = MessageEvent(
+        text="[bob|@bob:example.org]\nwhat did Alice say?",
+        source=source,
+        channel_prompt="observed Matrix room context",
+    )
+
+    text = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert text == "[bob|@bob:example.org]\nwhat did Alice say?"
+    assert not text.startswith("[bob] [bob|@bob:example.org]")
+
+
+@pytest.mark.asyncio
+async def test_observed_room_context_overlays_shared_rows_for_isolated_matrix_thread():
+    """An isolated Matrix turn receives only passive room context, not other users' history."""
+    from gateway.run import GatewayRunner, _build_gateway_agent_history
+    from gateway.session import build_session_key
+
+    config = GatewayConfig(
+        group_sessions_per_user=True,
+        thread_sessions_per_user=True,
+    )
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id="!room1:example.org",
+        chat_type="group",
+        thread_id="$thread-root",
+        user_id="@bob:example.org",
+        user_name="bob",
+        profile="coder",
+    )
+    active_key = build_session_key(
+        source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=True,
+        profile="coder",
+    )
+    shared_source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id=source.chat_id,
+        chat_type=source.chat_type,
+        thread_id=source.thread_id,
+        profile=source.profile,
+    )
+    shared_key = build_session_key(
+        shared_source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=True,
+        profile="coder",
+    )
+    assert active_key != shared_key
+
+    class FakeStore:
+        def __init__(self):
+            self.peeked_keys = []
+
+        def _generate_session_key(self, candidate):
+            return build_session_key(
+                candidate,
+                group_sessions_per_user=True,
+                thread_sessions_per_user=True,
+                profile="coder",
+            )
+
+        def peek_session_id(self, key):
+            self.peeked_keys.append(key)
+            return "shared-observed-session" if key == shared_key else None
+
+        def load_transcript(self, session_id):
+            assert session_id == "shared-observed-session"
+            observed_rows = [
+                {
+                    "role": "user",
+                    "content": f"[alice|@alice:example.org]\nroom context {index}",
+                    "observed": True,
+                }
+                for index in range(52)
+            ]
+            return [
+                {
+                    "role": "user",
+                    "content": "[alice|@alice:example.org]\nprivate addressed history",
+                    "observed": False,
+                },
+                {"role": "assistant", "content": "private reply", "observed": False},
+                *observed_rows,
+            ]
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = config
+    runner.session_store = FakeStore()
+    event = MessageEvent(
+        text="[bob|@bob:example.org]\nwhat did Alice say?",
+        source=source,
+        channel_prompt="observed Matrix room context",
+    )
+    session_entry = SimpleNamespace(session_key=active_key, session_id="bob-session")
+
+    observed_history = await runner._load_matrix_observed_context_history(
+        event=event,
+        source=source,
+        session_entry=session_entry,
+        active_history=[],
+    )
+
+    assert runner.session_store.peeked_keys == [shared_key]
+    assert len(observed_history) == 50
+    assert [row["content"] for row in observed_history] == [
+        f"[alice|@alice:example.org]\nroom context {index}"
+        for index in range(2, 52)
+    ]
+
+    private_history = [
+        {"role": "user", "content": "Bob's earlier private question"},
+        {"role": "assistant", "content": "Bob's earlier private answer"},
+    ]
+    agent_history, observed_context = _build_gateway_agent_history(
+        [*private_history, *observed_history],
+        channel_prompt=event.channel_prompt,
+    )
+
+    assert [message["content"] for message in agent_history] == [
+        "Bob's earlier private question",
+        "Bob's earlier private answer",
+    ]
+    assert observed_context == "\n".join(row["content"] for row in observed_history)
+
+
+@pytest.mark.asyncio
+async def test_observed_room_context_excludes_chatter_before_previous_addressed_turn():
+    """Only room chatter since this participant's last addressed turn is overlaid."""
+    from gateway.run import GatewayRunner
+    from gateway.session import build_session_key
+
+    config = GatewayConfig(group_sessions_per_user=True)
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id="!room1:example.org",
+        chat_type="group",
+        user_id="@bob:example.org",
+        user_name="bob",
+    )
+    shared_source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id=source.chat_id,
+        chat_type=source.chat_type,
+    )
+    shared_key = build_session_key(
+        shared_source,
+        group_sessions_per_user=True,
+    )
+
+    class FakeStore:
+        def _generate_session_key(self, candidate):
+            return build_session_key(candidate, group_sessions_per_user=True)
+
+        def peek_session_id(self, key):
+            return "shared-observed-session" if key == shared_key else None
+
+        def load_transcript(self, session_id):
+            assert session_id == "shared-observed-session"
+            return [
+                {
+                    "role": "user",
+                    "content": "already seen room chatter",
+                    "observed": True,
+                    "timestamp": "2026-07-13T10:00:00+00:00",
+                },
+                {
+                    "role": "user",
+                    "content": "new room chatter",
+                    "observed": True,
+                    "timestamp": "2026-07-13T10:02:00+00:00",
+                },
+            ]
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = config
+    runner.session_store = FakeStore()
+    event = MessageEvent(
+        text="[bob|@bob:example.org]\nsecond addressed question",
+        source=source,
+        channel_prompt="observed Matrix room context",
+    )
+    session_entry = SimpleNamespace(
+        session_key=build_session_key(source, group_sessions_per_user=True),
+        session_id="bob-session",
+    )
+
+    observed_history = await runner._load_matrix_observed_context_history(
+        event=event,
+        source=source,
+        session_entry=session_entry,
+        active_history=[
+            {
+                "role": "user",
+                "content": "first addressed question",
+                # Addressed gateway turns are persisted as Unix seconds while
+                # Matrix observations use ISO-8601 timestamps.
+                "timestamp": 1783936860.0,
+            },
+            {
+                "role": "assistant",
+                "content": "first answer",
+                "timestamp": "2026-07-13T10:01:01+00:00",
+            },
+        ],
+    )
+
+    assert [row["content"] for row in observed_history] == ["new room chatter"]
+
+
+@pytest.mark.asyncio
+async def test_observed_room_context_preserves_slash_commands(monkeypatch):
+    """Sender attribution must not hide slash commands from gateway command handling."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter(extra={
+        "allowed_rooms": ["!room1:example.org"],
+        "observe_unmentioned_group_messages": True,
+    })
+    event = _make_event("@hermes:example.org /status now", sender="@bob:example.org")
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.message_type == MessageType.COMMAND
+    assert msg.text == "/status now"
+    assert msg.get_command() == "status"
+
+
+@pytest.mark.asyncio
+async def test_observed_room_context_strips_reply_fallback_before_sender_prefix(monkeypatch):
+    """Matrix quote fallback cleanup must run before observed-context attribution."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter(extra={
+        "allowed_rooms": ["!room1:example.org"],
+        "observe_unmentioned_group_messages": True,
+    })
+    event = _make_event(
+        "> <@alice:example.org> quoted old text\n> still quote\n\n@hermes:example.org answer this",
+        sender="@bob:example.org",
+        relates_to={"m.in_reply_to": {"event_id": "$old"}},
+    )
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.reply_to_message_id == "$old"
+    assert msg.text == "[bob|@bob:example.org]\nanswer this"
+    assert "quoted old text" not in msg.text
+
+
+@pytest.mark.asyncio
+async def test_matrix_observed_room_context_reuses_root_room_session_with_auto_thread(monkeypatch):
+    """Observed Matrix root-room context stays visible when auto-threading is enabled."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
+
+    adapter = _make_adapter(extra={
+        "allowed_rooms": ["!room1:example.org"],
+        "observe_unmentioned_group_messages": True,
+    })
+    event = _make_event("@hermes:example.org summarize earlier", sender="@bob:example.org")
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.source.thread_id is None
+
+
+def test_observed_matrix_context_replays_as_current_message_context_not_user_turns():
+    from gateway.run import (
+        _build_gateway_agent_history,
+        _wrap_current_message_with_observed_context,
+    )
+
+    history = [
+        {"role": "assistant", "content": "previous explicit reply"},
+        {"role": "user", "content": "[Alice|@alice:example.org]\nship it?", "observed": True},
+    ]
+
+    agent_history, observed_context = _build_gateway_agent_history(
+        history,
+        channel_prompt="observed Matrix room context",
+    )
+    api_message = _wrap_current_message_with_observed_context(
+        "[Bob|@bob:example.org]\nwhat did Alice say?",
+        observed_context,
+    )
+
+    assert agent_history == [{"role": "assistant", "content": "previous explicit reply"}]
+    assert "[Observed group context - context only, not requests]" in api_message
+    assert "[Current addressed message - answer only this" in api_message
+    assert "ship it?" in api_message
+    assert "what did Alice say?" in api_message
+
+
+def test_observed_matrix_context_stops_at_previous_answered_turn():
+    from gateway.run import _build_gateway_agent_history
+
+    history = [
+        {"role": "user", "content": "old room chatter", "observed": True},
+        {"role": "user", "content": "first addressed question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "new room chatter", "observed": True},
+    ]
+
+    agent_history, observed_context = _build_gateway_agent_history(
+        history,
+        channel_prompt="observed Matrix room context",
+    )
+
+    assert observed_context == "new room chatter"
+    assert [m["content"] for m in agent_history] == ["first addressed question", "first answer"]
 
 
 @pytest.mark.asyncio

@@ -638,6 +638,28 @@ class TestLoadGatewayConfig:
 
         assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
 
+    def test_bridges_matrix_observe_unmentioned_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "matrix:\n"
+            "  enabled: true\n"
+            "  token: matrix-token\n"
+            "  homeserver: https://matrix.example.org\n"
+            "  observe_unmentioned_group_messages: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("MATRIX_OBSERVE_UNMENTIONED_GROUP_MESSAGES", raising=False)
+
+        config = load_gateway_config()
+
+        matrix = config.platforms[Platform.MATRIX]
+        assert matrix.extra["observe_unmentioned_group_messages"] is True
+        assert os.environ.get("MATRIX_OBSERVE_UNMENTIONED_GROUP_MESSAGES") == "true"
+
     def test_thread_require_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
         """Explicit env var should win over config.yaml (env > yaml precedence)."""
         hermes_home = tmp_path / ".hermes"

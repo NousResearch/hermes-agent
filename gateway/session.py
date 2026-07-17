@@ -968,12 +968,12 @@ def build_session_key(
     if source.thread_id:
         key_parts.append(source.thread_id)
 
-    # In threads, default to shared sessions (all participants see the same
-    # conversation).  Per-user isolation only applies when explicitly enabled
-    # via thread_sessions_per_user, or when there is no thread (regular group).
-    isolate_user = group_sessions_per_user
-    if source.thread_id and not thread_sessions_per_user:
-        isolate_user = False
+    # Thread isolation is controlled independently from root group/channel
+    # isolation. An explicit thread_sessions_per_user=True must still isolate
+    # participants when root group sessions are configured as shared.
+    isolate_user = (
+        thread_sessions_per_user if source.thread_id else group_sessions_per_user
+    )
 
     if isolate_user and participant_id:
         key_parts.append(str(participant_id))

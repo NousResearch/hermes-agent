@@ -800,22 +800,72 @@ def _build_replay_entry(
 
 
 _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
-_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
+_MATRIX_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Matrix room context"
+_MAX_MATRIX_OBSERVED_CONTEXT_ROWS = 50
+_OBSERVED_CONTEXT_PROMPT_MARKERS = (
+    _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER,
+    _MATRIX_OBSERVED_CONTEXT_PROMPT_MARKER,
+    "observed group context",
+)
+_TELEGRAM_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
+_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed group context - context only, not requests]"
 _CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
 
 
-def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool:
-    """Return True for Telegram group turns that may include observed chatter.
+class _ObservedContext(str):
+    """Observed context text plus the API-only wrapper header to use for it."""
 
-    Telegram's observe-unmentioned mode persists skipped group chatter so a
-    later @mention can see it. Those rows must not replay as ordinary user
-    turns: a weak wake word like ``@bot cambio`` should not make the model treat
-    old unmentioned chatter as pending work. The Telegram adapter marks these
-    turns with a channel prompt; this helper keeps the run-path check explicit
-    and unit-testable.
+    def __new__(cls, value: str, header: str):
+        obj = str.__new__(cls, value)
+        obj.header = header
+        return obj
+
+
+def _observed_context_header_for_prompt(channel_prompt: Optional[str]) -> Optional[str]:
+    """Return the context-only wrapper header for observed group/room prompts."""
+
+    if not channel_prompt:
+        return None
+    if _MATRIX_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt:
+        return _OBSERVED_GROUP_CONTEXT_HEADER
+    if _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt:
+        return _TELEGRAM_OBSERVED_GROUP_CONTEXT_HEADER
+    if any(marker in channel_prompt for marker in _OBSERVED_CONTEXT_PROMPT_MARKERS):
+        return _OBSERVED_GROUP_CONTEXT_HEADER
+    return None
+
+
+def _uses_observed_group_context(channel_prompt: Optional[str]) -> bool:
+    """Return True for gateway turns that may include observed group/room chatter."""
+
+    return _observed_context_header_for_prompt(channel_prompt) is not None
+
+
+def _matrix_observed_context_source(
+    source: "SessionSource",
+    channel_prompt: Optional[str],
+) -> Optional["SessionSource"]:
+    """Return the shared Matrix room/thread source for an observed-context turn.
+
+    Matrix keeps an addressed turn in the sender's normal session when
+    per-user isolation is enabled, while passive room messages are stored in
+    a room/thread session without a participant.  Derive that latter source
+    from the trusted inbound source instead of accepting an adapter-provided
+    routing key, so the backfill cannot cross a room, thread, or profile.
     """
-
-    return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
+    if (
+        source.platform != Platform.MATRIX
+        or not channel_prompt
+        or _MATRIX_OBSERVED_CONTEXT_PROMPT_MARKER not in channel_prompt
+    ):
+        return None
+    return dataclasses.replace(
+        source,
+        user_id=None,
+        user_name=None,
+        user_id_alt=None,
+        message_id=None,
+    )
 
 
 def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
@@ -846,9 +896,9 @@ def _build_gateway_agent_history(
 ) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """Convert stored gateway transcript rows into agent replay messages.
 
-    Observed Telegram group rows are returned as API-only context for the
+    Observed group/room rows are returned as API-only context for the
     current addressed message instead of being replayed as normal prior user
-    turns.  Keeping that context out of ``conversation_history`` avoids
+    turns. Keeping that context out of ``conversation_history`` avoids
     consecutive-user repair merging it with the live user turn and then hiding
     the current message behind ``history_offset`` during persistence.
 
@@ -865,20 +915,16 @@ def _build_gateway_agent_history(
     _msg_tz = _get_msg_tz()
     agent_history: List[Dict[str, Any]] = []
     observed_group_context: List[str] = []
-    separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
+    observed_context_header = _observed_context_header_for_prompt(channel_prompt)
+    separate_observed_context = observed_context_header is not None
 
     for msg in history or []:
         role = msg.get("role")
         if not role:
             continue
 
-        # Skip metadata entries (tool definitions, session info) -- these are
-        # for transcript logging, not for the LLM.
-        if role in {"session_meta",}:
-            continue
-
-        # Skip system messages -- the agent rebuilds its own system prompt.
-        if role == "system":
+        # Skip metadata/system entries -- these are not replayed to the LLM.
+        if role in {"session_meta", "system"}:
             continue
 
         content = msg.get("content")
@@ -887,6 +933,13 @@ def _build_gateway_agent_history(
         if separate_observed_context and msg.get("observed") and role == "user" and content:
             observed_group_context.append(str(content).strip())
             continue
+
+        if separate_observed_context and role == "user":
+            # Observed context is a prelude to the next addressed turn, not a
+            # permanent memory replay. Once a normal addressed user turn is in
+            # the stored transcript, older observed chatter has already had its
+            # chance to inform that turn and should not be injected forever.
+            observed_group_context = []
 
         # Rich agent messages (tool_calls, tool results) must be passed through
         # intact so the API sees valid assistant→tool sequences.
@@ -939,8 +992,10 @@ def _build_gateway_agent_history(
         agent_history, now=time.time()
     )
 
-    observed_context = "\n".join(observed_group_context).strip() or None
-    return agent_history, observed_context
+    observed_text = "\n".join(observed_group_context).strip()
+    if observed_text and observed_context_header:
+        return agent_history, _ObservedContext(observed_text, observed_context_header)
+    return agent_history, None
 
 
 def _select_cached_agent_history(
@@ -966,14 +1021,19 @@ def _select_cached_agent_history(
 
 
 def _wrap_current_message_with_observed_context(message: Any, observed_context: Optional[str]) -> Any:
-    """Prepend observed Telegram context to the API-only current user turn."""
+    """Prepend observed context to the API-only current user turn."""
 
     if not observed_context:
         return message
 
+    observed_header = getattr(
+        observed_context,
+        "header",
+        _TELEGRAM_OBSERVED_GROUP_CONTEXT_HEADER,
+    )
     prefix = (
-        f"{_OBSERVED_GROUP_CONTEXT_HEADER}\n"
-        f"{observed_context}\n\n"
+        f"{observed_header}\n"
+        f"{str(observed_context)}\n\n"
         f"{_CURRENT_ADDRESSED_MESSAGE_HEADER}\n"
     )
 
@@ -981,12 +1041,19 @@ def _wrap_current_message_with_observed_context(message: Any, observed_context: 
         return f"{prefix}{message}"
 
     if isinstance(message, list):
-        wrapped = [dict(part) if isinstance(part, dict) else part for part in message]
-        for part in wrapped:
-            if isinstance(part, dict) and part.get("type") == "text":
-                part["text"] = f"{prefix}{part.get('text', '')}"
-                return wrapped
-        return [{"type": "text", "text": prefix.rstrip()}] + wrapped
+        wrapped: list[Any] = []
+        inserted = False
+        for part in message:
+            if not inserted and isinstance(part, dict) and part.get("type") == "text":
+                new_part = dict(part)
+                new_part["text"] = f"{prefix}{part.get('text', '')}"
+                wrapped.append(new_part)
+                inserted = True
+            else:
+                wrapped.append(part)
+        if inserted:
+            return wrapped
+        return [{"type": "text", "text": prefix.rstrip()}] + list(message)
 
     return message
 
@@ -8863,6 +8930,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Stamp every inbound event from this adapter with its profile so
             # the agent turn (and session key) resolve to the right home.
+            adapter._gateway_profile = profile_name
             adapter.set_message_handler(
                 self._make_profile_message_handler(profile_name)
             )
@@ -10721,7 +10789,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             group_sessions_per_user=_group_sessions_per_user,
             thread_sessions_per_user=_thread_sessions_per_user,
         )
-        if _is_shared_multi_user and source.user_name:
+        if (
+            _is_shared_multi_user
+            and source.user_name
+            and not _uses_observed_group_context(event.channel_prompt)
+        ):
             # source.user_name is the platform display name — attacker-
             # influenceable on any platform that lets participants set their
             # own name. Neutralize embedded newlines/control chars before
@@ -11099,6 +11171,101 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             facade = AsyncSessionStore(self.session_store)
             self._async_session_store = facade
         return facade
+
+    async def _load_matrix_observed_context_history(
+        self,
+        *,
+        event: MessageEvent,
+        source: SessionSource,
+        session_entry: Any,
+        active_history: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Load only passive Matrix room rows for an isolated addressed turn.
+
+        The Matrix adapter deliberately persists unmentioned room chatter in a
+        participant-free room/thread session.  When the active addressed turn
+        is participant-isolated, load that shared transcript separately and
+        return only its ``observed=True`` rows.  Keeping this as a per-turn
+        overlay prevents another participant's addressed conversation from
+        entering the active session, its persisted transcript, or hygiene
+        compression.
+        """
+        shared_source = _matrix_observed_context_source(
+            source,
+            getattr(event, "channel_prompt", None),
+        )
+        if shared_source is None:
+            return []
+
+        shared_key = self._session_key_for_source(shared_source)
+        if not shared_key or shared_key == getattr(session_entry, "session_key", None):
+            # The room already uses a shared session, so its transcript is the
+            # active history and needs no separate overlay.
+            return []
+
+        try:
+            shared_session_id = await self.async_session_store.peek_session_id(shared_key)
+        except Exception:
+            logger.debug(
+                "Matrix observed-context session lookup failed for %s",
+                shared_key,
+                exc_info=True,
+            )
+            return []
+        if not shared_session_id or shared_session_id == getattr(session_entry, "session_id", None):
+            return []
+
+        try:
+            shared_history = await self.async_session_store.load_transcript(shared_session_id)
+        except Exception:
+            logger.debug(
+                "Matrix observed-context transcript load failed for %s",
+                shared_key,
+                exc_info=True,
+            )
+            return []
+
+        # The shared room transcript outlives each participant's isolated
+        # conversation.  Use the last addressed user turn already persisted
+        # in this participant's transcript as a durable watermark: chatter
+        # that preceded it has already been offered to the model and must not
+        # be replayed on every later addressed turn.
+        last_addressed_timestamp = _coerce_gateway_timestamp(
+            next(
+                (
+                    message.get("timestamp")
+                    for message in reversed(active_history or [])
+                    if (
+                        isinstance(message, dict)
+                        and message.get("role") == "user"
+                        and not message.get("observed")
+                        and message.get("timestamp") is not None
+                    )
+                ),
+                None,
+            )
+        )
+        observed_rows = [
+            message
+            for message in shared_history or []
+            if (
+                isinstance(message, dict)
+                and bool(message.get("observed"))
+                and (
+                    last_addressed_timestamp is None
+                    or (
+                        (observed_timestamp := _coerce_gateway_timestamp(
+                            message.get("timestamp")
+                        )) is not None
+                        and observed_timestamp > last_addressed_timestamp
+                    )
+                )
+            )
+        ]
+        # This is a prompt-only overlay, not persistent retention. Bound it
+        # here so an isolated room with no recent addressed turn cannot grow
+        # an unbounded one-shot prompt while its shared transcript accumulates.
+        return observed_rows[-_MAX_MATRIX_OBSERVED_CONTEXT_ROWS:]
 
     def _get_cached_session_source(self, session_key: str):
         if not session_key:
@@ -11997,6 +12164,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             run_generation,
         )
 
+        # Matrix observed room chatter lives in a participant-free shared
+        # transcript.  Overlay it only for this agent call when the addressed
+        # participant has an isolated session; never fold it into ``history``
+        # used by session hygiene or later persistence paths.
+        history_for_agent = history
+        observed_matrix_history = await self._load_matrix_observed_context_history(
+            event=event,
+            source=source,
+            session_entry=session_entry,
+            active_history=history,
+        )
+        if observed_matrix_history:
+            history_for_agent = [*history, *observed_matrix_history]
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -12018,7 +12199,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,
-                history=history,
+                history=history_for_agent,
                 source=source,
                 session_id=_run_start_session_id,
                 session_key=session_key,
@@ -19291,7 +19472,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             #      - These must be passed through intact so the API sees valid
             #        assistant→tool sequences (dropping tool_calls causes 500 errors)
             #
-            # Telegram observed group context is handled structurally here:
+            # Observed group/room context is handled structurally here:
             # observed=True transcript rows are withheld from replayable
             # history and attached to the current addressed message as
             # API-only context, so persisted history stores only the real

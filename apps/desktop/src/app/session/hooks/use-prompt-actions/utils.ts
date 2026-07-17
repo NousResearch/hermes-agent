@@ -226,4 +226,11 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
 export interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
   fromQueue?: boolean
+  /** Runtime session id to submit into. Queue drains pass this so a
+   *  backgrounded/source session cannot be replaced by the current foreground
+   *  session between enqueue and drain. */
+  sessionId?: string | null
+  /** Stable stored session id for optimistic/cache updates and stale-runtime
+   *  recovery. Distinct from the runtime session id minted by the gateway. */
+  storedSessionId?: string | null
 }

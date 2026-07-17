@@ -1055,6 +1055,8 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
+    override_request_overrides: Optional[Dict[str, Any]] = None,
+    override_max_tokens: Optional[int] = None,
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -1288,15 +1290,32 @@ def _build_child_agent(
     child_providers_ignored = getattr(parent_agent, "providers_ignored", None)
     child_providers_order = getattr(parent_agent, "providers_order", None)
     child_provider_sort = getattr(parent_agent, "provider_sort", None)
+    child_provider_require_parameters = getattr(
+        parent_agent, "provider_require_parameters", False
+    )
+    child_provider_data_collection = getattr(
+        parent_agent, "provider_data_collection", None
+    ) or ""
     child_openrouter_min_coding_score = getattr(parent_agent, "openrouter_min_coding_score", None)
     if override_provider:
         child_providers_allowed = None
         child_providers_ignored = None
         child_providers_order = None
         child_provider_sort = None
+        child_provider_require_parameters = False
+        child_provider_data_collection = ""
         # Note: openrouter_min_coding_score is model-gated (only emitted on
         # openrouter/pareto-code), so we keep it inherited even when the
         # provider is overridden — it's a no-op on any other model.
+
+    child_max_tokens = (
+        override_max_tokens
+        if override_max_tokens is not None
+        else getattr(parent_agent, "max_tokens", None)
+    )
+    child_optional_kwargs: Dict[str, Any] = {}
+    if isinstance(child_max_tokens, int):
+        child_optional_kwargs["max_tokens"] = child_max_tokens
 
     child = AIAgent(
         base_url=effective_base_url,
@@ -1307,7 +1326,7 @@ def _build_child_agent(
         acp_command=effective_acp_command,
         acp_args=effective_acp_args,
         max_iterations=max_iterations,
-        max_tokens=getattr(parent_agent, "max_tokens", None),
+
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         fallback_model=parent_fallback,
@@ -1326,9 +1345,17 @@ def _build_child_agent(
         providers_ignored=child_providers_ignored,
         providers_order=child_providers_order,
         provider_sort=child_provider_sort,
+        provider_require_parameters=child_provider_require_parameters,
+        provider_data_collection=child_provider_data_collection,
+        request_overrides=(
+            dict(override_request_overrides or {})
+            if override_provider
+            else dict(getattr(parent_agent, "request_overrides", {}) or {})
+        ),
         openrouter_min_coding_score=child_openrouter_min_coding_score,
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
+        **child_optional_kwargs,
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Now the child exists, its session id can ride on every relayed event
@@ -1879,6 +1906,18 @@ def _run_single_child(
 
         child_task_id = _subagent_id or f"subagent-{task_index}-{_uuid.uuid4().hex[:8]}"
         parent_task_id = getattr(parent_agent, "_current_task_id", None)
+        # Seed the child's session-cwd record from the parent's (cwd rearch):
+        # children share the parent's container, and today they inherit the
+        # parent's live env.cwd implicitly. Seeding at spawn preserves that
+        # starting directory while keeping the child's subsequent `cd`s
+        # isolated in its own record (a child's cd no longer bleeds back into
+        # the parent once readers flip to the record store).
+        try:
+            from tools.terminal_tool import get_session_cwd, record_session_cwd
+
+            record_session_cwd(child_task_id, get_session_cwd(parent_task_id))
+        except Exception as e:
+            logger.debug("Child cwd seed failed: %s", e)
         wall_start = time.time()
         parent_reads_snapshot = (
             list(file_state.known_reads(parent_task_id)) if parent_task_id else []
@@ -2500,6 +2539,8 @@ def delegate_task(
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
+                override_request_overrides=creds.get("request_overrides"),
+                override_max_tokens=creds.get("max_output_tokens"),
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
@@ -2815,6 +2856,20 @@ def delegate_task(
                     _session_key = _agent_session_id
         except Exception:
             _origin_ui_session_id = ""
+        if not _session_key:
+            # CLI (single-process) path: the approval contextvar is only bound
+            # during gateway/TUI turns and HERMES_SESSION_KEY is not in the CLI
+            # environment, so the key resolves empty here. Since #64240 the CLI
+            # drains completions through a positive-ownership filter keyed on
+            # the durable AIAgent.session_id — an empty session_key would fail
+            # closed and the CLI could never claim its own completions, while
+            # a restored foreign event with an empty key could leak into any
+            # unfiltered consumer (#64484). Stamp the parent's durable session
+            # id instead; compression rotations are handled on the drain side
+            # via resolve_resume_session_id lineage resolution.
+            _agent_session_id = str(getattr(parent_agent, "session_id", "") or "")
+            if _agent_session_id:
+                _session_key = _agent_session_id
         _parent_session_id = getattr(parent_agent, "session_id", None)
         _child_agents = [c for (_, _, c) in children]
 
@@ -3086,6 +3141,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": None,
             "api_key": None,
             "api_mode": None,
+            "request_overrides": None,
+            "max_output_tokens": None,
         }
 
     # Provider is configured — resolve full credentials
@@ -3114,6 +3171,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
+        "max_output_tokens": runtime.get("max_output_tokens"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }

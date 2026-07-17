@@ -90,10 +90,15 @@ export const ja = defineLocale({
       retry: '再試行',
       repairInstall: 'インストールを修復',
       useLocalGateway: 'ローカルゲートウェイを使用',
+      gatewaySettings: 'ゲートウェイ設定',
+      back: '戻る',
       openLogs: 'ログを開く',
       repairHint: '修復はインストーラーを再実行します。新しいマシンでは数分かかる場合があります。',
-      remoteSignInHint:
-        'ゲートウェイのログインウィンドウを開きます。代わりにバンドルされたバックエンドに切り替えるには「ローカルゲートウェイを使用」を選択してください。',
+      remoteSignInHint: signInLabel =>
+        `保存済みのリモートブラウザセッションからサインアウトし、${signInLabel}を開きます。代わりにバンドルされたバックエンドに切り替えるには「ローカルゲートウェイを使用」を選択してください。`,
+      signOutAndSignIn: 'サインアウトして再サインイン',
+      remoteFailureHint:
+        '「ゲートウェイ設定」でゲートウェイの URL とサインインを確認するか、ローカルゲートウェイに切り替えてください。',
       hideRecentLogs: '最近のログを非表示',
       showRecentLogs: '最近のログを表示',
       signedInTitle: 'サインインしました',
@@ -212,6 +217,7 @@ export const ja = defineLocale({
       providerApiKeys: 'API キー',
       gateway: 'ゲートウェイ',
       apiKeys: 'ツールとキー',
+      keybinds: 'キーボードショートカット',
       keysTools: 'ツール',
       keysSettings: '設定',
       mcp: 'MCP',
@@ -293,6 +299,8 @@ export const ja = defineLocale({
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
       translucencyTitle: 'ウィンドウの透過',
       translucencyDesc: 'ウィンドウ全体を透過させてデスクトップを表示します。macOS と Windows のみ。',
+      backdropTitle: 'チャット背景',
+      backdropDesc: '会話の背後に表示される淡い彫像の画像。',
       embedsTitle: 'インライン埋め込み',
       embedsDesc:
         'リッチプレビューは第三者サイト（YouTube、X など）から読み込まれます。確認は許可するまでプレースホルダーを表示し、常には自動で読み込み、オフはリンクのままにします。',
@@ -1415,7 +1423,10 @@ export const ja = defineLocale({
     customPlaceholder: '0 9 * * * または weekdays at 9am',
     customHint: 'Cron 式、または「every hour」「weekdays at 9am」のようなフレーズ。',
     optional: '省略可能',
+    promptRequired: 'プロンプトは必須です。',
     promptScheduleRequired: 'プロンプトとスケジュールは必須です。',
+    scheduleRequired: 'スケジュールは必須です。',
+    scriptOnlyEditHint: 'スクリプトのみのジョブ（AI プロンプトなし）。ジョブ ID:',
     saveChanges: '変更を保存',
     createAction: 'Cron を作成'
   },
@@ -1520,6 +1531,9 @@ export const ja = defineLocale({
       newWorktreeTitle: '新しいワークツリー',
       newWorktreeDesc: 'このワークツリーのブランチ名を入力してください。',
       branchPlaceholder: '例: my-feature',
+      branchOff: () => ({ after: ' から分岐', before: '' }),
+      baseBranchPlaceholder: 'ブランチを検索…',
+      baseBranchNone: 'ブランチが見つかりません',
       startWorkFailed: 'ワークツリーを作成できませんでした',
       convertBranch: 'ブランチを変換…',
       convertBranchTitle: 'ブランチを変換',
@@ -1560,12 +1574,15 @@ export const ja = defineLocale({
       sessionRunning: 'セッション実行中',
       needsInput: '入力が必要です',
       waitingForAnswer: '回答を待っています',
+      finishedUnread: '完了 — 未読',
+      backgroundRunning: 'バックグラウンドタスク実行中',
       handoffOrigin: platform => `${platform} から引き継ぎ`,
       renamed: '名前を変更しました',
       renameFailed: '名前の変更に失敗しました',
       renameTitle: 'セッションの名前を変更',
       renameDesc: 'このチャットにわかりやすいタイトルをつけてください。空欄にするとクリアされます。',
       untitledPlaceholder: '無題のセッション',
+      untitledChat: id => `セッション ${id}`,
       ageNow: 'たった今',
       ageDay: '日',
       ageHour: '時間',
@@ -1875,6 +1892,10 @@ export const ja = defineLocale({
     featuredPitch: '1 つのサブスクリプションで 300 以上の最先端モデル — Hermes を実行するための推奨方法',
     openRouterPitch: '1 つのキーで数百のモデル — 堅実なデフォルト',
     apiKeyOptions: {
+      fireworks: {
+        short: 'モデル API に直接接続',
+        description: 'Fireworks AI がホストするモデルに直接アクセスします。'
+      },
       openrouter: {
         short: '1 つのキーで多くのモデル',
         description: '1 つのキーで数百のモデルをホスト。新規インストールのデフォルトとして最適。'
@@ -1977,7 +1998,9 @@ export const ja = defineLocale({
       low: '低',
       medium: '中',
       high: '高',
+      xhigh: '特高',
       max: '最大',
+      ultra: 'ウルトラ',
       updateFailed: 'モデルオプションの更新に失敗しました',
       fastFailed: '高速モードの更新に失敗しました'
     },
@@ -1995,6 +2018,16 @@ export const ja = defineLocale({
       recentActivity: '最近のアクティビティ',
       viewAllLogs: 'すべてのログを見る →',
       messagingPlatforms: 'メッセージングプラットフォーム'
+    },
+    approvalMode: {
+      title: '承認モード',
+      ariaLabel: mode => `承認モード: ${mode}`,
+      manual: '手動',
+      manualDescription: '承認が必要な操作の前に確認します',
+      smart: 'スマート',
+      smartDescription: '必要な場合にのみ確認します',
+      off: 'オフ',
+      offDescription: '承認プロンプトなしで実行します'
     },
     statusbar: {
       unknown: '不明',
@@ -2196,6 +2229,48 @@ export const ja = defineLocale({
     }
   },
 
+  zones: {
+    showHeader: 'ヘッダーを表示',
+    hideHeader: 'ヘッダーを隠す',
+    minimize: '最小化',
+    restore: '復元',
+    closeOthers: '他を閉じる',
+    closeToRight: '右側を閉じる',
+    closeAll: 'すべて閉じる',
+    split: dir => `${dir}に分割`,
+    move: dir => `${dir}へ移動`,
+    dirUp: '上',
+    dirDown: '下',
+    dirLeft: '左',
+    dirRight: '右',
+    pluginDisabled: pluginId => `プラグイン「${pluginId}」を無効化しました`,
+    pluginDisabledBody: '設定 → プラグイン で再有効化するとペインが戻ります。',
+    missingPane: paneId => `ペインが見つかりません: ${paneId}`,
+    editTitle: 'レイアウト',
+    editHint: 'レイアウトを選ぶか、ペインをゾーン間へドラッグ。ゾーンを右クリックで分割。',
+    reset: 'リセット',
+    templates: 'テンプレート',
+    custom: 'カスタム',
+    newGridLayout: '新しいグリッドレイアウト',
+    saveCurrentAs: '現在の配置をテンプレートとして保存',
+    nameLayoutPlaceholder: 'レイアウト名を入力…',
+    deletePreset: name => `${name} を削除`,
+    zoneEditorTitle: 'ゾーンエディター',
+    editorHintPre: 'クリックで分割 · ',
+    editorHintPost: ' で線の向きを反転 · ゾーンをまたいでドラッグで結合 · 共有辺をドラッグでリサイズ',
+    templateColumns: '列',
+    templateRows: '行',
+    templateGrid: 'グリッド',
+    templatePriority: '優先',
+    zoneTag: index => `ゾーン ${index}`,
+    mergeZones: count => `${count} 個のゾーンを結合`,
+    customZoneName: count => `カスタム ${count} ゾーン`,
+    layoutNamePlaceholder: fallback => `レイアウト名（${fallback}）`,
+    saveApply: '保存して適用',
+    notExpressible: 'この配置は互いに噛み合っています（風車型）— 入れ子の分割では表現できません',
+    zoneCount: count => `${count} ゾーン`
+  },
+
   assistant: {
     thread: {
       loadingSession: 'セッションを読み込み中',
@@ -2253,6 +2328,7 @@ export const ja = defineLocale({
       other: 'その他（回答を入力）',
       placeholder: '回答を入力…',
       skip: 'スキップ',
+      skipped: 'スキップ済み',
       continueLabel: '続行'
     },
     tool: {

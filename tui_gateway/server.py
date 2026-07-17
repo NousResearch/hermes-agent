@@ -452,6 +452,53 @@ def _release_active_session_slot(session: dict | None) -> None:
         logger.debug("Failed to release active session slot", exc_info=True)
 
 
+def _ensure_turn_lease(sid: str, session: dict) -> str | None:
+    """Claim the cross-process active-session slot for this session's turn,
+    unless the session already holds one.
+
+    TUI/desktop sessions acquire their registry lease lazily on the first
+    turn (not at session.create/resume, which fire for every composer paint
+    and sidebar switch) and keep it across turns; the idle reaper hands the
+    slot back after the configured idle window without conversational
+    activity (see ``_release_idle_session_leases``). This is the re-acquire
+    half: mirrors the platform gateway's claim-per-turn in
+    ``gateway/run.py`` handle_message.
+
+    Returns the limit message when the cap is reached (the caller surfaces
+    it as the turn's error), None on success or fail-open.
+    """
+    with session["history_lock"]:
+        if session.get("active_session_lease") is not None:
+            return None
+    lease, limit_message = _claim_active_session_slot(
+        str(session.get("session_key") or ""),
+        live_session_id=sid,
+        surface=_session_source(session),
+    )
+    if limit_message is not None:
+        return limit_message
+    if lease is None:
+        # Fail-open (registry unreadable/locked) — proceed uncounted, same as
+        # every other surface. The next turn retries the claim.
+        return None
+    # Store under the same lock turn-start uses, re-checking both the slot (a
+    # concurrent claimer may have won — e.g. a stuck-`running` overlap) and
+    # finalize (the tab may have closed between claim and store; a lease
+    # stored into a finalized session would leak until process exit).
+    with session["history_lock"]:
+        if (
+            session.get("active_session_lease") is None
+            and not session.get("_finalized")
+        ):
+            session["active_session_lease"] = lease
+            return None
+    try:
+        lease.release()
+    except Exception:
+        logger.debug("Failed to release turn lease after lost store race", exc_info=True)
+    return None
+
+
 def _transfer_active_session_slot(
     sid: str,
     session: dict,
@@ -872,12 +919,84 @@ def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
     return (now - last_active) > _SESSION_TTL_S and (now - created_at) > _SESSION_TTL_S
 
 
+# How long a session may sit without conversational activity before its
+# cross-process active-session lease (max_concurrent_sessions slot) is handed
+# back. The lease only — the session, its agent, and its transcript stay live;
+# the next turn re-acquires through _ensure_turn_lease. Without this, tabs
+# sitting open in a CONNECTED desktop app hold their slot forever: the TTL
+# reaper above requires a dead transport, so N idle overnight tabs pin the cap
+# at N and lock out every other surface. 0 disables idle release.
+_LEASE_IDLE_RELEASE_DEFAULT_S = 1800.0
+
+
+def _lease_idle_release_seconds() -> float:
+    """Resolve the user-facing idle window from config.yaml."""
+    raw = _load_cfg().get("tui_lease_idle_seconds", _LEASE_IDLE_RELEASE_DEFAULT_S)
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        logger.warning(
+            "Ignoring invalid tui_lease_idle_seconds=%r; using %s",
+            raw,
+            int(_LEASE_IDLE_RELEASE_DEFAULT_S),
+        )
+        return _LEASE_IDLE_RELEASE_DEFAULT_S
+
+
+def _release_idle_session_leases(now: float) -> None:
+    """Release the active-session LEASE (not the session) for idle sessions.
+
+    Runs on the reaper cadence. Applies to live-transport sessions too — that
+    is the point: connected-but-idle tabs are exactly the ones the TTL reaper
+    can never free. Skips anything mid-turn, awaiting an input/approval
+    prompt, holding a queued next-turn prompt, or still building its agent
+    (imminent turn). The `running` check happens under history_lock, the same
+    lock every turn-start path sets it under, so a lease can't be pulled out
+    from under a turn that is about to reuse it.
+    """
+    idle_release_s = _lease_idle_release_seconds()
+    if idle_release_s <= 0:
+        return
+    with _sessions_lock:
+        candidates = list(_sessions.items())
+    for sid, session in candidates:
+        if session.get("active_session_lease") is None or session.get("_finalized"):
+            continue
+        lock = session.get("history_lock")
+        if lock is None:
+            continue
+        with lock:
+            if session.get("running") or session.get("queued_prompt"):
+                continue
+            if _session_pending_kind(sid):
+                continue
+            ready = session.get("agent_ready")
+            if ready is not None and not ready.is_set() and not session.get("lazy"):
+                continue
+            last_active = float(session.get("last_active") or 0.0)
+            created_at = float(session.get("created_at") or 0.0)
+            reference = max(last_active, created_at)
+            if (now - reference) <= idle_release_s:
+                continue
+            lease = session.pop("active_session_lease", None)
+        if lease is None:
+            continue
+        try:
+            lease.release()
+        except Exception:
+            logger.debug("Failed to release idle active session lease", exc_info=True)
+
+
 def _reap_idle_sessions() -> None:
     now = time.time()
     with _sessions_lock:
         victims = [sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)]
     for sid in victims:
         _close_session_by_id(sid, end_reason="idle_timeout")
+    try:
+        _release_idle_session_leases(now)
+    except Exception:
+        logger.debug("idle lease release sweep failed", exc_info=True)
     _enforce_session_cap()
 
 
@@ -5562,12 +5681,13 @@ def _(rid, params: dict) -> dict:
 
     ready = threading.Event()
     now = time.time()
-    lease, limit_message = _claim_active_session_slot(
-        key, live_session_id=sid, surface=source
-    )
-    if limit_message is not None:
-        return _err(rid, 4090, limit_message)
 
+    # No active-session slot is claimed here. Every TUI/desktop launch (and
+    # every "New agent" / draft) opens a session just to paint the composer —
+    # like the DB row (see the NOTE below), the cross-process lease is claimed
+    # lazily on the first turn (_ensure_turn_lease), and idle tabs hand it
+    # back (_release_idle_session_leases) so open-but-quiet tabs don't pin
+    # max_concurrent_sessions.
     with _sessions_lock:
         _sessions[sid] = {
             "agent": None,
@@ -5575,7 +5695,7 @@ def _(rid, params: dict) -> dict:
             "agent_ready": ready,
             "attached_images": [],
             "close_on_disconnect": is_truthy_value(params.get("close_on_disconnect", False)),
-            "active_session_lease": lease,
+            "active_session_lease": None,
             "cols": cols,
             "created_at": now,
             "edit_snapshots": {},
@@ -5991,19 +6111,16 @@ def _(rid, params: dict) -> dict:
     if is_truthy_value(params.get("lazy", False)):
         sid = uuid.uuid4().hex[:8]
         source = _resolve_session_source(str(params.get("source") or "").strip() or None)
-        lease, limit_message = _claim_active_session_slot(
-            target, live_session_id=sid, surface=source
-        )
-        if limit_message is not None:
-            return _err(rid, 4090, limit_message)
+        # Active-session lease is claimed lazily on the first turn (see
+        # _ensure_turn_lease) — reopening a tab never counts against
+        # max_concurrent_sessions by itself.
+        lease = None
         try:
             db.reopen_session(target)
             # The child's OWN conversation only — include_ancestors would prepend
             # the parent's transcript onto the subagent's branch.
             history = db.get_messages_as_conversation(target)
         except Exception as e:
-            if lease is not None:
-                lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
         cwd = profile_resume_cwd or _default_session_cwd()
         record = _deferred_session_record(
@@ -6055,11 +6172,8 @@ def _(rid, params: dict) -> dict:
     if not is_truthy_value(params.get("eager_build", False)):
         sid = uuid.uuid4().hex[:8]
         source = _resolve_session_source(str(params.get("source") or "").strip() or None)
-        lease, limit_message = _claim_active_session_slot(
-            target, live_session_id=sid, surface=source
-        )
-        if limit_message is not None:
-            return _err(rid, 4090, limit_message)
+        # Lease claimed lazily on the first turn (_ensure_turn_lease).
+        lease = None
         # Interactive resume routes approvals/clarify through gateway prompts;
         # the deferred build wires the remaining per-session callbacks.
         _enable_gateway_prompts()
@@ -6068,8 +6182,6 @@ def _(rid, params: dict) -> dict:
             raw_history = db.get_messages_as_conversation(target)
             display_history = db.get_messages_as_conversation(target, include_ancestors=True)
         except Exception as e:
-            if lease is not None:
-                lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
         # Display keeps the full transcript; the model-fed history drops a
         # dangling/interrupted tool-call tail so a session killed mid-loop does
@@ -6128,11 +6240,7 @@ def _(rid, params: dict) -> dict:
     # dispatch thread (it's not a _LONG_HANDLER), blocking fast-path RPCs.
     sid = uuid.uuid4().hex[:8]
     source = _resolve_session_source(str(params.get("source") or "").strip() or None)
-    lease, limit_message = _claim_active_session_slot(
-        target, live_session_id=sid, surface=source
-    )
-    if limit_message is not None:
-        return _err(rid, 4090, limit_message)
+    # Active-session lease is claimed lazily on the first turn (_ensure_turn_lease).
     _enable_gateway_prompts()
     home_token = (
         set_hermes_home_override(str(profile_home)) if profile_home is not None else None
@@ -6174,8 +6282,6 @@ def _(rid, params: dict) -> dict:
         finally:
             _clear_session_context(tokens)
     except Exception as e:
-        if lease is not None:
-            lease.release()
         return _err(rid, 5000, f"resume failed: {e}")
     finally:
         if home_token is not None:
@@ -6192,8 +6298,6 @@ def _(rid, params: dict) -> dict:
                     agent.close()
             except Exception:
                 pass
-            if lease is not None:
-                lease.release()
             other_sid, other_session = live
             payload = _live_session_payload(
                 other_sid,
@@ -6235,10 +6339,7 @@ def _(rid, params: dict) -> dict:
                 # skills — must resolve to the resumed profile too).
                 if profile_home is not None:
                     _sessions[sid]["profile_home"] = str(profile_home)
-                _sessions[sid]["active_session_lease"] = lease
         except Exception as e:
-            if lease is not None:
-                lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
         session = _sessions.get(sid) or {}
     return _ok(
@@ -8414,11 +8515,8 @@ def _(rid, params: dict) -> dict:
     new_key = _new_session_key()
     new_sid = uuid.uuid4().hex[:8]
     source = _session_source(session)
-    lease, limit_message = _claim_active_session_slot(
-        new_key, live_session_id=new_sid, surface=source
-    )
-    if limit_message is not None:
-        return _err(rid, 4090, limit_message)
+    # Active-session lease is claimed lazily on the branch's first turn
+    # (_ensure_turn_lease) — opening the branch tab doesn't consume a slot.
     branch_name = params.get("name", "")
     try:
         if branch_name:
@@ -8451,8 +8549,6 @@ def _(rid, params: dict) -> dict:
             )
         db.set_session_title(new_key, title)
     except Exception as e:
-        if lease is not None:
-            lease.release()
         return _err(rid, 5008, f"branch failed: {e}")
     try:
         tokens = _set_session_context(new_key)
@@ -8473,11 +8569,7 @@ def _(rid, params: dict) -> dict:
             cols=session.get("cols", 80),
             source=source,
         )
-        if new_sid in _sessions:
-            _sessions[new_sid]["active_session_lease"] = lease
     except Exception as e:
-        if lease is not None:
-            lease.release()
         return _err(rid, 5000, f"agent init failed on branch: {e}")
     return _ok(rid, {"session_id": new_sid, "title": title, "parent": old_key})
 
@@ -9343,6 +9435,19 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
         try:
+            # Claim (or reuse) the cross-process active-session slot before any
+            # model work. First turn of a tab and first turn after an idle
+            # release both land here; every turn entry point (prompt.submit,
+            # queued drain, goal continuation, notification turns) funnels
+            # through this body. At cap, surface the standard limit message as
+            # this turn's error — same message.start→error shape as the
+            # ctx.blocked path below; the finally clears running/inflight so
+            # the client returns to idle.
+            limit_message = _ensure_turn_lease(sid, session)
+            if limit_message is not None:
+                _emit("error", sid, {"message": limit_message})
+                return
+
             from tools.approval import (
                 reset_current_session_key,
                 set_current_session_key,

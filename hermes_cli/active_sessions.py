@@ -1,8 +1,13 @@
 """Cross-process active chat session leases.
 
 The session database records persisted conversations.  This module records
-currently open chat surfaces, including idle CLI/TUI sessions that have not
-written a transcript row yet.
+currently active chat surfaces, including CLI sessions that have not written
+a transcript row yet.  What "active" means is surface-specific: the CLI
+holds a lease for the life of the interactive process, the messaging
+gateway claims per in-flight turn, and the TUI/desktop gateway claims on a
+tab's first turn and hands the slot back after an idle window (so open but
+quiet tabs don't pin ``max_concurrent_sessions``; see
+``tui_gateway.server._ensure_turn_lease`` / ``_release_idle_session_leases``).
 """
 
 from __future__ import annotations

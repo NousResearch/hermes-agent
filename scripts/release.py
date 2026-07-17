@@ -404,6 +404,7 @@ LEGACY_AUTHOR_MAP = {
     "embwl0x@users.noreply.github.com": "embwl0x",  # PR #60810 salvage (channel directory offload)
     "caztronics@yahoo.com": "doncazper",
     "30668368+alex107ivanov@users.noreply.github.com": "alex107ivanov",
+    "alex@odbo.co": "alex107ivanov",  # PR #39301 (PostgreSQL state backend)
     "210088133+rungmc357@users.noreply.github.com": "rungmc357",
     "florian.rutishauser@outlook.com": "flo1t",
     "fanyang@microsoft.com": "fanyangCS",

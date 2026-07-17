@@ -159,6 +159,7 @@ def _task_dict(
     task: kanban_db.Task,
     *,
     latest_summary: Optional[str] = None,
+    current_run: Optional[kanban_db.Run] = None,
 ) -> dict[str, Any]:
     d = asdict(task)
     # Add derived age metrics so the UI can colour stale cards without
@@ -172,6 +173,7 @@ def _task_dict(
     # ``task_runs.summary`` (the kanban-worker pattern) instead of
     # ``tasks.result``. ``None`` when no run has produced a summary yet.
     d["latest_summary"] = latest_summary
+    d["current_run"] = _run_dict(current_run) if current_run is not None else None
     # Keep body short on list endpoints; full body comes from /tasks/:id.
     return d
 
@@ -223,6 +225,7 @@ def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
         "claim_lock": r.claim_lock,
         "claim_expires": r.claim_expires,
         "worker_pid": r.worker_pid,
+        "worker_session_id": r.worker_session_id,
         "max_runtime_seconds": r.max_runtime_seconds,
         "last_heartbeat_at": r.last_heartbeat_at,
         "started_at": r.started_at,
@@ -458,13 +461,33 @@ def get_board(
         # for boards with hundreds of tasks). Truncated to a card-size
         # preview here — the full text is available via /tasks/:id.
         summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        current_run_ids = sorted(
+            {int(t.current_run_id) for t in tasks if t.current_run_id is not None}
+        )
+        current_runs: dict[int, kanban_db.Run] = {}
+        if current_run_ids:
+            placeholders = ",".join("?" for _ in current_run_ids)
+            for row in conn.execute(
+                f"SELECT * FROM task_runs WHERE id IN ({placeholders})",
+                current_run_ids,
+            ).fetchall():
+                current_runs[int(row["id"])] = kanban_db.Run.from_row(row)
 
         for t in tasks:
             full = summary_map.get(t.id)
             preview = (
                 full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None
             )
-            d = _task_dict(t, latest_summary=preview)
+            current_run = (
+                current_runs.get(int(t.current_run_id))
+                if t.current_run_id is not None
+                else None
+            )
+            d = _task_dict(
+                t,
+                latest_summary=preview,
+                current_run=current_run,
+            )
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -545,7 +568,16 @@ def get_task(
         # operators can read the complete worker handoff without making
         # a second round-trip. Cards on /board carry a 200-char preview.
         full_summary = kanban_db.latest_summary(conn, task_id)
-        task_d = _task_dict(task, latest_summary=full_summary)
+        current_run = (
+            kanban_db.get_run(conn, task.current_run_id)
+            if task.current_run_id is not None
+            else None
+        )
+        task_d = _task_dict(
+            task,
+            latest_summary=full_summary,
+            current_run=current_run,
+        )
         links = _links_for(conn, task_id)
         child_ids = links["children"]
         child_summaries = kanban_db.latest_summaries(conn, child_ids)
@@ -1913,14 +1945,15 @@ def get_assignees(board: Optional[str] = Query(None)):
 @router.get("/tasks/{task_id}/log")
 def get_task_log(
     task_id: str,
-    tail: Optional[int] = Query(None, ge=1, le=2_000_000),
+    tail: int = Query(65_536, ge=1, le=262_144),
     board: Optional[str] = Query(None),
 ):
     """Return the worker's stdout/stderr log.
 
-    ``tail`` caps the response size (bytes) so the dashboard drawer
-    doesn't paginate megabytes into the browser. Returns 404 if the task
-    has never spawned. The on-disk log is rotated at 2 MiB per
+    ``tail`` caps the response size (bytes) to 256 KiB and defaults to
+    64 KiB so the dashboard drawer never paginates megabytes into the
+    browser. Content is redacted before it crosses the API boundary.
+    Returns 404 if the task has never spawned. The on-disk log is rotated at 2 MiB per
     ``_rotate_worker_log`` — a single ``.log.1`` is kept, no further
     generations, so disk usage per task is bounded at ~4 MiB.
     """
@@ -1933,16 +1966,19 @@ def get_task_log(
     if task is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     content = kanban_db.read_worker_log(task_id, tail_bytes=tail, board=board)
+    if content:
+        from agent.redact import redact_sensitive_text
+
+        content = redact_sensitive_text(content, force=True)
     log_path = kanban_db.worker_log_path(task_id, board=board)
     size = log_path.stat().st_size if log_path.exists() else 0
     return {
         "task_id": task_id,
-        "path": str(log_path),
         "exists": content is not None,
         "size_bytes": size,
         "content": content or "",
         # Truncated when the on-disk file was larger than the tail cap.
-        "truncated": bool(tail and size > tail),
+        "truncated": size > tail,
     }
 
 

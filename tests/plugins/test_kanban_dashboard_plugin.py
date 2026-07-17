@@ -115,6 +115,67 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_board_and_detail_expose_current_worker_session(client):
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(
+            conn, title="Observable worker", assignee="builder", session_id="origin-1"
+        )
+        kb.claim_task(conn, task_id, claimer="host:worker")
+        task = kb.get_task(conn, task_id)
+        assert task is not None and task.current_run_id is not None
+        kb.bind_worker_session(
+            conn, task_id, task.current_run_id, "worker-session-1"
+        )
+    finally:
+        conn.close()
+
+    board = client.get("/api/plugins/kanban/board")
+    assert board.status_code == 200
+    cards = [
+        card for column in board.json()["columns"] for card in column["tasks"]
+    ]
+    card = next(card for card in cards if card["id"] == task_id)
+    assert card["session_id"] == "origin-1"
+    assert card["current_run"]["id"] == task.current_run_id
+    assert card["current_run"]["worker_session_id"] == "worker-session-1"
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["task"]["current_run"]["worker_session_id"] == "worker-session-1"
+    assert body["runs"][-1]["worker_session_id"] == "worker-session-1"
+    assert any(event["kind"] == "worker_session_bound" for event in body["events"])
+
+
+def test_worker_log_is_bounded_redacted_and_hides_local_path(client):
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="Secret-safe log", assignee="builder")
+    finally:
+        conn.close()
+
+    fake_secret = "sk-" + ("A" * 48)
+    log_path = kb.worker_log_path(task_id)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        f"starting\nOPENAI_API_KEY={fake_secret}\nfinished\n",
+        encoding="utf-8",
+    )
+
+    response = client.get(f"/api/plugins/kanban/tasks/{task_id}/log")
+    assert response.status_code == 200
+    body = response.json()
+    assert fake_secret not in body["content"]
+    assert "path" not in body
+    assert body["exists"] is True
+
+    too_large = client.get(
+        f"/api/plugins/kanban/tasks/{task_id}/log", params={"tail": 262_145}
+    )
+    assert too_large.status_code == 422
+
+
 def test_board_list_recommends_persistent_workspace_for_configured_workdir(
     client, tmp_path
 ):

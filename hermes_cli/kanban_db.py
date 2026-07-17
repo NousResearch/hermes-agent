@@ -1021,6 +1021,7 @@ class Run:
     claim_lock: Optional[str]
     claim_expires: Optional[int]
     worker_pid: Optional[int]
+    worker_session_id: Optional[str]
     max_runtime_seconds: Optional[int]
     last_heartbeat_at: Optional[int]
     started_at: int
@@ -1045,6 +1046,11 @@ class Run:
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             worker_pid=row["worker_pid"],
+            worker_session_id=(
+                row["worker_session_id"]
+                if "worker_session_id" in row.keys() and row["worker_session_id"]
+                else None
+            ),
             max_runtime_seconds=row["max_runtime_seconds"],
             last_heartbeat_at=row["last_heartbeat_at"],
             started_at=int(row["started_at"]),
@@ -1219,6 +1225,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     claim_lock          TEXT,
     claim_expires       INTEGER,
     worker_pid          INTEGER,
+    worker_session_id   TEXT,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
     started_at          INTEGER NOT NULL,
@@ -2016,6 +2023,29 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "ON task_events(run_id, id)"
     )
 
+    # Each dispatch attempt owns one durable Hermes conversation. Keep this
+    # separate from ``tasks.session_id``: that field identifies the session
+    # that created the card, while this field identifies the worker executing
+    # this specific run. Legacy attempts remain NULL.
+    run_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
+    ).fetchone() is not None
+    if run_table_exists:
+        run_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+        }
+        if "worker_session_id" not in run_cols:
+            _add_column_if_missing(
+                conn,
+                "task_runs",
+                "worker_session_id",
+                "worker_session_id TEXT",
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_task_runs_worker_session "
+            "ON task_runs(worker_session_id)"
+        )
+
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
     ).fetchone() is not None
@@ -2137,13 +2167,14 @@ _REBUILD_SPECS = {
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
         " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
         " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
-        " worker_pid INTEGER, max_runtime_seconds INTEGER,"
+        " worker_pid INTEGER, worker_session_id TEXT, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
         " error TEXT)",
         (
             "CREATE INDEX idx_runs_task ON task_runs(task_id, started_at)",
             "CREATE INDEX idx_runs_status ON task_runs(status)",
+            "CREATE INDEX idx_task_runs_worker_session ON task_runs(worker_session_id)",
         ),
     ),
     "kanban_notify_subs": (
@@ -9135,6 +9166,82 @@ def known_assignees(conn: sqlite3.Connection) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Runs (attempt history on a task)
 # ---------------------------------------------------------------------------
+
+def bind_worker_session(
+    conn: sqlite3.Connection,
+    task_id: str,
+    run_id: int,
+    worker_session_id: str,
+) -> Run:
+    """Bind the current dispatch attempt to its Hermes conversation.
+
+    The task's active-run pointer is the authority: stale, foreign, closed,
+    and superseded attempts are rejected. Repeating the same binding is
+    idempotent; replacing an existing session id is never allowed.
+    """
+    session_id = str(worker_session_id or "").strip()
+    if not session_id:
+        raise ValueError("worker_session_id is required")
+    try:
+        parsed_run_id = int(run_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("run_id must be an integer") from exc
+
+    with write_txn(conn):
+        task_row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if task_row is None:
+            raise ValueError(f"task {task_id} not found")
+        if task_row["status"] != "running":
+            raise ValueError(f"task {task_id} is not running")
+        if task_row["current_run_id"] != parsed_run_id:
+            raise ValueError(
+                f"run {parsed_run_id} is not the current run for task {task_id}"
+            )
+
+        row = conn.execute(
+            "SELECT * FROM task_runs WHERE id = ?",
+            (parsed_run_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"run {parsed_run_id} not found")
+        if row["task_id"] != task_id:
+            raise ValueError(f"run {parsed_run_id} belongs to another task")
+        if row["ended_at"] is not None or row["status"] != "running":
+            raise ValueError(f"run {parsed_run_id} is already closed")
+
+        existing = row["worker_session_id"]
+        if existing:
+            if existing != session_id:
+                raise ValueError(
+                    f"run {parsed_run_id} is already bound to another worker session"
+                )
+            return Run.from_row(row)
+
+        updated = conn.execute(
+            "UPDATE task_runs SET worker_session_id = ? "
+            "WHERE id = ? AND task_id = ? AND status = 'running' "
+            "AND ended_at IS NULL AND worker_session_id IS NULL",
+            (session_id, parsed_run_id, task_id),
+        )
+        if updated.rowcount != 1:
+            raise ValueError(f"run {parsed_run_id} could not be bound")
+        _append_event(
+            conn,
+            task_id,
+            "worker_session_bound",
+            {"worker_session_id": session_id},
+            run_id=parsed_run_id,
+        )
+        bound = conn.execute(
+            "SELECT * FROM task_runs WHERE id = ?",
+            (parsed_run_id,),
+        ).fetchone()
+        assert bound is not None
+        return Run.from_row(bound)
+
 
 def list_runs(
     conn: sqlite3.Connection,

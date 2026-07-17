@@ -1,0 +1,6 @@
+name: pr-review-buttons
+version: "0.1.0"
+description: "Approve / Request-changes / Comment buttons for the cron PR-review sweep. Stages each PR's verbatim review, posts a Block Kit digest to the Slack home channel with three buttons per PR, and posts the EXACT staged review to GitHub (via gh) when the operator clicks — a true what-you-approved gate. Adds the `hermes prreview` CLI (stage/publish/list) and three Slack action handlers; no model tools."
+author: "Hermes Agent"
+requires_env:
+  - SLACK_BOT_TOKEN

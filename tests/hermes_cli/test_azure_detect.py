@@ -188,7 +188,7 @@ def test_probe_openai_models_tries_multiple_api_versions():
 def test_http_get_json_on_urlerror_returns_zero_none():
     """Network failure returns (0, None), never raises."""
     import urllib.error
-    with patch("hermes_cli.azure_detect.urllib_request.urlopen",
+    with patch("hermes_cli.azure_detect.open_credentialed_url",
                side_effect=urllib.error.URLError("dns fail")):
         status, body = azure_detect._http_get_json("https://bad.example/", "k")
     assert status == 0
@@ -199,7 +199,7 @@ def test_http_get_json_on_http_error_returns_code_none():
     """HTTP 4xx/5xx returns (code, None)."""
     import urllib.error
     err = urllib.error.HTTPError("https://x/", 403, "Forbidden", {}, None)
-    with patch("hermes_cli.azure_detect.urllib_request.urlopen", side_effect=err):
+    with patch("hermes_cli.azure_detect.open_credentialed_url", side_effect=err):
         status, body = azure_detect._http_get_json("https://x/", "k")
     assert status == 403
     assert body is None

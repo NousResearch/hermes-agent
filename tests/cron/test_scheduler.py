@@ -1,6 +1,7 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
 import contextlib
+import itertools
 import json
 import logging
 import os
@@ -1532,6 +1533,25 @@ class TestRunJobSessionPersistence:
         assert "final fallback report" in output
         assert "(FAILED)" not in output
 
+    def test_tick_skips_due_jobs_while_dispatch_is_paused(self, tmp_path):
+        """The drain gate runs before advancing a due job's schedule."""
+        from cron.scheduler import tick
+
+        job = {
+            "id": "paused-due-job",
+            "name": "paused due job",
+            "schedule": {"kind": "interval", "seconds": 60},
+            "next_run_at": "2020-01-01T00:00:00+00:00",
+            "enabled": True,
+        }
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), patch(
+            "cron.scheduler.advance_next_run"
+        ) as advance, patch("cron.scheduler.run_one_job") as run_one:
+            assert tick(verbose=False, sync=True, can_dispatch=lambda: False) == 0
+
+        advance.assert_not_called()
+        run_one.assert_not_called()
+
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,
         tick() should mark the job as error so last_status != 'ok'.
@@ -1622,6 +1642,63 @@ class TestRunJobSessionPersistence:
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID") is None
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
         fake_db.close.assert_called_once()
+
+    @pytest.mark.parametrize("timeout_value", ["600", "0"])
+    def test_run_job_heartbeats_oneshot_claim_in_both_wait_modes(
+        self, tmp_path, monkeypatch, timeout_value
+    ):
+        """Timed and unlimited one-shot monitors both refresh their owned claim."""
+        job = {
+            "id": "heartbeat-job",
+            "name": "heartbeat",
+            "prompt": "hello",
+            "schedule": {"kind": "once", "run_at": "2026-07-10T12:00:00Z"},
+            "run_claim": {"at": "2026-07-10T12:00:00Z", "by": "owner-token"},
+        }
+        fake_db = MagicMock()
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_conversation(self, *args, **kwargs):
+                return {"final_response": "ok"}
+
+        class FakeFuture:
+            def result(self):
+                return {"final_response": "ok"}
+
+        fake_future = FakeFuture()
+        fake_pool = MagicMock()
+        fake_pool.submit.return_value = fake_future
+        wait_results = [(set(), set()), ({fake_future}, set())]
+        monotonic_ticks = itertools.count(step=61.0)
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", timeout_value)
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", FakeAgent), \
+             patch("cron.scheduler.concurrent.futures.ThreadPoolExecutor", return_value=fake_pool), \
+             patch("cron.scheduler.concurrent.futures.wait", side_effect=wait_results), \
+             patch("cron.scheduler.time.monotonic", side_effect=monotonic_ticks.__next__), \
+             patch("cron.scheduler.heartbeat_run_claim", return_value=True) as heartbeat:
+            success, _output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        heartbeat.assert_called_once_with(
+            "heartbeat-job", expected_owner="owner-token"
+        )
 
     def test_run_job_resets_secret_source_cache_before_reload(self, tmp_path, monkeypatch):
         """Each run must clear the secret-source cache before re-reading the
@@ -1924,6 +2001,61 @@ class TestRunJobConfigEnvVarExpansion:
             f"Expected expanded fallback model in {expanded!r}. "
             "config.yaml ${VAR} in fallback_providers was not expanded."
         )
+
+    def test_auth_fallback_switches_provider_and_model_together(self, tmp_path):
+        """Codex auth failure must produce OpenRouter+GLM, never OpenRouter+GPT."""
+        from hermes_cli.auth import AuthError
+
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  default: gpt-5.6-sol\n"
+            "  provider: openai-codex\n"
+            "fallback_providers:\n"
+            "  - provider: anthropic\n"
+            "  - provider: openrouter\n"
+            "    model: z-ai/glm-5.2\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "auth-fallback",
+            "name": "auth fallback",
+            "prompt": "hi",
+            "provider_snapshot": "openai-codex",
+            "model_snapshot": "gpt-5.6-sol",
+        }
+        fake_db = MagicMock()
+        requested = []
+
+        def resolve_runtime(**kwargs):
+            requested.append(kwargs.get("requested"))
+            if kwargs.get("requested") in (None, "openai-codex"):
+                # Cron must retain the configured primary provider for drift
+                # comparison even when older/custom AuthError sites omit it.
+                raise AuthError("No Codex credentials stored")
+            assert kwargs["requested"] == "openrouter"
+            assert kwargs["target_model"] == "z-ai/glm-5.2"
+            return {**self._RUNTIME, "provider": "openrouter"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=resolve_runtime), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert requested == [None, "openrouter"]
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["provider"] == "openrouter"
+        assert kwargs["model"] == "z-ai/glm-5.2"
 
     def test_fallback_chain_merges_providers_and_legacy_model(self, tmp_path, monkeypatch):
         """Cron uses get_fallback_chain so legacy fallback_model is not dropped."""
@@ -2883,6 +3015,31 @@ class TestBuildJobPromptMissingSkill:
             result = _build_job_prompt({"skills": ["ghost-skill", "real-skill"], "prompt": "go"})
         assert "Real skill content." in result
         assert "go" in result
+
+
+class TestBuildJobPromptAbsoluteSkillPath:
+    """Cron jobs may store absolute skill paths; normalize before skill_view."""
+
+    def test_absolute_skill_path_normalized_before_skill_view(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        skill_dir = skills_dir / "alpha-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Alpha\nDo alpha.")
+        absolute_path = str(skill_dir)
+        seen_names: list[str] = []
+
+        def _skill_view(name: str) -> str:
+            seen_names.append(name)
+            if name == "alpha-skill":
+                return json.dumps({"success": True, "content": "# Alpha\nDo alpha."})
+            return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_tool.skill_view", side_effect=_skill_view):
+            result = _build_job_prompt({"skills": [absolute_path], "prompt": "go"})
+
+        assert seen_names == ["alpha-skill"]
+        assert "Do alpha." in result
 
 
 class TestBuildJobPromptBumpUse:

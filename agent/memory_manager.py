@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 # teardown indefinitely — the worker threads are daemon, so anything still
 # running past this window dies with the interpreter.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
+_EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
 
 
 def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
@@ -357,10 +358,19 @@ class MemoryManager:
     provider is allowed.  Failures in one provider never block the other.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._has_external: bool = False  # True once a non-builtin provider is added
+        self._external_prefetch_timeout = (
+            _EXTERNAL_PREFETCH_TIMEOUT_S
+            if external_prefetch_timeout is None
+            else float(external_prefetch_timeout)
+        )
+        if self._external_prefetch_timeout <= 0:
+            raise ValueError("external_prefetch_timeout must be positive")
+        self._external_prefetch_threads: Dict[str, threading.Thread] = {}
+        self._external_prefetch_lock = threading.Lock()
         # Background executor for end-of-turn sync/prefetch. Lazily created on
         # first use so the common builtin-only path spawns no extra threads.
         # A single worker serializes a provider's writes (turn N must land
@@ -504,7 +514,7 @@ class MemoryManager:
         parts = []
         for provider in self._providers:
             try:
-                result = provider.prefetch(clean_query, session_id=session_id)
+                result = self._prefetch_provider(provider, clean_query, session_id=session_id)
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:
@@ -513,6 +523,56 @@ class MemoryManager:
                     provider.name, e,
                 )
         return "\n\n".join(parts)
+
+    def _prefetch_provider(
+        self, provider: MemoryProvider, query: str, *, session_id: str = ""
+    ) -> str:
+        if provider.name == "builtin":
+            return provider.prefetch(query, session_id=session_id)
+
+        result_box: Dict[str, str] = {}
+        error_box: Dict[str, Exception] = {}
+
+        def _run() -> None:
+            try:
+                result_box["value"] = provider.prefetch(query, session_id=session_id) or ""
+            except Exception as exc:  # pragma: no cover - re-raised by caller
+                error_box["value"] = exc
+
+        thread = threading.Thread(
+            target=_run,
+            daemon=True,
+            name=f"memory-prefetch-{provider.name}",
+        )
+        with self._external_prefetch_lock:
+            existing = self._external_prefetch_threads.get(provider.name)
+            if existing is not None:
+                if existing.is_alive():
+                    logger.debug(
+                        "Memory provider '%s' prefetch is still running; skipping this turn",
+                        provider.name,
+                    )
+                    return ""
+                self._external_prefetch_threads.pop(provider.name, None)
+            self._external_prefetch_threads[provider.name] = thread
+            thread.start()
+
+        thread.join(self._external_prefetch_timeout)
+        if thread.is_alive():
+            logger.warning(
+                "Memory provider '%s' prefetch timed out after %.1fs; skipping it until "
+                "the stuck call returns",
+                provider.name,
+                self._external_prefetch_timeout,
+            )
+            return ""
+
+        with self._external_prefetch_lock:
+            if self._external_prefetch_threads.get(provider.name) is thread:
+                self._external_prefetch_threads.pop(provider.name, None)
+        if error_box:
+            raise error_box["value"]
+        return result_box.get("value", "")
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn.
@@ -782,6 +842,55 @@ class MemoryManager:
                     provider.name, e,
                     exc_info=True,
                 )
+
+    def commit_session_boundary_async(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        new_session_id: str,
+        parent_session_id: str = "",
+        reason: str = "new_session",
+    ) -> None:
+        """Queue old-session extraction + provider rebinding as ONE serialized task.
+
+        Session rotation (/new) must deliver ``on_session_end`` (end-of-session
+        extraction — an LLM-bound call that can take seconds) strictly BEFORE
+        ``on_session_switch`` (which rebinds provider-internal ``_session_id`` /
+        turn buffers to the new session). Running extraction inline blocked the
+        /new command for the whole LLM round-trip (#16454); running it on an
+        ad-hoc thread raced the inline switch — providers key off internal
+        state, so a late ``on_session_end`` ran against post-switch bindings
+        (transcript misattributed to the new session id, double-ingest of the
+        old turn buffer, new-session buffers cleared).
+
+        Submitting BOTH hooks as one task on the manager's single background
+        worker gives both properties at a single chokepoint: the caller returns
+        immediately, and the worker's FIFO order serializes end→switch against
+        every other provider write (per-turn ``sync_all``, prefetches), which
+        already share the same worker. If the executor is unavailable,
+        ``_submit_background`` degrades to inline execution — the pre-#16454
+        synchronous behavior, slow but correct.
+        """
+        if not self._providers:
+            return
+        snapshot = list(messages or [])
+
+        def _run() -> None:
+            try:
+                self.on_session_end(snapshot)
+            except Exception as e:  # pragma: no cover - on_session_end guards per-provider
+                logger.warning("Session-boundary extraction failed: %s", e)
+            try:
+                self.on_session_switch(
+                    new_session_id,
+                    parent_session_id=parent_session_id,
+                    reset=True,
+                    reason=reason,
+                )
+            except Exception as e:  # pragma: no cover - on_session_switch guards per-provider
+                logger.warning("Session-boundary switch failed: %s", e)
+
+        self._submit_background(_run)
 
     def on_session_switch(
         self,

@@ -3630,8 +3630,12 @@ class APIServerAdapter(BasePlatformAdapter):
                                         len(conversation_history) + 1,
                                     )
                                     full_history = list(_agent_messages)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to persist compressed response_store snapshot "
+                                "(streaming): %s",
+                                e,
+                            )
                 _persist_response_snapshot(
                     completed_env,
                     conversation_history_snapshot=full_history,
@@ -3978,8 +3982,11 @@ class APIServerAdapter(BasePlatformAdapter):
                             full_history = list(_agent_messages)
                             if _rotated and _result_sid:
                                 _effective_session_id = _result_sid
-                except Exception:
-                    pass  # Fall back to default behavior
+                except Exception as e:
+                    logger.warning(
+                        "Failed to persist compressed response_store snapshot: %s",
+                        e,
+                    )
 
         # Build output items from the current turn only.  AIAgent returns a
         # full transcript in result["messages"], while older/mocked paths may

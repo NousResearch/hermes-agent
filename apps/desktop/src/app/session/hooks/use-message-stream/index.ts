@@ -10,17 +10,15 @@ import {
   type ChatMessagePart,
   chatMessageText,
   type GatewayEventPayload,
+  mergeFinalAssistantText,
   reasoningPart,
   renderMediaTags,
   upsertToolPart
 } from '@/lib/chat-messages'
-import {
-  dedupeGeneratedImageEchoesInParts,
-  generatedImageEchoSources,
-  stripGeneratedImageEchoes
-} from '@/lib/generated-images'
+import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { parseTodos } from '@/lib/todos'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { $keepInterimAssistantMessages } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
 import { setSessionTodos } from '@/store/todos'
@@ -354,28 +352,7 @@ export function useMessageStream({
         const streamId = state.streamId
         const finalText = renderMediaTags(text).trim()
         const completionError = completionErrorText(finalText)
-        const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
-
-        const replaceTextPart = (parts: ChatMessagePart[]) => {
-          const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
-          const dedupeReference = normalize(visibleFinalText)
-
-          const kept = parts.filter(part => {
-            if (part.type === 'text') {
-              return false
-            }
-
-            if (part.type !== 'reasoning' || !dedupeReference) {
-              return true
-            }
-
-            const r = normalize(part.text)
-
-            return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
-          })
-
-          return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
-        }
+        const keepInterim = $keepInterimAssistantMessages.get()
 
         const completeMessage = (message: ChatMessage): ChatMessage =>
           completionError
@@ -387,7 +364,7 @@ export function useMessageStream({
               }
             : {
                 ...message,
-                parts: replaceTextPart(message.parts),
+                parts: mergeFinalAssistantText(message.parts, finalText, keepInterim),
                 pending: false
               }
 

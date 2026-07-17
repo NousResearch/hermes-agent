@@ -11,7 +11,8 @@ import {
   setCurrentPersonality,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
-  setIntroPersonality
+  setIntroPersonality,
+  setKeepInterimAssistantMessages
 } from '@/store/session'
 import { applyAutoSpeakFromConfig } from '@/store/voice-prefs'
 
@@ -87,6 +88,9 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
 
       setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
       setSttEnabled(config.stt?.enabled !== false)
+      // Default true — only an explicit `false` opts into the lean (collapse
+      // interim narration) view, matching the backend display-config default.
+      setKeepInterimAssistantMessages(config.display?.interim_assistant_messages !== false)
       applyAutoSpeakFromConfig(config)
     } catch {
       // Config is nice-to-have; chat still works without it.

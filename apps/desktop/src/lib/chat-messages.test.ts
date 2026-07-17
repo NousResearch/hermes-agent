@@ -5,6 +5,7 @@ import {
   appendAssistantTextPart,
   appendReasoningPart,
   chatMessageText,
+  mergeFinalAssistantText,
   preserveLocalAssistantErrors,
   renderMediaTags,
   toChatMessages,
@@ -782,6 +783,83 @@ describe('upsertToolPart', () => {
     expect((part as Extract<ChatMessagePart, { type: 'tool-call' }>).result).toMatchObject({
       data: { web: [{ title: 'Suva forecast' }] },
       summary: 'Did 1 search in 0.5s'
+    })
+  })
+})
+
+describe('mergeFinalAssistantText', () => {
+  const textParts = (parts: ChatMessagePart[]) =>
+    parts.filter((p): p is Extract<ChatMessagePart, { type: 'text' }> => p.type === 'text').map(p => p.text)
+
+  describe('keepInterim = true (default / comprehensive)', () => {
+    it('keeps interim narration and upgrades the trailing segment in place', () => {
+      // text → tool → text, final text restates only the LAST segment.
+      let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Let me check the repo.')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1' }, 'running')
+      parts = appendAssistantTextPart(parts, 'No CI here.')
+
+      const merged = mergeFinalAssistantText(parts, 'No CI here.', true)
+
+      expect(merged.map(p => p.type)).toEqual(['text', 'tool-call', 'text'])
+      expect(textParts(merged)).toEqual(['Let me check the repo.', 'No CI here.'])
+    })
+
+    it('appends the final text as a new part when it does not restate the last streamed segment', () => {
+      let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Working on it.')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1' }, 'running')
+
+      // No trailing text part after the tool; final text is genuinely new.
+      const merged = mergeFinalAssistantText(parts, 'All done.', true)
+
+      expect(merged.map(p => p.type)).toEqual(['text', 'tool-call', 'text'])
+      expect(textParts(merged)).toEqual(['Working on it.', 'All done.'])
+    })
+
+    it('drops reasoning the final text restates but keeps interim narration', () => {
+      let parts: ChatMessagePart[] = appendReasoningPart([], 'The answer is 42.')
+      parts = appendAssistantTextPart(parts, 'Intermediate note.')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1' }, 'running')
+
+      const merged = mergeFinalAssistantText(parts, 'The answer is 42.', true)
+
+      // reasoning that the final text restates is dropped; interim text stays;
+      // the new final text is appended.
+      expect(merged.some(p => p.type === 'reasoning')).toBe(false)
+      expect(textParts(merged)).toEqual(['Intermediate note.', 'The answer is 42.'])
+    })
+
+    it('returns kept parts unchanged when the final text is empty', () => {
+      let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Only narration.')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1' }, 'running')
+
+      const merged = mergeFinalAssistantText(parts, '', true)
+
+      expect(textParts(merged)).toEqual(['Only narration.'])
+    })
+  })
+
+  describe('keepInterim = false (lean / legacy collapse)', () => {
+    it('drops every interim text part and re-appends only the final text', () => {
+      let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Let me check the repo.')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1' }, 'running')
+      parts = appendAssistantTextPart(parts, 'No CI here.')
+
+      const merged = mergeFinalAssistantText(parts, 'No CI here.', false)
+
+      // Historical behavior: tool survives, all text collapses to one trailing part.
+      expect(merged.map(p => p.type)).toEqual(['tool-call', 'text'])
+      expect(textParts(merged)).toEqual(['No CI here.'])
+    })
+
+    it('keeps tool/reasoning parts the final text does not restate', () => {
+      let parts: ChatMessagePart[] = appendReasoningPart([], 'unrelated thought')
+      parts = appendAssistantTextPart(parts, 'chatter')
+      parts = upsertToolPart(parts, { name: 'terminal', tool_id: 'tc-1' }, 'running')
+
+      const merged = mergeFinalAssistantText(parts, 'Final answer.', false)
+
+      expect(merged.map(p => p.type)).toEqual(['reasoning', 'tool-call', 'text'])
+      expect(textParts(merged)).toEqual(['Final answer.'])
     })
   })
 })

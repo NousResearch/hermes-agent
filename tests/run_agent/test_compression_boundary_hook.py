@@ -163,6 +163,45 @@ class TestCompressionBoundaryHook:
             assert compressed
             assert agent.session_id != original_sid
 
+    def test_plugin_noop_does_not_rotate_or_emit_boundary(self):
+        """A plugin no-op must not create a compression child session.
+
+        External context engines such as LCM can be above the host token
+        threshold while having no eligible leaf backlog outside their protected
+        fresh tail.  In that case they report a no-op and return the unchanged
+        active context.  Treating that as a successful compression would split
+        the session without creating summary/DAG state for the continuation.
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+
+            messages = [{"role": "user", "content": "tail-only pressure"}]
+            compressor = MagicMock()
+            compressor.compress.return_value = messages
+            compressor.compression_count = 0
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            compressor.last_compression_status = "noop"
+            agent.context_compressor = compressor
+
+            original_sid = agent.session_id
+            compressed, _prompt = agent._compress_context(
+                messages, "sys", approx_tokens=10_000
+            )
+
+            assert compressed == messages
+            assert agent.session_id == original_sid
+            comp_calls = [
+                c for c in compressor.on_session_start.call_args_list
+                if c.kwargs.get("boundary_reason") == "compression"
+            ]
+            assert not comp_calls
+
 
 class TestSessionCompressEvent:
     """The session:compress event_callback fires after a compression split."""

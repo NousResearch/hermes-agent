@@ -319,6 +319,19 @@ def _run_agent(
 
     cfg = load_config()
 
+    # Bounded wait for the background MCP discovery started at CLI launch
+    # (_prepare_agent_startup in main.py) so the tool snapshot below —
+    # _get_platform_tools() + AIAgent construction, which resolves the
+    # available tool list once — sees configured MCP servers.  This is the
+    # same bounded contract the interactive CLI uses (_init_agent /
+    # get_tool_definitions in cli.py): the bound comes from
+    # ``mcp_discovery_timeout`` in config, so a slow/dead server can delay
+    # but never freeze ``hermes -z``.  No-op when no discovery thread is in
+    # flight (non-MCP users, or entry points that ran inline discovery).
+    from hermes_cli.mcp_startup import wait_for_mcp_discovery
+
+    wait_for_mcp_discovery()
+
     # Resolve effective model: explicit arg → env var → config.
     model_cfg = cfg.get("model") or {}
     if isinstance(model_cfg, str):

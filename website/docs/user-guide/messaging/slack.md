@@ -209,6 +209,28 @@ Or run the interactive setup:
 hermes gateway setup    # Select Slack when prompted
 ```
 
+### Review files already attached to a thread
+
+By default, Hermes processes files attached to the current message but does not download
+historical thread attachments. Enable request-driven thread-file context in
+`~/.hermes/config.yaml`:
+
+```yaml
+slack:
+  thread_file_context: on_request  # off (default) | on_request | always
+```
+
+With `on_request`, an authorized user can say, for example, “review the file uploaded
+above” or “위에 올린 파일 검토해줘.” Hermes then inspects the current thread and passes up
+to five prior files to the agent. Files larger than 20 MiB are reported but skipped.
+Files uploaded by users outside the allowlist are labeled `[unverified]` and treated as
+data rather than instructions.
+
+The adapter checks authorization before it queries historical files. Unauthorized users
+cannot trigger this lookup. `always` performs the same lookup on every authorized thread
+message and can add unnecessary Slack API calls and model context, so `on_request` is the
+recommended mode. This feature requires the `files:read` scope from Step 2.
+
 Then start the gateway:
 
 ```bash

@@ -2114,26 +2114,23 @@ class TestRunPreUpdateBackup:
         assert "Pre-update snapshot" in out
         assert "Creating pre-update backup" not in out
         assert self._snaps(hermes_home)
+        assert self._snaps(hermes_home / "profiles" / "coder")
         assert not self._zips(hermes_home)
 
-    def test_snapshots_other_running_profiles_before_shared_update(
+    def test_snapshots_every_known_profile_before_shared_update(
         self, hermes_home, monkeypatch, capsys
     ):
-        """Every running profile restarted by an update gets its own snapshot."""
+        """Every registered profile gets a rollback point before shared update."""
         other_home = hermes_home / "profiles" / "coder"
-        other_profile = Namespace(
-            name="coder",
-            path=other_home,
-            gateway_running=True,
-        )
-        stopped_profile = Namespace(
-            name="stopped",
-            path=hermes_home / "profiles" / "stopped",
-            gateway_running=False,
-        )
+        stopped_home = hermes_home / "profiles" / "stopped"
+        stopped_home.mkdir()
+        (stopped_home / "config.yaml").write_text("model:\n  provider: stopped\n")
         monkeypatch.setattr(
-            "hermes_cli.profiles.list_profiles",
-            lambda: [other_profile, stopped_profile],
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: [
+                ("coder", other_home),
+                ("stopped", stopped_home),
+            ],
         )
 
         from hermes_cli.main import _run_pre_update_backup
@@ -2144,11 +2141,12 @@ class TestRunPreUpdateBackup:
         assert snap_id is not None
         assert self._snaps(hermes_home)
         assert self._snaps(other_home)
-        assert not self._snaps(stopped_profile.path)
+        assert self._snaps(stopped_home)
         assert "coder" in out
+        assert "stopped" in out
 
     def test_secondary_snapshot_failure_does_not_skip_later_profiles(
-        self, hermes_home, monkeypatch
+        self, hermes_home, monkeypatch, capsys
     ):
         """A broken profile must not prevent snapshots for remaining gateways."""
         from hermes_cli import backup as backup_mod
@@ -2158,10 +2156,13 @@ class TestRunPreUpdateBackup:
         (bad_home / "config.yaml").write_text("model:\n  provider: broken\n")
         good_home = hermes_home / "profiles" / "coder"
         profiles = [
-            Namespace(name="broken", path=bad_home, gateway_running=True),
-            Namespace(name="coder", path=good_home, gateway_running=True),
+            ("broken", bad_home),
+            ("coder", good_home),
         ]
-        monkeypatch.setattr("hermes_cli.profiles.list_profiles", lambda: profiles)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: profiles,
+        )
 
         real_create = backup_mod.create_quick_snapshot
 
@@ -2175,20 +2176,23 @@ class TestRunPreUpdateBackup:
         from hermes_cli.main import _run_pre_update_backup
 
         snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        out = capsys.readouterr().out
 
         assert snap_id is not None
         assert self._snaps(good_home)
+        assert "broken" in out
+        assert "snapshot failed" in out.lower()
 
-    def test_active_snapshot_failure_does_not_skip_running_profiles(
-        self, hermes_home, monkeypatch
+    def test_active_snapshot_failure_does_not_skip_registered_profiles(
+        self, hermes_home, monkeypatch, capsys
     ):
-        """The active backup is isolated from backups for other gateways."""
+        """The active backup is isolated from backups for registered profiles."""
         from hermes_cli import backup as backup_mod
 
         other_home = hermes_home / "profiles" / "coder"
         monkeypatch.setattr(
-            "hermes_cli.profiles.list_profiles",
-            lambda: [Namespace(name="coder", path=other_home, gateway_running=True)],
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: [("coder", other_home)],
         )
         real_create = backup_mod.create_quick_snapshot
 
@@ -2202,9 +2206,12 @@ class TestRunPreUpdateBackup:
         from hermes_cli.main import _run_pre_update_backup
 
         snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        out = capsys.readouterr().out
 
         assert snap_id is None
         assert self._snaps(other_home)
+        assert "active profile" in out.lower()
+        assert "snapshot failed" in out.lower()
 
     def test_backup_flag_forces_full(self, hermes_home, capsys):
         """--backup forces the full zip (plus quick snapshot) for one run."""

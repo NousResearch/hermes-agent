@@ -38,6 +38,7 @@ _ensure_telegram_mock()
 from plugins.platforms.telegram.adapter import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
+    _escape_mdv2_backslashes,
     _strip_mdv2,
     _wrap_markdown_tables,
 )
@@ -623,6 +624,55 @@ class TestStripMdv2:
 
 
 # =========================================================================
+# _escape_mdv2_backslashes — preserves formatting in fallback
+# =========================================================================
+
+
+class TestEscapeMdv2Backslashes:
+    """_escape_mdv2_backslashes strips only escape backslashes, preserving
+    markdown formatting markers.  Used in Telegram fallback paths where
+    MarkdownV2 fails but the content should remain readable."""
+
+    def test_removes_escape_backslashes(self):
+        assert _escape_mdv2_backslashes(r"hello\.world\!") == "hello.world!"
+
+    def test_preserves_bold_markers(self):
+        assert _escape_mdv2_backslashes("**bold text**") == "**bold text**"
+
+    def test_preserves_italic_markers(self):
+        assert _escape_mdv2_backslashes("_italic text_") == "_italic text_"
+
+    def test_preserves_strikethrough(self):
+        assert _escape_mdv2_backslashes("~struck~") == "~struck~"
+
+    def test_preserves_spoiler(self):
+        assert _escape_mdv2_backslashes("||hidden||") == "||hidden||"
+
+    def test_table_with_bold_headers(self):
+        """The core bug: bold headers in tables must survive fallback."""
+        table = (
+            "| **Code** | **Name** | **Price** |\n"
+            "|----------|----------|------------|\n"
+            "| 2330     | TSMC     | 815        |"
+        )
+        result = _escape_mdv2_backslashes(table)
+        assert "**Code**" in result
+        assert "**Name**" in result
+        assert "**Price**" in result
+
+    def test_plain_text_unchanged(self):
+        assert _escape_mdv2_backslashes("plain text") == "plain text"
+
+    def test_empty_string(self):
+        assert _escape_mdv2_backslashes("") == ""
+
+    def test_mixed_escape_and_formatting(self):
+        text = r"Escaped \. and **bold** text"
+        result = _escape_mdv2_backslashes(text)
+        assert result == "Escaped . and **bold** text"
+
+
+# =========================================================================
 # Markdown table auto-wrap
 # =========================================================================
 
@@ -903,7 +953,7 @@ class TestEditMessageStreamingSafety:
         assert second_call == {
             "chat_id": 123,
             "message_id": 456,
-            "text": "final bold",
+            "text": "final **bold**",
         }
 
     @pytest.mark.asyncio

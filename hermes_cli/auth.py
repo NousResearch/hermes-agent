@@ -8372,6 +8372,14 @@ def _refresh_minimax_oauth_state(
     ``source_path`` + ``set_active=False`` let source-aware callers persist
     borrowed-root grants back to global root without creating a profile-local
     shadow or flipping ``active_provider`` on a background refresh.
+
+    When ``source_path`` points at a different auth store than the active
+    profile (borrowed-root profile sessions), the whole
+    sync→POST→write-back runs inside ``_provider_state_transaction`` so two
+    distinct profiles sharing one root grant cannot both POST the same
+    single-use refresh token.  If the authoritative source was removed while
+    waiting for the lock, we fail closed instead of resurrecting stale
+    credentials.
     """
     if not state.get("refresh_token"):
         raise AuthError(
@@ -8380,6 +8388,64 @@ def _refresh_minimax_oauth_state(
             code="no_refresh_token",
             relogin_required=True,
         )
+
+    active_path = _auth_file_path()
+    target_is_root = source_path is not None and not _same_path(
+        source_path, active_path
+    )
+
+    def _needs_refresh(_state: Dict[str, Any]) -> bool:
+        try:
+            expires_at = datetime.fromisoformat(
+                _state.get("expires_at", "")
+            ).timestamp()
+        except Exception:
+            expires_at = 0.0
+        now = time.time()
+        return force or (expires_at - now) <= MINIMAX_OAUTH_REFRESH_SKEW_SECONDS
+
+    if target_is_root:
+        lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), timeout_seconds + 5.0)
+        with _provider_state_transaction(
+            "minimax-oauth", timeout_seconds=lock_timeout
+        ) as (_auth_store, source_state, source_path):
+            if not isinstance(source_state, dict):
+                logger.debug(
+                    "MiniMax OAuth: source state disappeared while waiting for "
+                    "the source lock; failing closed instead of resurrecting"
+                )
+                raise AuthError(
+                    "MiniMax OAuth session was removed; please re-login.",
+                    provider="minimax-oauth",
+                    code="not_logged_in",
+                    relogin_required=True,
+                )
+            if not _needs_refresh(source_state):
+                return source_state
+            try:
+                updated_fields = refresh_minimax_oauth_pure(
+                    source_state, timeout_seconds=timeout_seconds
+                )
+            except AuthError as exc:
+                if _is_terminal_minimax_oauth_refresh_error(exc):
+                    quarantined = dict(source_state)
+                    _minimax_oauth_quarantine_on_terminal_refresh(
+                        quarantined, exc, persist=False
+                    )
+                    _persist_provider_state_to_store(
+                        "minimax-oauth",
+                        quarantined,
+                        source_path,
+                        set_active=False,
+                    )
+                raise
+            new_state = dict(source_state)
+            new_state.update(updated_fields)
+            _persist_provider_state_to_store(
+                "minimax-oauth", new_state, source_path, set_active=set_active
+            )
+            return new_state
+
     try:
         expires_at = datetime.fromisoformat(state.get("expires_at", "")).timestamp()
     except Exception:
@@ -8392,6 +8458,8 @@ def _refresh_minimax_oauth_state(
     new_state = dict(state)
     new_state.update(updated_fields)
     _minimax_save_auth_state(new_state, source_path=source_path, set_active=set_active)
+    return new_state
+
     return new_state
 
 

@@ -399,16 +399,19 @@ def _compute_tool_definitions(
     if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
-                if toolset_name.startswith("hermes-"):
-                    # Platform bundles (hermes-*) include _HERMES_CORE_TOOLS, so
-                    # subtracting the whole bundle would strip core tools shared
-                    # by other enabled toolsets and empty the tool list (#33924).
-                    # Subtract only the bundle's non-core delta; keep core.
-                    from toolsets import bundle_non_core_tools
+                from toolsets import bundle_non_core_tools, get_toolset
+                if toolset_name.startswith("hermes-") or (get_toolset(toolset_name) or {}).get("posture"):
+                    # Platform bundles (hermes-*) include _HERMES_CORE_TOOLS, and
+                    # posture toolsets (`posture: True`, e.g. `coding`) re-list
+                    # those same core tools without owning them, so subtracting
+                    # the whole toolset would strip core tools shared by other
+                    # enabled toolsets and empty the tool list (#33924, #57315).
+                    # Subtract only the non-core delta; keep core.
                     to_remove = bundle_non_core_tools(toolset_name)
                     tools_to_include.difference_update(to_remove)
                     resolved = sorted(to_remove)
-                    if not quiet_mode and toolset_name not in _WARNED_DISABLED_BUNDLES:
+                    if (not quiet_mode and toolset_name.startswith("hermes-")
+                            and toolset_name not in _WARNED_DISABLED_BUNDLES):
                         _WARNED_DISABLED_BUNDLES.add(toolset_name)
                         logger.info(
                             "agent.disabled_toolsets contains platform-bundle "
@@ -580,7 +583,13 @@ def _resolve_active_context_length() -> int:
         if not model_id:
             return 0
         from agent.model_metadata import get_model_context_length
-        return int(get_model_context_length(model_id) or 0)
+        # Honor explicit `model.context_length` in config.yaml — short-circuits
+        # the OpenRouter /models probe at get_model_context_length step 0, so
+        # non-OpenRouter providers don't pay the ~2-3s OpenRouter fetch at every
+        # CLI startup.  See issue #46620.
+        raw_ctx = model_cfg.get("context_length")
+        config_ctx = raw_ctx if isinstance(raw_ctx, int) and raw_ctx > 0 else None
+        return int(get_model_context_length(model_id, config_context_length=config_ctx) or 0)
     except Exception as e:
         logger.debug("Could not resolve active context length: %s", e)
         return 0

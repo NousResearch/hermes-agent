@@ -1508,11 +1508,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if has_wrapper:
         items.append(f"Command alias ({wrapper_path})")
 
-    print(f"\nThis will permanently delete:")
+    print("\nThis will permanently delete:")
     for item in items:
         print(f"  • {item}")
     if gw_running:
-        print(f"  ⚠ Gateway is running — it will be stopped.")
+        print("  ⚠ Gateway is running — it will be stopped.")
 
     # Confirmation
     if not yes:
@@ -1736,7 +1736,7 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
                     capture_output=True, check=False, timeout=10,
                 )
                 plist_path.unlink(missing_ok=True)
-                print(f"✓ Launchd service removed")
+                print("✓ Launchd service removed")
     except Exception as e:
         print(f"⚠ Service cleanup: {e}")
     finally:

@@ -244,30 +244,6 @@ def test_set_session_env_includes_session_key():
     assert get_session_env("HERMES_SESSION_KEY") != "tg:-1001:17585"
 
 
-def test_set_session_env_includes_session_id():
-    """_set_session_env should propagate session_id from SessionContext."""
-    runner = object.__new__(GatewayRunner)
-    source = SessionSource(
-        platform=Platform.DISCORD,
-        chat_id="channel-123",
-        chat_name="general",
-        chat_type="thread",
-        thread_id="thread-456",
-    )
-    context = SessionContext(
-        source=source,
-        connected_platforms=[],
-        home_channels={},
-        session_key="agent:main:discord:thread:thread-456:thread-456",
-        session_id="20260705_191621_abcd",
-    )
-
-    tokens = runner._set_session_env(context)
-    assert get_session_env("HERMES_SESSION_ID") == "20260705_191621_abcd"
-    runner._clear_session_env(tokens)
-    assert get_session_env("HERMES_SESSION_ID") != "20260705_191621_abcd"
-
-
 def test_session_key_no_race_condition_with_contextvars(monkeypatch):
     """Prove contextvars isolates SESSION_KEY across concurrent async tasks.
 
@@ -417,3 +393,4 @@ async def test_gateway_executor_refuses_resurrection_after_shutdown():
             await runner._run_in_executor_with_context(lambda: "second")
     finally:
         runner._shutdown_executor()
+

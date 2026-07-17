@@ -10,6 +10,7 @@ Tests cover:
   6. OOP middleware ABC and class tests
 """
 
+import asyncio
 import sys
 import os
 import json
@@ -45,6 +46,8 @@ from gateway.platforms.yuanbao import (
     DispatchMiddleware,
     InboundPipelineBuilder,
     YuanbaoAdapter,
+    _MIN_RESOLVE_CONCURRENCY,
+    _MAX_RESOLVE_CONCURRENCY,
 )
 from gateway.config import PlatformConfig
 
@@ -1504,6 +1507,339 @@ class TestResolveYbresRefs:
 
         assert paths == []
         assert mimes == []
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_skips_resource_url_resolve(self, tmp_path):
+        """A resourceId cache hit must not await ``_fetch_resource_url`` at all."""
+        adapter = make_adapter()
+        cached_file = tmp_path / "rid-cached.jpg"
+        cached_file.write_bytes(b"cached-image")
+        MediaResolveMiddleware._resource_cache.clear()
+        try:
+            MediaResolveMiddleware._put_cached_resource(
+                "rid-cached", str(cached_file), "image/jpeg",
+            )
+
+            with patch.object(
+                MediaResolveMiddleware, "_fetch_resource_url",
+                new=AsyncMock(return_value="https://fresh/never"),
+            ) as p_fetch:
+                paths, mimes = await MediaResolveMiddleware._resolve_ybres_refs(
+                    adapter, [("rid-cached", "image", "")], log_prefix="test",
+                )
+
+            assert paths == [str(cached_file)]
+            assert mimes == ["image/jpeg"]
+            p_fetch.assert_not_awaited()
+        finally:
+            MediaResolveMiddleware._resource_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_cache_miss_still_resolves(self, tmp_path):
+        """Uncached refs still pay the resolve; cached ones are served in place."""
+        adapter = make_adapter()
+        cached_file = tmp_path / "rid-cached.jpg"
+        cached_file.write_bytes(b"cached-image")
+        MediaResolveMiddleware._resource_cache.clear()
+        try:
+            MediaResolveMiddleware._put_cached_resource(
+                "rid-cached", str(cached_file), "image/jpeg",
+            )
+
+            with patch.object(
+                MediaResolveMiddleware, "_fetch_resource_url",
+                new=AsyncMock(return_value="https://fresh/new"),
+            ) as p_fetch, patch.object(
+                MediaResolveMiddleware, "_download_and_cache",
+                new=AsyncMock(return_value=("/cache/new.jpg", "image/jpeg")),
+            ):
+                paths, mimes = await MediaResolveMiddleware._resolve_ybres_refs(
+                    adapter,
+                    [("rid-cached", "image", ""), ("rid-new", "image", "")],
+                    log_prefix="test",
+                )
+
+            assert paths == [str(cached_file), "/cache/new.jpg"]
+            assert mimes == ["image/jpeg", "image/jpeg"]
+            p_fetch.assert_awaited_once()
+        finally:
+            MediaResolveMiddleware._resource_cache.clear()
+
+
+class TestResolveMediaUrlsCacheHit:
+    """Current-message media cache hits must skip the download-URL resolve."""
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_skips_resolve_download_url(self, tmp_path):
+        adapter = make_adapter()
+        cached_file = tmp_path / "rid-cached.jpg"
+        cached_file.write_bytes(b"cached-image")
+        MediaResolveMiddleware._resource_cache.clear()
+        try:
+            MediaResolveMiddleware._put_cached_resource(
+                "rid-cached", str(cached_file), "image/jpeg",
+            )
+
+            with patch.object(
+                MediaResolveMiddleware, "_resolve_download_url",
+                new=AsyncMock(return_value="https://fresh/never"),
+            ) as p_resolve, patch.object(
+                MediaResolveMiddleware, "_fetch_resource_url",
+                new=AsyncMock(return_value="https://fresh/never"),
+            ) as p_fetch:
+                paths, mimes = await MediaResolveMiddleware._resolve_media_urls(
+                    adapter,
+                    [{
+                        "kind": "image",
+                        "url": "https://hunyuan.tencent.com/api/resource/download?resourceId=rid-cached",
+                    }],
+                )
+
+            assert paths == [str(cached_file)]
+            assert mimes == ["image/jpeg"]
+            p_resolve.assert_not_awaited()
+            p_fetch.assert_not_awaited()
+        finally:
+            MediaResolveMiddleware._resource_cache.clear()
+
+
+class TestResolveYbresRefsConcurrency:
+    """Bounded-concurrency contracts for ``_resolve_ybres_refs``."""
+
+    # ------------------------------------------------------------------
+    # Bounded-concurrency contracts (issue 3 in
+    # yuanbao-media-pipeline-optimizations.md). These are behavior
+    # contracts, not implementation snapshots — they assert the
+    # invariants the new gather()-based path must hold, not how it's
+    # wired internally.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_concurrent_resolve_preserves_input_order(self):
+        """Order of returned (paths, mimes) must match input ``refs`` order
+        even when later refs finish downloading first.
+        """
+        adapter = make_adapter(extra={"media_resolve_concurrency": 4})
+        refs = [
+            ("rid-A", "image", ""),
+            ("rid-B", "image", ""),
+            ("rid-C", "image", ""),
+        ]
+
+        # _fetch is fast and uniform; the interesting variation is in
+        # _download_and_cache, where rid-A is the slowest. If results
+        # were assembled by completion order, rid-A would land last.
+        async def slow_fetch(_adapter, rid):
+            return f"https://fresh/{rid}"
+
+        delays = {"rid-A": 0.06, "rid-B": 0.02, "rid-C": 0.0}
+        results_by_rid = {
+            "rid-A": ("/cache/A.jpg", "image/jpeg"),
+            "rid-B": ("/cache/B.jpg", "image/jpeg"),
+            "rid-C": ("/cache/C.jpg", "image/jpeg"),
+        }
+
+        async def slow_download(_adapter, *, fetch_url, kind, file_name, log_tag, resource_id):
+            await asyncio.sleep(delays[resource_id])
+            return results_by_rid[resource_id]
+
+        with patch.object(
+            MediaResolveMiddleware, "_fetch_resource_url",
+            new=AsyncMock(side_effect=slow_fetch),
+        ), patch.object(
+            MediaResolveMiddleware, "_download_and_cache",
+            new=AsyncMock(side_effect=slow_download),
+        ):
+            paths, mimes = await MediaResolveMiddleware._resolve_ybres_refs(
+                adapter, refs, log_prefix="test",
+            )
+
+        assert paths == ["/cache/A.jpg", "/cache/B.jpg", "/cache/C.jpg"]
+        assert mimes == ["image/jpeg", "image/jpeg", "image/jpeg"]
+
+    @pytest.mark.asyncio
+    async def test_concurrency_one_equivalent_to_sequential(self):
+        """``media_resolve_concurrency = 1`` must behave like the legacy
+        sequential path — at any moment at most one ``_download_and_cache``
+        is in flight.
+        """
+        adapter = make_adapter(extra={"media_resolve_concurrency": 1})
+        refs = [("rid-A", "image", ""), ("rid-B", "image", ""), ("rid-C", "image", "")]
+
+        in_flight = 0
+        max_in_flight = 0
+
+        async def tracked_download(_adapter, *, fetch_url, kind, file_name, log_tag, resource_id):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            try:
+                # Yield to the event loop so any concurrent coroutine
+                # would have a chance to also enter the critical section.
+                await asyncio.sleep(0.01)
+                return (f"/cache/{resource_id}.jpg", "image/jpeg")
+            finally:
+                in_flight -= 1
+
+        with patch.object(
+            MediaResolveMiddleware, "_fetch_resource_url",
+            new=AsyncMock(side_effect=lambda _a, rid: f"https://fresh/{rid}"),
+        ), patch.object(
+            MediaResolveMiddleware, "_download_and_cache",
+            new=AsyncMock(side_effect=tracked_download),
+        ):
+            paths, _ = await MediaResolveMiddleware._resolve_ybres_refs(
+                adapter, refs, log_prefix="test",
+            )
+
+        assert max_in_flight == 1
+        assert paths == ["/cache/rid-A.jpg", "/cache/rid-B.jpg", "/cache/rid-C.jpg"]
+
+    @pytest.mark.asyncio
+    async def test_concurrency_caps_inflight_downloads(self):
+        """Configured concurrency bounds the number of in-flight downloads."""
+        adapter = make_adapter(extra={"media_resolve_concurrency": 2})
+        refs = [(f"rid-{i}", "image", "") for i in range(6)]
+
+        in_flight = 0
+        max_in_flight = 0
+
+        async def tracked_download(_adapter, *, fetch_url, kind, file_name, log_tag, resource_id):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            try:
+                await asyncio.sleep(0.01)
+                return (f"/cache/{resource_id}.jpg", "image/jpeg")
+            finally:
+                in_flight -= 1
+
+        with patch.object(
+            MediaResolveMiddleware, "_fetch_resource_url",
+            new=AsyncMock(side_effect=lambda _a, rid: f"https://fresh/{rid}"),
+        ), patch.object(
+            MediaResolveMiddleware, "_download_and_cache",
+            new=AsyncMock(side_effect=tracked_download),
+        ):
+            paths, _ = await MediaResolveMiddleware._resolve_ybres_refs(
+                adapter, refs, log_prefix="test",
+            )
+
+        assert max_in_flight == 2
+        assert paths == [f"/cache/rid-{i}.jpg" for i in range(6)]
+
+    @pytest.mark.asyncio
+    async def test_download_exception_isolated_to_single_ref(self):
+        """An exception raised inside ``_download_and_cache`` for one rid
+        must not poison the whole batch; surviving refs still resolve.
+        """
+        adapter = make_adapter(extra={"media_resolve_concurrency": 4})
+        refs = [
+            ("rid-ok-1", "image", ""),
+            ("rid-boom", "image", ""),
+            ("rid-ok-2", "image", ""),
+        ]
+
+        async def maybe_boom(_adapter, *, fetch_url, kind, file_name, log_tag, resource_id):
+            if resource_id == "rid-boom":
+                raise RuntimeError("download crashed")
+            return (f"/cache/{resource_id}.jpg", "image/jpeg")
+
+        with patch.object(
+            MediaResolveMiddleware, "_fetch_resource_url",
+            new=AsyncMock(side_effect=lambda _a, rid: f"https://fresh/{rid}"),
+        ), patch.object(
+            MediaResolveMiddleware, "_download_and_cache",
+            new=AsyncMock(side_effect=maybe_boom),
+        ):
+            paths, mimes = await MediaResolveMiddleware._resolve_ybres_refs(
+                adapter, refs, log_prefix="test",
+            )
+
+        assert paths == ["/cache/rid-ok-1.jpg", "/cache/rid-ok-2.jpg"]
+        assert mimes == ["image/jpeg", "image/jpeg"]
+
+    @pytest.mark.asyncio
+    async def test_misconfigured_concurrency_clamped(self):
+        """Out-of-range or non-int concurrency values are clamped, not crashed."""
+        # Negative -> clamped up to MIN
+        adapter_low = make_adapter(extra={"media_resolve_concurrency": -3})
+        assert adapter_low.media_resolve_concurrency >= _MIN_RESOLVE_CONCURRENCY
+
+        # Huge -> clamped down to MAX
+        adapter_high = make_adapter(extra={"media_resolve_concurrency": 9999})
+        assert adapter_high.media_resolve_concurrency <= _MAX_RESOLVE_CONCURRENCY
+
+        # Non-int garbage -> falls back to default, doesn't raise
+        adapter_garbage = make_adapter(extra={"media_resolve_concurrency": "fast"})
+        assert (
+            _MIN_RESOLVE_CONCURRENCY
+            <= adapter_garbage.media_resolve_concurrency
+            <= _MAX_RESOLVE_CONCURRENCY
+        )
+
+
+class TestResolveMediaUrlsConcurrency:
+    """Bounded-concurrency contracts for ``_resolve_media_urls`` (own-turn
+    media). Same invariants as ``_resolve_ybres_refs`` — order preserved,
+    failures isolated, concurrency clamped.
+    """
+
+    @pytest.mark.asyncio
+    async def test_preserves_input_order(self):
+        adapter = make_adapter(extra={"media_resolve_concurrency": 4})
+        media_refs = [
+            {"kind": "image", "url": "https://hunyuan.tencent.com/api/resource/download?resourceId=rid-A", "name": ""},
+            {"kind": "image", "url": "https://hunyuan.tencent.com/api/resource/download?resourceId=rid-B", "name": ""},
+            {"kind": "image", "url": "https://hunyuan.tencent.com/api/resource/download?resourceId=rid-C", "name": ""},
+        ]
+
+        delays = {"rid-A": 0.05, "rid-B": 0.02, "rid-C": 0.0}
+
+        async def slow_download(_adapter, *, fetch_url, kind, file_name, log_tag, resource_id):
+            await asyncio.sleep(delays[resource_id])
+            return (f"/cache/{resource_id}.jpg", "image/jpeg")
+
+        with patch.object(
+            MediaResolveMiddleware, "_resolve_download_url",
+            new=AsyncMock(side_effect=lambda _a, url: url),
+        ), patch.object(
+            MediaResolveMiddleware, "_download_and_cache",
+            new=AsyncMock(side_effect=slow_download),
+        ):
+            paths, mimes = await MediaResolveMiddleware._resolve_media_urls(
+                adapter, media_refs,
+            )
+
+        assert paths == ["/cache/rid-A.jpg", "/cache/rid-B.jpg", "/cache/rid-C.jpg"]
+        assert mimes == ["image/jpeg"] * 3
+
+    @pytest.mark.asyncio
+    async def test_failure_isolated(self):
+        adapter = make_adapter(extra={"media_resolve_concurrency": 4})
+        media_refs = [
+            {"kind": "image", "url": "https://x/api/resource/download?resourceId=ok", "name": ""},
+            {"kind": "image", "url": "https://x/api/resource/download?resourceId=boom", "name": ""},
+        ]
+
+        async def maybe_boom(_adapter, *, fetch_url, kind, file_name, log_tag, resource_id):
+            if resource_id == "boom":
+                raise RuntimeError("download crashed")
+            return ("/cache/ok.jpg", "image/jpeg")
+
+        with patch.object(
+            MediaResolveMiddleware, "_resolve_download_url",
+            new=AsyncMock(side_effect=lambda _a, url: url),
+        ), patch.object(
+            MediaResolveMiddleware, "_download_and_cache",
+            new=AsyncMock(side_effect=maybe_boom),
+        ):
+            paths, mimes = await MediaResolveMiddleware._resolve_media_urls(
+                adapter, media_refs,
+            )
+
+        assert paths == ["/cache/ok.jpg"]
+        assert mimes == ["image/jpeg"]
 
 
 class TestMediaResolveMiddlewareRouting:

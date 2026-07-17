@@ -9646,6 +9646,31 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+def _preserve_local_update_commits(git_cmd, repo_root) -> bool:
+    """Whether this checkout keeps its local patch stack across updates.
+
+    This is an install-local Git setting rather than a tracked config value so
+    a managed downstream patch can protect the very update code that performs
+    the rebase.  The default stays compatible with ordinary managed installs;
+    operators opt in with::
+
+        git config hermes.updatePreserveLocalCommits true
+    """
+    try:
+        result = subprocess.run(
+            git_cmd
+            + ["config", "--bool", "--get", "hermes.updatePreserveLocalCommits"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return False
+
+    return result.returncode == 0 and result.stdout.strip().lower() == "true"
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -10123,26 +10148,56 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 text=True,
             )
             if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
-                )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
+                # ff-only failed — local and remote have diverged. Managed
+                # downstream installs may carry a deliberately-maintained
+                # local patch stack. Rebase that stack when the install-local
+                # guard is enabled; fail closed on conflicts so an update can
+                # never silently delete the fix that launched it.
+                if _preserve_local_update_commits(git_cmd, PROJECT_ROOT):
                     print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        "  ⚠ Fast-forward not possible. Preserving local commits "
+                        "and rebasing them onto the update..."
                     )
-                    sys.exit(1)
+                    rebase_result = subprocess.run(
+                        git_cmd + ["rebase", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if rebase_result.returncode != 0:
+                        subprocess.run(
+                            git_cmd + ["rebase", "--abort"],
+                            cwd=PROJECT_ROOT,
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
+                        print("✗ Local update patches conflict with the new version.")
+                        print("  Update stopped without discarding local commits.")
+                        if rebase_result.stderr.strip():
+                            print(f"  {rebase_result.stderr.strip().splitlines()[0]}")
+                        sys.exit(1)
+                else:
+                    # Historical managed-install behavior for upstream history
+                    # rewrites: local working changes are already stashed, so
+                    # reset to match the remote exactly.
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        )
+                        sys.exit(1)
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit

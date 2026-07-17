@@ -163,47 +163,190 @@ pub async fn get_bootstrap_status(
 /// (e.g. when Stage-Desktop was skipped) so the frontend can present
 /// actionable failure UI rather than silently doing nothing.
 #[tauri::command]
-pub async fn launch_hermes_desktop(
-    app: AppHandle,
-    install_root: String,
-) -> Result<(), String> {
+pub async fn launch_hermes_desktop(app: AppHandle, install_root: String) -> Result<(), String> {
     let install_root = PathBuf::from(install_root);
     let exe_path = resolve_hermes_desktop_exe(&install_root).ok_or_else(|| {
         format!(
             "Couldn't find a built Hermes desktop at {}. The desktop build step \
              may have been skipped or failed. Run `hermes desktop` from a \
              terminal to build and launch it.",
-            install_root.join("apps").join("desktop").join("release").display()
+            install_root
+                .join("apps")
+                .join("desktop")
+                .join("release")
+                .display()
         )
     })?;
 
     tracing::info!(?exe_path, "launching Hermes desktop");
 
-    // Detach from us — the installer is about to exit. On macOS launch the
-    // bundle through LaunchServices instead of exec'ing Contents/MacOS/Hermes
-    // directly; this matches user double-click/open behavior and avoids cwd /
-    // quarantine oddities after a self-update rebuild.
-    let mut cmd = desktop_launch_command(&exe_path, &install_root);
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
-        // DETACHED_PROCESS = 0x00000008
-        cmd.creation_flags(0x0000_0008);
+        launch_windows_desktop_via_task(&exe_path, &install_root)
+            .await
+            .map_err(|e| format!("failed to launch {}: {e:#}", exe_path.display()))?;
+        crate::allow_update_close(&app);
+        app.exit(0);
+        return Ok(());
     }
 
-    cmd.spawn().map_err(|e| {
-        format!(
-            "failed to launch {}: {e}",
-            exe_path.display()
-        )
-    })?;
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Detach from us — the installer is about to exit. On macOS launch the
+        // bundle through LaunchServices instead of exec'ing Contents/MacOS/Hermes
+        // directly; this matches user double-click/open behavior and avoids cwd /
+        // quarantine oddities after a self-update rebuild.
+        let mut cmd = desktop_launch_command(&exe_path, &install_root);
+        cmd.spawn()
+            .map_err(|e| format!("failed to launch {}: {e}", exe_path.display()))?;
 
-    // Give Windows ~150ms to actually start the new process before we exit.
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        crate::allow_update_close(&app);
+        app.exit(0);
+        Ok(())
+    }
+}
 
-    // Exit the installer cleanly. Tauri's process plugin gives us the
-    // right hook regardless of platform.
-    app.exit(0);
+#[cfg(target_os = "windows")]
+#[derive(Debug, Deserialize)]
+struct DesktopRelaunchAck {
+    ok: bool,
+    pid: u32,
+    #[serde(rename = "requestId")]
+    request_id: String,
+}
+
+#[cfg(target_os = "windows")]
+async fn run_schtasks(args: &[String]) -> Result<std::process::Output> {
+    let mut cmd = tokio::process::Command::new("schtasks.exe");
+    cmd.args(args);
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    Ok(cmd.output().await?)
+}
+
+#[cfg(target_os = "windows")]
+async fn cleanup_desktop_launch_task(task_name: &str, end_running: bool) {
+    if end_running {
+        let _ = run_schtasks(&["/End".into(), "/TN".into(), task_name.into()]).await;
+    }
+    let _ = run_schtasks(&[
+        "/Delete".into(),
+        "/F".into(),
+        "/TN".into(),
+        task_name.into(),
+    ])
+    .await;
+}
+
+#[cfg(target_os = "windows")]
+fn windows_pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut exit_code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut exit_code) != 0;
+        CloseHandle(handle);
+        ok && exit_code == STILL_ACTIVE as u32
+    }
+}
+
+/// Relaunch through a new Task Scheduler action whose executable is Hermes.exe
+/// itself. The task therefore owns the desktop independently of both the
+/// updater's job and the outer update-launch task. The desktop writes a
+/// request-bound cold-start ACK from Electron's app-ready path; only then do we
+/// delete the one-shot definition and verify that its PID survived deletion.
+#[cfg(target_os = "windows")]
+async fn launch_windows_desktop_via_task(
+    exe_path: &std::path::Path,
+    install_root: &std::path::Path,
+) -> Result<()> {
+    let request_id = uuid::Uuid::new_v4().simple().to_string();
+    let task_name = format!("Hermes_DesktopRelaunch_{request_id}");
+    let ack_path = crate::paths::hermes_home()
+        .join("logs")
+        .join(format!("desktop-relaunch-{request_id}.json"));
+    if let Some(parent) = ack_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let _ = std::fs::remove_file(&ack_path);
+
+    let action = format!(
+        "\"{}\" --hermes-update-relaunch-ack=\"{}\" --hermes-update-relaunch-request={}",
+        exe_path.display(),
+        ack_path.display(),
+        request_id
+    );
+    let create_args = vec![
+        "/Create".into(),
+        "/F".into(),
+        "/TN".into(),
+        task_name.clone(),
+        "/SC".into(),
+        "ONCE".into(),
+        "/ST".into(),
+        "23:59".into(),
+        "/TR".into(),
+        action,
+    ];
+    let created = run_schtasks(&create_args).await?;
+    if !created.status.success() {
+        cleanup_desktop_launch_task(&task_name, false).await;
+        return Err(anyhow!(
+            "creating desktop relaunch task failed: {}",
+            String::from_utf8_lossy(&created.stderr).trim()
+        ));
+    }
+
+    let started = run_schtasks(&["/Run".into(), "/TN".into(), task_name.clone()]).await?;
+    if !started.status.success() {
+        cleanup_desktop_launch_task(&task_name, true).await;
+        return Err(anyhow!(
+            "starting desktop relaunch task failed: {}",
+            String::from_utf8_lossy(&started.stderr).trim()
+        ));
+    }
+
+    let deadline = Instant::now() + std::time::Duration::from_secs(30);
+    let ack = loop {
+        if let Ok(raw) = std::fs::read_to_string(&ack_path) {
+            if let Ok(parsed) = serde_json::from_str::<DesktopRelaunchAck>(&raw) {
+                if parsed.ok && parsed.request_id == request_id && parsed.pid > 0 {
+                    break parsed;
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            cleanup_desktop_launch_task(&task_name, true).await;
+            let _ = std::fs::remove_file(&ack_path);
+            return Err(anyhow!(
+                "no request-bound desktop cold-start ACK within 30s"
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+
+    cleanup_desktop_launch_task(&task_name, false).await;
+    let _ = std::fs::remove_file(&ack_path);
+    tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+    if !windows_pid_alive(ack.pid) {
+        return Err(anyhow!(
+            "desktop PID {} did not survive scheduled-task cleanup",
+            ack.pid
+        ));
+    }
+
+    tracing::info!(
+        desktop_pid = ack.pid,
+        ?install_root,
+        "desktop cold-start ACK survived independent scheduled-task cleanup"
+    );
     Ok(())
 }
 
@@ -298,6 +441,7 @@ fn app_bundle_for_exe(exe: &std::path::Path) -> Option<PathBuf> {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn desktop_launch_command(
     exe_path: &std::path::Path,
     install_root: &std::path::Path,
@@ -348,8 +492,12 @@ async fn run_bootstrap(
     let kind = ScriptKind::for_current_os();
 
     let pin = Pin {
-        commit: args.commit.or_else(|| option_env_string("BUILD_PIN_COMMIT")),
-        branch: args.branch.or_else(|| option_env_string("BUILD_PIN_BRANCH")),
+        commit: args
+            .commit
+            .or_else(|| option_env_string("BUILD_PIN_COMMIT")),
+        branch: args
+            .branch
+            .or_else(|| option_env_string("BUILD_PIN_BRANCH")),
     };
 
     tracing::info!(
@@ -443,20 +591,21 @@ async fn run_bootstrap(
         return Err(anyhow!(err));
     }
 
-    let manifest: Manifest = powershell::parse_manifest(&manifest_result.stdout).ok_or_else(|| {
-        let err = format!(
-            "install.ps1 -Manifest produced no parseable JSON payload\n{}",
-            truncate(&manifest_result.stdout, 4000)
-        );
-        emit_event(
-            &app,
-            BootstrapEvent::Failed {
-                stage: None,
-                error: err.clone(),
-            },
-        );
-        anyhow!(err)
-    })?;
+    let manifest: Manifest =
+        powershell::parse_manifest(&manifest_result.stdout).ok_or_else(|| {
+            let err = format!(
+                "install.ps1 -Manifest produced no parseable JSON payload\n{}",
+                truncate(&manifest_result.stdout, 4000)
+            );
+            emit_event(
+                &app,
+                BootstrapEvent::Failed {
+                    stage: None,
+                    error: err.clone(),
+                },
+            );
+            anyhow!(err)
+        })?;
 
     emit_event(
         &app,
@@ -650,7 +799,10 @@ async fn run_bootstrap(
     // we're already running from that path. Best-effort — a failure here must
     // not fail an otherwise-successful install.
     if let Err(err) = crate::paths::copy_self_to_hermes_home() {
-        tracing::warn!(?err, "failed to copy installer into HERMES_HOME (non-fatal)");
+        tracing::warn!(
+            ?err,
+            "failed to copy installer into HERMES_HOME (non-fatal)"
+        );
         emit_log(&format!(
             "[bootstrap] warning: could not stage updater binary: {err}"
         ));
@@ -821,8 +973,8 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::path::Path;
+    use std::path::PathBuf;
 
     fn unique_tmp_dir(tag: &str) -> PathBuf {
         let base = std::env::temp_dir().join(format!(

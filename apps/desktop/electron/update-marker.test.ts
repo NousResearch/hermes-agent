@@ -20,6 +20,7 @@ import path from 'path'
 import { test } from 'vitest'
 
 import {
+  clearUpdateMarkerIfOwnedBy,
   isPidAlive,
   markerPath,
   readLiveUpdateMarker,
@@ -127,4 +128,16 @@ test('writeUpdateMarker + dead pid => self-heals on read', () => {
   const res = readLiveUpdateMarker(home, { kill: DEAD })
   assert.equal(res, null, 'a dead-pid marker from writeUpdateMarker self-heals')
   assert.ok(!fs.existsSync(markerPath(home)), 'marker file is pruned')
+})
+
+test('pre-handoff cleanup removes only the desktop-owned provisional marker', () => {
+  const home = tmpHome('owned-cleanup')
+
+  writeMarker(home, 4242, Math.floor(Date.now() / 1000))
+  assert.equal(clearUpdateMarkerIfOwnedBy(home, 4242), true)
+  assert.ok(!fs.existsSync(markerPath(home)))
+
+  writeMarker(home, 7777, Math.floor(Date.now() / 1000))
+  assert.equal(clearUpdateMarkerIfOwnedBy(home, 4242), false)
+  assert.ok(fs.existsSync(markerPath(home)), 'an updater-owned replacement marker must survive desktop cleanup')
 })

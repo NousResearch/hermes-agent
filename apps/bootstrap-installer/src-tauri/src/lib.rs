@@ -11,11 +11,13 @@
 mod bootstrap;
 mod events;
 mod install_script;
-mod powershell;
 mod paths;
+mod powershell;
 mod update;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tauri::Manager;
 use tokio::sync::Mutex;
 
 /// How the installer was invoked. Resolved once from the process args in
@@ -74,6 +76,10 @@ pub struct AppState {
     /// How this process was launched (install vs update). Immutable for the
     /// lifetime of the process; read by the `get_mode` command.
     pub mode: AppMode,
+    /// Native close gate for update mode. Starts blocked before the webview or
+    /// frontend store exists and opens only after a verified desktop relaunch
+    /// or a terminal error.
+    pub update_close_allowed: AtomicBool,
 }
 
 impl AppState {
@@ -81,8 +87,18 @@ impl AppState {
         Self {
             bootstrap: Mutex::new(None),
             mode,
+            update_close_allowed: AtomicBool::new(mode != AppMode::Update),
         }
     }
+}
+
+fn should_prevent_window_close(mode: AppMode, update_close_allowed: bool) -> bool {
+    mode == AppMode::Update && !update_close_allowed
+}
+
+pub(crate) fn allow_update_close(app: &tauri::AppHandle) {
+    let state = app.state::<Arc<AppState>>();
+    state.update_close_allowed.store(true, Ordering::SeqCst);
 }
 
 /// Frontend → Rust: which flow should the UI render?
@@ -111,6 +127,18 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .manage(Arc::new(AppState::new(mode)))
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let state = window.state::<Arc<AppState>>();
+                if should_prevent_window_close(
+                    state.mode,
+                    state.update_close_allowed.load(Ordering::SeqCst),
+                ) {
+                    tracing::warn!("ignored close request while update/relaunch is still active");
+                    api.prevent_close();
+                }
+            }
+        })
         .setup(move |app| {
             use tauri::Manager;
             // Launcher fast path (macOS only): a bare ("Install") launch when
@@ -160,7 +188,9 @@ pub fn run() {
                     }
                 }
                 None => {
-                    tracing::error!("main installer window not found; installer UI will not appear");
+                    tracing::error!(
+                        "main installer window not found; installer UI will not appear"
+                    );
                 }
             }
             Ok(())
@@ -187,7 +217,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{force_setup_from_args, AppMode};
+    use super::{force_setup_from_args, should_prevent_window_close, AppMode};
 
     #[test]
     fn bare_args_are_install() {
@@ -228,5 +258,12 @@ mod tests {
             AppMode::from_args(["--update", "--reinstall"]),
             AppMode::Update
         );
+    }
+
+    #[test]
+    fn native_update_close_gate_covers_startup_and_relaunch_windows() {
+        assert!(should_prevent_window_close(AppMode::Update, false));
+        assert!(!should_prevent_window_close(AppMode::Update, true));
+        assert!(!should_prevent_window_close(AppMode::Install, false));
     }
 }

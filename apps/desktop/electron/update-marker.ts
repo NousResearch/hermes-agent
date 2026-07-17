@@ -136,3 +136,32 @@ export function writeUpdateMarker(hermesHome, pid, { now = Date.now } = {}) {
     // updater will write its own when it reaches run_update.
   }
 }
+
+/** Remove only the desktop's provisional marker after a pre-handoff failure. */
+export function clearUpdateMarkerIfOwnedBy(hermesHome, expectedPid) {
+  const file = markerPath(hermesHome)
+  let raw
+
+  try {
+    raw = fs.readFileSync(file, 'utf8')
+  } catch {
+    return false
+  }
+
+  const [pidLine] = String(raw).split('\n')
+  const markerPid = Number.parseInt((pidLine || '').trim(), 10)
+
+  // The updater may already have replaced our placeholder with its own PID.
+  // In that case leave the real marker intact so backend startup stays parked.
+  if (!Number.isInteger(expectedPid) || markerPid !== expectedPid) {
+    return false
+  }
+
+  try {
+    fs.unlinkSync(file)
+
+    return true
+  } catch {
+    return false
+  }
+}

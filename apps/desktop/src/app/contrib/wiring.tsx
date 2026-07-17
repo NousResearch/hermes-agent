@@ -34,6 +34,8 @@ import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActi
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '@/store/projects'
 import {
   $activeSessionId,
+  $awaitingResponse,
+  $busy,
   $connection,
   $currentCwd,
   $freshDraftReady,
@@ -98,6 +100,7 @@ import { useBackgroundSync } from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
+import { useUpdateContinuation } from './hooks/use-update-continuation'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
@@ -131,6 +134,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
+  const awaitingResponse = useStore($awaitingResponse)
+  const busy = useStore($busy)
   const currentCwd = useStore($currentCwd)
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
@@ -535,6 +540,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     startFreshSessionDraft,
     sttEnabled,
     updateSessionState
+  })
+
+  useUpdateContinuation({
+    activeSessionId,
+    awaitingResponse,
+    busy,
+    gatewayState,
+    routedSessionId,
+    runtimeIdByStoredSessionIdRef,
+    selectedStoredSessionId,
+    requestGateway
   })
 
   // Runs outside the selected ChatBar so queues belonging to background

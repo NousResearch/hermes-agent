@@ -116,7 +116,7 @@ import {
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
-import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
+import { clearUpdateMarkerIfOwnedBy, readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
 import { runRebuildWithRetry } from './update-rebuild'
 import {
   buildRelaunchScript,
@@ -129,6 +129,9 @@ import {
 } from './update-relaunch'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import { spawnUpdaterProcess } from './updater-process'
+import { launchUpdaterViaScheduledTask } from './windows-update-launch'
+import { acknowledgeUpdateRelaunch } from './windows-update-relaunch'
+import { collectProcessTreePids, parseWindowsProcessList } from './windows-update-runtime'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import {
   computeWindowOptions,
@@ -2424,26 +2427,107 @@ function isShimLocked(shimPath) {
 // Force-kill the entire process TREE rooted at each PID. Node's child.kill()
 // only signals the direct child, so on Windows a backend `hermes.exe` that
 // spawned its own grandchildren (a `hermes` REPL, a pty terminal session, the
-// gateway) would survive and keep the venv shim locked. taskkill /T /F reaps
-// the whole tree synchronously. Windows-only: this is called solely from the
-// Windows shim-unlock path, and the backend is NOT spawned detached (so it's
-// not a process-group leader — a POSIX negative-pgid kill would be meaningless
-// here anyway). POSIX teardown stays with the existing before-quit SIGTERM.
-function forceKillProcessTree(pid) {
+// gateway) would survive and keep the venv shim locked. Windows-only: this is
+// called solely from the Windows shim-unlock path, and the backend is NOT
+// spawned detached (so it's not a process-group leader — a POSIX negative-pgid
+// kill would be meaningless here anyway). POSIX teardown stays with the
+// existing before-quit SIGTERM.
+//
+// NOT `taskkill /T`: taskkill builds its tree from raw ParentProcessId links
+// with no creation-time check. Our own dead launcher-parent PID gets recycled
+// by short-lived backend grandchildren, at which point taskkill /T counts the
+// DESKTOP as a descendant of the backend and kills us mid-handoff (that was
+// the "all Hermes processes die within 1s of Update now" failure). Instead we
+// enumerate the tree from a CIM inventory with our own pid hard-excluded and
+// kill each pid individually.
+function forceKillProcessTree(pid, processes = null) {
   if (!IS_WINDOWS) {
     return
   }
 
-  if (!Number.isInteger(pid) || pid <= 0) {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) {
     return
   }
 
-  try {
-    execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], hiddenWindowsChildOptions({ stdio: 'ignore' }))
-  } catch {
-    // Already gone, or no permission — best effort; the unlock wait below is
-    // the real gate.
+  const expectedRootCreationTimeMs = desktopOwnedWindowsProcessCreationTimes.get(pid)
+
+  if (!expectedRootCreationTimeMs) {
+    rememberLog(`[process] refusing tree-kill for untracked or identity-unknown PID ${pid}`)
+    return
   }
+
+  const inventory = processes || listWindowsProcessesForUpdate()
+  const tree = collectProcessTreePids(inventory, pid, {
+    excludePids: [process.pid],
+    expectedRootCreationTimeMs
+  })
+  // No fallback to the bare PID: when the tracked child has already exited,
+  // Windows may have recycled its PID for an unrelated process. The live
+  // inventory (including creation times) is the identity/lineage gate.
+  const targets = tree
+
+  for (const target of targets) {
+    if (target === process.pid) {
+      continue
+    }
+
+    try {
+      execFileSync('taskkill', ['/PID', String(target), '/F'], hiddenWindowsChildOptions({ stdio: 'ignore' }))
+    } catch {
+      // Already gone, or no permission — best effort; the unlock wait below is
+      // the real gate.
+    }
+  }
+}
+
+// Inventory Windows processes through CIM so the update handoff can reap every
+// process whose executable lives under this install's venv (the same set the
+// hermes update holder guard refuses to race). Fail-closed: empty inventory.
+function listWindowsProcessesForUpdate() {
+  if (!IS_WINDOWS) {
+    return []
+  }
+
+  const powershell = windowsPowerShellPath() || 'powershell.exe'
+  const script =
+    '$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new(); ' +
+    'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,@{Name="CreationTimeMs";Expression={([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds()}},ExecutablePath,CommandLine | ConvertTo-Json -Compress -Depth 3'
+
+  try {
+    const raw = execFileSync(
+      powershell,
+      ['-NoProfile', '-NonInteractive', '-Command', script],
+      hiddenWindowsChildOptions({
+        encoding: 'utf8',
+        maxBuffer: 4 * 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'ignore']
+      })
+    )
+
+    return parseWindowsProcessList(raw)
+  } catch (err) {
+    rememberLog(`[updates] managed runtime inventory unavailable; holder guard remains active: ${err.message}`)
+    return []
+  }
+}
+
+const desktopOwnedWindowsProcessCreationTimes = new Map<number, number>()
+
+function trackDesktopOwnedWindowsProcess(child) {
+  if (!IS_WINDOWS || !Number.isInteger(child?.pid)) {
+    return
+  }
+
+  const pid = child.pid
+  const info = listWindowsProcessesForUpdate().find(candidate => candidate.pid === pid)
+
+  if (info?.creationTimeMs) {
+    desktopOwnedWindowsProcessCreationTimes.set(pid, info.creationTimeMs)
+  } else {
+    rememberLog(`[process] could not establish creation-time identity for Desktop child PID ${pid}`)
+  }
+
+  child.once('exit', () => desktopOwnedWindowsProcessCreationTimes.delete(pid))
 }
 
 // Before handing off the update on Windows, the desktop MUST stop every backend
@@ -2504,11 +2588,15 @@ async function releaseBackendLock(updateRoot, tag) {
     }
   }
 
+  traceUpdateHandoff(`${tag}: sigterm sent; stopping pool backends`)
   stopAllPoolBackends()
+  traceUpdateHandoff(`${tag}: pool stopped; tree-killing ${pids.length} backend pid(s)`)
 
   for (const pid of pids) {
     forceKillProcessTree(pid)
   }
+
+  traceUpdateHandoff(`${tag}: owned backend tree-kills done; waiting for shim unlock`)
 
   const shim = venvHermesShimPath(updateRoot)
   const deadlineMs = Date.now() + 15000
@@ -2556,6 +2644,21 @@ async function releaseBackendLock(updateRoot, tag) {
   )
 
   return { unlocked: false }
+}
+
+// Hand-off phase trace — appendFileSync straight to disk, because desktop.log
+// only flushes the in-memory ring buffer: a hand-off that dies mid-flight
+// leaves no evidence there, which is exactly what made the one-click failures
+// so hard to diagnose. One line per phase; the updater side has its own logs.
+function traceUpdateHandoff(step) {
+  try {
+    fs.appendFileSync(
+      path.join(HERMES_HOME, 'logs', 'update-handoff.log'),
+      `${new Date().toISOString()} pid=${process.pid} ${step}\n`
+    )
+  } catch {
+    void 0
+  }
 }
 
 // applyUpdates — hand off to the installer's --update flow, then exit.
@@ -2642,11 +2745,19 @@ async function applyUpdates(opts = {}) {
 
     const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
 
+    // Latch handoff BEFORE tearing down the backend. The renderer reconnect
+    // path otherwise respawns serve and re-locks the venv before the updater runs.
+    isQuittingForHandoff = true
+    traceUpdateHandoff('applyUpdates: handoff latched')
+    writeUpdateMarker(HERMES_HOME, process.pid)
+    traceUpdateHandoff('applyUpdates: marker written (desktop pid placeholder)')
+
     // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
     // spawn the updater. Without this the updater races a still-locked
     // hermes.exe (held by the backend child / its grandchildren) and the update
     // bricks. See releaseBackendLockForUpdate for the full failure analysis.
     const lock = await releaseBackendLockForUpdate(updateRoot)
+    traceUpdateHandoff(`applyUpdates: backend lock released unlocked=${lock.unlocked}`)
 
     if (!lock.unlocked) {
       // Something OUTSIDE this app holds the venv (a second window, a user
@@ -2659,23 +2770,68 @@ async function applyUpdates(opts = {}) {
         '(a second Hermes window or a terminal running hermes?). Close it and retry.'
 
       emitUpdateProgress({ stage: 'error', message, percent: null })
+      clearUpdateMarkerIfOwnedBy(HERMES_HOME, process.pid)
+      isQuittingForHandoff = false
       startHermes().catch(() => {})
 
       return { ok: false, error: message }
     }
 
-    // Detached so the updater outlives this process — it needs us GONE before
-    // `hermes update` will run (the venv shim is locked while we live).
-    const child = spawnUpdaterProcess(updater, updaterArgs, {
-      cwd: HERMES_HOME,
-      env: {
-        ...process.env,
-        HERMES_HOME,
-        PATH: pathWithHermesManagedNode(venvBin)
-      },
-      detached: true,
-      stdio: 'ignore'
-    })
+    const updaterEnvPath = pathWithHermesManagedNode(venvBin)
+    let updaterPid: number | null = null
+    let launchVehicle = IS_WINDOWS ? 'scheduled-task' : 'spawn'
+
+    if (IS_WINDOWS) {
+      // The desktop usually runs inside a Job Object with KILL_ON_JOB_CLOSE
+      // (scheduled-task launchers, the bootstrap chain), and Node's
+      // `detached: true` does NOT set CREATE_BREAKAWAY_FROM_JOB — a directly
+      // spawned updater stays in our job and dies the moment we quit for the
+      // hand-off. That was the one-click-update failure: bootstrap-installer.log
+      // stopped after its init line. Launch through a one-shot scheduled task
+      // instead (the Task Scheduler service creates the process outside our
+      // job) and wait for the launcher's ACK so the hand-off is confirmed
+      // before we quit.
+      traceUpdateHandoff('applyUpdates: launching updater via scheduled task')
+      const launch = await launchUpdaterViaScheduledTask({
+        updaterPath: updater,
+        updaterArgs,
+        hermesHome: HERMES_HOME,
+        pathEnv: updaterEnvPath
+      })
+      traceUpdateHandoff(`applyUpdates: scheduled-task launch ok=${launch.ok} pid=${launch.updaterPid} err=${launch.error || '-'}`)
+
+      if (launch.ok) {
+        updaterPid = launch.updaterPid
+      } else {
+        const message = `Update handoff failed safely: ${launch.error || 'Task Scheduler did not confirm the updater.'}`
+
+        rememberLog(`[updates] ${message}`)
+        emitUpdateProgress({ stage: 'error', message, percent: null })
+        clearUpdateMarkerIfOwnedBy(HERMES_HOME, process.pid)
+        isQuittingForHandoff = false
+        startHermes().catch(() => {})
+
+        return { ok: false, error: message }
+      }
+    }
+
+    if (!IS_WINDOWS) {
+      // Detached so the updater outlives this process — it needs us GONE before
+      // `hermes update` will run (the venv shim is locked while we live). On
+      // Windows this is only the fallback path: detached does not escape the job.
+      const child = spawnUpdaterProcess(updater, updaterArgs, {
+        cwd: HERMES_HOME,
+        env: {
+          ...process.env,
+          HERMES_HOME,
+          PATH: updaterEnvPath
+        },
+        detached: true,
+        stdio: 'ignore'
+      })
+
+      updaterPid = Number.isInteger(child.pid) ? child.pid : null
+    }
 
     // Write the update-in-progress marker IMMEDIATELY — before the 2.5s
     // quit dwell. The Tauri updater won't write its own marker for several
@@ -2684,19 +2840,25 @@ async function applyUpdates(opts = {}) {
     // the venv. By writing the marker ourselves the renderer's
     // waitForUpdateToFinish() gate sees a live update and parks instead.
     // The updater overwrites this with its own PID later; same format.
-    if (Number.isInteger(child.pid)) {
-      writeUpdateMarker(HERMES_HOME, child.pid)
+    if (Number.isInteger(updaterPid)) {
+      writeUpdateMarker(HERMES_HOME, updaterPid)
     }
 
-    rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
+    rememberLog(
+      `[updates] launched updater via ${launchVehicle}: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`
+    )
+
+    app.once('before-quit', () => traceUpdateHandoff('applyUpdates: before-quit fired'))
+    process.once('exit', code => traceUpdateHandoff(`applyUpdates: process exit code=${code}`))
 
     // Linger on the "updating — don't reopen" overlay long enough for the user
     // to actually read it (and to bridge the gap until the updater's own window
     // appears), THEN quit to release the venv shim. The updater rebuilds and
     // relaunches us when it's done. (#50419 — a 600ms quit looked like a crash
     // and lured users into the #50238 relaunch loop.)
-    isQuittingForHandoff = true
+    traceUpdateHandoff(`applyUpdates: dwell started (vehicle=${launchVehicle}); quitting in ${UPDATE_HANDOFF_DWELL_MS}ms`)
     setTimeout(() => {
+      traceUpdateHandoff('applyUpdates: app.quit()')
       app.quit()
     }, UPDATE_HANDOFF_DWELL_MS)
 
@@ -2739,28 +2901,43 @@ async function handOffWindowsBootstrapRecovery(reason) {
 
   const updaterArgs = chooseUpdaterArgs(haveRealInstall, branch)
 
-  await releaseBackendLockForUpdate(updateRoot)
+  const lock = await releaseBackendLockForUpdate(updateRoot)
 
-  const child = spawnUpdaterProcess(updater, updaterArgs, {
-    cwd: HERMES_HOME,
-    env: {
-      ...process.env,
-      HERMES_HOME,
-      PATH: pathWithHermesManagedNode(venvBin)
-    },
-    detached: true,
-    stdio: 'ignore'
+  if (!lock.unlocked) {
+    rememberLog(`[bootstrap] ${reason} recovery aborted: an external process still holds the Hermes venv`)
+
+    return false
+  }
+
+  // Same Job-Object problem as applyUpdates: a detached spawn dies with our
+  // job when we quit. Require the scheduled-task launch (outside the job, with
+  // a positive ACK); an ambiguous status fails closed without a second updater.
+  const updaterEnvPath = pathWithHermesManagedNode(venvBin)
+
+  const launch = await launchUpdaterViaScheduledTask({
+    updaterPath: updater,
+    updaterArgs,
+    hermesHome: HERMES_HOME,
+    pathEnv: updaterEnvPath
   })
+
+  if (!launch.ok || !Number.isInteger(launch.updaterPid)) {
+    rememberLog(`[bootstrap] scheduled-task launch failed safely: ${launch.error || 'missing updater pid'}`)
+
+    return false
+  }
+
+  const updaterPid = launch.updaterPid
 
   // Same marker pre-write as applyUpdates — see comment there. The recovery
   // hand-off has the same window where the renderer can respawn a backend
   // before the updater writes its own marker.
-  if (Number.isInteger(child.pid)) {
-    writeUpdateMarker(HERMES_HOME, child.pid)
+  if (Number.isInteger(updaterPid)) {
+    writeUpdateMarker(HERMES_HOME, updaterPid)
   }
 
   rememberLog(
-    `[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`
+    `[bootstrap] handed off ${reason} recovery to updater via scheduled-task: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`
   )
   // Same dwell as the in-app update hand-off (#50419): give the updater's
   // window time to appear before we vanish, so the recovery doesn't look like
@@ -6786,6 +6963,8 @@ async function spawnPoolBackend(profile, entry) {
     })
   )
 
+  trackDesktopOwnedWindowsProcess(child)
+
   entry.process = child
   entry.token = token
 
@@ -7035,6 +7214,8 @@ async function startHermes() {
         stdio: ['ignore', 'pipe', 'pipe']
       })
     )
+
+    trackDesktopOwnedWindowsProcess(hermesProcess)
 
     const processOwner = backendConnectionState.attachProcess(connectionAttempt, hermesProcess)
 
@@ -9458,6 +9639,7 @@ app.whenReady().then(() => {
   configureSpellChecker()
   registerPowerResumeListeners()
   createWindow()
+  acknowledgeUpdateRelaunch(process.argv, HERMES_HOME)
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)

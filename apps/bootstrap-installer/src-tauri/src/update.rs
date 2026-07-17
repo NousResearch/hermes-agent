@@ -92,6 +92,7 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
                     error: format!("{err:#}"),
                 },
             );
+            crate::allow_update_close(&app);
         }
         UPDATE_RUNNING.store(false, Ordering::SeqCst);
     });
@@ -455,6 +456,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
 
     if let Some(target_app) = launch_target {
         if let Err(err) = launch_macos_app_and_exit(&app, &target_app).await {
+            crate::allow_update_close(&app);
             emit_log(
                 &app,
                 None,
@@ -465,6 +467,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
     } else if let Err(err) =
         crate::bootstrap::launch_hermes_desktop(app.clone(), install_root.to_string_lossy().into_owned()).await
     {
+        crate::allow_update_close(&app);
         // Launch failed: don't hard-fail the update (it succeeded); surface a
         // log line so the success screen can still tell the user to launch
         // manually.

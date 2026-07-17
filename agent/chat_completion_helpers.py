@@ -36,6 +36,7 @@ from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
 )
+from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
@@ -2146,7 +2147,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
                 # Claim the delta sink for this bedrock stream (#65991) so a
                 # superseded attempt's callbacks are fenced by the sink guard.
-                agent._claim_stream_writer()
+                claim_stream_writer(agent)
 
                 def _on_text(text):
                     _fire_first()
@@ -2350,7 +2351,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # stream is somehow still alive (a stale-stream reconnect whose socket
         # abort raced), this claim supersedes it so its late chunks are fenced
         # out of the turn instead of interleaving with ours.
-        _writer_token = agent._claim_stream_writer()
+        _writer_token = claim_stream_writer(agent)
 
         # Some OpenAI-compatible adapters (for example copilot-acp, and the MoA
         # openai-codex aggregator) accept stream=True but still return a
@@ -2427,7 +2428,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # (#65991): this attempt has been superseded, so it must neither
             # fire deltas (incl. the tool-suppressed raw-callback path below)
             # nor keep consuming a stream that would interleave into the turn.
-            if not agent._stream_writer_is_current(_writer_token):
+            if not stream_writer_is_current(agent, _writer_token):
                 logger.warning(
                     "Streaming attempt superseded by a newer stream; stopping "
                     "consumption to preserve the single-writer invariant "
@@ -2759,11 +2760,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 pass
             # Claim the delta sink for THIS attempt (#65991) — parity with the
             # chat_completions path so a superseded anthropic stream is fenced.
-            _writer_token = agent._claim_stream_writer()
+            _writer_token = claim_stream_writer(agent)
             for event in stream:
                 # Bail the instant a newer attempt supersedes this one so a
                 # stale stream can't interleave tokens into the turn.
-                if not agent._stream_writer_is_current(_writer_token):
+                if not stream_writer_is_current(agent, _writer_token):
                     logger.warning(
                         "Anthropic streaming attempt superseded by a newer "
                         "stream; stopping consumption to preserve the "

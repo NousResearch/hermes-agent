@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "description": "Non-secret project index exported for Nous Hermes Agent. Project-specific credentials stay in each project's own .env file.",
+  "secretPolicy": {
+    "modelProviderKeys": "Configure in Hermes Agent profile/env.",
+    "projectIntegrationKeys": "Keep in the respective project .env files.",
+    "agentAccess": "Use project commands from the project directory so each app loads its own environment."
+  },
+  "projects": [
+    {
+      "name": "hermes",
+      "role": "Hermes OS control plane",
+      "path": "/Users/hq/Workspace/projects/hermes",
+      "dashboardId": "hermes.workspace",
+      "dashboardUrl": "http://localhost:3920/"
+    },
+    {
+      "name": "nous-hermes-agent",
+      "role": "Official Nous Hermes Agent runtime and dashboard",
+      "path": "/Users/hq/Workspace/projects/nous-hermes-agent",
+      "dashboardId": "nous-hermes-agent.dashboard",
+      "dashboardUrl": "http://127.0.0.1:9119/"
+    },
+    {
+      "name": "khashi-vc",
+      "role": "Khashi VC / Amari ROC research system",
+      "path": "/Users/hq/Workspace/projects/khashi-vc",
+      "dashboardId": "khashi-vc.roc",
+      "dashboardUrl": "https://roc.tlccapitalgroup.com/"
+    },
+    {
+      "name": "media-engine",
+      "role": "Media production engine",
+      "path": "/Users/hq/Workspace/projects/media-engine",
+      "dashboardId": "media-engine.ops",
+      "dashboardUrl": "http://localhost:4200/dashboard"
+    },
+    {
+      "name": "media-business-operations",
+      "role": "Media business operations control plane",
+      "path": "/Users/hq/Workspace/projects/media-business-operations",
+      "dashboardId": "media-business-operations.main",
+      "dashboardUrl": "http://localhost:4100/dashboard"
+    },
+    {
+      "name": "business-mapper",
+      "role": "Business mapping workspace",
+      "path": "/Users/hq/Workspace/projects/business-mapper",
+      "dashboardId": "business-mapper.workspace",
+      "dashboardUrl": "http://localhost:8765/dashboard"
+    },
+    {
+      "name": "investing-system",
+      "role": "Investing research and analysis system",
+      "path": "/Users/hq/Workspace/projects/investing-system",
+      "dashboardId": "investing-system.roc",
+      "dashboardUrl": "http://localhost:3102/roc"
+    },
+    {
+      "name": "meal-assistant",
+      "role": "Meal planning and household assistant",
+      "path": "/Users/hq/Workspace/projects/Meal-assistant",
+      "dashboardId": null,
+      "dashboardUrl": null
+    },
+    {
+      "name": "rinseables-os",
+      "role": "Rinseables operating system",
+      "path": "/Users/hq/Workspace/projects/rinseables-os",
+      "dashboardId": null,
+      "dashboardUrl": null
+    },
+    {
+      "name": "tlc-capital-group-os",
+      "role": "TLC Capital Group operating system",
+      "path": "/Users/hq/Workspace/projects/tlc-capital-group-os",
+      "dashboardId": null,
+      "dashboardUrl": null
+    }
+  ]
+}

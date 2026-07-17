@@ -25,6 +25,7 @@ INTENT_UNKNOWN = "unknown"
 
 WORKFLOW_STATUS_PLANNED = "planned"
 WORKFLOW_STATUS_WAITING = "waiting_for_approval"
+WORKFLOW_STATES = ["planned", "running", "waiting", "delegated", "validating", "completed", "failed", "canceled"]
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,64 @@ class ChatEnvelope:
     dry_run: bool = True
 
 
+@dataclass(frozen=True)
+class ConversationalSession:
+    session_id: str
+    user_id: str
+    project_id: str
+    goal: str = ""
+    initiative: str = ""
+    transcript_ref: str = ""
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+@dataclass(frozen=True)
+class ChatResponseEnvelope:
+    session_id: str
+    status: str
+    message: str
+    route: Dict[str, Any] = field(default_factory=dict)
+    approvals: List[Dict[str, Any]] = field(default_factory=list)
+    artifacts: List[str] = field(default_factory=list)
+    audit_events: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ConversationTranscript:
+    session_id: str
+    project_id: str
+    turns: List[Dict[str, Any]]
+    source_refs: List[str] = field(default_factory=list)
+    stored_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+@dataclass(frozen=True)
+class ConversationalWorkflow:
+    workflow_id: str
+    route: str
+    status: str
+    steps: List[WorkflowStep]
+    checkpoints: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DelegationProtocol:
+    assignment_id: str
+    agent_role: str
+    input_artifacts: List[str]
+    output_artifacts: List[str]
+    completion_evidence: List[str] = field(default_factory=list)
+    status: str = "planned"
+
+
+@dataclass(frozen=True)
+class AgentAssignment:
+    assignment_id: str
+    agent_role: str
+    step_id: str
+    confidence: float
+    risk: str = "normal"
+    fallback: bool = False
 @dataclass(frozen=True)
 class IntentRoute:
     intent: str
@@ -130,6 +189,24 @@ SKILL_COMMANDS = {
     "/research": "research",
 }
 
+CHAT_CAPABLE_COMMANDS = {
+    "architect": "architecture review",
+    "plan": "work graph planning",
+    "workspace": "workspace summary",
+    "projects": "project registry",
+    "switch": "project switch",
+    "start": "runtime startup",
+    "snapshot": "workspace snapshots",
+    "ask": "one-shot conversational planning",
+}
+
+SKILL_MANIFEST_INDEX = {
+    "grill-me": {"aliases": ["/grill-me", "/clarify"], "goals": ["clarify idea", "interview project"]},
+    "plan": {"aliases": ["/plan", "/tasks"], "goals": ["create plan", "generate tasks"]},
+    "architect": {"aliases": ["/architecture", "/review-architecture"], "goals": ["review architecture", "find system gaps"]},
+    "research": {"aliases": ["/research", "/analyze"], "goals": ["research topic", "compare options"]},
+}
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -148,6 +225,217 @@ def build_col_config(enabled: bool = True) -> Dict[str, Any]:
         },
         "source_of_truth": "hermes_os",
     }
+
+
+def col_contracts() -> Dict[str, Any]:
+    return {
+        "ownership": {
+            "hermes_os": ["state", "governance", "approvals", "artifacts"],
+            "chief_of_staff": ["route", "plan", "delegate", "report"],
+            "worker_agents": ["produce artifacts for review"],
+        },
+        "boundaries": guardrails(),
+    }
+
+
+def create_conversational_session(session_id: str, user_id: str, project_id: str, *, goal: str = "", initiative: str = "") -> ConversationalSession:
+    return ConversationalSession(session_id=session_id, user_id=user_id, project_id=project_id, goal=goal, initiative=initiative)
+
+
+def chat_response_from_plan(plan: ChiefOfStaffPlan) -> ChatResponseEnvelope:
+    return ChatResponseEnvelope(
+        session_id=plan.request.session_id,
+        status=plan.status,
+        message="Hermes OS prepared a dry-run workflow plan.",
+        route=asdict(plan.route),
+        approvals=[asdict(step) for step in plan.steps if step.requires_approval],
+        artifacts=[artifact for step in plan.steps for artifact in step.expected_artifacts],
+        audit_events=plan.audit_events,
+    )
+
+
+def transcript_from_turns(session: ConversationalSession, turns: List[Dict[str, Any]], source_refs: Optional[List[str]] = None) -> ConversationTranscript:
+    return ConversationTranscript(session_id=session.session_id, project_id=session.project_id, turns=list(turns), source_refs=list(source_refs or []))
+
+
+def col_audit_event(event_type: str, session_id: str, *, route: str = "", delegation_id: str = "", approval_id: str = "", artifact_ref: str = "") -> Dict[str, Any]:
+    return {
+        "type": event_type,
+        "session_id": session_id,
+        "route": route,
+        "delegation_id": delegation_id,
+        "approval_id": approval_id,
+        "artifact_ref": artifact_ref,
+        "timestamp": _now(),
+    }
+
+
+def discover_chat_commands() -> Dict[str, Any]:
+    return {"commands": [{"name": name, "capability": capability} for name, capability in sorted(CHAT_CAPABLE_COMMANDS.items())]}
+
+
+def chat_cli_contract(*, interactive: bool = False, feature_enabled: bool = True) -> Dict[str, Any]:
+    return {
+        "command": "hermes chat",
+        "interactive": interactive,
+        "feature_enabled": feature_enabled,
+        "executes_work": False,
+        "mode": "prototype" if feature_enabled else "disabled",
+    }
+
+
+def ask_command_contract(message: str, *, project: str = ".") -> Dict[str, Any]:
+    return {"command": "hermes ask", "message": message, "project": project, "dry_run": True}
+
+
+def interactive_shell_contract(*, feature_enabled: bool = False) -> Dict[str, Any]:
+    return {"command": "hermes", "mode": "chat-shell" if feature_enabled else "classic-cli", "feature_flag": "hermes_chat_shell"}
+
+
+def parse_conversational_shortcut(message: str) -> Dict[str, Any]:
+    command = normalize_slash_command(message)
+    return {"slash_command": command, "route": SKILL_COMMANDS.get(command, ""), "valid": bool(command)}
+
+
+def streaming_status_updates(plan: ChiefOfStaffPlan) -> List[Dict[str, Any]]:
+    return [{"event": "workflow.step", "step_id": step.step_id, "status": step.status} for step in plan.steps]
+
+
+def save_transcript_contract(transcript: ConversationTranscript) -> Dict[str, Any]:
+    return {"path": f".hermes/conversations/{transcript.session_id}.json", "schema": "hermes-col-transcript-v1", "turn_count": len(transcript.turns)}
+
+
+def load_transcript_contract(session_id: str) -> Dict[str, Any]:
+    return {"path": f".hermes/conversations/{session_id}.json", "required": False}
+
+
+def project_switch_from_chat(message: str, available_projects: Iterable[str]) -> Dict[str, Any]:
+    text = message.lower()
+    for project in available_projects:
+        if project.lower() in text:
+            return {"project_id": project, "command": f"hermes switch {project}", "dry_run": True}
+    return {"project_id": "", "command": "", "dry_run": True}
+
+
+def chat_error_envelope(code: str, message: str) -> Dict[str, Any]:
+    return {"ok": False, "error": {"code": code, "message": message}, "data": {}}
+
+
+def chat_help_examples() -> List[str]:
+    return [
+        "hermes ask \"Build a CRM for wholesalers\"",
+        "hermes chat --project khashi-vc",
+        "/architecture Review this project",
+        "/research Compare provider options",
+    ]
+
+
+def cli_smoke_contracts() -> List[Dict[str, Any]]:
+    return [
+        {"command": "hermes chat --help", "expected": "usage"},
+        {"command": "hermes ask \"Build a CRM\"", "expected": "dry-run workflow"},
+        {"command": "hermes", "expected": "classic cli or chat shell"},
+    ]
+
+
+def chief_of_staff_role() -> Dict[str, Any]:
+    return {
+        "role": "Chief of Staff",
+        "responsibilities": ["understand", "route", "plan", "delegate", "track", "report"],
+        "prohibitions": ["direct worker implementation", "source-of-truth overwrite", "unapproved destructive action"],
+        "outputs": ["workflow plan", "delegation records", "approval prompts", "status report"],
+    }
+
+
+def chief_of_staff_policy(action: str) -> Dict[str, Any]:
+    blocked = action in {"write_code", "deploy", "delete"}
+    return {"allowed": not blocked, "reason": "Chief of Staff coordinates; workers execute." if blocked else "coordination action"}
+
+
+def chief_of_staff_decision_loop(envelope: ChatEnvelope, project_path: str = ".") -> Dict[str, Any]:
+    plan = chief_of_staff_plan(envelope, project_path=project_path)
+    return {
+        "loop": ["understand", "route", "plan", "delegate", "track", "report"],
+        "route": asdict(plan.route),
+        "step_count": len(plan.steps),
+        "delegation_count": len(plan.delegations),
+        "status": plan.status,
+    }
+
+
+def action_plan_schema(plan: ChiefOfStaffPlan) -> Dict[str, Any]:
+    return {
+        "selected_workflow": plan.route.workflow,
+        "agents": [item.agent_role for item in plan.delegations],
+        "approvals": [asdict(step) for step in plan.steps if step.requires_approval],
+        "expected_artifacts": [artifact for step in plan.steps for artifact in step.expected_artifacts],
+    }
+
+
+def conversational_status_report(workflow: ConversationalWorkflow) -> Dict[str, Any]:
+    blocked = [step.step_id for step in workflow.steps if step.requires_approval]
+    return {"workflow_id": workflow.workflow_id, "status": workflow.status, "blocked_steps": blocked, "step_count": len(workflow.steps)}
+
+
+def clarification_prompt(route: IntentRoute) -> Dict[str, Any]:
+    return {"required": route.requires_clarification, "question": route.clarification or "Confirm the desired outcome before proceeding."}
+
+
+def approval_prompt_contract(plan: ChiefOfStaffPlan) -> Dict[str, Any]:
+    approvals = [step for step in plan.steps if step.requires_approval]
+    return {"required": bool(approvals), "approvals": [asdict(item) for item in approvals]}
+
+
+def chief_of_staff_memory_handoff(plan: ChiefOfStaffPlan) -> Dict[str, Any]:
+    return {"project_id": plan.request.project_id, "session_id": plan.request.session_id, "memory_refs": plan.memory.loaded_sources, "summary": plan.route.workflow}
+
+
+def model_assisted_intent_fallback(message: str) -> Dict[str, Any]:
+    return {"enabled": False, "reason": "deterministic router used first", "message": message}
+
+
+def intent_evaluation_set() -> List[Dict[str, str]]:
+    return [
+        {"input": "Build a CRM", "expected": INTENT_NEW_PROJECT},
+        {"input": "Continue Khashi dashboard", "expected": INTENT_EXISTING_PROJECT},
+        {"input": "Research providers", "expected": INTENT_RESEARCH},
+        {"input": "Review architecture", "expected": INTENT_ARCHITECTURE},
+        {"input": "Implement task-123", "expected": INTENT_TASK_WORK},
+    ]
+
+
+def workflow_registry() -> Dict[str, Dict[str, Any]]:
+    return {
+        "new_project_launch": {"route": INTENT_NEW_PROJECT, "steps": [step.step_id for step in workflow_steps_for(IntentRoute(INTENT_NEW_PROJECT, 1.0, "new_project_launch"))]},
+        "existing_project_work": {"route": INTENT_EXISTING_PROJECT, "steps": [step.step_id for step in workflow_steps_for(IntentRoute(INTENT_EXISTING_PROJECT, 1.0, "existing_project_work"))]},
+        "research": {"route": INTENT_RESEARCH, "steps": [step.step_id for step in workflow_steps_for(IntentRoute(INTENT_RESEARCH, 1.0, "research"))]},
+        "architecture_review": {"route": INTENT_ARCHITECTURE, "steps": [step.step_id for step in workflow_steps_for(IntentRoute(INTENT_ARCHITECTURE, 1.0, "architecture_review"))]},
+        "task_execution": {"route": INTENT_TASK_WORK, "steps": [step.step_id for step in workflow_steps_for(IntentRoute(INTENT_TASK_WORK, 1.0, "task_execution"))]},
+    }
+
+
+def create_conversational_workflow(route: IntentRoute) -> ConversationalWorkflow:
+    steps = workflow_steps_for(route)
+    return ConversationalWorkflow(workflow_id=f"workflow:{route.workflow}", route=route.workflow, status="planned", steps=steps)
+
+
+def transition_conversational_workflow(workflow: ConversationalWorkflow, new_status: str) -> ConversationalWorkflow:
+    if new_status not in WORKFLOW_STATES:
+        raise ValueError("unknown conversational workflow state: " + new_status)
+    return ConversationalWorkflow(workflow_id=workflow.workflow_id, route=workflow.route, status=new_status, steps=workflow.steps, checkpoints=workflow.checkpoints)
+
+
+def checkpoint_workflow(workflow: ConversationalWorkflow, step_id: str, artifact_ref: str) -> ConversationalWorkflow:
+    checkpoints = list(workflow.checkpoints) + [{"step_id": step_id, "artifact_ref": artifact_ref, "timestamp": _now()}]
+    return ConversationalWorkflow(workflow.workflow_id, workflow.route, workflow.status, workflow.steps, checkpoints)
+
+
+def workflow_preview(workflow: ConversationalWorkflow) -> Dict[str, Any]:
+    return {"workflow_id": workflow.workflow_id, "steps": [asdict(item) for item in workflow.steps], "approvals": [asdict(item) for item in workflow.steps if item.requires_approval], "artifacts": [artifact for step in workflow.steps for artifact in step.expected_artifacts]}
+
+
+def workflow_recovery_contract(workflow: ConversationalWorkflow, action: str) -> Dict[str, Any]:
+    return {"workflow_id": workflow.workflow_id, "action": action, "valid": action in {"resume", "cancel", "recover"}, "dry_run": True}
 
 
 def normalize_slash_command(message: str) -> str:
@@ -432,3 +720,209 @@ def col_dashboard_panels(project: str = ".") -> List[Dict[str, Any]]:
             },
         },
     ]
+
+
+def project_identity_memory(project_id: str, workspace_path: str) -> Dict[str, Any]:
+    return {"project_id": project_id, "workspace_path": str(Path(workspace_path).resolve()), "source": "session"}
+
+
+def core_project_memory_loader(project_path: str) -> Dict[str, Any]:
+    root = Path(project_path)
+    names = ["project.md", "architecture.md", "decisions.md", "progress.md", "tracker.md", "backlog.md", "agents.md", "TASKS.md"]
+    loaded = {}
+    missing = []
+    for name in names:
+        path = root / name
+        if path.exists():
+            loaded[name] = path.read_text(encoding="utf-8")
+        else:
+            missing.append(name)
+    return {"project_path": str(root.resolve()), "loaded": loaded, "missing": missing}
+
+
+def working_context_builder(memory: Dict[str, Any], *, max_chars: int = 2000) -> Dict[str, Any]:
+    text = "\n".join(str(value) for value in memory.get("loaded", {}).values())
+    return {"context": text[:max_chars], "source_count": len(memory.get("loaded", {})), "truncated": len(text) > max_chars}
+
+
+def retrieve_decision_progress(records: Iterable[Dict[str, Any]], *, topic: str = "", min_confidence: float = 0.0) -> List[Dict[str, Any]]:
+    return [record for record in records if (not topic or record.get("topic") == topic) and float(record.get("confidence", 1.0)) >= min_confidence]
+
+
+def rolling_conversation_memory(turns: List[Dict[str, Any]], *, limit: int = 5) -> Dict[str, Any]:
+    recent = turns[-limit:]
+    return {"recent_turns": recent, "unresolved_questions": [turn for turn in recent if str(turn.get("content", "")).endswith("?")]}
+
+
+def active_session_store(session: ConversationalSession) -> Dict[str, Any]:
+    return {"active_project": session.project_id, "active_goal": session.goal, "active_initiative": session.initiative, "session_id": session.session_id}
+
+
+def memory_freshness_warnings(memory: Dict[str, Any], *, max_missing: int = 3) -> List[str]:
+    missing = list(memory.get("missing", []))
+    warnings = []
+    if len(missing) > max_missing:
+        warnings.append("Project memory is sparse; core context documents are missing.")
+    if "decisions.md" in missing:
+        warnings.append("Decision memory is missing.")
+    return warnings
+
+
+def redact_memory_context(context: Dict[str, Any]) -> Dict[str, Any]:
+    redacted = {}
+    for key, value in context.items():
+        if any(token in key.lower() for token in ("secret", "token", "password", "api_key")):
+            redacted[key] = "<redacted>"
+        else:
+            redacted[key] = value
+    return redacted
+
+
+def agent_context_package(project_memory: Dict[str, Any], task_context: Dict[str, Any], workflow: ConversationalWorkflow) -> Dict[str, Any]:
+    return {"project_memory": redact_memory_context(project_memory), "task_context": task_context, "workflow_id": workflow.workflow_id, "checkpoint_count": len(workflow.checkpoints)}
+
+
+def conversational_agent_roles() -> Dict[str, Dict[str, str]]:
+    return {"management": MANAGEMENT_ROLES, "worker": WORKER_ROLES}
+
+
+def delegation_protocol_for(step: WorkflowStep, agent_role: str) -> DelegationProtocol:
+    return DelegationProtocol(assignment_id=f"{step.step_id}:{agent_role}", agent_role=agent_role, input_artifacts=[], output_artifacts=step.expected_artifacts)
+
+
+def plan_agent_assignment(step: WorkflowStep, candidates: Iterable[Dict[str, Any]]) -> AgentAssignment:
+    candidates_list = list(candidates)
+    selected = candidates_list[0] if candidates_list else {"role": step.owner.lower().replace(" ", "_"), "confidence": 0.5}
+    return AgentAssignment(
+        assignment_id=f"{step.step_id}:{selected.get('role')}",
+        agent_role=str(selected.get("role")),
+        step_id=step.step_id,
+        confidence=float(selected.get("confidence", 0.5)),
+        risk="approval_required" if step.requires_approval else "normal",
+        fallback=not bool(candidates_list),
+    )
+
+
+def validate_artifact_handoff(protocol: DelegationProtocol) -> Dict[str, Any]:
+    return {"valid": bool(protocol.output_artifacts), "assignment_id": protocol.assignment_id, "missing": [] if protocol.output_artifacts else ["output_artifacts"]}
+
+
+def multi_agent_trace(delegations: Iterable[DelegationRecord]) -> List[Dict[str, Any]]:
+    return [{"agent_role": item.agent_role, "layer": item.layer, "status": item.status, "outputs": item.output_artifacts} for item in delegations]
+
+
+def reviewer_approval_flow(artifact_ref: str, *, reviewer: str = "reviewer") -> Dict[str, Any]:
+    return {"artifact_ref": artifact_ref, "reviewer": reviewer, "actions": ["approve", "reject", "request-more-context"], "requires_reason": True}
+
+
+def agent_failure_fallback(agent_role: str, *, reason: str) -> Dict[str, Any]:
+    return {"agent_role": agent_role, "reason": reason, "fallback": "reviewer" if agent_role != "reviewer" else "Chief of Staff", "escalate": True}
+
+
+def chief_of_staff_api_contract() -> Dict[str, Any]:
+    return {"endpoints": ["/api/col/chat", "/api/col/workflow", "/api/col/recommendations", "/api/col/context"], "mode": "contract"}
+
+
+def open_webui_integration_contract(session: ConversationalSession) -> Dict[str, Any]:
+    return {"adapter": "open-webui", "session_id": session.session_id, "project_id": session.project_id, "streaming": True}
+
+
+def hermes_chat_page_contract(session: ConversationalSession, workflow: ConversationalWorkflow) -> Dict[str, Any]:
+    return {"page": "hermes-chat", "session": asdict(session), "workflow_status": workflow.status, "persistent_conversation": True}
+
+
+def project_switcher_contract(projects: Iterable[str], active_project: str = "") -> Dict[str, Any]:
+    project_list = list(projects)
+    return {"projects": project_list, "active_project": active_project or (project_list[0] if project_list else "")}
+
+
+def task_backlog_view(tasks: Iterable[Dict[str, Any]], *, project_id: str, workflow_id: str = "") -> Dict[str, Any]:
+    selected = [task for task in tasks if task.get("project_id") == project_id and (not workflow_id or task.get("workflow_id") == workflow_id)]
+    return {"project_id": project_id, "workflow_id": workflow_id, "tasks": selected, "count": len(selected)}
+
+
+def review_queue_view(items: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    pending = [item for item in items if item.get("status") == "pending"]
+    return {"count": len(pending), "items": pending, "actions": ["approve", "reject", "request-more-context"]}
+
+
+def recommendation_panel(plan: ChiefOfStaffPlan) -> Dict[str, Any]:
+    return {"panel_id": "col-recommendations", "recommendations": [asdict(item) for item in plan.recommendations]}
+
+
+def active_agent_activity(assignments: Iterable[AgentAssignment]) -> Dict[str, Any]:
+    rows = [asdict(item) for item in assignments]
+    return {"panel_id": "active-agent-activity", "count": len(rows), "assignments": rows}
+
+
+def dashboard_status_widgets(session: ConversationalSession, *, open_tasks: int = 0, pending_reviews: int = 0) -> Dict[str, Any]:
+    return {"active_project": session.project_id, "active_initiative": session.initiative, "open_tasks": open_tasks, "pending_reviews": pending_reviews, "dashboard": "ready"}
+
+
+def ui_test_contracts() -> List[Dict[str, str]]:
+    return [{"scenario": name, "status": "contract"} for name in ["chat", "project switching", "task viewing", "review actions", "status refresh"]]
+
+
+def skill_manifest_index() -> Dict[str, Any]:
+    return {"skills": SKILL_MANIFEST_INDEX}
+
+
+def slash_command_aliases() -> Dict[str, str]:
+    aliases = {}
+    for skill, payload in SKILL_MANIFEST_INDEX.items():
+        for alias in payload["aliases"]:
+            aliases[alias] = skill
+    return aliases
+
+
+def natural_language_skill_invocation(message: str) -> Dict[str, Any]:
+    text = message.lower()
+    for skill, payload in SKILL_MANIFEST_INDEX.items():
+        if any(goal in text for goal in payload["goals"]):
+            return {"skill": skill, "confidence": 0.8, "dry_run": True}
+    return {"skill": "", "confidence": 0.0, "dry_run": True}
+
+
+def contextual_command_recommendation(active_project: str, workflow: str, recent_messages: Iterable[str]) -> Dict[str, Any]:
+    messages = " ".join(recent_messages).lower()
+    if "research" in messages or workflow == "research":
+        command = "/research"
+    elif workflow == "new_project_launch":
+        command = "/grill-me"
+    else:
+        command = "/plan"
+    return {"active_project": active_project, "workflow": workflow, "command": command}
+
+
+def generated_command_permission_check(command: str, *, approved: bool = False) -> Dict[str, Any]:
+    high_risk = any(token in command for token in ("deploy", "delete", "purchase"))
+    return {"allowed": not high_risk or approved, "requires_approval": high_risk and not approved, "command": command}
+
+
+def chief_of_staff_dashboard(plan: ChiefOfStaffPlan) -> Dict[str, Any]:
+    return {
+        "active_project": plan.request.project_id,
+        "initiative": plan.request.active_initiative,
+        "tasks": [step.step_id for step in plan.steps],
+        "reviews": [step.step_id for step in plan.steps if step.requires_approval],
+        "agents": [item.agent_role for item in plan.delegations],
+        "recommendations": [item.title for item in plan.recommendations],
+    }
+
+
+def crm_launch_success_scenario(project_name: str = "wholesaler-crm") -> Dict[str, Any]:
+    envelope = ChatEnvelope(message="Build a CRM for wholesalers", project_id=project_name)
+    plan = chief_of_staff_plan(envelope)
+    return {"project_id": project_name, "workflow": plan.route.workflow, "success_path": [step.step_id for step in plan.steps], "dry_run": True}
+
+
+def conversational_user_guide() -> Dict[str, Any]:
+    return {"title": "Conversational Hermes OS Workflows", "sections": ["ask", "chat", "approvals", "artifacts", "operator expectations"]}
+
+
+def command_first_to_chat_first_rollout() -> Dict[str, Any]:
+    return {"phases": ["contract", "dry-run", "operator-gated live", "default chat"], "migration": "command aliases remain available"}
+
+
+def dynamic_command_regression_tests() -> List[Dict[str, str]]:
+    return [{"case": "dynamic command recommendation"}, {"case": "launch workflow"}, {"case": "dashboard panels"}, {"case": "documentation links"}]

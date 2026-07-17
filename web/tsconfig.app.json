@@ -18,7 +18,8 @@
 
     /* Path aliases */
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@hermes/dashboard-kit": ["../packages/hermes-dashboard-kit/src/index.ts"]
     },
 
     /* Linting */

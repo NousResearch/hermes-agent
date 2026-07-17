@@ -5,6 +5,7 @@
   "private": true,
   "workspaces": [
     "apps/*",
+    "packages/*",
     "ui-tui",
     "ui-tui/packages/*",
     "web"
@@ -20,7 +21,11 @@
     "audit:tui": "npm audit --workspace ui-tui",
     "audit:fix:root": "npm audit fix --workspaces=false",
     "audit:fix:web": "npm audit fix --workspace web",
-    "audit:fix:tui": "npm audit fix --workspace ui-tui"
+    "audit:fix:tui": "npm audit fix --workspace ui-tui",
+    "dashboard:registry:validate": "node scripts/validate-dashboard-registry.mjs",
+    "dashboard:usage:audit": "node scripts/audit-dashboard-usage.mjs",
+    "dashboard:usage:audit:strict": "node scripts/audit-dashboard-usage.mjs --strict",
+    "dashboard:visual:check": "npx playwright test -c playwright.dashboard.config.ts"
   },
   "repository": {
     "type": "git",
@@ -40,5 +45,8 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
   }
 }

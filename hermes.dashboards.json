@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "dashboards": [
+    {
+      "id": "nous-hermes-agent.dashboard",
+      "label": "Nous Hermes Agent",
+      "description": "Official Hermes Agent web dashboard for chat, profiles, model/provider config, sessions, skills, tools, and gateway setup.",
+      "category": "control-plane",
+      "owner": "Hermes",
+      "url": "http://127.0.0.1:9119/",
+      "healthUrl": "http://127.0.0.1:9119/api/status",
+      "command": [
+        "/Users/hq/Workspace/projects/nous-hermes-agent/.venv/bin/python",
+        "-m",
+        "hermes_cli.main",
+        "dashboard",
+        "--no-open",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "9119"
+      ]
+    },
+    {
+      "id": "khashi-vc.roc",
+      "label": "Khashi VC ROC",
+      "description": "Research operations center for Khashi VC experiments, scheduler capacity, markets, cost, and findings.",
+      "category": "research-operations",
+      "owner": "Khashi VC",
+      "url": "https://roc.tlccapitalgroup.com/",
+      "healthUrl": "https://roc.tlccapitalgroup.com/readyz",
+      "projectPath": "/Users/hq/Workspace/projects/khashi-vc",
+      "projectName": "Khashi VC",
+      "command": []
+    },
+    {
+      "id": "media-engine.ops",
+      "label": "Media Engine Ops",
+      "description": "Publishing, approval, production-run, and cross-channel operations.",
+      "category": "media-operations",
+      "owner": "Media Engine",
+      "url": "http://localhost:4200/dashboard",
+      "healthUrl": "http://localhost:4200/health",
+      "projectPath": "/Users/hq/Workspace/projects/media-engine",
+      "projectName": "Media Engine",
+      "command": [
+        "npm",
+        "run",
+        "ops:dashboard:server"
+      ]
+    }
+  ]
+}

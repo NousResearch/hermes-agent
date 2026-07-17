@@ -1,0 +1,85 @@
+name: Dashboard Design System
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/dashboard-design-system.yml"
+      - "docs/design/**"
+      - "hermes.dashboards.json"
+      - "package.json"
+      - "package-lock.json"
+      - "packages/hermes-dashboard-kit/**"
+      - "playwright.dashboard.config.ts"
+      - "scripts/audit-dashboard-usage.mjs"
+      - "scripts/validate-dashboard-registry.mjs"
+      - "tests/dashboard/**"
+      - "web/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/dashboard-design-system.yml"
+      - "docs/design/**"
+      - "hermes.dashboards.json"
+      - "package.json"
+      - "package-lock.json"
+      - "packages/hermes-dashboard-kit/**"
+      - "playwright.dashboard.config.ts"
+      - "scripts/audit-dashboard-usage.mjs"
+      - "scripts/validate-dashboard-registry.mjs"
+      - "tests/dashboard/**"
+      - "web/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dashboard-design-system-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dashboard-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate dashboard registry
+        run: npm run dashboard:registry:validate
+
+      - name: Audit dashboard design-system usage
+        run: npm run dashboard:usage:audit
+
+      - name: Typecheck dashboard kit
+        run: npm run typecheck --workspace @hermes/dashboard-kit
+
+      - name: Build dashboard kit
+        run: npm run build --workspace @hermes/dashboard-kit
+
+      - name: Build web dashboard
+        run: npm run build --workspace web
+
+      - name: Install Playwright browser
+        run: npx playwright install chromium
+
+      - name: Run visual dashboard checks
+        run: npm run dashboard:visual:check
+
+      - name: Upload dashboard screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dashboard-visual-artifacts
+          path: test-results/dashboard
+          if-no-files-found: ignore
+          retention-days: 7

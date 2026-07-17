@@ -124,6 +124,8 @@ class LiveRuntimeExecution:
     duration_ms: int = 0
     artifacts: List[Dict[str, Any]] = field(default_factory=list)
     rollback_ref: str = ""
+    resumed_from: str = ""
+    context_ref: str = ""
 
 
 @dataclass(frozen=True)
@@ -142,6 +144,17 @@ class ApprovalRequest:
 
 
 @dataclass(frozen=True)
+class PolicyOverride:
+    override_id: str
+    project_id: str
+    action: str
+    reason: str
+    approver: str
+    expires_at: str = ""
+    created_at: str = field(default_factory=_now)
+
+
+@dataclass(frozen=True)
 class AutomationWorkflow:
     workflow_id: str
     project_id: str
@@ -150,10 +163,31 @@ class AutomationWorkflow:
 
 
 @dataclass(frozen=True)
+class AutomationRun:
+    run_id: str
+    workflow_id: str
+    project_id: str
+    status: str = "planned"
+    checkpoints: List[Dict[str, Any]] = field(default_factory=list)
+    created_at: str = field(default_factory=_now)
+
+
+@dataclass(frozen=True)
 class CrossProjectDependency:
     source_project: str
     target_project: str
     reason: str
+    status: str = "open"
+    blocked_since: str = ""
+
+
+@dataclass(frozen=True)
+class CrossProjectBlocker:
+    blocker_id: str
+    source_project: str
+    target_project: str
+    reason: str
+    age_hours: int = 0
     status: str = "open"
 
 
@@ -171,6 +205,17 @@ class AgentFleetMember:
 
 
 @dataclass(frozen=True)
+class AgentHeartbeat:
+    agent_id: str
+    project_id: str
+    status: str = "healthy"
+    timestamp: str = field(default_factory=_now)
+    latency_ms: int = 0
+    failure_count: int = 0
+    retry_count: int = 0
+
+
+@dataclass(frozen=True)
 class TelemetryEvent:
     event_id: str
     project_id: str
@@ -180,6 +225,17 @@ class TelemetryEvent:
     correlation_id: str
     payload: Dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=_now)
+
+
+@dataclass(frozen=True)
+class MetricRollup:
+    project_id: str
+    date: str
+    health_score: int = 100
+    cost_usd: float = 0.0
+    runtime_failures: int = 0
+    approval_count: int = 0
+    agent_route_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -609,6 +665,111 @@ def live_runtime_artifact_manifest(project_id: str, artifacts: Sequence[Dict[str
     return {"project_id": project_id, "artifacts": normalized, "valid": all(item["validation_status"] == "passed" for item in normalized)}
 
 
+def supervise_live_runtime_process(
+    execution: LiveRuntimeExecution,
+    *,
+    pid: Optional[int] = None,
+    exit_code: Optional[int] = None,
+    stdout_ref: str = "",
+    stderr_ref: str = "",
+    duration_ms: int = 0,
+) -> LiveRuntimeExecution:
+    """Attach process supervisor output to a live runtime execution record."""
+
+    data = asdict(execution)
+    if pid is not None:
+        data["pid"] = pid
+    if exit_code is not None:
+        data["exit_code"] = exit_code
+    if stdout_ref:
+        data["stdout_ref"] = stdout_ref
+    if stderr_ref:
+        data["stderr_ref"] = stderr_ref
+    if duration_ms:
+        data["duration_ms"] = int(duration_ms)
+    if exit_code == 0 and execution.state == "running":
+        data["state"] = "validating"
+    elif exit_code not in (None, 0):
+        data["state"] = "failed"
+        data["ended_at"] = data.get("ended_at") or _now()
+    return LiveRuntimeExecution(**data)
+
+
+def cancel_live_runtime(execution: LiveRuntimeExecution, *, requester: str, reason: str) -> Dict[str, Any]:
+    if not reason.strip():
+        raise ValueError("cancellation requires a reason")
+    canceled = transition_live_runtime(execution, "canceled")
+    return {
+        "execution": asdict(canceled),
+        "audit": {
+            "type": "live-runtime-cancellation",
+            "execution_id": execution.execution_id,
+            "project_id": execution.project_id,
+            "requester": requester,
+            "reason": reason,
+            "timestamp": _now(),
+        },
+    }
+
+
+def resume_live_runtime(execution: LiveRuntimeExecution, *, context_ref: str) -> LiveRuntimeExecution:
+    if execution.state not in {"failed", "canceled", "rolled_back"}:
+        raise ValueError("only failed, canceled, or rolled back executions can be resumed")
+    return LiveRuntimeExecution(
+        execution_id=execution.execution_id + ":resume",
+        project_id=execution.project_id,
+        command=execution.command,
+        state="queued",
+        artifacts=list(execution.artifacts),
+        resumed_from=execution.execution_id,
+        context_ref=context_ref,
+    )
+
+
+def live_runtime_validation_gate(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    artifacts = list(manifest.get("artifacts", []))
+    failures = [
+        artifact.get("ref", "unknown")
+        for artifact in artifacts
+        if artifact.get("validation_status") != "passed" or not artifact.get("checksum")
+    ]
+    return {
+        "allowed": not failures and bool(artifacts),
+        "failure_refs": failures,
+        "artifact_count": len(artifacts),
+        "requires_ingestion": not failures and bool(artifacts),
+    }
+
+
+def live_runtime_rollback_plan(execution: LiveRuntimeExecution, reversible_actions: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    actions = []
+    for index, action in enumerate(reversible_actions):
+        actions.append({
+            "id": f"rollback-{index + 1:03d}",
+            "type": action.get("type", "manual"),
+            "target": action.get("target", execution.project_id),
+            "command": action.get("rollback_command", ""),
+            "status": "planned" if action.get("rollback_command") else "manual-review",
+        })
+    return {
+        "execution_id": execution.execution_id,
+        "project_id": execution.project_id,
+        "required": execution.state == "failed",
+        "actions": actions,
+    }
+
+
+def select_sandbox_profile(project_policy: Dict[str, Any], action: str) -> Dict[str, Any]:
+    profiles = project_policy.get("sandbox_profiles", {}) if isinstance(project_policy, dict) else {}
+    selected = profiles.get(action) or profiles.get("default") or {"name": "read-only", "network": False, "writes": False}
+    high_risk = action in {"write", "deploy", "purchase", "delete"}
+    return {
+        "action": action,
+        "profile": selected,
+        "requires_approval": bool(high_risk and selected.get("writes")),
+    }
+
+
 def live_runtime_history(executions: Sequence[LiveRuntimeExecution], *, project_id: str = "") -> List[Dict[str, Any]]:
     rows = [asdict(item) for item in executions if not project_id or item.project_id == project_id]
     return sorted(rows, key=lambda item: item.get("started_at") or item.get("execution_id") or "")
@@ -670,9 +831,79 @@ def approval_audit_export(requests: Sequence[ApprovalRequest]) -> Dict[str, Any]
     return {"exported_at": _now(), "count": len(requests), "approvals": [asdict(item) for item in requests]}
 
 
+def approval_queue_view(requests: Sequence[ApprovalRequest], *, status: str = "") -> Dict[str, Any]:
+    selected = [item for item in requests if not status or item.status == status]
+    return {"count": len(selected), "approvals": [asdict(item) for item in selected]}
+
+
+def approval_command_contract(action: str, approval_id: str = "", *, reason: str = "") -> Dict[str, Any]:
+    requires_reason = action in {"approve", "reject"}
+    return {
+        "command": f"hermes approvals {action}" + (f" {approval_id}" if approval_id else ""),
+        "requires_reason": requires_reason,
+        "valid": action in {"list", "approve", "reject"} and (not requires_reason or bool(reason.strip())),
+        "reason": reason,
+    }
+
+
+def create_policy_override(override_id: str, project_id: str, *, action: str, reason: str, approver: str, expires_at: str = "") -> PolicyOverride:
+    if not reason.strip():
+        raise ValueError("policy override requires a reason")
+    return PolicyOverride(override_id=override_id, project_id=project_id, action=action, reason=reason, approver=approver, expires_at=expires_at)
+
+
+def approval_dashboard_actions(request: ApprovalRequest) -> List[Dict[str, Any]]:
+    if request.status != "pending":
+        return []
+    return [
+        {"action": "approve", "approval_id": request.approval_id, "requires_reason": True},
+        {"action": "reject", "approval_id": request.approval_id, "requires_reason": True},
+        {"action": "request-more-context", "approval_id": request.approval_id, "requires_reason": True},
+    ]
+
+
+def approval_notification_event(request: ApprovalRequest, event_type: str = "approval.requested") -> Dict[str, Any]:
+    return {
+        "type": event_type,
+        "project_id": request.project_id,
+        "approval_id": request.approval_id,
+        "status": request.status,
+        "risk": request.risk,
+        "timestamp": _now(),
+    }
+
+
 def build_automation_workflow(project_id: str, steps: Sequence[str], *, dry_run: bool = True) -> AutomationWorkflow:
     plan = [{"id": f"step-{index + 1:03d}", "type": step, "status": "planned", "depends_on": [] if index == 0 else [f"step-{index:03d}"]} for index, step in enumerate(steps)]
     return AutomationWorkflow(workflow_id=f"{project_id}:workflow:{len(plan)}", project_id=project_id, steps=plan, dry_run=dry_run)
+
+
+def project_run_command_contract(project_id: str, workflow_id: str, *, live: bool = False) -> Dict[str, Any]:
+    return {"command": f"hermes project run {workflow_id}", "project_id": project_id, "workflow_id": workflow_id, "dry_run": not live}
+
+
+def project_switch_automation(project_id: str) -> AutomationWorkflow:
+    return build_automation_workflow(project_id, ["memory-load", "snapshot-restore", "service-start", "dashboard-open"])
+
+
+def project_shutdown_automation(project_id: str) -> AutomationWorkflow:
+    return build_automation_workflow(project_id, ["service-stop", "snapshot-save", "final-status"])
+
+
+def record_automation_run(workflow: AutomationWorkflow, *, status: str = "planned") -> AutomationRun:
+    return AutomationRun(run_id=f"{workflow.workflow_id}:run:{_now()}", workflow_id=workflow.workflow_id, project_id=workflow.project_id, status=status, checkpoints=list(workflow.steps))
+
+
+def automation_replay_contract(run: AutomationRun) -> Dict[str, Any]:
+    return {"run_id": run.run_id, "workflow_id": run.workflow_id, "project_id": run.project_id, "steps": run.checkpoints, "dry_run": True}
+
+
+def automation_dashboard_panel(runs: Sequence[AutomationRun]) -> Dict[str, Any]:
+    return {"panel_id": "automation-workflows", "title": "Automation Workflows", "data": {"count": len(runs), "runs": [asdict(item) for item in runs]}}
+
+
+def automation_schedule_contract(project_id: str, workflow_id: str, schedule: str) -> Dict[str, Any]:
+    return {"name": f"Project warmup: {project_id}", "project_id": project_id, "workflow_id": workflow_id, "schedule": schedule, "mode": "dry_run"}
 
 
 def automation_preflight(*, dirty_worktree: bool = False, unavailable_tools: Sequence[str] = (), blocked_approvals: Sequence[str] = (), missing_config: Sequence[str] = ()) -> Dict[str, Any]:
@@ -706,6 +937,39 @@ def resolve_cross_project_dependencies(dependencies: Sequence[CrossProjectDepend
         if dep.target_project not in ordered:
             ordered.append(dep.target_project)
     return {"ordered_projects": ordered, "blocked": blocked, "blocked_count": len(blocked)}
+
+
+def blocker_registry(blockers: Sequence[CrossProjectBlocker]) -> Dict[str, Any]:
+    return {"count": len(blockers), "blockers": [asdict(item) for item in blockers], "aged_count": len([item for item in blockers if item.age_hours >= 24])}
+
+
+def multi_project_execution_queue(projects: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [{"project_id": item.get("project_id") or item.get("name"), "status": "queued", "isolation": "project-scoped"} for item in balance_project_queue(projects)]
+
+
+def shared_infrastructure_map(actions: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    by_resource: Dict[str, List[str]] = {}
+    for action in actions:
+        resource = str(action.get("resource") or "")
+        if resource:
+            by_resource.setdefault(resource, []).append(str(action.get("project_id") or "unknown"))
+    return {"resources": {key: sorted(set(value)) for key, value in by_resource.items()}}
+
+
+def multi_project_dashboard_graph(dependencies: Sequence[CrossProjectDependency]) -> Dict[str, Any]:
+    return {
+        "panel_id": "multi-project-graph",
+        "nodes": sorted({dep.source_project for dep in dependencies} | {dep.target_project for dep in dependencies}),
+        "edges": [asdict(dep) for dep in dependencies],
+    }
+
+
+def detect_stale_dependencies(dependencies: Sequence[CrossProjectDependency], *, stale_hours: int = 24) -> List[Dict[str, Any]]:
+    return [asdict(dep) for dep in dependencies if dep.status != "completed" and int(dep.blocked_since or 0) >= stale_hours]
+
+
+def orchestration_report_export(dependencies: Sequence[CrossProjectDependency], blockers: Sequence[CrossProjectBlocker]) -> Dict[str, Any]:
+    return {"generated_at": _now(), "dependencies": [asdict(item) for item in dependencies], "blockers": [asdict(item) for item in blockers]}
 
 
 def balance_project_queue(projects: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -743,6 +1007,37 @@ def route_agent(members: Sequence[AgentFleetMember], required_capabilities: Sequ
     return {"selected": selected, "candidates": scored, "fallback": bool(selected and selected["capability_score"] < 1.0)}
 
 
+def detect_stale_heartbeats(heartbeats: Sequence[AgentHeartbeat], *, stale_after_seconds: int = 300, now: str = "") -> List[Dict[str, Any]]:
+    current = now or _now()
+    return [asdict(item) for item in heartbeats if item.timestamp <= current and item.status != "healthy" or item.failure_count > 0]
+
+
+def agent_cost_score(records: Sequence[Dict[str, Any]], agent_id: str) -> float:
+    total = sum(float(item.get("cost_usd", 0) or 0) for item in records if item.get("agent_id") == agent_id)
+    return max(0.0, round(1.0 - min(total, 10.0) / 10.0, 3))
+
+
+def agent_latency_score(records: Sequence[Dict[str, Any]], agent_id: str) -> float:
+    latencies = [float(item.get("latency_ms", 0) or 0) for item in records if item.get("agent_id") == agent_id]
+    if not latencies:
+        return 1.0
+    avg = sum(latencies) / len(latencies)
+    return max(0.0, round(1.0 - min(avg, 10000.0) / 10000.0, 3))
+
+
+def agent_routing_explanation(selected: Dict[str, Any], candidates: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    return {"selected": selected, "candidate_count": len(candidates), "reason": "highest health_score after capability matching"}
+
+
+def agent_fleet_dashboard(members: Sequence[AgentFleetMember]) -> Dict[str, Any]:
+    scored = [score_agent(member) for member in members]
+    return {"panel_id": "agent-fleet", "title": "Agent Fleet", "data": {"count": len(members), "agents": scored}}
+
+
+def agent_fleet_export(members: Sequence[AgentFleetMember]) -> Dict[str, Any]:
+    return {"exported_at": _now(), "agents": [asdict(item) for item in members]}
+
+
 def quarantine_agent(member: AgentFleetMember, *, failures: int, policy_limit: int = 3) -> AgentFleetMember:
     if failures < policy_limit:
         return member
@@ -759,6 +1054,48 @@ def redact_telemetry_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def create_telemetry_event(event_id: str, project_id: str, phase: str, severity: str, source: str, correlation_id: str, payload: Dict[str, Any]) -> TelemetryEvent:
     return TelemetryEvent(event_id=event_id, project_id=project_id, phase=phase, severity=severity, source=source, correlation_id=correlation_id, payload=redact_telemetry_payload(payload))
+
+
+def write_telemetry_event(events: List[TelemetryEvent], event: TelemetryEvent) -> Dict[str, Any]:
+    events.append(event)
+    return {"written": True, "event_id": event.event_id, "count": len(events)}
+
+
+def correlate_trace(events: Sequence[TelemetryEvent], correlation_id: str) -> Dict[str, Any]:
+    chain = [asdict(item) for item in events if item.correlation_id == correlation_id]
+    return {"correlation_id": correlation_id, "event_count": len(chain), "events": chain}
+
+
+def metric_rollup(events: Sequence[TelemetryEvent], *, project_id: str, date: str) -> MetricRollup:
+    project_events = [item for item in events if item.project_id == project_id]
+    failures = len([item for item in project_events if item.severity in {"error", "critical"}])
+    approvals = len([item for item in project_events if item.phase == "approval"])
+    return MetricRollup(project_id=project_id, date=date, health_score=max(0, 100 - failures * 10), runtime_failures=failures, approval_count=approvals, agent_route_count=len([item for item in project_events if item.phase == "agent-routing"]))
+
+
+def observability_dashboard_trends(rollups: Sequence[MetricRollup]) -> Dict[str, Any]:
+    return {"panel_id": "observability-trends", "title": "Observability Trends", "data": {"rollups": [asdict(item) for item in rollups]}}
+
+
+def telemetry_retention_policy(*, retain_days: int = 90, max_events: int = 10000) -> Dict[str, Any]:
+    return {"retain_days": int(retain_days), "max_events": int(max_events), "prune_enabled": True}
+
+
+def prune_telemetry_events(events: Sequence[TelemetryEvent], *, max_events: int) -> List[TelemetryEvent]:
+    return list(events)[-int(max_events):]
+
+
+def telemetry_import_export_compatibility(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {"compatible": payload.get("schema") in {None, "hermes-os-telemetry-v1"}, "schema": payload.get("schema", "hermes-os-telemetry-v1")}
+
+
+def detect_slow_operations(events: Sequence[TelemetryEvent], *, threshold_ms: int = 5000) -> List[Dict[str, Any]]:
+    return [asdict(item) for item in events if int(item.payload.get("duration_ms", 0) or 0) >= threshold_ms]
+
+
+def telemetry_integrity_check(events: Sequence[TelemetryEvent]) -> Dict[str, Any]:
+    missing = [item.event_id for item in events if not item.correlation_id]
+    return {"ok": not missing, "missing_correlation": missing, "checked": len(events)}
 
 
 def telemetry_rollup(events: Sequence[TelemetryEvent]) -> Dict[str, Any]:
@@ -796,6 +1133,48 @@ def connector_secret_policy(secret_refs: Sequence[str]) -> Dict[str, Any]:
     return {"raw_secret_storage_allowed": False, "secret_refs": list(secret_refs), "status": "reference-only"}
 
 
+def discover_connectors(paths: Sequence[str]) -> Dict[str, Any]:
+    connectors = []
+    diagnostics = []
+    for root in paths:
+        path = Path(root).expanduser()
+        if not path.exists():
+            continue
+        candidates = [path] if path.is_file() else sorted(path.glob("*.json"))
+        for candidate in candidates:
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+                connectors.append(ConnectorManifest(
+                    connector_id=str(payload.get("connector_id") or payload.get("id") or candidate.stem),
+                    name=str(payload.get("name") or candidate.stem),
+                    permissions=[str(item) for item in payload.get("permissions", [])],
+                    resources=[str(item) for item in payload.get("resources", [])],
+                    commands=[str(item) for item in payload.get("commands", [])],
+                    risk_profile=str(payload.get("risk_profile") or "medium"),
+                    min_hermes_os_version=str(payload.get("min_hermes_os_version") or "1"),
+                ))
+            except Exception as exc:
+                diagnostics.append({"path": str(candidate), "error": str(exc)})
+    return {"connectors": [asdict(item) for item in connectors], "diagnostics": diagnostics}
+
+
+def connector_health_contract(manifest: ConnectorManifest) -> Dict[str, Any]:
+    return {"connector_id": manifest.connector_id, "status": "unknown", "commands": manifest.commands, "resources": manifest.resources}
+
+
+def connector_lifecycle_contract(manifest: ConnectorManifest, action: str) -> Dict[str, Any]:
+    return {"connector_id": manifest.connector_id, "action": action, "valid": action in {"install", "update", "remove"}, "requires_approval": action in {"install", "update", "remove"}}
+
+
+def connector_compatibility(manifest: ConnectorManifest, *, hermes_os_version: str = "1", project_permissions: Sequence[str] = ()) -> Dict[str, Any]:
+    try:
+        version_ok = int(manifest.min_hermes_os_version.split(".", 1)[0]) <= int(hermes_os_version.split(".", 1)[0])
+    except ValueError:
+        version_ok = False
+    permission_ok = not project_permissions or set(manifest.permissions).issubset(set(project_permissions))
+    return {"compatible": version_ok and permission_ok, "version_ok": version_ok, "permission_ok": permission_ok}
+
+
 def run_evaluations(project_id: str, target_ref: str, checks: Sequence[Dict[str, Any]]) -> List[EvaluationResult]:
     results = []
     for index, check in enumerate(checks):
@@ -829,6 +1208,27 @@ def cost_aware_evaluation_plan(checks: Sequence[Dict[str, Any]]) -> Dict[str, An
     return {"stages": [{"name": "deterministic", "checks": deterministic}, {"name": "model", "checks": model}], "model_checks_deferred": bool(deterministic)}
 
 
+def rubric_evaluation_contract(target_ref: str, criteria: Sequence[str]) -> Dict[str, Any]:
+    return {"target_ref": target_ref, "type": "rubric", "criteria": list(criteria), "requires_model_review": True}
+
+
+def self_review_workflow(target_ref: str) -> Dict[str, Any]:
+    return {"workflow_id": f"self-review:{target_ref}", "steps": ["summarize", "critique", "revise", "validate"], "dry_run": True}
+
+
+def evaluation_dashboard_panel(evaluations: Sequence[EvaluationResult]) -> Dict[str, Any]:
+    failures = [item for item in evaluations if item.status == "fail"]
+    return {"panel_id": "quality-gates", "title": "Quality Gates", "data": {"count": len(evaluations), "failure_count": len(failures), "evaluations": [asdict(item) for item in evaluations]}}
+
+
+def regression_evaluation_set(name: str, cases: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    return {"name": name, "case_count": len(cases), "cases": list(cases)}
+
+
+def evaluation_export(evaluations: Sequence[EvaluationResult]) -> Dict[str, Any]:
+    return {"exported_at": _now(), "evaluations": [asdict(item) for item in evaluations]}
+
+
 def index_project_memory(records: Sequence[MemoryIndexRecord]) -> Dict[str, Any]:
     by_topic: Dict[str, List[Dict[str, Any]]] = {}
     for record in records:
@@ -858,6 +1258,42 @@ def memory_compaction_plan(records: Sequence[MemoryIndexRecord], *, keep_latest:
     return {"keep": [item.record_id for item in sorted_records[:keep_latest]], "compact": [item.record_id for item in sorted_records[keep_latest:]]}
 
 
+def extract_lessons(records: Sequence[Dict[str, Any]]) -> List[MemoryIndexRecord]:
+    lessons = []
+    for index, record in enumerate(records):
+        if record.get("status") in {"completed", "failed", "approved", "rejected"}:
+            lessons.append(MemoryIndexRecord(
+                record_id=f"lesson-{index + 1:03d}",
+                project_id=str(record.get("project_id") or "unknown"),
+                source_path=str(record.get("source_path") or record.get("id") or ""),
+                summary=str(record.get("lesson") or record.get("summary") or record.get("status")),
+                topic=str(record.get("topic") or "lessons"),
+            ))
+    return lessons
+
+
+def memory_refresh_schedule(project_id: str, schedule: str = "0 8 * * 1") -> Dict[str, Any]:
+    return {"name": f"Memory refresh: {project_id}", "project_id": project_id, "schedule": schedule, "mode": "dry_run"}
+
+
+def memory_query_panel(records: Sequence[MemoryIndexRecord], *, topic: str = "") -> Dict[str, Any]:
+    matches = retrieve_project_decisions(records, topic=topic) if topic else [asdict(item) for item in records]
+    return {"panel_id": "project-memory", "title": "Project Memory", "data": {"count": len(matches), "records": matches}}
+
+
+def memory_bundle_export(records: Sequence[MemoryIndexRecord]) -> Dict[str, Any]:
+    return {"schema": "hermes-os-memory-v1", "records": [asdict(item) for item in records]}
+
+
+def memory_bundle_import(payload: Dict[str, Any]) -> List[MemoryIndexRecord]:
+    return [MemoryIndexRecord(**item) for item in payload.get("records", [])]
+
+
+def enforce_memory_source_guard(*, source: str, target: str) -> Dict[str, Any]:
+    blocked = source == "agent_runtime_memory" and target == "source_of_truth"
+    return {"allowed": not blocked, "reason": "agent runtime memory cannot overwrite source-of-truth memory records" if blocked else "allowed"}
+
+
 def release_checklist() -> List[Dict[str, Any]]:
     items = ["cli", "dashboard", "runtime", "persistence", "templates", "connectors", "docs", "migrations", "packaging", "failure-drills"]
     return [{"id": f"release-{index + 1:03d}", "area": item, "status": "pending"} for index, item in enumerate(items)]
@@ -869,6 +1305,19 @@ def migration_compatibility_matrix(versions: Sequence[int], current: int) -> Dic
 
 def failure_drill(name: str, *, recovery_steps: Sequence[str]) -> Dict[str, Any]:
     return {"name": name, "status": "ready", "recovery_steps": list(recovery_steps), "verified": False}
+
+
+def dashboard_build_verification(panels: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    missing = [index for index, panel in enumerate(panels) if not panel.get("panel_id") or not panel.get("title")]
+    return {"ok": not missing, "checked": len(panels), "missing": missing}
+
+
+def packaging_verification(modules: Sequence[str], subcommands: Sequence[str]) -> Dict[str, Any]:
+    return {"ok": bool(modules and subcommands), "modules": list(modules), "subcommands": list(subcommands)}
+
+
+def documentation_pass(topics: Sequence[str]) -> Dict[str, Any]:
+    return {"complete": bool(topics), "topics": list(topics), "required": ["command examples", "safety policies", "restore flows", "live runtime rollout"]}
 
 
 def release_notes_from_tasks(tasks: Sequence[Dict[str, Any]]) -> str:

@@ -26,6 +26,7 @@ import {
   Database,
   Download,
   Eye,
+  GalleryVerticalEnd,
   FolderOpen,
   FileText,
   GitBranch,
@@ -81,6 +82,7 @@ import AnalyticsPage from "@/pages/AnalyticsPage";
 import ModelsPage from "@/pages/ModelsPage";
 import CronPage from "@/pages/CronPage";
 import HermesOsPage from "@/pages/HermesOsPage";
+import DesignSystemPage from "@/pages/DesignSystemPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import ProfileBuilderPage from "@/pages/ProfileBuilderPage";
 import SkillsPage from "@/pages/SkillsPage";
@@ -136,6 +138,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/files": FilesPage,
   "/analytics": AnalyticsPage,
   "/hermes-os": HermesOsPage,
+  "/design-system": DesignSystemPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
   "/cron": CronPage,
@@ -176,6 +179,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     icon: BarChart3,
   },
   { path: "/hermes-os", label: "Hermes OS", icon: GitBranch },
+  { path: "/design-system", label: "Design System", icon: GalleryVerticalEnd },
   {
     path: "/models",
     labelKey: "models",

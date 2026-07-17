@@ -62,6 +62,10 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "@hermes/dashboard-kit": path.resolve(
+        __dirname,
+        "../packages/hermes-dashboard-kit/src",
+      ),
     },
     // When @nous-research/ui is symlinked via `file:../../design-language`,
     // Node's module resolution would pick up shared deps from

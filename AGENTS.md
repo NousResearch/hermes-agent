@@ -183,6 +183,37 @@ line-level account of where the fix acts beats a plausible-sounding rationale
 every time. When in doubt about intent, it is cheaper to ask than to ship a
 fix that fights the design.
 
+## Dashboard Design System Rules
+
+Hermes/TLC dashboards must use the shared dashboard kit before adding local UI.
+The kit lives in `web/src/dashboard-kit`, and the design contract lives in
+`docs/design/hermes-dashboard-design-contract.md`.
+
+Default composition:
+
+- Use `DashboardShell`, `DashboardSidebar`, `DashboardHeader`,
+  `DashboardMain`, and `DashboardSection` for dashboard page structure.
+- Use `MetricGrid`, `KpiCard`, `StatusPill`, `HealthBadge`,
+  `ProgressMetric`, and `CapacityMeter` for operational metrics.
+- Use `DataTable`, `FilterBar`, `SearchInput`, `SegmentedControl`, and
+  `DateRangeToggle` for table and filter surfaces.
+- Use `ChartPanel`, chart wrappers, `InsightPanel`, `FindingCard`, and
+  `RecommendationCard` for analytics and research surfaces.
+- Use `DashboardLauncher` and `ProjectSwitcher` for cross-dashboard/project
+  navigation.
+- Use `CommandBar`, `ActionButtonGroup`, `ActivityTimeline`, `QueuePanel`,
+  `RunStatusPanel`, and `AuditEventList` for operator workflows.
+- Use `DashboardLoadingState`, `DashboardEmptyState`, and
+  `DashboardErrorState` on every data surface.
+
+Do not create new project-local dashboard shells, metric cards, status pills,
+tables, chart chrome, queue panels, or launcher widgets unless the shared kit
+does not cover the needed behavior. If two dashboards need the same new
+behavior, extend the kit first.
+
+The component gallery route is `/design-system`. Use it as the visual source of
+truth before changing dashboard layouts.
+
 ### The Footprint Ladder (new capability decision)
 
 Each rung adds more permanent surface than the one above. Choose the highest

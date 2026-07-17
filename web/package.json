@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@nous-research/ui": "0.18.2",
+    "@hermes/dashboard-kit": "file:../packages/hermes-dashboard-kit",
     "@observablehq/plot": "^0.6.17",
     "@react-three/fiber": "^9.6.0",
     "@tailwindcss/vite": "^4.2.1",

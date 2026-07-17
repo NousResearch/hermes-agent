@@ -1,10 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, AlertTriangle, CheckCircle2, GitBranch, ShieldCheck } from "lucide-react";
-import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Activity, AlertTriangle, CheckCircle2, GalleryVerticalEnd, GitBranch, RefreshCw, ShieldCheck } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Card, CardContent } from "@nous-research/ui/ui/components/card";
-import { H2 } from "@nous-research/ui/ui/components/typography/h2";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import {
+  ChartPanel,
+  DashboardEmptyState,
+  DashboardErrorState,
+  DashboardHeader,
+  DashboardLoadingState,
+  DashboardSection,
+  DashboardShell,
+  DashboardSidebar,
+  DataTable,
+  HealthBadge,
+  InsightPanel,
+  KpiCard,
+  MetricGrid,
+  SimpleBarChart,
+  StatusPill,
+  type DataTableColumn,
+  type DashboardTone,
+} from "@hermes/dashboard-kit";
 import { api } from "@/lib/api";
 import type { HermesOsPanel, HermesOsSummary } from "@/lib/api";
 
@@ -20,6 +35,32 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function toneForStatus(status: unknown): DashboardTone {
+  const text = String(status ?? "").toLowerCase();
+  if (["ready", "healthy", "complete", "completed", "success", "clear"].includes(text)) return "success";
+  if (["blocked", "failed", "critical", "error"].includes(text)) return "critical";
+  if (["warning", "pending", "needs_review"].includes(text)) return "warning";
+  if (text) return "info";
+  return "unknown";
+}
+
+function compactValue(value: unknown): string {
+  if (Array.isArray(value)) return String(value.length);
+  if (typeof value === "object" && value) return "configured";
+  return String(value ?? "");
+}
+
+interface TaskRow {
+  id: string;
+  title: string;
+  status: string;
+}
+
+interface ModuleRow {
+  key: string;
+  value: string;
 }
 
 export default function HermesOsPage() {
@@ -72,188 +113,218 @@ export default function HermesOsPage() {
     "col-workflow-preview",
     "col-agent-hierarchy",
   ].map((id) => panel(summary, id)).filter(Boolean) as HermesOsPanel[];
+
   const byAgent = useMemo(
     () => Object.entries(asRecord(assignmentData.assignments_by_agent)),
     [assignmentData.assignments_by_agent],
   );
 
+  const taskRows = useMemo<TaskRow[]>(() => {
+    if (!Array.isArray(taskData.tasks)) return [];
+    return taskData.tasks.slice(0, 12).map((task) => {
+      const row = asRecord(task);
+      return {
+        id: String(row.id ?? ""),
+        title: String(row.title ?? ""),
+        status: String(row.status ?? "unknown"),
+      };
+    });
+  }, [taskData.tasks]);
+
+  const taskColumns = useMemo<DataTableColumn<TaskRow>[]>(() => [
+    {
+      id: "id",
+      header: "ID",
+      accessor: (row) => <span className="font-mono-ui text-xs text-muted-foreground">{row.id}</span>,
+      sortValue: (row) => row.id,
+      cellClassName: "w-40",
+    },
+    {
+      id: "title",
+      header: "Title",
+      accessor: (row) => row.title,
+      sortValue: (row) => row.title,
+    },
+    {
+      id: "status",
+      header: "Status",
+      accessor: (row) => <StatusPill tone={toneForStatus(row.status)}>{row.status}</StatusPill>,
+      sortValue: (row) => row.status,
+      cellClassName: "w-32",
+    },
+  ], []);
+
   if (loading) {
-    return (
-      <div className="flex min-h-[50vh] items-center justify-center">
-        <Spinner />
-      </div>
-    );
+    return <DashboardLoadingState label="Loading Hermes OS" className="min-h-[50vh]" />;
   }
 
+  const sidebarItems = [
+    { id: "overview", label: "Overview", href: "#overview", active: true, icon: ShieldCheck },
+    { id: "backlog", label: "Task Backlog", href: "#backlog", icon: Activity },
+    { id: "gaps", label: "Architecture Gaps", href: "#gaps", icon: AlertTriangle },
+    { id: "agents", label: "Agent Assignments", href: "#agents", icon: GitBranch },
+    { id: "design-system", label: "Design System", href: "/design-system", icon: GalleryVerticalEnd },
+  ];
+
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <H2>Hermes OS</H2>
-          <p className="text-sm text-muted-foreground">{summary?.project_path ?? "No project loaded"}</p>
+    <DashboardShell
+      sidebar={(
+        <DashboardSidebar
+          title="Hermes OS"
+          description="Reference dashboard kit implementation."
+          items={sidebarItems}
+          footer={<div className="text-xs text-muted-foreground">Built with `web/src/dashboard-kit`.</div>}
+        />
+      )}
+      header={(
+        <DashboardHeader
+          title="Hermes OS"
+          eyebrow="Operating layer"
+          description={summary?.project_path ?? "No project loaded"}
+          actions={(
+            <>
+              <a
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground transition hover:bg-muted"
+                href="/design-system"
+              >
+                <GalleryVerticalEnd className="h-4 w-4" />
+                Design System
+              </a>
+              <Button onClick={load}>
+                <RefreshCw className="h-4 w-4" />
+                Refresh
+              </Button>
+            </>
+          )}
+          meta={(
+            <HealthBadge
+              label={scoreData.blocked ? "blocked" : "ready"}
+              tone={scoreData.blocked ? "critical" : "success"}
+            />
+          )}
+        />
+      )}
+    >
+      {error ? <DashboardErrorState message={error} /> : null}
+
+      <MetricGrid columns={4} className="scroll-mt-4" id="overview">
+        <KpiCard
+          label="Architecture Score"
+          value={String(scoreData.score ?? "0")}
+          tone={scoreData.blocked ? "critical" : "success"}
+          icon={ShieldCheck}
+          detail={scoreData.blocked ? "Blocked by architecture gaps" : "Ready for staged work"}
+        />
+        <KpiCard
+          label="Work Graph"
+          value={String(graphData.node_count ?? "0")}
+          icon={GitBranch}
+          detail={`${String(graphData.blocked_count ?? 0)} blocked, ${String(graphData.approval_count ?? 0)} approvals`}
+        />
+        <KpiCard
+          label="Runtime"
+          value={String(runtimeData.provider ?? "official-hermes-agent")}
+          tone={runtimeData.available ? "success" : "warning"}
+          icon={runtimeData.available ? CheckCircle2 : AlertTriangle}
+          detail={String(runtimeData.mode ?? "dry_run")}
+        />
+        <KpiCard
+          label="Assignments"
+          value={String(graphData.assignment_count ?? "0")}
+          icon={Activity}
+          detail={`${String(assignmentData.fallback_count ?? 0)} fallback`}
+        />
+        <KpiCard
+          label="Tasks"
+          value={String(taskData.task_count ?? "0")}
+          detail={`${String(taskData.blocked_count ?? 0)} blocked`}
+        />
+        <KpiCard
+          label="Templates"
+          value={String(templateData.template_count ?? "0")}
+          detail={`${String(templateData.compile_failure_count ?? 0)} failures`}
+        />
+        <KpiCard
+          label="Dry-run"
+          value={String(dryRunData.batch_count ?? "0")}
+          detail="execution batches"
+        />
+      </MetricGrid>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <DashboardSection
+          className="scroll-mt-4"
+          title="Task Backlog"
+          description="Generated architecture and runtime work that still needs attention."
+          id="backlog"
+        >
+          <DataTable
+            rows={taskRows}
+            columns={taskColumns}
+            getRowKey={(row) => row.id}
+            emptyTitle="No tasks generated"
+            emptyDescription="The operating layer has not produced backlog items yet."
+          />
+        </DashboardSection>
+
+        <div id="gaps" className="scroll-mt-4">
+        <InsightPanel title="Architecture Gaps" tone={scoreData.blocked ? "warning" : "success"}>
+          {["missing_documents", "missing_schemas", "missing_dashboards", "missing_approvals"].map((key) => {
+            const values = asList(gapData[key]);
+            return (
+              <div key={key}>
+                <div className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">{key.replaceAll("_", " ")}</div>
+                <div className="flex flex-wrap gap-2">
+                  {values.length
+                    ? values.map((item) => <StatusPill key={item} tone="warning">{item}</StatusPill>)
+                    : <StatusPill tone="success">clear</StatusPill>}
+                </div>
+              </div>
+            );
+          })}
+        </InsightPanel>
         </div>
-        <Button onClick={load}>
-          <Activity className="h-4 w-4" />
-          Refresh
-        </Button>
-      </div>
-
-      {error ? (
-        <Card>
-          <CardContent className="flex items-center gap-3 py-4 text-sm text-destructive">
-            <AlertTriangle className="h-4 w-4" />
-            <span>{error}</span>
-          </CardContent>
-        </Card>
-      ) : null}
-
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <Card>
-          <CardContent className="py-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Architecture Score</span>
-              <Badge tone={scoreData.blocked ? "destructive" : "success"}>
-                {scoreData.blocked ? "blocked" : "ready"}
-              </Badge>
-            </div>
-            <div className="mt-3 text-4xl font-semibold">{String(scoreData.score ?? "0")}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="py-4">
-            <span className="text-sm text-muted-foreground">Work Graph</span>
-            <div className="mt-3 flex items-end gap-2">
-              <span className="text-4xl font-semibold">{String(graphData.node_count ?? "0")}</span>
-              <span className="pb-1 text-xs text-muted-foreground">nodes</span>
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              {String(graphData.blocked_count ?? 0)} blocked, {String(graphData.approval_count ?? 0)} approvals
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="py-4">
-            <span className="text-sm text-muted-foreground">Runtime</span>
-            <div className="mt-3 flex items-center gap-2">
-              {runtimeData.available ? <CheckCircle2 className="h-5 w-5 text-success" /> : <AlertTriangle className="h-5 w-5 text-warning" />}
-              <span className="font-medium">{String(runtimeData.provider ?? "official-hermes-agent")}</span>
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">{String(runtimeData.mode ?? "dry_run")}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="py-4">
-            <span className="text-sm text-muted-foreground">Assignments</span>
-            <div className="mt-3 text-4xl font-semibold">{String(graphData.assignment_count ?? "0")}</div>
-            <p className="mt-2 text-xs text-muted-foreground">{String(assignmentData.fallback_count ?? 0)} fallback</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="py-4">
-            <span className="text-sm text-muted-foreground">Tasks</span>
-            <div className="mt-3 text-4xl font-semibold">{String(taskData.task_count ?? "0")}</div>
-            <p className="mt-2 text-xs text-muted-foreground">{String(taskData.blocked_count ?? 0)} blocked</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="py-4">
-            <span className="text-sm text-muted-foreground">Templates</span>
-            <div className="mt-3 text-4xl font-semibold">{String(templateData.template_count ?? "0")}</div>
-            <p className="mt-2 text-xs text-muted-foreground">{String(templateData.compile_failure_count ?? 0)} failures</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="py-4">
-            <span className="text-sm text-muted-foreground">Dry-run</span>
-            <div className="mt-3 text-4xl font-semibold">{String(dryRunData.batch_count ?? "0")}</div>
-            <p className="mt-2 text-xs text-muted-foreground">execution batches</p>
-          </CardContent>
-        </Card>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardContent className="py-4">
-            <div className="mb-3 flex items-center gap-2 font-medium">
-              <Activity className="h-4 w-4" />
-              Task Backlog
-            </div>
-            <div className="space-y-2">
-              {Array.isArray(taskData.tasks) && taskData.tasks.length
-                ? taskData.tasks.slice(0, 12).map((task) => {
-                    const row = asRecord(task);
-                    return (
-                      <div key={String(row.id)} className="flex items-start justify-between gap-3 border-b border-border pb-2 text-sm">
-                        <div>
-                          <div className="font-mono-ui text-xs text-muted-foreground">{String(row.id)}</div>
-                          <div>{String(row.title)}</div>
-                        </div>
-                        <Badge tone={row.status === "blocked" ? "warning" : "success"}>{String(row.status)}</Badge>
-                      </div>
-                    );
-                  })
-                : <p className="text-sm text-muted-foreground">No tasks generated yet.</p>}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="py-4">
-            <div className="mb-3 flex items-center gap-2 font-medium">
-              <ShieldCheck className="h-4 w-4" />
-              Architecture Gaps
-            </div>
-            {["missing_documents", "missing_schemas", "missing_dashboards", "missing_approvals"].map((key) => (
-              <div key={key} className="mb-3">
-                <div className="mb-1 text-xs uppercase text-muted-foreground">{key.replaceAll("_", " ")}</div>
-                <div className="flex flex-wrap gap-2">
-                  {asList(gapData[key]).length
-                    ? asList(gapData[key]).map((item) => <Badge key={item} tone="warning">{item}</Badge>)
-                    : <Badge tone="success">clear</Badge>}
-                </div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="py-4">
-            <div className="mb-3 flex items-center gap-2 font-medium">
-              <GitBranch className="h-4 w-4" />
-              Agent Assignments
-            </div>
-            <div className="space-y-2">
-              {byAgent.length ? byAgent.map(([agent, count]) => (
-                <div key={agent} className="flex items-center justify-between border-b border-border pb-2 text-sm">
-                  <span>{agent}</span>
-                  <Badge>{String(count)}</Badge>
-                </div>
-              )) : <p className="text-sm text-muted-foreground">No assignments yet.</p>}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+        <ChartPanel title="Agent Assignments" description="Current work distribution by agent role." className="scroll-mt-4" id="agents">
+          {byAgent.length ? (
+            <SimpleBarChart
+              data={byAgent.map(([agent, count]) => ({ label: agent, value: Number(count) || 0 }))}
+              valueLabel="assignments"
+            />
+          ) : (
+            <DashboardEmptyState title="No assignments" description="No agent assignments have been generated yet." />
+          )}
+        </ChartPanel>
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        {runtimeModules.map((module) => (
-          <Card key={module.panel_id}>
-            <CardContent className="py-4">
-              <div className="mb-3 flex items-center gap-2 font-medium">
-                <Activity className="h-4 w-4" />
-                {module.title}
-              </div>
-              <div className="space-y-2 text-sm">
-                {Object.entries(asRecord(module.data)).slice(0, 5).map(([key, value]) => (
-                  <div key={key} className="flex items-start justify-between gap-3 border-b border-border pb-2">
-                    <span className="text-muted-foreground">{key.replaceAll("_", " ")}</span>
-                    <span className="max-w-[60%] truncate text-right font-mono-ui text-xs">
-                      {Array.isArray(value) ? String(value.length) : typeof value === "object" && value ? "configured" : String(value ?? "")}
-                    </span>
+        <DashboardSection title="Runtime Modules" description="Readiness summary for Hermes OS runtime surfaces.">
+          <div className="grid gap-3 md:grid-cols-2">
+            {runtimeModules.map((module) => {
+              const rows: ModuleRow[] = Object.entries(asRecord(module.data)).slice(0, 5).map(([key, value]) => ({
+                key: key.replaceAll("_", " "),
+                value: compactValue(value),
+              }));
+              return (
+                <div key={module.panel_id} className="rounded-lg border border-border bg-background p-3">
+                  <div className="mb-3 flex items-center gap-2 text-sm font-medium text-foreground">
+                    <Activity className="h-4 w-4" />
+                    {module.title}
                   </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+                  <div className="space-y-2 text-sm">
+                    {rows.map((row) => (
+                      <div key={row.key} className="flex items-start justify-between gap-3 border-b border-border pb-2 last:border-b-0 last:pb-0">
+                        <span className="text-muted-foreground">{row.key}</span>
+                        <span className="max-w-[60%] truncate text-right font-mono-ui text-xs text-foreground">{row.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </DashboardSection>
       </div>
-    </div>
+    </DashboardShell>
   );
 }

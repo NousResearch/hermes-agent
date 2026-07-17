@@ -54,19 +54,7 @@ export function useBackgroundQueueDrain({
     submitTextRef.current = submitText
   }, [submitText])
 
-  const scheduleRetry = useCallback(() => {
-    if (typeof window === 'undefined') {
-      return
-    }
-
-    const timer = window.setTimeout(() => {
-      retryTimersRef.current = retryTimersRef.current.filter(id => id !== timer)
-      setRetryTick(tick => tick + 1)
-    }, BACKGROUND_DRAIN_RETRY_MS)
-
-    retryTimersRef.current.push(timer)
-  }, [])
-
+  // Cleanup all pending retry timers on unmount.
   useEffect(
     () => () => {
       for (const timer of retryTimersRef.current) {
@@ -90,18 +78,29 @@ export function useBackgroundQueueDrain({
         const failures = (drainFailuresRef.current.get(entry.id) ?? 0) + 1
         drainFailuresRef.current.set(entry.id, failures)
 
-        if (failures >= MAX_AUTO_DRAIN_ATTEMPTS) {
+        if (failures === MAX_AUTO_DRAIN_ATTEMPTS) {
           notify({
             id: `composer-background-queue-stuck-${sessionKey}`,
             kind: 'error',
             title: t.composer.queueStuckTitle,
             message: t.composer.queueStuckBody
           })
-
-          return
         }
 
-        scheduleRetry()
+        // Retry indefinitely with exponential backoff capped at ~30s.
+        // The entry stays queued; the user can manually delete or send it
+        // from the queue panel, and a reconnect/remount resets failures.
+        const backoffMs = Math.min(
+          BACKGROUND_DRAIN_RETRY_MS * Math.pow(1.5, failures),
+          30_000
+        )
+
+        const timer = window.setTimeout(() => {
+          retryTimersRef.current = retryTimersRef.current.filter(id => id !== timer)
+          setRetryTick(tick => tick + 1)
+        }, backoffMs)
+
+        retryTimersRef.current.push(timer)
       }
 
       void Promise.resolve()
@@ -143,7 +142,7 @@ export function useBackgroundQueueDrain({
           drainingSessionIdsRef.current.delete(sessionKey)
         })
     },
-    [runtimeIdByStoredSessionIdRef, scheduleRetry, t]
+    [runtimeIdByStoredSessionIdRef, t]
   )
 
   useEffect(() => {
@@ -164,7 +163,7 @@ export function useBackgroundQueueDrain({
 
       const entry = entries[0]
 
-      if (!entry || (drainFailuresRef.current.get(entry.id) ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
+      if (!entry) {
         continue
       }
 

@@ -1451,6 +1451,10 @@ export interface Translations {
     queueDelete: string
     queueStuckTitle: string
     queueStuckBody: string
+    queueNotReadyTitle: string
+    queueNotReadyBody: string
+    queueStoreFailedTitle: string
+    queueStoreFailedBody: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string

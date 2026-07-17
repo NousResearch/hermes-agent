@@ -317,6 +317,11 @@ class ChatCompletionsTransport(ProviderTransport):
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
+            # Explicitly emit the documented "auto" default so inference engines
+            # (e.g. vLLM) that do not apply a default themselves receive a
+            # deterministic tool_choice value for every request that includes tools.
+            if "tool_choice" not in api_kwargs:
+                api_kwargs["tool_choice"] = "auto"
 
         # max_tokens resolution — priority: ephemeral > user > provider default
         max_tokens_fn = params.get("max_tokens_param_fn")
@@ -504,6 +509,11 @@ class ChatCompletionsTransport(ProviderTransport):
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
+            # Explicitly emit the documented "auto" default so inference engines
+            # (e.g. vLLM) that do not apply a default themselves receive a
+            # deterministic tool_choice value for every request that includes tools.
+            if "tool_choice" not in api_kwargs:
+                api_kwargs["tool_choice"] = "auto"
 
         # max_tokens resolution — priority: ephemeral > user > profile default
         max_tokens_fn = params.get("max_tokens_param_fn")

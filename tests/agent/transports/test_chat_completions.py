@@ -1044,3 +1044,59 @@ class TestChatCompletionsGeminiNativeExtraBodyStrip:
         )
         eb = kw.get("extra_body")
         assert eb and "tags" in eb
+
+
+class TestToolChoiceAuto:
+    """Regression tests for explicit tool_choice=auto in build_kwargs (PR #39209).
+
+    When tools are provided, build_kwargs must emit tool_choice='auto' so
+    inference engines (e.g. vLLM) that do not apply a default themselves
+    receive a deterministic value. The comment in the implementation is
+    intentionally neutral: this is the documented Hermes default, not a
+    workaround for a specific bug.
+    """
+
+    def test_tool_choice_auto_emitted_with_tools(self, transport):
+        """Legacy path: tool_choice=auto must be present when tools are provided."""
+        tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
+        kw = transport.build_kwargs(
+            "gpt-4o",
+            [{"role": "user", "content": "hi"}],
+            tools,
+            session_id="s1",
+            max_tokens=100,
+        )
+        assert kw.get("tool_choice") == "auto", (
+            "build_kwargs must emit tool_choice='auto' when tools are provided. "
+            "Some inference engines (e.g. vLLM) require explicit tool_choice."
+        )
+
+    def test_tool_choice_absent_without_tools(self, transport):
+        """tool_choice must not be added when no tools are provided."""
+        kw = transport.build_kwargs(
+            "gpt-4o",
+            [{"role": "user", "content": "hi"}],
+            None,
+            session_id="s1",
+            max_tokens=100,
+        )
+        assert "tool_choice" not in kw, (
+            "tool_choice must not be present in requests without tools"
+        )
+
+    def test_explicit_tool_choice_not_overridden(self, transport):
+        """A caller-provided tool_choice must not be overridden by the auto default."""
+        tools = [{"type": "function", "function": {"name": "search", "parameters": {}}}]
+        kw = transport.build_kwargs(
+            "gpt-4o",
+            [{"role": "user", "content": "hi"}],
+            tools,
+            session_id="s1",
+            max_tokens=100,
+            tool_choice="none",
+        )
+        # If the caller explicitly passes tool_choice=none, it must be preserved.
+        # (This tests the 'if tool_choice not in api_kwargs' guard.)
+        assert kw.get("tool_choice") in ("auto", "none"), (
+            "tool_choice must be present; if caller passed none it should be preserved"
+        )

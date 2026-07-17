@@ -15529,7 +15529,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         
         # Register atexit cleanup so resources are freed even on unexpected exit
         atexit.register(_run_cleanup)
-        
+
+        # Arm the exit watchdog at TUI STARTUP, not only inside _run_cleanup.
+        # _run_cleanup arms it too, but if the main thread wedges in a syscall /
+        # poll loop before app.run() returns (so the `finally` block that calls
+        # _run_cleanup never executes), the process would have NO backstop and
+        # stay alive spinning for minutes. Arming here covers the entire
+        # post-turn -> cleanup window. _run_cleanup re-arms harmlessly (the
+        # watchdog is a fresh daemon thread each call; a duplicate merely
+        # adds a redundant timer that also calls os._exit(0)).
+        try:
+            _arm_exit_watchdog()
+        except Exception:
+            pass
+
         # Register signal handlers for graceful shutdown on SSH disconnect / SIGTERM
         def _signal_handler(signum, frame):
             """Handle SIGHUP/SIGTERM by triggering graceful cleanup.
@@ -16150,6 +16163,14 @@ def main(
     
     # Register cleanup for single-query mode (interactive mode registers in run())
     atexit.register(_run_cleanup)
+
+    # Same startup-arm as the interactive TUI path: guarantee the exit
+    # watchdog covers the post-turn -> cleanup window even if a wedge
+    # prevents atexit/_run_cleanup from running.
+    try:
+        _arm_exit_watchdog()
+    except Exception:
+        pass
 
     # Also install signal handlers in single-query / `-q` mode.  Interactive
     # mode registers its own inside HermesCLI.run(), but `-q` runs

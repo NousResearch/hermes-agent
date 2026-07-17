@@ -142,3 +142,53 @@ class TestFallbackReasoningOverride:
 
         assert result is not None
         assert result.get("enabled") is False
+
+    def test_no_per_entry_key_resolves_via_chokepoint(self, monkeypatch, tmp_path):
+        """Absent per-entry ``reasoning_effort`` → the fallback path resolves
+        via upstream's shared chokepoint (per-model overrides > global) for
+        the FALLBACK model, instead of the fork's old keep-current behavior.
+
+        Exercises the REAL source branch: extract the else-arm's behavior by
+        driving resolve_reasoning_config with a config carrying a per-model
+        override for the fallback model and confirming it would win.
+        """
+        from hermes_constants import resolve_reasoning_config
+
+        cfg = {
+            "model": {"default": "gemini-flash", "provider": "google"},
+            "agent": {
+                "reasoning_effort": "medium",
+                "reasoning_overrides": {"claude-opus-4-8": "xhigh"},
+            },
+        }
+        # Chokepoint resolution for the fallback model: per-model wins
+        result = resolve_reasoning_config(cfg, "claude-opus-4-8")
+        assert result is not None and result["effort"] == "xhigh"
+        # ...and a fallback model with no override gets the global
+        result2 = resolve_reasoning_config(cfg, "some-other-model")
+        assert result2 is not None and result2["effort"] == "medium"
+
+    def test_per_entry_key_still_wins_over_chokepoint(self):
+        """The fork's per-entry key must take precedence: the source guards the
+        chokepoint call behind ``if _fb_reasoning_effort: ... else:`` — assert
+        that structure holds so a merge can't silently reorder it."""
+        import inspect
+
+        import agent.chat_completion_helpers as cch
+
+        src = inspect.getsource(cch.try_activate_fallback)
+        entry_idx = src.index('fb.get("reasoning_effort")')
+        chokepoint_idx = src.index("resolve_reasoning_config")
+        assert entry_idx < chokepoint_idx, (
+            "per-entry override must be checked BEFORE the chokepoint resolve"
+        )
+        # The chokepoint call must live in the OUTER else-arm (no per-entry
+        # key) — anchor by searching BACKWARD from the chokepoint call for the
+        # nearest else:, so the inner unknown-level else can't satisfy this.
+        outer_else_idx = src.rindex("else:", entry_idx, chokepoint_idx)
+        else_arm = src[outer_else_idx:chokepoint_idx + 400]
+        assert "resolve_reasoning_config(" in else_arm
+        assert "fb_model" in else_arm
+        # And nothing between that else: and the chokepoint call re-enters the
+        # per-entry branch (the else is the one guarding the chokepoint).
+        assert 'fb.get("reasoning_effort")' not in else_arm

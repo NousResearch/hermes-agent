@@ -345,6 +345,35 @@ def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]
     return result.stdout, None
 
 
+def _glob_like_to_regex(pattern: str) -> Optional[str]:
+    """Convert a glob-style content pattern to a substring regex, or ``None``.
+
+    Local / smaller models sometimes pass a glob into the content *regex* field
+    — e.g. ``*foo*bar*`` or the group-wrapped ``(?:*foo*bar*)`` — which ripgrep
+    rejects with a "regex parse error" ("repetition operator missing
+    expression"). Given only that raw diagnostic the model re-emits the same bad
+    pattern and the session loops (issue #66129).
+
+    This maps glob wildcards to regex (``*`` -> ``.*``, ``?`` -> ``.``) and
+    regex-escapes everything else, after stripping one optional wrapping
+    ``(?:...)`` / ``(...)`` group. Returns ``None`` when the pattern carries no
+    ``*`` wildcard, so callers only retry on the shape this targets and never
+    second-guess an intentional (but genuinely broken) regex.
+    """
+    if "*" not in pattern:
+        return None
+    inner = pattern.strip()
+    for prefix in ("(?:", "("):
+        if inner.startswith(prefix) and inner.endswith(")"):
+            inner = inner[len(prefix):-1]
+            break
+    translated = "".join(
+        ".*" if ch == "*" else "." if ch == "?" else re.escape(ch)
+        for ch in inner
+    )
+    return translated or None
+
+
 def _split_tool_diagnostics(output: str) -> tuple[str, str]:
     """Separate rg/grep diagnostic lines from real match output.
 
@@ -2267,53 +2296,92 @@ class ShellFileOperations(FileOperations):
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Search using ripgrep."""
-        cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
-        
-        # Add context if requested
-        if context > 0:
-            cmd_parts.extend(["-C", str(context)])
-        
-        # Add file glob filter (must be quoted to prevent shell expansion)
-        if file_glob:
-            cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
-        
-        # Output mode handling
-        if output_mode == "files_only":
-            cmd_parts.append("-l")  # Files only
-        elif output_mode == "count":
-            cmd_parts.append("-c")  # Count per file
-        
-        # Add pattern and path
-        cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
-        
-        # Fetch extra rows so we can report the true total before slicing.
-        # For context mode, rg emits separator lines ("--") between groups,
-        # so we grab generously and filter in Python.
-        fetch_limit = limit + offset + 200 if context > 0 else limit + offset
-        cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
-        
-        # `set -o pipefail` so rg's exit status propagates through `| head`.
-        # Without it the pipeline reports head's status (0), masking rg's
-        # error code (2) and making the guard below unreachable. rg handles a
-        # truncating head cleanly (exit 0 on SIGPIPE), so pipefail does not
-        # introduce false errors on a successful-but-truncated search.
-        cmd = "set -o pipefail; " + " ".join(cmd_parts)
-        result = self._exec(cmd, timeout=60)
-        stdout, limit_reason = _search_stdout_and_limit(result)
 
-        # _exec merges stderr into stdout (stderr=subprocess.STDOUT), so rg's
-        # diagnostic lines ("rg: <file>: <error>", "rg: regex parse error:")
-        # are interleaved with match output. Split them out: diagnostics must
-        # not be parsed as matches, and on a hard error they ARE the message.
-        diagnostics, payload = _split_tool_diagnostics(stdout)
+        def _run_rg(pat: str):
+            """Run rg for ``pat`` and return (result, stdout, limit_reason,
+            diagnostics, payload). Only the pattern varies across retries."""
+            cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
 
-        # rg exit codes: 0=matches found, 1=no matches, 2=error. rg returns 2
-        # even on partial errors (e.g. one unreadable file in a tree that
-        # otherwise matched), so only surface an error when exit==2 AND no
-        # usable match payload remains. Otherwise we keep the real matches.
-        if result.exit_code == 2 and not payload.strip():
+            # Add context if requested
+            if context > 0:
+                cmd_parts.extend(["-C", str(context)])
+
+            # Add file glob filter (must be quoted to prevent shell expansion)
+            if file_glob:
+                cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
+
+            # Output mode handling
+            if output_mode == "files_only":
+                cmd_parts.append("-l")  # Files only
+            elif output_mode == "count":
+                cmd_parts.append("-c")  # Count per file
+
+            # Add pattern and path
+            cmd_parts.append(self._escape_shell_arg(pat))
+            cmd_parts.append(self._escape_shell_arg(path))
+
+            # Fetch extra rows so we can report the true total before slicing.
+            # For context mode, rg emits separator lines ("--") between groups,
+            # so we grab generously and filter in Python.
+            fetch_limit = limit + offset + 200 if context > 0 else limit + offset
+            cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
+
+            # `set -o pipefail` so rg's exit status propagates through `| head`.
+            # Without it the pipeline reports head's status (0), masking rg's
+            # error code (2) and making the guard below unreachable. rg handles a
+            # truncating head cleanly (exit 0 on SIGPIPE), so pipefail does not
+            # introduce false errors on a successful-but-truncated search.
+            cmd = "set -o pipefail; " + " ".join(cmd_parts)
+            res = self._exec(cmd, timeout=60)
+            out, lim = _search_stdout_and_limit(res)
+            # _exec merges stderr into stdout (stderr=subprocess.STDOUT), so rg's
+            # diagnostic lines ("rg: <file>: <error>", "rg: regex parse error:")
+            # are interleaved with match output. Split them out: diagnostics must
+            # not be parsed as matches, and on a hard error they ARE the message.
+            diag, pay = _split_tool_diagnostics(out)
+            return res, out, lim, diag, pay
+
+        result, stdout, limit_reason, diagnostics, payload = _run_rg(pattern)
+
+        # rg exit codes: 0=matches found, 1=no matches, 2=error.
+        def _is_hard_error(res, pay) -> bool:
+            # rg returns 2 even on partial errors (e.g. one unreadable file in a
+            # tree that otherwise matched), so only treat exit==2 AND no usable
+            # match payload as a hard error. Otherwise we keep the real matches.
+            return res.exit_code == 2 and not pay.strip()
+
+        # Glob-as-regex recovery (issue #66129): local/small models sometimes
+        # pass a glob into the content-regex field ("*foo*bar*", or wrapped as
+        # "(?:*foo*bar*)"). rg rejects it with a regex parse error and, given
+        # only the raw diagnostic, the model retries the same bad pattern and
+        # the session loops. Retry ONCE interpreting the pattern as a glob; if
+        # that resolves, return the matches with a warning so the model learns
+        # the correct shape instead of spinning.
+        recovery_warning = None
+        if _is_hard_error(result, payload) and "regex parse error" in diagnostics.lower():
+            translated = _glob_like_to_regex(pattern)
+            if translated:
+                retried = _run_rg(translated)
+                if not _is_hard_error(retried[0], retried[4]):
+                    result, stdout, limit_reason, diagnostics, payload = retried
+                    recovery_warning = (
+                        f"'{pattern}' is not a valid regex; interpreted it as a glob "
+                        f"and searched for the regex '{translated}' instead. The "
+                        f"'pattern' field takes a REGEX for content search — use '.*' "
+                        f"for '*' and '.' for '?'. To match file NAMES by glob, call "
+                        f"search_files with target='files'."
+                    )
+
+        if _is_hard_error(result, payload):
             error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
+            if "regex parse error" in error_msg.lower():
+                # Turn the raw rg diagnostic into an actionable recovery hint so
+                # the model changes shape instead of re-emitting the same regex.
+                error_msg += (
+                    " — the 'pattern' field is a REGEX, not a glob: use '.*' instead "
+                    "of '*' and '.' instead of '?', or call search_files with "
+                    "target='files' to match file names by glob."
+                )
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
 
         # Parse the diagnostic-free payload so error text never becomes a match.
@@ -2328,6 +2396,7 @@ class ShellFileOperations(FileOperations):
                 total_count=total,
                 truncated=bool(limit_reason),
                 limit_reason=limit_reason,
+                warning=recovery_warning,
             )
         
         elif output_mode == "count":
@@ -2345,6 +2414,7 @@ class ShellFileOperations(FileOperations):
                 total_count=sum(counts.values()),
                 truncated=bool(limit_reason),
                 limit_reason=limit_reason,
+                warning=recovery_warning,
             )
         
         else:
@@ -2388,6 +2458,7 @@ class ShellFileOperations(FileOperations):
                 total_count=total,
                 truncated=total > offset + limit or bool(limit_reason),
                 limit_reason=limit_reason,
+                warning=recovery_warning,
             )
     
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],

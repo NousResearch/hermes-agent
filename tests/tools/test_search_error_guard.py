@@ -28,6 +28,7 @@ import pytest
 
 from tools.file_operations import (
     ShellFileOperations,
+    _glob_like_to_regex,
     _pattern_has_regex_newline,
     _split_tool_diagnostics,
 )
@@ -179,6 +180,82 @@ class TestSearchContentNewlineWarning:
 
         assert res.error is None
         assert res.total_count == 0
+        assert res.warning is None
+
+
+class TestGlobLikeToRegex:
+    """Unit coverage for the glob->regex recovery translator (issue #66129)."""
+
+    def test_bare_glob_maps_wildcards(self):
+        assert _glob_like_to_regex("*detector*scheduler*") == ".*detector.*scheduler.*"
+
+    def test_group_wrapped_glob_is_unwrapped(self):
+        assert _glob_like_to_regex("(?:*detector*scheduler*)") == ".*detector.*scheduler.*"
+        assert _glob_like_to_regex("(*foo*)") == ".*foo.*"
+
+    def test_question_mark_maps_to_dot(self):
+        assert _glob_like_to_regex("a?b*c") == "a.b.*c"
+
+    def test_regex_specials_are_escaped(self):
+        # A '.' in the pattern must stay literal in the recovered regex.
+        assert _glob_like_to_regex("*a.b*") == ".*a\\.b.*"
+
+    def test_no_star_returns_none(self):
+        # Without a glob '*' there is nothing glob-like to recover; don't
+        # second-guess a genuinely broken regex.
+        assert _glob_like_to_regex("needle") is None
+        assert _glob_like_to_regex("[") is None
+
+
+@pytest.mark.skipif(not shutil.which("rg"), reason="ripgrep required")
+class TestGlobAsRegexRecovery:
+    """Issue #66129: a glob passed into the content-regex field must recover
+    with a warning instead of erroring and looping."""
+
+    @pytest.fixture
+    def code_tree(self, tmp_path):
+        (tmp_path / "a.py").write_text(
+            "class DetectorScheduler:\n    detector_scheduler = 1\n"
+        )
+        (tmp_path / "b.py").write_text("unrelated line\n")
+        return tmp_path
+
+    def test_bare_glob_recovers_with_warning(self, code_tree):
+        res = _search(_ops(code_tree), "_search_with_rg", "*detector*scheduler*", code_tree)
+        assert res.error is None
+        assert res.total_count == 1
+        assert res.matches[0].line_number == 2
+        assert res.warning is not None
+        assert "glob" in res.warning.lower()
+
+    def test_group_wrapped_glob_recovers(self, code_tree):
+        res = _search(_ops(code_tree), "_search_with_rg",
+                      "(?:*detector*scheduler*)", code_tree)
+        assert res.error is None
+        assert res.total_count == 1
+
+    def test_recovery_through_high_level_search(self, code_tree):
+        res = _ops(code_tree).search(
+            "*detector*scheduler*", path=str(code_tree), target="content"
+        )
+        assert res.error is None
+        assert res.total_count == 1
+        assert res.warning is not None
+
+    def test_invalid_regex_without_glob_still_errors_actionably(self, code_tree):
+        # No '*' to reinterpret — surface an error, but one the model can act on.
+        res = _search(_ops(code_tree), "_search_with_rg", "[", code_tree)
+        assert res.error is not None
+        assert "Search failed" in res.error
+        assert "target='files'" in res.error
+        assert not res.matches
+
+    def test_valid_regex_with_star_is_unaffected(self, code_tree):
+        # A legitimate regex containing '*' succeeds on the first pass, so no
+        # recovery warning should be attached (no regression / false positive).
+        res = _search(_ops(code_tree), "_search_with_rg", "detector.*scheduler", code_tree)
+        assert res.error is None
+        assert res.total_count == 1
         assert res.warning is None
 
 

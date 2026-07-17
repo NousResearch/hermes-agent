@@ -129,5 +129,8 @@ def test_real_rg_error_still_hard_fails(ops, monkeypatch):
 
     result = ops.search("[", path="/big", target="content")
 
-    assert result.error == "Search failed: rg: regex parse error:"
+    # A genuinely invalid regex (no glob '*' to reinterpret) must still hard
+    # fail, now with an actionable recovery hint appended (issue #66129).
+    assert result.error.startswith("Search failed: rg: regex parse error:")
+    assert "target='files'" in result.error
     assert result.limit_reason is None

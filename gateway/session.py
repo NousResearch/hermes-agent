@@ -2514,34 +2514,59 @@ class SessionStore:
         with self._transcript_retry_lock:
             pending = self._dirty_transcripts.setdefault(session_id, [])
             pending.append(dict(message))
-            while pending:
-                try:
-                    self._append_transcript_message(session_id, pending[0])
-                except Exception as exc:
-                    if self._is_fts_corruption_error(exc) and self._rebuild_fts_once():
-                        try:
-                            self._append_transcript_message(session_id, pending[0])
-                        except Exception as retry_exc:
-                            exc = retry_exc
-                        else:
-                            pending.pop(0)
-                            continue
+            # Cap pending messages per session to avoid unbounded memory
+            # growth when the DB is persistently broken. Drop the oldest.
+            if len(pending) > self._MAX_PENDING_PER_SESSION:
+                dropped = pending.pop(0)
+                logger.warning(
+                    "Session DB transcript pending queue full for %s "
+                    "(cap=%d); dropping oldest message to make room",
+                    session_id, self._MAX_PENDING_PER_SESSION,
+                )
+            # Snapshot the first pending message, then release the lock
+            # before the DB write so other sessions are not blocked.
+            msg = pending[0]
+        # DB write outside the retry lock — other sessions can append
+        # concurrently. We re-acquire the lock only to update the queue.
+        while True:
+            try:
+                self._append_transcript_message(session_id, msg)
+            except Exception as exc:
+                if self._is_fts_corruption_error(exc) and self._rebuild_fts_once():
+                    try:
+                        self._append_transcript_message(session_id, msg)
+                    except Exception as retry_exc:
+                        exc = retry_exc
+                    else:
+                        with self._transcript_retry_lock:
+                            if pending and pending[0] is msg:
+                                pending.pop(0)
+                            if not pending:
+                                self._dirty_transcripts.pop(session_id, None)
+                                self._transcript_append_failures.pop(session_id, None)
+                        continue
+                with self._transcript_retry_lock:
                     failures = self._transcript_append_failures.get(session_id, 0) + 1
                     self._transcript_append_failures[session_id] = failures
-                    logger.warning(
-                        "Session DB transcript append failed for %s "
-                        "(failure_count=%d, pending=%d); will retry: %s",
-                        session_id, failures, len(pending), exc,
-                    )
-                    break
-                else:
-                    pending.pop(0)
-            if not pending:
-                self._dirty_transcripts.pop(session_id, None)
-                self._transcript_append_failures.pop(session_id, None)
+                logger.warning(
+                    "Session DB transcript append failed for %s "
+                    "(failure_count=%d, pending=%d); will retry: %s",
+                    session_id, failures, len(pending), exc,
+                )
+                return
+            else:
+                with self._transcript_retry_lock:
+                    if pending and pending[0] is msg:
+                        pending.pop(0)
+                    if not pending:
+                        self._dirty_transcripts.pop(session_id, None)
+                        self._transcript_append_failures.pop(session_id, None)
+                        return
+                    msg = pending[0]
+                continue
 
     def _append_transcript_message(self, session_id: str, message: Dict[str, Any]) -> None:
-        """Write one transcript row. Caller serializes retries per session store."""
+        """Write one transcript row. Caller handles retry queuing."""
         self._db.append_message(
             session_id=session_id,
             role=message.get("role", "unknown"),
@@ -2559,40 +2584,65 @@ class SessionStore:
             timestamp=message.get("timestamp"),
         )
 
+    # Maximum in-memory pending messages per session before dropping the
+    # oldest. Prevents unbounded growth when the DB is persistently broken.
+    _MAX_PENDING_PER_SESSION = 200
+
     @staticmethod
     def _is_fts_corruption_error(exc: Exception) -> bool:
+        """True if *exc* looks like an FTS index corruption error.
+
+        Matches the specific SQLite error strings for malformed disk images
+        and FTS table corruption — not bare ``"fts"`` substrings which match
+        unrelated words like ``"shifts"`` or ``"gifts"``.
+        """
         text = str(exc).lower()
-        return "database disk image is malformed" in text or "fts" in text
+        return any(
+            marker in text
+            for marker in (
+                "database disk image is malformed",
+                "malformed database schema",
+                "messages_fts",
+                "no such table: messages_fts",
+            )
+        )
 
     def _rebuild_fts_once(self) -> bool:
-        """Attempt SQLite's documented FTS5 rebuild command once per store."""
+        """Attempt FTS5 ``rebuild`` command once per store lifetime.
+
+        Delegates to ``SessionDB.rebuild_fts()`` which handles locking and
+        table-existence checks internally. Returns ``True`` when at least
+        one index was rebuilt.
+        """
         if self._fts_rebuild_attempted:
             return False
         self._fts_rebuild_attempted = True
         db = self._db
-        conn = getattr(db, "_conn", None)
-        lock = getattr(db, "_lock", None)
-        if conn is None or lock is None:
+        if db is None or not hasattr(db, "rebuild_fts"):
             return False
-        rebuilt = 0
         try:
-            with lock:
-                for table in getattr(db, "_FTS_TABLES", ("messages_fts", "messages_fts_trigram")):
-                    try:
-                        if hasattr(db, "_fts_table_exists") and not db._fts_table_exists(table):
-                            continue
-                        conn.execute(f"INSERT INTO {table}({table}) VALUES('rebuild')")
-                        conn.commit()
-                        rebuilt += 1
-                    except Exception as exc:
-                        conn.rollback()
-                        logger.warning("Session DB FTS rebuild failed for %s: %s", table, exc)
+            rebuilt = db.rebuild_fts()
         except Exception as exc:
             logger.warning("Session DB FTS rebuild failed: %s", exc)
             return False
         if rebuilt:
-            logger.warning("Rebuilt %d Session DB FTS index(es) after append corruption", rebuilt)
+            logger.warning(
+                "Rebuilt %d Session DB FTS index(es) after append corruption",
+                rebuilt,
+            )
         return rebuilt > 0
+
+    def _clear_dirty_transcript(self, session_id: str) -> None:
+        """Drop queued pending messages for a session.
+
+        Called by ``rewrite_transcript`` and ``rewind_session`` so that
+        /retry, /undo, /compress — which replace or truncate the transcript —
+        don't leave stale messages that would be re-inserted on the next
+        append.
+        """
+        with self._transcript_retry_lock:
+            self._dirty_transcripts.pop(session_id, None)
+            self._transcript_append_failures.pop(session_id, None)
     
     def has_platform_message_id(
         self, session_id: str, platform_message_id: str
@@ -2628,6 +2678,7 @@ class SessionStore:
         """
         if not self._db:
             return True
+        self._clear_dirty_transcript(session_id)
         try:
             self._db.replace_messages(session_id, messages)
             return True
@@ -2670,6 +2721,7 @@ class SessionStore:
         """
         if not self._db:
             return None
+        self._clear_dirty_transcript(session_id)
         if n < 1:
             n = 1
         try:

@@ -7273,6 +7273,37 @@ class SessionDB:
                     )
         return optimized
 
+    def rebuild_fts(self) -> int:
+        """Rebuild FTS5 indexes from the canonical ``messages`` table.
+
+        Uses the FTS5 ``'rebuild'`` command, which rewrites the internal
+        b-tree segments from the content rows. This is the documented
+        recovery for a corrupt FTS index that rejects message writes while
+        reads still succeed (issue #50502). Unlike ``optimize_fts`` (which
+        merges existing segments), ``rebuild`` discards and recreates the
+        index data entirely.
+
+        Safe to call when FTS tables don't exist (skips them).
+        Returns the number of FTS indexes that were rebuilt.
+        """
+        rebuilt = 0
+        with self._lock:
+            for tbl in self._FTS_TABLES:
+                if not self._fts_table_exists(tbl):
+                    continue
+                try:
+                    self._conn.execute(
+                        f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')"
+                    )
+                    self._conn.commit()
+                    rebuilt += 1
+                except sqlite3.OperationalError as exc:
+                    self._conn.rollback()
+                    logger.warning(
+                        "FTS rebuild failed for %s: %s", tbl, exc
+                    )
+        return rebuilt
+
     def vacuum(self) -> int:
         """Run VACUUM to reclaim disk space after large deletes.
 

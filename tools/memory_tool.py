@@ -26,6 +26,7 @@ Design:
 import json
 import logging
 import os
+import stat
 import tempfile
 import time
 from contextlib import contextmanager
@@ -55,6 +56,38 @@ logger = logging.getLogger(__name__)
 def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
     return get_hermes_home() / "memories"
+
+
+def _ensure_owner_access(path: Path, mask: int) -> None:
+    """OR ``mask`` into ``path``'s mode so the owner can always use it.
+
+    Directories created with ``mkdir`` and files created via ``mkstemp`` /
+    ``open`` all honor the process umask, so under a restrictive umask
+    (e.g. ``0o077`` or ``0o777`` — seen in some Docker / NAS deployments) they
+    can land with no owner permissions (``d---------`` / ``----------``). That
+    makes memory directories, files (MEMORY.md, USER.md) and lock files
+    unreadable and silently breaks persistence across sessions (issue #66183).
+
+    OR-ing the owner bits in never widens group/other access beyond what the
+    umask already allowed — the memories tree stays owner-only by convention
+    (see ``_secure_dir`` in ``hermes_cli/config``). No-op on non-POSIX and
+    best-effort otherwise: a perms tweak must never break memory persistence.
+    """
+    if os.name != "posix":
+        return
+    try:
+        current = stat.S_IMODE(os.stat(path).st_mode)
+        if current | mask != current:
+            os.chmod(path, current | mask)
+    except OSError:
+        pass
+
+
+def _ensure_memory_dir(path: Path) -> None:
+    """Create ``path`` (and parents) and guarantee owner ``rwx`` on it (#66183)."""
+    path.mkdir(parents=True, exist_ok=True)
+    _ensure_owner_access(path, 0o700)
+
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -183,7 +216,7 @@ class MemoryStore:
         stable for the entire session (prefix-cache invariant holds).
         """
         mem_dir = get_memory_dir()
-        mem_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_memory_dir(mem_dir)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
         self.user_entries = self._read_file(mem_dir / "USER.md")
@@ -249,13 +282,16 @@ class MemoryStore:
         atomically replaced via os.replace().
         """
         lock_path = path.with_suffix(path.suffix + ".lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_memory_dir(lock_path.parent)
 
         if fcntl is None and msvcrt is None:
             yield
             return
 
         fd = open(lock_path, "a+", encoding="utf-8")
+        # Under a restrictive umask the lock file can land at 000, blocking the
+        # next process from opening it — keep it owner-accessible (#66183).
+        _ensure_owner_access(lock_path, 0o600)
         try:
             if fcntl:
                 fcntl.flock(fd, fcntl.LOCK_EX)
@@ -308,7 +344,7 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
+        _ensure_memory_dir(get_memory_dir())
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
@@ -777,6 +813,10 @@ class MemoryStore:
                     f.flush()
                     os.fsync(f.fileno())
                 atomic_replace(tmp_path, path)
+                # mkstemp honors the umask, so under a restrictive umask the
+                # persisted file can be 000 (unreadable even by its owner) —
+                # keep memory files owner-accessible (#66183).
+                _ensure_owner_access(path, 0o600)
             except BaseException:
                 # Clean up temp file on any failure
                 try:

@@ -3571,8 +3571,15 @@ class GatewaySlashCommandsMixin:
             return t("gateway.compress.failed", error=e)
 
     async def _handle_topic_command(self, event: MessageEvent, args: str = "") -> str:
-        """Handle /topic for Telegram DM user-managed topic sessions."""
+        """Handle /topic for Telegram DM topic sessions and Feishu fresh sessions."""
         source = event.source
+
+        # Feishu: /topic resets the session using the full /new lifecycle
+        # (generation invalidation, cached-agent cleanup, queue/delegation
+        # interruption, override clearing, hooks, then session reset).
+        if source.platform == Platform.FEISHU:
+            return await self._handle_reset_command(event)
+
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
             return t("gateway.topic.not_telegram_dm")
         if not self._session_db:

@@ -67,7 +67,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
                aliases=("reset",), args_hint="[name]"),
-    CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
+    CommandDef("topic", "Enable/inspect Telegram DM topic sessions, or start a fresh session on Feishu", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),

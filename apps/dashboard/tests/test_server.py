@@ -145,6 +145,28 @@ class SampleFallbackTests(unittest.TestCase):
         for item in data["items"]:
             self.assertTrue(item["title"] and item["url"] and item["published"])
 
+    def test_air_offline_shape(self):
+        d = self.api.air({"lat": ["40.71"], "lon": ["-74.01"]})
+        self.assertEqual(d["source"], "sample")
+        self.assertIsInstance(d["aqi"], int)
+        self.assertIn("label", d["band"])
+        self.assertTrue(d["pollutants"])
+        for p in d["pollutants"]:
+            self.assertIn("label", p)
+            self.assertIsNotNone(p["value"])
+        self.assertTrue(d["pollen"])
+
+    def test_air_band_thresholds(self):
+        self.assertEqual(server.aqi_band(20)["label"], "Good")
+        self.assertEqual(server.aqi_band(75)["label"], "Moderate")
+        self.assertEqual(server.aqi_band(175)["label"], "Unhealthy")
+        self.assertEqual(server.aqi_band(500)["label"], "Hazardous")
+        self.assertEqual(server.aqi_band(None)["label"], "—")
+
+    def test_air_rejects_bad_coords(self):
+        with self.assertRaises(server.ApiError):
+            self.api.air({"lat": ["abc"], "lon": ["1"]})
+
     def test_news_all_aggregates_topics(self):
         data = self.api.news({"all": ["1"], "limit": ["40"]})
         self.assertEqual(data["topic"], "all")

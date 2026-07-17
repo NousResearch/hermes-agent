@@ -21,6 +21,7 @@ function defaultPages() {
     { id: uid(), name: "Sports", layout: [w("scores", "l")] },
     { id: uid(), name: "Intel", layout: [
       w("worldclock", "m"), w("quakes", "m"), w("fx", "m"), w("convert", "m"),
+      w("air", "m"),
     ] },
     { id: uid(), name: "Health", layout: [
       w("medbot", "l"), w("pubmed", "m"), w("trials", "m"),

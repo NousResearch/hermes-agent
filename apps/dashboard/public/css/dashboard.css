@@ -1078,6 +1078,31 @@ a { color: inherit; }
 .fx-rate { flex: 0 0 auto; }
 .fx-note { margin-top: 8px; }
 
+/* ---------- air quality + pollen ---------- */
+.aq-gauge { border-radius: 8px; padding: 12px; text-align: center; border: 1px solid var(--hairline); }
+.aq-gauge.aq-good { background: color-mix(in srgb, var(--status-stable) 16%, transparent); border-color: color-mix(in srgb, var(--status-stable) 45%, transparent); }
+.aq-gauge.aq-mod { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.aq-gauge.aq-warn { background: color-mix(in srgb, var(--status-elevated, orange) 16%, transparent); border-color: color-mix(in srgb, var(--status-elevated, orange) 45%, transparent); }
+.aq-gauge.aq-bad { background: color-mix(in srgb, var(--status-critical) 16%, transparent); border-color: color-mix(in srgb, var(--status-critical) 45%, transparent); }
+.aq-aqi { font-size: 34px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.aq-band { font-size: 13px; letter-spacing: 0.04em; margin-top: 2px; }
+.aq-loc { margin-top: 3px; }
+.aq-section-label { font-size: 10px; letter-spacing: 0.12em; color: var(--muted); margin: 12px 0 6px; }
+.aq-pollutants { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.aq-cell { border: 1px solid var(--hairline); border-radius: 5px; padding: 6px 4px; text-align: center; }
+.aq-cell-label { display: block; font-size: 11px; color: var(--ink-2); }
+.aq-cell-val { display: block; font-size: 16px; font-variant-numeric: tabular-nums; }
+.aq-cell-unit { font-size: 9px; }
+.aq-pollen { display: flex; flex-direction: column; gap: 2px; }
+.aq-pollen-row { display: flex; align-items: baseline; gap: 8px; padding: 4px 2px; border-bottom: 1px solid var(--hairline); }
+.aq-pollen-row:last-child { border-bottom: none; }
+.aq-pollen-name { flex: 0 0 70px; }
+.aq-pollen-level { flex: 1; font-size: 12px; font-weight: 600; }
+.aq-pollen-level.pl-low { color: var(--status-stable); }
+.aq-pollen-level.pl-moderate { color: var(--accent); }
+.aq-pollen-level.pl-high, .aq-pollen-level.pl-very { color: var(--status-critical); }
+.aq-nopollen { margin-top: 8px; }
+
 /* ---------- universal converter ---------- */
 .cv-row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
 .cv-amount { flex: 1 1 70px; min-width: 60px; font-size: 16px; }

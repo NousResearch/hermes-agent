@@ -122,7 +122,7 @@ const WIDGET_PAGES = {
   Markets: ["markets", "stocks"],
   Feeds: ["news", "reading", "socials", "gaming", "podcasts"],
   Sports: ["scores"],
-  Intel: ["worldclock", "quakes", "fx", "convert"],
+  Intel: ["worldclock", "quakes", "fx", "convert", "air"],
   Health: ["medbot", "pubmed", "trials"],
 };
 const pageOf = (type) => Object.keys(WIDGET_PAGES).find((p) => WIDGET_PAGES[p].includes(type)) || "Main";
@@ -628,6 +628,14 @@ await page.waitForFunction(() =>
   /Added/.test(document.querySelector(".widget-scores .myteam-cal")?.textContent || ""),
   null, { timeout: 5000 });
 check("add-to-calendar marks the fixture added", true);
+
+// ---- air quality + pollen --------------------------------------------------------
+await gotoWidget("air");
+await page.waitForSelector(".widget-air .aq-aqi", { timeout: 5000 });
+check("air quality gauge shows an AQI", /\d/.test(await page.locator(".widget-air .aq-aqi").innerText()));
+check("air quality band labeled", (await page.locator(".widget-air .aq-band").innerText()).length > 2);
+check("air quality lists pollutants", (await page.locator(".widget-air .aq-cell").count()) >= 3);
+check("air quality shows pollen rows", (await page.locator(".widget-air .aq-pollen-row").count()) >= 1);
 
 // ---- health & medicine (PubMed, trials, SA MedBot) -------------------------------
 await gotoWidget("pubmed");

@@ -1709,6 +1709,88 @@ def live_geocode(query: str) -> dict:
     return {"source": "live", "results": results}
 
 
+# ---------------------------------------------------------------------------
+# Air quality + pollen (Open-Meteo Air Quality API — no key)
+# ---------------------------------------------------------------------------
+AIR_TTL = 30 * 60
+# US AQI category bands (breakpoint upper bound → label/tone).
+_AQI_BANDS = [
+    (50, "Good", "up"), (100, "Moderate", "neutral"),
+    (150, "Unhealthy (sensitive)", "warn"), (200, "Unhealthy", "down"),
+    (300, "Very unhealthy", "down"), (10_000, "Hazardous", "down"),
+]
+_POLLEN_KEYS = [
+    ("alder_pollen", "Alder"), ("birch_pollen", "Birch"), ("grass_pollen", "Grass"),
+    ("mugwort_pollen", "Mugwort"), ("olive_pollen", "Olive"), ("ragweed_pollen", "Ragweed"),
+]
+
+
+def aqi_band(aqi) -> dict:
+    if aqi is None:
+        return {"label": "—", "tone": "neutral"}
+    for upper, label, tone in _AQI_BANDS:
+        if aqi <= upper:
+            return {"label": label, "tone": tone}
+    return {"label": "Hazardous", "tone": "down"}
+
+
+def _pollen_level(grains) -> str:
+    if grains is None:
+        return "—"
+    # grains/m³ → rough low/moderate/high/very-high bands (grass-calibrated).
+    return ("Very high" if grains >= 50 else "High" if grains >= 20
+            else "Moderate" if grains >= 5 else "Low")
+
+
+def live_air(lat: float, lon: float, name: str | None) -> dict:
+    fields = ("us_aqi,pm2_5,pm10,ozone,nitrogen_dioxide,sulphur_dioxide,carbon_monoxide,"
+              "alder_pollen,birch_pollen,grass_pollen,mugwort_pollen,olive_pollen,ragweed_pollen")
+    q = urllib.parse.urlencode({"latitude": f"{lat:.4f}", "longitude": f"{lon:.4f}", "current": fields})
+    raw = json.loads(fetch_url(f"https://air-quality-api.open-meteo.com/v1/air-quality?{q}", timeout=8))
+    cur = raw.get("current") or {}
+    aqi = cur.get("us_aqi")
+    aqi = round(aqi) if aqi is not None else None
+    pollutants = [
+        {"key": "pm2_5", "label": "PM2.5", "value": cur.get("pm2_5"), "unit": "µg/m³"},
+        {"key": "pm10", "label": "PM10", "value": cur.get("pm10"), "unit": "µg/m³"},
+        {"key": "ozone", "label": "O₃", "value": cur.get("ozone"), "unit": "µg/m³"},
+        {"key": "no2", "label": "NO₂", "value": cur.get("nitrogen_dioxide"), "unit": "µg/m³"},
+        {"key": "so2", "label": "SO₂", "value": cur.get("sulphur_dioxide"), "unit": "µg/m³"},
+        {"key": "co", "label": "CO", "value": cur.get("carbon_monoxide"), "unit": "µg/m³"},
+    ]
+    pollen = [{"key": k, "label": lb, "value": cur.get(k), "level": _pollen_level(cur.get(k))}
+              for k, lb in _POLLEN_KEYS if cur.get(k) is not None]
+    return {
+        "source": "live",
+        "location": {"name": name or f"{lat:.2f}, {lon:.2f}", "lat": lat, "lon": lon},
+        "aqi": aqi, "band": aqi_band(aqi),
+        "pollutants": [p for p in pollutants if p["value"] is not None],
+        "pollen": pollen,
+    }
+
+
+def sample_air(name: str | None = None) -> dict:
+    aqi = 42
+    return {
+        "source": "sample",
+        "location": {"name": name or "New York", "lat": 40.71, "lon": -74.01},
+        "aqi": aqi, "band": aqi_band(aqi),
+        "pollutants": [
+            {"key": "pm2_5", "label": "PM2.5", "value": 9.8, "unit": "µg/m³"},
+            {"key": "pm10", "label": "PM10", "value": 17.2, "unit": "µg/m³"},
+            {"key": "ozone", "label": "O₃", "value": 61.0, "unit": "µg/m³"},
+            {"key": "no2", "label": "NO₂", "value": 12.4, "unit": "µg/m³"},
+            {"key": "so2", "label": "SO₂", "value": 3.1, "unit": "µg/m³"},
+            {"key": "co", "label": "CO", "value": 120.0, "unit": "µg/m³"},
+        ],
+        "pollen": [
+            {"key": "grass_pollen", "label": "Grass", "value": 7.0, "level": "Moderate"},
+            {"key": "birch_pollen", "label": "Birch", "value": 1.5, "level": "Low"},
+            {"key": "ragweed_pollen", "label": "Ragweed", "value": 22.0, "level": "High"},
+        ],
+    }
+
+
 def live_markets(ids: list[str] | None = None) -> dict:
     joined = ",".join(ids or DEFAULT_CRYPTO_IDS)
     url = (
@@ -2148,6 +2230,20 @@ class Api:
             WEATHER_TTL,
             lambda: live_weather(lat, lon, name),
             lambda: sample_weather(name),
+        )
+
+    def air(self, params: dict) -> dict:
+        try:
+            lat = float(params.get("lat", ["40.7128"])[0])
+            lon = float(params.get("lon", ["-74.0060"])[0])
+        except ValueError:
+            raise ApiError(400, "lat/lon must be numbers") from None
+        name = params.get("name", [None])[0]
+        return self._cached(
+            f"air:{lat:.3f}:{lon:.3f}",
+            AIR_TTL,
+            lambda: live_air(lat, lon, name),
+            lambda: sample_air(name),
         )
 
     def geocode(self, params: dict) -> dict:
@@ -2745,6 +2841,7 @@ class HubHandler(BaseHTTPRequestHandler):
     ROUTES = {
         "/api/news": "news",
         "/api/weather": "weather",
+        "/api/air": "air",
         "/api/geocode": "geocode",
         "/api/markets": "markets",
         "/api/crypto/coin": "crypto_coin",

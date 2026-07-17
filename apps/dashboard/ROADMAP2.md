@@ -49,9 +49,11 @@ Effort key: **S** < ½ day · **M** ~1 day · **L** multi-day.
 - ✅ **§0.3 data-source registry** — `SOURCES` table + `Api.fetch_source()`
   collapse the try-live→cache→sample boilerplate; ten endpoints refactored onto
   it and the convention documented in JARVIS.md — shipped.
+- ✅ **§5 air quality + pollen** — Open-Meteo Air Quality API (no key): US AQI
+  with a colour-coded category band, six pollutants, and a pollen breakdown,
+  sharing the weather widget's saved locations — shipped on the Intel page.
 - ⬜ Still remaining from the original list:
-  §5 widgets (air quality/pollen, weather alerts, space weather, flights,
-  RSS-reader folders).
+  §5 widgets (weather alerts, space weather, flights, RSS-reader folders).
 
 ---
 

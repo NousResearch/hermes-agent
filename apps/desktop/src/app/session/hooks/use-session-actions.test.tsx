@@ -3,8 +3,10 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getSession, getSessionMessages, type SessionInfo } from '@/hermes'
+import { deleteSession, getSession, getSessionMessages, type SessionInfo, setSessionArchived } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $queuedPromptsBySession } from '@/store/composer-queue'
+import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
@@ -15,7 +17,10 @@ import {
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
+  $sessions,
+  clearAllSessionUnread,
   requestSessionResumeProfile,
+  sessionHasUnread,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setCurrentCwd,
@@ -23,7 +28,8 @@ import {
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
-  setSessions
+  setSessions,
+  setSessionUnread
 } from '@/store/session'
 
 import { sessionRoute } from '../../routes'
@@ -77,7 +83,7 @@ describe('resolveStoredSession profile ownership', () => {
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'startFreshSessionDraft'
+  'archiveSession' | 'createBackendSessionForSend' | 'removeSession' | 'startFreshSessionDraft'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -291,6 +297,69 @@ describe('active stored-session id rotation routing', () => {
     await waitFor(() => expect(selectedStoredSessionIdRef.current).toBe('stored-A-next'))
     expect($selectedStoredSessionId.get()).toBe('stored-A-next')
     expect(navigate).not.toHaveBeenCalled()
+  })
+})
+
+describe('stored session mutations preserve profile ownership', () => {
+  afterEach(() => {
+    cleanup()
+    clearAllSessionUnread()
+    setSessions([])
+    $pinnedSessionIds.set([])
+    $queuedPromptsBySession.set({})
+    $activeGatewayProfile.set('default')
+    vi.mocked(deleteSession).mockReset()
+    vi.mocked(setSessionArchived).mockReset()
+  })
+
+  async function mountActions(): Promise<HarnessHandle> {
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={next => (handle = next)} requestGateway={vi.fn(async () => ({}) as never)} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    return handle!
+  }
+
+  function seedCollision(): void {
+    setSessions([
+      storedSession({ id: 'same', profile: 'alpha', title: 'Alpha' }),
+      storedSession({ id: 'same', profile: 'beta', title: 'Beta' })
+    ])
+    setSessionUnread('same', true, 'alpha')
+    setSessionUnread('same', true, 'beta')
+    $pinnedSessionIds.set(['same'])
+    $queuedPromptsBySession.set({
+      same: [{ attachments: [], id: 'queued-alpha', queuedAt: 1, text: 'keep me' }]
+    })
+    $activeGatewayProfile.set('alpha')
+  }
+
+  it('deletes only the requested profile row and unread entry', async () => {
+    seedCollision()
+    const handle = await mountActions()
+
+    await act(async () => handle.removeSession('same', 'beta'))
+
+    expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('same', 'beta')
+    expect($sessions.get().map(session => session.profile)).toEqual(['alpha'])
+    expect(sessionHasUnread('same', 'alpha')).toBe(true)
+    expect(sessionHasUnread('same', 'beta')).toBe(false)
+    expect($pinnedSessionIds.get()).toEqual(['same'])
+    expect($queuedPromptsBySession.get().same?.[0]?.id).toBe('queued-alpha')
+  })
+
+  it('archives only the requested profile row and unread entry', async () => {
+    seedCollision()
+    const handle = await mountActions()
+
+    await act(async () => handle.archiveSession('same', 'beta'))
+
+    expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('same', true, 'beta')
+    expect($sessions.get().map(session => session.profile)).toEqual(['alpha'])
+    expect(sessionHasUnread('same', 'alpha')).toBe(true)
+    expect(sessionHasUnread('same', 'beta')).toBe(false)
+    expect($pinnedSessionIds.get()).toEqual(['same'])
+    expect($queuedPromptsBySession.get().same?.[0]?.id).toBe('queued-alpha')
   })
 })
 

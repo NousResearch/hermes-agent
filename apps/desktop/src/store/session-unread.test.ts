@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   $unreadFinishedSessionIds,
   clearAllSessionUnread,
+  getSessionCompletionToken,
+  getSessionRenderedCompletion,
   sessionHasUnread,
   sessionLineageIds,
   setSessions,
@@ -56,5 +58,20 @@ describe('setSessionUnread', () => {
     expect(sessionHasUnread('same', 'alpha')).toBe(false)
     expect(sessionHasUnread('same', 'beta')).toBe(true)
     expect($unreadFinishedSessionIds.get()).toEqual(['same'])
+  })
+
+  it('resolves the rendered completion by exact profile when raw ids collide', () => {
+    setSessionUnread('same', true, 'alpha')
+    setSessionUnread('same', true, 'beta')
+
+    expect(getSessionRenderedCompletion('same', 'alpha')).toEqual({
+      completion: getSessionCompletionToken('same', 'alpha'),
+      profile: 'alpha'
+    })
+    expect(getSessionRenderedCompletion('same', 'beta')).toEqual({
+      completion: getSessionCompletionToken('same', 'beta'),
+      profile: 'beta'
+    })
+    expect(getSessionRenderedCompletion('same', 'gamma')).toBeNull()
   })
 })

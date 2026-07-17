@@ -23,7 +23,7 @@ import { cn } from '@/lib/utils'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $gatewaySwapTarget, $profiles } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
 import {
   $contextSuggestions,
   $freshDraftReady,
@@ -264,6 +264,7 @@ export function ChatView({
   const freshDraftReady = useStore($freshDraftReady)
   const gatewayState = useStore($gatewayState)
   const gatewaySwapTarget = useStore($gatewaySwapTarget)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const gatewayOpen = gatewayState === 'open'
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)
@@ -458,6 +459,7 @@ export function ChatView({
             onCancel={onCancel}
             onDismissError={onDismissError}
             onRestoreToMessage={onRestoreToMessage}
+            profile={activeGatewayProfile}
             sessionId={activeSessionId}
             sessionKey={threadKey}
             transcriptVisible={!resumeExhausted}

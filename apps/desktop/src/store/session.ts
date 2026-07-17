@@ -906,20 +906,21 @@ export interface SessionRenderedCompletion {
   profile: string
 }
 
-export function getUniqueSessionCompletion(sessionId: string): null | SessionRenderedCompletion {
-  const matches = [...unreadEntries.values()].filter(entry => {
-    const profile = normalizeSessionProfile(entry.profile)
+export function getSessionRenderedCompletion(
+  sessionId: string,
+  profile?: null | string
+): null | SessionRenderedCompletion {
+  const normalizedProfile = normalizeSessionProfile(profile)
+  const root = sessionLineageRootId(sessionId, normalizedProfile)
+  const entry = unreadEntries.get(sessionScopeKey(normalizedProfile, root))
 
-    return sessionLineageRootId(sessionId, profile) === entry.sessionId
-  })
-
-  if (matches.length !== 1) {
+  if (!entry || entry.acknowledged) {
     return null
   }
 
   return {
-    completion: matches[0].completion,
-    profile: normalizeSessionProfile(matches[0].profile)
+    completion: entry.completion,
+    profile: normalizedProfile
   }
 }
 

@@ -9,7 +9,7 @@ import {
   $sessions,
   $unreadFinishedSessionIds,
   getSessionCompletionToken,
-  getUniqueSessionCompletion,
+  getSessionRenderedCompletion,
   setSessionUnread
 } from '@/store/session'
 import { registerTranscriptSurface } from '@/store/thread-scroll'
@@ -69,7 +69,7 @@ function Harness({
     }
 
     const surface = registerTranscriptSurface(selectedStoredSessionId, atBottom)
-    surface.setRenderedCompletion(getUniqueSessionCompletion(selectedStoredSessionId))
+    surface.setRenderedCompletion(getSessionRenderedCompletion(selectedStoredSessionId, 'default'))
 
     return surface.dispose
   }, [activeSessionId, atBottom, currentView, selectedStoredSessionId, unread])

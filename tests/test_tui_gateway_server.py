@@ -9525,6 +9525,7 @@ def test_notification_poller_delivers_completion(monkeypatch):
         status_calls = [a for a in emitted if a[0] == "status.update"]
         assert len(status_calls) >= 1
         assert status_calls[0][2]["kind"] == "process"
+        assert len([a for a in emitted if a[0] == "message.start"]) == 1
 
         # Should have triggered an agent turn
         assert len(turns) == 1
@@ -11035,6 +11036,7 @@ def test_delegation_status_and_interrupt_are_profile_scoped(monkeypatch):
     from tools import delegate_tool
 
     requested_profiles = []
+    monkeypatch.setattr(server, "_compute_host_supervisor", None)
     monkeypatch.setattr(
         delegate_tool,
         "list_active_subagents",
@@ -11085,6 +11087,51 @@ def test_delegation_status_and_interrupt_are_profile_scoped(monkeypatch):
 
     assert result["result"]["found"] is True
     assert interrupted == [("pending-alpha", "alpha")]
+
+
+def test_delegation_status_and_interrupt_include_compute_host(monkeypatch):
+    from tools import async_delegation as async_registry
+    from tools import delegate_tool
+
+    class _Host:
+        def __init__(self):
+            self.status_profiles = []
+            self.interrupts = []
+
+        def is_running(self):
+            return True
+
+        def delegation_status(self, profile=None):
+            self.status_profiles.append(profile)
+            return [
+                {
+                    "profile": profile,
+                    "status": "running",
+                    "subagent_id": "hosted-alpha",
+                }
+            ]
+
+        def interrupt_subagent(self, subagent_id, profile=None):
+            self.interrupts.append((subagent_id, profile))
+            return subagent_id == "hosted-alpha"
+
+    host = _Host()
+    monkeypatch.setattr(server, "_compute_host_supervisor", host)
+    monkeypatch.setattr(delegate_tool, "list_active_subagents", lambda _profile=None: [])
+    monkeypatch.setattr(delegate_tool, "interrupt_subagent", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(async_registry, "list_pending_async_delivery_handoffs", lambda: [])
+
+    status = server._methods["delegation.status"]("status", {"profile": "alpha"})
+    interrupted = server._methods["subagent.interrupt"](
+        "interrupt", {"profile": "alpha", "subagent_id": "hosted-alpha"}
+    )
+
+    assert status["result"]["active"] == [
+        {"profile": "alpha", "status": "running", "subagent_id": "hosted-alpha"}
+    ]
+    assert host.status_profiles == ["alpha"]
+    assert interrupted["result"]["found"] is True
+    assert host.interrupts == [("hosted-alpha", "alpha")]
 
 
 def test_subagent_progress_forwards_spawn_time_detached_provenance(monkeypatch):
@@ -11154,3 +11201,31 @@ def test_async_delivery_announcement_names_exact_children(monkeypatch):
         )
     ]
     assert retired == ["deleg-1"]
+
+
+def test_notification_prompt_starts_before_async_delivery_announcement(monkeypatch):
+    observed = []
+    event = {
+        "delegation_id": "deleg-ordered",
+        "subagent_ids": ["child-ordered"],
+        "type": "async_delegation",
+    }
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, _text, turn_kind="": observed.append(
+            ("message.start", turn_kind)
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "_announce_async_delegation_delivery",
+        lambda _sid, evt: observed.append(("delegation.delivery", evt["delegation_id"])),
+    )
+
+    server._run_notification_prompt_submit("rid", "sid", {}, "done", event)
+
+    assert observed == [
+        ("message.start", "async_delegation"),
+        ("delegation.delivery", "deleg-ordered"),
+    ]

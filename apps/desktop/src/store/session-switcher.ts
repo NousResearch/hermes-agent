@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import type { SessionInfo } from '@/types/hermes'
 
+import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import {
   $selectedStoredSessionId,
   $sessions,
@@ -79,7 +80,12 @@ export function openOrAdvanceSwitcher(direction: 1 | -1): string | null {
     return null
   }
 
-  const current = sessions.findIndex(session => session.id === $selectedStoredSessionId.get())
+  const selectedProfile = normalizeProfileKey($activeGatewayProfile.get())
+
+  const current = sessions.findIndex(
+    session => session.id === $selectedStoredSessionId.get() && normalizeProfileKey(session.profile) === selectedProfile
+  )
+
   const start = current === -1 ? (direction === 1 ? -1 : 0) : current
   const nextIndex = wrap(start + direction, sessions.length)
 

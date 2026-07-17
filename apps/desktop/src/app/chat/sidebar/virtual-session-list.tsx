@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
 
 import { SidebarSessionRow } from './session-row'
+import { isSidebarSessionSelected, isSidebarSessionWorking, sidebarSessionScopeKey } from './session-row-state'
 
 interface SessionRowCommonProps {
   branchStem?: string
@@ -26,17 +27,18 @@ interface SessionRowCommonProps {
 
 interface VirtualSessionListProps {
   activeSessionId: null | string
+  activeSessionProfile: null | string
   className?: string
   entries: SidebarSessionEntry[]
-  onArchiveSession: (sessionId: string) => void
+  onArchiveSession: (sessionId: string, profile?: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
-  onDeleteSession: (sessionId: string) => void
+  onDeleteSession: (sessionId: string, profile?: string) => void
   onResumeSession: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
   pinned: boolean
   showProfileTags?: boolean
   sortable: boolean
-  workingSessionIdSet: Set<string>
+  workingSessionScopeKeySet: Set<string>
 }
 
 const ROW_ESTIMATE_PX = 28
@@ -44,6 +46,7 @@ const OVERSCAN_ROWS = 12
 
 export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   activeSessionId,
+  activeSessionProfile,
   className,
   entries,
   onArchiveSession,
@@ -54,14 +57,14 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   pinned,
   showProfileTags = false,
   sortable,
-  workingSessionIdSet
+  workingSessionScopeKeySet
 }) => {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
 
   const virtualizer = useVirtualizer({
     count: entries.length,
     estimateSize: () => ROW_ESTIMATE_PX,
-    getItemKey: index => entries[index]?.session.id ?? index,
+    getItemKey: index => (entries[index] ? sidebarSessionScopeKey(entries[index].session) : index),
     getScrollElement: () => scrollerRef.current,
     // jsdom-friendly default; the real rect takes over on first observe.
     initialRect: { height: 600, width: 240 },
@@ -86,11 +89,11 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     const commonProps: SessionRowCommonProps = {
       branchStem,
       isPinned: pinned,
-      isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
-      onArchive: () => onArchiveSession(session.id),
+      isSelected: isSidebarSessionSelected(session, activeSessionId, activeSessionProfile),
+      isWorking: isSidebarSessionWorking(session, workingSessionScopeKeySet),
+      onArchive: () => onArchiveSession(session.id, session.profile),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
-      onDelete: () => onDeleteSession(session.id),
+      onDelete: () => onDeleteSession(session.id, session.profile),
       onPin: () => onTogglePin(sessionPinId(session)),
       onResume: () => onResumeSession(session.id, session.profile),
       reorderable,
@@ -100,7 +103,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     return reorderable ? (
       <VirtualSortableRow
         index={virtualItem.index}
-        key={session.id}
+        key={sidebarSessionScopeKey(session)}
         measureRef={virtualizer.measureElement}
         rowProps={commonProps}
         session={session}
@@ -109,7 +112,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       <SidebarSessionRow
         {...commonProps}
         data-index={virtualItem.index}
-        key={session.id}
+        key={sidebarSessionScopeKey(session)}
         ref={virtualizer.measureElement}
         session={session}
       />

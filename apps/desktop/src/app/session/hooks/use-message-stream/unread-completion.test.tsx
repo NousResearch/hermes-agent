@@ -11,7 +11,7 @@ import {
   $unreadFinishedSessionIds,
   acknowledgeSessionCompletion,
   clearAllSessionUnread,
-  getUniqueSessionCompletion
+  getSessionRenderedCompletion
 } from '@/store/session'
 import { registerTranscriptSurface, type TranscriptSurfaceRegistration } from '@/store/thread-scroll'
 import type { RpcEvent } from '@/types/hermes'
@@ -82,7 +82,7 @@ function complete(sessionId: string) {
 }
 
 function commitVisibleSurface(surface: TranscriptSurfaceRegistration, storedSessionId: string) {
-  const rendered = getUniqueSessionCompletion(storedSessionId)
+  const rendered = getSessionRenderedCompletion(storedSessionId, 'default')
 
   surface.setRenderedCompletion(rendered)
 

@@ -1365,6 +1365,15 @@ def _send_compute_host_control(
     )
 
 
+def _running_compute_host_supervisor():
+    """Return the existing live host without creating one for a status query."""
+    with _compute_host_supervisor_lock:
+        supervisor = _compute_host_supervisor
+    if supervisor is None or not supervisor.is_running():
+        return None
+    return supervisor
+
+
 def _emit_approval_request(sid: str, data: dict | None) -> None:
     """Emit an ``approval.request`` event to the TUI client with the command
     redacted. The approval payload is built from the RAW command string, so a
@@ -9101,6 +9110,18 @@ def _(rid, params: dict) -> dict:
     profile = requested_profile if isinstance(requested_profile, str) else None
     active = list_active_subagents(profile)
 
+    supervisor = _running_compute_host_supervisor()
+    if supervisor is not None:
+        try:
+            known_ids = {str(item.get("subagent_id") or "") for item in active}
+            for item in supervisor.delegation_status(profile):
+                subagent_id = str(item.get("subagent_id") or "")
+                if subagent_id and subagent_id not in known_ids:
+                    active.append(item)
+                    known_ids.add(subagent_id)
+        except Exception as exc:
+            logger.debug("Failed to query compute-host delegation status: %s", exc)
+
     try:
         from tools.async_delegation import list_pending_async_delivery_handoffs
 
@@ -9153,7 +9174,15 @@ def _(rid, params: dict) -> dict:
     if not subagent_id:
         return _err(rid, 4000, "subagent_id required")
     profile = params.get("profile")
-    ok = interrupt_subagent(subagent_id, profile if isinstance(profile, str) else None)
+    scoped_profile = profile if isinstance(profile, str) else None
+    ok = interrupt_subagent(subagent_id, scoped_profile)
+    if not ok:
+        supervisor = _running_compute_host_supervisor()
+        if supervisor is not None:
+            try:
+                ok = supervisor.interrupt_subagent(subagent_id, scoped_profile)
+            except Exception as exc:
+                logger.debug("Failed to interrupt compute-host subagent %s: %s", subagent_id, exc)
     return _ok(rid, {"found": ok, "subagent_id": subagent_id})
 
 
@@ -9679,6 +9708,20 @@ def _announce_async_delegation_delivery(sid: str, evt: dict) -> None:
         logger.debug("Failed to retire async delegation handoff %s: %s", delegation_id, exc)
 
 
+def _run_notification_prompt_submit(
+    rid: str, sid: str, session: dict, text: Any, evt: dict
+) -> None:
+    """Start a completion follow-up, then retire its detached handoff.
+
+    ``_run_prompt_submit`` emits ``message.start`` synchronously before it
+    starts the worker thread. This common wrapper keeps every poller/post-turn
+    path ordered after that start and prevents duplicate delivery announcements.
+    """
+    turn_kind = "async_delegation" if evt.get("type") == "async_delegation" else ""
+    _run_prompt_submit(rid, sid, session, text, turn_kind)
+    _announce_async_delegation_delivery(sid, evt)
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -9772,15 +9815,7 @@ def _notification_poller_loop(
         if _claim is None:
             continue
         try:
-            _emit("message.start", sid)
-            _run_prompt_submit(
-                rid,
-                sid,
-                session,
-                text,
-                "async_delegation" if evt.get("type") == "async_delegation" else "",
-            )
-            _announce_async_delegation_delivery(sid, evt)
+            _run_notification_prompt_submit(rid, sid, session, text, evt)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -9847,15 +9882,7 @@ def _notification_poller_loop(
         if _claim is None:
             continue
         try:
-            _emit("message.start", sid)
-            _run_prompt_submit(
-                rid,
-                sid,
-                session,
-                text,
-                "async_delegation" if evt.get("type") == "async_delegation" else "",
-            )
-            _announce_async_delegation_delivery(sid, evt)
+            _run_notification_prompt_submit(rid, sid, session, text, evt)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -10431,7 +10458,6 @@ def _run_prompt_submit(
                     return
                 session["running"] = True
             try:
-                _emit("message.start", sid)
                 _run_prompt_submit(rid, sid, session, goal_followup)
             except Exception as _cont_exc:
                 print(
@@ -10477,14 +10503,7 @@ def _run_prompt_submit(
                 if _claim is None:
                     continue
                 try:
-                    _emit("message.start", sid)
-                    _run_prompt_submit(
-                        rid,
-                        sid,
-                        session,
-                        synth,
-                        "async_delegation" if _evt.get("type") == "async_delegation" else "",
-                    )
+                    _run_notification_prompt_submit(rid, sid, session, synth, _evt)
                     complete_event_delivery(_evt, _claim)
                 except Exception as _n_exc:
                     release_event_delivery(_evt, _claim)

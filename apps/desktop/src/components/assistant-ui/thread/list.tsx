@@ -17,7 +17,7 @@ import { useStickToBottom } from 'use-stick-to-bottom'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $unreadFinishedSessionIds, getUniqueSessionCompletion } from '@/store/session'
+import { $unreadFinishedSessionIds, getSessionRenderedCompletion } from '@/store/session'
 import {
   onScrollToBottomRequest,
   onThreadEditClose,
@@ -57,6 +57,7 @@ interface ThreadMessageListProps {
   components: ThreadMessageComponents
   emptyPlaceholder?: ReactNode
   loadingIndicator?: ReactNode
+  profile?: null | string
   sessionKey?: string | null
   transcriptVisible?: boolean
 }
@@ -123,6 +124,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   components,
   emptyPlaceholder,
   loadingIndicator,
+  profile,
   sessionKey,
   transcriptVisible = true
 }) => {
@@ -248,8 +250,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // Runs only after the assistant-ui message tree commits. Tie the surface to
     // that painted completion rather than acknowledging in the gateway stack.
     void unreadFinishedSessionIds
-    transcriptSurfaceRef.current?.setRenderedCompletion(sessionKey ? getUniqueSessionCompletion(sessionKey) : null)
-  }, [messageSignature, sessionKey, unreadFinishedSessionIds])
+    transcriptSurfaceRef.current?.setRenderedCompletion(
+      sessionKey ? getSessionRenderedCompletion(sessionKey, profile) : null
+    )
+  }, [messageSignature, profile, sessionKey, unreadFinishedSessionIds])
 
   // Floating jump button (outside this subtree) → return to the bottom.
   useEffect(() => onScrollToBottomRequest(() => void scrollToBottom()), [scrollToBottom])

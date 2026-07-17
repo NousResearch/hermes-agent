@@ -178,7 +178,7 @@ function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewCha
 
 function sessionUnreadAliases(
   storedSessionId: string,
-  session?: Pick<SessionInfo, '_lineage_root_id' | 'id'>
+  session?: Pick<SessionInfo, '_lineage_root_id' | 'id' | 'profile'>
 ): string[] {
   return [
     ...new Set([storedSessionId, session?.id, session?._lineage_root_id].filter((id): id is string => Boolean(id)))
@@ -187,11 +187,23 @@ function sessionUnreadAliases(
 
 function clearSessionUnreadAliases(
   storedSessionId: string,
-  session?: Pick<SessionInfo, '_lineage_root_id' | 'id'>
+  session?: Pick<SessionInfo, '_lineage_root_id' | 'id' | 'profile'>,
+  requestedProfile?: null | string
 ): void {
   const aliases = sessionUnreadAliases(storedSessionId, session)
 
-  aliases.forEach(id => setSessionUnread(id, false))
+  aliases.forEach(id => setSessionUnread(id, false, session?.profile ?? requestedProfile))
+}
+
+function sessionMatchesActionTarget(
+  session: SessionInfo,
+  storedSessionId: string,
+  profile: null | string | undefined
+): boolean {
+  return (
+    sessionMatchesStoredId(session, storedSessionId) &&
+    normalizeProfileKey(session.profile) === normalizeProfileKey(profile)
+  )
 }
 
 export function useSessionActions({
@@ -1161,11 +1173,18 @@ export function useSessionActions({
   )
 
   const removeSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, requestedProfile?: string) => {
       clearNotifications()
 
-      const removed = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
-      const wasSelected = selectedStoredSessionId === storedSessionId
+      const targetProfile = normalizeProfileKey(requestedProfile ?? $activeGatewayProfile.get())
+      const targetsActiveProfile = targetProfile === normalizeProfileKey($activeGatewayProfile.get())
+
+      const removed = $sessions
+        .get()
+        .find(session => sessionMatchesActionTarget(session, storedSessionId, targetProfile))
+
+      const wasSelected = selectedStoredSessionId === storedSessionId && targetsActiveProfile
+
       const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
@@ -1173,15 +1192,22 @@ export function useSessionActions({
       // live tip after compression. Drop both so the pin can't linger.
       const removedPinId = removed ? sessionPinId(removed) : storedSessionId
 
-      setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
-      // Evict from the project tree's optimistic layer too (the backend snapshot
-      // still lists it until its next refresh), so grouped + flat views drop the
-      // row in lockstep.
-      tombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id])
+      setSessions(prev => prev.filter(session => !sessionMatchesActionTarget(session, storedSessionId, targetProfile)))
+
+      if (targetsActiveProfile) {
+        // Evict from the project tree's optimistic layer too (the backend snapshot
+        // still lists it until its next refresh), so grouped + flat views drop the
+        // row in lockstep.
+        tombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id])
+      }
+
       // Keep $sessionsTotal in sync so the sidebar's "Load N more" footer
       // doesn't keep claiming the removed row is still on the server.
       setSessionsTotal(prev => Math.max(0, prev - 1))
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
+
+      if (targetsActiveProfile) {
+        $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
+      }
 
       // Tear down before awaiting so the route effect can't resume the
       // doomed session via the stale /<sid> URL.
@@ -1194,9 +1220,13 @@ export function useSessionActions({
           await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
         }
 
-        await deleteSession(storedSessionId, removed?.profile)
-        clearQueuedPrompts(storedSessionId)
-        clearSessionUnreadAliases(storedSessionId, removed)
+        await deleteSession(storedSessionId, removed?.profile ?? targetProfile)
+
+        if (targetsActiveProfile) {
+          clearQueuedPrompts(storedSessionId)
+        }
+
+        clearSessionUnreadAliases(storedSessionId, removed, targetProfile)
 
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)
@@ -1205,8 +1235,13 @@ export function useSessionActions({
         // A tiled copy of this session must not outlive it: collapse the pane
         // and evict its mirrored runtime state so nothing submits to (or renders)
         // a deleted session.
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        closeSessionTile(storedSessionId)
+        const tiledRuntimeId = targetsActiveProfile
+          ? runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+          : undefined
+
+        if (targetsActiveProfile) {
+          closeSessionTile(storedSessionId)
+        }
 
         if (tiledRuntimeId) {
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
@@ -1219,8 +1254,10 @@ export function useSessionActions({
           setSessionsTotal(prev => prev + 1)
         }
 
-        untombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id])
-        $pinnedSessionIds.set(previousPinned)
+        if (targetsActiveProfile) {
+          untombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id])
+          $pinnedSessionIds.set(previousPinned)
+        }
 
         if (wasSelected) {
           setFreshDraftReady(false)
@@ -1259,41 +1296,66 @@ export function useSessionActions({
   )
 
   const archiveSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, requestedProfile?: string) => {
       clearNotifications()
 
-      const archived = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
-      const wasSelected = selectedStoredSessionId === storedSessionId
+      const targetProfile = normalizeProfileKey(requestedProfile ?? $activeGatewayProfile.get())
+      const targetsActiveProfile = targetProfile === normalizeProfileKey($activeGatewayProfile.get())
+
+      const archived = $sessions
+        .get()
+        .find(session => sessionMatchesActionTarget(session, storedSessionId, targetProfile))
+
+      const wasSelected = selectedStoredSessionId === storedSessionId && targetsActiveProfile
+
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
       const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
 
       // Soft-hide: drop from the sidebar immediately, keep the data.
-      setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
-      tombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
+      setSessions(prev => prev.filter(session => !sessionMatchesActionTarget(session, storedSessionId, targetProfile)))
+
+      if (targetsActiveProfile) {
+        tombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
+      }
+
       // Archived sessions are hidden by the listSessions(min_messages=1) query
       // on the next refresh, so they count as "removed" for the load-more
       // footer math.
       setSessionsTotal(prev => Math.max(0, prev - 1))
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
+
+      if (targetsActiveProfile) {
+        $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
+      }
 
       if (wasSelected) {
         startFreshSessionDraft(true)
       }
 
       try {
-        await setSessionArchived(storedSessionId, true, archived?.profile)
-        clearSessionUnreadAliases(storedSessionId, archived)
+        await setSessionArchived(storedSessionId, true, archived?.profile ?? targetProfile)
+        clearSessionUnreadAliases(storedSessionId, archived, targetProfile)
         // A sidebar refresh can race the optimistic removal while the PATCH is
         // in flight and briefly reinsert the still-unarchived backend row. Win
         // that race after the mutation succeeds so right-click → Archive does
         // not appear to do nothing until the next full refresh.
-        setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
-        $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId && id !== archivedPinId))
+        setSessions(prev =>
+          prev.filter(session => !sessionMatchesActionTarget(session, storedSessionId, targetProfile))
+        )
+
+        if (targetsActiveProfile) {
+          $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId && id !== archivedPinId))
+        }
+
         // An archived session is hidden from the sidebar; its tile must go too.
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        closeSessionTile(storedSessionId)
+        const tiledRuntimeId = targetsActiveProfile
+          ? runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+          : undefined
+
+        if (targetsActiveProfile) {
+          closeSessionTile(storedSessionId)
+        }
 
         if (tiledRuntimeId) {
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
@@ -1304,12 +1366,18 @@ export function useSessionActions({
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
         if (archived) {
-          setSessions(prev => [archived, ...prev.filter(session => !sessionMatchesStoredId(session, storedSessionId))])
+          setSessions(prev => [
+            archived,
+            ...prev.filter(session => !sessionMatchesActionTarget(session, storedSessionId, targetProfile))
+          ])
           setSessionsTotal(prev => prev + 1)
         }
 
-        untombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
-        $pinnedSessionIds.set(previousPinned)
+        if (targetsActiveProfile) {
+          untombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
+          $pinnedSessionIds.set(previousPinned)
+        }
+
         notifyError(err, copy.archiveFailed)
       }
     },

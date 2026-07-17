@@ -27,7 +27,6 @@
  * trust seam.
  */
 
-import { getStatus } from '@/hermes'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 
@@ -246,8 +245,8 @@ async function scanDiskPlugins(): Promise<void> {
   scanning = true
 
   try {
-    const { hermes_home } = await getStatus()
-    const { entries } = await desktop.readDir(`${hermes_home}/desktop-plugins`)
+    const pluginsDir = await desktop.getDesktopPluginsDir()
+    const { entries } = await desktop.readDir(pluginsDir)
     const seen = new Set<string>()
 
     for (const dir of entries.filter(e => e.isDirectory)) {

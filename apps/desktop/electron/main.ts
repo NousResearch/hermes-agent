@@ -8473,6 +8473,11 @@ function disposeTerminalSession(id) {
   return true
 }
 
+// Desktop plugins are renderer code loaded from this machine. Their directory
+// is therefore an Electron-owned runtime fact, independent of whichever local,
+// remote, or cloud backend the renderer is currently connected to.
+ipcMain.handle('hermes:plugins:dir', async () => path.join(HERMES_HOME, 'desktop-plugins'))
+
 ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
 
 ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))

@@ -466,12 +466,123 @@ def render_training_section(data: dict | None, reason: str) -> str:
     return "\n".join(lines)
 
 
+_PROJECT_GLYPHS: dict[str, str] = {
+    "shipped": "🚀",
+    "in_progress": "⏳",
+    "blocked": "⛔",
+    "waiting_signoff": "📋",
+    "idle": "💤",
+}
+
+
+def _render_project_header(project: dict) -> str:
+    name = project.get("name", "")
+    status = project.get("status", "")
+    glyph = _PROJECT_GLYPHS.get(status, "")
+
+    header = f"**{name}** — {glyph} {status}"
+
+    if status == "in_progress":
+        ip = project.get("in_progress")
+        if isinstance(ip, dict):
+            sprint_label = ip.get("sprint_label", "")
+            percent = ip.get("percent", "")
+            ticket = ip.get("ticket", "")
+            header += f" ({sprint_label}, {percent}% — {ticket})"
+
+    # compact counts suffix when any bucket is non-empty
+    bucket_counts: list[str] = []
+    for bucket_name in ("shipped", "fixed", "stale", "waiting"):
+        bucket = project.get(bucket_name) or []
+        if bucket:
+            bucket_counts.append(f"{bucket_name[0].upper()}{len(bucket)}")
+    if bucket_counts:
+        header += f" [{' '.join(bucket_counts)}]"
+
+    return header
+
+
+def _render_shipped_item(item) -> str:
+    if not isinstance(item, dict):
+        return f"- {item}"
+    label = item.get("label", "")
+    goal = item.get("goal", "")
+    done = item.get("done", "")
+    pr_number = item.get("pr_number")
+    pr_part = f", PR #{pr_number}" if pr_number is not None else ""
+    return f'- Shipped: {label} "{goal}" ({done} done{pr_part})'
+
+
+def _render_fixed_item(item) -> str:
+    if not isinstance(item, dict):
+        return f"- {item}"
+    issue_number = item.get("issue_number", "")
+    title = item.get("title", "")
+    return f"- Fixed: #{issue_number} {title}"
+
+
+def _render_stale_item(item) -> str:
+    if not isinstance(item, dict):
+        return f"- {item}"
+    kind = item.get("kind", "")
+    if kind == "blocked":
+        issue_number = item.get("issue_number", "")
+        age_days = item.get("age_days", "")
+        type_ = item.get("type", "")
+        title = item.get("title", "")
+        return f"- #{issue_number} blocked {age_days}d ({type_}) — {title}"
+    if kind == "waiting_signoff":
+        label = item.get("label", "")
+        age_days = item.get("age_days", "")
+        return f"- {label} awaiting sign-off {age_days}d"
+    if kind == "backlog":
+        label = item.get("label", "")
+        age_days = item.get("age_days", "")
+        ticket_count = item.get("ticket_count", "")
+        return f"- {label} backlog untouched {age_days}d ({ticket_count} tickets)"
+    # unknown kind — render as much as possible
+    return f"- {item}"
+
+
+def _render_waiting_item(item) -> str:
+    if not isinstance(item, dict):
+        return f"- {item}"
+    label = item.get("label", "")
+    ticket_count = item.get("ticket_count", "")
+    estimated_hours = item.get("estimated_hours")
+    hours_part = f", ~{estimated_hours}h" if estimated_hours is not None else ""
+    return f"- Waiting: {label} sign-off ({ticket_count} tickets{hours_part})"
+
+
+def _render_project_block(project: dict) -> list[str]:
+    lines = [_render_project_header(project)]
+    for bucket_name, renderer in (
+        ("shipped", _render_shipped_item),
+        ("fixed", _render_fixed_item),
+        ("stale", _render_stale_item),
+        ("waiting", _render_waiting_item),
+    ):
+        for item in (project.get(bucket_name) or []):
+            lines.append(renderer(item))
+    return lines
+
+
 def render_dev_report_section(data: dict | None, reason: str) -> str:
     lines = ["## Section 4 — Overnight Dev Report\n"]
     if data is None:
         lines.append(_unavailable_block(reason))
         return "\n".join(lines)
 
+    projects = data.get("projects")
+    if projects:
+        for project in projects:
+            lines.extend(_render_project_block(project))
+
+        cost = data.get("cost", "unknown")
+        lines.append(f"\nCost: {cost}")
+        return "\n".join(lines)
+
+    # Legacy flat path — unchanged
     completed = data.get("completed") or []
     needs_review = data.get("needs_review") or []
     dead_letter = data.get("dead_letter") or []

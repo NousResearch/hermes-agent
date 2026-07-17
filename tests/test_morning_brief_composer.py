@@ -1311,3 +1311,450 @@ class TestV3PerBlockOmission:
         section = render_training_section(data, "")
         assert "**Advisories:**" not in section
         assert "- ⚠️ High load this week." in section
+
+
+# ---------------------------------------------------------------------------
+# Issue #60: Structured commander contract — render_dev_report_section
+# ---------------------------------------------------------------------------
+
+# Helpers for structured project contract fixtures
+
+def _project(name="project-alpha", status="in_progress", **kwargs):
+    """Build a minimal project dict."""
+    p = {"name": name, "status": status}
+    p.update(kwargs)
+    return p
+
+
+def _in_progress_sub(sprint_label="S5", percent=60, ticket="PROJ-12"):
+    return {"sprint_label": sprint_label, "percent": percent, "ticket": ticket}
+
+
+def _shipped_item(label="v1.2", goal="Ship auth", done=3, pr_number=42):
+    return {"label": label, "goal": goal, "done": done, "pr_number": pr_number}
+
+
+def _fixed_item(issue_number=7, title="Fix login crash"):
+    return {"issue_number": issue_number, "title": title}
+
+
+def _stale_blocked(issue_number=9, age_days=5, type="review", title="Auth PR"):
+    return {"kind": "blocked", "issue_number": issue_number, "age_days": age_days,
+            "type": type, "title": title}
+
+
+def _stale_waiting_signoff(label="v1.1", age_days=3):
+    return {"kind": "waiting_signoff", "label": label, "age_days": age_days}
+
+
+def _stale_backlog(label="backlog-A", age_days=10, ticket_count=5):
+    return {"kind": "backlog", "label": label, "age_days": age_days, "ticket_count": ticket_count}
+
+
+def _waiting_item(label="v1.3", ticket_count=4, estimated_hours=8):
+    return {"label": label, "ticket_count": ticket_count, "estimated_hours": estimated_hours}
+
+
+def _commander_projects_data(projects, cost="$0.12", for_date=None):
+    return {
+        "for_date": for_date or _today(),
+        "projects": projects,
+        "cost": cost,
+    }
+
+
+# ---------------------------------------------------------------------------
+# AC-1: projects present → header format with glyph per status
+# ---------------------------------------------------------------------------
+
+class TestProjectsHeaderLine:
+    """AC-1: each project renders **{name}** — {glyph} {status} with correct glyph."""
+
+    _GLYPH_MAP = {
+        "shipped": "🚀",
+        "in_progress": "⏳",
+        "blocked": "⛔",
+        "waiting_signoff": "📋",
+        "idle": "💤",
+    }
+
+    def test_shipped_glyph(self):
+        data = _commander_projects_data([_project("proj", "shipped")])
+        section = render_dev_report_section(data, "")
+        assert "**proj** — 🚀 shipped" in section
+
+    def test_in_progress_glyph(self):
+        data = _commander_projects_data([_project("proj", "in_progress")])
+        section = render_dev_report_section(data, "")
+        assert "**proj** — ⏳ in_progress" in section
+
+    def test_blocked_glyph(self):
+        data = _commander_projects_data([_project("proj", "blocked")])
+        section = render_dev_report_section(data, "")
+        assert "**proj** — ⛔ blocked" in section
+
+    def test_waiting_signoff_glyph(self):
+        data = _commander_projects_data([_project("proj", "waiting_signoff")])
+        section = render_dev_report_section(data, "")
+        assert "**proj** — 📋 waiting_signoff" in section
+
+    def test_idle_glyph(self):
+        data = _commander_projects_data([_project("proj", "idle")])
+        section = render_dev_report_section(data, "")
+        assert "**proj** — 💤 idle" in section
+
+    def test_multiple_projects_each_get_header(self):
+        data = _commander_projects_data([
+            _project("alpha", "in_progress"),
+            _project("beta", "idle"),
+        ])
+        section = render_dev_report_section(data, "")
+        assert "**alpha** — ⏳ in_progress" in section
+        assert "**beta** — 💤 idle" in section
+
+
+# ---------------------------------------------------------------------------
+# AC-2: in_progress header suffix
+# ---------------------------------------------------------------------------
+
+class TestInProgressHeaderSuffix:
+    """AC-2: in_progress header appends (sprint_label, percent% — ticket) when
+    in_progress sub-key present; omitted when sub-key absent."""
+
+    def test_in_progress_suffix_rendered(self):
+        p = _project("proj", "in_progress", in_progress=_in_progress_sub("S5", 60, "PROJ-12"))
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "(S5, 60% — PROJ-12)" in section
+
+    def test_in_progress_suffix_absent_when_sub_key_missing(self):
+        p = _project("proj", "in_progress")
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "**proj** — ⏳ in_progress" in section
+        assert "%" not in section
+
+
+# ---------------------------------------------------------------------------
+# AC-3: compact counts suffix when any bucket non-empty
+# ---------------------------------------------------------------------------
+
+class TestCountsSuffix:
+    """AC-3: compact counts suffix on header line when any bucket non-empty."""
+
+    def test_counts_suffix_present_when_shipped_non_empty(self):
+        p = _project("proj", "in_progress", shipped=[_shipped_item()])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        # Header line contains counts bracket
+        header_line = next(l for l in section.splitlines() if "**proj**" in l)
+        assert "[" in header_line and "]" in header_line
+
+    def test_counts_suffix_absent_for_idle_project(self):
+        p = _project("proj", "idle")
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        header_line = next(l for l in section.splitlines() if "**proj**" in l)
+        assert "[" not in header_line
+
+    def test_counts_suffix_reflects_shipped_count(self):
+        p = _project("proj", "shipped", shipped=[_shipped_item(), _shipped_item("v1.3", "Other", 1, 43)])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        header_line = next(l for l in section.splitlines() if "**proj**" in l)
+        assert "2" in header_line
+
+
+# ---------------------------------------------------------------------------
+# AC-4: shipped bucket sub-bullets
+# ---------------------------------------------------------------------------
+
+class TestShippedBucket:
+    """AC-4: non-empty shipped renders - Shipped: {label} "{goal}" ({done} done, PR #{pr})."""
+
+    def test_shipped_sub_bullet_format(self):
+        p = _project("proj", "shipped", shipped=[_shipped_item("v1.2", "Ship auth", 3, 42)])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert '- Shipped: v1.2 "Ship auth" (3 done, PR #42)' in section
+
+    def test_shipped_string_item_rendered_verbatim(self):
+        p = _project("proj", "shipped", shipped=["verbatim shipped text"])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "- verbatim shipped text" in section
+
+    def test_shipped_missing_pr_number_no_keyerror(self):
+        item = {"label": "v1.0", "goal": "Launch", "done": 1}
+        p = _project("proj", "shipped", shipped=[item])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "v1.0" in section
+        assert "Launch" in section
+
+
+# ---------------------------------------------------------------------------
+# AC-5: fixed bucket sub-bullets
+# ---------------------------------------------------------------------------
+
+class TestFixedBucket:
+    """AC-5: non-empty fixed renders - Fixed: #{issue_number} {title}."""
+
+    def test_fixed_sub_bullet_format(self):
+        p = _project("proj", "shipped", fixed=[_fixed_item(7, "Fix login crash")])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "- Fixed: #7 Fix login crash" in section
+
+    def test_fixed_string_item_rendered_verbatim(self):
+        p = _project("proj", "shipped", fixed=["verbatim fixed text"])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "- verbatim fixed text" in section
+
+
+# ---------------------------------------------------------------------------
+# AC-6: stale bucket — all three kinds
+# ---------------------------------------------------------------------------
+
+class TestStaleBucket:
+    """AC-6: stale renders blocked/waiting_signoff/backlog sub-bullets."""
+
+    def test_stale_blocked_format(self):
+        item = _stale_blocked(9, 5, "review", "Auth PR")
+        p = _project("proj", "blocked", stale=[item])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "#9 blocked 5d (review) — Auth PR" in section
+
+    def test_stale_waiting_signoff_format(self):
+        item = _stale_waiting_signoff("v1.1", 3)
+        p = _project("proj", "waiting_signoff", stale=[item])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "v1.1 awaiting sign-off 3d" in section
+
+    def test_stale_backlog_format(self):
+        item = _stale_backlog("backlog-A", 10, 5)
+        p = _project("proj", "in_progress", stale=[item])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "backlog-A backlog untouched 10d (5 tickets)" in section
+
+    def test_stale_string_item_rendered_verbatim(self):
+        p = _project("proj", "blocked", stale=["stale string item"])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "- stale string item" in section
+
+    def test_stale_mixed_kinds_all_render(self):
+        stale = [
+            _stale_blocked(1, 2, "ci", "CI job"),
+            _stale_waiting_signoff("v0.9", 4),
+            _stale_backlog("tech-debt", 7, 3),
+        ]
+        p = _project("proj", "blocked", stale=stale)
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "#1 blocked 2d (ci) — CI job" in section
+        assert "v0.9 awaiting sign-off 4d" in section
+        assert "tech-debt backlog untouched 7d (3 tickets)" in section
+
+
+# ---------------------------------------------------------------------------
+# AC-7: waiting bucket sub-bullets
+# ---------------------------------------------------------------------------
+
+class TestWaitingBucket:
+    """AC-7: non-empty waiting renders - Waiting: {label} sign-off ({count} tickets, ~{h}h)."""
+
+    def test_waiting_sub_bullet_format(self):
+        p = _project("proj", "waiting_signoff", waiting=[_waiting_item("v1.3", 4, 8)])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "- Waiting: v1.3 sign-off (4 tickets, ~8h)" in section
+
+    def test_waiting_string_item_rendered_verbatim(self):
+        p = _project("proj", "waiting_signoff", waiting=["verbatim waiting text"])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "- verbatim waiting text" in section
+
+    def test_waiting_missing_estimated_hours_no_keyerror(self):
+        item = {"label": "v2.0", "ticket_count": 2}
+        p = _project("proj", "waiting_signoff", waiting=[item])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "v2.0" in section
+        assert "2 tickets" in section
+
+
+# ---------------------------------------------------------------------------
+# AC-8: idle projects collapse to header line only
+# ---------------------------------------------------------------------------
+
+class TestIdleProjectCollapse:
+    """AC-8: idle projects (all buckets empty) render only the header line."""
+
+    def test_idle_project_no_sub_bullets(self):
+        p = _project("proj", "idle")
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        lines = [l for l in section.splitlines() if l.strip().startswith("-")]
+        assert not lines
+
+    def test_idle_project_with_explicitly_empty_buckets_no_sub_bullets(self):
+        p = _project("proj", "idle", shipped=[], fixed=[], stale=[], waiting=[])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        lines = [l for l in section.splitlines() if l.strip().startswith("-")]
+        assert not lines
+
+
+# ---------------------------------------------------------------------------
+# AC-9: dict/string tolerance (render_advisory pattern)
+# ---------------------------------------------------------------------------
+
+class TestBucketItemTolerance:
+    """AC-9: every bucket item accepts dict or plain string."""
+
+    def test_shipped_string_and_dict_both_accepted(self):
+        p = _project("p", "shipped",
+                     shipped=["string item", _shipped_item("v1.0", "Goal", 1, 10)])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "string item" in section
+        assert "v1.0" in section
+
+    def test_stale_string_and_dict_both_accepted(self):
+        p = _project("p", "blocked",
+                     stale=["plain stale", _stale_blocked(3, 1, "review", "Bug")])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "plain stale" in section
+        assert "#3 blocked 1d (review) — Bug" in section
+
+
+# ---------------------------------------------------------------------------
+# AC-10: missing sub-keys default cleanly
+# ---------------------------------------------------------------------------
+
+class TestMissingSubKeysSafe:
+    """AC-10: missing optional sub-keys (in_progress, pr_number, estimated_hours)
+    produce no KeyError."""
+
+    def test_in_progress_sub_key_absent_no_crash(self):
+        p = _project("proj", "in_progress")
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "**proj**" in section
+
+    def test_shipped_missing_pr_number_no_crash(self):
+        p = _project("proj", "shipped", shipped=[{"label": "v1", "goal": "G", "done": 1}])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "v1" in section
+
+    def test_waiting_missing_estimated_hours_no_crash(self):
+        p = _project("proj", "waiting_signoff", waiting=[{"label": "v2", "ticket_count": 3}])
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "v2" in section
+
+    def test_all_project_buckets_absent_no_crash(self):
+        p = {"name": "minimal", "status": "idle"}
+        data = _commander_projects_data([p])
+        section = render_dev_report_section(data, "")
+        assert "**minimal**" in section
+
+
+# ---------------------------------------------------------------------------
+# AC-11: Cost line rendered after all project blocks
+# ---------------------------------------------------------------------------
+
+class TestCostLinePosition:
+    """AC-11: Cost: {cost} line is unchanged and appears after all project blocks."""
+
+    def test_cost_line_present(self):
+        data = _commander_projects_data([_project("p", "idle")], cost="$1.23")
+        section = render_dev_report_section(data, "")
+        assert "Cost: $1.23" in section
+
+    def test_cost_line_after_project_blocks(self):
+        p = _project("proj", "shipped", shipped=[_shipped_item()])
+        data = _commander_projects_data([p], cost="$0.50")
+        section = render_dev_report_section(data, "")
+        proj_pos = section.index("**proj**")
+        cost_pos = section.index("Cost: $0.50")
+        assert proj_pos < cost_pos
+
+
+# ---------------------------------------------------------------------------
+# AC-12: projects absent or empty → flat fallthrough unchanged
+# ---------------------------------------------------------------------------
+
+class TestFlatFallthrough:
+    """AC-12: when data.projects is absent or [], falls through to flat path."""
+
+    def test_no_projects_key_uses_flat_path(self):
+        data = _commander_data(completed=["task-X"], cost="$0.10")
+        section = render_dev_report_section(data, "")
+        assert "task-X" in section
+        assert "**Completed:**" in section
+
+    def test_empty_projects_uses_flat_path(self):
+        data = {
+            "for_date": _today(),
+            "projects": [],
+            "completed": ["task-Y"],
+            "needs_review": [],
+            "dead_letter": [],
+            "cost": "$0.05",
+        }
+        section = render_dev_report_section(data, "")
+        assert "task-Y" in section
+        assert "**Completed:**" in section
+
+    def test_projects_non_empty_ignores_flat_keys(self):
+        """AC-13: both projects and legacy flat keys → projects wins."""
+        data = {
+            "for_date": _today(),
+            "projects": [_project("structured-proj", "idle")],
+            "completed": ["should-be-ignored"],
+            "needs_review": ["also-ignored"],
+            "dead_letter": [],
+            "cost": "$0.01",
+        }
+        section = render_dev_report_section(data, "")
+        assert "**structured-proj**" in section
+        assert "should-be-ignored" not in section
+        assert "also-ignored" not in section
+
+
+# ---------------------------------------------------------------------------
+# AC-14: snapshot test — legacy flat output byte-identical before/after
+# ---------------------------------------------------------------------------
+
+class TestLegacyFlatSnapshot:
+    """AC-14: legacy flat contract produces the same output byte-for-byte."""
+
+    def test_flat_contract_snapshot(self):
+        data = _commander_data(
+            completed=["feature-X shipped", "bug-Y fixed"],
+            needs_review=["PR #42"],
+            dead_letter=["stalled-task-Z"],
+            cost="$1.23",
+        )
+        section = render_dev_report_section(data, "")
+        expected = "\n".join([
+            "## Section 4 — Overnight Dev Report\n",
+            "**Completed:**",
+            "- feature-X shipped",
+            "- bug-Y fixed",
+            "\n**Needs Review:**",
+            "- PR #42",
+            "\n**Dead Letter:**",
+            "- stalled-task-Z",
+            "\nCost: $1.23",
+        ])
+        assert section == expected

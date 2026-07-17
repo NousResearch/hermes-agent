@@ -177,6 +177,7 @@ interface PromptActionsOptions {
   getRouteToken: () => string
   handleSkinCommand: (arg: string) => string
   openMemoryGraph: () => void
+  openMemoryViewer: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
@@ -208,6 +209,7 @@ export function usePromptActions({
   getRouteToken,
   handleSkinCommand,
   openMemoryGraph,
+  openMemoryViewer,
   refreshSessions,
   requestGateway,
   resumeStoredSession,
@@ -475,6 +477,7 @@ export function usePromptActions({
     handleSkinCommand,
     handoffSession,
     openMemoryGraph,
+    openMemoryViewer,
     refreshSessions,
     requestGateway,
     resumeStoredSession,

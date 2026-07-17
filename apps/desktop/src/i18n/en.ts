@@ -969,6 +969,19 @@ export const en: Translations = {
     importedBadge: 'imported map',
     resetToMine: 'Back to my map'
   },
+  memoryViewer: {
+    title: 'Memory Viewer',
+    subtitle: 'Browse agent memories and user profile',
+    close: 'Close memory viewer',
+    loading: 'Loading…',
+    loadFailed: 'Could not load memory content',
+    memoryTab: 'Agent Memory',
+    userTab: 'User Profile',
+    emptyTitle: 'No content yet',
+    memoryEmpty: 'The agent has not created any memories. Memories accumulate as you chat.',
+    userEmpty: 'No user profile yet. The agent learns your preferences over time.',
+    entryCount: count => `${count} ${count === 1 ? 'entry' : 'entries'}`
+  },
   agents: {
     close: 'Close agents',
     title: 'Spawn tree',

@@ -1151,6 +1151,19 @@ export const zh: Translations = {
     importedBadge: '导入的图谱',
     resetToMine: '返回我的图谱'
   },
+  memoryViewer: {
+    title: '记忆浏览器',
+    subtitle: '查看代理记忆与用户人格档案',
+    close: '关闭记忆浏览器',
+    loading: '加载中…',
+    loadFailed: '无法加载记忆内容',
+    memoryTab: '代理记忆',
+    userTab: '用户档案',
+    emptyTitle: '暂无内容',
+    memoryEmpty: '代理尚未创建任何记忆。在对话中代理会自动积累经验。',
+    userEmpty: '尚未建立用户档案。代理会在对话中逐步了解你的偏好。',
+    entryCount: count => `${count} 条记录`
+  },
   agents: {
     close: '关闭代理',
     title: '派生树',

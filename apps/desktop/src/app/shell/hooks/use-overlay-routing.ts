@@ -7,6 +7,7 @@ import {
   appViewForPath,
   COMMAND_CENTER_ROUTE,
   isOverlayView,
+  MEMORY_ROUTE,
   NEW_CHAT_ROUTE,
   STARMAP_ROUTE
 } from '@/app/routes'
@@ -22,6 +23,7 @@ export function useOverlayRouting() {
   const commandCenterOpen = currentView === 'command-center'
   const agentsOpen = currentView === 'agents'
   const starmapOpen = currentView === 'starmap'
+  const memoryOpen = currentView === 'memory'
   const cronOpen = currentView === 'cron'
   const profilesOpen = currentView === 'profiles'
   const chatOpen = currentView === 'chat'
@@ -62,6 +64,7 @@ export function useOverlayRouting() {
 
   const openAgents = useCallback(() => navigate(AGENTS_ROUTE), [navigate])
   const openStarmap = useCallback(() => navigate(STARMAP_ROUTE), [navigate])
+  const openMemory = useCallback(() => navigate(MEMORY_ROUTE), [navigate])
 
   return {
     agentsOpen,
@@ -71,8 +74,10 @@ export function useOverlayRouting() {
     commandCenterOpen,
     cronOpen,
     currentView,
+    memoryOpen,
     openAgents,
     openCommandCenterSection,
+    openMemory,
     openStarmap,
     profilesOpen,
     settingsOpen,

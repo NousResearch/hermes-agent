@@ -847,6 +847,19 @@ export interface Translations {
     importedBadge: string
     resetToMine: string
   }
+  memoryViewer: {
+    title: string
+    subtitle: string
+    close: string
+    loading: string
+    loadFailed: string
+    memoryTab: string
+    userTab: string
+    emptyTitle: string
+    memoryEmpty: string
+    userEmpty: string
+    entryCount: (count: number) => string
+  }
   agents: {
     close: string
     title: string

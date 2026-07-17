@@ -14,6 +14,7 @@ export const CRON_ROUTE = '/cron'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
 export const STARMAP_ROUTE = '/starmap'
+export const MEMORY_ROUTE = '/memory'
 
 export type AppView =
   | 'agents'
@@ -26,6 +27,7 @@ export type AppView =
   // so the sidebar kept a session highlighted and the titlebar kept the
   // session-title dropdown while a plugin page was showing.
   | 'extension'
+  | 'memory'
   | 'messaging'
   | 'profiles'
   | 'settings'
@@ -37,6 +39,7 @@ export type AppRouteId =
   | 'artifacts'
   | 'command-center'
   | 'cron'
+  | 'memory'
   | 'messaging'
   | 'new'
   | 'profiles'
@@ -60,6 +63,7 @@ export const APP_ROUTES = [
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
   { id: 'agents', path: AGENTS_ROUTE, view: 'agents' },
+  { id: 'memory', path: MEMORY_ROUTE, view: 'memory' },
   { id: 'starmap', path: STARMAP_ROUTE, view: 'starmap' }
 ] as const satisfies readonly AppRoute[]
 
@@ -119,6 +123,7 @@ export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
   'agents',
   'command-center',
   'cron',
+  'memory',
   'profiles',
   'settings',
   'starmap'

@@ -15,6 +15,7 @@ import {
   Activity,
   Archive,
   BarChart3,
+  Brain,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -68,6 +69,7 @@ import {
   ARTIFACTS_ROUTE,
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
+  MEMORY_ROUTE,
   MESSAGING_ROUTE,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
@@ -466,6 +468,13 @@ export function CommandPalette() {
             keywords: ['star map', 'memory', 'memories', 'skills', 'graph', 'learning', 'constellation'],
             label: t.starmap.title,
             run: go(STARMAP_ROUTE)
+          },
+          {
+            icon: Brain,
+            id: 'nav-memory',
+            keywords: ['memory', 'memories', 'user profile', 'notes', 'recall'],
+            label: t.memoryViewer.title,
+            run: go(MEMORY_ROUTE)
           }
         ]
       },

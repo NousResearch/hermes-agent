@@ -932,6 +932,19 @@ export const ja = defineLocale({
     emptyTitle: 'まだ学習はありません',
     emptyDesc: 'Hermes がスキルやメモリを蓄積すると、ここに表示されます。'
   },
+  memoryViewer: {
+    title: 'メモリビューアー',
+    subtitle: 'エージェントメモリとユーザープロファイルを参照',
+    close: 'メモリビューアーを閉じる',
+    loading: '読み込み中…',
+    loadFailed: 'メモリ内容を読み込めませんでした',
+    memoryTab: 'エージェントメモリ',
+    userTab: 'ユーザープロファイル',
+    emptyTitle: 'まだ内容はありません',
+    memoryEmpty: 'エージェントはまだメモリを作成していません。会話を通じて自動的に蓄積されます。',
+    userEmpty: 'ユーザープロファイルはまだありません。エージェントは会話を通じてあなたの好みを学習します。',
+    entryCount: count => `${count} 件`
+  },
   agents: {
     close: 'エージェントを閉じる',
     title: 'スポーンツリー',

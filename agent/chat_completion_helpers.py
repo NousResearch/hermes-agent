@@ -1502,8 +1502,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # Pass base_url and api_key from fallback config so custom
         # endpoints (e.g. Ollama Cloud) resolve correctly instead of
         # falling through to OpenRouter defaults.
-        fb_base_url_hint = (fb.get("base_url") or "").strip() or None
-        fb_api_key_hint = (fb.get("api_key") or "").strip() or None
+        fb_base_url_hint = (fb.get("base_url") or "").strip()
+        fb_api_key_hint = (fb.get("api_key") or "").strip()
+        fb_api_mode_hint = (fb.get("api_mode") or "").strip()
         if not fb_api_key_hint:
             # key_env and api_key_env are both documented aliases (see
             # _normalize_custom_provider_entry in hermes_cli/config.py).
@@ -1518,7 +1519,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         fb_client, _resolved_fb_model = resolve_provider_client(
             fb_provider, model=fb_model, raw_codex=True,
             explicit_base_url=fb_base_url_hint,
-            explicit_api_key=fb_api_key_hint)
+            explicit_api_key=fb_api_key_hint,
+            api_mode=fb_api_mode_hint)
         if fb_client is None:
             logger.warning(
                 "Fallback to %s failed: provider not configured",

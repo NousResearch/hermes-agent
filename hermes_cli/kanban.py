@@ -572,6 +572,37 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="JSON dict of structured facts to store on the latest completed run.",
     )
 
+    p_close_merged = sub.add_parser(
+        "close-merged",
+        help="Close a card as merged (explicit, audited; requires --yes-merged "
+             "+ --reason + --pr + --commit)",
+    )
+    p_close_merged.add_argument("task_id")
+    p_close_merged.add_argument(
+        "--yes-merged",
+        dest="authorized",
+        action="store_true",
+        help="Explicit authorization. REQUIRED — without it the close is "
+             "refused so a merged-close can never happen by accident.",
+    )
+    p_close_merged.add_argument(
+        "--reason",
+        required=True,
+        help="Non-empty human explanation of why the card is closed as merged.",
+    )
+    p_close_merged.add_argument(
+        "--pr",
+        required=True,
+        help="Merge evidence: a GitHub PR URL "
+             "(https://github.com/<owner>/<repo>/pull/<n>) or a PR number.",
+    )
+    p_close_merged.add_argument(
+        "--commit",
+        required=True,
+        help="Merge evidence: the merge commit SHA (7-40 hex chars).",
+    )
+    p_close_merged.add_argument("--json", action="store_true")
+
     p_block = sub.add_parser("block", help="Mark one or more tasks blocked")
     p_block.add_argument("task_id")
     p_block.add_argument("reason", nargs="*", help="Reason (also appended as a comment)")
@@ -974,6 +1005,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "attach-rm": _cmd_attach_rm,
             "complete": _cmd_complete,
             "edit":     _cmd_edit,
+            "close-merged": _cmd_close_merged,
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
@@ -2035,6 +2067,57 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_close_merged(args: argparse.Namespace) -> int:
+    """Explicitly close a card as merged (dedicated, audited terminal action).
+
+    Requires the explicit ``--yes-merged`` authorization flag, a non-empty
+    ``--reason``, and merge evidence (``--pr`` + ``--commit``). Validation and
+    the state transition live in ``kanban_db.close_task_as_merged``; this
+    handler just adapts CLI args and reports the outcome. It never spawns a
+    worker, so there is no recursive-agent risk.
+    """
+    as_json = getattr(args, "json", False)
+
+    def _fail(msg: str, code: int = 2) -> int:
+        if as_json:
+            print(json.dumps({"ok": False, "task_id": args.task_id, "error": msg}))
+        else:
+            print(f"kanban: {msg}", file=sys.stderr)
+        return code
+
+    try:
+        with kb.connect_closing() as conn:
+            ok = kb.close_task_as_merged(
+                conn,
+                args.task_id,
+                reason=args.reason,
+                pr=args.pr,
+                commit=args.commit,
+                authorized=bool(getattr(args, "authorized", False)),
+                authorized_by=_profile_author(),
+            )
+    except (kb.MergeAuthorizationError, kb.MergeEvidenceError) as exc:
+        return _fail(str(exc))
+    if not ok:
+        return _fail(
+            f"cannot close {args.task_id} as merged "
+            f"(unknown id or already terminal: done/archived)",
+            code=1,
+        )
+    if as_json:
+        print(json.dumps({
+            "ok": True,
+            "task_id": args.task_id,
+            "status": "done",
+            "outcome": kb.MERGED_OUTCOME,
+            "pr": args.pr,
+            "commit": args.commit,
+        }))
+    else:
+        print(f"Closed {args.task_id} as merged (PR {args.pr} @ {args.commit})")
+    return 0
+
+
 def _cmd_block(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     kind = getattr(args, "kind", None)
@@ -2854,6 +2937,7 @@ Common subcommands:
   `comment <id> <msg>`  Append a comment
   `attach <id> <path>`  Attach a local file; `attachments <id>` to list
   `complete <id>…`      Mark task(s) done
+  `close-merged <id>`   Close a card as merged (audited; needs --yes-merged --reason --pr --commit)
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards

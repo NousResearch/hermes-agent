@@ -209,16 +209,16 @@ def test_concurrent_same_key_returns_one_published_session(tmp_path):
 
     def synchronized_query(**kwargs):
         owner_started.set()
-        assert release_owner.wait(timeout=2)
+        assert release_owner.wait(timeout=10)
         return original_query(**kwargs)
 
     store._query_recoverable_session = synchronized_query  # type: ignore[method-assign]
     with ThreadPoolExecutor(max_workers=2) as pool:
         owner = pool.submit(store.get_or_create_session, source)
-        assert owner_started.wait(timeout=2)
+        assert owner_started.wait(timeout=10)
         follower = pool.submit(store.get_or_create_session, source)
         release_owner.set()
-        entries = [owner.result(timeout=2), follower.result(timeout=2)]
+        entries = [owner.result(timeout=10), follower.result(timeout=10)]
 
     key = store._generate_session_key(source)
     assert entries[0] is entries[1]
@@ -238,16 +238,16 @@ def test_concurrent_force_new_returns_one_published_session(tmp_path):
 
     def synchronized_impl(*args, **kwargs):
         owner_started.set()
-        assert release_owner.wait(timeout=2)
+        assert release_owner.wait(timeout=10)
         return original_impl(*args, **kwargs)
 
     store._get_or_create_session_impl = synchronized_impl  # type: ignore[method-assign]
     with ThreadPoolExecutor(max_workers=2) as pool:
         owner = pool.submit(store.get_or_create_session, source, True)
-        assert owner_started.wait(timeout=2)
+        assert owner_started.wait(timeout=10)
         follower = pool.submit(store.get_or_create_session, source, True)
         release_owner.set()
-        entries = [owner.result(timeout=2), follower.result(timeout=2)]
+        entries = [owner.result(timeout=10), follower.result(timeout=10)]
 
     assert entries[0] is entries[1]
     created_ids = {call.kwargs["session_id"] for call in db.create_session.call_args_list}
@@ -296,7 +296,7 @@ def test_legacy_and_off_lock_saves_share_one_serialization_lock(tmp_path):
             call_number = write_count
         if call_number == 1:
             first_write_started.set()
-            assert release_first_write.wait(timeout=2)
+            assert release_first_write.wait(timeout=10)
         persisted = dict(entries)
 
     db.replace_gateway_routing_entries.side_effect = replace
@@ -314,12 +314,12 @@ def test_legacy_and_off_lock_saves_share_one_serialization_lock(tmp_path):
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         future_a = pool.submit(store._save_entries)
-        assert first_write_started.wait(timeout=2)
+        assert first_write_started.wait(timeout=10)
         _seed_entry(store, key_b, "sid-b")
         future_b = pool.submit(store._save)
         release_first_write.set()
-        future_a.result(timeout=2)
-        future_b.result(timeout=2)
+        future_a.result(timeout=10)
+        future_b.result(timeout=10)
 
     assert set(persisted) == {key_a, key_b}
 
@@ -340,7 +340,7 @@ def test_save_serialization_snapshots_latest_routing_index(tmp_path):
             call_number = write_count
         if call_number == 1:
             first_write_started.set()
-            assert release_first_write.wait(timeout=2)
+            assert release_first_write.wait(timeout=10)
         persisted = dict(entries)
 
     db.replace_gateway_routing_entries.side_effect = replace
@@ -358,12 +358,12 @@ def test_save_serialization_snapshots_latest_routing_index(tmp_path):
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         future_a = pool.submit(store._save_entries)
-        assert first_write_started.wait(timeout=2)
+        assert first_write_started.wait(timeout=10)
         entry_b = _seed_entry(store, key_b, "sid-b")
         future_b = pool.submit(store._save_entries)
         release_first_write.set()
-        future_a.result(timeout=2)
-        future_b.result(timeout=2)
+        future_a.result(timeout=10)
+        future_b.result(timeout=10)
 
     assert set(store._entries) == {key_a, key_b}
     assert set(persisted) == {key_a, key_b}

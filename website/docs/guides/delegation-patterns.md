@@ -208,7 +208,7 @@ Choose toolsets based on what the subagent needs:
 |-----------|----------|-----|
 | Web research | `["web"]` | web_search + web_extract only |
 | Code work | `["terminal", "file"]` | Shell access + file operations |
-| Full-stack | `["terminal", "file", "web"]` | Everything except messaging |
+| Full-stack | `["terminal", "file", "web"]` | Shell, files, and web lookup/extraction |
 | Read-only analysis | `["file"]` | Can only read files, no shell |
 
 Restricting toolsets keeps the subagent focused and prevents accidental side effects (like a research subagent running shell commands).

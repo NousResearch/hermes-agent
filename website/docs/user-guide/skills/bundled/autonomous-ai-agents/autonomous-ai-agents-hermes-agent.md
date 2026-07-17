@@ -442,7 +442,6 @@ Enable/disable via `hermes tools` (interactive) or `hermes tools enable/disable 
 | `delegation` | Subagent task delegation |
 | `cronjob` | Scheduled task management |
 | `clarify` | Ask user clarifying questions |
-| `messaging` | Cross-platform message sending |
 | `todo` | In-session task planning and tracking |
 | `kanban` | Multi-agent work-queue tools (gated to workers) |
 | `debugging` | Extra introspection/debug tools (off by default) |

@@ -2166,7 +2166,6 @@ Compose this skill with other Hermes skills for specific phases:
 | **`memory`** | Persist key decisions across sessions: contribution framing, venue choice, reviewer feedback. |
 | **`cronjob`** | Schedule experiment monitoring, deadline countdowns, automated arXiv checks. |
 | **`clarify`** | Ask the user targeted questions when blocked (venue choice, contribution framing). |
-| **`send_message`** | Notify user when experiments complete or drafts are ready, even if user isn't in chat. |
 
 ### Tool Usage Patterns
 
@@ -2177,7 +2176,7 @@ terminal("ps aux | grep <pattern>")
 → terminal("ls results/")
 → execute_code("analyze results JSON, compute metrics")
 → terminal("git add -A && git commit -m '<descriptive message>' && git push")
-→ send_message("Experiment complete: <summary>")
+→ cronjob(..., deliver="origin") or final response: "Experiment complete: <summary>"
 ```
 
 **Parallel section drafting** (using delegation):
@@ -2277,7 +2276,7 @@ cronjob("create", {
 
 ### Communication Patterns
 
-**When to notify the user** (via `send_message` or direct response):
+**When to notify the user** (via final response, cron `deliver`, or `hermes send` outside the agent loop):
 - Experiment batch completed (with results table)
 - Unexpected finding or failure requiring decision
 - Draft section ready for review

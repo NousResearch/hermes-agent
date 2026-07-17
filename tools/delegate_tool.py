@@ -1060,6 +1060,9 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Phase03: explicit provider-diverse fallback chain from the model router.
+    # None (default) → inherit the parent's chain (byte-stable prior behaviour).
+    override_fallback_chain: Optional[List[Dict[str, Any]]] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1277,7 +1280,13 @@ def _build_child_agent(
     # from rate-limits and credential exhaustion exactly like the top-level
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    # Phase03: when the model router supplies an explicit provider-diverse
+    # chain for this task, use it instead of the parent's (still a plain
+    # [{provider, model}, ...] list AIAgent filters on construction).
+    if override_fallback_chain:
+        parent_fallback = list(override_fallback_chain)
+    else:
+        parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -2524,6 +2533,15 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Phase03: resolve per-task credentials. Honours explicit
+            # tasks[].model/provider first, then a forced delegation provider,
+            # then the opt-in dynamic model router, else inherits `creds`
+            # unchanged (router OFF → byte-identical to prior behaviour).
+            try:
+                task_creds, task_fallback_chain = _resolve_task_credentials(t, cfg, creds)
+            except Exception:
+                logger.debug("model_router: per-task credential resolution failed", exc_info=True)
+                task_creds, task_fallback_chain = creds, None
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2531,18 +2549,19 @@ def delegate_task(
                 # Subagents always inherit the parent's toolsets; the model
                 # cannot choose or narrow them (no model-facing toolsets arg).
                 toolsets=None,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_request_overrides=creds.get("request_overrides"),
-                override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
+                override_request_overrides=task_creds.get("request_overrides"),
+                override_max_tokens=task_creds.get("max_output_tokens"),
+                override_acp_command=task_creds.get("command"),
+                override_acp_args=task_creds.get("args"),
+                override_fallback_chain=task_fallback_chain,
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -3178,6 +3197,196 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
+def _parse_task_model_override(task: Any) -> tuple[Optional[str], Optional[str]]:
+    """Return ``(provider, model)`` from an explicit per-task override.
+
+    Accepts the two documented shapes:
+      * ``task["model"] = "model-id"``            → (task.provider or None, "model-id")
+      * ``task["model"] = {"provider", "model"}`` → (provider, model)
+      * ``task["provider"] = "slug"`` alone       → (slug, None)
+
+    Returns ``(None, None)`` when the task pinned nothing.
+    """
+    if not isinstance(task, dict):
+        return None, None
+    prov = str(task.get("provider") or "").strip() or None
+    m = task.get("model")
+    if isinstance(m, dict):
+        return (
+            str(m.get("provider") or prov or "").strip() or None,
+            str(m.get("model") or "").strip() or None,
+        )
+    if isinstance(m, str) and m.strip():
+        return (prov, m.strip())
+    return (prov, None)
+
+
+def _provider_has_available_credentials(provider: str) -> bool:
+    """Credential-pool health gate. True when the provider can still be used.
+
+    Best-effort and fail-open: if the pool cannot be inspected we assume the
+    provider is usable (the child's own credential rotation / fallback chain is
+    the real backstop). A provider whose pool reports it has credentials but
+    none currently available (all rate-limited/exhausted) returns False so the
+    router skips it.
+    """
+    provider = (provider or "").strip()
+    if not provider:
+        return False
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool(provider)
+        if pool is not None and pool.has_credentials():
+            return pool.has_available()
+    except Exception:
+        logger.debug("model_router: credential pool check failed for %s", provider, exc_info=True)
+    return True
+
+
+def _resolve_provider_model_bundle(provider: str, model: Optional[str]) -> Optional[dict]:
+    """Resolve a full credential bundle for a chosen ``provider``/``model``.
+
+    Uses the same runtime provider resolution as ``_resolve_delegation_credentials``
+    so a routed/explicit provider gets the correct base_url/api_key/api_mode.
+    Returns ``None`` (caller then inherits parent credentials) when resolution
+    fails or the provider has no usable key.
+    """
+    provider = (provider or "").strip()
+    if not provider:
+        return None
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(requested=provider, target_model=model)
+    except Exception:
+        logger.debug("model_router: runtime resolve failed for %s", provider, exc_info=True)
+        return None
+    api_key = runtime.get("api_key", "")
+    if not api_key:
+        logger.debug("model_router: provider %s resolved without api key; skipping", provider)
+        return None
+    resolved_provider = (
+        provider
+        if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM
+        else runtime.get("provider")
+    )
+    return {
+        "model": model or runtime.get("model") or None,
+        "provider": resolved_provider,
+        "base_url": runtime.get("base_url"),
+        "api_key": api_key,
+        "api_mode": runtime.get("api_mode"),
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
+        "max_output_tokens": runtime.get("max_output_tokens"),
+        "command": runtime.get("command"),
+        "args": list(runtime.get("args") or []),
+    }
+
+
+def _resolve_task_credentials(task: dict, cfg: dict, default_creds: dict) -> tuple[dict, Optional[List[dict]]]:
+    """Per-task credential resolution (Phase03).
+
+    Precedence (highest first):
+      1. Explicit per-task ``model`` / ``provider`` override → resolve + apply.
+      2. A globally forced ``delegation.provider`` / ``delegation.base_url``
+         (already baked into ``default_creds``) → keep as-is, router steps aside.
+      3. ``delegation.model_router.enabled`` → dynamic provider/model selection
+         from the providers the user actually holds credentials for.
+      4. Otherwise → inherit ``default_creds`` unchanged.
+
+    Returns ``(effective_creds, fallback_chain_or_None)``. When the router is
+    disabled and no explicit override is present this returns
+    ``(default_creds, None)`` byte-for-byte, preserving current behaviour.
+    """
+    # 1. Explicit per-task override always wins — resolve it to a full bundle.
+    exp_provider, exp_model = _parse_task_model_override(task)
+    if exp_provider or exp_model:
+        if exp_provider:
+            bundle = _resolve_provider_model_bundle(exp_provider, exp_model)
+            if bundle is not None:
+                return bundle, None
+            # Resolution failed → fall through to inherited creds but swap model
+            # so an explicit model id at least applies against inherited auth.
+        merged = dict(default_creds)
+        if exp_model:
+            merged["model"] = exp_model
+        return merged, None
+
+    # 2. Forced global delegation provider/endpoint → respect it, no routing.
+    if default_creds.get("provider") or default_creds.get("base_url"):
+        return default_creds, None
+
+    # 3. Dynamic model router (opt-in).
+    router_cfg = cfg.get("model_router") or {}
+    try:
+        from agent.model_router import router_enabled, select_delegation_model
+    except Exception:
+        return default_creds, None
+    if not router_enabled(router_cfg):
+        return default_creds, None
+
+    try:
+        from hermes_cli.models import (
+            curated_models_for_provider,
+            get_pricing_for_provider,
+            list_available_providers,
+        )
+    except Exception:
+        return default_creds, None
+
+    def _inventory() -> List[str]:
+        return [
+            str(p.get("id"))
+            for p in list_available_providers()
+            if isinstance(p, dict) and p.get("authenticated") and p.get("id")
+        ]
+
+    def _catalog(provider: str):
+        try:
+            return curated_models_for_provider(provider, force_refresh=False)
+        except TypeError:
+            return curated_models_for_provider(provider)
+
+    def _pricing(provider: str):
+        try:
+            return get_pricing_for_provider(provider, force_refresh=False)
+        except TypeError:
+            return get_pricing_for_provider(provider)
+
+    selection = select_delegation_model(
+        task,
+        router_cfg,
+        provider_inventory_fn=_inventory,
+        catalog_fn=_catalog,
+        pricing_fn=_pricing,
+        credential_ok_fn=_provider_has_available_credentials,
+        goal=str(task.get("goal") or ""),
+        context=str(task.get("context") or ""),
+    )
+    if not selection:
+        return default_creds, None
+
+    sel = selection["selected"]
+    bundle = _resolve_provider_model_bundle(sel.get("provider"), sel.get("model"))
+    if bundle is None:
+        return default_creds, None
+
+    # Convert the router's provider-diverse fallback chain into resolved
+    # {provider, model} entries AIAgent accepts (it filters unusable ones).
+    fallback_chain = [
+        {"provider": c["provider"], "model": c["model"]}
+        for c in selection.get("fallback_chain", [])
+        if c.get("provider") and c.get("model")
+    ] or None
+    logger.info(
+        "model_router: task routed → %s/%s (route=%s, %d fallbacks)",
+        bundle.get("provider"), bundle.get("model"),
+        selection.get("route"), len(fallback_chain or []),
+    )
+    return bundle, fallback_chain
+
+
 def _load_config() -> dict:
     """Load delegation config from the active Hermes config.
 
@@ -3319,7 +3528,7 @@ def _build_top_level_description() -> str:
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
-        "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
+        "- Subagent model selection: by default children inherit the parent/global delegation model. If delegation.model_router.enabled=true, Hermes selects a provider/model per task from available credentials. For explicit per-task routing, pass tasks[].model (string model id, or {provider, model}) and/or tasks[].provider; explicit overrides beat the router and global delegation.provider/model.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     )
@@ -3442,6 +3651,23 @@ DELEGATE_TASK_SCHEMA = {
                         "context": {
                             "type": "string",
                             "description": "Task-specific context",
+                        },
+                        "model": {
+                            "description": (
+                                "Optional explicit model override for this task. "
+                                "Use a string model id to keep inherited/provider-global auth, "
+                                "or an object like {'provider': 'openrouter', 'model': '...'} "
+                                "to pin both provider and model. Explicit overrides bypass "
+                                "delegation.model_router."
+                            )
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Optional explicit provider override for this task. "
+                                "Use with 'model' to pin a provider/model pair, or alone "
+                                "to use that provider's configured/default model."
+                            ),
                         },
                         "role": {
                             "type": "string",

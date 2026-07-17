@@ -2333,6 +2333,26 @@ DEFAULT_CONFIG = {
         # Flip to true only if you trust delegated work to run dangerous cmds
         # without human review (cron pipelines, batch automation, etc.).
         "subagent_auto_approve": False,
+
+        # Phase03 dynamic model router (default OFF). When enabled, the parent
+        # does NOT force one fixed model on every subagent. Instead it selects a
+        # provider/model per task from the providers you actually hold
+        # credentials for, scored by task type, preferring paid/preferred models
+        # first and free/local models as the final fallback tier, and builds a
+        # provider-diverse fallback chain so a child recovers from
+        # rate-limit/exhaustion just like the top-level agent. Explicit
+        # tasks[].model / tasks[].provider and a forced
+        # delegation.provider/base_url both bypass the router. No fixed model
+        # names live in code — routing matches capability words against each
+        # provider's own live model catalog. OFF keeps behaviour + prompt
+        # caching byte-stable.
+        "model_router": {
+            "enabled": False,          # master switch; OFF preserves current behaviour
+            "provider_priority": [],   # optional provider slugs to surface first (within tier)
+            "free_providers": [],      # extra providers to treat as the free/local fallback tier
+            "max_models_per_provider": 60,
+            "max_candidates": 12,
+        },
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

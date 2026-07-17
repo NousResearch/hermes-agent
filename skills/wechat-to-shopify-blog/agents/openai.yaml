@@ -1,0 +1,4 @@
+interface:
+  display_name: "WeChat to Shopify Blog"
+  short_description: "Turn WeChat articles into Shopify blog drafts"
+  default_prompt: "Use $wechat-to-shopify-blog to extract this WeChat article, adapt it for the store, and create a Shopify draft with approved images and product links."

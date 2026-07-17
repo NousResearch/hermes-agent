@@ -2770,6 +2770,63 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             dropped_empty_tool_calls,
         )
 
+    # --- Drop null assistant turns (no payload at all) ---
+    # An assistant message with empty content, no tool_calls, no reasoning and
+    # no codex items carries zero information. Weak/quantized open-weight models
+    # can emit a run of these after tool results, and (unlike thinking-only
+    # turns, handled in drop_thinking_only_and_merge_users) they have no
+    # reasoning to gate on, so nothing else removes them. Left in place they
+    # accumulate on the wire (observed 36 in one request, #66429) and collapse
+    # tool-calling: the model narrates and stops. Runs on the per-call copy
+    # only; the persisted transcript keeps its "(empty)" sentinel for the UI.
+    #
+    # Preserve any assistant turn carrying reasoning or Codex items even when
+    # its visible content is empty — dropping those breaks the Codex
+    # reasoning-replay contract
+    # (test_run_conversation_codex_disables_reasoning_replay_after_invalid_encrypted_content).
+    def _assistant_content_is_empty(content: Any) -> bool:
+        if content is None:
+            return True
+        if isinstance(content, str):
+            return not content.strip()
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    if block:
+                        return False
+                    continue
+                if block.get("type") == "text":
+                    if (block.get("text") or "").strip():
+                        return False
+                elif block.get("type") is not None:
+                    return False  # image/other non-text block = real content
+            return True
+        return False
+
+    def _is_null_assistant(m: Dict[str, Any]) -> bool:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            return False
+        if not _assistant_content_is_empty(m.get("content")):
+            return False
+        if isinstance(m.get("tool_calls"), list) and m["tool_calls"]:
+            return False
+        for _k in (
+            "reasoning", "reasoning_content", "reasoning_details",
+            "codex_reasoning_items", "codex_message_items",
+        ):
+            if m.get(_k):
+                return False
+        return True
+
+    _before_null = len(messages)
+    messages = [m for m in messages if not _is_null_assistant(m)]
+    if _before_null != len(messages):
+        _ra().logger.debug(
+            "Pre-call sanitizer: dropped %d null assistant turn(s) "
+            "(no content, no tool_calls, no reasoning; #66429)",
+            _before_null - len(messages),
+        )
+
     # --- Repair tool_calls whose function.name is empty/missing ---
     # Some providers (and partially-streamed responses) emit a tool_call with
     # id="call_xxx" but function.name="". Downstream Responses-API adapters

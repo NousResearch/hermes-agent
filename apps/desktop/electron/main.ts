@@ -6965,6 +6965,7 @@ async function startHermes() {
     }
 
     const message = error instanceof Error ? error.message : String(error)
+
     // Only latch LOCAL boot failures. A remote failure (lapsed session / mint
     // timeout / host briefly unreachable across sleep) is transient and has no
     // child 'exit' handler to clear the cache — latching it would wedge the app
@@ -6973,6 +6974,7 @@ async function startHermes() {
     if (shouldLatchBackendStartFailure({ attemptedRemote })) {
       backendStartFailure = error instanceof Error ? error : new Error(message)
     }
+
     updateBootProgress(
       {
         error: message,

@@ -182,33 +182,14 @@ DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-# Sent as the Bearer token when a self-hosted ``tts.openai.base_url`` is
-# configured without any key — auth-less OpenAI-compatible servers ignore it.
-_PLACEHOLDER_OPENAI_KEY = "sk-no-key-required"
-
-
-def _tts_base_url_is_private(base_url: str) -> bool:
-    """True when ``base_url`` is plainly self-hosted (any http:// URL, or
-    https:// with a localhost / private / loopback / link-local IP-literal
-    host). Mirrors ``transcription_tools._base_url_is_private``; used to keep
-    env API keys away from LAN targets."""
-    import ipaddress
-    from urllib.parse import urlsplit
-
-    try:
-        parts = urlsplit(str(base_url or ""))
-    except ValueError:
-        return False
-    if parts.scheme == "http":
-        return True
-    host = (parts.hostname or "").strip().lower()
-    if host in ("localhost", "127.0.0.1", "::1"):
-        return True
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+# Shared audio credential guard (single source of truth; a real cloud key is
+# never sent to a private/self-hosted base_url). ``_tts_base_url_is_private`` /
+# ``_PLACEHOLDER_OPENAI_KEY`` are re-exported for backward compatibility.
+from hermes_cli.audio_key_guard import (
+    base_url_is_private as _tts_base_url_is_private,
+    resolve_provider_key as _resolve_provider_key,
+    PLACEHOLDER_KEY as _PLACEHOLDER_OPENAI_KEY,
+)
 DEFAULT_MINIMAX_MODEL = "speech-02-hd"
 DEFAULT_MINIMAX_VOICE_ID = "English_expressive_narrator"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
@@ -1231,12 +1212,16 @@ def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, A
                 "api.deepinfra.com so the live catalog can be fetched."
             )
         model = candidates[0]
+    di_base_url = deepinfra_base_url(di_config)
+    # Never send the real DeepInfra cloud key to a config-overridden private
+    # base_url; a config tts.deepinfra.api_key wins for self-hosted-with-auth.
+    di_key = _resolve_provider_key(di_config.get("api_key"), api_key, di_base_url)
     return _generate_openai_tts(
         text,
         output_path,
         tts_config,
-        api_key=api_key,
-        base_url=deepinfra_base_url(di_config),
+        api_key=di_key,
+        base_url=di_base_url,
         model=model,
         voice=di_config.get("voice", DEFAULT_DEEPINFRA_TTS_VOICE),
         speed=float(di_config.get("speed", tts_config.get("speed", 1.0))),
@@ -1414,6 +1399,11 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         or get_env_value("XAI_BASE_URL")
         or DEFAULT_XAI_BASE_URL
     ).strip().rstrip("/")
+    # Never send the real xAI cloud key to a config-overridden private/LAN
+    # base_url; a config tts.xai.api_key wins for self-hosted-with-auth.
+    api_key = _resolve_provider_key(xai_config.get("api_key"), api_key, base_url)
+    if not api_key:
+        raise ValueError("No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY.")
 
     # Match the documented minimal POST /v1/tts shape by default. Only send
     # output_format when Hermes actually needs a non-default format/override.
@@ -1512,6 +1502,12 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     if group_id and "GroupId=" not in base_url:
         sep = "&" if "?" in base_url else "?"
         base_url = f"{base_url}{sep}GroupId={group_id}"
+
+    # Never send the real MiniMax cloud key to a config-overridden private/LAN
+    # base_url; a config tts.minimax.api_key wins for self-hosted-with-auth.
+    api_key = _resolve_provider_key(mm_config.get("api_key"), api_key, base_url)
+    if not api_key:
+        raise ValueError("MINIMAX_API_KEY not set. Get one at https://platform.minimax.io/")
 
     headers = {
         "Content-Type": "application/json",
@@ -1871,6 +1867,14 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         or get_env_value("GEMINI_BASE_URL")
         or DEFAULT_GEMINI_TTS_BASE_URL
     ).strip().rstrip("/")
+    # Never send the real Gemini cloud key (query-param ``key``) to a config-
+    # overridden private base_url; a config tts.gemini.api_key wins for
+    # self-hosted-with-auth.
+    api_key = _resolve_provider_key(gemini_config.get("api_key"), api_key, base_url)
+    if not api_key:
+        raise ValueError(
+            "GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey"
+        )
     persona_prompt = _read_gemini_persona_prompt(gemini_config)
     tts_script = text
     if _gemini_audio_tags_enabled(gemini_config, model):

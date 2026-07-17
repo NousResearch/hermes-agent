@@ -97,35 +97,14 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
-# Sent as the Bearer token when a self-hosted ``stt.openai.base_url`` is
-# configured without any key — auth-less OpenAI-compatible servers ignore it.
-_PLACEHOLDER_OPENAI_KEY = "sk-no-key-required"
-
-
-def _base_url_is_private(base_url: str) -> bool:
-    """True when ``base_url`` points at a plainly self-hosted target: any
-    ``http://`` URL, or an ``https://`` one whose host is localhost or a
-    private/loopback/link-local IP literal. Used to decide whether env API
-    keys may be attached — a real OpenAI key must never be sent to a LAN
-    server (cleartext http) it was not issued for. Public https hosts (e.g.
-    a hosted OpenAI-compatible proxy) still receive the env key."""
-    import ipaddress
-    from urllib.parse import urlsplit
-
-    try:
-        parts = urlsplit(str(base_url or ""))
-    except ValueError:
-        return False
-    if parts.scheme == "http":
-        return True
-    host = (parts.hostname or "").strip().lower()
-    if host in ("localhost", "127.0.0.1", "::1"):
-        return True
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+# Shared audio credential guard (single source of truth; a real cloud key is
+# never sent to a private/self-hosted base_url). ``_base_url_is_private`` /
+# ``_PLACEHOLDER_OPENAI_KEY`` are re-exported for backward compatibility.
+from hermes_cli.audio_key_guard import (
+    base_url_is_private as _base_url_is_private,
+    resolve_provider_key as _resolve_provider_key,
+    PLACEHOLDER_KEY as _PLACEHOLDER_OPENAI_KEY,
+)
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
 # DeepInfra STT base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
@@ -1627,6 +1606,12 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
         or creds.get("base_url")
         or XAI_STT_BASE_URL
     ).strip().rstrip("/")
+    # Never send the real xAI cloud key to a config-overridden private/LAN
+    # base_url; a config stt.xai.api_key is honoured for self-hosted-with-auth.
+    api_key = _resolve_provider_key(xai_config.get("api_key"), api_key, base_url)
+    if not api_key:
+        return {"success": False, "transcript": "",
+                "error": "No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY"}
     language = str(
         xai_config.get("language")
         or os.getenv("HERMES_LOCAL_STT_LANGUAGE")
@@ -1721,6 +1706,11 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
         or get_env_value("ELEVENLABS_STT_BASE_URL")
         or ELEVENLABS_STT_BASE_URL
     ).strip().rstrip("/")
+    # Never send the real ElevenLabs cloud key to a config-overridden private
+    # base_url; a config stt.elevenlabs.api_key wins for self-hosted-with-auth.
+    api_key = _resolve_provider_key(elevenlabs_config.get("api_key"), api_key, base_url)
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "ELEVENLABS_API_KEY not set"}
     language_code = str(elevenlabs_config.get("language_code") or "").strip()
     tag_audio_events = is_truthy_value(elevenlabs_config.get("tag_audio_events", False))
     diarize = is_truthy_value(elevenlabs_config.get("diarize", False))
@@ -1817,6 +1807,9 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
     if not isinstance(di_config, dict):
         di_config = {}
     base_url = deepinfra_base_url(di_config)
+    # Never send the real DeepInfra cloud key to a config-overridden private
+    # base_url; a config stt.deepinfra.api_key wins for self-hosted-with-auth.
+    api_key = _resolve_provider_key(di_config.get("api_key"), api_key, base_url)
 
     if not model_name:
         candidates = deepinfra_model_ids("stt")

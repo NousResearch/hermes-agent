@@ -143,6 +143,47 @@ class TestFindBashSkipsBrokenCustomPath:
         assert _find_bash() == str(portable)
 
 
+class TestFindBashRejectsWslLauncher:
+    """Native Windows terminal execution must use Git Bash, not WSL's shim."""
+
+    def test_skips_configured_wsl_launcher_for_portable_git(
+        self, tmp_path, monkeypatch
+    ):
+        import tools.environments.local as local_mod
+
+        launcher = r"C:\Windows\System32\bash.exe"
+        portable = tmp_path / "hermes" / "git" / "bin" / "bash.exe"
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setenv("SystemRoot", r"C:\Windows")
+        monkeypatch.setenv("HERMES_GIT_BASH_PATH", launcher)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setattr(
+            local_mod.os.path,
+            "isfile",
+            lambda path: path in {launcher, str(portable)},
+        )
+        monkeypatch.setattr(local_mod.shutil, "which", lambda name: None)
+        monkeypatch.setattr(
+            local_mod, "_bash_starts", lambda path: path == str(portable)
+        )
+
+        assert _find_bash() == str(portable)
+
+    def test_rejects_path_resolved_wsl_launcher(self, monkeypatch):
+        import tools.environments.local as local_mod
+
+        launcher = r"C:\Windows\System32\bash.exe"
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setenv("SystemRoot", r"C:\Windows")
+        monkeypatch.setenv("LOCALAPPDATA", "")
+        monkeypatch.delenv("HERMES_GIT_BASH_PATH", raising=False)
+        monkeypatch.setattr(local_mod.os.path, "isfile", lambda path: False)
+        monkeypatch.setattr(local_mod.shutil, "which", lambda name: launcher)
+
+        with pytest.raises(RuntimeError, match="Git Bash not found"):
+            _find_bash()
+
+
 @pytest.mark.skipif(
     not os.path.isfile("/bin/bash") or sys.platform != "darwin",
     reason="reproduces the macOS system-bash-3.2 login-shell swallow",

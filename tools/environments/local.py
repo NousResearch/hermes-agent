@@ -1,6 +1,7 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import logging
+import ntpath
 import os
 import platform
 import re
@@ -600,9 +601,25 @@ def _find_bash() -> str:
 
     candidates: list[str] = []
 
+    def _is_wsl_launcher(path: str) -> bool:
+        """Return whether ``path`` is Windows' legacy WSL bash shim."""
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        launcher = ntpath.join(system_root, "System32", "bash.exe")
+        return ntpath.normcase(ntpath.abspath(path)) == ntpath.normcase(
+            ntpath.abspath(launcher)
+        )
+
     custom = os.environ.get("HERMES_GIT_BASH_PATH")
     if custom and os.path.isfile(custom):
-        candidates.append(custom)
+        if _is_wsl_launcher(custom):
+            logger.warning(
+                "Ignoring HERMES_GIT_BASH_PATH because it points at the "
+                "Windows WSL launcher: %s",
+                custom,
+            )
+            custom = None
+        else:
+            candidates.append(custom)
 
     # Prefer our own portable Git install — a broken or partially-uninstalled
     # system Git (or a stale HERMES_GIT_BASH_PATH pointing at one) must not
@@ -636,7 +653,10 @@ def _find_bash() -> str:
 
     found = shutil.which("bash")
     if found and found not in candidates:
-        candidates.append(found)
+        if _is_wsl_launcher(found):
+            logger.debug("Ignoring Windows WSL bash launcher on PATH: %s", found)
+        else:
+            candidates.append(found)
 
     # Prefer the first candidate that can actually start.  A stale
     # HERMES_GIT_BASH_PATH pointing at a broken Git-for-Windows install

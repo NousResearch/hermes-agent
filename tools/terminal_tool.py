@@ -1439,11 +1439,56 @@ def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
     )
 
 
-def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
-                        ssh_config: dict = None, container_config: dict = None,
-                        local_config: dict = None,
-                        task_id: str = "default",
-                        host_cwd: str = None):
+def _create_environment(
+    env_type: str,
+    image: str,
+    cwd: str,
+    timeout: int,
+    ssh_config: dict = None,
+    container_config: dict = None,
+    local_config: dict = None,
+    task_id: str = "default",
+    host_cwd: str = None,
+):
+    """Create an environment through the migration facade."""
+    from tools.environments.definitions import BackendFactoryRequest
+    from tools.environments.facade import get_environment_facade
+
+    request = BackendFactoryRequest(
+        backend_name=env_type,
+        image=image,
+        cwd=cwd,
+        timeout=timeout,
+        task_id=task_id,
+        host_cwd=host_cwd,
+        terminal_config={
+            "ssh_config": ssh_config,
+            "container_config": container_config,
+            "local_config": local_config,
+        },
+    )
+
+    def legacy_factory(factory_request: BackendFactoryRequest):
+        return _create_environment_legacy(
+            factory_request.backend_name,
+            factory_request.image,
+            factory_request.cwd,
+            factory_request.timeout,
+            ssh_config=factory_request.terminal_config.get("ssh_config"),
+            container_config=factory_request.terminal_config.get("container_config"),
+            local_config=factory_request.terminal_config.get("local_config"),
+            task_id=factory_request.task_id,
+            host_cwd=factory_request.host_cwd,
+        )
+
+    return get_environment_facade(legacy_factory).create_environment(request)
+
+
+def _create_environment_legacy(env_type: str, image: str, cwd: str, timeout: int,
+                               ssh_config: dict = None, container_config: dict = None,
+                               local_config: dict = None,
+                               task_id: str = "default",
+                               host_cwd: str = None):
     """
     Create an execution environment for sandboxed command execution.
     

@@ -379,6 +379,163 @@ def test_mark_exhausted_and_rotate_persists_status(tmp_path, monkeypatch):
     assert persisted["last_error_code"] == 402
 
 
+@pytest.mark.parametrize(
+    ("reset_field", "reset_value"),
+    [
+        ("reset_at", "2026-01-15T17:19:59Z"),
+        ("reset_at", "2026-01-15T17:20:00Z"),
+        ("resets_at", 1_768_497_599),
+        ("resets_at", 1_768_497_600),
+        ("retry_until", 1_768_497_599_000),
+        ("retry_until", 1_768_497_600_000),
+    ],
+    ids=(
+        "past-iso-8601",
+        "current-iso-8601",
+        "past-epoch-seconds",
+        "current-epoch-seconds",
+        "past-epoch-milliseconds",
+        "current-epoch-milliseconds",
+    ),
+)
+def test_non_future_structured_reset_does_not_immediately_reselect_credential(
+    tmp_path,
+    monkeypatch,
+    reset_field,
+    reset_value,
+):
+    """Elapsed structured resets use the 429 TTL, not same-rotation retry.
+
+    Related PRs #46902 and #46930 cover absolute timestamps embedded in the
+    message body. This regression exercises the separate structured fields
+    without adding or duplicating a message-body parser.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-primary",
+                    }
+                ]
+            },
+        },
+    )
+
+    import agent.credential_pool as credential_pool
+
+    pool = credential_pool.load_pool("anthropic")
+    assert pool.select().id == "cred-1"
+    monkeypatch.setattr(credential_pool.time, "time", lambda: 1_768_497_600.0)
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=429,
+        error_context={reset_field: reset_value},
+    )
+
+    assert next_entry is None
+    exhausted = pool.entries()[0]
+    assert exhausted.last_status == credential_pool.STATUS_EXHAUSTED
+    assert exhausted.last_status_at == 1_768_497_600.0
+    assert exhausted.last_error_reset_at is None
+
+
+def test_future_structured_reset_remains_authoritative(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-primary",
+                    }
+                ]
+            },
+        },
+    )
+
+    import agent.credential_pool as credential_pool
+
+    pool = credential_pool.load_pool("anthropic")
+    assert pool.select().id == "cred-1"
+    now = 1_768_497_600.0
+    future_reset = now + 60
+    monkeypatch.setattr(credential_pool.time, "time", lambda: now)
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=429,
+        error_context={"reset_at": future_reset},
+    )
+
+    assert next_entry is None
+    exhausted = pool.entries()[0]
+    assert exhausted.last_status == credential_pool.STATUS_EXHAUSTED
+    assert exhausted.last_error_reset_at == future_reset
+
+
+def test_non_future_structured_reset_rotates_to_another_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-primary",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "secondary",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-secondary",
+                    },
+                ]
+            },
+        },
+    )
+
+    import agent.credential_pool as credential_pool
+
+    pool = credential_pool.load_pool("anthropic")
+    assert pool.select().id == "cred-1"
+    now = 1_768_497_600.0
+    monkeypatch.setattr(credential_pool.time, "time", lambda: now)
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=429,
+        error_context={"retry_until": now},
+    )
+
+    assert next_entry is not None
+    assert next_entry.id == "cred-2"
+    primary = next(entry for entry in pool.entries() if entry.id == "cred-1")
+    assert primary.last_status == credential_pool.STATUS_EXHAUSTED
+    assert primary.last_error_reset_at is None
+
+
 def test_token_invalidated_marks_credential_dead(tmp_path, monkeypatch):
     """OpenAI Codex token_invalidated must mark the credential DEAD, not exhausted.
 

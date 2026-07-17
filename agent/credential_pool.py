@@ -356,7 +356,19 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
         or error_context.get("retry_until")
     )
     parsed_reset_at = _parse_absolute_timestamp(reset_at)
-    if parsed_reset_at is None and isinstance(message, str):
+    non_future_structured_reset = (
+        parsed_reset_at is not None and parsed_reset_at <= time.time()
+    )
+    if non_future_structured_reset:
+        # An elapsed provider timestamp must not make the credential available
+        # again in the same mark-and-rotate call. Omitting it here delegates
+        # the cooldown to the normal status-specific exhaustion TTL.
+        parsed_reset_at = None
+    if (
+        parsed_reset_at is None
+        and not non_future_structured_reset
+        and isinstance(message, str)
+    ):
         retry_delay_seconds = _extract_retry_delay_seconds(message)
         if retry_delay_seconds is not None:
             parsed_reset_at = time.time() + retry_delay_seconds

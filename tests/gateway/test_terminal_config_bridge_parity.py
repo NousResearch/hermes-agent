@@ -8,16 +8,12 @@ only the gateway bootstrap bridge block, stopping before adapter imports/startup
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-CLI_PATH = REPO_ROOT / "cli.py"
-GATEWAY_RUN_PATH = REPO_ROOT / "gateway" / "run.py"
+import gateway.run as gateway_run
 
 TERMINAL_ENV_KEYS = (
     "TERMINAL_ENV",
@@ -53,31 +49,11 @@ def _run_cli_bridge(home: Path, monkeypatch: pytest.MonkeyPatch, cwd: Path):
     return cli.load_cli_config()
 
 
-def _gateway_bridge_source() -> str:
-    """Extract only gateway/run.py's bootstrap config bridge block.
-
-    Importing gateway.run would start real gateway initialization.  Executing the
-    bounded source slice exercises the actual bridge code while stopping before
-    gateway config/platform imports.
-    """
-    source = GATEWAY_RUN_PATH.read_text(encoding="utf-8")
-    start_marker = "# Bridge config.yaml values into the environment so os.getenv() picks them up."
-    end_marker = "from gateway.config import ("
-    start = source.index(start_marker)
-    end = source.index(end_marker, start)
-    return source[start:end]
-
-
 def _run_gateway_bridge(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    ns = {
-        "__file__": str(GATEWAY_RUN_PATH),
-        "_hermes_home": home,
-        "os": os,
-        "Path": Path,
-        "sys": sys,
-        "json": __import__("json"),
-    }
-    exec(compile(_gateway_bridge_source(), str(GATEWAY_RUN_PATH), "exec"), ns)
+    """Call gateway.run's production terminal bridge against temp config."""
+    config_path = home / "config.yaml"
+    cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    gateway_run._bridge_terminal_config_to_env(cfg.get("terminal", {}))
 
 
 def test_cli_terminal_config_overrides_stale_terminal_env(tmp_path, monkeypatch):

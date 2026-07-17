@@ -18,13 +18,12 @@ import pytest
 import yaml
 
 from gateway.config import GatewayConfig
+import gateway.run as gateway_run
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli import config as hermes_config
 from hermes_cli.config import cfg_get
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-GATEWAY_RUN_PATH = REPO_ROOT / "gateway" / "run.py"
 AUXILIARY_ENV_KEYS = (
     "AUXILIARY_VISION_PROVIDER",
     "AUXILIARY_VISION_MODEL",
@@ -68,17 +67,6 @@ def _write_config(home: Path, config: dict[str, Any]) -> None:
     (home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
 
 
-def _gateway_bridge_source() -> str:
-    """Extract only gateway/run.py's startup config bridge block."""
-
-    source = GATEWAY_RUN_PATH.read_text(encoding="utf-8")
-    start_marker = "# Bridge config.yaml values into the environment so os.getenv() picks them up."
-    end_marker = "from gateway.config import ("
-    start = source.index(start_marker)
-    end = source.index(end_marker, start)
-    return source[start:end]
-
-
 def _install_fake_plugin_aux_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     """Avoid real plugin discovery while preserving gateway bridge semantics."""
 
@@ -91,15 +79,8 @@ def _install_fake_plugin_aux_registry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _run_gateway_bridge(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _install_fake_plugin_aux_registry(monkeypatch)
-    ns = {
-        "__file__": str(GATEWAY_RUN_PATH),
-        "_hermes_home": home,
-        "os": os,
-        "Path": Path,
-        "sys": sys,
-        "json": __import__("json"),
-    }
-    exec(compile(_gateway_bridge_source(), str(GATEWAY_RUN_PATH), "exec"), ns)
+    cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
+    gateway_run._bridge_auxiliary_config_to_env(cfg.get("auxiliary", {}))
 
 
 def test_full_config_loader_preserves_auxiliary_slots_from_temp_home(
@@ -220,7 +201,7 @@ def test_gateway_approval_warning_surface_reads_auxiliary_approval_from_full_con
     assert approval_slot["provider"] == "dummy-approval-provider"
     assert approval_slot["model"] == "dummy-approval-model"
 
-    gateway_source = GATEWAY_RUN_PATH.read_text(encoding="utf-8")
+    gateway_source = Path(gateway_run.__file__).read_text(encoding="utf-8")
     assert "from hermes_cli.config import load_config as _load_full_config" in gateway_source
     assert 'cfg_get(_appr_cfg, "auxiliary", "approval", default=None)' in gateway_source
 

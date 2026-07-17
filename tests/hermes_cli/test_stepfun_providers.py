@@ -93,3 +93,18 @@ class TestStepfunRegionToggle:
         for pid in ("stepfun", "stepfun-plan"):
             assert "step-3.7-flash" in _PROVIDER_MODELS[pid]
             assert "step-3.5-flash" in _PROVIDER_MODELS[pid]
+
+
+class TestStepfunMetadata:
+    def test_provider_prefixes(self):
+        from agent.model_metadata import _PROVIDER_PREFIXES
+
+        assert "stepfun" in _PROVIDER_PREFIXES
+        assert "stepfun-plan" in _PROVIDER_PREFIXES
+
+    def test_vendor_prefix_unchanged(self):
+        # `step-*` model slugs still resolve to the models.dev vendor `stepfun`,
+        # independent of the hermes provider-id split.
+        from hermes_cli.model_normalize import _VENDOR_PREFIXES
+
+        assert _VENDOR_PREFIXES["step"] == "stepfun"

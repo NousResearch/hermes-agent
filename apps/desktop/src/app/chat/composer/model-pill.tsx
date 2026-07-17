@@ -90,7 +90,9 @@ export function ModelPill({
       )
     : PILL
 
-  const baseTitle = currentProvider ? copy.modelTitle(currentProvider, currentModel || copy.modelNone) : copy.switchModel
+  const baseTitle = currentProvider
+    ? copy.modelTitle(currentProvider, currentModel || copy.modelNone)
+    : copy.switchModel
   const title = pinnedOverride ? `${baseTitle} — ${copy.modelPinned}` : baseTitle
 
   if (!model.modelMenuContent) {

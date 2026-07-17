@@ -7617,7 +7617,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Process in batches of 100 with event-loop yield points to avoid
             # O(n^2) event-loop blocking when recovering thousands of watchers.
             for i, watcher in enumerate(watchers):
-                asyncio.create_task(self._run_process_watcher(watcher))
+                self._spawn_supervised(
+                    lambda w=watcher: self._run_process_watcher(w),
+                    f"process_watcher:{watcher.get('session_id')}",
+                    restart=False,
+                )
                 logger.info("Resumed watcher for recovered process %s", watcher.get("session_id"))
                 if i % 100 == 99:
                     await asyncio.sleep(0)
@@ -7625,18 +7629,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.error("Recovered watcher setup error: %s", e)
 
         # Start background session expiry watcher to finalize expired sessions
-        asyncio.create_task(self._session_expiry_watcher())
+        self._spawn_supervised(self._session_expiry_watcher, "session_expiry_watcher")
 
         # Start background kanban notifier — delivers `completed`, `blocked`,
         # `spawn_auto_blocked`, and `crashed` events to gateway subscribers
         # so human-in-the-loop workflows hear back without polling.
-        asyncio.create_task(self._kanban_notifier_watcher())
+        self._spawn_supervised(self._kanban_notifier_watcher, "kanban_notifier_watcher")
 
         # Start background kanban dispatcher — spawns workers for ready
         # tasks. Gated by `kanban.dispatch_in_gateway` (default True).
         # When false, users run `hermes kanban daemon` externally or
         # simply don't use kanban; this loop becomes a no-op.
-        asyncio.create_task(self._kanban_dispatcher_watcher())
+        self._spawn_supervised(self._kanban_dispatcher_watcher, "kanban_dispatcher_watcher")
 
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
@@ -7645,19 +7649,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 len(self._failed_platforms),
                 ", ".join(p.value for p in self._failed_platforms),
             )
-        asyncio.create_task(self._platform_reconnect_watcher())
+        self._spawn_supervised(self._platform_reconnect_watcher, "platform_reconnect_watcher")
 
         # Start background handoff watcher — picks up CLI sessions marked
         # handoff_state='pending' in state.db and re-binds them to the
         # destination platform's home channel, then forges a synthetic user
         # turn so the agent kicks off the new chat.
-        asyncio.create_task(self._handoff_watcher())
+        self._spawn_supervised(self._handoff_watcher, "handoff_watcher")
 
         # Start background async-delegation watcher — drains completion events
         # from delegate_task(background=true) subagents and injects each
         # result back into its originating session as a new turn, covering the
         # idle case where the subagent finishes with no agent turn running.
-        asyncio.create_task(self._async_delegation_watcher())
+        self._spawn_supervised(self._async_delegation_watcher, "async_delegation_watcher")
 
         # Start the scale-to-zero idle watcher ONLY when this instance is opted
         # in (the NAS "Labs" HERMES_SCALE_TO_ZERO stamp), messaging is
@@ -7671,7 +7675,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "scale-to-zero: armed (idle timeout %.0fs) — watching for idle",
                     self._scale_to_zero_idle_timeout_seconds(),
                 )
-                asyncio.create_task(self._scale_to_zero_watcher())
+                self._spawn_supervised(self._scale_to_zero_watcher, "scale_to_zero_watcher")
             else:
                 # Surface WHY an OPTED-IN instance didn't arm (a non-opted instance
                 # not arming is normal — stay silent there). Without this, a failed
@@ -7686,11 +7690,69 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # left behind by a prior instantiation (durable-volume restart, NS-570)
         # is ignored via its instantiation epoch; only a current-epoch marker
         # engages drain on the first tick.
-        asyncio.create_task(self._drain_control_watcher())
+        self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
 
         logger.info("Press Ctrl+C to stop")
         
         return True
+
+    _MAX_SUPERVISED_RESTARTS = 5
+
+    def _spawn_supervised(self, coro_factory, name, *, restart=True, _attempt=0):
+        """Launch a long-lived background task with task-level supervision.
+
+        Complements upstream's per-iteration inner-loop try/except (which only
+        guards a single loop-body) by covering what that CANNOT: an exception
+        raised in the watcher's OUTER ``while self._running:`` loop or its
+        pre-try setup region, plus task-level death generally. A bare
+        ``asyncio.create_task`` drops such an exception on the floor — no log,
+        no restart, the watcher silently gone. This retains the handle in
+        ``self._background_tasks``, logs any crash, and restarts with capped
+        exponential backoff up to ``_MAX_SUPERVISED_RESTARTS`` consecutive
+        failures.
+        """
+        if getattr(self, "_background_tasks", None) is None:
+            self._background_tasks = set()
+
+        # Deliberately do NOT pass name= to create_task — some test doubles mock
+        # create_task with a signature that rejects the name kwarg.
+        task = asyncio.create_task(coro_factory())
+        self._background_tasks.add(task)
+
+        def _done(t):
+            self._background_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is None:
+                # Clean return == deliberate shutdown or a self-disabling watcher
+                # (e.g. a gated no-op that returns synchronously). Respawning here
+                # would busy-spin such a watcher — so NEVER restart on clean exit.
+                return
+            logger.error("Supervised task %s died: %r", name, exc, exc_info=exc)
+            if restart and self._running:
+                if _attempt >= self._MAX_SUPERVISED_RESTARTS:
+                    logger.error(
+                        "Supervised task %s died %d times consecutively — giving up restarts",
+                        name,
+                        _attempt,
+                    )
+                    return
+                backoff = min(60, 2 ** min(_attempt, 6))
+
+                async def _respawn():
+                    await asyncio.sleep(backoff)
+                    if self._running:
+                        self._spawn_supervised(
+                            coro_factory, name, restart=restart, _attempt=_attempt + 1
+                        )
+
+                respawn_task = asyncio.create_task(_respawn())
+                self._background_tasks.add(respawn_task)
+                respawn_task.add_done_callback(self._background_tasks.discard)
+
+        task.add_done_callback(_done)
+        return task
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
         """Background task that processes pending CLI→gateway session handoffs.

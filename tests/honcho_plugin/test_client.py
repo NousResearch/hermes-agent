@@ -741,6 +741,11 @@ class TestGetHonchoClient:
     )
     def test_timeout_change_triggers_client_rebuild(self):
         """Changing timeout config must rebuild the cached client."""
+        from hermes_constants import get_hermes_home
+
+        cfg_yaml = get_hermes_home() / "config.yaml"
+        cfg_yaml.write_text("honcho:\n  timeout: 30\n")
+
         fake_honcho_1 = MagicMock(name="Honcho_v1")
         fake_honcho_2 = MagicMock(name="Honcho_v2")
         cfg = HonchoClientConfig(
@@ -749,29 +754,73 @@ class TestGetHonchoClient:
             environment="production",
         )
 
-        with patch("honcho.Honcho", return_value=fake_honcho_1) as mock_h1, \
-             patch("hermes_cli.config.load_config", return_value={"honcho": {"timeout": 30}}):
+        with patch("honcho.Honcho", return_value=fake_honcho_1) as mock_h1:
             client1 = get_honcho_client(cfg)
 
         assert client1 is fake_honcho_1
         assert mock_h1.call_args.kwargs["timeout"] == 30.0
 
         # Same config — should return cached client (no rebuild)
-        with patch("honcho.Honcho", return_value=fake_honcho_2) as mock_h2, \
-             patch("hermes_cli.config.load_config", return_value={"honcho": {"timeout": 30}}):
+        with patch("honcho.Honcho", return_value=fake_honcho_2) as mock_h2:
             client2 = get_honcho_client(cfg)
 
         assert client2 is fake_honcho_1  # still cached
         mock_h2.assert_not_called()
 
         # Changed timeout — must rebuild
-        with patch("honcho.Honcho", return_value=fake_honcho_2) as mock_h3, \
-             patch("hermes_cli.config.load_config", return_value={"honcho": {"timeout": 300}}):
+        cfg_yaml.write_text("honcho:\n  timeout: 300\n")
+        st = cfg_yaml.stat()
+        os.utime(cfg_yaml, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+        with patch("honcho.Honcho", return_value=fake_honcho_2) as mock_h3:
             client3 = get_honcho_client(cfg)
 
         assert client3 is fake_honcho_2  # rebuilt
         mock_h3.assert_called_once()
         assert mock_h3.call_args.kwargs["timeout"] == 300.0
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_managed_config_timeout_does_not_thrash_singleton(self, tmp_path, monkeypatch):
+        """A managed-scope honcho.timeout with no user config.yaml must be seen
+        by the staleness check (stable reuse), and a managed edit must trigger
+        a rebuild. Regression for a memo that keyed only on the user file."""
+        managed_dir = tmp_path / "managed"
+        managed_dir.mkdir()
+        managed_cfg = managed_dir / "config.yaml"
+        managed_cfg.write_text("honcho:\n  timeout: 88\n")
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+
+        fake_honcho_1 = MagicMock(name="Honcho_v1")
+        fake_honcho_2 = MagicMock(name="Honcho_v2")
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho_1) as mock_h1:
+            client1 = get_honcho_client(cfg)
+            client2 = get_honcho_client(cfg)
+
+        assert client1 is fake_honcho_1
+        assert client2 is fake_honcho_1
+        assert mock_h1.call_count == 1
+        assert mock_h1.call_args.kwargs["timeout"] == 88.0
+
+        # A managed-timeout edit is detected (same-size write, so bump mtime).
+        managed_cfg.write_text("honcho:\n  timeout: 99\n")
+        st = managed_cfg.stat()
+        os.utime(managed_cfg, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+        with patch("honcho.Honcho", return_value=fake_honcho_2) as mock_h2:
+            client3 = get_honcho_client(cfg)
+
+        assert client3 is fake_honcho_2
+        mock_h2.assert_called_once()
+        assert mock_h2.call_args.kwargs["timeout"] == 99.0
 
     @pytest.mark.skipif(
         not importlib.util.find_spec("honcho"),

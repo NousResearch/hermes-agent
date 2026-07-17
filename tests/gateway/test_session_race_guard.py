@@ -303,11 +303,17 @@ def test_merge_pending_message_event_merges_text_and_photo_followups():
         text="first follow-up",
         message_type=MessageType.TEXT,
         source=source,
+        message_id="100",
+        reply_to_message_id="90",
+        reply_to_text="old quote",
     )
     photo_event = MessageEvent(
         text="see screenshot",
         message_type=MessageType.PHOTO,
         source=source,
+        message_id="101",
+        reply_to_message_id="99",
+        reply_to_text="latest quote",
         media_urls=["/tmp/test.png"],
         media_types=["image/png"],
     )
@@ -320,6 +326,9 @@ def test_merge_pending_message_event_merges_text_and_photo_followups():
     assert merged.text == "first follow-up\n\nsee screenshot"
     assert merged.media_urls == ["/tmp/test.png"]
     assert merged.media_types == ["image/png"]
+    assert merged.message_id == "101"
+    assert merged.reply_to_message_id == "99"
+    assert merged.reply_to_text == "latest quote"
 
 
 def test_merge_pending_message_event_promotes_document_followups_over_text():

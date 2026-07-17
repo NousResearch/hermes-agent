@@ -2104,6 +2104,24 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+def _refresh_merged_event_trigger_metadata(
+    existing: MessageEvent,
+    event: MessageEvent,
+) -> None:
+    """Align a merged event's trigger and reply context with its newest input."""
+    # Synthetic/internal follow-ups may not have a platform message id; keep
+    # the last concrete anchor in that case. Reply context is still replaced
+    # so an unquoted newer message cannot inherit an older quoted-message
+    # prompt prefix.
+    if event.message_id is not None:
+        existing.message_id = event.message_id
+    existing.reply_to_message_id = event.reply_to_message_id
+    existing.reply_to_text = event.reply_to_text
+    existing.reply_to_author_id = event.reply_to_author_id
+    existing.reply_to_author_name = event.reply_to_author_name
+    existing.reply_to_is_own_message = event.reply_to_is_own_message
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
@@ -2134,6 +2152,7 @@ def merge_pending_message_event(
             existing.media_types.extend(event.media_types)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+            _refresh_merged_event_trigger_metadata(existing, event)
             return
 
         if existing_has_media or incoming_has_media:
@@ -2152,6 +2171,7 @@ def merge_pending_message_event(
                 and event.message_type != MessageType.TEXT
             ):
                 existing.message_type = event.message_type
+            _refresh_merged_event_trigger_metadata(existing, event)
             return
 
         if (
@@ -2162,18 +2182,10 @@ def merge_pending_message_event(
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             # The merged event becomes the next turn's trigger. Keep its reply
-            # target and injected reply context aligned with the newest user
-            # message rather than the first message that occupied the pending
-            # slot; otherwise Telegram visibly quotes a stale follow-up. A
-            # synthetic/internal follow-up may not have a platform message id;
-            # preserve the last usable anchor in that case.
-            if event.message_id is not None:
-                existing.message_id = event.message_id
-            existing.reply_to_message_id = event.reply_to_message_id
-            existing.reply_to_text = event.reply_to_text
-            existing.reply_to_author_id = event.reply_to_author_id
-            existing.reply_to_author_name = event.reply_to_author_name
-            existing.reply_to_is_own_message = event.reply_to_is_own_message
+            # target and injected reply context aligned with the newest input;
+            # otherwise Telegram can visibly quote one message while the model
+            # receives stale quoted-message context from another.
+            _refresh_merged_event_trigger_metadata(existing, event)
             return
 
     pending_messages[session_key] = event
@@ -4360,12 +4372,7 @@ class BasePlatformAdapter(ABC):
                     if state.event.text
                     else event.text
                 )
-            latest_message_id = getattr(event, "message_id", None)
-            latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
-            if latest_message_id is not None:
-                state.event.message_id = str(latest_message_id)
-            if latest_anchor is not None and hasattr(state.event, "reply_to_message_id"):
-                state.event.reply_to_message_id = str(latest_anchor)
+            _refresh_merged_event_trigger_metadata(state.event, event)
             state.last_ts = now
 
         if state.task is not None and not state.task.done():

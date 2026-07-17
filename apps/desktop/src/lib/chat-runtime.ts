@@ -185,9 +185,11 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
 /**
  * Display ref for the optimistic (in-flight) user bubble.
  *
- * Images prefer their in-hand base64 preview (a `data:` URL) over a file path.
- * `DirectiveContent` runs `extractEmbeddedImages` first, so a raw `data:` URL
- * renders as an inline thumbnail with zero network. An `@image:<localpath>` ref
+ * Images prefer their in-hand preview (`data:` from paperclip IPC, or `blob:`
+ * from an OS drop File handle) over a file path. `DirectiveContent` runs
+ * `extractEmbeddedImages` for bare `data:` URLs; `blob:` previews use a
+ * markdown image so the renderer can show them without base64-loading the
+ * file (Windows Explorer drop freeze — #63682). An `@image:<localpath>` ref
  * would instead route through `/api/media`, which in remote mode 403s ("Path
  * outside media roots") on a local path the gateway can't read yet — flashing a
  * fallback chip until submit uploads the bytes. The preview also survives the
@@ -204,6 +206,14 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
 
   if (attachment.kind === 'image' && attachment.previewUrl?.startsWith('data:')) {
     return attachment.previewUrl
+  }
+
+  // Object-URL previews from OS drops — markdown image keeps them out of the
+  // data-URL extract path while still rendering inline in the optimistic bubble.
+  if (attachment.kind === 'image' && attachment.previewUrl?.startsWith('blob:')) {
+    const alt = attachment.label || 'image'
+
+    return `![${alt}](${attachment.previewUrl})`
   }
 
   return attachmentDisplayText(attachment)

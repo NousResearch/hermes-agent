@@ -63,6 +63,24 @@ export async function attachmentPreviewDataUrl(filePath: string): Promise<string
   return readDesktopFileDataUrl(filePath)
 }
 
+/**
+ * Prefer a cheap object-URL preview when the drop/paste still has a Blob/File
+ * handle. `readFileDataUrl` base64-loads the whole file over IPC (capped at
+ * 16 MB) and was freezing Desktop on Windows Explorer image drops (#63682).
+ * Object URLs skip that read; path-only attaches (paperclip) still fall back
+ * to the IPC data-URL path.
+ */
+export async function resolveImageAttachmentPreview(
+  filePath: string,
+  previewSource?: Blob | null
+): Promise<string> {
+  if (previewSource && previewSource.size > 0) {
+    return URL.createObjectURL(previewSource)
+  }
+
+  return attachmentPreviewDataUrl(filePath)
+}
+
 export interface DroppedFile {
   /** Browser-native File handle. Absent for in-app drags (e.g. project tree). */
   file?: File
@@ -402,7 +420,7 @@ export function useComposerActions({
   )
 
   const attachImagePath = useCallback(
-    async (filePath: string) => {
+    async (filePath: string, previewSource?: Blob | null) => {
       if (!filePath) {
         return false
       }
@@ -418,7 +436,10 @@ export function useComposerActions({
       attachToMain(baseAttachment)
 
       try {
-        const previewUrl = await attachmentPreviewDataUrl(filePath)
+        // OS drops / clipboard blobs pass their File/Blob so preview never
+        // base64-loads the full image over IPC (Windows freeze on Explorer
+        // drag-drop — #63682). Path-only picks keep the IPC thumbnail path.
+        const previewUrl = await resolveImageAttachmentPreview(filePath, previewSource)
 
         if (previewUrl) {
           scope.add({ ...baseAttachment, previewUrl })
@@ -455,7 +476,9 @@ export function useComposerActions({
           return false
         }
 
-        return attachImagePath(savedPath)
+        // Reuse the in-hand blob for the chip preview — do not re-read the
+        // just-written temp file as a data URL.
+        return attachImagePath(savedPath, blob)
       } catch (err) {
         notifyError(err, copy.imageAttachFailed)
 
@@ -595,7 +618,9 @@ export function useComposerActions({
         const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
 
         if (isImage) {
-          if ((filePath && (await attachImagePath(filePath))) || (await attachImageBlob(file))) {
+          // Prefer the absolute path (local `image.attach`) and always hand the
+          // dropped File through for a non-blocking object-URL preview.
+          if ((filePath && (await attachImagePath(filePath, file))) || (await attachImageBlob(file))) {
             attached = true
 
             continue

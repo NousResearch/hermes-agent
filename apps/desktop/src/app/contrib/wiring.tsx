@@ -652,6 +652,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Keep app data live while the gateway is open (on-connect reseed + the
   // cron / messaging / transcript visibility polls + fresh-draft reseed).
   useBackgroundSync({
+    activeGatewayProfile,
     activeIsMessaging,
     activeSessionId,
     freshDraftReady,

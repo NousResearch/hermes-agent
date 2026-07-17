@@ -51,7 +51,7 @@ export const $sessionStates = atom<Record<string, ClientSessionState>>({})
 // presentation hint and never mutates the backend-derived busy state.
 export const $stalledSessionIds = atom<string[]>([])
 
-function setSessionStalled(storedSessionId: string | null | undefined, stalled: boolean) {
+export function setSessionStalled(storedSessionId: string | null | undefined, stalled: boolean) {
   if (!storedSessionId) {
     return
   }
@@ -67,7 +67,7 @@ function setSessionStalled(storedSessionId: string | null | undefined, stalled: 
 }
 
 // --- Watchdog: marks busy sessions quiet after 8 min of stream silence -----
-const SESSION_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
+export const SESSION_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
 const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function armWatchdog(runtimeId: string) {

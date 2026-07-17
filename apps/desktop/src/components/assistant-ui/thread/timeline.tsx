@@ -206,7 +206,13 @@ export const ThreadTimeline: FC = () => {
       }
     }
 
-    compute()
+    // Initial compute rides the same rAF batching as scroll. A sync call here
+    // reads getBoundingClientRect for every user message while other commit
+    // effects are still writing styles — on a session switch that interleaving
+    // forces a full reflow per read on a large transcript. One rAF later the
+    // reads batch into a single layout pass, and back-to-back entries updates
+    // (prefetch paint, then resume reconcile) coalesce into one compute.
+    onScroll()
     viewport.addEventListener('scroll', onScroll, { passive: true })
 
     return () => {

@@ -13231,6 +13231,13 @@ def main():
     moa_parser.set_defaults(func=cmd_moa)
 
     # =========================================================================
+    # fetch command — fastfetch-style runtime overview (standalone `hermesfetch`)
+    # =========================================================================
+    # NOTE: The `hermesfetch` entry point is registered separately in pyproject.toml.
+    # This CLI subcommand is intentionally NOT added to keep the top-level CLI
+    # surface minimal; users should use `hermesfetch` or `/fetch` slash command.
+
+    # =========================================================================
     # fallback command — manage the fallback provider chain
     # =========================================================================
     from hermes_cli.fallback_cmd import cmd_fallback

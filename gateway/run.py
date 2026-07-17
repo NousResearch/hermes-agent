@@ -9544,8 +9544,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._release_running_agent_state(_quick_key)
 
         if _quick_key in self._running_agents:
-            if event.get_command() == "status":
-                return await self._handle_status_command(event)
+            if event.get_command() in ("status", "fetch"):
+                if event.get_command() == "status":
+                    return await self._handle_status_command(event)
+                return await self._handle_fetch_command(event)
 
             # Resolve the command once for all early-intercept checks below.
             from hermes_cli.commands import (
@@ -10069,6 +10071,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "fetch":
+            return await self._handle_fetch_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)

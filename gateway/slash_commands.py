@@ -700,6 +700,12 @@ class GatewaySlashCommandsMixin:
 
         return "\n".join(lines)
 
+    async def _handle_fetch_command(self, event: MessageEvent) -> str:
+        """Handle /fetch — show fastfetch-style Hermes runtime overview."""
+        from hermes_cli.fetch import render_fetch_slash_args
+
+        return render_fetch_slash_args(event.get_command_args().strip())
+
     @staticmethod
     def _redact_matrix_session_key(session_key: str) -> str:
         """Return a stable Matrix session-key fingerprint for shared room status."""

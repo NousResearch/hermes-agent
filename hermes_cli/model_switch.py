@@ -811,6 +811,61 @@ def _configured_provider_matches(
                     matches[slug] = hit
                     break
 
+    def _user_provider_alias(entry: dict, name: str) -> Optional[str]:
+        """Return the ``providers.<slug>`` key when ``entry`` is a legacy view
+        of that same user-provider config entry, else None.
+
+        ``get_compatible_custom_providers()`` re-exposes every ``providers``
+        dict entry as a legacy custom-provider row (dual exposure kept for
+        legacy ``custom_providers`` consumers).  Callers such as the gateway
+        /model path pass BOTH views here, so without canonicalization one
+        physical endpoint counts as two matches and the #45006 multi-provider
+        guard rejects an unambiguous bare model name.
+
+        Identity checks, strongest first:
+        1. ``provider_key`` — stamped by ``_normalize_custom_provider_entry``
+           with the originating ``providers`` dict key.
+        2. Display name + base_url — a view whose ``name`` equals a
+           ``providers`` entry's display name AND targets the same endpoint IS
+           that entry (covers views built without ``provider_key``).  Both
+           URLs must be nonempty and normalized-equal; if either side lacks
+           an endpoint URL the entries are NOT collapsed, so same-name
+           entries with incomplete endpoint identity stay distinct and the
+           multi-provider guard still applies.
+        """
+        if not isinstance(user_providers, dict):
+            return None
+        provider_key = entry.get("provider_key")
+        if (
+            isinstance(provider_key, str)
+            and provider_key.strip()
+            and provider_key.strip() in user_providers
+        ):
+            return provider_key.strip()
+        entry_url = str(entry.get("base_url", "") or "").strip().rstrip("/").lower()
+        name_lower = name.strip().lower()
+        for slug, cfg in user_providers.items():
+            if not isinstance(slug, str) or not isinstance(cfg, dict):
+                continue
+            display = cfg.get("name")
+            display_lower = (
+                display.strip().lower()
+                if isinstance(display, str) and display.strip()
+                else slug.strip().lower()
+            )
+            if display_lower != name_lower:
+                continue
+            cfg_url = ""
+            for url_key in ("base_url", "url", "api"):
+                raw_url = cfg.get(url_key)
+                if isinstance(raw_url, str) and raw_url.strip():
+                    cfg_url = raw_url.strip().rstrip("/").lower()
+                    break
+            if not entry_url or not cfg_url or entry_url != cfg_url:
+                continue
+            return slug
+        return None
+
     if isinstance(custom_providers, list):
         for entry in custom_providers:
             if not isinstance(entry, dict):
@@ -824,7 +879,14 @@ def _configured_provider_matches(
             for key in ("models", "model", "default_model"):
                 hit = _match(entry.get(key))
                 if hit:
-                    matches[slug] = hit
+                    # Same physical entry as a ``providers.<slug>`` block?
+                    # Attribute the match to the user-provider slug so one
+                    # endpoint never counts as two providers (#45006 D1).
+                    alias = _user_provider_alias(entry, name)
+                    if alias is not None:
+                        matches.setdefault(alias, hit)
+                    else:
+                        matches[slug] = hit
                     break
 
     return matches

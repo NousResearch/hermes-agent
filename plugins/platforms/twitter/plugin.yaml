@@ -1,0 +1,19 @@
+name: twitter-platform
+label: Twitter / X
+kind: platform
+version: 1.0.0
+description: OAuth 2.0 Twitter/X gateway adapter for public mentions and direct messages.
+author: NousResearch
+optional_env:
+  - name: TWITTER_ALLOWED_USERS
+    description: Comma-separated numeric X user IDs allowed to trigger Hermes
+    prompt: Allowed X user IDs
+    password: false
+  - name: TWITTER_ALLOW_ALL_USERS
+    description: Allow every X user to trigger Hermes
+    prompt: Allow all X users?
+    password: false
+  - name: TWITTER_HOME_CHANNEL
+    description: Default typed destination for cron delivery
+    prompt: Home channel
+    password: false

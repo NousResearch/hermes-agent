@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call
@@ -27,6 +28,45 @@ def _load_release_module(monkeypatch, tmp_root: Path):
 
 def _result(returncode=0, stdout="", stderr=""):
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def test_push_sends_only_the_requested_release_tag(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.name", "Release Test")
+    _git(repo, "config", "user.email", "release@example.invalid")
+    (repo / "README.md").write_text("initial\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "initial")
+    _git(tmp_path, "init", "--bare", str(remote))
+    _git(repo, "remote", "add", "origin", str(remote))
+
+    requested_tag = "v2099.1.1"
+    stale_tag = "v2098.1.1"
+    _git(repo, "tag", "-a", requested_tag, "-m", "current release")
+    _git(repo, "tag", "-a", stale_tag, "-m", "stale local tag")
+
+    module = _load_release_module(monkeypatch, repo)
+
+    assert module.push_and_verify_release_tag(requested_tag) is True
+    remote_tags = set(
+        _git(tmp_path, "--git-dir", str(remote), "tag", "--list").splitlines()
+    )
+    assert requested_tag in remote_tags
+    assert stale_tag not in remote_tags
 
 
 def _configure_publish(module, monkeypatch):
@@ -79,7 +119,7 @@ def test_push_failure_aborts_before_build_or_github_release(monkeypatch, tmp_pat
             "-m",
             "Hermes Agent v0.14.0 (2026.7.16)\n\nWeekly release",
         ),
-        call("push", "origin", "HEAD", "--tags"),
+        call("push", "origin", "HEAD", f"refs/tags/{TAG_NAME}"),
     ]
     build.assert_not_called()
     gh_which.assert_not_called()

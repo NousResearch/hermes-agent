@@ -2048,12 +2048,14 @@ def git_result(*args, cwd=None):
 
 def push_and_verify_release_tag(tag_name: str) -> bool:
     """Push release refs and verify the remote tag resolves to the local commit."""
-    push_result = git_result("push", "origin", "HEAD", "--tags")
+    push_result = git_result(
+        "push", "origin", "HEAD", f"refs/tags/{tag_name}"
+    )
     if push_result.returncode != 0:
         print(f"  ✗ Failed to push to origin: {push_result.stderr.strip()}")
         print("    Release aborted before building artifacts or creating a GitHub release.")
         print("    Retry after fixing access:")
-        print("    git push origin HEAD --tags")
+        print(f"    git push origin HEAD refs/tags/{tag_name}")
         return False
     print("  ✓ Pushed to origin")
 

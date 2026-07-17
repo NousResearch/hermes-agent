@@ -190,6 +190,35 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
 # Argparse builder
 # ---------------------------------------------------------------------------
 
+def _nonneg_int(value: str) -> int:
+    """argparse type for a limit: reject negatives (0 = unlimited is kept)."""
+    iv = int(value)
+    if iv < 0:
+        raise argparse.ArgumentTypeError("must be >= 0 (0 = unlimited)")
+    return iv
+
+
+def _positive_int(value: str) -> int:
+    """argparse type for a refresh interval: must be strictly positive.
+
+    A 0 would make the --tail loop time.sleep(0) and busy-spin; a negative
+    value only fails once Rich's Live alternate screen is already active.
+    Reject both at parse time.
+    """
+    iv = int(value)
+    if iv < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer (seconds)")
+    return iv
+
+
+# Kanban subcommands that render an unbounded live view (a `while True` loop
+# exited only by Ctrl-C). run_slash captures stdout synchronously, so over the
+# slash / gateway path these never return and hang the worker thread; reject
+# them there. Keyed by (action, requires --tail): "board" only loops with
+# --tail, while "tail"/"watch" always loop.
+_SLASH_UNBOUNDED_ACTIONS = frozenset({"tail", "watch"})
+
+
 def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Attach the ``kanban`` subcommand tree under an existing subparsers.
 
@@ -447,7 +476,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         description="Show all tasks grouped by status as columns in a Rich table.",
     )
     p_board.add_argument(
-        "--limit", type=int, default=5,
+        "--limit", type=_nonneg_int, default=5,
         help="Max tasks per column (default 5; 0 = unlimited)",
     )
     p_board.add_argument(
@@ -471,7 +500,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Continuously refresh the board view (Ctrl+C to stop)",
     )
     p_board.add_argument(
-        "--refresh", type=int, default=5,
+        "--refresh", type=_positive_int, default=5,
         help="Seconds between refreshes in --tail mode (default 5)",
     )
     p_board.add_argument(
@@ -3069,6 +3098,19 @@ def run_slash(rest: str) -> str:
         return f"⚠ /kanban usage error\n{body}" if body else "⚠ /kanban usage error"
     except argparse.ArgumentError as exc:
         return f"⚠ /kanban usage error\n{_usage_for_error()}\n{exc}"
+
+    # Reject unbounded live views on the slash path: run_slash captures stdout
+    # synchronously, so a `while True` view never returns and hangs the gateway
+    # worker thread. "board" only loops with --tail; "tail"/"watch" always do.
+    _action = getattr(args, "kanban_action", None)
+    if _action in _SLASH_UNBOUNDED_ACTIONS or (
+        _action == "board" and getattr(args, "tail", False)
+    ):
+        _what = "board --tail" if _action == "board" else _action
+        return (
+            f"⚠ /kanban {_what} runs a live view that never returns here. "
+            f"Run it in an interactive terminal: hermes kanban {_what}."
+        )
 
     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
         try:

@@ -691,6 +691,11 @@ def maybe_apply_prepared_candidate(
     cfg = _agent_config(agent)
     if cfg is None or not cfg.enabled:
         return None
+    # Same gate as the synchronous triggers: an agent with compaction off —
+    # including the background-review fork, which shares the parent's live
+    # session_id — must never rewrite the transcript (#38727).
+    if not getattr(agent, "compression_enabled", False):
+        return None
     controller = getattr(agent, "background_compression", None)
     if not isinstance(controller, BackgroundCompressionController):
         return None

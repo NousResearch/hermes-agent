@@ -3537,6 +3537,18 @@ class AIAgent:
         hard teardown for actual session boundaries (/new, /reset, session
         expiry).
         """
+        # Stop background compression work. The candidate and its worker are
+        # bound to THIS instance; the rebuilt agent starts with a fresh
+        # controller, so keeping the old worker alive would only leak a
+        # thread (and a candidate nobody can ever apply).
+        try:
+            _bg_controller = getattr(self, "background_compression", None)
+            if _bg_controller is not None:
+                _bg_controller.shutdown(wait=False)
+                self.background_compression = None
+        except Exception:
+            pass
+
         # Close active child agents (per-turn; no cross-turn persistence).
         try:
             with self._active_children_lock:

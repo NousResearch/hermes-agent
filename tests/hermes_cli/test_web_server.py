@@ -2053,6 +2053,65 @@ class TestWebServerEndpoints:
             "pid": 99,
         }
 
+    def test_action_status_survives_server_restart_from_result_file(self, tmp_path, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", tmp_path)
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+        web_server._write_action_result("hermes-update", exit_code=0, pid=42424)
+
+        resp = self.client.get("/api/actions/hermes-update/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["running"] is False
+        assert data["exit_code"] == 0
+        assert data["pid"] == 42424
+
+    def test_spawn_hermes_action_clears_stale_persisted_result(self, tmp_path, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", tmp_path)
+        web_server._write_action_result("hermes-update", exit_code=0, pid=111)
+
+        class _Proc:
+            pid = 222
+
+        captured = {}
+
+        def fake_popen(*_args, **kwargs):
+            captured.update(kwargs)
+            return _Proc()
+
+        monkeypatch.setattr(web_server.subprocess, "Popen", fake_popen)
+
+        proc = web_server._spawn_hermes_action(["update"], "hermes-update")
+
+        assert proc.pid == 222
+        assert captured["env"]["HERMES_DASHBOARD_ACTION_NAME"] == "hermes-update"
+        assert captured["env"]["HERMES_DASHBOARD_ACTION_RESULT_FILE"] == str(
+            tmp_path / "hermes-update.result.json"
+        )
+        assert web_server._read_action_result("hermes-update") is None
+
+    def test_action_status_ignores_corrupt_persisted_result(self, tmp_path, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", tmp_path)
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        web_server._action_result_path("hermes-update").write_text("not json", encoding="utf-8")
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+
+        resp = self.client.get("/api/actions/hermes-update/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["running"] is False
+        assert data["exit_code"] is None
+        assert data["pid"] is None
+
     def test_action_status_tails_large_log_without_read_text(self, tmp_path, monkeypatch):
         import hermes_cli.web_server as web_server
 

@@ -1028,6 +1028,74 @@ class TestCmdUpdateZipBranchRefusal:
         # No actual download attempted.
         assert "Downloading latest version" not in out
 
+    def test_zip_fallback_records_success_before_gateway_resume(self, tmp_path, monkeypatch):
+        from hermes_cli import config as config_mod
+        from hermes_cli import main as hm
+
+        events = []
+        args = SimpleNamespace(yes=True, force=False, force_venv=False, branch=None)
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(hm.sys, "platform", "win32")
+        monkeypatch.setattr(hm, "_is_windows", lambda: False)
+        monkeypatch.setattr(hm, "_run_pre_update_backup", lambda _args: None)
+        monkeypatch.setattr(hm, "_pause_windows_gateways_for_update", lambda: ())
+        monkeypatch.setattr(hm, "_discard_lockfile_churn", lambda *_args: None)
+        monkeypatch.setattr(hm, "_get_origin_url", lambda *_args: "https://github.com/NousResearch/hermes-agent.git")
+        monkeypatch.setattr(hm, "_is_fork", lambda _url: False)
+        monkeypatch.setattr(config_mod, "load_config", lambda: {})
+        monkeypatch.setattr(hm, "_update_via_zip", lambda _args: events.append("update"))
+        monkeypatch.setattr(
+            hm,
+            "_record_dashboard_action_success_from_env",
+            lambda: events.append("stamp"),
+        )
+        monkeypatch.setattr(
+            hm,
+            "_resume_windows_gateways_after_update",
+            lambda token: events.append(("resume", token)),
+        )
+
+        hm._cmd_update_impl(args, gateway_mode=False)
+
+        assert events == ["update", "stamp", ("resume", ())]
+
+    def test_zip_fallback_does_not_record_failed_update(self, tmp_path, monkeypatch):
+        from hermes_cli import config as config_mod
+        from hermes_cli import main as hm
+
+        events = []
+        args = SimpleNamespace(yes=True, force=False, force_venv=False, branch=None)
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(hm.sys, "platform", "win32")
+        monkeypatch.setattr(hm, "_is_windows", lambda: False)
+        monkeypatch.setattr(hm, "_run_pre_update_backup", lambda _args: None)
+        monkeypatch.setattr(hm, "_pause_windows_gateways_for_update", lambda: ())
+        monkeypatch.setattr(hm, "_discard_lockfile_churn", lambda *_args: None)
+        monkeypatch.setattr(hm, "_get_origin_url", lambda *_args: "https://github.com/NousResearch/hermes-agent.git")
+        monkeypatch.setattr(hm, "_is_fork", lambda _url: False)
+        monkeypatch.setattr(config_mod, "load_config", lambda: {})
+
+        def fail_zip(_args):
+            events.append("update")
+            raise RuntimeError("zip failed")
+
+        monkeypatch.setattr(hm, "_update_via_zip", fail_zip)
+        monkeypatch.setattr(
+            hm,
+            "_record_dashboard_action_success_from_env",
+            lambda: events.append("stamp"),
+        )
+        monkeypatch.setattr(
+            hm,
+            "_resume_windows_gateways_after_update",
+            lambda token: events.append(("resume", token)),
+        )
+
+        with pytest.raises(RuntimeError, match="zip failed"):
+            hm._cmd_update_impl(args, gateway_mode=False)
+
+        assert events == ["update", ("resume", ())]
+
 
 def test_is_termux_env_true_for_termux_prefix():
     from hermes_cli import main as hm

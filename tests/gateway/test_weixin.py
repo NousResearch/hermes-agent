@@ -1205,3 +1205,41 @@ class TestWeixinApiTimeout:
             )
         )
         assert result == {"ret": 0, "msgs": [], "get_updates_buf": "buf-123"}
+
+
+class TestWeixinRateLimitClassification:
+    """Regression tests for Weixin rate-limit vs stale-session classification.
+
+    ret=-2 has two distinct meanings in iLink:
+    1. Genuine rate limit (errmsg != "unknown error") -> backoff and retry
+    2. Stale-session signal (errmsg == "unknown error") -> session refresh
+
+    These must NOT be conflated in shared _RETRYABLE_ERROR_PATTERNS
+    (issue #21061). The classification is adapter-specific.
+    """
+
+    def test_is_stale_session_ret_detects_stale_session(self):
+        """ret=-2 + errmsg=unknown error must be classified as stale-session."""
+        from gateway.platforms.weixin import _is_stale_session_ret
+        assert _is_stale_session_ret(ret=-2, errcode=-2, errmsg="unknown error") is True
+
+    def test_is_stale_session_ret_ignores_genuine_rate_limit(self):
+        """ret=-2 with a real rate-limit message must NOT be stale-session."""
+        from gateway.platforms.weixin import _is_stale_session_ret
+        assert _is_stale_session_ret(ret=-2, errcode=-2, errmsg="frequency limit") is False
+
+    def test_is_stale_session_ret_ignores_non_minus2(self):
+        """ret=0 must never be classified as stale-session."""
+        from gateway.platforms.weixin import _is_stale_session_ret
+        assert _is_stale_session_ret(ret=0, errcode=0, errmsg="unknown error") is False
+
+    def test_rate_limit_errcode_not_in_global_retryable_patterns(self):
+        """ret=-2 / Weixin-specific tokens must NOT appear in the shared
+        _RETRYABLE_ERROR_PATTERNS so non-Weixin adapters are unaffected."""
+        from gateway.platforms.base import _RETRYABLE_ERROR_PATTERNS
+        weixin_tokens = ("ret=-2", "ilink", "frequency limit")
+        for tok in weixin_tokens:
+            assert not any(tok in p for p in _RETRYABLE_ERROR_PATTERNS), (
+                f"Weixin-specific token {tok!r} must not be in shared "
+                "_RETRYABLE_ERROR_PATTERNS; keep classification adapter-specific"
+            )

@@ -15,7 +15,19 @@ sides live in the same symlink-resolved namespace.
 
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.commands import telegram_menu_commands
+
+
+def _symlink_dir_or_skip(link, target):
+    """Create a directory symlink, skipping on platforms without symlink
+    support (e.g. Windows without Developer Mode). Mirrors the
+    ``_symlink_file_or_skip`` helper in test_profile_distribution.py."""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable in test environment: {exc}")
 
 
 def _write_min_config(tmp_path):
@@ -31,7 +43,7 @@ class TestSymlinkedSkillsDirMenu:
         real_src = tmp_path / "vault-skills"
         real_src.mkdir()
         link_dir = tmp_path / "skills"  # the symlink == patched SKILLS_DIR
-        link_dir.symlink_to(real_src, target_is_directory=True)
+        _symlink_dir_or_skip(link_dir, real_src)
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         _write_min_config(tmp_path)
@@ -63,7 +75,7 @@ class TestSymlinkedSkillsDirMenu:
         real_src = tmp_path / "vault-skills"
         real_src.mkdir()
         link_dir = tmp_path / "skills"
-        link_dir.symlink_to(real_src, target_is_directory=True)
+        _symlink_dir_or_skip(link_dir, real_src)
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         _write_min_config(tmp_path)

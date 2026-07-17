@@ -236,6 +236,16 @@ def load_hermes_dotenv(
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 
+    # Desktop-spawned backends (HERMES_DESKTOP=1) mint HERMES_DASHBOARD_SESSION_TOKEN
+    # and pass it in the child env. User .env is loaded with override=True below, which
+    # would clobber that mint and leave Electron main 401'ing against its own backend
+    # ("Could not connect to Hermes gateway" boot overlay). Preserve the spawn mint.
+    _desktop_preserve: dict[str, str] = {}
+    if os.environ.get("HERMES_DESKTOP") == "1":
+        for _k in ("HERMES_DASHBOARD_SESSION_TOKEN",):
+            if _k in os.environ and os.environ[_k]:
+                _desktop_preserve[_k] = os.environ[_k]
+
     # Fix corrupted .env files before python-dotenv parses them (#8908).
     if user_env.exists():
         _sanitize_env_file_if_needed(user_env)
@@ -245,6 +255,9 @@ def load_hermes_dotenv(
     if user_env.exists():
         _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)
+
+    for _k, _v in _desktop_preserve.items():
+        os.environ[_k] = _v
 
     # Load .op.env AFTER .env so that .env values win, but the bootstrap
     # token (OP_SERVICE_ACCOUNT_TOKEN) becomes available for
@@ -266,6 +279,10 @@ def load_hermes_dotenv(
 
     _apply_external_secret_sources(home_path)
     _apply_managed_env()
+
+    # Re-apply after managed/external loads (same desktop mint reason as above).
+    for _k, _v in _desktop_preserve.items():
+        os.environ[_k] = _v
 
     return loaded
 

@@ -41,10 +41,12 @@ import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
+import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { $sessionTiles, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
+import { CONTEXT_SPLIT_KIT, DROPDOWN_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 
 // Rename a session, preferring the gateway's session.title RPC over REST.
 //
@@ -321,10 +323,21 @@ function useSessionActions({
     </Item>
   )
 
-  const renderItems = (kit: MenuKit) => (
+  const renderItems = (kit: MenuKit, splitKit: typeof DROPDOWN_SPLIT_KIT) => (
     <>
       {openItems.map(item => renderMenuItem(kit.Item, item))}
-      {openItems.length > 0 && <kit.Separator />}
+      {surface === 'row' && sessionId && !alreadyTabbed && (
+        <SplitSubmenu
+          kit={splitKit}
+          label={r.openInSplit}
+          onSplit={dir => {
+            triggerHaptic('selection')
+            openSessionTile(sessionId, dir)
+            revealTreePane(`session-tile:${sessionId}`)
+          }}
+        />
+      )}
+      {(openItems.length > 0 || (surface === 'row' && sessionId && !alreadyTabbed)) && <kit.Separator />}
       {identityItems.map(item => renderMenuItem(kit.Item, item))}
       <CopyButton
         appearance={kit.Item === DropdownMenuItem ? 'menu-item' : 'context-menu-item'}
@@ -393,10 +406,10 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
         <DropdownMenuContent
           align={align}
           aria-label={t.sidebar.row.actionsFor(actions.title)}
-          className="w-40"
+          className="w-44"
           sideOffset={sideOffset}
         >
-          {renderItems(DROPDOWN_KIT)}
+          {renderItems(DROPDOWN_KIT, DROPDOWN_SPLIT_KIT)}
         </DropdownMenuContent>
       </DropdownMenu>
       {renameDialog}
@@ -416,8 +429,8 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
     <>
       <ContextMenu>
         <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-        <ContextMenuContent aria-label={t.sidebar.row.actionsFor(actions.title)} className="w-40">
-          {renderItems(CONTEXT_KIT)}
+        <ContextMenuContent aria-label={t.sidebar.row.actionsFor(actions.title)} className="w-44">
+          {renderItems(CONTEXT_KIT, CONTEXT_SPLIT_KIT)}
         </ContextMenuContent>
       </ContextMenu>
       {renameDialog}

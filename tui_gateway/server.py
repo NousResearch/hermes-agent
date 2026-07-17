@@ -2345,11 +2345,12 @@ def _resolve_model() -> str:
     ).strip()
     if env:
         return env
+    from hermes_cli.config import resolve_model_name_from_config
+
     m = _load_cfg().get("model", "")
-    if isinstance(m, dict):
-        return str(m.get("default", "") or "").strip()
-    if isinstance(m, str) and m:
-        return m.strip()
+    resolved = resolve_model_name_from_config(m)
+    if resolved:
+        return resolved
     # No env seed and no config preference: fall back to the cost-safe silent
     # default (catalog-labeled, cache-only read), never an expensive Anthropic
     # flagship the user didn't pick.
@@ -2418,12 +2419,16 @@ def _config_model_target() -> tuple[str, str]:
     model = ""
     provider = ""
     if isinstance(cfg_model, dict):
-        model = str(cfg_model.get("default", "") or "").strip()
+        from hermes_cli.config import resolve_model_name_from_config
+
+        model = resolve_model_name_from_config(cfg_model)
         provider = str(cfg_model.get("provider") or "").strip()
         if provider.lower() == "auto":
             provider = ""
     elif isinstance(cfg_model, str):
-        model = cfg_model.strip()
+        from hermes_cli.config import resolve_model_name_from_config
+
+        model = resolve_model_name_from_config(cfg_model)
     # No fallback to _resolve_model() here: that reads HERMES_MODEL /
     # HERMES_INFERENCE_MODEL, which `hermes --tui -m <model>` sets as a
     # session-scoped seed for THIS launch. When config.yaml has no

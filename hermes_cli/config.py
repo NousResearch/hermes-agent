@@ -4797,6 +4797,20 @@ def _format_config_get_value(value, *, as_json: bool) -> str:
     return str(value)
 
 
+def resolve_model_name_from_config(model_cfg: Any) -> str:
+    """Return the configured main model name across supported config shapes."""
+    if isinstance(model_cfg, str):
+        return model_cfg.strip()
+    if not isinstance(model_cfg, dict):
+        return ""
+    return str(
+        model_cfg.get("default")
+        or model_cfg.get("model")
+        or model_cfg.get("name")
+        or ""
+    ).strip()
+
+
 def get_missing_config_fields() -> List[Dict[str, Any]]:
     """
     Check which config fields are missing or outdated (recursive).

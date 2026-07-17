@@ -1804,6 +1804,21 @@ def test_resolve_model_strips_config_model(monkeypatch):
     assert server._resolve_model() == "nous/hermes-test"
 
 
+def test_resolve_model_accepts_legacy_model_keys(monkeypatch):
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"model": {"model": " mimo-v2.5-pro "}}
+    )
+    assert server._resolve_model() == "mimo-v2.5-pro"
+
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"model": {"name": " xiaomi/mimo "}}
+    )
+    assert server._resolve_model() == "xiaomi/mimo"
+
+
 def _sync_test_session(**extra):
     session = {
         "agent": types.SimpleNamespace(model="old/model"),
@@ -1990,6 +2005,25 @@ def test_config_model_target_never_reads_env(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"provider": "nous"}})
 
     assert server._config_model_target() == ("", "nous")
+
+
+@pytest.mark.parametrize(
+    ("legacy_key", "legacy_model"),
+    [
+        ("model", " mimo-v2.5-pro "),
+        ("name", " xiaomi/mimo "),
+    ],
+)
+def test_config_model_target_accepts_legacy_model_keys(
+    monkeypatch, legacy_key, legacy_model
+):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"model": {legacy_key: legacy_model, "provider": "nous"}},
+    )
+
+    assert server._config_model_target() == (legacy_model.strip(), "nous")
 
 
 def test_apply_model_switch_persist_override_false_never_persists(monkeypatch):

@@ -121,6 +121,10 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // is a no-op. ⌘⇧T reopens the last closed tab where it was.
   { id: 'view.closeTab', category: 'view', defaults: ['mod+w'] },
   { id: 'view.reopenTab', category: 'view', defaults: ['mod+shift+t'] },
+  // ⌘F — open the find-in-page bar. `comboAllowedInInput` lets the combo
+  // fire from inside a textarea / contenteditable (matches browser behavior
+  // so typing in the composer and pressing ⌘F focuses find, not 'f').
+  { id: 'view.findInPage', category: 'view', defaults: ['mod+f'] },
   { id: 'appearance.toggleMode', category: 'view', defaults: ['shift+x'] },
   { id: 'keybinds.openPanel', category: 'view', defaults: ['mod+/'] }
 ]

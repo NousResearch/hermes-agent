@@ -497,3 +497,44 @@ class TestVisionBlocksCloudMetadataViaAlwaysBlocked:
         assert result["success"] is False
         assert "private or internal address" in result["error"]
         assert CLOUD_METADATA_URL in result["error"]
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "kwargs"),
+    [
+        ("snapshot", {"task_id": "test"}),
+        ("vision", {"question": "what do you see", "task_id": "test"}),
+    ],
+)
+def test_content_tools_use_shared_private_page_guard(monkeypatch, tool_name, kwargs):
+    """Snapshot and vision must delegate cloud-metadata checks to the shared helper."""
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    guard_calls = []
+    calls = []
+
+    def eval_ssrf_guard_active(task_id):
+        guard_calls.append(task_id)
+        return True
+
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", eval_ssrf_guard_active)
+
+    def current_page_private_url(task_id):
+        calls.append(task_id)
+        return CLOUD_METADATA_URL
+
+    monkeypatch.setattr(browser_tool, "_current_page_private_url", current_page_private_url)
+
+    def mock_run_browser_command(task_id, command, args=None, **kwargs):
+        if tool_name == "snapshot" and command == "snapshot":
+            return _make_snapshot_result()
+        pytest.fail(f"{tool_name} should block via the shared helper before {command}")
+
+    monkeypatch.setattr(browser_tool, "_run_browser_command", mock_run_browser_command)
+
+    tool = browser_browser_snapshot if tool_name == "snapshot" else browser_browser_vision
+    result = json.loads(tool(**kwargs))
+
+    assert result["success"] is False
+    assert CLOUD_METADATA_URL in result["error"]
+    assert guard_calls == ["test"]
+    assert calls == ["test"]

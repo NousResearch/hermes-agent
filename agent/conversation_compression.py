@@ -28,15 +28,18 @@ these paths see no behavioural change.
 
 from __future__ import annotations
 
+import copy
 import inspect
+import json
 import logging
 import os
+import re
 import tempfile
 import uuid
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, cast
 
 from agent.model_metadata import estimate_request_tokens_rough
 
@@ -51,6 +54,514 @@ COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
+
+_COMPRESSION_CHECKPOINT_VERSION = 1
+_COMPRESSION_CHECKPOINT_META_PREFIX = "compression_checkpoint:"
+_COMPRESSION_CHECKPOINT_START = "<!-- hermes:compression-checkpoint:v1 -->"
+_COMPRESSION_CHECKPOINT_END = "<!-- /hermes:compression-checkpoint -->"
+_MAX_CHECKPOINT_ENTRIES = 8
+_MAX_CHECKPOINT_ENTRY_CHARS = 2000
+_MAX_CHECKPOINT_JSON_CHARS = 24 * 1024
+_RESOLVED_BLOCKER_STATUSES = {"resolved", "closed", "fixed", "done", "unblocked", "cleared"}
+
+
+def _summary_section(summary: str, heading: str) -> str:
+    """Return one level-2 Markdown section from a compaction summary."""
+    if not isinstance(summary, str) or not summary.strip():
+        return ""
+    match = re.search(
+        rf"(?ms)^##\s+{re.escape(heading)}\s*$\n?(.*?)(?=^##\s+|\Z)",
+        summary,
+    )
+    # Remove only the Markdown section-boundary newlines. Spaces can be part of
+    # an exact multiline Resume value and must survive checkpoint extraction.
+    return match.group(1).strip("\r\n") if match else ""
+
+
+def _checkpoint_entries(section: str) -> list[str]:
+    """Normalize a summary section into bounded, non-placeholder entries."""
+    if not section:
+        return []
+    entries: list[str] = []
+    current: list[str] = []
+    for raw_line in section.splitlines():
+        line = raw_line
+        stripped = line.strip()
+        if not stripped:
+            if current:
+                current.append(line)
+            continue
+        structural = line.lstrip()
+        if re.match(r"^(?:[-*]|\d+[.)])\s+", structural):
+            if current:
+                entries.append("\n".join(current).rstrip("\r\n"))
+            current = [
+                re.sub(r"^(?:[-*]|\d+[.)])\s+", "", structural)
+            ]
+        elif current:
+            current.append(line)
+        else:
+            current = [structural]
+    if current:
+        entries.append("\n".join(current).rstrip("\r\n"))
+
+    placeholders = {
+        "none",
+        "none.",
+        "n/a",
+        "unknown",
+        "no blockers",
+        "no blockers.",
+        "none recoverable from deterministic fallback.",
+    }
+    out: list[str] = []
+    for entry in entries:
+        placeholder_text = entry.strip()
+        placeholder_key = re.sub(r"\s+", " ", placeholder_text).casefold()
+        if placeholder_text and placeholder_key not in placeholders:
+            if len(entry) > _MAX_CHECKPOINT_ENTRY_CHARS:
+                raise ValueError("compression checkpoint entry exceeds size limit")
+            out.append(entry)
+    return out
+
+
+def _checkpoint_value_before_delimiter(text: str, match: re.Match[str]) -> str:
+    """Return value text before a field pipe, removing one framing separator."""
+    pipe_index = text.find("|", match.start(), match.end())
+    if pipe_index < 0:
+        return text[:match.start()]
+    value_end = pipe_index
+    if text[:value_end].endswith("\r\n"):
+        value_end -= 2
+    elif value_end and text[value_end - 1] in " \t\r\n":
+        value_end -= 1
+    return text[:value_end]
+
+
+def _split_checkpoint_fields(entry: str) -> dict[str, str]:
+    """Parse ordered checkpoint fields without splitting label-like value text."""
+    decision_labels = (
+        ("decision", "Decision"),
+        ("rationale", "Rationale"),
+        ("rejected", "Rejected"),
+        ("scope", "Scope"),
+    )
+    blocker_labels = (
+        ("blocker", "Blocker"),
+        ("evidence", "Evidence"),
+        ("failed_attempts", "Failed attempts"),
+        ("artifact_state", "Artifact state"),
+        ("required_input", "Required input"),
+        ("resume", "Resume"),
+    )
+    stripped = entry.lstrip()
+    if re.match(r"^Decision\s*:", stripped, flags=re.IGNORECASE):
+        labels = decision_labels
+    elif re.match(r"^Blocker\s*:", stripped, flags=re.IGNORECASE):
+        labels = blocker_labels
+    else:
+        return {"text": entry}
+
+    remainder = stripped
+    fields: dict[str, str] = {}
+
+    # Status is not part of the required summary schema, but older summaries
+    # may append it. Accept it only when the entire suffix is a recognized
+    # status; quoted shell text such as ``'x | Status: unresolved | wc -c'``
+    # must remain byte-for-byte inside the Resume value.
+    if labels is blocker_labels:
+        status_matches = list(
+            re.finditer(r"\s+\|\s+Status\s*:\s*", remainder, flags=re.IGNORECASE)
+        )
+        if status_matches:
+            match = status_matches[-1]
+            status_value = remainder[match.end():].strip()
+            normalized_status = re.sub(r"[^a-z]+", " ", status_value.casefold()).strip()
+            known_statuses = _RESOLVED_BLOCKER_STATUSES | {"unresolved", "blocked", "open"}
+            if normalized_status in known_statuses:
+                fields["status"] = status_value
+                remainder = _checkpoint_value_before_delimiter(remainder, match)
+
+    # Split right-to-left in schema order. Once Resume has been removed,
+    # label-like pipeline text inside it cannot be mistaken for earlier fields.
+    for key, label in reversed(labels[1:]):
+        # The schema uses one conventional horizontal separator after each
+        # colon. Consume at most that one byte for Resume; any additional
+        # leading whitespace belongs to the exact command value.
+        value_whitespace = r"[ \t]?" if key == "resume" else r"\s*"
+        matches = list(
+            re.finditer(
+                rf"\s+\|\s+{re.escape(label)}\s*:{value_whitespace}",
+                remainder,
+                flags=re.IGNORECASE,
+            )
+        )
+        if not matches:
+            continue
+        match = matches[-1]
+        value = remainder[match.end():]
+        fields[key] = value if key == "resume" else value.strip()
+        remainder = remainder[:match.start()]
+
+    if labels is blocker_labels and "status" not in fields:
+        status_matches = list(
+            re.finditer(r"\s+\|\s+Status\s*:\s*", remainder, flags=re.IGNORECASE)
+        )
+        if status_matches:
+            match = status_matches[-1]
+            status_value = remainder[match.end():].strip()
+            normalized_status = re.sub(r"[^a-z]+", " ", status_value.casefold()).strip()
+            known_statuses = _RESOLVED_BLOCKER_STATUSES | {"unresolved", "blocked", "open"}
+            if normalized_status in known_statuses:
+                fields["status"] = status_value
+                remainder = _checkpoint_value_before_delimiter(remainder, match)
+
+    first_key, first_label = labels[0]
+    first_match = re.match(
+        rf"^{re.escape(first_label)}\s*:\s*",
+        remainder,
+        flags=re.IGNORECASE,
+    )
+    if first_match is None:
+        return {"text": entry}
+    fields[first_key] = remainder[first_match.end():].strip()
+    return fields
+
+
+def _required_checkpoint_field(
+    fields: dict[str, str],
+    key: str,
+    *,
+    entry_kind: str,
+) -> str:
+    value = fields.pop(key, "")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"compression checkpoint {entry_kind} is missing required {key}")
+    return value if key == "resume" else value.strip()
+
+
+def build_compression_checkpoint(summary: str, *, session_id: str) -> dict[str, Any]:
+    """Build the durable decision/blocker sidecar from a generated summary."""
+    decision_entries = _checkpoint_entries(_summary_section(summary, "Key Decisions"))
+    blocker_entries = _checkpoint_entries(_summary_section(summary, "Blocked"))
+    if len(decision_entries) + len(blocker_entries) > _MAX_CHECKPOINT_ENTRIES:
+        raise ValueError("compression checkpoint exceeds entry limit")
+
+    decisions = []
+    for entry in decision_entries:
+        fields = _split_checkpoint_fields(entry)
+        if "text" in fields:
+            raise ValueError("compression checkpoint decision is not structured")
+        decisions.append(
+            {
+                "decision": _required_checkpoint_field(
+                    fields, "decision", entry_kind="decision"
+                ),
+                "rationale": _required_checkpoint_field(
+                    fields, "rationale", entry_kind="decision"
+                ),
+                "rejected_alternatives": _required_checkpoint_field(
+                    fields, "rejected", entry_kind="decision"
+                ),
+                "scope": _required_checkpoint_field(
+                    fields, "scope", entry_kind="decision"
+                ),
+                **fields,
+            }
+        )
+
+    blockers = []
+    for entry in blocker_entries:
+        fields = _split_checkpoint_fields(entry)
+        declared_status = re.sub(
+            r"[^a-z]+",
+            " ",
+            fields.pop("status", "").casefold(),
+        ).strip()
+        entry_prefix = entry.lstrip().casefold()
+        if (
+            any(
+                declared_status == status or declared_status.startswith(status + " ")
+                for status in _RESOLVED_BLOCKER_STATUSES
+            )
+            or re.match(
+                r"^(?:\[(?:resolved|closed|fixed|done|unblocked|cleared)\]|"
+                r"(?:resolved|closed|fixed|done|unblocked|cleared)\s*[:—-])",
+                entry_prefix,
+            )
+        ):
+            continue
+        if "text" in fields:
+            raise ValueError("compression checkpoint blocker is not structured")
+        blockers.append(
+            {
+                "blocker": _required_checkpoint_field(
+                    fields, "blocker", entry_kind="blocker"
+                ),
+                "evidence": _required_checkpoint_field(
+                    fields, "evidence", entry_kind="blocker"
+                ),
+                "failed_attempts": _required_checkpoint_field(
+                    fields, "failed_attempts", entry_kind="blocker"
+                ),
+                "artifact_state": _required_checkpoint_field(
+                    fields, "artifact_state", entry_kind="blocker"
+                ),
+                "required_input": _required_checkpoint_field(
+                    fields, "required_input", entry_kind="blocker"
+                ),
+                "resume_action": _required_checkpoint_field(
+                    fields, "resume", entry_kind="blocker"
+                ),
+                "status": "unresolved",
+                **fields,
+            }
+        )
+
+    return {
+        "version": _COMPRESSION_CHECKPOINT_VERSION,
+        "session_id": str(session_id or ""),
+        "decisions": decisions,
+        "blockers": blockers,
+    }
+
+
+def _checkpoint_json(checkpoint: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        checkpoint,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(encoded.encode("utf-8")) > _MAX_CHECKPOINT_JSON_CHARS:
+        raise ValueError("compression checkpoint exceeds JSON size limit")
+    return encoded
+
+
+def _inject_compression_checkpoint(
+    compressed: list[dict[str, Any]], checkpoint: dict[str, Any]
+) -> bool:
+    """Append the canonical checkpoint inside the existing summary boundary."""
+    try:
+        from agent.context_compressor import (
+            COMPRESSED_SUMMARY_METADATA_KEY,
+            _SUMMARY_END_MARKER,
+        )
+    except Exception:
+        return False
+
+    block = (
+        f"{_COMPRESSION_CHECKPOINT_START}\n"
+        "## Durable Compression Checkpoint\n"
+        "Only current decisions and unresolved blockers are authoritative here.\n"
+        f"```json\n{_checkpoint_json(checkpoint)}\n```\n"
+        f"{_COMPRESSION_CHECKPOINT_END}"
+    )
+    marker_re = re.compile(
+        rf"(?ms)\n*{re.escape(_COMPRESSION_CHECKPOINT_START)}.*?"
+        rf"{re.escape(_COMPRESSION_CHECKPOINT_END)}\n*"
+    )
+    stale_state_re = re.compile(
+        r"(?ims)^##\s+(?:Blocked|Key Decisions)\s*$\n?.*?(?=^##\s+|\Z)"
+    )
+
+    def _copy_content(content: Any) -> Any:
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return None
+        return [
+            dict(item)
+            if isinstance(item, dict) and isinstance(item.get("text"), str)
+            else item
+            for item in content
+        ]
+
+    def _text_segments(content: Any) -> tuple[str, list[tuple[int, int, int]]]:
+        if isinstance(content, str):
+            return content, [(-1, 0, len(content))]
+        if not isinstance(content, list):
+            return "", []
+        combined: list[str] = []
+        segments: list[tuple[int, int, int]] = []
+        cursor = 0
+        for index, item in enumerate(content):
+            text = item if isinstance(item, str) else (
+                item.get("text") if isinstance(item, dict) else None
+            )
+            if not isinstance(text, str):
+                continue
+            start = cursor
+            cursor += len(text)
+            combined.append(text)
+            segments.append((index, start, cursor))
+        return "".join(combined), segments
+
+    def _set_segment_text(content: Any, index: int, text: str) -> Any:
+        if index < 0:
+            return text
+        item = content[index]
+        if isinstance(item, str):
+            content[index] = text
+        else:
+            item["text"] = text
+        return content
+
+    def _remove_spans(content: Any, *, remove_stale_state: bool) -> Any:
+        copied = _copy_content(content)
+        if copied is None:
+            return None
+        combined, segments = _text_segments(copied)
+        marker_matches = list(marker_re.finditer(combined))
+        marker_remainder = marker_re.sub("", combined)
+        if (
+            _COMPRESSION_CHECKPOINT_START in marker_remainder
+            or _COMPRESSION_CHECKPOINT_END in marker_remainder
+        ):
+            return None
+        spans = [match.span() for match in marker_matches]
+        if remove_stale_state:
+            spans.extend(match.span() for match in stale_state_re.finditer(combined))
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted(spans):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+
+        def _kept_text(start: int, end: int) -> str:
+            chunks: list[str] = []
+            cursor = start
+            for removed_start, removed_end in merged:
+                if removed_end <= cursor:
+                    continue
+                if removed_start >= end:
+                    break
+                if removed_start > cursor:
+                    chunks.append(combined[cursor:min(removed_start, end)])
+                cursor = max(cursor, removed_end)
+                if cursor >= end:
+                    break
+            if cursor < end:
+                chunks.append(combined[cursor:end])
+            return "".join(chunks)
+
+        if isinstance(copied, str):
+            return _kept_text(0, len(combined)).rstrip()
+        for index, start, end in segments:
+            _set_segment_text(copied, index, _kept_text(start, end))
+        return copied
+
+    def _logical_text(content: Any) -> str:
+        combined, _ = _text_segments(content)
+        return combined
+
+    def _inject_content(content: Any) -> Any:
+        copied = _remove_spans(content, remove_stale_state=False)
+        if copied is None:
+            return None
+        combined, segments = _text_segments(copied)
+        if not segments:
+            if isinstance(copied, list):
+                copied.append({"type": "text", "text": block})
+                return copied
+            return None
+
+        boundary = combined.rfind(_SUMMARY_END_MARKER)
+        insertion_at = boundary if boundary >= 0 else len(combined)
+        target_index, target_start, _ = segments[-1]
+        for segment in segments:
+            index, start, end = segment
+            if start <= insertion_at < end or (insertion_at == start == end):
+                target_index, target_start, _ = segment
+                break
+        target_text = (
+            copied
+            if target_index < 0
+            else copied[target_index]
+            if isinstance(copied[target_index], str)
+            else copied[target_index]["text"]
+        )
+        offset = max(0, min(len(target_text), insertion_at - target_start))
+        before = target_text[:offset].rstrip()
+        after = target_text[offset:].lstrip("\r\n")
+        injected_text = (
+            f"{before}\n\n{block}\n\n{after}"
+            if before
+            else f"{block}\n\n{after}"
+        ).rstrip()
+        copied = _set_segment_text(copied, target_index, injected_text)
+        rendered = _logical_text(copied)
+        rendered_boundary = rendered.rfind(_SUMMARY_END_MARKER)
+        rendered_checkpoint_end = rendered.rfind(_COMPRESSION_CHECKPOINT_END)
+        if rendered_boundary >= 0 and rendered_checkpoint_end >= rendered_boundary:
+            return None
+        return copied
+
+    summaries: list[tuple[int, dict[str, Any]]] = []
+    marked: list[tuple[int, dict[str, Any]]] = []
+    for index, message in enumerate(compressed):
+        text = _logical_text(message.get("content"))
+        is_marked = bool(message.get(COMPRESSED_SUMMARY_METADATA_KEY))
+        if is_marked or (
+            _SUMMARY_END_MARKER in text
+            or "[CONTEXT COMPACTION" in text
+            or "## Historical Task Snapshot" in text
+        ):
+            item = (index, message)
+            summaries.append(item)
+            if is_marked:
+                marked.append(item)
+    if not summaries:
+        return False
+
+    target_index, target_message = marked[-1] if marked else summaries[-1]
+    for index, message in summaries:
+        if index >= target_index:
+            continue
+        sanitized = _remove_spans(message.get("content"), remove_stale_state=True)
+        if sanitized is None:
+            return False
+        message["content"] = sanitized
+
+    injected = _inject_content(target_message.get("content"))
+    if injected is None:
+        return False
+    target_message[COMPRESSED_SUMMARY_METADATA_KEY] = True
+    target_message["content"] = injected
+    return True
+
+
+def _summary_body_for_checkpoint(compressor: Any, compressed: list[dict[str, Any]]) -> str:
+    """Prefer the unprefixed generated body; fall back to the summary message."""
+    strip_prefix = getattr(compressor, "_strip_summary_prefix", None)
+
+    def _normalized(text: str) -> str:
+        if callable(strip_prefix):
+            try:
+                return str(strip_prefix(text) or "").strip()
+            except Exception:
+                pass
+        return text.strip()
+
+    previous = getattr(compressor, "_previous_summary", None)
+    if (
+        not getattr(compressor, "_last_summary_fallback_used", False)
+        and isinstance(previous, str)
+        and previous.strip()
+    ):
+        return _normalized(previous)
+    try:
+        from agent.context_compressor import (
+            COMPRESSED_SUMMARY_METADATA_KEY,
+            _content_text_for_contains,
+        )
+    except Exception:
+        return ""
+    for message in reversed(compressed):
+        if message.get(COMPRESSED_SUMMARY_METADATA_KEY):
+            return _normalized(_content_text_for_contains(message.get("content")))
+    return ""
 
 
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
@@ -834,8 +1345,14 @@ def compress_context(
                 _lock_refresh_interval,
             ).start()
 
+    _lock_released = False
+
     def _release_lock() -> None:
         """Release the lock keyed on the OLD session_id (before rotation)."""
+        nonlocal _lock_released
+        if _lock_released:
+            return
+        _lock_released = True
         if _lock_refresher is not None:
             _lock_refresher.stop()
         if _lock_db is not None and _lock_sid and _lock_holder:
@@ -896,6 +1413,57 @@ def compress_context(
                 existing_prompt = agent._build_system_prompt(system_message)
             return messages, existing_prompt
 
+    # Acquiring the lock proves that no other path is compressing this parent
+    # *now*. It does not prove that this AIAgent still points at the live tip: a
+    # competing path can finish its rotation and release the parent lock while
+    # this path is delayed in preflight provider checks. Revalidate lineage only
+    # after acquisition, when the winner's end-parent/create-child writes are
+    # stable. Otherwise the delayed path can acquire the old id and create a
+    # second continuation sibling despite the lock never being held concurrently.
+    try:
+        from hermes_state import SessionDB as _ConcreteSessionDB
+
+        _can_revalidate_lineage = isinstance(_lock_db, _ConcreteSessionDB)
+    except Exception:
+        _can_revalidate_lineage = False
+    _get_compression_tip = None
+    if _can_revalidate_lineage and _lock_db is not None:
+        _get_compression_tip = getattr(_lock_db, "get_compression_tip", None)
+    if callable(_get_compression_tip) and _lock_sid:
+        try:
+            _compression_tip = _get_compression_tip(_lock_sid)
+        except Exception as _lineage_err:
+            logger.warning(
+                "compression lineage revalidation failed for session=%s "
+                "(%s: %s) — skipping compression this cycle",
+                _lock_sid,
+                type(_lineage_err).__name__,
+                _lineage_err,
+            )
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            _release_lock()
+            return messages, _existing_sp
+        if _compression_tip and _compression_tip != _lock_sid:
+            logger.warning(
+                "compression skipped: stale session=%s already continued as %s",
+                _lock_sid,
+                _compression_tip,
+            )
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            _release_lock()
+            return messages, _existing_sp
+
+    try:
+        from agent.context_compressor import ContextCompressor as _BuiltInContextCompressor
+
+        _is_builtin_compressor = type(agent.context_compressor) is _BuiltInContextCompressor
+    except Exception:
+        _is_builtin_compressor = False
+
     # Notify external memory provider before compression discards context
     if agent._memory_manager:
         try:
@@ -903,6 +1471,76 @@ def compress_context(
         except Exception:
             pass
 
+    # A successful built-in compression mutates iterative, anti-thrash, and
+    # diagnostic state before the SessionDB boundary is rewritten. Snapshot the
+    # complete instance state so a checkpoint failure cannot consume an attempt
+    # or leave a cooldown/savings verdict for a boundary that never committed.
+    _compressor_state_before: Optional[dict[str, Any]] = None
+    _compressor_dict_before = (
+        getattr(agent.context_compressor, "__dict__", None)
+        if _is_builtin_compressor
+        else None
+    )
+    _compressor_durable_state_before: dict[str, Any] = {}
+    _compressor_state_snapshot_error: Optional[Exception] = None
+    if isinstance(_compressor_dict_before, dict):
+        try:
+            _compressor_state_before = {
+                key: value if key == "_session_db" else copy.deepcopy(value)
+                for key, value in _compressor_dict_before.items()
+            }
+            _compressor_db = _compressor_dict_before.get("_session_db") or _lock_db
+            _compressor_sid = str(
+                _compressor_dict_before.get("_session_id") or _lock_sid or ""
+            )
+            if _compressor_db is not None and _compressor_sid:
+                _cooldown_getter = getattr(
+                    _compressor_db, "get_compression_failure_cooldown", None
+                )
+                _cooldown_recorder = getattr(
+                    _compressor_db, "record_compression_failure_cooldown", None
+                )
+                _cooldown_clearer = getattr(
+                    _compressor_db, "clear_compression_failure_cooldown", None
+                )
+                if (
+                    callable(_cooldown_getter)
+                    and callable(_cooldown_recorder)
+                    and callable(_cooldown_clearer)
+                ):
+                    _compressor_durable_state_before["cooldown"] = copy.deepcopy(
+                        _cooldown_getter(_compressor_sid)
+                    )
+                _streak_getter = getattr(
+                    _compressor_db, "get_compression_fallback_streak", None
+                )
+                _streak_setter = getattr(
+                    _compressor_db, "set_compression_fallback_streak", None
+                )
+                if callable(_streak_getter) and callable(_streak_setter):
+                    _compressor_durable_state_before["fallback_streak"] = copy.deepcopy(
+                        _streak_getter(_compressor_sid)
+                    )
+                _compressor_durable_state_before["db"] = _compressor_db
+                _compressor_durable_state_before["session_id"] = _compressor_sid
+        except (OSError, TypeError, ValueError, RuntimeError) as _snapshot_err:
+            _compressor_state_before = None
+            _compressor_durable_state_before = {}
+            _compressor_state_snapshot_error = _snapshot_err
+
+    if _compressor_state_snapshot_error is not None:
+        try:
+            agent._emit_warning(
+                "⚠ Compression aborted: built-in compressor state could not be "
+                f"snapshotted ({_compressor_state_snapshot_error}). No messages were dropped."
+            )
+        except Exception:
+            pass
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        _release_lock()
+        return messages, _existing_sp
     try:
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
     except TypeError:
@@ -985,6 +1623,118 @@ def compress_context(
         _release_lock()
         return messages, _existing_sp
 
+    _system_prompt_before_boundary = getattr(agent, "_cached_system_prompt", None)
+
+    def _abort_builtin_checkpoint_boundary(
+        error: Exception,
+        *,
+        stage: str,
+    ) -> Tuple[list[dict[str, Any]], str]:
+        _compressor_dict = getattr(agent.context_compressor, "__dict__", None)
+        if isinstance(_compressor_dict, dict) and _compressor_state_before is not None:
+            _compressor_dict.clear()
+            _compressor_dict.update(_compressor_state_before)
+        _durable_restore_error: Optional[Exception] = None
+        if _compressor_durable_state_before:
+            try:
+                _state_db = _compressor_durable_state_before["db"]
+                _state_sid = _compressor_durable_state_before["session_id"]
+                if "cooldown" in _compressor_durable_state_before:
+                    _cooldown_state = cast(
+                        Optional[dict[str, Any]],
+                        _compressor_durable_state_before["cooldown"],
+                    )
+                    if _cooldown_state:
+                        _state_db.record_compression_failure_cooldown(
+                            _state_sid,
+                            float(_cooldown_state["cooldown_until"]),
+                            _cooldown_state.get("error"),
+                        )
+                    else:
+                        _state_db.clear_compression_failure_cooldown(_state_sid)
+                if "fallback_streak" in _compressor_durable_state_before:
+                    _streak_state = cast(
+                        Optional[int],
+                        _compressor_durable_state_before["fallback_streak"],
+                    )
+                    _state_db.set_compression_fallback_streak(
+                        _state_sid,
+                        int(_streak_state or 0),
+                    )
+            except (OSError, TypeError, ValueError, RuntimeError) as restore_error:
+                _durable_restore_error = restore_error
+        agent.context_compressor._last_compress_aborted = True
+        agent.context_compressor._last_compression_made_progress = False
+        agent.context_compressor._last_summary_error = (
+            f"compression checkpoint {stage} failed: {error}"
+        )
+        logger.warning(
+            "Compression checkpoint %s failed for session=%s (%s: %s) — "
+            "returning the unchanged transcript",
+            stage,
+            _lock_sid or "none",
+            type(error).__name__,
+            error,
+        )
+        if _durable_restore_error is not None:
+            logger.error(
+                "Compressor durable-state rollback also failed for session=%s (%s: %s)",
+                _lock_sid or "none",
+                type(_durable_restore_error).__name__,
+                _durable_restore_error,
+            )
+        try:
+            agent._emit_warning(
+                "⚠ Compression aborted because its durable checkpoint/transcript "
+                "boundary could not be committed. No messages were dropped."
+            )
+        except Exception:
+            pass
+        agent._cached_system_prompt = _system_prompt_before_boundary
+        _existing_system_prompt = _system_prompt_before_boundary
+        if not _existing_system_prompt:
+            _existing_system_prompt = agent._build_system_prompt(system_message)
+        _release_lock()
+        return messages, _existing_system_prompt
+
+    # The built-in compressor's narrative already contains ``## Key Decisions``
+    # and ``## Blocked``. Convert those sections into a compact, versioned
+    # sidecar in memory. Persistence is deferred to the same SessionDB transaction
+    # that archives the in-place transcript or creates the continuation child.
+    # Plugin context engines keep their existing behavior because they own their
+    # persistence contract.
+    _checkpoint: Optional[dict[str, Any]] = None
+    if _is_builtin_compressor:
+        try:
+            _checkpoint = build_compression_checkpoint(
+                _summary_body_for_checkpoint(agent.context_compressor, compressed),
+                session_id=_lock_sid,
+            )
+            if not _inject_compression_checkpoint(compressed, _checkpoint):
+                raise RuntimeError("compressed summary message was not found")
+            _checkpoint_json(_checkpoint)
+        except Exception as _checkpoint_err:
+            return _abort_builtin_checkpoint_boundary(
+                _checkpoint_err,
+                stage="preparation",
+            )
+
+    def _checkpoint_state_for_session(
+        session_id: str,
+    ) -> Tuple[Optional[dict[str, Any]], Optional[dict[str, str]]]:
+        if not _is_builtin_compressor or _checkpoint is None:
+            return None, None
+        targeted = copy.deepcopy(_checkpoint)
+        targeted["session_id"] = session_id
+        if not _inject_compression_checkpoint(compressed, targeted):
+            raise RuntimeError("compressed summary message was not found during retarget")
+        payload = _checkpoint_json(targeted)
+        return targeted, {
+            _COMPRESSION_CHECKPOINT_META_PREFIX + session_id: payload,
+        }
+
+    _committed_checkpoint: Optional[dict[str, Any]] = None
+
     try:
         summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
         if summary_error:
@@ -1052,7 +1802,18 @@ def compress_context(
                     # for search/recovery (Teknium review — keep one durable id
                     # WITHOUT destroying history, unlike a hard replace_messages).
                     # See #38763.
-                    agent._session_db.archive_and_compact(agent.session_id, compressed)
+                    _target_checkpoint, _target_state_meta = _checkpoint_state_for_session(
+                        agent.session_id
+                    )
+                    if _target_state_meta:
+                        agent._session_db.archive_and_compact(
+                            agent.session_id,
+                            compressed,
+                            state_meta=_target_state_meta,
+                        )
+                    else:
+                        agent._session_db.archive_and_compact(agent.session_id, compressed)
+                    _committed_checkpoint = _target_checkpoint
                     # Reset the flush identity set so the next turn's appends are
                     # diffed against the COMPACTED transcript: the compacted dicts
                     # are passed as conversation_history next turn and skipped by
@@ -1071,7 +1832,9 @@ def compress_context(
                     try:
                         agent._flush_messages_to_session_db(messages)
                     except Exception:
-                        pass  # best-effort — don't block compression on a flush error
+                        if _is_builtin_compressor:
+                            raise
+                        pass  # plugin engines retain their legacy best-effort behavior
                     # Propagate title to the new session with auto-numbering
                     old_title = agent._session_db.get_session_title(agent.session_id)
                     agent._session_db.end_session(agent.session_id, "compression")
@@ -1102,13 +1865,23 @@ def compress_context(
                         pass
                     agent._session_db_created = False
                     try:
+                        _target_checkpoint, _target_state_meta = (
+                            _checkpoint_state_for_session(agent.session_id)
+                        )
+                        _create_kwargs = {
+                            "model": agent.model,
+                            "model_config": agent._session_init_model_config,
+                            "parent_session_id": old_session_id,
+                        }
+                        if _target_state_meta:
+                            _create_kwargs["state_meta"] = _target_state_meta
                         agent._session_db.create_session(
                             session_id=agent.session_id,
-                            source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                            model=agent.model,
-                            model_config=agent._session_init_model_config,
-                            parent_session_id=old_session_id,
+                            source=agent.platform
+                            or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                            **_create_kwargs,
                         )
+                        _committed_checkpoint = _target_checkpoint
                     except Exception as _cs_err:
                         # The child row could not be created (e.g. FK constraint,
                         # contended write). Previously the outer handler simply
@@ -1185,6 +1958,11 @@ def compress_context(
                         if isinstance(message, dict)
                     }
             except Exception as e:
+                if _is_builtin_compressor:
+                    return _abort_builtin_checkpoint_boundary(
+                        e,
+                        stage="session persistence",
+                    )
                 # If the rotation rolled back to the parent (orphan-avoidance
                 # above), agent.session_id is the still-indexed parent and
                 # old_session_id was cleared — so this is recovery, not an
@@ -1197,6 +1975,13 @@ def compress_context(
                     )
                 else:
                     logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+
+        if _is_builtin_compressor:
+            if _committed_checkpoint is None:
+                _committed_checkpoint, _ = _checkpoint_state_for_session(
+                    agent.session_id or _lock_sid
+                )
+            agent._last_compression_checkpoint = _committed_checkpoint
 
         # Compaction-boundary bookkeeping, computed once. `old_session_id` is only
         # bound in the rotation branch; in-place leaves it unset. `_boundary_parent`

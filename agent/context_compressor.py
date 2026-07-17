@@ -2274,10 +2274,24 @@ Be specific with file paths, commands, line numbers, and results.]
 [Work currently underway — what was being done when compaction fired]
 
 ## Blocked
-[Any blockers, errors, or issues not yet resolved. Include exact error messages.]
+[Only blockers, errors, or issues that are still unresolved. Use one bullet per
+blocker in this compact form. Every displayed field is required and non-empty;
+write "unknown" explicitly when history cannot recover a value:
+Blocker: ... | Evidence: ... | Failed attempts: ... | Artifact state: ... |
+Required input: ... | Resume: exact next action or command.
+Write "None." when no unresolved blocker remains.]
 
 ## Key Decisions
-[Important technical decisions and WHY they were made]
+[Only decisions that still apply. Use one bullet per decision in this compact
+form. Every displayed field is required and non-empty; write "unknown"
+explicitly when history cannot recover a value:
+Decision: ... | Rationale: ... | Rejected: materially relevant alternatives |
+Scope: where the decision applies.
+Remove superseded decisions instead of carrying both forward.]
+
+Across `## Blocked` and `## Key Decisions`, emit at most 8 bullets total and keep
+each bullet under 2000 characters. If more state exists, consolidate related items
+without dropping an exact `Resume:` action.
 
 ## Resolved Questions
 [Questions the user asked that were ALREADY answered — include the answer so it is not repeated]

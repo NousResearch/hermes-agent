@@ -174,6 +174,46 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     )
 
 
+def test_delayed_stale_agent_cannot_rotate_completed_parent_again(
+    tmp_path: Path,
+) -> None:
+    """A path delayed before lock acquisition must not fork an ended parent.
+
+    The SQLite lock serializes overlapping holders, but serialization alone is
+    insufficient when a second AIAgent still carries the old parent id after
+    the winner has completed and released that lock. The delayed path can then
+    acquire the now-free parent lock unless it revalidates the compression tip.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "STALE_PARENT_TEST_SESSION"
+    db.create_session(parent_sid, source="discord")
+
+    winner = _build_agent_with_db(db, parent_sid)
+    delayed = _build_agent_with_db(db, parent_sid)
+    setattr(winner, "_compression_feasibility_checked", True)
+    setattr(delayed, "_compression_feasibility_checked", True)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    winner._compress_context(messages, "sys", approx_tokens=120_000)
+
+    winner_session_id = getattr(winner, "session_id")
+    assert winner_session_id != parent_sid
+    assert db.get_compression_tip(parent_sid) == winner_session_id
+    assert _count_children(db, parent_sid) == 1
+
+    returned, _ = delayed._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+    )
+
+    assert returned is messages or returned == messages
+    assert getattr(delayed, "session_id") == parent_sid
+    getattr(delayed, "context_compressor").compress.assert_not_called()
+    assert _count_children(db, parent_sid) == 1
+    assert db.get_compression_lock_holder(parent_sid) is None
+
+
 def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     """The loser of the lock race must return its input messages verbatim.
 

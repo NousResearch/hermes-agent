@@ -9,8 +9,10 @@ gaps, #42228 null cwd). When the flag is False (default), rotation behaves
 exactly as before.
 """
 
+import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -59,6 +61,252 @@ def _seed(db, sid, title, n=8):
 
 
 class TestInPlaceCompaction:
+    def test_multimodal_merged_summary_persists_checkpoint(self):
+        """A summary merged into list content remains compactable and durable."""
+        from agent.conversation_compression import (
+            _COMPRESSION_CHECKPOINT_META_PREFIX,
+            compress_context,
+        )
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260619_115500_multimodal"
+            _seed(db, sid, "multimodal", n=9)
+            agent = _make_agent(db, sid, in_place=True)
+            compressor = getattr(agent, "context_compressor")
+            del compressor.__dict__["compress"]
+            compressor.protect_first_n = 2
+            compressor.protect_last_n = 3
+            compressor._previous_summary = None
+            compressor.compression_count = 0
+            messages = [
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "msg 1"},
+                {"role": "assistant", "content": "msg 2"},
+                {"role": "user", "content": "msg 3"},
+                {"role": "assistant", "content": "msg 4"},
+                {"role": "user", "content": "msg 5"},
+                {"role": "user", "content": [{"type": "text", "text": "msg 6"}]},
+                {"role": "assistant", "content": "msg 7"},
+                {"role": "user", "content": "msg 8"},
+            ]
+
+            with patch.object(compressor, "_generate_summary", return_value=(
+                "## Blocked\nNone.\n\n"
+                "## Key Decisions\n"
+                "- Decision: retain multimodal content | Rationale: preserve provider input | "
+                "Rejected: flattening blocks | Scope: compressed transcript"
+            )):
+                compressed, _ = compress_context(
+                    agent,
+                    messages,
+                    approx_tokens=100_000,
+                    system_message="sys",
+                )
+
+            assert compressed is not messages
+            merged = next(
+                message for message in compressed
+                if message.get("_compressed_summary")
+            )
+            assert isinstance(merged["content"], list)
+            rendered = "\n".join(
+                block if isinstance(block, str) else str(block.get("text") or "")
+                for block in merged["content"]
+            )
+            assert "<!-- hermes:compression-checkpoint:v1 -->" in rendered
+            assert rendered.index("<!-- /hermes:compression-checkpoint -->") < rendered.index(
+                "--- END OF CONTEXT SUMMARY"
+            )
+            checkpoint = json.loads(
+                db.get_meta(_COMPRESSION_CHECKPOINT_META_PREFIX + sid) or "{}"
+            )
+            assert checkpoint["decisions"][0]["decision"] == "retain multimodal content"
+
+    def test_checkpoint_failure_restores_real_compressor_durable_state(self):
+        from agent.conversation_compression import (
+            _COMPRESSION_CHECKPOINT_META_PREFIX,
+            compress_context,
+        )
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260619_115600_rollback"
+            _seed(db, sid, "rollback", n=9)
+            agent = _make_agent(db, sid, in_place=True)
+            compressor = getattr(agent, "context_compressor")
+            del compressor.__dict__["compress"]
+            compressor.protect_first_n = 2
+            compressor.protect_last_n = 3
+            compressor._previous_summary = None
+            compressor.compression_count = 0
+            cooldown_until = time.time() + 600
+            db.record_compression_failure_cooldown(sid, cooldown_until, "before")
+            compressor.get_active_compression_failure_cooldown()
+            before = db.get_compression_failure_cooldown(sid)
+            assert before is not None
+            active_before = db.get_messages_as_conversation(sid)
+            messages = [
+                {"role": "system", "content": "system prompt"},
+                *[
+                    {
+                        "role": "user" if index % 2 else "assistant",
+                        "content": f"msg {index}",
+                    }
+                    for index in range(1, 9)
+                ],
+            ]
+            summary = (
+                "## Blocked\nNone.\n\n## Key Decisions\n"
+                "- Decision: preserve rollback | Rationale: atomic boundary | "
+                "Rejected: partial commit | Scope: checkpoint failure"
+            )
+
+            def _generate_and_clear(*_args, **_kwargs):
+                compressor._previous_summary = summary
+                compressor._clear_compression_failure_cooldown()
+                return summary
+
+            def _fail_message_insert(*_args, **_kwargs):
+                raise OSError("disk full")
+
+            with (
+                patch.object(compressor, "_generate_summary", _generate_and_clear),
+                patch.object(db, "_insert_message_rows", _fail_message_insert),
+            ):
+                returned, _ = compress_context(
+                    agent,
+                    messages,
+                    approx_tokens=100_000,
+                    system_message="sys",
+                )
+
+            after = db.get_compression_failure_cooldown(sid)
+            assert returned is messages
+            assert after is not None
+            assert after["error"] == before["error"] == "before"
+            assert after["cooldown_until"] == pytest.approx(
+                before["cooldown_until"], abs=0.01
+            )
+            assert db.get_meta(_COMPRESSION_CHECKPOINT_META_PREFIX + sid) is None
+            assert db.get_messages_as_conversation(sid) == active_before
+
+    def test_persisted_checkpoint_is_replaced_after_reload_and_recompression(self):
+        from agent.context_compressor import _SUMMARY_END_MARKER
+        from agent.conversation_compression import (
+            _COMPRESSION_CHECKPOINT_END,
+            _COMPRESSION_CHECKPOINT_META_PREFIX,
+            _COMPRESSION_CHECKPOINT_START,
+            compress_context,
+        )
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260619_115700_recompress"
+            db.create_session(sid, "cli", model="test/model")
+            old_checkpoint = json.dumps(
+                {
+                    "version": 1,
+                    "session_id": sid,
+                    "decisions": [{"decision": "obsolete choice"}],
+                    "blockers": [{"blocker": "old blocker", "status": "unresolved"}],
+                }
+            )
+            checkpoint_start_cut = len(_COMPRESSION_CHECKPOINT_START) // 2
+            checkpoint_end_cut = len(_COMPRESSION_CHECKPOINT_END) // 2
+            old_summary = [
+                {
+                    "type": "text",
+                    "text": (
+                        "[CONTEXT COMPACTION — REFERENCE ONLY]\n"
+                        "## Historical Task Snapshot\nkeep historical fact\n\n"
+                        "## Blo"
+                    ),
+                },
+                {"type": "text", "text": "cked\n- Blocker: old blocker\n\n"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,old"}},
+                {"type": "text", "text": "## Key Deci"},
+                {"type": "text", "text": "sions\n- Decision: obsolete choice\n\n"},
+                {
+                    "type": "text",
+                    "text": _COMPRESSION_CHECKPOINT_START[:checkpoint_start_cut],
+                },
+                {
+                    "type": "text",
+                    "text": _COMPRESSION_CHECKPOINT_START[checkpoint_start_cut:]
+                    + "\n```json\n"
+                    + old_checkpoint
+                    + "\n```\n"
+                    + _COMPRESSION_CHECKPOINT_END[:checkpoint_end_cut],
+                },
+                {
+                    "type": "text",
+                    "text": _COMPRESSION_CHECKPOINT_END[checkpoint_end_cut:]
+                    + "\n\n"
+                    + _SUMMARY_END_MARKER,
+                },
+            ]
+            persisted = [
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": old_summary, "_compressed_summary": True},
+                {"role": "assistant", "content": "msg 2"},
+                {"role": "user", "content": "msg 3"},
+                {"role": "assistant", "content": "msg 4"},
+                {"role": "user", "content": "msg 5"},
+                {"role": "user", "content": "msg 6"},
+                {"role": "assistant", "content": "msg 7"},
+                {"role": "user", "content": "msg 8"},
+            ]
+            db.replace_messages(sid, persisted)
+            reloaded = db.get_messages_as_conversation(sid)
+            assert all("_compressed_summary" not in message for message in reloaded)
+
+            agent = _make_agent(db, sid, in_place=True)
+            compressor = getattr(agent, "context_compressor")
+            del compressor.__dict__["compress"]
+            compressor.protect_first_n = 2
+            compressor.protect_last_n = 3
+            compressor.tail_token_budget = 1
+            compressor._previous_summary = None
+            compressor.compression_count = 0
+            with patch.object(
+                compressor,
+                "_generate_summary",
+                return_value=(
+                    "## Blocked\nNone.\n\n"
+                    "## Key Decisions\n- Decision: current choice | Rationale: current | "
+                    "Rejected: prior approach | Scope: recompression"
+                ),
+            ):
+                compressed, _ = compress_context(
+                    agent,
+                    reloaded,
+                    approx_tokens=100_000,
+                    system_message="sys",
+                )
+
+            rendered = "\n".join(str(message.get("content") or "") for message in compressed)
+            assert rendered.count(_COMPRESSION_CHECKPOINT_START) == 1
+            assert "obsolete choice" not in rendered
+            assert "old blocker" not in rendered
+            assert "keep historical fact" in rendered
+            assert "data:image/png;base64,old" in rendered
+            assert "current choice" in rendered
+            checkpoint = json.loads(
+                db.get_meta(_COMPRESSION_CHECKPOINT_META_PREFIX + sid) or "{}"
+            )
+            assert checkpoint["decisions"][0]["decision"] == "current choice"
+
+            persisted_again = "\n".join(
+                str(message.get("content") or "")
+                for message in db.get_messages_as_conversation(sid)
+            )
+            assert persisted_again.count(_COMPRESSION_CHECKPOINT_START) == 1
+            assert "obsolete choice" not in persisted_again
+
     def test_in_place_keeps_same_session_id(self):
         """In-place mode: id unchanged, no child row, no rename, history kept."""
         from hermes_state import SessionDB
@@ -95,10 +343,12 @@ class TestInPlaceCompaction:
             # doesn't immediately re-compact (#38763).
             reloaded = db.get_messages_as_conversation(sid)
             assert len(reloaded) == 2
-            assert [m.get("content") for m in reloaded] == [
-                "[CONTEXT COMPACTION] summary of prior turns",
-                "recent reply",
-            ]
+            summary = reloaded[0].get("content") or ""
+            assert summary.startswith("[CONTEXT COMPACTION] summary of prior turns")
+            assert "<!-- hermes:compression-checkpoint:v1 -->" in summary
+            assert '"blockers":[]' in summary
+            assert '"decisions":[]' in summary
+            assert reloaded[1].get("content") == "recent reply"
             assert row["message_count"] == 2  # live (active) count
             # NON-DESTRUCTIVE: the 8 seeded originals survive at active=0
             # alongside the 2 compacted rows — nothing was DELETEd.
@@ -190,7 +440,10 @@ class TestRotationFallbackWhenFlagOff:
         #38763). With in_place=False explicitly set, legacy rotation is
         unchanged — forks a renamed continuation session."""
         from hermes_state import SessionDB
-        from agent.conversation_compression import compress_context
+        from agent.conversation_compression import (
+            _COMPRESSION_CHECKPOINT_META_PREFIX,
+            compress_context,
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             db = SessionDB(db_path=Path(tmp) / "t.db")
@@ -200,7 +453,7 @@ class TestRotationFallbackWhenFlagOff:
             agent._last_flushed_db_idx = 5
 
             messages = [{"role": "user", "content": f"m{i}"} for i in range(8)]
-            compress_context(
+            compressed, _ = compress_context(
                 agent, messages, approx_tokens=100_000, system_message="sys"
             )
 
@@ -217,10 +470,25 @@ class TestRotationFallbackWhenFlagOff:
             # boundary, so a headless process killed before finalization can
             # still resume it without duplicating the two handoff messages.
             assert agent._last_flushed_db_idx == 2
-            assert [m.get("content") for m in db.get_messages_as_conversation(agent.session_id)] == [
-                "[CONTEXT COMPACTION] summary of prior turns",
-                "recent reply",
-            ]
+            child_id = child[0]["id"]
+            assert db.get_meta(_COMPRESSION_CHECKPOINT_META_PREFIX + sid) is None
+            child_checkpoint = json.loads(
+                db.get_meta(_COMPRESSION_CHECKPOINT_META_PREFIX + child_id) or "{}"
+            )
+            assert child_checkpoint["session_id"] == child_id
+            assert getattr(agent, "_last_compression_checkpoint")["session_id"] == child_id
+            assert child_id in "\n".join(
+                str(message.get("content") or "") for message in compressed
+            )
+            persisted = db.get_messages_as_conversation(child_id)
+            assert len(persisted) == 2
+            persisted_summary = str(persisted[0].get("content") or "")
+            assert persisted_summary.startswith(
+                "[CONTEXT COMPACTION] summary of prior turns"
+            )
+            assert "<!-- hermes:compression-checkpoint:v1 -->" in persisted_summary
+            assert child_id in persisted_summary
+            assert persisted[1].get("content") == "recent reply"
             # Rotation mode does NOT set the in-place signal.
             assert getattr(agent, "_last_compaction_in_place", False) is False
 

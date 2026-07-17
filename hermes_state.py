@@ -1952,6 +1952,7 @@ class SessionDB:
         parent_session_id: str = None,
         cwd: str = None,
         profile_name: str = None,
+        state_meta: Optional[Dict[str, str]] = None,
     ) -> None:
         """Insert a session row, enriching NULL metadata on conflict.
 
@@ -2006,6 +2007,12 @@ class SessionDB:
                     time.time(),
                 ),
             )
+            if state_meta:
+                conn.executemany(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    tuple(state_meta.items()),
+                )
         self._execute_write(_do)
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
@@ -4419,7 +4426,11 @@ class SessionDB:
             return cursor.fetchone() is not None
 
     def archive_and_compact(
-        self, session_id: str, compacted_messages: List[Dict[str, Any]]
+        self,
+        session_id: str,
+        compacted_messages: List[Dict[str, Any]],
+        *,
+        state_meta: Optional[Dict[str, str]] = None,
     ) -> int:
         """Non-destructive in-place compaction for a single durable session id.
 
@@ -4446,6 +4457,15 @@ class SessionDB:
         """
 
         def _do(conn):
+            # Commit the durable compression sidecar in the SAME transaction,
+            # before any active transcript row is archived. A later insert or
+            # count failure rolls both changes back together.
+            if state_meta:
+                conn.executemany(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    tuple(state_meta.items()),
+                )
             # Soft-archive the live turns: active=0 hides them from the live
             # context load, compacted=1 marks them as "summarized away" (vs
             # rewind/undo's active=0+compacted=0, which means "user took it

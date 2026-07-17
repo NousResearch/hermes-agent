@@ -154,6 +154,60 @@ class TestProviderDriftGuard:
         assert agent_constructed is True
 
 
+class TestCronAuthFallbackApiMode:
+    def test_fallback_forwards_explicit_api_mode(self, tmp_path):
+        """Cron auth failover must preserve the fallback entry's wire protocol."""
+        from hermes_cli.auth import AuthError
+
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  default: primary-model\n"
+            "  provider: openai-codex\n"
+            "fallback_providers:\n"
+            "  - provider: kimi-coding\n"
+            "    model: k3\n"
+            "    base_url: https://api.kimi.com/coding/v1\n"
+            "    api_mode: chat_completions\n"
+        )
+        calls = []
+
+        def fake_resolve(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise AuthError("primary credentials unavailable")
+            return {
+                "api_key": "test-key",
+                "base_url": "https://api.kimi.com/coding/v1",
+                "provider": "kimi-coding",
+                "api_mode": kwargs.get("explicit_api_mode"),
+            }
+
+        fake_db = MagicMock()
+        with (
+            patch("cron.scheduler._hermes_home", tmp_path),
+            patch("cron.scheduler._get_hermes_home", return_value=tmp_path),
+            patch("cron.scheduler._resolve_origin", return_value=None),
+            patch("hermes_cli.env_loader.load_hermes_dotenv"),
+            patch("hermes_cli.env_loader.reset_secret_source_cache"),
+            patch("hermes_state.SessionDB", return_value=fake_db),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                side_effect=fake_resolve,
+            ),
+            patch("run_agent.AIAgent") as mock_agent_cls,
+        ):
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _output, final_response, error = run_job(_base_job())
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert calls[1]["explicit_api_mode"] == "chat_completions"
+        assert calls[1]["target_model"] == "k3"
+
+
 class TestCreateJobSnapshot:
     """create_job captures provider_snapshot for unpinned agent jobs only."""
 

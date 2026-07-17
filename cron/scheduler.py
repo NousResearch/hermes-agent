@@ -3218,6 +3218,8 @@ def run_job(
                     }
                     if entry.get("base_url"):
                         fb_kwargs["explicit_base_url"] = entry["base_url"]
+                    if entry.get("api_mode"):
+                        fb_kwargs["explicit_api_mode"] = entry["api_mode"]
                     fb_api_key = resolve_entry_api_key(entry)
                     if fb_api_key:
                         fb_kwargs["explicit_api_key"] = fb_api_key

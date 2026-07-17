@@ -2174,6 +2174,8 @@ def _try_resolve_fallback_provider() -> dict | None:
                     requested=entry.get("provider"),
                     explicit_base_url=entry.get("base_url"),
                     explicit_api_key=resolve_entry_api_key(entry),
+                    explicit_api_mode=entry.get("api_mode"),
+                    target_model=entry.get("model"),
                 )
                 # Log the literal `provider` key from config, not the resolved
                 # runtime category — an Ollama fallback resolves through the

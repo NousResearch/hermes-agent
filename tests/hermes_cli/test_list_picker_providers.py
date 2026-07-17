@@ -115,44 +115,28 @@ def test_non_openrouter_rows_passed_through_unchanged(monkeypatch):
     assert result[1]["models"] == ["gemini-3-flash-preview"]
 
 
-def test_authenticated_kimi_row_keeps_k3_in_offline_gateway_picker(monkeypatch):
-    """Telegram/Discord pickers retain K3 when live model discovery is offline."""
-    import agent.models_dev as models_dev
-    import hermes_cli.auth as auth
-    import hermes_cli.models as models
-    import hermes_cli.providers as providers
-
-    monkeypatch.setenv("KIMI_API_KEY", "test-key")
+def test_kimi_picker_preserves_endpoint_scoped_k3_catalog(monkeypatch):
+    """Telegram/Discord retain K3 once the Kimi profile authorizes it."""
+    base = [
+        _make_provider(
+            "kimi-coding",
+            models=["kimi-k2.7-code", "k3"],
+        )
+    ]
     monkeypatch.setattr(
-        models_dev,
-        "PROVIDER_TO_MODELS_DEV",
-        {"kimi-coding": "kimi-for-coding"},
+        model_switch,
+        "list_authenticated_providers",
+        lambda **kw: list(base),
     )
     monkeypatch.setattr(
-        models_dev,
-        "fetch_models_dev",
-        lambda: {
-            "kimi-for-coding": {
-                "name": "Kimi Coding Plan",
-                "env": ["KIMI_API_KEY"],
-                "models": {},
-            }
-        },
-    )
-    monkeypatch.setattr(models, "cached_provider_model_ids", lambda *_a, **_kw: [])
-    monkeypatch.setattr(models, "CANONICAL_PROVIDERS", [])
-    monkeypatch.setattr(providers, "HERMES_OVERLAYS", {})
-    monkeypatch.setattr(
-        auth,
-        "is_runtime_provider_routable",
-        lambda provider: provider == "kimi-coding",
+        "hermes_cli.models.fetch_openrouter_models",
+        lambda *a, **kw: pytest.fail("should not be called"),
     )
 
     result = model_switch.list_picker_providers(max_models=50)
 
-    kimi = next(row for row in result if row["slug"] == "kimi-coding")
-    assert "k3" in kimi["models"]
-    assert "kimi-for-coding" in kimi["models"]
+    assert result[0]["slug"] == "kimi-coding"
+    assert result[0]["models"] == ["kimi-k2.7-code", "k3"]
 
 
 def test_include_moa_adds_virtual_provider_with_named_presets(monkeypatch):

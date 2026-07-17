@@ -1519,7 +1519,7 @@ def _resolve_explicit_runtime(
     return None
 
 
-def resolve_runtime_provider(
+def _resolve_runtime_provider_impl(
     *,
     requested: Optional[str] = None,
     explicit_api_key: Optional[str] = None,
@@ -2116,6 +2116,44 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     runtime["requested_provider"] = requested_provider
+    return runtime
+
+
+def resolve_runtime_provider(
+    *,
+    requested: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+    explicit_api_mode: Optional[str] = None,
+    target_model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve provider credentials and honor a validated transport override.
+
+    ``explicit_api_mode`` is intended for fallback entries and other callers
+    that already resolved a provider-specific wire protocol.  A valid explicit
+    value is authoritative over persisted primary-model state and URL
+    heuristics.  Unknown values are ignored so the normal resolver remains the
+    safe fallback.
+    """
+    runtime = _resolve_runtime_provider_impl(
+        requested=requested,
+        explicit_api_key=explicit_api_key,
+        explicit_base_url=explicit_base_url,
+        target_model=target_model,
+    )
+    if explicit_api_mode is None:
+        return runtime
+
+    parsed_mode = _parse_api_mode(explicit_api_mode)
+    if parsed_mode:
+        runtime = dict(runtime)
+        runtime["api_mode"] = parsed_mode
+    elif str(explicit_api_mode or "").strip():
+        logger.warning(
+            "Ignoring unknown explicit api_mode %r for provider %s",
+            explicit_api_mode,
+            requested or runtime.get("provider"),
+        )
     return runtime
 
 

@@ -2209,12 +2209,21 @@ class SessionStore:
         are re-resolved at rehydration time via the normal runtime provider
         resolution.  Pass ``None`` (or a dict with no persistable values)
         to clear the persisted override, e.g. on /new.
+
+        Raises ``KeyError`` when *session_key* has no routing entry — callers
+        must ``get_or_create_session`` first.  A silent no-op here made
+        session-only ``/model`` switches appear to succeed while never
+        writing through, so the next agent rebuild reverted to
+        ``model.default`` (#66107).
         """
         with self._lock:
             self._ensure_loaded_locked()
             entry = self._entries.get(session_key)
             if entry is None:
-                return
+                raise KeyError(
+                    f"Cannot persist model override: no session entry for "
+                    f"{session_key!r}"
+                )
             cleaned = sanitize_model_override(override)
             if entry.model_override == cleaned:
                 return

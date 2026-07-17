@@ -39,6 +39,7 @@ gateway:
     warning_prefix:         "警告: {warning}"
     saved_global:           "config.yaml に保存しました (`--global`)"
     session_only_hint:      "_(このセッションのみ — 永続化するには `--global` を追加)_"
+    persist_failed_hint:    "セッション上書きを永続化できませんでした — 次のメッセージで設定のデフォルトに戻る可能性があります。gateway ログを確認するか `--global` を使ってください"
     current_label:          "現在: `{model}` ({provider})"
     current_tag:            " (現在)"
     more_models_suffix:     " (他 {count} 件)"

@@ -39,6 +39,7 @@ gateway:
     warning_prefix:         "Figyelmeztetés: {warning}"
     saved_global:           "Mentve a config.yaml fájlba (`--global`)"
     session_only_hint:      "_(csak ehhez a munkamenethez — add hozzá a `--global` opciót a megőrzéshez)_"
+    persist_failed_hint:    "nem sikerült a munkamenet-felülírás mentése - a következő üzenet visszaállhat a config alapértelmezésére; ellenőrizze a gateway naplókat vagy használja a `--global` kapcsolót"
     current_label:          "Aktuális: `{model}` ezen: {provider}"
     current_tag:            " (aktuális)"
     more_models_suffix:     " (+{count} további)"

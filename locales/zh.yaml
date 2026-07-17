@@ -39,6 +39,7 @@ gateway:
     warning_prefix:         "警告：{warning}"
     saved_global:           "已保存到 config.yaml（`--global`）"
     session_only_hint:      "_（仅本次会话有效 — 添加 `--global` 可永久保存）_"
+    persist_failed_hint:    "无法持久化会话覆盖 — 下一条消息可能回退到配置默认值；请检查 gateway 日志或使用 `--global`"
     current_label:          "当前：`{model}`（{provider}）"
     current_tag:            "（当前）"
     more_models_suffix:     "（还有 {count} 个）"

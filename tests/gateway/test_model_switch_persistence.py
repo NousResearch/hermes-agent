@@ -352,10 +352,29 @@ class TestOneTurnNeverPersisted:
         runner._session_model_overrides = {}
         runner._pending_one_turn_model_restores = {}
         runner._running_agents = {}
+        runner._session_db = None
         # async_session_store is a property over session_store; install the
-        # mock behind the private cache attribute it reads.
+        # mock behind the private cache attribute it reads. Keep session_store
+        # None so the persist helper must honor the async facade (not early-
+        # return just because the sync store is absent).
+        sk = build_session_key(_make_source())
         _store = MagicMock()
         _store.set_model_override = AsyncMock()
+        _store.get_or_create_session = AsyncMock(
+            return_value=SimpleNamespace(
+                session_key=sk,
+                session_id="sess-1",
+                was_auto_reset=False,
+            )
+        )
+        # Echo the written model so the post-write verification passes.
+        _store.get_model_override = AsyncMock(
+            return_value={
+                "model": "gpt-5.5",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+            }
+        )
         _store._store = None
         runner.session_store = None
         runner._async_session_store = _store

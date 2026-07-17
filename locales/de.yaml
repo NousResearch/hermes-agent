@@ -39,6 +39,7 @@ gateway:
     warning_prefix:         "Warnung: {warning}"
     saved_global:           "In config.yaml gespeichert (`--global`)"
     session_only_hint:      "_(nur für diese Sitzung — `--global` ergänzen, um zu speichern)_"
+    persist_failed_hint:    "Sitzungs-Override konnte nicht persistiert werden - die nächste Nachricht fällt möglicherweise auf die Config-Vorgabe zurück; Gateway-Logs prüfen oder `--global` verwenden"
     current_label:          "Aktuell: `{model}` bei {provider}"
     current_tag:            " (aktuell)"
     more_models_suffix:     " (+{count} weitere)"

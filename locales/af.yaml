@@ -39,6 +39,7 @@ gateway:
     warning_prefix:         "Waarskuwing: {warning}"
     saved_global:           "Gestoor in config.yaml (`--global`)"
     session_only_hint:      "_(slegs sessie — voeg `--global` by om permanent te stoor)_"
+    persist_failed_hint:    "kon nie sessie-oorskrywing stoor nie - volgende boodskap kan terugval na die konfigurasie-verstek; kontroleer gateway-logboeke of gebruik `--global`"
     current_label:          "Huidig: `{model}` op {provider}"
     current_tag:            " (huidig)"
     more_models_suffix:     " (+{count} meer)"

@@ -1,0 +1,22 @@
+name: ARC Runner Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: arc-runner-set
+    steps:
+      - uses: actions/checkout@v4
+      - name: Runner info
+        run: |
+          echo "Node: $(hostname)"
+          echo "OS: $(uname -a)"
+          echo "CPUs: $(nproc)"
+          echo "Memory: $(free -h | grep Mem | awk '{print $2}')"
+          echo "Disk: $(df -h / | tail -1 | awk '{print $2}')"
+      - name: Test docker
+        run: |
+          docker run --rm hello-world
+      - name: Success
+        run: echo "awaaaaaa ARC runner works!! :3"

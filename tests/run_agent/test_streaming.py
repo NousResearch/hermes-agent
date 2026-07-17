@@ -2134,3 +2134,46 @@ class TestBedrockStreamLivenessWatchdog:
 
         assert response.choices[0].message.content == "hi"
         assert agent._consecutive_stale_streams == 0
+
+
+class TestBedrockReasoningStaleFloor:
+    """The Bedrock inference-profile id -> reasoning stale-timeout floor
+    normalizer must match floor-table keys regardless of whether the model
+    is keyed with a dashed version (``claude-opus-4``) or a dotted version
+    (``claude-sonnet-4.5``). Bedrock always dashes the version, so the
+    normalizer has to try the alternate separator form."""
+
+    @pytest.mark.parametrize(
+        "model_id, expected",
+        [
+            # opus is keyed dashed/base (``claude-opus-4`` -> 240) and
+            # matches the Bedrock dashed id unchanged.
+            ("us.anthropic.claude-opus-4-6-v1:0", 240.0),
+            # sonnet is keyed DOTTED (``claude-sonnet-4.5`` /
+            # ``claude-sonnet-4.6`` -> 180). The Bedrock dashed id must
+            # now resolve via the alternate version-separator form.
+            ("us.anthropic.claude-sonnet-4-5-v1:0", 180.0),
+            ("us.anthropic.claude-sonnet-4-6-v1:0", 180.0),
+            # region prefix variations still strip correctly.
+            ("eu.anthropic.claude-sonnet-4-5-v1:0", 180.0),
+        ],
+    )
+    def test_bedrock_reasoning_models_resolve_floor(self, model_id, expected):
+        from agent.chat_completion_helpers import _bedrock_reasoning_stale_floor
+
+        assert _bedrock_reasoning_stale_floor(model_id) == expected
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            # Non-reasoning Bedrock model -> no floor.
+            "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+            "us.amazon.nova-lite-v1:0",
+            "",
+            None,
+        ],
+    )
+    def test_non_reasoning_bedrock_models_return_none(self, model_id):
+        from agent.chat_completion_helpers import _bedrock_reasoning_stale_floor
+
+        assert _bedrock_reasoning_stale_floor(model_id) is None

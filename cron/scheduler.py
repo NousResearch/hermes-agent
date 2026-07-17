@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -97,6 +98,13 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     job_name = job.get("name") or job.get("id") or "cron job"
     text = (error or "unknown error").strip()
     lower = text.lower()
+
+    # Script timeouts must be checked before the generic "timed out"
+    # provider-timeout branch below — the literal error text ("Script timed
+    # out after Ns: path") would otherwise match that branch and get
+    # mislabeled as a provider/fallback-chain issue, which is misleading.
+    if "script timed out" in lower:
+        return f"⚠️ Cron '{job_name}' failed: script timed out. Full details saved in cron output."
 
     # Provider/API failures are the common noisy path. Keep these short.
     if "429" in text or "rate limit" in lower or "usage limit" in lower:
@@ -2138,17 +2146,46 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         from tools.environments.local import _sanitize_subprocess_env
 
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
-        result = subprocess.run(
+        if sys.platform != "win32":
+            # Start the script in its own session so a timeout can clean up
+            # the whole process group, not just the direct child — a script
+            # that spawns background work (watchdog patterns, `cmd &`) would
+            # otherwise leave orphans running after the tick reports failure.
+            # start_new_session (not preexec_fn=os.setsid): callers can hold a
+            # running claim-heartbeat thread, and preexec_fn is unsafe in a
+            # multithreaded process.
+            popen_kwargs["start_new_session"] = True
+
+        proc = subprocess.Popen(
             argv,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=script_timeout,
             cwd=str(path.parent),
             env=_sanitize_subprocess_env(os.environ.copy()),
             **popen_kwargs,
         )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
+        try:
+            stdout, stderr = proc.communicate(timeout=script_timeout)
+            returncode = proc.returncode
+        except subprocess.TimeoutExpired:
+            if sys.platform != "win32":
+                try:
+                    # start_new_session makes the child the group leader, so
+                    # its pid is the PGID. Use it directly rather than
+                    # os.getpgid(proc.pid), which can raise if the leader
+                    # already exited while descendants are still running —
+                    # exactly the orphan case this cleanup exists for.
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            else:
+                proc.kill()
+            proc.communicate()
+            raise
+
+        stdout = (stdout or "").strip()
+        stderr = (stderr or "").strip()
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -2160,8 +2197,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             stdout = "[REDACTED - redaction failed]"
             stderr = "[REDACTED - redaction failed]"
 
-        if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
+        if returncode != 0:
+            parts = [f"Script exited with code {returncode}"]
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
             if stdout:

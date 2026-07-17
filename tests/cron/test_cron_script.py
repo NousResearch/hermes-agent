@@ -195,6 +195,96 @@ class TestRunJobScript:
         assert success is False
         assert "timed out" in output.lower()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX process groups"
+    )
+    def test_script_timeout_kills_descendants(self, cron_env, monkeypatch):
+        """A timed-out script must not leave background work running.
+
+        The script is started with start_new_session=True, so the timeout
+        path can SIGKILL the whole process group. Before that, only the
+        direct child was killed and any grandchild (`cmd &`, watchdog
+        patterns) survived the tick as an orphan.
+        """
+        import time
+
+        import psutil
+
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        monkeypatch.setattr(sched_mod, "_SCRIPT_TIMEOUT", 3)
+
+        pid_file = cron_env / "grandchild.pid"
+        script = cron_env / "scripts" / "spawner.py"
+        # The grandchild detaches its stdio (as backgrounded work typically
+        # does). That matters: if it inherited our pipes, communicate() would
+        # block on them until it exited anyway, masking whether the group kill
+        # actually worked. Detached, it is a clean orphan probe. Its sleep is
+        # bounded so a regression leaks the process for a minute, not forever.
+        script.write_text(
+            textwrap.dedent(
+                f"""
+                import subprocess, sys, time
+                child = subprocess.Popen(
+                    [sys.executable, "-c", "import time; time.sleep(60)"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                )
+                with open({str(pid_file)!r}, "w") as fh:
+                    fh.write(str(child.pid))
+                time.sleep(60)
+                """
+            )
+        )
+
+        success, output = _run_job_script(str(script))
+        assert success is False
+        assert "timed out" in output.lower()
+
+        assert pid_file.exists(), "script never spawned its grandchild"
+        grandchild_pid = int(pid_file.read_text().strip())
+
+        def _dead(pid: int) -> bool:
+            # Killed-but-unreaped zombies count as dead: the orphan is
+            # reparented to init, which may not have reaped it yet. psutil can
+            # also raise mid-probe if the pid vanishes between the existence
+            # check and the status read — treat that race as dead.
+            try:
+                if not psutil.pid_exists(pid):
+                    return True
+                return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+            except Exception:
+                return True
+
+        # SIGKILL delivery to the group is asynchronous; poll rather than
+        # assert immediately.
+        deadline = time.time() + 10
+        while time.time() < deadline and not _dead(grandchild_pid):
+            time.sleep(0.1)
+
+        assert _dead(grandchild_pid), (
+            f"grandchild {grandchild_pid} survived the script timeout — the "
+            "process group was not killed"
+        )
+
+    def test_script_timeout_summary_is_not_labeled_provider_timeout(self):
+        """The script-timeout error text contains 'timed out', which the
+        generic provider-timeout branch would otherwise claim — telling the
+        operator the fallback chain was exhausted when their own script hung.
+        """
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        summary = _summarize_cron_failure_for_delivery(
+            {"name": "backup"},
+            "Script timed out after 300s: /home/u/.hermes/scripts/backup.py",
+        )
+
+        assert "script timed out" in summary.lower()
+        assert "provider timeout" not in summary.lower()
+        assert "fallback chain" not in summary.lower()
+
     def test_script_json_output(self, cron_env):
         """Scripts can output structured JSON for the LLM to parse."""
         from cron.scheduler import _run_job_script

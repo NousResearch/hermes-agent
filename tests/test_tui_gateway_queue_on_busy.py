@@ -143,12 +143,36 @@ def test_busy_queue_mode_queues_without_interrupting(monkeypatch):
     assert session["queued_prompt"]["text"] == "later"
 
 
-def test_busy_steer_mode_queues_canonical_turn_without_live_injection(monkeypatch):
+def test_busy_steer_mode_injects_when_accepted_without_enqueueing(monkeypatch):
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
-    calls = {"interrupt": 0, "steer": 0}
+    calls = {"interrupt": 0, "steer": []}
     agent = types.SimpleNamespace(
         interrupt=lambda: calls.__setitem__("interrupt", calls["interrupt"] + 1),
-        steer=lambda _text: calls.__setitem__("steer", calls["steer"] + 1),
+        steer=lambda text: (calls["steer"].append(text), True)[1],
+    )
+    session = _session(agent=agent, running=True)
+
+    resp = server._handle_busy_submit(
+        "r1",
+        "sid",
+        session,
+        "nudge",
+        "ws-1",
+        submitted_at=101.25,
+        message_id="desktop-steer-1",
+    )
+
+    assert resp["result"]["status"] == "steered"
+    assert calls == {"interrupt": 0, "steer": ["nudge"]}
+    assert session.get("queued_prompt") is None
+
+
+def test_busy_steer_mode_rejection_queues_with_source_identity(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
+    calls = {"interrupt": 0, "steer": []}
+    agent = types.SimpleNamespace(
+        interrupt=lambda: calls.__setitem__("interrupt", calls["interrupt"] + 1),
+        steer=lambda text: (calls["steer"].append(text), False)[1],
     )
     session = _session(agent=agent, running=True)
 
@@ -163,7 +187,35 @@ def test_busy_steer_mode_queues_canonical_turn_without_live_injection(monkeypatc
     )
 
     assert resp["result"]["status"] == "queued"
-    assert calls == {"interrupt": 0, "steer": 0}
+    assert calls == {"interrupt": 1, "steer": ["nudge"]}
+    assert session["queued_prompt"] == {
+        "text": "nudge",
+        "transport": "ws-1",
+        "submitted_at": 101.25,
+        "message_id": "desktop-steer-1",
+    }
+
+
+def test_busy_steer_mode_unavailable_queues_with_source_identity(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
+    calls = {"interrupt": 0}
+    agent = types.SimpleNamespace(
+        interrupt=lambda: calls.__setitem__("interrupt", calls["interrupt"] + 1)
+    )
+    session = _session(agent=agent, running=True)
+
+    resp = server._handle_busy_submit(
+        "r1",
+        "sid",
+        session,
+        "nudge",
+        "ws-1",
+        submitted_at=101.25,
+        message_id="desktop-steer-1",
+    )
+
+    assert resp["result"]["status"] == "queued"
+    assert calls["interrupt"] == 1
     assert session["queued_prompt"] == {
         "text": "nudge",
         "transport": "ws-1",
@@ -684,7 +736,7 @@ def _model_response(text):
     return types.SimpleNamespace(choices=[choice], model="test/model", usage=None)
 
 
-def test_busy_steer_submit_dedupes_and_persists_one_canonical_turn(
+def test_busy_steer_rejection_dedupes_and_persists_one_canonical_turn(
     monkeypatch,
     tmp_path,
 ):
@@ -711,7 +763,7 @@ def test_busy_steer_submit_dedupes_and_persists_one_canonical_turn(
     interrupt_calls = []
     wire_requests = []
     completed = threading.Event()
-    monkeypatch.setattr(agent, "steer", lambda text: steer_calls.append(text))
+    monkeypatch.setattr(agent, "steer", lambda text: (steer_calls.append(text), False)[1])
     monkeypatch.setattr(agent, "interrupt", lambda: interrupt_calls.append(True))
     monkeypatch.setattr(
         agent,
@@ -757,14 +809,14 @@ def test_busy_steer_submit_dedupes_and_persists_one_canonical_turn(
 
     assert first["result"]["status"] == "queued"
     assert duplicate["result"]["status"] == "duplicate"
-    assert steer_calls == []
-    assert interrupt_calls == []
+    assert steer_calls == ["canonical nudge"]
+    assert interrupt_calls == [True]
     assert session["queued_prompt"]["message_id"] == "desktop-steer-1"
     assert session.get("queued_prompts", []) == []
 
     session["running"] = False
     assert server._drain_queued_prompt("rpc-steer", "ui-session", session) is True
-    assert completed.wait(10), "steer-configured canonical turn did not complete"
+    assert completed.wait(10), "steer-fallback queued turn did not complete"
 
     canonical_users = [
         message for message in session["history"] if message.get("role") == "user"

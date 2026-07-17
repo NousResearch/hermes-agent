@@ -6166,8 +6166,10 @@ def _handle_busy_submit(
     retain the proven interrupt-and-queue path drained from ``run``'s tail.
 
     Modes: ``interrupt`` (default) interrupts the live turn before queueing;
-    ``queue`` and legacy ``steer`` queue without interruption. Live non-canonical
-    injection remains available only through the explicit ``session.steer`` API.
+    ``queue`` waits for the next turn; ``steer`` injects into the live turn when
+    accepted and otherwise falls back to the identity-preserving queue.
+    Explicit live injection is also available through ``session.steer``.
+    """
     mode = _load_busy_input_mode()
     agent = session.get("agent")
     with session["history_lock"]:

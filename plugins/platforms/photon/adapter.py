@@ -671,6 +671,9 @@ class PhotonAdapter(BasePlatformAdapter):
             is_voice = payload.get("type") == "voice"
             name = payload.get("name") or ("voice" if is_voice else "(unnamed)")
             mime = payload.get("mimeType") or ""
+            # Only .caf files are promoted to VOICE (iMessage voice notes use CAF).
+            if not is_voice and name.lower().endswith(".caf"):
+                is_voice = True
             mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
             cached = _cache_inbound_attachment(
                 payload, name, mime, force_audio=is_voice

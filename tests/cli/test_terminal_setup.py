@@ -211,10 +211,10 @@ class TestWizardRouting:
         output = self._run("ghostty", monkeypatch)
         assert "Ghostty" in output or "ghostty" in output.lower()
 
-    def test_vscode(self, monkeypatch):
+    def test_vscode_shows_the_settings_json_snippet(self, monkeypatch):
         output = self._run("vscode", monkeypatch)
         assert "/terminal-setup" not in output
-        assert "Kitty keyboard protocol" in output
+        assert '"terminal.integrated.enableKittyKeyboardProtocol": true' in output
 
     def test_unknown(self, monkeypatch):
         output = self._run("unknown", monkeypatch)

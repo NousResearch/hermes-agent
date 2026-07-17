@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
+from gateway.platforms.base import find_structural_split
 from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
@@ -729,9 +730,16 @@ class GatewayStreamConsumer:
                         _cp_budget = _custom_unit_to_cp(
                             self._accumulated, _safe_limit, _len_fn,
                         )
-                        split_at = self._accumulated.rfind("\n", 0, _cp_budget)
-                        if split_at < _safe_limit // 2:
-                            split_at = _safe_limit
+                        # Structure-aware cut: this sealed chunk becomes its
+                        # own message forever — bisecting a table or fence
+                        # here leaves both halves permanently unrenderable.
+                        split_at = find_structural_split(
+                            self._accumulated, _cp_budget,
+                        )
+                        if split_at < 0:
+                            split_at = self._accumulated.rfind("\n", 0, _cp_budget)
+                            if split_at < _safe_limit // 2:
+                                split_at = _safe_limit
                         chunk = self._accumulated[:split_at]
                         # finalize=True so the adapter applies platform-specific
                         # rich-text markup (e.g. Telegram MarkdownV2). This
@@ -992,9 +1000,11 @@ class GatewayStreamConsumer:
         remaining = text
         while len_fn(remaining) > limit:
             _cp_budget = _custom_unit_to_cp(remaining, limit, len_fn)
-            split_at = remaining.rfind("\n", 0, _cp_budget)
-            if split_at < limit // 2:
-                split_at = limit
+            split_at = find_structural_split(remaining, _cp_budget)
+            if split_at < 0:
+                split_at = remaining.rfind("\n", 0, _cp_budget)
+                if split_at < limit // 2:
+                    split_at = limit
             chunks.append(remaining[:split_at])
             remaining = remaining[split_at:].lstrip("\n")
         if remaining:

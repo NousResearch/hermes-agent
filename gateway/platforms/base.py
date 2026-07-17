@@ -191,6 +191,83 @@ def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
     return lo
 
 
+def find_structural_split(text: str, cp_limit: int) -> int:
+    """Pick a markdown-structure-aware split index inside ``text[:cp_limit]``.
+
+    Overflow splits used to cut at the last newline regardless of what that
+    newline sat inside, bisecting pipe tables and code fences across two
+    messages — neither fragment could render. Returns the codepoint index to
+    cut at (``chunk = text[:idx]``), or ``-1`` when no structurally sound cut
+    exists in the window and the caller should use its legacy newline/space/
+    hard-cut fallbacks.
+
+    Preference order:
+      1. last blank line outside a code fence (paragraph boundary) in the
+         trailing half of the window;
+      2. last fence-outside newline that doesn't bisect a pipe-table run, in
+         the trailing half;
+      3. the same, anywhere past an eighth of the window — a short head
+         message beats slicing a table in two.
+    """
+    if cp_limit <= 0 or not text:
+        return -1
+    region = text[:cp_limit]
+    half = cp_limit // 2
+    eighth = max(1, cp_limit // 8)
+
+    lines = region.split("\n")
+    if len(lines) < 2:
+        return -1
+    offsets = []
+    pos = 0
+    for ln in lines:
+        offsets.append(pos)
+        pos += len(ln) + 1
+
+    # fence_at[i]: fence state while ON line i — i.e. before processing its
+    # own marker. An opening ``` line is "outside" (state False), its body
+    # and the closing ``` line are "inside" (True).
+    fence_at = []
+    in_fence = False
+    for ln in lines:
+        fence_at.append(in_fence)
+        stripped = ln.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+
+    def _is_row(i: int) -> bool:
+        return not fence_at[i] and lines[i].lstrip().startswith("|")
+
+    best_para = -1
+    best_nl = -1
+    for i in range(len(lines) - 1):
+        nl_pos = offsets[i] + len(lines[i])
+        # fence_at[i + 1] is True for every newline from "right after the
+        # opening marker" through "right before the closing marker" — the
+        # only cuts that would strand an unclosed fence. The newline after a
+        # closing marker (fence_at False again) is a fine boundary.
+        if fence_at[i + 1]:
+            continue
+        # Resolve the following line from the FULL text, not the window —
+        # the window's last line is truncated and can read as blank (or as a
+        # non-row) when the real continuation is a table row.
+        next_start = nl_pos + 1
+        next_end = text.find("\n", next_start)
+        next_line = text[next_start : next_end if next_end != -1 else len(text)]
+        if not next_line.strip():
+            best_para = nl_pos
+        if not (_is_row(i) and next_line.lstrip().startswith("|")):
+            best_nl = nl_pos
+
+    if best_para >= half:
+        return best_para
+    if best_nl >= half:
+        return best_nl
+    if best_nl >= eighth:
+        return best_nl
+    return -1
+
+
 def is_network_accessible(host: str) -> bool:
     """Return True if *host* would expose the server beyond loopback.
 
@@ -5850,9 +5927,13 @@ class BasePlatformAdapter(ABC):
             else:
                 _cp_limit = headroom
             region = remaining[:_cp_limit]
-            split_at = region.rfind("\n")
-            if split_at < _cp_limit // 2:
-                split_at = region.rfind(" ")
+            # Structure-aware first: never bisect a pipe table or cut just
+            # after a fence opening when a paragraph/newline boundary exists.
+            split_at = find_structural_split(remaining, _cp_limit)
+            if split_at < 0:
+                split_at = region.rfind("\n")
+                if split_at < _cp_limit // 2:
+                    split_at = region.rfind(" ")
             if split_at < 1:
                 # Consume at least one codepoint. Without the max(1, …) floor,
                 # a zero _cp_limit — reachable when max_length is 0/1, or under

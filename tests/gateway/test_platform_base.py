@@ -2113,3 +2113,72 @@ class TestMediaFallbackDoesNotLeakHostPath:
         sent_text = adapter.sent[0]["content"]
         assert "Here's the daily summary." in sent_text
         assert self.SENSITIVE_PATH not in sent_text
+
+
+# ---------------------------------------------------------------------------
+# find_structural_split
+# ---------------------------------------------------------------------------
+
+
+class TestFindStructuralSplit:
+    def test_no_usable_boundary_returns_minus_one(self):
+        from gateway.platforms.base import find_structural_split
+
+        assert find_structural_split("", 100) == -1
+        assert find_structural_split("a" * 200, 100) == -1  # no newline at all
+
+    def test_prefers_paragraph_boundary(self):
+        from gateway.platforms.base import find_structural_split
+
+        text = "A" * 60 + "\n\n" + "B" * 60
+        cut = find_structural_split(text, 100)
+        assert cut == 60
+        assert text[:cut] == "A" * 60
+
+    def test_does_not_bisect_table_run(self):
+        from gateway.platforms.base import find_structural_split
+
+        head = "intro\n" * 10  # 60 chars, newline before the table at 59
+        table = "\n".join("| a | b |" for _ in range(20))
+        text = head + table
+        cut = find_structural_split(text, len(head) + 50)
+        assert cut == 59  # the newline separating intro from the table
+        assert text[cut:].lstrip("\n").startswith("|")
+
+    def test_never_cuts_inside_open_fence(self):
+        from gateway.platforms.base import find_structural_split
+
+        text = "p" * 20 + "\n\n```python\n" + "code line\n" * 30 + "```\ndone"
+        cut = find_structural_split(text, 100)
+        # only structurally sound cut is before the fence opens
+        assert 0 < cut <= text.index("```")
+
+    def test_cut_after_closed_fence_is_allowed(self):
+        from gateway.platforms.base import find_structural_split
+
+        text = "```\n" + "code line\n" * 20 + "```\n" + "tail " * 10
+        closing_nl = text.index("\n", text.index("```", 4))
+        cut = find_structural_split(text, len(text) - 10)
+        # the newline right after the closing fence is the best boundary
+        assert cut == closing_nl
+
+    def test_prose_tail_returns_minus_one_for_legacy_space_cut(self):
+        from gateway.platforms.base import find_structural_split
+
+        # Tiny fenced head, then one long prose line: the only newline sits
+        # far below an eighth of the window, and prose can be space-cut by
+        # the legacy fallback — declining is the right call.
+        text = "```\ncode\n```\n" + "tail " * 30
+        assert find_structural_split(text, len(text) - 10) == -1
+
+
+class TestTruncateMessageStructural:
+    def test_table_stays_whole_across_chunks(self):
+        head = "intro line\n" * 15
+        rows = "\n".join(f"| row{i} | value{i} |" for i in range(8))
+        msg = head + rows
+        chunks = BasePlatformAdapter.truncate_message(msg, max_length=200)
+        assert len(chunks) == 2
+        assert "|" not in chunks[0]  # table not started in chunk 1
+        for i in range(8):
+            assert f"| row{i} |" in chunks[1]  # table whole in chunk 2

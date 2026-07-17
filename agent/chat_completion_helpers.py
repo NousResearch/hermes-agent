@@ -26,7 +26,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
+from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout, get_provider_wait_notice_interval
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.errors import EmptyStreamError
@@ -755,6 +755,18 @@ def interruptible_api_call(agent, api_kwargs: dict):
     _call_start = time.time()
     agent._touch_activity("waiting for non-streaming API response")
 
+    # Wait-notice interval: suppress by default for local providers (where a long
+    # thinking pause is normal, not a sign of trouble).  Configurable per provider
+    # via wait_notice_interval_seconds in config.yaml.
+    _cfg_ns_notice = get_provider_wait_notice_interval(agent.provider, agent.model)
+    if _cfg_ns_notice is not None:
+        _ns_notice_interval: float = _cfg_ns_notice
+    elif agent.base_url and is_local_endpoint(agent.base_url):
+        _ns_notice_interval = float("inf")
+    else:
+        _ns_notice_interval = 30.0
+    _ns_last_notice_elapsed: float = -float("inf")  # elapsed at last notice emission
+
     t = threading.Thread(target=_call, daemon=True)
     t.start()
     _poll_count = 0
@@ -769,26 +781,31 @@ def interruptible_api_call(agent, api_kwargs: dict):
         # usually a slow/overloaded provider, but the UI never said so).
         if _poll_count % 100 == 0:  # 100 × 0.3s = 30s
             _elapsed = time.time() - _call_start
-            try:
-                _recovery = _codex_wait_notice_recovery(
-                    stale_timeout=_stale_timeout,
-                    ttfb_enabled=_ttfb_enabled,
-                    ttfb_timeout=_ttfb_timeout,
-                    last_event_ts=getattr(
-                        agent, "_codex_stream_last_event_ts", None
-                    ),
-                    call_start=_call_start,
-                    idle_enabled=_codex_idle_enabled,
-                    idle_timeout=_codex_idle_timeout,
-                    elapsed=_elapsed,
-                )
-                agent._emit_wait_notice(
-                    f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
-                    f"{int(_elapsed)}s with no response yet (provider may be slow "
-                    f"or overloaded{_recovery})"
-                )
-            except Exception:
-                logger.debug("wait-notice construction failed", exc_info=True)
+            agent._touch_activity(
+                f"waiting for non-streaming API response ({int(_elapsed)}s)"
+            )
+            if _elapsed >= _ns_notice_interval and _elapsed - _ns_last_notice_elapsed >= _ns_notice_interval:
+                _ns_last_notice_elapsed = _elapsed
+                try:
+                    _recovery = _codex_wait_notice_recovery(
+                        stale_timeout=_stale_timeout,
+                        ttfb_enabled=_ttfb_enabled,
+                        ttfb_timeout=_ttfb_timeout,
+                        last_event_ts=getattr(
+                            agent, "_codex_stream_last_event_ts", None
+                        ),
+                        call_start=_call_start,
+                        idle_enabled=_codex_idle_enabled,
+                        idle_timeout=_codex_idle_timeout,
+                        elapsed=_elapsed,
+                    )
+                    agent._emit_wait_notice(
+                        f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
+                        f"{int(_elapsed)}s with no response yet (provider may be slow "
+                        f"or overloaded{_recovery})"
+                    )
+                except Exception:
+                    logger.debug("wait-notice construction failed", exc_info=True)
 
         _elapsed = time.time() - _call_start
 
@@ -3615,7 +3632,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     t = threading.Thread(target=_call, daemon=True)
     t.start()
     _last_heartbeat = time.time()
-    _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+    _HEARTBEAT_INTERVAL = 30.0  # seconds between activity-tracker ticks (never changes)
+    # Wait-notice interval: suppress by default for local providers (where a long
+    # thinking pause is normal, not a sign of trouble).  Configurable per provider
+    # via wait_notice_interval_seconds in config.yaml.
+    _cfg_notice_interval = get_provider_wait_notice_interval(agent.provider, agent.model)
+    if _cfg_notice_interval is not None:
+        _notice_interval: float = _cfg_notice_interval
+    elif agent.base_url and is_local_endpoint(agent.base_url):
+        _notice_interval = float("inf")
+    else:
+        _notice_interval = 30.0
+    _last_notice_at: float = 0.0  # last_chunk_time["t"] value when notice last fired
     while t.is_alive():
         t.join(timeout=0.3)
 
@@ -3631,11 +3659,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if _hb_now - _last_heartbeat >= _HEARTBEAT_INTERVAL:
             _last_heartbeat = _hb_now
             _waiting_secs = int(_hb_now - last_chunk_time["t"])
-            if _waiting_secs >= _HEARTBEAT_INTERVAL:
-                # No chunks for 30s+ — rewrite the live spinner/status line
-                # so CLI/TUI/Desktop users see WHAT the wait is (slow or
-                # overloaded provider / long thinking pause) instead of an
-                # unexplained generic spinner, and WHEN recovery kicks in.
+            if _waiting_secs >= _notice_interval and _hb_now - _last_notice_at >= _notice_interval:
+                # No chunks for notice_interval+ — rewrite the live spinner so
+                # users see what the wait is and when recovery kicks in.
+                # _last_notice_at gates re-emission: next notice only after
+                # another full interval of silence (not every 30s tick).
+                _last_notice_at = _hb_now
                 if (
                     _stream_stale_timeout is not None
                     and _stream_stale_timeout != float("inf")
@@ -3647,6 +3676,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
                     f"{_waiting_secs}s with no output yet (provider may be "
                     f"slow or overloaded, or the model is thinking{_recovery})"
+                )
+            elif _waiting_secs >= _HEARTBEAT_INTERVAL:
+                # Chunks are flowing or within notice threshold — keep the
+                # activity tracker fresh but leave the live display alone.
+                agent._touch_activity(
+                    f"waiting for stream response ({_waiting_secs}s, no chunks yet)"
                 )
             else:
                 # Chunks are flowing — keep the activity tracker fresh but

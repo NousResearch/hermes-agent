@@ -69,6 +69,40 @@ def get_provider_stale_timeout(
     return _coerce_timeout(provider_config.get("stale_timeout_seconds"))
 
 
+def get_provider_wait_notice_interval(
+    provider_id: str, model: str | None = None
+) -> float | None:
+    """Return configured wait-notice interval in seconds, or None to use default.
+
+    Reads ``wait_notice_interval_seconds`` from the provider (or model-specific)
+    config block.  Set to ``inf`` / a very large value to suppress notices
+    entirely for a provider.
+    """
+    if not provider_id:
+        return None
+
+    try:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+    except Exception:
+        return None
+
+    providers = config.get("providers", {}) if isinstance(config, dict) else {}
+    provider_config = (
+        providers.get(provider_id, {}) if isinstance(providers, dict) else {}
+    )
+    if not isinstance(provider_config, dict):
+        return None
+
+    model_config = _get_model_config(provider_config, model)
+    if model_config is not None:
+        interval = _coerce_timeout(model_config.get("wait_notice_interval_seconds"))
+        if interval is not None:
+            return interval
+
+    return _coerce_timeout(provider_config.get("wait_notice_interval_seconds"))
+
+
 def _get_model_config(
     provider_config: dict[str, object], model: str | None
 ) -> dict[str, object] | None:

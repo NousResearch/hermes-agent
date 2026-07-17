@@ -6,10 +6,12 @@ import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
+  $activeSessionId,
   $busy,
   $messages,
   noteSessionActivity,
   onSessionWatchdogClear,
+  setActiveSessionStoredId,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
@@ -115,6 +117,15 @@ export function useSessionStateCache({
 
         if (previousStoredSessionId && previousStoredSessionId !== storedSessionId) {
           setSessionWorking(previousStoredSessionId, false)
+
+          // Auto-compression rotated the stored id on the active session. Signal
+          // the route-following effect in use-session-actions so the URL + selection
+          // re-anchor to the continuation id — otherwise the next send hits a stale
+          // stored→runtime mapping (getRuntimeIdForStoredSession returns null) and
+          // triggers a full thread reload via resumeStoredSession.
+          if (sessionId === $activeSessionId.get()) {
+            setActiveSessionStoredId(storedSessionId)
+          }
         }
       }
 
@@ -295,6 +306,18 @@ export function useSessionStateCache({
     [ensureSessionState, syncSessionStateToView]
   )
 
+  const getRuntimeIdForStoredSession = useCallback((storedSessionId: string): string | null => {
+    const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+
+    if (!runtimeId) {
+      return null
+    }
+
+    const runtimeState = sessionStateByRuntimeIdRef.current.get(runtimeId)
+
+    return runtimeState?.storedSessionId === storedSessionId ? runtimeId : null
+  }, [])
+
   // When the store watchdog force-clears a stuck session (8 min of stream
   // silence — a hung or looping turn that never delivered its terminal event),
   // also drop that session's busy/awaiting flags here. Clearing the sidebar dot
@@ -323,6 +346,7 @@ export function useSessionStateCache({
   return {
     activeSessionIdRef,
     ensureSessionState,
+    getRuntimeIdForStoredSession,
     resetViewSync,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,

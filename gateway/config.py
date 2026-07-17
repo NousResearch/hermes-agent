@@ -313,6 +313,50 @@ class Platform(Enum):
 _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
 
 
+# Platforms that bind a host TCP port (HTTP/webhook listeners). In a profile
+# multiplexer the default profile owns the single shared listener and serves
+# every profile through the /p/<profile>/ URL prefix, so a SECONDARY profile
+# enabling one of these is always a misconfiguration: it would try to bind a
+# port already held by the default's listener. Single source of truth for
+# both the gateway's fail-fast startup validation (gateway/run.py) and the
+# dashboard's pre-write mutation validation (hermes_cli/web_server.py) so
+# the two policies cannot drift. Stored as platform .value strings.
+PORT_BINDING_PLATFORM_VALUES = frozenset({
+    "webhook",
+    "api_server",
+    "msgraph_webhook",
+    "feishu",
+    "wecom_callback",
+    "bluebubbles",
+    "sms",
+    "whatsapp_cloud",
+    "line",
+})
+
+# Platforms whose port-binding status depends on connection mode. Feishu in
+# websocket mode (its default) uses an outbound long connection — no listener.
+# Only webhook/callback mode binds a port. Maps platform value → the mode
+# value that actually binds (#52563).
+PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {
+    "feishu": "webhook",
+}
+
+
+def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bool:
+    """Return True when *platform_value* actually binds a port for *extra* config.
+
+    Mode-conditional platforms (Feishu) only bind in their listener mode;
+    everything else in ``PORT_BINDING_PLATFORM_VALUES`` always binds.
+    """
+    if platform_value not in PORT_BINDING_PLATFORM_VALUES:
+        return False
+    expected_mode = PORT_BINDING_CONDITIONAL_MODES.get(platform_value)
+    if expected_mode is not None:
+        actual = str((extra or {}).get("connection_mode", "websocket")).strip().lower()
+        return actual == expected_mode
+    return True
+
+
 @dataclass
 class HomeChannel:
     """
@@ -438,6 +482,22 @@ class ChannelOverride:
             provider=data.get("provider"),
             system_prompt=data.get("system_prompt"),
         )
+
+
+# Canonical map of platforms whose primary credential is ``PlatformConfig.token``
+# and the env var it loads from. Used for empty-token warnings at config
+# validation and by the multiplex primary-startup credential gate in
+# ``gateway.run`` (#64674). Platforms absent from this map authenticate some
+# other way (session files, port-bound webhooks, api_key-only) and must never
+# be skipped for a missing token.
+PLATFORM_TOKEN_ENV_NAMES: dict["Platform", str] = {
+    Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
+    Platform.DISCORD: "DISCORD_BOT_TOKEN",
+    Platform.SLACK: "SLACK_BOT_TOKEN",
+    Platform.MATTERMOST: "MATTERMOST_TOKEN",
+    Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
+    Platform.WEIXIN: "WEIXIN_TOKEN",
+}
 
 
 @dataclass
@@ -1424,14 +1484,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
 
     # Warn about empty bot tokens — platforms that loaded an empty string
     # won't connect and the cause can be confusing without a log line.
-    _token_env_names = {
-        Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
-        Platform.DISCORD: "DISCORD_BOT_TOKEN",
-        Platform.SLACK: "SLACK_BOT_TOKEN",
-        Platform.MATTERMOST: "MATTERMOST_TOKEN",
-        Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
-        Platform.WEIXIN: "WEIXIN_TOKEN",
-    }
+    _token_env_names = PLATFORM_TOKEN_ENV_NAMES
     for platform, pconfig in config.platforms.items():
         if not pconfig.enabled:
             continue

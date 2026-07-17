@@ -1,6 +1,8 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
 import json
+import threading
+import time
 import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -90,6 +92,21 @@ class MessagesMemoryProvider(FakeMemoryProvider):
 
     def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
         self.synced_turns.append((user_content, assistant_content, session_id, messages))
+
+
+class BlockingPrefetchProvider(FakeMemoryProvider):
+    """External provider whose prefetch call blocks until released."""
+
+    def __init__(self, name="external"):
+        super().__init__(name=name)
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def prefetch(self, query, *, session_id=""):
+        self.prefetch_queries.append(query)
+        self.started.set()
+        self.release.wait(timeout=5.0)
+        return self._prefetch_result
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +415,48 @@ class TestMemoryManager:
 
         result = mgr.prefetch_all("query")
         assert "external memory" in result
+
+    def test_external_prefetch_timeout_skips_stuck_provider(self):
+        mgr = MemoryManager(external_prefetch_timeout=0.01)
+        builtin = FakeMemoryProvider("builtin")
+        builtin._prefetch_result = "builtin memory"
+        external = BlockingPrefetchProvider("hy-memory")
+        external._prefetch_result = "late external memory"
+        mgr.add_provider(builtin)
+        mgr.add_provider(external)
+
+        started = time.monotonic()
+        result = mgr.prefetch_all("query")
+        elapsed = time.monotonic() - started
+
+        assert result == "builtin memory"
+        assert elapsed < 0.5
+        assert external.started.wait(timeout=1.0)
+        assert external.prefetch_queries == ["query"]
+
+        started = time.monotonic()
+        result = mgr.prefetch_all("query 2")
+        elapsed = time.monotonic() - started
+
+        assert result == "builtin memory"
+        assert elapsed < 0.2
+        assert external.prefetch_queries == ["query"]
+
+        external.release.set()
+
+        deadline = time.monotonic() + 1.0
+        while (
+            external.name in mgr._external_prefetch_threads
+            and mgr._external_prefetch_threads[external.name].is_alive()
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+
+        result = mgr.prefetch_all("query 3")
+
+        assert result == "builtin memory\n\nlate external memory"
+        assert external.prefetch_queries == ["query", "query 3"]
+        assert external.name not in mgr._external_prefetch_threads
 
     def test_system_prompt_failure_doesnt_block(self):
         mgr = MemoryManager()

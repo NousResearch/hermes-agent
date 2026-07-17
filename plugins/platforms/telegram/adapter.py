@@ -543,6 +543,14 @@ _UPDATER_STOP_TIMEOUT = 15.0
 # reconnect ladder from stalling indefinitely and allows the heartbeat loop to
 # trigger its own recovery path. Refs: NousResearch/hermes-agent#59614
 _UPDATER_START_TIMEOUT = 30.0
+# shutdown()/initialize() on the getUpdates httpx request close and rebuild the
+# connection pool. When a connection is wedged on a stale CLOSE-WAIT socket that
+# close can block forever, hanging _drain_polling_connections() and freezing the
+# whole reconnect ladder (the tracked _polling_error_task never completes, so
+# every escalation path stays gated behind its in-flight guard). Bound the drain
+# so the ladder always advances toward the fatal-restart escalation. Matches
+# _UPDATER_STOP_TIMEOUT. Refs: NousResearch/hermes-agent#66377
+_DRAIN_TIMEOUT = 15.0
 # A generation is not healthy until the dedicated getUpdates request returns
 # successfully. This exceeds a normal long-poll cycle for healthy idle bots.
 _POLLING_PROGRESS_TIMEOUT = 60.0
@@ -1987,20 +1995,22 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             return
         try:
-            await polling_req.shutdown()
+            # Bounded: a wedged CLOSE-WAIT socket can make this close hang
+            # forever and freeze the reconnect ladder (#66377).
+            await asyncio.wait_for(polling_req.shutdown(), timeout=_DRAIN_TIMEOUT)
         except Exception:
             logger.debug(
-                "[%s] Polling request shutdown failed (non-fatal)",
+                "[%s] Polling request shutdown failed/timed out (non-fatal)",
                 self.name, exc_info=True,
             )
         try:
-            await polling_req.initialize()
+            await asyncio.wait_for(polling_req.initialize(), timeout=_DRAIN_TIMEOUT)
             logger.debug(
                 "[%s] Polling request pool drained before reconnect", self.name
             )
         except Exception:
             logger.debug(
-                "[%s] Polling request re-initialize failed (non-fatal)",
+                "[%s] Polling request re-initialize failed/timed out (non-fatal)",
                 self.name, exc_info=True,
             )
 

@@ -157,7 +157,7 @@ jobs:
   # ---------------------------------------------------------------------------
   merge:
     if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     needs: [build]
     timeout-minutes: 10
     steps:

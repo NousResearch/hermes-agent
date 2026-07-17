@@ -60,7 +60,7 @@ concurrency:
 jobs:
   check:
     name: uv lock --check
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     timeout-minutes: 5
     outputs:
       review_status: ${{ steps.verify.outputs.review_status }}

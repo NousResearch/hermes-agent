@@ -25,7 +25,7 @@ permissions:
 
 jobs:
   check-common-ancestor:
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     timeout-minutes: 10
     outputs:
       review_status: ${{ steps.merge-base-check.outputs.review_status }}

@@ -30,7 +30,7 @@ jobs:
   lint-diff:
     name: ruff + ty diff
     if: inputs.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     timeout-minutes: 10
     steps:
       - name: Checkout code
@@ -121,7 +121,7 @@ jobs:
     # ``lint-diff`` job above runs independently so reviewers still get
     # the diff comment even when enforcement fails.
     name: ruff enforcement (blocking)
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     timeout-minutes: 5
     steps:
       - name: Checkout code
@@ -147,7 +147,7 @@ jobs:
     # shebang scripts via subprocess, bare open() without encoding=, etc.
     # See scripts/check-windows-footguns.py for the full rule list.
     name: Windows footguns (blocking)
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     timeout-minutes: 5
     steps:
       - name: Checkout code

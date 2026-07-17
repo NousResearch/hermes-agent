@@ -55,7 +55,7 @@ jobs:
 
   emit-status:
     name: Emit review status
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     needs: scan
     if: always()
     outputs:

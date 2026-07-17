@@ -415,6 +415,54 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_default_includes_autonomous_patch_instruction(self, monkeypatch, tmp_path):
+        """skill_auto_patch defaults True — preserves existing behavior."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+        result = build_skills_system_prompt()
+        assert "fix it with skill_manage(action='patch')" in result
+        assert "only call skill_manage(action='patch') when" not in result
+
+    def test_skill_auto_patch_false_requires_explicit_ask(self, monkeypatch, tmp_path):
+        """skill_auto_patch=False must fully remove the autonomous-patch
+        directive from the skills index, not just soften SKILLS_GUIDANCE
+        elsewhere in the prompt — a leftover "fix it" line here would still
+        tell the model to self-patch unprompted (the exact gap this covers)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+        result = build_skills_system_prompt(skill_auto_patch=False)
+        assert "fix it with skill_manage(action='patch')" not in result
+        assert "only call skill_manage(action='patch') when" in result
+        assert "explicitly ask" in result
+
+    def test_skill_auto_patch_true_and_false_cache_independently(self, monkeypatch, tmp_path):
+        """The two variants must not collide in the in-process cache — a
+        call with skill_auto_patch=False right after a True call (or vice
+        versa) must not silently serve the other's cached text."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+        auto = build_skills_system_prompt(skill_auto_patch=True)
+        confirm = build_skills_system_prompt(skill_auto_patch=False)
+        assert auto != confirm
+        assert "fix it with skill_manage(action='patch')" in auto
+        assert "fix it with skill_manage(action='patch')" not in confirm
+        # Re-fetch each — cache must still return the right variant, not
+        # whichever was computed most recently.
+        assert build_skills_system_prompt(skill_auto_patch=True) == auto
+        assert build_skills_system_prompt(skill_auto_patch=False) == confirm
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"

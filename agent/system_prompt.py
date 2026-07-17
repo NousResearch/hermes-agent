@@ -320,6 +320,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
             compact_categories=_compact_cats or None,
+            skill_auto_patch=getattr(agent, "_skill_auto_patch", True),
         )
     else:
         skills_prompt = ""

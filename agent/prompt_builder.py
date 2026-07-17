@@ -1477,8 +1477,16 @@ def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
+    skill_auto_patch: bool = True,
 ) -> str:
     """Build a compact skill index for the system prompt.
+
+    ``skill_auto_patch`` (config.yaml ``agent.skill_auto_patch``, default
+    True) gates the index's own "fix it with skill_manage(action='patch')"
+    line — the same setting SKILLS_GUIDANCE/SKILLS_GUIDANCE_CONFIRM key off
+    of in system_prompt.py. Both instructions must agree: setting the
+    config False and only silencing one of them still leaves the model an
+    unqualified "patch it" directive to follow.
 
     Two-layer cache:
       1. In-process LRU dict keyed by (skills_dir, tools, toolsets, hidden)
@@ -1517,6 +1525,7 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        bool(skill_auto_patch),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1714,7 +1723,13 @@ def build_skills_system_prompt(
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
             "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
             "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
+            + (
+                "If a skill has issues, fix it with skill_manage(action='patch').\n"
+                if skill_auto_patch else
+                "If a skill has issues, tell the user — only call "
+                "skill_manage(action='patch') when they explicitly ask you to "
+                "change it in the current turn.\n"
+            ) +
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "
             "pitfalls you discovered, update it before finishing.\n"

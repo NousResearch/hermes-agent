@@ -2826,7 +2826,17 @@ def _load_service_tier() -> str | None:
         return None
     if raw in {"fast", "priority", "on"}:
         return "priority"
+    if raw in {"auto", "cold"}:
+        return raw
     return None
+
+
+def _load_fast_auto_on_seconds() -> float:
+    from agent.fast_mode import normalize_fast_auto_on_seconds
+
+    return normalize_fast_auto_on_seconds(
+        (_load_cfg().get("agent") or {}).get("fast_auto_on_seconds", 60)
+    )
 
 
 def _load_provider_routing() -> dict:
@@ -4446,6 +4456,11 @@ def _agent_fallback_model(agent):
 
 def _background_agent_kwargs(agent, task_id: str) -> dict:
     cfg = _load_cfg()
+    from agent.fast_mode import normalize_fast_auto_on_seconds
+
+    parent_fast_cutoff = getattr(agent, "fast_auto_on_seconds", None)
+    if parent_fast_cutoff is None:
+        parent_fast_cutoff = _load_fast_auto_on_seconds()
 
     return {
         "base_url": getattr(agent, "base_url", None) or None,
@@ -4475,6 +4490,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "reasoning_config": getattr(agent, "reasoning_config", None)
         or _load_reasoning_config(str(getattr(agent, "model", "") or "")),
         "service_tier": getattr(agent, "service_tier", None) or _load_service_tier(),
+        "fast_auto_on_seconds": normalize_fast_auto_on_seconds(parent_fast_cutoff),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "platform": "tui",
         "session_db": _get_db(),
@@ -4947,6 +4963,7 @@ def _make_agent(
             if service_tier_override is not None
             else _load_service_tier()
         ),
+        fast_auto_on_seconds=_load_fast_auto_on_seconds(),
         enabled_toolsets=_load_enabled_toolsets(),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same
@@ -10744,28 +10761,38 @@ def _(rid, params: dict) -> dict:
     if key == "fast":
         raw = str(value or "").strip().lower()
         agent = session.get("agent") if session else None
-        if agent is not None:
-            current_fast = getattr(agent, "service_tier", None) == "priority"
-        else:
-            current_fast = _load_service_tier() == "priority"
+        current_tier = (
+            getattr(agent, "service_tier", None)
+            if agent is not None
+            else _load_service_tier()
+        )
+        current_mode = (
+            current_tier if current_tier in {"auto", "cold"}
+            else "fast" if current_tier == "priority"
+            else "normal"
+        )
 
         if raw in {"status"}:
             return _ok(
                 rid,
-                {"key": key, "value": "fast" if current_fast else "normal"},
+                {"key": key, "value": current_mode},
             )
 
         if raw in {"", "toggle"}:
-            nv = "normal" if current_fast else "fast"
+            nv = "normal" if current_mode in {"fast", "auto", "cold"} else "fast"
         elif raw in {"fast", "on"}:
             nv = "fast"
+        elif raw == "auto":
+            nv = "auto"
+        elif raw == "cold":
+            nv = "cold"
         elif raw in {"normal", "off"}:
             nv = "normal"
         else:
             return _err(rid, 4002, f"unknown fast mode: {value}")
 
         overrides = None
-        if nv == "fast":
+        if nv in {"fast", "auto", "cold"}:
             from hermes_cli.models import resolve_fast_mode_overrides
 
             target_model = (
@@ -10787,7 +10814,12 @@ def _(rid, params: dict) -> dict:
 
         _write_config_key("agent.service_tier", nv)
         if agent is not None:
-            agent.service_tier = "priority" if nv == "fast" else None
+            from agent.fast_mode import invalidate_fast_mode_turn
+
+            invalidate_fast_mode_turn(agent)
+            agent.service_tier = (
+                "priority" if nv == "fast" else nv if nv in {"auto", "cold"} else None
+            )
             current_overrides = dict(getattr(agent, "request_overrides", {}) or {})
             current_overrides.pop("service_tier", None)
             current_overrides.pop("speed", None)
@@ -11751,15 +11783,20 @@ def _(rid, params: dict) -> dict:
         )
         return _ok(rid, {"value": effort, "display": display})
     if key == "fast":
+        session = _sessions.get(params.get("session_id", ""))
+        current_tier = (
+            getattr(session.get("agent"), "service_tier", None)
+            if session
+            else _load_service_tier()
+        )
         return _ok(
             rid,
             {
                 "value": (
-                    "fast"
-                    if (session := _sessions.get(params.get("session_id", "")))
-                    and getattr(session.get("agent"), "service_tier", None)
-                    == "priority"
-                    else ("fast" if _load_service_tier() == "priority" else "normal")
+                    current_tier
+                    if current_tier in {"auto", "cold"}
+                    else "fast" if current_tier == "priority"
+                    else "normal"
                 ),
             },
         )
@@ -13889,9 +13926,20 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         elif name == "fast" and agent:
             mode = arg.lower()
             if mode in {"fast", "on"}:
-                agent.service_tier = "priority"
+                new_tier = "priority"
+            elif mode == "auto":
+                new_tier = "auto"
+            elif mode == "cold":
+                new_tier = "cold"
             elif mode in {"normal", "off"}:
-                agent.service_tier = None
+                new_tier = None
+            else:
+                new_tier = getattr(agent, "service_tier", None)
+            if mode in {"fast", "on", "auto", "cold", "normal", "off"}:
+                from agent.fast_mode import invalidate_fast_mode_turn
+
+                invalidate_fast_mode_turn(agent)
+                agent.service_tier = new_tier
             _emit("session.info", sid, _session_info(agent, session))
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()

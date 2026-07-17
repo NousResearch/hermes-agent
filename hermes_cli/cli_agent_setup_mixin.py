@@ -182,10 +182,10 @@ class CLIAgentSetupMixin:
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.
 
-        Always uses the session's primary model/provider.  If the user has
-        toggled `/fast` on and the current model supports Priority
-        Processing / Anthropic fast mode, attach `request_overrides` so the
-        API call is marked accordingly.
+        Always uses the session's primary model/provider. Persistent fast mode
+        resolves its provider override here. Auto mode deliberately leaves the
+        route override empty so the turn-local policy can resolve each request
+        at the API boundary.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -212,7 +212,7 @@ class CLIAgentSetupMixin:
         }
 
         service_tier = getattr(self, "service_tier", None)
-        if not service_tier:
+        if not service_tier or service_tier in {"auto", "cold"}:
             route["request_overrides"] = None
             return route
 
@@ -370,6 +370,7 @@ class CLIAgentSetupMixin:
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
                 service_tier=self.service_tier,
+                fast_auto_on_seconds=getattr(self, "fast_auto_on_seconds", 60.0),
                 request_overrides=request_overrides,
                 providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore,

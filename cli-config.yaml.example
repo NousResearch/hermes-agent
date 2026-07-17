@@ -749,6 +749,13 @@ agent:
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
   reasoning_effort: "medium"
+
+  # Fast-mode policy used by `/fast`: "normal", "fast", "auto", or "cold".
+  # Auto accelerates the opening window of every user turn. Cold accelerates
+  # only the opening window of the first turn in a logical session, including
+  # across process restarts. Later tool-loop/retry requests use normal mode.
+  # service_tier: "normal"
+  # fast_auto_on_seconds: 60
   
   # Per-model reasoning effort overrides (optional dict)
   # Key: any sensible model spelling works (exact, dots↔dashes interchangeable,

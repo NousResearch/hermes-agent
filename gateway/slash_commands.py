@@ -3067,6 +3067,14 @@ class GatewaySlashCommandsMixin:
                 self._service_tier = "priority"
                 saved_value = "fast"
                 label = t("gateway.fast.label_fast")
+            elif value == "auto":
+                self._service_tier = "auto"
+                saved_value = "auto"
+                label = t("gateway.fast.label_auto")
+            elif value == "cold":
+                self._service_tier = "cold"
+                saved_value = "cold"
+                label = t("gateway.fast.label_cold")
             elif value in {"normal", "off"}:
                 self._service_tier = None
                 saved_value = "normal"
@@ -3078,10 +3086,17 @@ class GatewaySlashCommandsMixin:
             return t("gateway.fast.session_only", label=label)
 
         if not args or args == "status":
-            is_fast = self._service_tier == "priority"
-            status = t("gateway.fast.status_fast") if is_fast else t("gateway.fast.status_normal")
+            if self._service_tier == "auto":
+                status = t("gateway.fast.status_auto")
+            elif self._service_tier == "cold":
+                status = t("gateway.fast.status_cold")
+            else:
+                status = t("gateway.fast.status_fast") if self._service_tier == "priority" else t("gateway.fast.status_normal")
 
-            # Interactive picker on platforms that support it.
+            # Interactive picker on platforms that support it. The picker offers the
+            # fast/normal quick-toggle; the bounded auto and cold policies remain
+            # available as typed arguments (`/fast auto`, `/fast cold`) and are
+            # reflected in the status line above.
             session_key = self._session_key_for_source(event.source)
 
             async def _on_fast_choice(_chat_id: str, value: str) -> str:
@@ -3095,12 +3110,12 @@ class GatewaySlashCommandsMixin:
                     {
                         "value": "fast",
                         "label": t("gateway.fast.choice_fast"),
-                        "is_current": is_fast,
+                        "is_current": self._service_tier == "priority",
                     },
                     {
                         "value": "normal",
                         "label": t("gateway.fast.choice_normal"),
-                        "is_current": not is_fast,
+                        "is_current": self._service_tier is None,
                     },
                 ],
                 on_choice_selected=_on_fast_choice,

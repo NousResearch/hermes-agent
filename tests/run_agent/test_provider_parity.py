@@ -535,6 +535,49 @@ class TestBuildApiKwargsCodex:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["service_tier"] == "priority"
 
+    def test_auto_service_tier_expires_at_request_boundary(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        agent.model = "gpt-5.4"
+        agent.service_tier = "auto"
+        agent.fast_auto_on_seconds = 60
+        agent._fast_mode_turn_started_at = 100.0
+        messages = [{"role": "user", "content": "hi"}]
+
+        monkeypatch.setattr("agent.fast_mode.time.monotonic", lambda: 160.0)
+        active_kwargs = agent._build_api_kwargs(messages)
+        assert active_kwargs["service_tier"] == "priority"
+
+        monkeypatch.setattr("agent.fast_mode.time.monotonic", lambda: 160.001)
+        expired_kwargs = agent._build_api_kwargs(messages)
+        assert "service_tier" not in expired_kwargs
+        assert agent.request_overrides == {}
+
+    def test_cold_service_tier_respects_turn_eligibility(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        agent.model = "gpt-5.4"
+        agent.service_tier = "cold"
+        agent.fast_auto_on_seconds = 60
+        messages = [{"role": "user", "content": "hi"}]
+
+        from agent.fast_mode import begin_fast_mode_turn
+
+        begin_fast_mode_turn(agent, [], now=100.0)
+        monkeypatch.setattr("agent.fast_mode.time.monotonic", lambda: 110.0)
+        assert agent._build_api_kwargs(messages)["service_tier"] == "priority"
+
+        begin_fast_mode_turn(
+            agent,
+            [{"role": "user", "content": "prior"}],
+            now=200.0,
+        )
+        assert "service_tier" not in agent._build_api_kwargs(messages)
+
     def test_omits_max_output_tokens_for_codex_backend(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
                             base_url="https://chatgpt.com/backend-api/codex")

@@ -488,6 +488,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        fast_auto_on_seconds: float = 60.0,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -540,6 +541,7 @@ class AIAgent:
             max_tokens=max_tokens,
             reasoning_config=reasoning_config,
             service_tier=service_tier,
+            fast_auto_on_seconds=fast_auto_on_seconds,
             request_overrides=request_overrides,
             prefill_messages=prefill_messages,
             platform=platform,

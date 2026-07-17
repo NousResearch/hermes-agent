@@ -29,6 +29,12 @@ class TestParseServiceTierConfig(unittest.TestCase):
         self.assertEqual(self._parse("fast"), "priority")
         self.assertEqual(self._parse("priority"), "priority")
 
+    def test_auto_is_preserved_as_policy(self):
+        self.assertEqual(self._parse("auto"), "auto")
+
+    def test_cold_is_preserved_as_policy(self):
+        self.assertEqual(self._parse("cold"), "cold")
+
     def test_normal_disables_service_tier(self):
         self.assertIsNone(self._parse("normal"))
         self.assertIsNone(self._parse("off"))
@@ -85,6 +91,32 @@ class TestHandleFastCommand(unittest.TestCase):
 
         mock_save.assert_called_once_with("agent.service_tier", "normal")
         self.assertIsNone(stub.service_tier)
+        self.assertIsNone(stub.agent)
+
+    def test_auto_argument_persists_policy(self):
+        cli_mod = _import_cli()
+        stub = self._make_cli(service_tier=None)
+        with (
+            patch.object(cli_mod, "_cprint"),
+            patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
+        ):
+            cli_mod.HermesCLI._handle_fast_command(stub, "/fast auto")
+
+        mock_save.assert_called_once_with("agent.service_tier", "auto")
+        self.assertEqual(stub.service_tier, "auto")
+        self.assertIsNone(stub.agent)
+
+    def test_cold_argument_persists_policy(self):
+        cli_mod = _import_cli()
+        stub = self._make_cli(service_tier=None)
+        with (
+            patch.object(cli_mod, "_cprint"),
+            patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
+        ):
+            cli_mod.HermesCLI._handle_fast_command(stub, "/fast cold")
+
+        mock_save.assert_called_once_with("agent.service_tier", "cold")
+        self.assertEqual(stub.service_tier, "cold")
         self.assertIsNone(stub.agent)
 
     def test_unsupported_model_does_not_expose_fast(self):
@@ -256,6 +288,24 @@ class TestFastModeRouting(unittest.TestCase):
         route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
 
         assert route["runtime"]["provider"] == "openrouter"
+        assert route.get("request_overrides") is None
+
+    def test_turn_route_leaves_cold_policy_for_request_time_resolution(self):
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            model="gpt-5.4",
+            api_key="primary-key",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+            api_mode="chat_completions",
+            acp_command=None,
+            acp_args=[],
+            _credential_pool=None,
+            service_tier="cold",
+        )
+
+        route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
+
         assert route.get("request_overrides") is None
 
 
@@ -483,3 +533,4 @@ class TestConfigDefault(unittest.TestCase):
         agent = DEFAULT_CONFIG.get("agent", {})
         self.assertIn("service_tier", agent)
         self.assertEqual(agent["service_tier"], "")
+        self.assertEqual(agent["fast_auto_on_seconds"], 60)

@@ -4372,14 +4372,17 @@ class APIServerAdapter(BasePlatformAdapter):
             except BaseException:
                 _release_fire_reservations()
                 raise
+            supervisor = _wait_for_fire_worker()
             try:
                 task = asyncio.create_task(
-                    _wait_for_fire_worker(),
+                    supervisor,
                     name="cron-fire-supervisor",
                 )
             except BaseException:
-                # The worker remains authoritative and will release from its
-                # finally block even if no asyncio tracking task can be created.
+                # Avoid an unawaited-coroutine warning if task construction
+                # itself fails. The worker remains authoritative and will
+                # release from its finally block.
+                supervisor.close()
                 raise
             try:
                 self._background_tasks.add(task)

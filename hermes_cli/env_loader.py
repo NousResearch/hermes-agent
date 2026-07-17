@@ -566,25 +566,37 @@ def _has_unresolved_env_reference(value: Any) -> bool:
 
 
 def _load_secrets_config_strict(home_path: Path) -> dict:
-    """Parse and expand secrets config, rejecting ambiguity or unresolved refs."""
-    config_path = home_path / "config.yaml"
-    if not config_path.exists():
-        return {}
+    """Load effective secrets config with strict managed-over-user precedence."""
+    from hermes_cli import managed_scope
+    from hermes_cli.config import _deep_merge, _expand_env_vars
 
-    from hermes_cli.config import _expand_env_vars
+    def _secrets_from(path: Path) -> dict:
+        if not path.exists():
+            return {}
+        data = _load_unique_yaml_mapping(path)
+        secrets = data.get("secrets", {})
+        if secrets is None:
+            return {}
+        if not isinstance(secrets, dict):
+            raise ValueError("secrets is not a mapping")
+        expanded = _expand_env_vars(secrets)
+        if not isinstance(expanded, dict):
+            raise ValueError("expanded secrets is not a mapping")
+        return expanded
 
-    data = _load_unique_yaml_mapping(config_path)
-    secrets = data.get("secrets", {})
-    if secrets is None:
-        return {}
-    if not isinstance(secrets, dict):
-        raise ValueError("secrets is not a mapping")
-    expanded = _expand_env_vars(secrets)
-    if not isinstance(expanded, dict):
-        raise ValueError("expanded secrets is not a mapping")
-    if _has_unresolved_env_reference(expanded):
+    user_secrets = _secrets_from(home_path / "config.yaml")
+    managed_dir = managed_scope.get_managed_dir()
+    managed_secrets = (
+        _secrets_from(managed_dir / "config.yaml")
+        if managed_dir is not None
+        else {}
+    )
+    effective = _deep_merge(user_secrets, managed_secrets)
+    if not isinstance(effective, dict):
+        raise ValueError("effective secrets is not a mapping")
+    if _has_unresolved_env_reference(effective):
         raise ValueError("secrets contains an unresolved environment reference")
-    return expanded
+    return effective
 
 
 def _load_secrets_config(home_path: Path) -> dict:

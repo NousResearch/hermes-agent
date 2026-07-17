@@ -451,6 +451,72 @@ def test_strict_refresh_rejects_unresolved_environment_reference(tmp_path, monke
     assert "UNSET_STRICT_TOKEN_ALIAS" not in str(raised.value)
 
 
+def test_strict_refresh_deep_merges_managed_secret_config_over_user(
+    tmp_path, monkeypatch
+):
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / "profile"
+    managed = tmp_path / "managed"
+    home.mkdir()
+    managed.mkdir()
+    (home / "config.yaml").write_text(
+        "secrets:\n"
+        "  stricttest:\n"
+        "    enabled: true\n"
+        "    token_alias: USER_BOOTSTRAP\n"
+        "    user_setting: keep\n"
+    )
+    (managed / "config.yaml").write_text(
+        "secrets:\n"
+        "  stricttest:\n"
+        "    token_alias: ${MANAGED_ALIAS_NAME}\n"
+        "    managed_setting: authoritative\n"
+    )
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("MANAGED_ALIAS_NAME", "MANAGED_BOOTSTRAP")
+    source = _StrictTestSource(FetchResult())
+    _install_strict_source(monkeypatch, source)
+
+    result = env_loader.refresh_hermes_dotenv_strict(hermes_home=home)
+
+    expected = {
+        "enabled": True,
+        "token_alias": "MANAGED_BOOTSTRAP",
+        "user_setting": "keep",
+        "managed_setting": "authoritative",
+    }
+    assert source.fetch_configs == [expected]
+    assert result.secrets_config == {"stricttest": expected}
+
+
+def test_strict_refresh_rejects_duplicate_keys_in_managed_config(
+    tmp_path, monkeypatch
+):
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / "profile"
+    managed = tmp_path / "managed"
+    home.mkdir()
+    managed.mkdir()
+    (managed / "config.yaml").write_text(
+        "secrets:\n"
+        "  stricttest:\n"
+        "    enabled: true\n"
+        "    token_alias: FIRST\n"
+        "    token_alias: SECOND\n"
+    )
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    _install_strict_source(monkeypatch, _StrictTestSource(FetchResult()))
+
+    with pytest.raises(env_loader.SecretSourceRefreshError) as raised:
+        env_loader.refresh_hermes_dotenv_strict(hermes_home=home)
+
+    assert raised.value.stage == "config"
+    assert "FIRST" not in str(raised.value)
+    assert "SECOND" not in str(raised.value)
+
+
 def test_strict_refresh_reapplies_managed_env_after_external_sources(
     tmp_path, monkeypatch
 ):

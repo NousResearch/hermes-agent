@@ -1808,6 +1808,18 @@ class APIServerAdapter(BasePlatformAdapter):
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         fallback_model = GatewayRunner._load_fallback_model()
 
+        # Keep the API-server platform aligned with the native messaging
+        # gateway: global fast/priority mode must reach each AIAgent request.
+        fast_mode_kwargs = {}
+        service_tier = GatewayRunner._load_service_tier()
+        if service_tier:
+            from hermes_cli.models import resolve_fast_mode_overrides
+
+            fast_mode_kwargs = {
+                "service_tier": service_tier,
+                "request_overrides": resolve_fast_mode_overrides(model),
+            }
+
         agent = AIAgent(
             model=model,
             **runtime_kwargs,
@@ -1825,6 +1837,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
+            **fast_mode_kwargs,
             gateway_session_key=gateway_session_key,
         )
         return agent

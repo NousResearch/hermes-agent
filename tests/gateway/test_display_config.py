@@ -607,3 +607,19 @@ class TestReasoningStyle:
 
         config = {"display": {"reasoning_style": "SUBTEXT"}}
         assert resolve_display_setting(config, "telegram", "reasoning_style") == "subtext"
+
+    def test_mattermost_streaming_defaults_off(self):
+        """#57747: Mattermost must default streaming OFF at the gateway resolver
+        level — not just in CLI DEFAULT_CONFIG. An unconfigured gateway resolves
+        mattermost streaming to False so it doesn't follow the global (True)
+        default. An explicit user override still wins.
+        """
+        from gateway.display_config import resolve_display_setting
+
+        # Unconfigured gateway -> built-in default (False), not global/None.
+        assert resolve_display_setting({}, "mattermost", "streaming") is False
+        # Explicit opt-in still honored.
+        assert resolve_display_setting(
+            {"display": {"platforms": {"mattermost": {"streaming": True}}}},
+            "mattermost", "streaming",
+        ) is True

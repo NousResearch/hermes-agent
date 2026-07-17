@@ -53,6 +53,8 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from hermes_constants import get_hermes_home
+from tools.skills_activation import SkillsActivationService
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
@@ -1275,6 +1277,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "jobs_admin": False,
                 "memory_write_api": False,
                 "skills_api": True,
+                "skills_activation/v1": True,
                 "audio_api": False,
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
@@ -1306,6 +1309,35 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         })
 
+    def _register_skills_activation(self, router: "web.UrlDispatcher") -> None:
+        """Wire the Layer-2 skills-activation routes (spec 309, plan 02-01).
+
+        Constructs a ``SkillsActivationService`` from this deployment's home,
+        auth check, and deployment-derived scope (LD-1 — scope is bound to
+        the DEPLOYMENT, never derived from request bodies), then registers
+        the activation/deactivation routes. The constructed service is
+        stashed on ``self._skills_activation_service`` so ``_handle_skills``'s
+        ``?scope=managed`` delegation branch can reach it without a second
+        construction or a circular import.
+        """
+        scope = {
+            "tenantId": os.environ.get("HERMES_SKILLS_SCOPE_TENANT_ID", "deployment-local"),
+            "companyId": os.environ.get("HERMES_SKILLS_SCOPE_COMPANY_ID", "deployment-local"),
+            "agentId": os.environ.get("HERMES_SKILLS_SCOPE_AGENT_ID", "deployment-local"),
+        }
+        self._skills_activation_service = SkillsActivationService(
+            home=get_hermes_home(),
+            check_auth=self._check_auth,
+            scope=scope,
+            idem_cache=_IdempotencyCache(),
+        )
+        router.add_post(
+            "/v1/skills/activations", self._skills_activation_service.handle_activate
+        )
+        router.add_delete(
+            "/v1/skills/activations/{skill_id}", self._skills_activation_service.handle_deactivate
+        )
+
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — list installed skills visible to the API-server agent.
 
@@ -1321,6 +1353,14 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+
+        # Layer-2 extension (spec 309, plan 02-01): ?scope=managed delegates
+        # to the managed-ownership ledger's observed inventory instead of
+        # the plain live skills scan below.
+        if request.query.get("scope") == "managed":
+            skills_activation_service = getattr(self, "_skills_activation_service", None)
+            if skills_activation_service is not None:
+                return await skills_activation_service.handle_managed_inventory(request)
 
         try:
             from tools.skills_tool import _find_all_skills, _sort_skills
@@ -4522,6 +4562,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_get("/v1/skills", self._handle_skills)
+            # Layer-2 activation routes (spec 309, plan 02-01).
+            self._register_skills_activation(self._app.router)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)

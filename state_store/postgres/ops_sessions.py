@@ -178,9 +178,45 @@ class PostgresSessionOperations:
             (session_id,),
         )
 
+    def promote_to_session_reset(
+        self, session_id: str, reason: str = "session_reset"
+    ) -> bool:
+        if not session_id:
+            return False
+        try:
+            rows = self._write(
+                """
+                UPDATE sessions
+                SET ended_at = EXTRACT(EPOCH FROM clock_timestamp()),
+                    end_reason = %s
+                WHERE id = %s
+                  AND (
+                    ended_at IS NULL
+                    OR end_reason IN ('agent_close', 'ws_orphan_reap')
+                  )
+                """,
+                (reason, session_id),
+            )
+            return bool(rows)
+        except Exception:
+            return False
+
     def _title_in_tx(
-        self, connection: Any, session_id: str, title: Optional[str]
+        self,
+        connection: Any,
+        session_id: str,
+        title: Optional[str],
+        *,
+        only_if_empty: bool = False,
     ) -> int:
+        if only_if_empty:
+            current = self._row(
+                connection,
+                "SELECT title FROM sessions WHERE id = %s FOR UPDATE",
+                (session_id,),
+            )
+            if current is None or current.get("title") is not None:
+                return 0
         if title:
             # Row locks cannot protect a title that does not exist yet.
             connection.execute(
@@ -207,8 +243,10 @@ class PostgresSessionOperations:
                     raise ValueError(
                         f"Title '{title}' is already in use by session {conflict_id}"
                     )
+        predicate = " AND title IS NULL" if only_if_empty else ""
         cursor = connection.execute(
-            "UPDATE sessions SET title = %s WHERE id = %s", (title, session_id)
+            f"UPDATE sessions SET title = %s WHERE id = %s{predicate}",
+            (title, session_id),
         )
         return int(getattr(cursor, "rowcount", 0) or 0)
 
@@ -586,6 +624,19 @@ class PostgresSessionOperations:
     def set_session_title(self, session_id: str, title: str) -> bool:
         sanitized = self.sanitize_title(title)
         return bool(self._run(lambda connection: self._title_in_tx(connection, session_id, sanitized)))
+
+    def set_auto_title_if_empty(self, session_id: str, title: str) -> bool:
+        sanitized = self.sanitize_title(title)
+        return bool(
+            self._run(
+                lambda connection: self._title_in_tx(
+                    connection,
+                    session_id,
+                    sanitized,
+                    only_if_empty=True,
+                )
+            )
+        )
 
     def get_session_title(self, session_id: str) -> Optional[str]:
         row = self._read_one("SELECT title FROM sessions WHERE id = %s", (session_id,))

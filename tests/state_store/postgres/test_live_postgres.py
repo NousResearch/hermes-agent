@@ -229,6 +229,20 @@ def test_lifecycle_messages_and_search_use_live_postgres(
     database = postgres_state.open(postgres_state.schema())
     database.create_session("lifecycle", "cli", model="test-model")
     assert database.set_session_title("lifecycle", "PostgreSQL lifecycle")
+    assert not database.set_auto_title_if_empty("lifecycle", "Generated replacement")
+    database.create_session("auto-title", "test-metadata", model="test-model")
+    assert database.set_auto_title_if_empty("auto-title", "Generated title")
+    assert not database.set_auto_title_if_empty("auto-title", "Second generated title")
+    database.create_session("reset-promote", "test-metadata", model="test-model")
+    database.end_session("reset-promote", "agent_close")
+    assert database.promote_to_session_reset(
+        "reset-promote", "resume_pending_expired"
+    )
+    assert database.get_session("reset-promote")["end_reason"] == "resume_pending_expired"
+    database.create_session("reset-explicit", "test-metadata", model="test-model")
+    database.end_session("reset-explicit", "compression")
+    assert not database.promote_to_session_reset("reset-explicit", "idle")
+    assert database.get_session("reset-explicit")["end_reason"] == "compression"
 
     first_id = database.append_message(
         "lifecycle",

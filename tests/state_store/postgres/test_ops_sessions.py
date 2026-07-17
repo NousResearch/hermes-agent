@@ -109,6 +109,7 @@ OWNED_PUBLIC_METHODS = (
     "resolve_session_by_title",
     "end_session",
     "reopen_session",
+    "promote_to_session_reset",
     "create_api_session_with_title",
     "fork_api_session",
     "record_gateway_session_peer",
@@ -127,6 +128,7 @@ OWNED_PUBLIC_METHODS = (
     "update_session_model",
     "update_session_billing_route",
     "set_session_title",
+    "set_auto_title_if_empty",
     "get_session_title",
     "get_session_by_title",
     "get_next_title_in_lineage",
@@ -351,6 +353,43 @@ def test_title_generation_locks_in_writable_transaction() -> None:
     assert store.transaction_modes == [False]
     assert "FOR UPDATE" in _queries(store)
     assert "pg_advisory_xact_lock" in _queries(store)
+
+
+def test_auto_title_sets_only_an_empty_title_in_one_transaction() -> None:
+    db, store = _db(
+        FakeCursor(row={"title": None}),
+        FakeCursor(),
+        FakeCursor(),
+        FakeCursor(rowcount=1),
+    )
+
+    assert db.set_auto_title_if_empty("session", "Generated") is True
+
+    queries = _queries(store)
+    assert "SELECT title FROM sessions WHERE id = %s FOR UPDATE" in queries
+    assert "UPDATE sessions SET title = %s WHERE id = %s AND title IS NULL" in queries
+    assert store.transaction_modes == [False]
+
+
+def test_auto_title_preserves_an_existing_manual_title() -> None:
+    db, store = _db(FakeCursor(row={"title": "Manual"}))
+
+    assert db.set_auto_title_if_empty("session", "Generated") is False
+
+    assert len(store.connection.executed) == 1
+    assert "FOR UPDATE" in _queries(store)
+
+
+def test_reset_promotion_matches_gateway_recovery_boundaries() -> None:
+    db, store = _db(FakeCursor(rowcount=1), FakeCursor(rowcount=0))
+
+    assert db.promote_to_session_reset("recoverable", "resume_pending_expired") is True
+    assert db.promote_to_session_reset("explicit", "idle") is False
+
+    queries = _queries(store)
+    assert "clock_timestamp()" in queries
+    assert "end_reason IN ('agent_close', 'ws_orphan_reap')" in queries
+    assert store.transaction_modes == [False, False]
 
 
 def test_compression_lock_uses_server_time_atomic_conflict_claim() -> None:

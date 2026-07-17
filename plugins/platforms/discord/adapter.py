@@ -4208,7 +4208,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # ``discord.dm_role_auth_guild`` in config.yaml. Without this, a
         # user with the configured role in ANY mutual guild could DM the
         # bot and bypass the allowlist (cross-guild leakage).
-        if is_dm or guild is None:
+        if is_dm:
             dm_guild_id = _read_dm_role_auth_guild()
             if dm_guild_id is None or self._client is None:
                 return False
@@ -4224,6 +4224,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 return False
             member_roles = getattr(member, "roles", None) or []
             return any(getattr(role, "id", None) in allowed_roles for role in member_roles)
+
+        # A non-DM payload without a concrete origin guild cannot prove role
+        # membership belongs to that guild. Never fall back to DM opt-in here.
+        if guild is None:
+            return False
 
         # Guild path: role check is scoped to THIS guild only.
         # 1) Prefer the direct Member object passed in (correct guild by construction).
@@ -5798,14 +5803,25 @@ class DiscordAdapter(BasePlatformAdapter):
         text: str,
     ) -> None:
         """Build a MessageEvent pointing at a thread and send it through handle_message."""
-        guild_name = ""
-        if hasattr(interaction, "guild") and interaction.guild:
-            guild_name = interaction.guild.name
-
+        _chan = getattr(interaction, "channel", None)
+        interaction_guild = (
+            getattr(interaction, "guild", None)
+            or getattr(_chan, "guild", None)
+        )
+        guild_name = str(getattr(interaction_guild, "name", "") or "")
         chat_name = f"{guild_name} / {thread_name}" if guild_name else thread_name
 
+        # The new thread's parent is the channel where /thread was invoked (or
+        # that channel's parent when invoked from an existing thread). Resolve
+        # it before build_source so profile routing sees the same scope as all
+        # later native interactions inside the created thread.
+        _parent_channel = self._thread_parent_channel(_chan)
+        _parent_id = (
+            str(getattr(_parent_channel, "id", "") or "")
+            or str(getattr(interaction, "channel_id", "") or "")
+        )
+
         # Inherit forum topic when the thread was created inside a forum channel.
-        _chan = getattr(interaction, "channel", None)
         chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
 
         source = self.build_source(
@@ -5816,10 +5832,20 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=(
+                str(getattr(interaction_guild, "id", "") or "")
+                or str(getattr(interaction, "guild_id", "") or "")
+                or None
+            ),
+            parent_chat_id=_parent_id or None,
+            role_authorized=self._has_allowed_role(
+                str(interaction.user.id),
+                author=interaction.user,
+                guild=interaction_guild,
+                is_dm=False,
+            ),
         )
 
-        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
-        _parent_id = str(getattr(_parent_channel, "id", "") or "")
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
         event = MessageEvent(

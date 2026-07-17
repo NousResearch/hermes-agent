@@ -558,12 +558,14 @@ async def test_handle_thread_create_slash_reports_failure(adapter):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_thread_session_builds_thread_event(adapter):
-    """Dispatched event should have chat_type=thread and chat_id=thread_id."""
-    interaction = SimpleNamespace(
-        user=SimpleNamespace(display_name="Jezza", id=42),
-        guild=SimpleNamespace(name="TestGuild"),
-    )
+async def test_dispatch_thread_session_preserves_route_and_role_context(adapter):
+    """The seeded thread event must route like later native thread slash events."""
+    role = SimpleNamespace(id=99)
+    guild = SimpleNamespace(name="TestGuild", id=1)
+    channel = SimpleNamespace(id=100, parent=None, guild=guild)
+    user = SimpleNamespace(display_name="Jezza", id=42, roles=[role])
+    adapter._allowed_role_ids = {99}
+    interaction = SimpleNamespace(user=user, guild=guild, channel=channel)
 
     captured_events = []
 
@@ -580,7 +582,38 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
     assert event.source.chat_id == "555"
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "555"
+    assert event.source.parent_chat_id == "100"
+    assert event.source.guild_id == "1"
+    assert event.source.scope_id == "1"
+    assert event.source.role_authorized is True
     assert "TestGuild" in event.source.chat_name
+
+
+@pytest.mark.asyncio
+async def test_dispatch_thread_session_falls_back_to_interaction_route_ids(adapter):
+    """Partial slash payloads still retain parent and guild route discriminators."""
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(display_name="Jezza", id=42, roles=[]),
+        guild=None,
+        guild_id=1,
+        channel=None,
+        channel_id=100,
+    )
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter._allowed_role_ids = {99}
+    adapter.handle_message = capture_handle
+
+    await adapter._dispatch_thread_session(interaction, "555", "Planning", "Hello!")
+
+    event = captured_events[0]
+    assert event.source.parent_chat_id == "100"
+    assert event.source.guild_id == "1"
+    assert event.source.scope_id == "1"
+    assert event.source.role_authorized is False
 
 
 # ------------------------------------------------------------------

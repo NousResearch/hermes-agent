@@ -264,6 +264,35 @@ def _check_stale_giveup(agent) -> None:
         )
 
 
+def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
+    """Stale-stream patience for a provider that is never a local endpoint.
+
+    Mirrors the main streaming path's derivation — provider config → env base
+    → context-size scaling → reasoning-model floor — minus the local-endpoint
+    ``float('inf')``/900s disable branch, which cannot apply to Bedrock (its
+    endpoint is always the AWS cloud). Factored so the Bedrock streaming
+    watchdog shares the exact same patience budget as the OpenAI/Anthropic
+    stale-stream detector below.
+    """
+    _cfg_stale = get_provider_stale_timeout(agent.provider, agent.model)
+    if _cfg_stale is not None:
+        _base = _cfg_stale
+    else:
+        _base = env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
+    _est_tokens = estimate_request_context_tokens(api_kwargs)
+    if _est_tokens > 100_000:
+        _timeout = max(_base, 300.0)
+    elif _est_tokens > 50_000:
+        _timeout = max(_base, 240.0)
+    else:
+        _timeout = _base
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+    _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
+    if _reasoning_floor is not None:
+        _timeout = max(_timeout, _reasoning_floor)
+    return _timeout
+
+
 def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     """Run one non-streaming LLM request for the active api_mode and return it.
 
@@ -2091,6 +2120,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         result = {"response": None, "error": None}
         first_delta_fired = {"done": False}
         deltas_were_sent = {"yes": False}
+        # Wire-level liveness for the boto3 converse_stream worker: the worker
+        # thread blocks inside ``for event in event_stream`` with NO read
+        # timeout, so a provider that opens the stream then stops yielding
+        # events wedges the thread forever. on_event stamps this on EVERY
+        # yielded Bedrock event (text/tool/metadata) — the poll loop below
+        # trips a watchdog when the gap exceeds the stale timeout.
+        _bedrock_last_event = {"t": time.time()}
+        # Region captured for the poll-loop client eviction below.  Read
+        # (not popped) here so the worker's own pop inside _bedrock_call still
+        # resolves the same value.
+        _bedrock_region = api_kwargs.get("__bedrock_region__", "us-east-1")
+        # Same patience budget as the OpenAI/Anthropic stale detector.
+        _bedrock_stale_timeout = _derive_stream_stale_timeout(agent, api_kwargs)
+
+        # Cross-turn stale-stream circuit breaker (#58962): a pre-elevated
+        # streak from prior wedged turns aborts before we even start — mirrors
+        # the entry check on the OpenAI/Anthropic path below.
+        _check_stale_giveup(agent)
 
         def _fire_first():
             if not first_delta_fired["done"] and on_first_delta:
@@ -2168,6 +2215,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     on_tool_start=_on_tool,
                     on_reasoning_delta=_on_reasoning if agent.reasoning_callback or agent.stream_delta_callback else None,
                     on_interrupt_check=lambda: agent._interrupt_requested,
+                    on_event=lambda: _bedrock_last_event.__setitem__("t", time.time()),
                 )
             except Exception as e:
                 result["error"] = e
@@ -2178,6 +2226,56 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             t.join(timeout=0.3)
             if agent._interrupt_requested:
                 raise InterruptedError("Agent interrupted during Bedrock API call")
+            # Liveness watchdog: no Bedrock event for longer than the stale
+            # timeout means the stream has wedged (open socket, keep-alives but
+            # no data, or a silently hung provider).  Without this the worker
+            # blocks in ``for event in event_stream`` indefinitely.
+            _stale_elapsed = time.time() - _bedrock_last_event["t"]
+            if _stale_elapsed > _bedrock_stale_timeout:
+                logger.warning(
+                    "Bedrock stream stale for %.0fs (threshold %.0fs) — no events "
+                    "received. region=%s model=%s. Aborting call.",
+                    _stale_elapsed, _bedrock_stale_timeout,
+                    _bedrock_region, api_kwargs.get("modelId", "unknown"),
+                )
+                agent._buffer_status(
+                    f"⚠️ No events from Bedrock for {int(_stale_elapsed)}s "
+                    f"(model: {api_kwargs.get('modelId', 'unknown')}). Aborting..."
+                )
+                # Count the stale kill in the SAME cross-turn breaker as the
+                # OpenAI/Anthropic path (#58962).
+                _bump_stale_streak(agent)
+                # Best-effort: evict the region's cached bedrock-runtime client
+                # so the NEXT call reconnects with a fresh pool.  NOTE: this does
+                # NOT abort the in-flight botocore EventStream the worker thread
+                # is blocked on — botocore exposes no external cancellation for
+                # it — so the daemon worker keeps reading until its socket read
+                # ultimately errors.  We therefore end THIS call by raising
+                # below and let the streak+give-up breaker escalate across turns.
+                try:
+                    from agent.bedrock_adapter import invalidate_runtime_client
+                    invalidate_runtime_client(_bedrock_region)
+                except Exception as _inval_exc:
+                    logger.debug(
+                        "bedrock: stale client eviction failed: %s", _inval_exc
+                    )
+                # Reset the timer so a repeated trip (should the worker somehow
+                # survive) waits a fresh interval rather than re-firing instantly.
+                _bedrock_last_event["t"] = time.time()
+                # Escalate across turns: raises RuntimeError once the streak
+                # crosses HERMES_STREAM_STALE_GIVEUP, so a persistently wedged
+                # Bedrock provider aborts fast instead of re-waiting the timeout.
+                _check_stale_giveup(agent)
+                # Streak still under the give-up threshold: end THIS call with a
+                # TimeoutError so the outer retry loop / next turn re-evaluates
+                # and the streak carries forward.  Break rather than keep polling
+                # a worker we cannot abort.
+                result["error"] = TimeoutError(
+                    f"Bedrock stream produced no events for {int(_stale_elapsed)}s "
+                    f"(threshold {int(_bedrock_stale_timeout)}s) — aborting stalled "
+                    f"stream so the retry/fallback path can recover."
+                )
+                break
         # Worker exited before the poll loop observed the interrupt flag. The
         # Bedrock stream callback breaks out and returns a PARTIAL response
         # without raising on interrupt (see bedrock_adapter.py
@@ -2190,6 +2288,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             raise InterruptedError("Agent interrupted during Bedrock API call (post-worker)")
         if result["error"] is not None:
             raise result["error"]
+        # Success — clear the cross-turn breaker (#58962): Bedrock proved
+        # responsive.  Mirrors the OpenAI/Anthropic success reset below so a
+        # recovered provider doesn't carry a stale streak into later turns.
+        if result["response"] is not None:
+            _reset_stale_streak(agent)
         return result["response"]
 
     result = {"response": None, "error": None, "partial_tool_names": []}
@@ -3196,11 +3299,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     else:
         _stream_stale_timeout_base = env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
     # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
-    # for prefill on large contexts.  Disable the stale detector unless
-    # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
+    # for prefill on large contexts, so tolerate far longer silence than
+    # the cloud default — but a wedged local server must EVENTUALLY trip the
+    # detector rather than hang forever (an infinite timeout meant a crashed
+    # or deadlocked local endpoint stalled the session indefinitely).  900s
+    # tolerates slow prefill while still bounding a hung endpoint.  Applies
+    # unless the user explicitly set HERMES_STREAM_STALE_TIMEOUT; override the
+    # local ceiling with HERMES_LOCAL_STREAM_STALE_TIMEOUT.
     if _stream_stale_timeout_base == 180.0 and agent.base_url and is_local_endpoint(agent.base_url):
-        _stream_stale_timeout = float("inf")
-        logger.debug("Local provider detected (%s) — stale stream timeout disabled", agent.base_url)
+        _stream_stale_timeout = env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", 900.0)
+        logger.debug(
+            "Local provider detected (%s) — stale stream timeout set to %.0fs",
+            agent.base_url, _stream_stale_timeout,
+        )
     else:
         # Scale the stale timeout for large contexts: slow models (like Opus)
         # can legitimately think for minutes before producing the first token

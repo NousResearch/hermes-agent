@@ -168,6 +168,9 @@ def test_run_slash_json_output(kanban_home):
 
 
 def test_run_slash_dispatch_dry_run_counts(kanban_home):
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  dispatch_in_gateway: false\n", encoding="utf-8"
+    )
     kc.run_slash("create 'a' --assignee alice")
     kc.run_slash("create 'b' --assignee bob")
     out = kc.run_slash("dispatch --dry-run")

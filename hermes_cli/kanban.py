@@ -953,7 +953,11 @@ def kanban_command(args: argparse.Namespace) -> int:
         # Standalone dispatch must be admitted before touching the DB. Its
         # handler initializes only after it holds the machine-global lock.
         if action == "dispatch":
-            return _cmd_dispatch(args)
+            try:
+                return _cmd_dispatch(args)
+            except (ValueError, RuntimeError) as exc:
+                print(f"kanban: {exc}", file=sys.stderr)
+                return 1
         try:
             kb.init_db()
         except Exception as exc:

@@ -101,6 +101,27 @@ def test_cli_dispatch_refuses_mutation_when_gateway_owns_dispatch(
     dispatch_once.assert_not_called()
 
 
+@pytest.mark.parametrize("error", [ValueError("bad dispatch"), RuntimeError("bad dispatch")])
+def test_cli_dispatch_preserves_handler_error_exit_without_auto_init(
+    isolated_kanban_home, monkeypatch, capsys, error,
+):
+    """Early dispatch keeps the normal handler error contract before DB init."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    monkeypatch.setattr(
+        kb_cli, "_cmd_dispatch", lambda args: (_ for _ in ()).throw(error),
+    )
+    monkeypatch.setattr(
+        kanban_db, "init_db", lambda: pytest.fail("dispatch must not auto-initialize"),
+    )
+
+    rc = kb_cli.kanban_command(argparse.Namespace(kanban_action="dispatch"))
+
+    assert rc == 1
+    assert capsys.readouterr().err == f"kanban: {error}\n"
+
+
 @pytest.mark.parametrize("dry_run", [False, True])
 @pytest.mark.parametrize(
     "config",

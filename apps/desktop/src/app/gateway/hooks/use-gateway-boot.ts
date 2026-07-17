@@ -33,7 +33,9 @@ import {
   $currentCwd,
   $sessions,
   ensureDefaultWorkspaceCwd,
+  reconcileProfileWorkingSessions,
   sessionNeedsInput,
+  sessionWorkingSnapshotRevision,
   setConnection,
   setCurrentBranch,
   setCurrentCwd,
@@ -50,6 +52,28 @@ import type { RpcEvent } from '@/types/hermes'
 // Settings / sign in / switch to local — the "lost connection breaks the app"
 // dead end. The next successful reconnect clears it.
 const RECONNECT_ESCALATE_AFTER = 6
+
+interface ActiveSessionSnapshotRow {
+  session_key: string
+  status: 'idle' | 'starting' | 'waiting' | 'working'
+}
+
+const isValidActiveSessionSnapshotRow = (row: unknown): row is ActiveSessionSnapshotRow => {
+  if (!row || typeof row !== 'object') {
+    return false
+  }
+
+  const candidate = row as Record<string, unknown>
+
+  return (
+    typeof candidate.session_key === 'string' &&
+    candidate.session_key.trim().length > 0 &&
+    (candidate.status === 'idle' ||
+      candidate.status === 'starting' ||
+      candidate.status === 'waiting' ||
+      candidate.status === 'working')
+  )
+}
 
 interface GatewayBootOptions {
   handleGatewayEvent: (event: RpcEvent) => void
@@ -148,13 +172,19 @@ export function useGatewayBoot({
         // "Starting Hermes…". The probe is a no-op for a healthy or local backend.
         await desktop.revalidateConnection?.().catch(() => undefined)
 
-        const conn = await desktop.getConnection($activeGatewayProfile.get())
+        const reconnectProfile = sourceProfile
+        const conn = await desktop.getConnection(reconnectProfile)
 
-        if (cancelled) {
+        if (cancelled || $gatewaySwitching.get() || sourceProfile !== reconnectProfile) {
           return
         }
 
-        publish(conn)
+        // The primary may reconnect while a secondary profile is foregrounded.
+        // Keep its socket alive without replacing the active profile's metadata.
+        if (normalizeProfileKey($activeGatewayProfile.get()) === reconnectProfile) {
+          publish(conn)
+        }
+
         // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
         // with a short TTL, so the ticket baked into the cached conn.wsUrl is
         // dead on every reconnect after the initial boot — reusing it surfaces
@@ -375,10 +405,44 @@ export function useGatewayBoot({
       }
     }
 
+    const reconcileWorkingSessions = async (target: HermesGateway, profile: string) => {
+      const epoch = gatewayEpoch
+      const normalizedProfile = normalizeProfileKey(profile)
+      const revision = sessionWorkingSnapshotRevision()
+
+      try {
+        const snapshot = await target.request<{ sessions?: unknown[] }>('session.active_list', {})
+
+        if (
+          cancelled ||
+          epoch !== gatewayEpoch ||
+          target.connectionState !== 'open' ||
+          (target === gateway && sourceProfile !== normalizedProfile) ||
+          !Array.isArray(snapshot?.sessions) ||
+          !snapshot.sessions.every(isValidActiveSessionSnapshotRow)
+        ) {
+          return
+        }
+
+        const workingIds = snapshot.sessions
+          .filter(row => row.status === 'starting' || row.status === 'working')
+          .map(row => row.session_key)
+
+        reconcileProfileWorkingSessions(normalizedProfile, workingIds, revision)
+      } catch {
+        // Best effort for rolling upgrades: live message/session events still
+        // update the ledger when an older backend lacks session.active_list.
+      }
+    }
+
+    const reconcileGatewayActivity = async (target: HermesGateway, profile: string) => {
+      await Promise.all([reconcileWorkingSessions(target, profile), reconcileDelegations(target, profile)])
+    }
+
     // Secondary (background-profile) sockets funnel into the same handler.
     configureGatewayRegistry({
       onEvent: event => callbacksRef.current.handleGatewayEvent(event),
-      onOpen: reconcileDelegations
+      onOpen: reconcileGatewayActivity
     })
 
     const offState = gateway.onState(st => {
@@ -391,7 +455,7 @@ export function useGatewayBoot({
         reauthNotified = false
         escalated = false
         clearReconnectTimer()
-        void reconcileDelegations(gateway, sourceProfile)
+        void reconcileGatewayActivity(gateway, sourceProfile)
 
         // A revalidate-driven reconnect can rebuild the backend in place when the
         // cached remote was found dead, which re-drives the boot-progress overlay.

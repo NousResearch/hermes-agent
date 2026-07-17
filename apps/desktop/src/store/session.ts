@@ -344,6 +344,9 @@ export const $sessionsLoading = atom(true)
 export const $workingSessionIds = atom<string[]>([])
 export const UNKNOWN_SESSION_PROFILE_SCOPE = '\u0001unknown'
 export const $workingSessionProfiles = atom<Record<string, string[]>>({})
+let workingSessionMutationRevision = 0
+const workingSessionScopeRevisions = new Map<string, number>()
+const workingSessionUnscopedRevisions = new Map<string, number>()
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export interface ActiveSessionStoredIdRotation {
@@ -927,6 +930,73 @@ export function clearAllSessionUnread(): void {
   broadcastSessionUnreadReset(version)
 }
 
+export interface SessionWorkingSnapshotRevision {
+  sequence: number
+}
+
+function recordSessionWorkingMutation(
+  sessionId: string,
+  profile: null | string | undefined,
+  previousScopes: readonly string[] = []
+): void {
+  workingSessionMutationRevision += 1
+
+  if (profile === undefined) {
+    workingSessionUnscopedRevisions.set(sessionId, workingSessionMutationRevision)
+
+    for (const scope of previousScopes) {
+      workingSessionScopeRevisions.set(sessionScopeKey(scope, sessionId), workingSessionMutationRevision)
+    }
+
+    return
+  }
+
+  workingSessionScopeRevisions.set(sessionScopeKey(profile, sessionId), workingSessionMutationRevision)
+}
+
+/** Capture the working ledger revision immediately before requesting an
+ * authoritative gateway snapshot. A live event that lands while the request is
+ * in flight changes this token, so the older response cannot overwrite it. */
+export function sessionWorkingSnapshotRevision(): SessionWorkingSnapshotRevision {
+  return { sequence: workingSessionMutationRevision }
+}
+
+function sessionWorkingChangedAfter(
+  sessionId: string,
+  profile: null | string | undefined,
+  revision: SessionWorkingSnapshotRevision | undefined
+): boolean {
+  if (!revision) {
+    return false
+  }
+
+  return (
+    (workingSessionUnscopedRevisions.get(sessionId) ?? 0) > revision.sequence ||
+    (workingSessionScopeRevisions.get(sessionScopeKey(profile, sessionId)) ?? 0) > revision.sequence
+  )
+}
+
+/** Merge one gateway profile from session.active_list without clearing local
+ * state. A missing terminal event is healed by the watchdog; pruning here would
+ * disarm that recovery while leaving the runtime cache busy. Per-session
+ * revisions keep a delayed active snapshot behind newer lifecycle events. */
+export function reconcileProfileWorkingSessions(
+  profile: null | string | undefined,
+  workingSessionIds: readonly string[],
+  expectedRevision?: SessionWorkingSnapshotRevision
+): boolean {
+  const normalized = normalizeSessionProfile(profile)
+  const activeIds = [...new Set(workingSessionIds.map(id => id.trim()).filter(Boolean))]
+
+  for (const sessionId of activeIds) {
+    if (!sessionWorkingChangedAfter(sessionId, normalized, expectedRevision)) {
+      setSessionWorking(sessionId, true, normalized)
+    }
+  }
+
+  return true
+}
+
 export function setSessionWorking(sessionId: string | null | undefined, working: boolean, profile?: null | string) {
   if (!sessionId) {
     return
@@ -949,6 +1019,11 @@ export function setSessionWorking(sessionId: string | null | undefined, working:
   )
   setWorkingSessionIds(current => {
     const present = current.includes(sessionId)
+
+    // A lifecycle event can be meaningful even when membership is unchanged
+    // (e.g. a new turn reasserts true while an old turn's idle snapshot is in
+    // flight). Record every assertion so stale snapshots cannot win that race.
+    recordSessionWorkingMutation(sessionId, profile, previousScopes)
 
     if (nextScopes.length > 0) {
       return present ? current : [...current, sessionId]

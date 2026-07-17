@@ -11,16 +11,21 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $unreadFinishedSessionIds,
+  $workingSessionIds,
+  $workingSessionProfiles,
   applyConfiguredDefaultProjectDir,
   clearSessionLineageAliases,
   mergeSessionPage,
+  reconcileProfileWorkingSessions,
   sessionLineageIds,
   sessionLineageRootId,
   sessionPinId,
   sessionScopeKey,
+  sessionWorkingSnapshotRevision,
   setCurrentCwd,
   setSelectedStoredSessionId,
   setSessionUnread,
+  setSessionWorking,
   workspaceCwdForNewSession
 } from './session'
 import {
@@ -354,6 +359,72 @@ describe('compression lineage aliases', () => {
 
     expect(sessionLineageIds('tip-2')).toEqual(expect.arrayContaining(['root', 'tip-1', 'tip-2']))
     expect(sessionLineageRootId('tip-2')).toBe('root')
+  })
+})
+
+describe('working session snapshot reconciliation', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    $workingSessionIds.set([])
+    $workingSessionProfiles.set({})
+  })
+
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+    $workingSessionIds.set([])
+    $workingSessionProfiles.set({})
+  })
+
+  it('adds reconnect activity without pruning local or colliding profile state', () => {
+    setSessionWorking('same', true, 'alpha')
+    setSessionWorking('same', true, 'beta')
+    setSessionWorking('stale-alpha', true, 'alpha')
+
+    expect(reconcileProfileWorkingSessions('alpha', ['same', 'fresh-alpha'])).toBe(true)
+    expect($workingSessionIds.get()).toEqual(['same', 'stale-alpha', 'fresh-alpha'])
+    expect($workingSessionProfiles.get()['fresh-alpha']).toEqual(['alpha'])
+    expect(new Set($workingSessionProfiles.get().same)).toEqual(new Set(['alpha', 'beta']))
+  })
+
+  it('merges snapshot rows without dropping existing or newer live activity', () => {
+    setSessionWorking('already-live', true, 'work')
+    const revision = sessionWorkingSnapshotRevision()
+
+    setSessionWorking('started-after-request', true, 'work')
+
+    expect(reconcileProfileWorkingSessions('work', ['snapshot-active'], revision)).toBe(true)
+    expect($workingSessionIds.get()).toEqual(['already-live', 'started-after-request', 'snapshot-active'])
+  })
+
+  it('keeps a local working assertion and its watchdog when an idle snapshot arrives', () => {
+    setSessionWorking('local-working', true, 'alpha')
+    const revision = sessionWorkingSnapshotRevision()
+
+    expect(reconcileProfileWorkingSessions('alpha', [], revision)).toBe(true)
+    expect($workingSessionIds.get()).toContain('local-working')
+
+    vi.advanceTimersByTime(8 * 60 * 1000)
+    expect($workingSessionIds.get()).not.toContain('local-working')
+  })
+
+  it('does not resurrect a session that finished after the snapshot request started', () => {
+    setSessionWorking('finished-after-request', true, 'work')
+    const revision = sessionWorkingSnapshotRevision()
+
+    setSessionWorking('finished-after-request', false, 'work')
+
+    expect(reconcileProfileWorkingSessions('work', ['finished-after-request'], revision)).toBe(true)
+    expect($workingSessionIds.get()).not.toContain('finished-after-request')
+  })
+
+  it('does not resurrect an idle session after a newer terminal no-op', () => {
+    const revision = sessionWorkingSnapshotRevision()
+
+    setSessionWorking('already-idle', false, 'work')
+
+    expect(reconcileProfileWorkingSessions('work', ['already-idle'], revision)).toBe(true)
+    expect($workingSessionIds.get()).not.toContain('already-idle')
   })
 })
 

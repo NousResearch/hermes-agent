@@ -191,6 +191,7 @@ credentials. For hosted agents NAS sets these at provision time:
 | key | meaning |
 |---|---|
 | `cron.provider` | `"chronos"` to activate (empty = built-in ticker) |
+| `cron.scheduler_owner` | Must be `"gateway"` or `"auto"`; external providers are Gateway-only and explicit `"desktop"` fails closed |
 | `cron.chronos.portal_url` | NAS base URL (also the expected JWT `iss`) |
 | `cron.chronos.callback_url` | the agent's own public base URL for NAS→agent fires |
 | `cron.chronos.expected_audience` | this agent's JWT `aud` (`agent:{instance_id}`) |

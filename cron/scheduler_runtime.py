@@ -1,7 +1,7 @@
 """Unified policy, lease, provider, and drain lifecycle for cron runtimes."""
 from __future__ import annotations
 
-import io
+import contextlib
 import logging
 import os
 import re
@@ -9,7 +9,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal, cast
+from typing import Any, Callable, Iterator, Literal, cast
 
 from cron.scheduler_lease import SchedulerOwnershipLease
 
@@ -18,8 +18,19 @@ RuntimeOwner = Literal["gateway", "desktop"]
 OwnershipMode = Literal["auto", "gateway", "desktop"]
 _PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _BUILTIN_NAMES = frozenset({"", "builtin", "in-process", "inprocess"})
-_ACTIVE_PROVIDERS: dict[str, Any] = {}
-_ACTIVE_PROVIDERS_LOCK = threading.Lock()
+_ACTIVE_PROVIDERS_LOCK = threading.Condition()
+_NEXT_GENERATION = 0
+
+
+@dataclass
+class _ActiveProviderGeneration:
+    provider: Any
+    generation: int
+    accepting: bool = True
+    reservations: int = 0
+
+
+_ACTIVE_PROVIDERS: dict[str, _ActiveProviderGeneration] = {}
 
 
 @dataclass(frozen=True)
@@ -29,7 +40,23 @@ class SchedulerOwnershipPolicy:
 
 
 def _read_mapping(path: Path) -> dict[str, Any]:
-    from utils import fast_safe_load
+    import yaml
+
+    class _UniqueKeyLoader(yaml.SafeLoader):
+        pass
+
+    def _construct_unique_mapping(loader: Any, node: Any, deep: bool = False) -> dict:
+        result: dict[Any, Any] = {}
+        for key_node, value_node in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            if key in result:
+                raise ValueError("duplicate mapping key")
+            result[key] = loader.construct_object(value_node, deep=deep)
+        return result
+
+    _UniqueKeyLoader.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+    )
 
     try:
         raw = path.read_text(encoding="utf-8")
@@ -42,7 +69,7 @@ def _read_mapping(path: Path) -> dict[str, Any]:
     ]
     if not meaningful:
         return {}
-    parsed = fast_safe_load(io.StringIO(raw))
+    parsed = yaml.load(raw, Loader=_UniqueKeyLoader)
     if not isinstance(parsed, dict):
         raise ValueError("config root must be a mapping")
     return parsed
@@ -115,6 +142,11 @@ def read_scheduler_ownership_policy_strict(
     elif not _PROVIDER_NAME_RE.fullmatch(provider):
         logger.error("Invalid cron.provider; automatic scheduler startup disabled.")
         return None
+    if mode == "desktop" and provider != "builtin":
+        logger.error(
+            "Invalid cron scheduler policy: external providers require Gateway ownership; scheduler startup disabled."
+        )
+        return None
     return SchedulerOwnershipPolicy(cast(OwnershipMode, mode), provider)
 
 
@@ -126,6 +158,8 @@ def scheduler_runtime_is_eligible(
 ) -> bool:
     if runtime not in {"gateway", "desktop"}:
         raise ValueError("Unknown cron scheduler runtime owner")
+    if policy.configured_provider != "builtin" and runtime != "gateway":
+        return False
     if policy.mode == "gateway":
         return runtime == "gateway"
     if policy.mode == "desktop":
@@ -143,19 +177,78 @@ def _home_key(home: Path | None = None) -> str:
     return str(home.expanduser().resolve())
 
 
-def get_active_scheduler_provider(*, hermes_home: Path | None = None) -> Any | None:
-    """Return only the provider protected by this process's active lease."""
+class SchedulerProviderReservation:
+    """A callback reservation pinned to one accepting leased generation."""
+
+    def __init__(self, state: _ActiveProviderGeneration) -> None:
+        self._state = state
+        self.provider = state.provider
+        self.generation = state.generation
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        with _ACTIVE_PROVIDERS_LOCK:
+            if self._released:
+                return
+            self._released = True
+            self._state.reservations -= 1
+            _ACTIVE_PROVIDERS_LOCK.notify_all()
+
+    def __enter__(self) -> "SchedulerProviderReservation":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.release()
+
+
+def reserve_active_scheduler_provider(
+    *, hermes_home: Path | None = None
+) -> SchedulerProviderReservation | None:
+    """Reserve the currently accepting leased generation, or fail closed."""
     with _ACTIVE_PROVIDERS_LOCK:
-        return _ACTIVE_PROVIDERS.get(_home_key(hermes_home))
+        state = _ACTIVE_PROVIDERS.get(_home_key(hermes_home))
+        if state is None or not state.accepting:
+            return None
+        state.reservations += 1
+        return SchedulerProviderReservation(state)
 
 
-def _set_active_provider(home: Path, provider: Any | None) -> None:
+@contextlib.contextmanager
+def reserved_active_scheduler_provider(
+    *, hermes_home: Path | None = None
+) -> Iterator[SchedulerProviderReservation | None]:
+    reservation = reserve_active_scheduler_provider(hermes_home=hermes_home)
+    try:
+        yield reservation
+    finally:
+        if reservation is not None:
+            reservation.release()
+
+
+def _publish_active_provider(home: Path, provider: Any) -> _ActiveProviderGeneration:
+    global _NEXT_GENERATION
     key = _home_key(home)
     with _ACTIVE_PROVIDERS_LOCK:
-        if provider is None:
-            _ACTIVE_PROVIDERS.pop(key, None)
-        else:
-            _ACTIVE_PROVIDERS[key] = provider
+        _NEXT_GENERATION += 1
+        state = _ActiveProviderGeneration(provider=provider, generation=_NEXT_GENERATION)
+        _ACTIVE_PROVIDERS[key] = state
+        return state
+
+
+def _stop_accepting_provider(
+    home: Path, generation: int
+) -> _ActiveProviderGeneration | None:
+    key = _home_key(home)
+    with _ACTIVE_PROVIDERS_LOCK:
+        state = _ACTIVE_PROVIDERS.get(key)
+        if state is None or state.generation != generation:
+            return None
+        state.accepting = False
+        _ACTIVE_PROVIDERS.pop(key, None)
+        _ACTIVE_PROVIDERS_LOCK.notify_all()
+        return state
 
 
 class OwnedSchedulerRuntime:
@@ -191,6 +284,8 @@ class OwnedSchedulerRuntime:
         self._provider_stop: threading.Event | None = None
         self._provider_failed = threading.Event()
         self._state_lock = threading.Lock()
+        self._active_policy: SchedulerOwnershipPolicy | None = None
+        self._active_generation: int | None = None
 
     @property
     def active_provider(self) -> Any | None:
@@ -273,18 +368,22 @@ class OwnedSchedulerRuntime:
             self._active_provider = provider
             self._provider_stop = provider_stop
             self._provider_thread = thread
-        _set_active_provider(home, provider)
+            self._active_policy = fresh
         try:
             thread.start()
         except BaseException:
-            _set_active_provider(home, None)
             with self._state_lock:
                 self._lease = None
                 self._active_provider = None
                 self._provider_stop = None
                 self._provider_thread = None
+                self._active_policy = None
+                self._active_generation = None
             lease.release()
             raise
+        generation_state = _publish_active_provider(home, provider)
+        with self._state_lock:
+            self._active_generation = generation_state.generation
         logger.info(
             "%s acquired cron scheduler ownership (provider=%s)",
             self.runtime_owner.capitalize(),
@@ -308,34 +407,56 @@ class OwnedSchedulerRuntime:
             provider_stop = self._provider_stop
             thread = self._provider_thread
             lease = self._lease
+            generation = self._active_generation
         if provider is None or lease is None:
             return
 
+        # Fence callbacks first: no new reservations may capture this generation
+        # after provider shutdown begins.
+        generation_state = (
+            _stop_accepting_provider(self._current_home(), generation)
+            if generation is not None
+            else None
+        )
         if provider_stop is not None:
             provider_stop.set()
         try:
             provider.stop()
         except BaseException:
             logger.exception("Cron scheduler provider stop() failed; retaining lease until drained")
-        _set_active_provider(self._current_home(), None)
 
         deadline = time.monotonic() + max(0.0, self.drain_timeout)
         warned = False
-        while (thread is not None and thread.is_alive()) or not self._jobs_drained():
+        while True:
+            with _ACTIVE_PROVIDERS_LOCK:
+                reservations_drained = (
+                    generation_state is None or generation_state.reservations == 0
+                )
+            if (
+                (thread is None or not thread.is_alive())
+                and self._jobs_drained()
+                and reservations_drained
+            ):
+                break
             if not warned and time.monotonic() >= deadline:
                 warned = True
                 logger.warning(
                     "Cron scheduler did not drain within %.0fs; retaining ownership until drain or process death",
                     self.drain_timeout,
                 )
-            # A shutdown request does not weaken the no-overlap invariant.
-            stop_event.wait(min(self.poll_interval, 0.1) if warned else self.poll_interval)
+            # stop_event is already set during shutdown, so waiting on it would
+            # busy-spin. The condition paces polling and wakes on reservation release.
+            delay = min(self.poll_interval, 0.1) if warned else self.poll_interval
+            with _ACTIVE_PROVIDERS_LOCK:
+                _ACTIVE_PROVIDERS_LOCK.wait(timeout=delay)
 
         with self._state_lock:
             self._active_provider = None
             self._provider_stop = None
             self._provider_thread = None
             self._lease = None
+            self._active_policy = None
+            self._active_generation = None
         lease.release()
         logger.info("%s released cron scheduler ownership", self.runtime_owner.capitalize())
 
@@ -344,8 +465,14 @@ class OwnedSchedulerRuntime:
         home = self._current_home()
         while not stop_event.is_set():
             policy = read_scheduler_ownership_policy_strict()
-            active = self.active_provider
-            if active is not None and (not self._eligible(policy) or self._provider_failed.is_set()):
+            with self._state_lock:
+                active = self._active_provider
+                active_policy = self._active_policy
+            if active is not None and (
+                not self._eligible(policy)
+                or policy != active_policy
+                or self._provider_failed.is_set()
+            ):
                 self._drain_active(stop_event)
                 if self._provider_failed.is_set():
                     stop_event.wait(self.poll_interval)

@@ -11,6 +11,7 @@ from cron.scheduler_provider import CronScheduler
 from cron.scheduler_runtime import (
     OwnedSchedulerRuntime,
     SchedulerOwnershipPolicy,
+    reserve_active_scheduler_provider,
     scheduler_runtime_is_eligible,
 )
 
@@ -63,6 +64,8 @@ class _Provider(CronScheduler):
         ("auto", "builtin", "desktop", True, False),
         ("auto", "chronos", "gateway", False, True),
         ("auto", "chronos", "desktop", False, False),
+        ("desktop", "chronos", "desktop", False, False),
+        ("desktop", "chronos", "gateway", False, False),
     ],
 )
 def test_scheduler_runtime_eligibility_matrix(mode, provider, runtime, gateway, expected):
@@ -210,6 +213,7 @@ def test_malformed_policy_stops_active_provider_before_release(tmp_path, monkeyp
     _wait_for(provider.started.is_set)
     state["policy"] = None
     _wait_for(provider.stopped.is_set)
+    _wait_for(lambda: runtime.active_provider is None)
     lease = SchedulerOwnershipLease.try_acquire(
         hermes_home=tmp_path, owner="desktop", provider="builtin"
     )
@@ -315,3 +319,75 @@ def test_named_provider_resolution_fails_closed(monkeypatch):
     monkeypatch.setattr("plugins.cron_providers.load_cron_scheduler", lambda _name: None)
     assert resolve_cron_scheduler_runtime_strict("missing") is None
     assert isinstance(resolve_cron_scheduler_runtime_strict("builtin"), InProcessCronScheduler)
+
+
+def test_provider_policy_changes_restart_while_gateway_remains_eligible(
+    tmp_path, monkeypatch
+):
+    state = {"policy": SchedulerOwnershipPolicy("gateway", "builtin")}
+    builtin_first = _Provider()
+    external = _Provider()
+    builtin_second = _Provider()
+    providers = iter((builtin_first, external, builtin_second))
+    monkeypatch.setattr(
+        "cron.scheduler_runtime.read_scheduler_ownership_policy_strict",
+        lambda: state["policy"],
+    )
+    monkeypatch.setattr(
+        "cron.scheduler_provider.resolve_cron_scheduler_runtime_strict",
+        lambda _name: next(providers),
+    )
+    runtime = OwnedSchedulerRuntime(
+        "gateway", hermes_home=tmp_path, poll_interval=0.01, drain_timeout=0.2
+    )
+    stop, thread = _run_runtime(runtime)
+    _wait_for(builtin_first.started.is_set)
+
+    state["policy"] = SchedulerOwnershipPolicy("gateway", "chronos")
+    _wait_for(builtin_first.stopped.is_set)
+    _wait_for(external.started.is_set)
+
+    state["policy"] = SchedulerOwnershipPolicy("gateway", "builtin")
+    _wait_for(external.stopped.is_set)
+    _wait_for(builtin_second.started.is_set)
+
+    stop.set()
+    thread.join(2)
+    assert not thread.is_alive()
+
+
+def test_callback_reservation_fences_drain_and_lease_release(tmp_path, monkeypatch):
+    policy = SchedulerOwnershipPolicy("gateway", "chronos")
+    provider = _Provider()
+    monkeypatch.setattr(
+        "cron.scheduler_runtime.read_scheduler_ownership_policy_strict", lambda: policy
+    )
+    monkeypatch.setattr(
+        "cron.scheduler_provider.resolve_cron_scheduler_runtime_strict",
+        lambda _name: provider,
+    )
+    runtime = OwnedSchedulerRuntime(
+        "gateway", hermes_home=tmp_path, poll_interval=0.01, drain_timeout=0.05
+    )
+    stop, thread = _run_runtime(runtime)
+    _wait_for(provider.started.is_set)
+    reservation = reserve_active_scheduler_provider(hermes_home=tmp_path)
+    assert reservation is not None and reservation.provider is provider
+
+    stop.set()
+    _wait_for(provider.stopped.is_set)
+    assert reserve_active_scheduler_provider(hermes_home=tmp_path) is None
+    time.sleep(0.08)
+    assert thread.is_alive()
+    assert SchedulerOwnershipLease.try_acquire(
+        hermes_home=tmp_path, owner="desktop", provider="builtin"
+    ) is None
+
+    reservation.release()
+    thread.join(2)
+    assert not thread.is_alive()
+    lease = SchedulerOwnershipLease.try_acquire(
+        hermes_home=tmp_path, owner="desktop", provider="builtin"
+    )
+    assert lease is not None
+    lease.release()

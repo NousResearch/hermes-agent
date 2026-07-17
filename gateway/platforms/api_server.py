@@ -4282,10 +4282,10 @@ class APIServerAdapter(BasePlatformAdapter):
             if not job_id:
                 return web.json_response({"error": "missing job_id"}, status=400)
 
-            from cron.scheduler_runtime import get_active_scheduler_provider
+            from cron.scheduler_runtime import reserve_active_scheduler_provider
 
-            provider = get_active_scheduler_provider()
-            if provider is None:
+            scheduler_reservation = reserve_active_scheduler_provider()
+            if scheduler_reservation is None:
                 return web.json_response(
                     {"error": "scheduler ownership unavailable"}, status=503
                 )
@@ -4293,13 +4293,25 @@ class APIServerAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
             # Fire in the background (202 immediately). fire_due claims via the
             # store CAS, so a retry while this is in flight is de-duped.
-            task = asyncio.create_task(
-                asyncio.to_thread(provider.fire_due, job_id, adapters=None, loop=loop)
-            )
+            try:
+                task = asyncio.create_task(
+                    asyncio.to_thread(
+                        scheduler_reservation.provider.fire_due,
+                        job_id,
+                        adapters=None,
+                        loop=loop,
+                    )
+                )
+            except BaseException:
+                scheduler_reservation.release()
+                raise
             reservation["detached"] = True
-            task.add_done_callback(
-                lambda _task: _release_pending_api_work(self, reservation)
-            )
+
+            def _release_fire_reservations(_task: asyncio.Task) -> None:
+                scheduler_reservation.release()
+                _release_pending_api_work(self, reservation)
+
+            task.add_done_callback(_release_fire_reservations)
             try:
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)

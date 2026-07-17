@@ -8,12 +8,37 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.secret_sources.base import ErrorKind, FetchResult, SecretSource
+
 
 class _ProtectedSource:
     name = "test-source"
 
     def protected_env_vars(self, cfg: dict) -> frozenset[str]:
         return frozenset({cfg.get("token_alias", "OP_SERVICE_ACCOUNT_TOKEN")})
+
+
+class _StrictTestSource(SecretSource):
+    name = "stricttest"
+    label = "Strict Test"
+    shape = "mapped"
+
+    def __init__(self, result: FetchResult):
+        self.result = result
+        self.invalidated: list[Path] = []
+
+    def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
+        return self.result
+
+    def invalidate_cache(self, home_path: Path) -> None:
+        self.invalidated.append(home_path)
+
+
+def _install_strict_source(monkeypatch, source: SecretSource) -> None:
+    import agent.secret_sources.registry as registry
+
+    monkeypatch.setattr(registry, "_BUILTINS_LOADED", True)
+    monkeypatch.setattr(registry, "_SOURCES", {source.name: source})
 
 
 def _patch_enabled_source(monkeypatch, *, alias: str = "CUSTOM_BOOTSTRAP") -> None:
@@ -63,7 +88,7 @@ def test_prepare_no_agent_child_env_is_immutable_and_strips_bootstrap_vars(
         child_env["MUTATION"] = "blocked"
 
 
-def test_prepare_no_agent_child_env_resets_before_loading_exact_canonical_home(
+def test_prepare_no_agent_child_env_loads_exact_canonical_home(
     tmp_path, monkeypatch
 ):
     import cron.scheduler as scheduler
@@ -73,10 +98,10 @@ def test_prepare_no_agent_child_env_resets_before_loading_exact_canonical_home(
     monkeypatch.setattr(scheduler, "_hermes_home", home / ".")
     calls: list[tuple[str, Path]] = []
 
-    def reset(path: Path) -> None:
+    def reset(path: Path, **_kwargs) -> None:
         calls.append(("reset", path))
 
-    def load(*, hermes_home: Path) -> None:
+    def load(*, hermes_home: Path, **_kwargs) -> None:
         calls.append(("load", hermes_home))
 
     with patch("hermes_cli.env_loader.reset_secret_source_cache", side_effect=reset), patch(
@@ -85,7 +110,7 @@ def test_prepare_no_agent_child_env_resets_before_loading_exact_canonical_home(
         pinned_home, _child_env = scheduler._prepare_no_agent_child_environment()
 
     assert pinned_home == home.resolve()
-    assert calls == [("reset", home.resolve()), ("load", home.resolve())]
+    assert calls == [("load", home.resolve())]
 
 
 def test_prepare_no_agent_child_env_rotates_across_consecutive_runs(tmp_path, monkeypatch):
@@ -96,7 +121,7 @@ def test_prepare_no_agent_child_env_rotates_across_consecutive_runs(tmp_path, mo
     monkeypatch.setattr(scheduler, "_hermes_home", home)
     values = iter(("first", "second"))
 
-    def load(*, hermes_home: Path) -> None:
+    def load(*, hermes_home: Path, **_kwargs) -> None:
         assert hermes_home == home.resolve()
         os.environ["PERSONAL_HUB_CRON_SECRET"] = next(values)
 
@@ -129,7 +154,7 @@ def test_prepare_no_agent_child_env_two_homes_cannot_interleave(tmp_path, monkey
     beta_loaded = threading.Event()
     original_sanitize = local_env._sanitize_subprocess_env
 
-    def load(*, hermes_home: Path) -> None:
+    def load(*, hermes_home: Path, **_kwargs) -> None:
         name = hermes_home.name
         os.environ["PROFILE_SCOPED_SECRET"] = name
         os.environ["HERMES_HOME"] = f"contaminated-by-{name}"
@@ -143,7 +168,9 @@ def test_prepare_no_agent_child_env_two_homes_cannot_interleave(tmp_path, monkey
         return original_sanitize(env)
 
     monkeypatch.setattr(scheduler, "_hermes_home", None)
-    monkeypatch.setattr(env_loader, "reset_secret_source_cache", lambda _home: None)
+    monkeypatch.setattr(
+        env_loader, "reset_secret_source_cache", lambda _home, **_kwargs: None
+    )
     monkeypatch.setattr(env_loader, "load_hermes_dotenv", load)
     monkeypatch.setattr(env_loader, "_load_secrets_config", lambda _home: {})
     monkeypatch.setattr(registry, "_ordered_enabled_sources", lambda _cfg: [])
@@ -197,15 +224,104 @@ def test_refresh_failure_fails_run_safely_without_starting_child(tmp_path, monke
         "script": "never-runs.py",
     }
     with patch(
-        "hermes_cli.env_loader.reset_secret_source_cache",
+        "hermes_cli.env_loader.refresh_hermes_dotenv_strict",
         side_effect=RuntimeError("refresh failed"),
     ), patch("cron.scheduler.subprocess.run") as run:
         success, doc, response, error = scheduler.run_job(job)
 
     assert success is False
     assert doc == "" and response == ""
-    assert error == "No-agent secret refresh failed: RuntimeError: refresh failed"
+    assert error == "No-agent secret refresh failed: secret refresh failed (type=RuntimeError)"
     run.assert_not_called()
+
+
+def test_fetch_result_error_removes_stale_secret_and_never_starts_child(
+    tmp_path, monkeypatch, caplog
+):
+    import cron.scheduler as scheduler
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "secrets:\n  stricttest:\n    enabled: true\n    override_existing: true\n"
+    )
+    monkeypatch.setattr(scheduler, "_hermes_home", home)
+    raw_secret = "backend token=do-not-log"
+    _install_strict_source(
+        monkeypatch,
+        _StrictTestSource(
+            FetchResult(error=raw_secret, error_kind=ErrorKind.NETWORK)
+        ),
+    )
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, "ROTATING_SECRET", "stricttest")
+    monkeypatch.setenv("ROTATING_SECRET", "stale-value")
+    job = {
+        "id": "strict-fetch-failure",
+        "name": "strict-fetch-failure",
+        "no_agent": True,
+        "script": "never-runs.py",
+    }
+
+    with caplog.at_level("ERROR"), patch("cron.scheduler.subprocess.run") as run:
+        success, doc, response, error = scheduler.run_job(job)
+
+    assert success is False and doc == "" and response == ""
+    assert error is not None
+    assert "source=stricttest" in error and "stage=fetch" in error
+    assert raw_secret not in error and raw_secret not in caplog.text
+    assert "ROTATING_SECRET" not in os.environ
+    run.assert_not_called()
+
+
+def test_strict_apply_exception_is_sanitized(tmp_path, monkeypatch):
+    import agent.secret_sources.registry as registry
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "secrets:\n  stricttest:\n    enabled: true\n"
+    )
+    source = _StrictTestSource(FetchResult(secrets={"VALUE": "unused"}))
+    _install_strict_source(monkeypatch, source)
+    raw_secret = "exception contains SECRET-VALUE"
+    monkeypatch.setattr(registry, "apply_all", lambda *_args: (_ for _ in ()).throw(RuntimeError(raw_secret)))
+
+    with pytest.raises(env_loader.SecretSourceRefreshError) as raised:
+        env_loader.refresh_hermes_dotenv_strict(hermes_home=home)
+    assert "source=stricttest" in str(raised.value)
+    assert "stage=apply" in str(raised.value)
+    assert raw_secret not in str(raised.value)
+
+
+def test_strict_refresh_success_replaces_stale_value(tmp_path, monkeypatch):
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "secrets:\n  stricttest:\n    enabled: true\n    override_existing: true\n"
+    )
+    source = _StrictTestSource(FetchResult(secrets={"ROTATING_SECRET": "fresh"}))
+    _install_strict_source(monkeypatch, source)
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, "ROTATING_SECRET", "stricttest")
+    monkeypatch.setenv("ROTATING_SECRET", "stale")
+
+    env_loader.refresh_hermes_dotenv_strict(hermes_home=home)
+
+    assert os.environ["ROTATING_SECRET"] == "fresh"
+    assert env_loader.get_secret_source("ROTATING_SECRET") == "stricttest"
+    assert source.invalidated == [home.resolve()]
+
+
+def test_strict_refresh_with_no_enabled_sources_is_successful(tmp_path, monkeypatch):
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    _install_strict_source(monkeypatch, _StrictTestSource(FetchResult()))
+    assert env_loader.refresh_hermes_dotenv_strict(hermes_home=home) == []
 
 
 def test_claim_heartbeat_passes_exact_prepared_snapshot_and_home(tmp_path, monkeypatch):

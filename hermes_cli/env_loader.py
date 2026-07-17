@@ -39,6 +39,19 @@ _SECRET_SOURCES: dict[str, str] = {}
 _APPLIED_HOMES: set[str] = set()
 
 
+class SecretSourceRefreshError(RuntimeError):
+    """Sanitized fail-closed error for no-agent secret refreshes."""
+
+    def __init__(self, *, source: str, source_type: str, stage: str) -> None:
+        self.source = source
+        self.source_type = source_type
+        self.stage = stage
+        super().__init__(
+            f"secret source refresh failed "
+            f"(source={source}, type={source_type}, stage={stage})"
+        )
+
+
 def get_secret_source(env_var: str) -> str | None:
     """Return the label of the secret source that supplied ``env_var``, if any.
 
@@ -232,6 +245,7 @@ def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
+    _apply_external: bool = True,
 ) -> list[Path]:
     """Load Hermes environment files with user config taking precedence.
 
@@ -275,7 +289,8 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
-    _apply_external_secret_sources(home_path)
+    if _apply_external:
+        _apply_external_secret_sources(home_path)
     _apply_managed_env()
 
     return loaded
@@ -384,6 +399,131 @@ def _apply_external_secret_sources(home_path: Path) -> None:
             print(f"  {src.label}: {warn}", file=sys.stderr)
     for conflict in report.conflicts:
         print(f"  Secret sources: {conflict}", file=sys.stderr)
+
+
+def refresh_hermes_dotenv_strict(
+    *, hermes_home: str | os.PathLike
+) -> list[Path]:
+    """Refresh no-agent secrets or raise a sanitized fail-closed error.
+
+    Ordinary startup remains fail-open through ``load_hermes_dotenv``. This
+    path is intentionally stricter because launching a script with a stale
+    externally sourced value is less safe than refusing to launch it.
+    """
+    home_path = Path(hermes_home).expanduser().resolve()
+    _APPLIED_HOMES.discard(str(home_path))
+
+    # Remove every value previously attributed to an external source before
+    # dotenv or vault reload. The caller holds the cron refresh lock across
+    # this removal, reload, and child snapshot.
+    for name in tuple(_SECRET_SOURCES):
+        os.environ.pop(name, None)
+        _SECRET_SOURCES.pop(name, None)
+
+    loaded = load_hermes_dotenv(hermes_home=home_path, _apply_external=False)
+
+    try:
+        cfg = _load_secrets_config_strict(home_path)
+    except Exception as exc:
+        if isinstance(exc, SecretSourceRefreshError):
+            raise
+        raise SecretSourceRefreshError(
+            source="configuration", source_type="mapping", stage="config"
+        ) from None
+
+    try:
+        from agent.secret_sources.registry import apply_all, list_sources
+
+        registered = {source.name: source for source in list_sources()}
+        enabled = []
+        for name, source_cfg in cfg.items():
+            if name == "sources":
+                continue
+            source = registered.get(name)
+            if source is None:
+                if isinstance(source_cfg, dict) and source_cfg.get("enabled") is True:
+                    raise SecretSourceRefreshError(
+                        source="unregistered", source_type="unregistered", stage="config"
+                    )
+                continue
+            if not isinstance(source_cfg, dict):
+                raise SecretSourceRefreshError(
+                    source=source.name,
+                    source_type=type(source).__name__,
+                    stage="config",
+                )
+            try:
+                if source.is_enabled(source_cfg):
+                    enabled.append(source)
+            except Exception:
+                raise SecretSourceRefreshError(
+                    source=source.name,
+                    source_type=type(source).__name__,
+                    stage="config",
+                ) from None
+    except SecretSourceRefreshError:
+        raise
+    except Exception:
+        raise SecretSourceRefreshError(
+            source="registry", source_type="registry", stage="config"
+        ) from None
+
+    if not enabled:
+        return loaded
+
+    for source in enabled:
+        try:
+            source.invalidate_cache(home_path)
+        except Exception:
+            raise SecretSourceRefreshError(
+                source=source.name,
+                source_type=type(source).__name__,
+                stage="invalidate",
+            ) from None
+
+    working_env = os.environ.copy()
+    try:
+        report = apply_all(cfg, home_path, environ=working_env)
+    except Exception:
+        summary = ",".join(source.name for source in enabled)
+        types = ",".join(type(source).__name__ for source in enabled)
+        raise SecretSourceRefreshError(
+            source=summary, source_type=types, stage="apply"
+        ) from None
+
+    source_types = {source.name: type(source).__name__ for source in enabled}
+    for source_report in report.sources:
+        if source_report.result.error or not source_report.result.ok:
+            raise SecretSourceRefreshError(
+                source=source_report.name,
+                source_type=source_types.get(source_report.name, "registered"),
+                stage="fetch",
+            )
+
+    if report.applied_any:
+        for name in report.provenance:
+            os.environ[name] = working_env[name]
+        _sanitize_loaded_credentials()
+        for name, applied in report.provenance.items():
+            _SECRET_SOURCES[name] = applied.source
+    return loaded
+
+
+def _load_secrets_config_strict(home_path: Path) -> dict:
+    """Parse the secrets section without startup's fail-open swallowing."""
+    config_path = home_path / "config.yaml"
+    if not config_path.exists():
+        return {}
+    with open(config_path, "r", encoding="utf-8") as config_file:
+        data = fast_safe_load(config_file) or {}
+    if not isinstance(data, dict):
+        raise ValueError("config root is not a mapping")
+    secrets = data.get("secrets", {})
+    if secrets is None:
+        return {}
+    if not isinstance(secrets, dict):
+        raise ValueError("secrets is not a mapping")
+    return secrets
 
 
 def _load_secrets_config(home_path: Path) -> dict:

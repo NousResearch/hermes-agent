@@ -122,3 +122,40 @@ def test_managed_provider_precedence_is_read_with_owner(tmp_path, monkeypatch):
     policy = read_scheduler_ownership_policy_strict()
     assert policy is not None
     assert (policy.mode, policy.configured_provider) == ("gateway", "chronos")
+
+
+def test_explicit_desktop_with_external_provider_fails_closed(caplog):
+    from cron.scheduler_runtime import read_scheduler_ownership_policy_strict
+
+    with caplog.at_level("ERROR"):
+        policy = read_scheduler_ownership_policy_strict(
+            {"cron": {"scheduler_owner": "desktop", "provider": "chronos"}}
+        )
+    assert policy is None
+    assert "external providers require Gateway ownership" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "cron: {}\ncron:\n  scheduler_owner: gateway\n",
+        "cron:\n  scheduler_owner: auto\n  scheduler_owner: gateway\n",
+        "cron:\n  provider: builtin\n  provider: chronos\n",
+    ],
+)
+@pytest.mark.parametrize("managed", [False, True])
+def test_duplicate_scheduler_policy_keys_fail_closed(
+    tmp_path, monkeypatch, body, managed
+):
+    from cron.scheduler_runtime import read_scheduler_ownership_policy_strict
+
+    home = tmp_path / "home"
+    target = tmp_path / "managed" if managed else home
+    _write_config(target, body)
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    if managed:
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(target))
+    else:
+        monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
+    assert read_scheduler_ownership_policy_strict() is None

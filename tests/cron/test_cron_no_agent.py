@@ -235,8 +235,10 @@ def test_run_job_no_agent_refreshes_external_secrets_before_subprocess(hermes_en
         os.environ["PERSONAL_HUB_CRON_SECRET"] = "fresh-per-run"
 
     try:
-        with patch("hermes_cli.env_loader.reset_secret_source_cache") as reset, \
-             patch("hermes_cli.env_loader.load_hermes_dotenv", side_effect=load_secret) as load:
+        with patch(
+            "hermes_cli.env_loader.refresh_hermes_dotenv_strict",
+            side_effect=load_secret,
+        ) as refresh:
             success, _doc, final_response, error = run_job(job)
     finally:
         os.environ.pop("PERSONAL_HUB_CRON_SECRET", None)
@@ -244,8 +246,7 @@ def test_run_job_no_agent_refreshes_external_secrets_before_subprocess(hermes_en
     assert success is True
     assert error is None
     assert final_response == "secret-loaded"
-    reset.assert_called_once_with(hermes_env)
-    load.assert_called_once_with(hermes_home=hermes_env)
+    refresh.assert_called_once_with(hermes_home=hermes_env)
 
 
 def test_run_job_no_agent_empty_output_is_silent(hermes_env):

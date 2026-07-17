@@ -35,7 +35,16 @@ def test_notify_helper_calls_provider_on_jobs_changed(monkeypatch):
         def on_jobs_changed(self):
             calls.append(1)
 
-    monkeypatch.setattr(runtime, "get_active_scheduler_provider", lambda: Spy())
+    class Reservation:
+        provider = Spy()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+    monkeypatch.setattr(runtime, "reserved_active_scheduler_provider", Reservation)
     sched._notify_provider_jobs_changed()
     assert calls == [1]
 
@@ -58,7 +67,16 @@ def test_notify_helper_swallows_provider_errors(monkeypatch):
         def on_jobs_changed(self):
             raise RuntimeError("kaboom")
 
-    monkeypatch.setattr(runtime, "get_active_scheduler_provider", lambda: Boom())
+    class Reservation:
+        provider = Boom()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+    monkeypatch.setattr(runtime, "reserved_active_scheduler_provider", Reservation)
     sched._notify_provider_jobs_changed()  # must not raise
 
 

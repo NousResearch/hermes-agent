@@ -852,8 +852,9 @@ platform_toolsets:
 
 # Exactly one long-running runtime should dispatch due jobs for a HERMES_HOME.
 # auto (default) prefers Gateway; Desktop runs the built-in fallback only while
-# no same-HERMES_HOME Gateway is active. Named external providers remain
-# Gateway-only and fail closed if unavailable. Invalid values fail closed.
+# no same-HERMES_HOME Gateway is active. Named external providers are always
+# Gateway-only: scheduler_owner: desktop with a named provider is invalid and
+# both runtimes fail closed. Invalid or duplicate policy keys also fail closed.
 cron:
   scheduler_owner: "auto"  # auto | gateway | desktop
 

@@ -2649,15 +2649,13 @@ def _prepare_no_agent_child_environment() -> tuple[Path, Mapping[str, str]]:
     from agent.secret_sources.registry import _ordered_enabled_sources
     from hermes_cli.env_loader import (
         _load_secrets_config,
-        load_hermes_dotenv,
-        reset_secret_source_cache,
+        refresh_hermes_dotenv_strict,
     )
     from tools.environments.local import _sanitize_subprocess_env
 
     with _cron_secret_refresh_lock:
         pinned_home = _get_hermes_home().expanduser().resolve()
-        reset_secret_source_cache(pinned_home)
-        load_hermes_dotenv(hermes_home=pinned_home)
+        refresh_hermes_dotenv_strict(hermes_home=pinned_home)
 
         child_env = _sanitize_subprocess_env(os.environ.copy())
         secrets_cfg = _load_secrets_config(pinned_home)
@@ -2729,12 +2727,18 @@ def run_job(
         try:
             pinned_home, child_env = _prepare_no_agent_child_environment()
         except Exception as exc:
+            from hermes_cli.env_loader import SecretSourceRefreshError
+
+            if isinstance(exc, SecretSourceRefreshError):
+                summary = str(exc)
+            else:
+                summary = f"secret refresh failed (type={type(exc).__name__})"
             logger.error(
-                "Job '%s': no-agent secret refresh failed; child not started",
+                "Job '%s': no-agent %s; child not started",
                 job_id,
-                exc_info=True,
+                summary,
             )
-            err = f"No-agent secret refresh failed: {type(exc).__name__}: {exc}"
+            err = f"No-agent secret refresh failed: {summary}"
             return False, "", "", err
 
         # Apply workdir if configured — lets scripts use predictable relative
@@ -3872,11 +3876,11 @@ def _notify_provider_jobs_changed() -> None:
     Never raises into the caller.
     """
     try:
-        from cron.scheduler_runtime import get_active_scheduler_provider
+        from cron.scheduler_runtime import reserved_active_scheduler_provider
 
-        provider = get_active_scheduler_provider()
-        if provider is not None:
-            provider.on_jobs_changed()
+        with reserved_active_scheduler_provider() as reservation:
+            if reservation is not None:
+                reservation.provider.on_jobs_changed()
     except Exception as e:
         logger.debug("on_jobs_changed notify failed: %s", e)
 

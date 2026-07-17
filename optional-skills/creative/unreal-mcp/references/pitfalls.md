@@ -297,6 +297,27 @@ bulbs, speaker/Niagara icons). They are editor overlay, NOT your scene —
 particles especially: an editor screenshot is not proof a Niagara effect is
 emitting. Verify effects via the actor's active state or a PIE capture.
 
+### 21c. The viewport axis gizmo survives bShowUI=false — plan a post-crop
+
+`CaptureViewport` with `bShowUI: false` hides menus and toolbars but the
+bottom-left XYZ axis gizmo is still burned into every frame
+(live-verified on 5.8; at 2027x1534 it occupies roughly the region below
+y≈1350, x<300). For video/hero deliverables, compose with spare margin and
+crop it out in post (e.g. a 16:9 punch-in via ffmpeg
+`crop=2027:1140:0:180,scale=1920:1080`) — deterministic across every frame
+of a sequence, no per-frame edits.
+
+### 21d. Frame sequences: one client session, serial captures, resumable loop
+
+For multi-frame virtual-camera moves (orbits, cranes) drive
+`CaptureViewport` in a loop from ONE MCP session, strictly serial (the
+game thread renders each), and write frames idempotently
+(skip-if-exists) so a killed run resumes where it stopped. Budget
+realistically: ~15-20 s/frame at editor resolution on a laptop — a 240-frame
+10 s @ 24 fps shot is roughly an hour. Smoothstep-ease camera parameters;
+constant angular velocity reads mechanical. Remove the VolumetricCloud
+actor if its low-res gather smears blocky artifacts across sky frames.
+
 ### 22. Report package paths + file paths
 
 The user needs: what actors/assets now exist (labels + `/Game/...` paths),

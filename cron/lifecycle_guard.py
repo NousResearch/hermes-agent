@@ -40,7 +40,7 @@ import re
 import shlex
 import stat
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 
 class GatewayLifecycleBlocked(ValueError):
@@ -83,6 +83,11 @@ _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
 _CONTROL_CHARS = frozenset(";&|()")
+
+
+
+
+_ReadRemoteScriptFn = Callable[[str], Optional[str]]
 
 
 def _iter_command_segments(command: str) -> Iterator[list[str]]:
@@ -201,6 +206,17 @@ def _iter_shell_command_payloads(command: str) -> Iterator[str]:
                 break
 
 
+def _resolve_script_directory(script_path: str) -> Optional[str]:
+    """Return the directory *script_path* resolves to, handling relative names."""
+    try:
+        path = _resolve_script_path(script_path)
+        if path.is_absolute():
+            return str(path.parent)
+    except Exception:
+        pass
+    return None
+
+
 def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
     """Return ``(text, unsafe)`` using bounded, regular-file-only reads."""
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
@@ -230,6 +246,7 @@ def _contains_unsafe_gateway_action(
     cwd: Optional[str],
     depth: int,
     visited: set[Path],
+    read_remote_script: Optional[_ReadRemoteScriptFn] = None,
 ) -> bool:
     if contains_gateway_lifecycle_command(command) or contains_launchctl_submit_command(
         command
@@ -244,6 +261,7 @@ def _contains_unsafe_gateway_action(
             cwd=cwd,
             depth=depth + 1,
             visited=visited,
+            read_remote_script=read_remote_script,
         ):
             return True
 
@@ -258,11 +276,20 @@ def _contains_unsafe_gateway_action(
         script_text, unsafe = _read_referenced_script(script_path)
         if unsafe:
             return True
+        if script_text is None and read_remote_script is not None:
+            # Local path missing; try the remote backend if one is available.
+            script_text = read_remote_script(str(script_path))
+        if not script_text:
+            continue
+        # Relative references inside a script resolve against that script's
+        # directory, not the original command's cwd.
+        script_dir = _resolve_script_directory(str(resolved)) or cwd
         if script_text and _contains_unsafe_gateway_action(
             script_text,
-            cwd=cwd,
+            cwd=script_dir,
             depth=depth + 1,
             visited=visited,
+            read_remote_script=read_remote_script,
         ):
             return True
     return False
@@ -272,6 +299,7 @@ def contains_gateway_lifecycle_command_or_referenced_script(
     command: str,
     *,
     cwd: Optional[str] = None,
+    read_remote_script: Optional[_ReadRemoteScriptFn] = None,
 ) -> bool:
     """Detect lifecycle/submit commands, including bounded nested scripts."""
     return _contains_unsafe_gateway_action(
@@ -279,7 +307,10 @@ def contains_gateway_lifecycle_command_or_referenced_script(
         cwd=cwd,
         depth=0,
         visited=set(),
+        read_remote_script=read_remote_script,
     )
+
+
 
 
 def _resolve_script_path(script_path: str) -> Path:
@@ -336,8 +367,10 @@ def check_gateway_lifecycle(
         if script_text:
             combined = f"{combined}\n{script_text}"
 
-    if contains_gateway_lifecycle_command(combined) or contains_launchctl_submit_command(
-        combined
+    script_dir = _resolve_script_directory(script) if script else None
+    if contains_gateway_lifecycle_command_or_referenced_script(
+        combined,
+        cwd=script_dir,
     ):
         raise GatewayLifecycleBlocked(
             "Blocked: cron job contains a gateway lifecycle command or persistent "

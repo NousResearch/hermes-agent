@@ -37,6 +37,8 @@ import logging
 import os
 import platform
 import re
+import shlex
+import stat
 import time
 import threading
 import atexit
@@ -2340,6 +2342,14 @@ def terminal_tool(
 
         assert env is not None  # all creation failure paths return above
 
+        # The session key that drives cwd records: get_current_session_key()'s
+        # contextvar doesn't cross tool-worker threads, so fall back to the raw
+        # task_id (which IS the session_key for the top-level agent) — a
+        # stable, thread-safe anchor.
+        from tools.approval import get_current_session_key
+
+        session_key = get_current_session_key(default="") or (task_id or "")
+
         # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
         # restart|stop targeting hermes-gateway) must never run inside the
         # gateway process itself. The restart would SIGTERM the gateway, which
@@ -2364,14 +2374,49 @@ def terminal_tool(
                     ),
                     "status": "error",
                 }, ensure_ascii=False)
+            guard_cwd_base = get_session_cwd(session_key)
+            if guard_cwd_base is None:
+                guard_cwd_base = getattr(env, "cwd", None) or cwd
             guard_cwd = _resolve_command_cwd(
                 workdir=workdir,
-                env=env,
-                default_cwd=cwd,
+                default_cwd=guard_cwd_base,
+                session_key=session_key,
             )
+
+            def _read_script_in_env(script_path: str) -> Optional[str]:
+                """Best-effort script read; uses env.execute only when local read fails.
+
+                For local backends the script path is on the host filesystem. For
+                SSH/Modal/Daytona the same path is remote; the local read misses, so we
+                fall back to ``env.execute('cat ...')``.
+                """
+                if env is None:
+                    return None
+                try:
+                    local_path = Path(script_path).expanduser()
+                    if not local_path.is_absolute():
+                        local_path = Path(guard_cwd) / local_path
+                    if local_path.is_file():
+                        metadata = local_path.stat()
+                        if stat.S_ISREG(metadata.st_mode) and metadata.st_size <= 1024 * 1024:
+                            data = local_path.read_bytes()
+                            if len(data) <= 1024 * 1024:
+                                return data.decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+                # Remote / sandboxed backend: read via the environment's shell.
+                try:
+                    result = env.execute(f"cat {shlex.quote(script_path)}")
+                    if result.get("returncode", -1) == 0:
+                        return result.get("output", "")
+                except Exception:
+                    pass
+                return None
+
             if contains_gateway_lifecycle_command_or_referenced_script(
                 command,
                 cwd=guard_cwd,
+                read_remote_script=_read_script_in_env,
             ):
                 return json.dumps({
                     "output": "",
@@ -2460,14 +2505,7 @@ def terminal_tool(
                 "EOF."
             )
 
-        # The session key that drives cwd records: get_current_session_key()'s
-        # contextvar doesn't cross tool-worker threads, so fall back to the raw
-        # task_id (which IS the session_key for the top-level agent) — a
-        # stable, thread-safe anchor.
-        from tools.approval import get_current_session_key
-
-        session_key = get_current_session_key(default="") or (task_id or "")
-
+        # The session key is already computed above the gateway guard.
         if background:
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.

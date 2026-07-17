@@ -739,3 +739,80 @@ class TestRestartLoopGuard:
         rlg.check_and_record(3, 60, now=1001.0)
         rlg.clear()
         assert rlg.check_and_record(3, 60, now=1002.0) is False
+
+class TestTerminalToolGatewayLifecycleGuardRemote:
+    """Remote-backend and two-session cwd regression coverage."""
+
+    def _patch_env(self, monkeypatch, fake_env, *, inside_gateway: bool):
+        import tools.terminal_tool as tt
+        eid = "default"
+        monkeypatch.setattr(tt, "_active_environments", {eid: fake_env})
+        monkeypatch.setattr(tt, "_last_activity", {eid: 0.0})
+        monkeypatch.setattr(tt, "_task_env_overrides", {})
+        monkeypatch.setattr(tt, "_get_env_config", lambda: {"env_type": "local", "cwd": "/tmp", "timeout": 60, "lifetime_seconds": 3600})
+        if inside_gateway:
+            monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        else:
+            monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+
+    def test_remote_backend_script_read_uses_env_execute(self, monkeypatch, tmp_path):
+        import tools.terminal_tool as tt
+
+        # Path only exists on the remote backend; locally it is absent, so the
+        # guard must fall back to env.execute('cat ...') to scan it.
+        script = "/remote/workspace/remote.sh"
+        calls = []
+
+        class _RemoteEnv:
+            env = {}
+            cwd = str(tmp_path)
+            def execute(self, command, **kwargs):
+                calls.append(command)
+                if "cat" in command and "/remote/workspace/remote.sh" in command:
+                    return {"output": "#!/bin/bash\\nhermes gateway restart\\n", "returncode": 0}
+                return {"output": "", "returncode": 0}
+
+        fake_env = _RemoteEnv()
+        fake_env.cwd = "/remote/workspace"
+        self._patch_env(monkeypatch, fake_env, inside_gateway=True)
+
+        result = json.loads(tt.terminal_tool(command=f"/bin/bash {script}"))
+
+        assert result["exit_code"] == 1
+        assert "referenced script" in result["error"]
+        assert any("cat" in c for c in calls)
+
+
+class TestCronCreateLifecycleBlockExtra:
+    """Additional cron create lifecycle guard coverage."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+
+    def test_cron_nested_wrapper_script_is_scanned(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        scripts_dir = tmp_path / ".hermes" / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "inner.sh").write_text("#!/bin/bash\nhermes gateway restart\n")
+        (scripts_dir / "outer.sh").write_text("#!/bin/bash\n/bin/bash inner.sh\n")
+        args = Namespace(
+            cron_command="create",
+            schedule="1h",
+            prompt=None,
+            name=None,
+            deliver=None,
+            repeat=None,
+            skill=None,
+            skills=None,
+            script="outer.sh",
+            workdir=None,
+            profile=None,
+            no_agent=True,
+        )
+        rc = cron_command(args)
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "Blocked" in out

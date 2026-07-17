@@ -2379,48 +2379,64 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
     ).fetchone() is not None
     if runs_exist:
-        with write_txn(conn):
-            inflight = conn.execute(
-                "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
-                "       max_runtime_seconds, last_heartbeat_at, started_at "
-                "FROM tasks "
-                "WHERE status = 'running' AND current_run_id IS NULL"
-            ).fetchall()
-            for row in inflight:
-                started = row["started_at"] or int(time.time())
-                cur = conn.execute(
-                    """
-                    INSERT INTO task_runs (
-                        task_id, profile, status,
-                        claim_lock, claim_expires, worker_pid,
-                        max_runtime_seconds, last_heartbeat_at,
-                        started_at
-                    ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        row["id"], row["assignee"], row["claim_lock"],
-                        row["claim_expires"], row["worker_pid"],
-                        row["max_runtime_seconds"], row["last_heartbeat_at"],
-                        started,
-                    ),
-                )
-                # CAS: only install the pointer if nothing else claimed
-                # the task between our SELECT and here (shouldn't happen
-                # under the write_txn, but belt-and-suspenders). If the
-                # CAS fails we've got an orphan run_row — mark it
-                # reclaimed so it doesn't look in-flight.
-                upd = conn.execute(
-                    "UPDATE tasks SET current_run_id = ? "
-                    "WHERE id = ? AND current_run_id IS NULL",
-                    (cur.lastrowid, row["id"]),
-                )
-                if upd.rowcount != 1:
-                    conn.execute(
-                        "UPDATE task_runs SET status = 'reclaimed', "
-                        "    outcome = 'reclaimed', ended_at = ? "
-                        "WHERE id = ?",
-                        (int(time.time()), cur.lastrowid),
+        # Probe BEFORE opening the write transaction, and skip it entirely
+        # when there is nothing to backfill — the overwhelmingly common
+        # case. This function runs on every process's first connect, and a
+        # per-start ``BEGIN IMMEDIATE`` here is one leg of a reproduced
+        # corruption trigger (health-probe + fresh rw connection + early
+        # write_txn under process churn at wal_autocheckpoint=1000 corrupts
+        # the board; see the reproduction matrix posted on PR #41795). The
+        # re-SELECT inside the transaction below stays, so a task that
+        # turns 'running' between probe and txn is still handled correctly
+        # — legacy rows can only pre-exist anyway (new claims always set
+        # current_run_id).
+        needs_backfill = conn.execute(
+            "SELECT 1 FROM tasks "
+            "WHERE status = 'running' AND current_run_id IS NULL LIMIT 1"
+        ).fetchone() is not None
+        if needs_backfill:
+            with write_txn(conn):
+                inflight = conn.execute(
+                    "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
+                    "       max_runtime_seconds, last_heartbeat_at, started_at "
+                    "FROM tasks "
+                    "WHERE status = 'running' AND current_run_id IS NULL"
+                ).fetchall()
+                for row in inflight:
+                    started = row["started_at"] or int(time.time())
+                    cur = conn.execute(
+                        """
+                        INSERT INTO task_runs (
+                            task_id, profile, status,
+                            claim_lock, claim_expires, worker_pid,
+                            max_runtime_seconds, last_heartbeat_at,
+                            started_at
+                        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            row["id"], row["assignee"], row["claim_lock"],
+                            row["claim_expires"], row["worker_pid"],
+                            row["max_runtime_seconds"], row["last_heartbeat_at"],
+                            started,
+                        ),
                     )
+                    # CAS: only install the pointer if nothing else claimed
+                    # the task between our SELECT and here (shouldn't happen
+                    # under the write_txn, but belt-and-suspenders). If the
+                    # CAS fails we've got an orphan run_row — mark it
+                    # reclaimed so it doesn't look in-flight.
+                    upd = conn.execute(
+                        "UPDATE tasks SET current_run_id = ? "
+                        "WHERE id = ? AND current_run_id IS NULL",
+                        (cur.lastrowid, row["id"]),
+                    )
+                    if upd.rowcount != 1:
+                        conn.execute(
+                            "UPDATE task_runs SET status = 'reclaimed', "
+                            "    outcome = 'reclaimed', ended_at = ? "
+                            "WHERE id = ?",
+                            (int(time.time()), cur.lastrowid),
+                        )
 
     # One-shot event-kind rename pass. The old names ("ready", "priority",
     # "spawn_auto_blocked") still worked but were awkward on the wire;

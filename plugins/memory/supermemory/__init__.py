@@ -262,6 +262,35 @@ def _is_trivial_message(text: str) -> bool:
     return bool(_TRIVIAL_RE.match((text or "").strip()))
 
 
+def _result_text(item: Any) -> str:
+    """Extract the visible text from a Supermemory search/profile result.
+
+    The Supermemory SDK (>=3.x) returns result text in the ``chunk`` field and
+    leaves ``memory`` as None. Older SDKs used ``memory`` directly. Fall back
+    through ``chunk`` -> ``memory`` -> ``content`` -> the first document's
+    ``title`` so the plugin keeps working across SDK versions instead of
+    returning silently-empty memories (similarity survives, text does not).
+    """
+    if isinstance(item, dict):
+        text = item.get("chunk") or item.get("memory") or item.get("content") or ""
+        if not text and item.get("documents"):
+            docs = item["documents"]
+            if isinstance(docs, list) and docs:
+                doc = docs[0]
+                text = doc.get("title") if isinstance(doc, dict) else getattr(doc, "title", "")
+        return text or ""
+    for attr in ("chunk", "memory", "content"):
+        text = getattr(item, attr, None)
+        if text:
+            return text
+    docs = getattr(item, "documents", None)
+    if docs and isinstance(docs, list):
+        title = getattr(docs[0], "title", None)
+        if title:
+            return title
+    return ""
+
+
 class _SupermemoryClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid"):
         # Lazy-install the supermemory SDK on demand. ensure() honors
@@ -330,7 +359,7 @@ class _SupermemoryClient:
         for item in (getattr(response, "results", None) or []):
             results.append({
                 "id": getattr(item, "id", ""),
-                "memory": getattr(item, "memory", "") or "",
+                "memory": _result_text(item) or "",
                 "similarity": getattr(item, "similarity", None),
                 "updated_at": getattr(item, "updated_at", None) or getattr(item, "updatedAt", None),
                 "metadata": getattr(item, "metadata", None),
@@ -353,10 +382,14 @@ class _SupermemoryClient:
         if isinstance(raw_results, list):
             for item in raw_results:
                 if isinstance(item, dict):
-                    search_results.append(item)
+                    search_results.append({
+                        "memory": _result_text(item) or item.get("memory") or "",
+                        "updated_at": item.get("updated_at") or item.get("updatedAt"),
+                        "similarity": item.get("similarity"),
+                    })
                 else:
                     search_results.append({
-                        "memory": getattr(item, "memory", ""),
+                        "memory": _result_text(item) or "",
                         "updated_at": getattr(item, "updated_at", None) or getattr(item, "updatedAt", None),
                         "similarity": getattr(item, "similarity", None),
                     })

@@ -51,6 +51,7 @@ from hermes_cli.auth import AuthError
 # Store helpers
 # ---------------------------------------------------------------------------
 
+
 def _write_store(path, store):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(store), encoding="utf-8")
@@ -131,8 +132,9 @@ def profile_and_root(tmp_path, monkeypatch):
     return profile_path, root_path
 
 
-def _patch_refresh_pure(monkeypatch, *, rotated_access="rotated-access",
-                        rotated_refresh="rotated-refresh"):
+def _patch_refresh_pure(
+    monkeypatch, *, rotated_access="rotated-access", rotated_refresh="rotated-refresh"
+):
     """Stub the network POST to return a deterministic rotated pair.
 
     Returns a dict tracking invocation count so concurrency tests can assert
@@ -168,7 +170,10 @@ def _patch_refresh_pure(monkeypatch, *, rotated_access="rotated-access",
 # 1. Write-through to root when profile reads root fallback
 # ---------------------------------------------------------------------------
 
-def test_minimax_oauth_pool_refresh_writes_through_to_root(profile_and_root, monkeypatch):
+
+def test_minimax_oauth_pool_refresh_writes_through_to_root(
+    profile_and_root, monkeypatch
+):
     """A profile reading root's grant must push rotated tokens back to root.
 
     Mirrors ``test_pool_refresh_writes_through_to_root_when_profile_reads_root``
@@ -192,9 +197,7 @@ def test_minimax_oauth_pool_refresh_writes_through_to_root(profile_and_root, mon
     # Stub get_provider_auth_state so the refresh impl can pull client_id /
     # portal_base_url from the persisted singleton (the pool entry does not
     # carry routing metadata).
-    monkeypatch.setattr(
-        A, "get_provider_auth_state", lambda _pid: dict(root_state)
-    )
+    monkeypatch.setattr(A, "get_provider_auth_state", lambda _pid: dict(root_state))
 
     refreshed = pool._refresh_entry(pool._entries[0], force=True)
 
@@ -220,6 +223,7 @@ def test_minimax_oauth_pool_refresh_writes_through_to_root(profile_and_root, mon
 # 2. Borrowed-root grant stays owned by root across two successive refreshes
 # ---------------------------------------------------------------------------
 
+
 def test_minimax_oauth_borrowed_root_grant_stays_owned_across_two_refreshes(
     profile_and_root, monkeypatch
 ):
@@ -232,7 +236,9 @@ def test_minimax_oauth_borrowed_root_grant_stays_owned_across_two_refreshes(
     (Review A MUST-FIX #2).
     """
     profile_path, root_path = profile_and_root
-    _write_store(profile_path, {"version": 1, "providers": {}, "active_provider": "openrouter"})
+    _write_store(
+        profile_path, {"version": 1, "providers": {}, "active_provider": "openrouter"}
+    )
     root_state = _minimax_state()
     _write_store(
         root_path,
@@ -280,7 +286,10 @@ def test_minimax_oauth_borrowed_root_grant_stays_owned_across_two_refreshes(
 # 2b. load_pool seeds MiniMax OAuth expiry from singleton state
 # ---------------------------------------------------------------------------
 
-def test_minimax_oauth_load_pool_seeds_expires_at_from_singleton(profile_and_root, monkeypatch):
+
+def test_minimax_oauth_load_pool_seeds_expires_at_from_singleton(
+    profile_and_root, monkeypatch
+):
     """A pool entry seeded from the auth-store singleton must carry expires_at.
 
     Proactive refresh in ``_entry_needs_refresh`` inspects ``entry.expires_at``.
@@ -290,7 +299,9 @@ def test_minimax_oauth_load_pool_seeds_expires_at_from_singleton(profile_and_roo
     (Review A MUST-FIX #3).
     """
     profile_path, root_path = profile_and_root
-    _write_store(profile_path, {"version": 1, "providers": {}, "active_provider": "openrouter"})
+    _write_store(
+        profile_path, {"version": 1, "providers": {}, "active_provider": "openrouter"}
+    )
     root_state = _minimax_state()
     _write_store(
         root_path,
@@ -312,7 +323,10 @@ def test_minimax_oauth_load_pool_seeds_expires_at_from_singleton(profile_and_roo
 # 2. Profile-local shadow is NOT promoted to root
 # ---------------------------------------------------------------------------
 
-def test_minimax_oauth_profile_local_login_not_promoted_to_root(profile_and_root, monkeypatch):
+
+def test_minimax_oauth_profile_local_login_not_promoted_to_root(
+    profile_and_root, monkeypatch
+):
     """A profile that genuinely owns its own minimax-oauth block shadows root.
 
     Its refresh must update the profile store but must NOT clobber the root
@@ -374,16 +388,14 @@ def test_minimax_oauth_profile_local_login_not_promoted_to_root(profile_and_root
     # Profile store updated.
     profile = _read_store(profile_path)
     assert (
-        profile["providers"]["minimax-oauth"]["refresh_token"]
-        == "profile-new-refresh"
+        profile["providers"]["minimax-oauth"]["refresh_token"] == "profile-new-refresh"
     )
 
     # Root keeps its own grant — write-through must not run when the profile
     # owns the block.
     root = _read_store(root_path)
     assert (
-        root["providers"]["minimax-oauth"]["refresh_token"]
-        == "root-untouched-refresh"
+        root["providers"]["minimax-oauth"]["refresh_token"] == "root-untouched-refresh"
     )
 
 
@@ -391,7 +403,10 @@ def test_minimax_oauth_profile_local_login_not_promoted_to_root(profile_and_root
 # 3. Lock held across the POST (concurrency safety invariant)
 # ---------------------------------------------------------------------------
 
-def test_minimax_oauth_pool_refresh_holds_auth_store_lock_across_post(monkeypatch, tmp_path):
+
+def test_minimax_oauth_pool_refresh_holds_auth_store_lock_across_post(
+    monkeypatch, tmp_path
+):
     """The MiniMax OAuth pool refresh must POST under the cross-process lock.
 
     MiniMax refresh tokens are single-use.  Serializing the
@@ -456,7 +471,10 @@ def test_minimax_oauth_pool_refresh_holds_auth_store_lock_across_post(monkeypatc
 # 4. Concurrent refresh produces exactly one POST
 # ---------------------------------------------------------------------------
 
-def test_minimax_oauth_concurrent_refresh_single_rotation(profile_and_root, monkeypatch):
+
+def test_minimax_oauth_concurrent_refresh_single_rotation(
+    profile_and_root, monkeypatch
+):
     """Two workers sharing one root grant refresh concurrently.
 
     Because the POST is serialized through the source-aware
@@ -513,9 +531,7 @@ def test_minimax_oauth_concurrent_refresh_single_rotation(profile_and_root, monk
     assert errors["p2"] is None, f"p2 errored: {errors['p2']}"
 
     # Exactly one POST exchange occurred.
-    assert calls["count"] == 1, (
-        f"expected exactly 1 refresh POST, got {calls['count']}"
-    )
+    assert calls["count"] == 1, f"expected exactly 1 refresh POST, got {calls['count']}"
 
     # At least one worker produced a refreshed entry.  The loser may have
     # short-circuited (adopted the winner's rotated token without POSTing)
@@ -662,11 +678,21 @@ def test_minimax_oauth_distinct_profiles_sharing_root_serialize_to_one_post(tmp_
     procs = []
     for wid in ("w1", "w2"):
         pdir = profile1_dir if wid == "w1" else profile2_dir
-        procs.append(subprocess.Popen(
-            [sys.executable, str(worker_script), str(pdir), str(root_path),
-             str(sync_dir), wid],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
-        ))
+        procs.append(
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    str(worker_script),
+                    str(pdir),
+                    str(root_path),
+                    str(sync_dir),
+                    wid,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+        )
 
     # Wait for both with a generous timeout.
     out = {}
@@ -699,7 +725,10 @@ def test_minimax_oauth_distinct_profiles_sharing_root_serialize_to_one_post(tmp_
 # 5. Terminal refresh failure quarantines profile and root
 # ---------------------------------------------------------------------------
 
-def test_minimax_oauth_terminal_refresh_quarantines_root_and_profile(profile_and_root, monkeypatch):
+
+def test_minimax_oauth_terminal_refresh_quarantines_root_and_profile(
+    profile_and_root, monkeypatch
+):
     """An invalid_grant terminal failure must wipe tokens from both stores.
 
     Mirrors ``test_resolve_credentials_quarantines_on_terminal_refresh_failure``
@@ -771,7 +800,10 @@ def test_minimax_oauth_terminal_refresh_quarantines_root_and_profile(profile_and
 # 6. Transient refresh failure retains credentials (no quarantine)
 # ---------------------------------------------------------------------------
 
-def test_minimax_oauth_transient_refresh_failure_retains_credentials(profile_and_root, monkeypatch):
+
+def test_minimax_oauth_transient_refresh_failure_retains_credentials(
+    profile_and_root, monkeypatch
+):
     """A non-terminal failure (relogin_required=False) must NOT quarantine.
 
     Transient failures (429 / 5xx / network) leave the stored refresh token
@@ -815,6 +847,7 @@ def test_minimax_oauth_transient_refresh_failure_retains_credentials(profile_and
 # ---------------------------------------------------------------------------
 # 7. Terminal error detector unit test
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize(
     "code,relogin,expected",

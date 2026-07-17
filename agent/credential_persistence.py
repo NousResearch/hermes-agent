@@ -100,7 +100,9 @@ def _normalize_key(key: Any) -> str:
     return raw.lower().replace("-", "_").replace(".", "_")
 
 
-def is_borrowed_credential_source(source: Any, provider_id: Any = None, payload: Mapping[str, Any] | None = None) -> bool:
+def is_borrowed_credential_source(
+    source: Any, provider_id: Any = None, payload: Mapping[str, Any] | None = None
+) -> bool:
     """Return True when ``source`` points at a borrowed/reference-only secret."""
     normalized_source = str(source or "").strip().lower()
     if not normalized_source:
@@ -141,7 +143,14 @@ def _fingerprint_value(value: Any) -> str | None:
 
 
 def _credential_secret_fingerprint(payload: Mapping[str, Any]) -> str | None:
-    for key in ("agent_key", "access_token", "refresh_token", "api_key", "token", "secret"):
+    for key in (
+        "agent_key",
+        "access_token",
+        "refresh_token",
+        "api_key",
+        "token",
+        "secret",
+    ):
         fingerprint = _fingerprint_value(payload.get(key))
         if fingerprint:
             return fingerprint
@@ -170,14 +179,14 @@ def sanitize_borrowed_credential_payload(
     fingerprint, but raw secret value fields are removed.
     """
     result = dict(payload)
-    if not is_borrowed_credential_source(result.get("source"), provider_id, payload=result):
+    if not is_borrowed_credential_source(
+        result.get("source"), provider_id, payload=result
+    ):
         return result
 
     fingerprint = _credential_secret_fingerprint(result)
     sanitized = {
-        key: value
-        for key, value in result.items()
-        if not _is_secret_payload_key(key)
+        key: value for key, value in result.items() if not _is_secret_payload_key(key)
     }
     if fingerprint:
         sanitized["secret_fingerprint"] = fingerprint

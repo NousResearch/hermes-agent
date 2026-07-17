@@ -60,16 +60,23 @@ def test_profile_with_zero_entries_falls_back_to_global(profile_env):
     """Empty profile pool inherits the global-root entries for that provider."""
     from hermes_cli.auth import read_credential_pool
 
-    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
-        "openrouter": [{
-            "id": "glob-1",
-            "label": "global-key",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-or-global",
-        }],
-    }))
+    _write(
+        profile_env["global"] / "auth.json",
+        _make_auth_store(
+            pool={
+                "openrouter": [
+                    {
+                        "id": "glob-1",
+                        "label": "global-key",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-global",
+                    }
+                ],
+            }
+        ),
+    )
     # Profile auth.json: exists but has no openrouter entries.
     _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={}))
 
@@ -83,26 +90,40 @@ def test_profile_with_entries_fully_shadows_global(profile_env):
     """Once the profile has any entries for a provider, global is ignored."""
     from hermes_cli.auth import read_credential_pool
 
-    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
-        "openrouter": [{
-            "id": "glob-1",
-            "label": "global-key",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-or-global",
-        }],
-    }))
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
-        "openrouter": [{
-            "id": "prof-1",
-            "label": "profile-key",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-or-profile",
-        }],
-    }))
+    _write(
+        profile_env["global"] / "auth.json",
+        _make_auth_store(
+            pool={
+                "openrouter": [
+                    {
+                        "id": "glob-1",
+                        "label": "global-key",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-global",
+                    }
+                ],
+            }
+        ),
+    )
+    _write(
+        profile_env["profile"] / "auth.json",
+        _make_auth_store(
+            pool={
+                "openrouter": [
+                    {
+                        "id": "prof-1",
+                        "label": "profile-key",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-profile",
+                    }
+                ],
+            }
+        ),
+    )
 
     entries = read_credential_pool("openrouter")
     assert len(entries) == 1
@@ -114,35 +135,51 @@ def test_per_provider_shadowing_is_independent(profile_env):
     """Profile can override one provider while inheriting another from global."""
     from hermes_cli.auth import read_credential_pool
 
-    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
-        "openrouter": [{
-            "id": "glob-or",
-            "label": "global-or",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-or-global",
-        }],
-        "anthropic": [{
-            "id": "glob-ant",
-            "label": "global-ant",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-ant-global",
-        }],
-    }))
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
-        # Profile has openrouter only — anthropic should still fall back.
-        "openrouter": [{
-            "id": "prof-or",
-            "label": "profile-or",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-or-profile",
-        }],
-    }))
+    _write(
+        profile_env["global"] / "auth.json",
+        _make_auth_store(
+            pool={
+                "openrouter": [
+                    {
+                        "id": "glob-or",
+                        "label": "global-or",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-global",
+                    }
+                ],
+                "anthropic": [
+                    {
+                        "id": "glob-ant",
+                        "label": "global-ant",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-ant-global",
+                    }
+                ],
+            }
+        ),
+    )
+    _write(
+        profile_env["profile"] / "auth.json",
+        _make_auth_store(
+            pool={
+                # Profile has openrouter only — anthropic should still fall back.
+                "openrouter": [
+                    {
+                        "id": "prof-or",
+                        "label": "profile-or",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-profile",
+                    }
+                ],
+            }
+        ),
+    )
 
     or_entries = read_credential_pool("openrouter")
     ant_entries = read_credential_pool("anthropic")
@@ -155,16 +192,23 @@ def test_missing_global_auth_file_is_safe(profile_env):
     from hermes_cli.auth import read_credential_pool
 
     # No global auth.json written at all.
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
-        "openrouter": [{
-            "id": "prof-1",
-            "label": "profile",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-profile",
-        }],
-    }))
+    _write(
+        profile_env["profile"] / "auth.json",
+        _make_auth_store(
+            pool={
+                "openrouter": [
+                    {
+                        "id": "prof-1",
+                        "label": "profile",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-profile",
+                    }
+                ],
+            }
+        ),
+    )
 
     assert read_credential_pool("openrouter")[0]["id"] == "prof-1"
     assert read_credential_pool("anthropic") == []
@@ -172,16 +216,23 @@ def test_missing_global_auth_file_is_safe(profile_env):
 
 def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
     (profile_env["global"] / "auth.json").write_text("{not valid json")
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
-        "openrouter": [{
-            "id": "prof-1",
-            "label": "profile",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-profile",
-        }],
-    }))
+    _write(
+        profile_env["profile"] / "auth.json",
+        _make_auth_store(
+            pool={
+                "openrouter": [
+                    {
+                        "id": "prof-1",
+                        "label": "profile",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-profile",
+                    }
+                ],
+            }
+        ),
+    )
 
     from hermes_cli.auth import read_credential_pool
 
@@ -199,34 +250,50 @@ def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
 def test_whole_pool_merges_global_providers_when_missing_locally(profile_env):
     from hermes_cli.auth import read_credential_pool
 
-    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
-        "openrouter": [{
-            "id": "glob-or",
-            "label": "global-or",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-or-global",
-        }],
-        "anthropic": [{
-            "id": "glob-ant",
-            "label": "global-ant",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-ant-global",
-        }],
-    }))
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
-        "openrouter": [{
-            "id": "prof-or",
-            "label": "profile-or",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-or-profile",
-        }],
-    }))
+    _write(
+        profile_env["global"] / "auth.json",
+        _make_auth_store(
+            pool={
+                "openrouter": [
+                    {
+                        "id": "glob-or",
+                        "label": "global-or",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-global",
+                    }
+                ],
+                "anthropic": [
+                    {
+                        "id": "glob-ant",
+                        "label": "global-ant",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-ant-global",
+                    }
+                ],
+            }
+        ),
+    )
+    _write(
+        profile_env["profile"] / "auth.json",
+        _make_auth_store(
+            pool={
+                "openrouter": [
+                    {
+                        "id": "prof-or",
+                        "label": "profile-or",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-profile",
+                    }
+                ],
+            }
+        ),
+    )
 
     pool = read_credential_pool(None)
     # Profile wins for openrouter, global fills in anthropic.
@@ -242,9 +309,14 @@ def test_whole_pool_merges_global_providers_when_missing_locally(profile_env):
 def test_provider_auth_state_falls_back_to_global_when_profile_has_none(profile_env):
     from hermes_cli.auth import get_provider_auth_state
 
-    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
-        "nous": {"access_token": "nous-global", "refresh_token": "rt-global"},
-    }))
+    _write(
+        profile_env["global"] / "auth.json",
+        _make_auth_store(
+            providers={
+                "nous": {"access_token": "nous-global", "refresh_token": "rt-global"},
+            }
+        ),
+    )
     _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
 
     state = get_provider_auth_state("nous")
@@ -255,12 +327,22 @@ def test_provider_auth_state_falls_back_to_global_when_profile_has_none(profile_
 def test_provider_auth_state_profile_wins_when_present(profile_env):
     from hermes_cli.auth import get_provider_auth_state
 
-    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
-        "nous": {"access_token": "nous-global"},
-    }))
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
-        "nous": {"access_token": "nous-profile"},
-    }))
+    _write(
+        profile_env["global"] / "auth.json",
+        _make_auth_store(
+            providers={
+                "nous": {"access_token": "nous-global"},
+            }
+        ),
+    )
+    _write(
+        profile_env["profile"] / "auth.json",
+        _make_auth_store(
+            providers={
+                "nous": {"access_token": "nous-profile"},
+            }
+        ),
+    )
 
     state = get_provider_auth_state("nous")
     assert state is not None
@@ -293,9 +375,14 @@ def test_load_provider_state_falls_back_to_global(profile_env):
     """When the loaded profile store has no provider entry, fall back to global."""
     from hermes_cli.auth import _load_auth_store, _load_provider_state
 
-    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
-        "nous": {"access_token": "global-nous-token", "refresh_token": "rt"},
-    }))
+    _write(
+        profile_env["global"] / "auth.json",
+        _make_auth_store(
+            providers={
+                "nous": {"access_token": "global-nous-token", "refresh_token": "rt"},
+            }
+        ),
+    )
     _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
 
     auth_store = _load_auth_store()
@@ -307,12 +394,22 @@ def test_load_provider_state_falls_back_to_global(profile_env):
 def test_load_provider_state_profile_wins_over_global(profile_env):
     from hermes_cli.auth import _load_auth_store, _load_provider_state
 
-    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
-        "nous": {"access_token": "global-token"},
-    }))
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
-        "nous": {"access_token": "profile-token"},
-    }))
+    _write(
+        profile_env["global"] / "auth.json",
+        _make_auth_store(
+            providers={
+                "nous": {"access_token": "global-token"},
+            }
+        ),
+    )
+    _write(
+        profile_env["profile"] / "auth.json",
+        _make_auth_store(
+            providers={
+                "nous": {"access_token": "profile-token"},
+            }
+        ),
+    )
 
     auth_store = _load_auth_store()
     state = _load_provider_state(auth_store, "nous")
@@ -339,9 +436,14 @@ def test_load_provider_state_classic_mode_no_fallback(tmp_path, monkeypatch):
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    _write(hermes_home / "auth.json", _make_auth_store(providers={
-        "nous": {"access_token": "classic-token"},
-    }))
+    _write(
+        hermes_home / "auth.json",
+        _make_auth_store(
+            providers={
+                "nous": {"access_token": "classic-token"},
+            }
+        ),
+    )
 
     from hermes_cli.auth import _load_auth_store, _load_provider_state
 
@@ -356,9 +458,14 @@ def test_load_provider_state_classic_mode_no_fallback(tmp_path, monkeypatch):
 def test_load_provider_state_malformed_global_does_not_break_profile(profile_env):
     """A corrupt global auth.json must not break profile reads."""
     (profile_env["global"] / "auth.json").write_text("{not valid json")
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
-        "nous": {"access_token": "profile-token"},
-    }))
+    _write(
+        profile_env["profile"] / "auth.json",
+        _make_auth_store(
+            providers={
+                "nous": {"access_token": "profile-token"},
+            }
+        ),
+    )
 
     from hermes_cli.auth import _load_auth_store, _load_provider_state
 
@@ -389,16 +496,23 @@ def test_classic_mode_does_not_double_read_same_file(tmp_path, monkeypatch):
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    _write(hermes_home / "auth.json", _make_auth_store(pool={
-        "openrouter": [{
-            "id": "only",
-            "label": "classic",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-classic",
-        }],
-    }))
+    _write(
+        hermes_home / "auth.json",
+        _make_auth_store(
+            pool={
+                "openrouter": [
+                    {
+                        "id": "only",
+                        "label": "classic",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-classic",
+                    }
+                ],
+            }
+        ),
+    )
 
     from hermes_cli.auth import read_credential_pool, _global_auth_file_path
 
@@ -421,25 +535,37 @@ def test_classic_mode_does_not_double_read_same_file(tmp_path, monkeypatch):
 def test_write_credential_pool_targets_profile_not_global(profile_env):
     from hermes_cli.auth import read_credential_pool, write_credential_pool
 
-    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
-        "openrouter": [{
-            "id": "glob-1",
-            "label": "global",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-global",
-        }],
-    }))
+    _write(
+        profile_env["global"] / "auth.json",
+        _make_auth_store(
+            pool={
+                "openrouter": [
+                    {
+                        "id": "glob-1",
+                        "label": "global",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-global",
+                    }
+                ],
+            }
+        ),
+    )
 
-    write_credential_pool("openrouter", [{
-        "id": "prof-new",
-        "label": "profile-new",
-        "auth_type": "api_key",
-        "priority": 0,
-        "source": "manual",
-        "access_token": "sk-profile-new",
-    }])
+    write_credential_pool(
+        "openrouter",
+        [
+            {
+                "id": "prof-new",
+                "label": "profile-new",
+                "auth_type": "api_key",
+                "priority": 0,
+                "source": "manual",
+                "access_token": "sk-profile-new",
+            }
+        ],
+    )
 
     # Global auth.json unchanged.
     global_data = json.loads((profile_env["global"] / "auth.json").read_text())

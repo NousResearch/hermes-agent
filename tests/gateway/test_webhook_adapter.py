@@ -1247,3 +1247,43 @@ class TestInsecureNoAuthSafetyRail:
         finally:
             await adapter.disconnect()
 
+
+
+class TestAllowInsecureConfig:
+    """Regression tests for allow_insecure: true config key (PR #47347)."""
+
+    @pytest.mark.asyncio
+    async def test_allow_insecure_true_on_loopback_allowed(self):
+        routes = {"r1": {"allow_insecure": True, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="127.0.0.1", port=0)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is True
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_allow_insecure_true_on_public_bind_rejected(self):
+        routes = {"r1": {"allow_insecure": True, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="0.0.0.0", port=0)
+        with pytest.raises(ValueError, match="non-loopback|INSECURE_NO_AUTH"):
+            await adapter.connect()
+
+    @pytest.mark.asyncio
+    async def test_allow_insecure_false_string_fails_closed(self):
+        routes = {"r1": {"allow_insecure": "false", "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="127.0.0.1", port=0)
+        with pytest.raises(ValueError, match="no HMAC secret|secret"):
+            await adapter.connect()
+
+    @pytest.mark.asyncio
+    async def test_allow_insecure_true_string_acts_as_true(self):
+        routes = {"r1": {"allow_insecure": "true", "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="127.0.0.1", port=0)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is True
+        finally:
+            await adapter.disconnect()

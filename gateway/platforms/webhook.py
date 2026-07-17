@@ -51,7 +51,7 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, _coerce_bool
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -167,11 +167,21 @@ class WebhookAdapter(BasePlatformAdapter):
         # Validate routes at startup — secret is required per route
         for name, route in self._routes.items():
             secret = route.get("secret", self._global_secret)
+            # allow_insecure: true in config.yaml is a config-native alternative to
+            # setting secret: INSECURE_NO_AUTH. Coerced strictly (fail-closed) via
+            # _coerce_bool so a quoted YAML "false" does NOT enable the HMAC bypass.
+            _allow_insecure_cfg = _coerce_bool(route.get("allow_insecure"), default=False)
+            if _allow_insecure_cfg and not secret:
+                # Map allow_insecure: true to the sentinel so existing validation
+                # and loopback-safety-rail paths handle it uniformly.
+                secret = _INSECURE_NO_AUTH
+
             if not secret:
                 raise ValueError(
                     f"[webhook] Route '{name}' has no HMAC secret. "
                     f"Set 'secret' on the route or globally. "
-                    f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
+                    f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}' "
+                    f"or allow_insecure: true in config.yaml."
                 )
 
             # Safety rail: refuse to start if INSECURE_NO_AUTH is combined with a

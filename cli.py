@@ -1056,6 +1056,50 @@ def _arm_exit_watchdog(timeout_s: float | None = None) -> None:
         pass  # best-effort — never block shutdown on watchdog setup
 
 
+_signal_watchdog_armed = False
+
+
+def _arm_exit_watchdog_on_shutdown_signal() -> None:
+    """Arm the exit backstop the moment a termination signal arrives.
+
+    SIGTERM/SIGHUP establish unambiguous shutdown intent, but the graceful
+    path from signal → ``agent.interrupt()`` → ``app.exit()`` /
+    ``KeyboardInterrupt`` → ``finally`` → ``_run_cleanup`` has several wedge
+    points BEFORE ``_run_cleanup`` arms the normal watchdog: a main thread
+    parked in a syscall that never observes the unwind, a prompt_toolkit
+    teardown that never returns, or an agent worker blocking the ``finally``.
+    When that happens the process has NO backstop and a "dead" CLI lingers
+    (observed: ``hermes --tui`` alive ~47 min at 4% CPU after terminal close —
+    the #65998 class).
+
+    Arming at signal time closes that window. The leash is 2× the normal
+    cleanup timeout so a slow-but-progressing ``_run_cleanup`` (which arms
+    its own tighter timer when it starts) is never cut short by this outer
+    backstop — this timer only wins when cleanup was never reached at all.
+
+    Deliberately NOT armed at chat startup: the watchdog thread calls
+    ``os._exit(0)`` unconditionally after its sleep, so arming without
+    shutdown intent would hard-kill every session that outlives the timeout.
+
+    Idempotent (module flag) so repeated signals don't stack timer threads.
+    Never raises — safe to call from a signal handler.
+    """
+    global _signal_watchdog_armed
+    if _signal_watchdog_armed:
+        return
+    _signal_watchdog_armed = True
+    try:
+        base = float(os.getenv("HERMES_EXIT_WATCHDOG_S", "30"))
+    except (TypeError, ValueError):
+        base = 30.0
+    if base <= 0:
+        return  # explicitly disabled
+    try:
+        _arm_exit_watchdog(timeout_s=base * 2)
+    except Exception:
+        pass  # never let the backstop break signal handling
+
+
 def _run_cleanup(*, notify_session_finalize: bool = True):
     """Run resource cleanup exactly once."""
     global _cleanup_done
@@ -15574,6 +15618,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 logger.debug("Received signal %s, triggering graceful shutdown", signum)
             except Exception:
                 pass  # never let logging raise from a signal handler (#13710 regression)
+            # Shutdown intent is now unambiguous — arm the exit backstop
+            # IMMEDIATELY, before the graceful unwind below.  If any step of
+            # that unwind wedges (main thread parked in a syscall, prompt_toolkit
+            # teardown never returning), _run_cleanup never runs and would
+            # never arm its own watchdog — leaving a "dead" CLI alive for
+            # minutes (#65998 class).  Never raises.
+            _arm_exit_watchdog_on_shutdown_signal()
             try:
                 if getattr(self, "agent", None) and getattr(self, "_agent_running", False):
                     self.agent.interrupt(f"received signal {signum}")
@@ -16178,6 +16229,10 @@ def main(
     # default for debugging.
     def _signal_handler_q(signum, frame):
         logger.debug("Received signal %s in single-query mode", signum)
+        # Arm the exit backstop now that shutdown intent is unambiguous —
+        # covers wedges in the unwind below that would otherwise leave the
+        # process alive with no watchdog (#65998 class). Never raises.
+        _arm_exit_watchdog_on_shutdown_signal()
         try:
             _agent = getattr(cli, "agent", None)
             if _agent is not None:

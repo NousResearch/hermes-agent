@@ -709,6 +709,15 @@ export interface McpTestResult {
   resources?: number
 }
 
+export interface McpOAuthFlow {
+  flow_id: string
+  server_name: string
+  status: 'starting' | 'authorization_required' | 'approved' | 'error'
+  authorization_url: string | null
+  error: string | null
+  tools?: { name: string; description: string }[]
+}
+
 /** Connect to the server, list its tools, disconnect. Slow (spawns/handshakes
  *  for real) — well past the 15s default fetch timeout. */
 export function testMcpServer(name: string): Promise<McpTestResult> {
@@ -732,14 +741,20 @@ export function saveMcpServers(servers: Record<string, Record<string, unknown>>)
   })
 }
 
-/** Run the OAuth flow for an HTTP server — opens the system browser and blocks
- *  until the user finishes (or gives up), hence the very generous timeout. */
-export function authMcpServer(name: string): Promise<McpTestResult> {
-  return window.hermesDesktop.api<McpTestResult>({
+/** Start an MCP OAuth flow and return the authorization URL. */
+export function authMcpServer(name: string): Promise<McpOAuthFlow> {
+  return window.hermesDesktop.api<McpOAuthFlow>({
     ...profileScoped(),
     path: `/api/mcp/servers/${encodeURIComponent(name)}/auth`,
     method: 'POST',
-    timeoutMs: 300_000
+    timeoutMs: 60_000
+  })
+}
+
+export function getMcpOAuthFlow(flowId: string): Promise<McpOAuthFlow> {
+  return window.hermesDesktop.api<McpOAuthFlow>({
+    ...profileScoped(),
+    path: `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`
   })
 }
 

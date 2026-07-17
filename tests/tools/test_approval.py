@@ -234,14 +234,14 @@ class TestWindowsShellDestructiveCommands:
         assert dangerous is True
         assert desc == "Windows PowerShell destructive delete"
 
-    def test_powershell_benign_path_containing_del_not_flagged(self):
-        # A benign file path that merely contains "del" must NOT trip the guard
-        # (verb-position anchoring prevents matching inside a -File arg).
+    def test_powershell_benign_path_containing_del_not_matched_as_delete(self):
+        # The path text must not be mistaken for a destructive verb. Running a
+        # script via -File is independently approval-worthy.
         dangerous, key, desc = detect_dangerous_command(
             r"powershell -File C:\del-logs\run.ps1"
         )
-        assert dangerous is False
-        assert key is None
+        assert dangerous is True
+        assert key != "Windows PowerShell destructive delete"
 
     def test_plain_text_does_not_trigger_windows_delete(self):
         dangerous, key, desc = detect_dangerous_command(
@@ -702,12 +702,13 @@ class TestHermesConfigWriteProtection:
         assert dangerous is True
 
     def test_perl_eval_no_inplace_safe(self):
-        # `perl -e` with no -i flag is code evaluation, not file mutation —
-        # the perl/ruby -i pattern must not fire on it.
+        # `perl -e` with no -i flag is code evaluation, not file mutation. It
+        # requires approval, but must not be attributed to the in-place rule.
         dangerous, key, desc = detect_dangerous_command(
             "perl -wne 'print' ~/.hermes/config.yaml"
         )
-        assert dangerous is False
+        assert dangerous is True
+        assert key != "in-place edit of Hermes config/env (perl/ruby)"
 
     def test_read_is_safe(self):
         # Reading config is not a write — must not trip.

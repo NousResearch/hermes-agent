@@ -2160,11 +2160,11 @@ class MCPServerTask:
                 if not t.done():
                     try:
                         t.cancel()
-                    except RuntimeError:
-                        continue  # ponytail: loop closed, can't cancel
+                    except BaseException:
+                        pass  # ponytail: event loop closing, any exception is harmless
                     try:
                         await t
-                    except (asyncio.CancelledError, Exception):
+                    except BaseException:
                         pass
         if self._shutdown_event.is_set():
             return "shutdown"

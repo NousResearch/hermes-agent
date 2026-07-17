@@ -7,6 +7,7 @@ from tools.cronjob_tools import (
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,
+    CRONJOB_SCHEMA,
 )
 
 
@@ -756,3 +757,31 @@ class TestValidateCronBaseUrl:
 
     def test_base_url_without_provider_rejected(self):
         assert self._v(None, "https://x.example/v1") is not None
+
+
+class TestCronjobSchemaRepeat:
+    """CRONJOB_SCHEMA's repeat field must accept both integer and
+    'forever'/'infinite' strings at the JSON Schema level (#64724)."""
+
+    def _repeat_schema(self):
+        return CRONJOB_SCHEMA["parameters"]["properties"]["repeat"]
+
+    def test_repeat_schema_has_anyOf(self):
+        rs = self._repeat_schema()
+        assert "anyOf" in rs, f"Expected anyOf in repeat schema, got keys: {list(rs.keys())}"
+
+    def test_repeat_schema_accepts_integer(self):
+        rs = self._repeat_schema()
+        int_schema = next(s for s in rs["anyOf"] if s.get("type") == "integer")
+        assert int_schema is not None
+
+    def test_repeat_schema_accepts_forever_string(self):
+        rs = self._repeat_schema()
+        str_schema = next(s for s in rs["anyOf"] if s.get("type") == "string")
+        assert "forever" in str_schema["enum"]
+        assert "infinite" in str_schema["enum"]
+
+    def test_repeat_schema_description_mentions_forever(self):
+        rs = self._repeat_schema()
+        desc = rs.get("description", "")
+        assert "forever" in desc, f"Description should mention forever: {desc}"

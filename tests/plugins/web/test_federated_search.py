@@ -263,6 +263,97 @@ class TestFederatedSearch:
             result = provider.search("test")
             assert result["success"] is True
 
+    def test_blocked_backend_timeout_produces_partial_results(
+        self, provider: FederatedSearchProvider,
+    ) -> None:
+        """A backend that blocks must be bounded by the configured timeout.
+
+        The blocking backend is abandoned; results from faster backends are
+        still collected and returned.
+        """
+        import threading
+
+        block_signal = threading.Event()
+
+        def slow_backend(backend, query, limit):
+            block_signal.wait()  # block until released
+            return []
+
+        def fast_backend(backend, query, limit):
+            return [{"title": "Fast", "url": "https://f.com", "description": ""}]
+
+        config = {
+            "backends": [
+                {"name": "slow", "type": "custom"},
+                {"name": "fast", "type": "custom"},
+            ],
+            "timeout": 1,
+            "max_results": 5,
+        }
+        try:
+            with patch(
+                "plugins.web.federated.provider._read_config",
+                return_value=config,
+            ), patch(
+                "plugins.web.federated.provider._search_one_backend",
+                side_effect=lambda b, q, l: slow_backend(b, q, l) if b["name"] == "slow" else fast_backend(b, q, l),
+            ):
+                result = provider.search("test", limit=5)
+                # Must return within a few seconds (not waiting for the blocked backend)
+                assert result["success"] is True
+                web = result["data"]["web"]
+                # Fast backend result should be present
+                assert len(web) >= 1
+                assert web[0]["title"] == "Fast"
+        finally:
+            block_signal.set()  # release blocked thread so it can exit
+
+    def test_limit_below_max_results(
+        self, provider: FederatedSearchProvider,
+    ) -> None:
+        """When limit < max_results, return only `limit` items."""
+        config = {
+            "backends": [{"name": "t", "type": "custom"}],
+            "max_results": 8,
+            "timeout": 5,
+        }
+        with patch(
+            "plugins.web.federated.provider._read_config",
+            return_value=config,
+        ), patch(
+            "plugins.web.federated.provider._search_one_backend",
+            return_value=[
+                {"title": f"R{i}", "url": f"https://r{i}.com", "description": ""}
+                for i in range(10)
+            ],
+        ):
+            result = provider.search("test", limit=3)
+            assert result["success"] is True
+            assert len(result["data"]["web"]) == 3
+
+    def test_limit_above_max_results(
+        self, provider: FederatedSearchProvider,
+    ) -> None:
+        """When limit > max_results, the configured max_results acts as the cap."""
+        config = {
+            "backends": [{"name": "t", "type": "custom"}],
+            "max_results": 4,
+            "timeout": 5,
+        }
+        with patch(
+            "plugins.web.federated.provider._read_config",
+            return_value=config,
+        ), patch(
+            "plugins.web.federated.provider._search_one_backend",
+            return_value=[
+                {"title": f"R{i}", "url": f"https://r{i}.com", "description": ""}
+                for i in range(10)
+            ],
+        ):
+            result = provider.search("test", limit=10)
+            assert result["success"] is True
+            assert len(result["data"]["web"]) == 4  # capped by max_results
+
 
 # ---------------------------------------------------------------------------
 # Config key integration
@@ -327,3 +418,49 @@ class TestConfigurableSettings:
         }
         assert config["ranker"]["provider"] == "opencode-go"
         assert config["ranker"]["model"] == "deepseek-v4-flash"
+
+
+# ---------------------------------------------------------------------------
+# HERMES_HOME config discovery integration test
+# ---------------------------------------------------------------------------
+
+
+class TestFederatedConfigDiscovery:
+    """Verify that federated search config is discovered from an isolated
+    HERMES_HOME directory via the real config loading path."""
+
+    def test_read_config_from_hermes_home(self, tmp_path) -> None:
+        """_read_config discovers web.federated from config.yaml in HERMES_HOME."""
+        import yaml
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "web": {
+                "federated": {
+                    "timeout": 15,
+                    "max_results": 6,
+                    "backends": [
+                        {"name": "tavily"},
+                        {"name": "custom1", "type": "custom",
+                         "base_url": "https://api.example.com",
+                         "api_key_env": "EXAMPLE_KEY",
+                         "search_path": "/v1/search",
+                         "query_param": "q"},
+                    ],
+                    "ranker": {
+                        "provider": "opencode-go",
+                        "model": "deepseek-v4-flash",
+                    },
+                },
+            },
+        }))
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            from plugins.web.federated.provider import _read_config as _cfg
+            cfg = _cfg()
+            assert cfg is not None
+            assert cfg["timeout"] == 15
+            assert cfg["max_results"] == 6
+            assert len(cfg["backends"]) == 2
+            assert cfg["backends"][0]["name"] == "tavily"
+            assert cfg["ranker"]["provider"] == "opencode-go"

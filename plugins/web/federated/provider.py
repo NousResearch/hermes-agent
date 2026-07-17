@@ -58,10 +58,20 @@ _RANK_TIMEOUT = 20
 
 
 def _read_config() -> Optional[Dict[str, Any]]:
+    """Read the ``web.federated`` section from the raw config file.
+
+    Uses raw-YAML access rather than ``load_config()`` because the schema
+    validator strips unknown keys from the ``web`` section during loading.
+    """
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        web = cfg.get("web", {})
+        from hermes_cli.config import get_config_path
+        import yaml
+        config_path = get_config_path()
+        if not config_path.exists():
+            return None
+        with open(config_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        web = cfg.get("web")
         if not isinstance(web, dict):
             return None
         return web.get("federated")
@@ -398,37 +408,41 @@ class FederatedSearchProvider(WebSearchProvider):
             # ---------- parallel backend execution ----------
             all_results: List[Dict[str, Any]] = []
             errors: List[str] = []
-            deadline = time.time() + timeout
             start_time = time.time()
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=len(backends)) as pool:
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(backends))
+            try:
                 futures = {pool.submit(_search_one_backend, b, query, limit): b for b in backends}
 
-                try:
-                    for future in concurrent.futures.as_completed(futures, timeout=timeout):
-                        if time.time() >= deadline or is_interrupted():
-                            for f in futures:
-                                f.cancel()
-                            break
-                        try:
-                            results = future.result(timeout=2)
-                            all_results.extend(results)
-                        except concurrent.futures.TimeoutError:
-                            b = futures[future]
-                            errors.append(f"backend '{b.get('name','?')}' timed out")
-                        except Exception as exc:
-                            b = futures[future]
-                            errors.append(f"backend '{b.get('name','?')}' failed: {exc}")
-                except concurrent.futures.TimeoutError:
+                done, not_done = concurrent.futures.wait(
+                    futures, timeout=timeout,
+                )
+
+                for f in not_done:
+                    b = futures[f]
+                    errors.append(f"backend '{b.get('name','?')}' timed out")
+                    f.cancel()
+
+                for f in done:
+                    if is_interrupted():
+                        break
+                    try:
+                        results = f.result(timeout=2)
+                        all_results.extend(results)
+                    except Exception as exc:
+                        b = futures[f]
+                        errors.append(f"backend '{b.get('name','?')}' failed: {exc}")
+
+                if not_done:
                     logger.warning(
-                        "Federated search timed out after %ds, collecting partial "
+                        "Federated search timed out after %ds, collected partial "
                         "results from %d/%d backends",
                         timeout,
-                        sum(1 for f in futures if f.done()),
+                        len(done),
                         len(futures),
                     )
-                    for f in futures:
-                        f.cancel()
+            finally:
+                pool.shutdown(wait=False)
 
             if not all_results:
                 if errors:
@@ -443,8 +457,10 @@ class FederatedSearchProvider(WebSearchProvider):
             rank_input = all_results[:rank_input_count]
             ranked = _rank_results(query, rank_input, ranker_config)
 
-            # Top N
-            top = ranked[:max_results]
+            # Top N — honour the caller's requested limit while respecting
+            # the configured max_results cap.
+            output_count = min(limit, max_results)
+            top = ranked[:output_count]
             for i, r in enumerate(top):
                 r["position"] = i + 1
 

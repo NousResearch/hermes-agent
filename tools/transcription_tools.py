@@ -101,7 +101,7 @@ XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
 # DeepInfra STT base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
 
-SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
+SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac", ".caf"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
@@ -1218,6 +1218,32 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
         return None, f"Failed to convert audio for local STT: {details}"
 
 
+def _convert_caf_to_wav(file_path: str) -> Optional[str]:
+    """Convert CAF to WAV using ffmpeg or afconvert (macOS)."""
+    audio_path = Path(file_path)
+    wav_path = os.path.join(audio_path.parent, f"{audio_path.stem}.wav")
+    ffmpeg = _find_ffmpeg_binary()
+    if ffmpeg:
+        try:
+            subprocess.run([ffmpeg, "-y", "-i", file_path, wav_path],
+                check=True, capture_output=True, text=True,
+                timeout=300, stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags())
+            return wav_path
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            logger.warning("ffmpeg CAF to WAV failed for %s: %s", file_path, e)
+    afconvert = shutil.which("afconvert")
+    if afconvert:
+        try:
+            subprocess.run([afconvert, file_path, wav_path, "-d", "LEI16", "-f", "WAVE"],
+                check=True, capture_output=True, text=True,
+                timeout=300, stdin=subprocess.DEVNULL)
+            return wav_path
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            logger.warning("afconvert CAF to WAV failed for %s: %s", file_path, e)
+    return None
+
+
 def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]:
     """Run the configured local STT command template and read back a .txt transcript."""
     command_template = _get_local_command_template()
@@ -1743,6 +1769,15 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         }
 
     provider = _get_provider(stt_config)
+
+    # Convert CAF (iMessage voice notes) to WAV for cloud STT providers.
+    if Path(file_path).suffix.lower() == ".caf" and provider not in ("local", "local_command"):
+        converted = _convert_caf_to_wav(file_path)
+        if converted:
+            file_path = converted
+        else:
+            return {"success": False, "transcript": "",
+                    "error": "CAF audio could not be converted to WAV."}
 
     if provider == "local":
         local_cfg = stt_config.get("local") or {}

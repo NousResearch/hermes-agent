@@ -54,6 +54,8 @@ def test_hosted_auth_start_returns_public_authorization_url(monkeypatch):
 
 
 def test_hosted_callback_is_public_and_delivers_code():
+    import asyncio
+
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
@@ -63,6 +65,11 @@ def test_hosted_callback_is_public_and_delivers_code():
         server_name="reports",
         profile=None,
         redirect_uri="https://agent.example/api/mcp/oauth/callback/flow-public",
+    )
+    asyncio.run(
+        flow.publish_authorization_url(
+            "https://idp.example/authorize?state=expected"
+        )
     )
     web_server._mcp_oauth_flows[flow.flow_id] = flow
 
@@ -75,6 +82,8 @@ def test_hosted_callback_is_public_and_delivers_code():
 
 
 def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
+    import asyncio
+
     from starlette.testclient import TestClient
 
     from hermes_cli import web_server
@@ -86,6 +95,11 @@ def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
         profile=None,
         redirect_uri="https://agent.example/api/mcp/oauth/callback/flow-gated",
     )
+    asyncio.run(
+        flow.publish_authorization_url(
+            "https://idp.example/authorize?state=expected"
+        )
+    )
     web_server._mcp_oauth_flows[flow.flow_id] = flow
     monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
 
@@ -95,6 +109,54 @@ def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
 
     assert response.status_code == 200
     assert flow._callback == ("abc", "expected")
+
+
+def test_hosted_callback_rejects_wrong_state_before_waking_sdk():
+    import asyncio
+
+    from hermes_cli import web_server
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-state-route",
+        server_name="reports",
+        profile=None,
+        redirect_uri="https://agent.example/api/mcp/oauth/callback/flow-state-route",
+    )
+    asyncio.run(
+        flow.publish_authorization_url(
+            "https://idp.example/authorize?state=expected-state"
+        )
+    )
+    web_server._mcp_oauth_flows[flow.flow_id] = flow
+
+    response = _client().get(
+        "/api/mcp/oauth/callback/flow-state-route?code=attacker&state=wrong"
+    )
+    assert response.status_code == 400
+    assert flow._callback is None
+
+
+def test_hosted_auth_start_bounds_pending_flow_registry():
+    from hermes_cli import web_server
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    client = _client()
+    client.post(
+        "/api/mcp/servers",
+        json={"name": "reports", "url": "https://mcp.example/mcp", "auth": "oauth"},
+    )
+    for index in range(web_server._MAX_PENDING_MCP_OAUTH_FLOWS):
+        flow = DashboardOAuthFlow(
+            flow_id=f"existing-{index}",
+            server_name="reports",
+            profile=None,
+            redirect_uri=f"https://agent.example/callback/{index}",
+        )
+        web_server._mcp_oauth_flows[flow.flow_id] = flow
+
+    response = client.post("/api/mcp/servers/reports/auth")
+    assert response.status_code == 429
 
 
 def test_flow_status_does_not_expose_authorization_code():

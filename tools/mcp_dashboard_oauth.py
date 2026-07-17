@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import secrets
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Iterator
+from urllib.parse import parse_qs, urlparse
 
 
 @dataclass
@@ -27,12 +29,17 @@ class DashboardOAuthFlow:
     authorization_url: str | None = None
     error: str | None = None
     tools: list[dict] = field(default_factory=list)
+    expected_state: str | None = field(default=None, init=False)
     _callback: tuple[str, str | None] | None = field(default=None, init=False, repr=False)
     _callback_error: str | None = field(default=None, init=False, repr=False)
     _authorization_ready: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _callback_ready: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
 
     async def publish_authorization_url(self, url: str) -> None:
+        state = parse_qs(urlparse(url).query).get("state", [None])[0]
+        if not state:
+            raise ValueError("OAuth authorization URL did not include state")
+        self.expected_state = state
         self.authorization_url = url
         self.status = "authorization_required"
         self._authorization_ready.set()
@@ -54,6 +61,12 @@ class DashboardOAuthFlow:
     ) -> None:
         if self._callback_ready.is_set():
             raise ValueError("OAuth callback already received")
+        if (
+            self.expected_state is None
+            or state is None
+            or not secrets.compare_digest(self.expected_state, state)
+        ):
+            raise ValueError("OAuth callback state mismatch")
         if error:
             self._callback_error = error
         elif code:

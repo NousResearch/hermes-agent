@@ -28,6 +28,31 @@ def test_dashboard_flow_exposes_authorization_url_and_accepts_callback():
     assert asyncio.run(flow.wait_for_callback()) == ("code-1", "s1")
 
 
+def test_dashboard_flow_rejects_wrong_state_without_consuming_callback():
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-state",
+        server_name="reports",
+        profile=None,
+        redirect_uri="https://agent.example/mcp/oauth/callback/flow-state",
+    )
+    asyncio.run(
+        flow.publish_authorization_url(
+            "https://idp.example/authorize?state=expected-state"
+        )
+    )
+
+    with pytest.raises(ValueError, match="state mismatch"):
+        flow.deliver_callback(code="attacker", state="wrong-state", error=None)
+
+    flow.deliver_callback(code="legitimate", state="expected-state", error=None)
+    assert asyncio.run(flow.wait_for_callback()) == (
+        "legitimate",
+        "expected-state",
+    )
+
+
 def test_dashboard_flow_rejects_second_callback():
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 
@@ -36,6 +61,11 @@ def test_dashboard_flow_rejects_second_callback():
         server_name="reports",
         profile=None,
         redirect_uri="https://agent.example/mcp/oauth/callback/flow-2",
+    )
+    asyncio.run(
+        flow.publish_authorization_url(
+            "https://idp.example/authorize?state=state"
+        )
     )
     flow.deliver_callback(code="first", state="state", error=None)
     with pytest.raises(ValueError, match="already received"):
@@ -83,11 +113,15 @@ def test_mcp_oauth_helpers_use_dashboard_flow_without_loopback_port():
         metadata = _build_client_metadata(cfg)
         assert str(metadata.redirect_uris[0]) == flow.redirect_uri
 
-        asyncio.run(_make_redirect_handler(0)("https://idp.example/authorize"))
+        asyncio.run(
+            _make_redirect_handler(0)(
+                "https://idp.example/authorize?state=state-4"
+            )
+        )
         flow.deliver_callback(code="code-4", state="state-4", error=None)
         assert asyncio.run(_make_callback_waiter(0)()) == ("code-4", "state-4")
 
-    assert flow.authorization_url == "https://idp.example/authorize"
+    assert flow.authorization_url == "https://idp.example/authorize?state=state-4"
 
 
 def test_manager_build_allows_dashboard_flow_without_tty(tmp_path, monkeypatch):

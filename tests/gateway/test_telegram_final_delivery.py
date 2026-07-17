@@ -277,17 +277,22 @@ async def test_telegram_connect_timeout_preserves_safe_retry_classification():
     class ConnectTimeout(Exception):
         pass
 
+    class TimedOut(Exception):
+        pass
+
+    connect_timeout = ConnectTimeout("connection timed out")
+    wrapped_timeout = TimedOut("timed out")
+    wrapped_timeout.__cause__ = connect_timeout
+
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
     bot = MagicMock()
-    bot.edit_message_text = AsyncMock(
-        side_effect=ConnectTimeout("connection timed out")
-    )
+    bot.edit_message_text = AsyncMock(side_effect=wrapped_timeout)
     adapter._bot = bot
 
     result = await adapter.edit_message("123", "456", "Final answer", finalize=False)
 
     assert result.success is False
-    assert result.error == "ConnectTimeout: connection timed out"
+    assert result.error == "ConnectTimeout: timed out"
     assert result.retryable is True
     assert GatewayStreamConsumer._send_failure_may_have_delivered(result) is False
 
@@ -350,4 +355,13 @@ def test_connect_timeout_is_not_treated_as_ambiguous_delivery():
 
     assert GatewayStreamConsumer._send_failure_may_have_delivered(
         ConnectTimeout("connection timed out")
+    ) is False
+
+
+def test_pool_timeout_is_not_treated_as_ambiguous_delivery():
+    class PoolTimeout(Exception):
+        pass
+
+    assert GatewayStreamConsumer._send_failure_may_have_delivered(
+        PoolTimeout("connection pool exhausted")
     ) is False

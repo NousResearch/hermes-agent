@@ -1231,10 +1231,13 @@ class GatewayStreamConsumer:
         error = str(getattr(result_or_exc, "error", None) or result_or_exc).lower()
         name = result_or_exc.__class__.__name__.lower()
         compact_error = re.sub(r"[^a-z]", "", error)
-        # A connection timeout occurs before any request reaches the platform,
-        # so retrying cannot duplicate delivery. Keep this aligned with
-        # BasePlatformAdapter._is_timeout_error and _is_retryable_error.
-        if "connecttimeout" in name or "connecttimeout" in compact_error:
+        # ConnectTimeout and PoolTimeout both occur before a request reaches
+        # the platform, so retrying cannot duplicate delivery. Keep this aligned
+        # with the transport's pre-send timeout semantics.
+        if any(
+            timeout_kind in name or timeout_kind in compact_error
+            for timeout_kind in ("connecttimeout", "pooltimeout")
+        ):
             return False
         is_timeout = (
             "timeout" in error

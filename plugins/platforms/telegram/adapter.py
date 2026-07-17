@@ -4487,6 +4487,20 @@ class TelegramAdapter(BasePlatformAdapter):
             if _is_transient:
                 safe_error = _redact_telegram_error_text(e)
                 error_type = e.__class__.__name__
+                cause = e.__cause__ or e.__context__
+                seen_causes: set[int] = set()
+                while cause is not None and id(cause) not in seen_causes:
+                    seen_causes.add(id(cause))
+                    cause_type = cause.__class__.__name__
+                    if cause_type in {
+                        "ConnectTimeout",
+                        "PoolTimeout",
+                        "ReadTimeout",
+                        "WriteTimeout",
+                    }:
+                        error_type = cause_type
+                        break
+                    cause = cause.__cause__ or cause.__context__
                 logger.warning(
                     "[%s] Transient network error editing message %s (will retry): %s",
                     self.name,

@@ -810,6 +810,12 @@ class UpdateTaskBody(BaseModel):
     body: Optional[str] = None
     result: Optional[str] = None
     block_reason: Optional[str] = None
+    # Structured blocker ownership — forwarded to block_task when status
+    # transitions to 'blocked'. Lets the dashboard classify who owns a block
+    # (human / reviewer / automation / external / acceptance / parked) instead
+    # of leaving reports to infer it from the reason prose.
+    blocker_owner_kind: Optional[str] = None
+    blocker_owner: Optional[str] = None
     # Structured handoff fields — forwarded to complete_task when status
     # transitions to 'done'. Dashboard parity with ``hermes kanban
     # complete --summary ... --metadata ...``.
@@ -849,7 +855,12 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     metadata=payload.metadata,
                 )
             elif s == "blocked":
-                ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
+                ok = kanban_db.block_task(
+                    conn, task_id,
+                    reason=payload.block_reason,
+                    blocker_owner_kind=payload.blocker_owner_kind,
+                    blocker_owner=payload.blocker_owner,
+                )
             elif s == "scheduled":
                 ok = kanban_db.schedule_task(conn, task_id, reason=payload.block_reason)
             elif s == "ready":

@@ -80,6 +80,10 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        "block_kind": t.block_kind,
+        "block_recurrences": t.block_recurrences,
+        "blocker_owner_kind": t.blocker_owner_kind,
+        "blocker_owner": t.blocker_owner,
     }
 
 
@@ -587,7 +591,26 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "triage to break unblock loops. Omit for a generic block."
         ),
     )
-
+    p_block.add_argument(
+        "--owner-kind", dest="owner_kind", default=None,
+        choices=sorted(kb.VALID_BLOCKER_OWNER_KINDS - {"unknown"}),
+        help=(
+            "WHO must clear this block (orthogonal to --kind). 'human' = a "
+            "named person must decide/act (pass --owner); 'reviewer' = "
+            "awaiting review (the review-required lane; auto-set from a "
+            "'review-required' reason, never a named person); 'automation' = "
+            "an agent/cron/pipeline; 'external' = a third party/system; "
+            "'acceptance' = batchable verification; 'parked' = shelved, "
+            "don't nag. Omit for legacy/unknown — never defaults to human."
+        ),
+    )
+    p_block.add_argument(
+        "--owner", dest="owner", default=None,
+        help=(
+            "Specific owner / required-from string; kept only for "
+            "--owner-kind human or external."
+        ),
+    )
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
     p_schedule.add_argument("reason", nargs="*", help="Reason/timing note (also appended as a comment)")
@@ -2038,6 +2061,8 @@ def _cmd_edit(args: argparse.Namespace) -> int:
 def _cmd_block(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     kind = getattr(args, "kind", None)
+    owner_kind = getattr(args, "owner_kind", None)
+    owner = getattr(args, "owner", None)
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
     failed: list[str] = []
@@ -2050,6 +2075,8 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 tid,
                 reason=reason,
                 kind=kind,
+                blocker_owner_kind=owner_kind,
+                blocker_owner=owner,
                 expected_run_id=_worker_run_id_for(tid),
             ):
                 failed.append(tid)

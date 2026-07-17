@@ -124,6 +124,101 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
+# ---------------------------------------------------------------------------
+# Blocker OWNERSHIP (orthogonal to VALID_BLOCK_KINDS above).
+#
+# ``block_kind`` answers "what retry/routing behaviour does this block want"
+# (dependency vs needs_input vs capability vs transient). It does NOT answer
+# "who is on the hook to clear this block". Reports historically inferred the
+# owner from free text in the reason ("Daniel", "your review", ...), which
+# collapsed reviewer work, autonomous automation, parked work, and true human
+# decisions into one undifferentiated "blocked on Daniel" queue (see the
+# 36-card false personal queue). ``blocker_owner_kind`` makes ownership a
+# first-class structured field owned by the kernel, so downstream reports and
+# triage never have to guess from prose:
+#
+#   * ``human``      — a specific person must make a decision / take an action.
+#                      Pair with ``blocker_owner`` naming who (e.g. "daniel").
+#                      Never the implicit default — a block is only human-owned
+#                      when a caller says so.
+#   * ``reviewer``   — awaiting code/PR review (the ``review-required`` lane).
+#                      Owned by whoever reviews, NOT by a named human.
+#   * ``automation`` — waiting on an autonomous agent / cron / pipeline
+#                      (merge, rebase, packaging). No human ask.
+#   * ``external``   — waiting on a third party / external system / service.
+#                      ``blocker_owner`` may name it (e.g. "upstream-ci").
+#   * ``acceptance`` — awaiting acceptance/verification that can be batched
+#                      (e.g. an in-game walk-through). Distinct from a blocking
+#                      human decision; can be swept in a batch, not nagged.
+#   * ``parked``     — deliberately shelved work. Not an ask of anyone; must
+#                      never be nagged as a pending human queue item.
+#   * ``unknown``    — legacy / un-classified rows (persisted as NULL). Reports
+#                      may apply a conservative prose fallback for these ONLY.
+#
+# ``blocker_owner`` carries a specific owner/required-from string and is only
+# meaningful when ``blocker_owner_kind`` is ``human`` or ``external``; it is
+# cleared for every other kind so no code path can smuggle a name (like
+# "daniel") in behind a non-human kind.
+VALID_BLOCKER_OWNER_KINDS = {
+    "human",
+    "reviewer",
+    "automation",
+    "external",
+    "acceptance",
+    "parked",
+    "unknown",
+}
+
+# Owner kinds that carry a meaningful ``blocker_owner`` (required-from) string.
+# For every other kind the owner string is dropped on write.
+_OWNER_KINDS_WITH_OWNER = {"human", "external"}
+
+
+def derive_blocker_owner(
+    reason: Optional[str],
+    owner_kind: Optional[str],
+    owner: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Normalise a (owner_kind, owner) pair for persistence.
+
+    Rules (kernel-owned, so reports never re-derive from prose):
+
+    * An explicit ``owner_kind`` wins and is validated against
+      :data:`VALID_BLOCKER_OWNER_KINDS`. ``"unknown"`` normalises to ``None``
+      (stored as NULL) so legacy and explicitly-unknown rows read identically.
+    * With no explicit kind, the only conservative inference the kernel makes
+      is the well-established ``review-required`` convention → ``reviewer``.
+      Everything else stays ``None`` (unknown) — the kernel NEVER defaults a
+      block to ``human``, so no card silently becomes a personal ask.
+    * ``owner`` (required-from) is retained only for ``human`` / ``external``;
+      it is dropped for every other kind so a name can't ride in behind a
+      non-human classification.
+
+    Returns the normalised ``(owner_kind, owner)`` to store on the task row.
+    Raises ``ValueError`` on an unrecognised explicit ``owner_kind``.
+    """
+    if owner_kind is not None:
+        owner_kind = str(owner_kind).strip().lower() or None
+    if owner_kind is not None and owner_kind not in VALID_BLOCKER_OWNER_KINDS:
+        raise ValueError(
+            f"blocker owner kind must be one of "
+            f"{sorted(VALID_BLOCKER_OWNER_KINDS)} or None"
+        )
+    if owner_kind == "unknown":
+        owner_kind = None
+
+    if owner_kind is None:
+        # Conservative, single well-known inference: the review-required lane
+        # is reviewer-owned, never a named human.
+        if reason and "review-required" in reason.lower():
+            owner_kind = "reviewer"
+
+    owner_str: Optional[str] = None
+    if owner_kind in _OWNER_KINDS_WITH_OWNER and owner:
+        owner_str = str(owner).strip() or None
+
+    return owner_kind, owner_str
+
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
 # unblocker (usually a cron) and routes the task to ``triage`` instead of back
@@ -915,6 +1010,13 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Structured blocker ownership (one of VALID_BLOCKER_OWNER_KINDS) or None
+    # for legacy/unknown rows. Answers "who clears this block"; review-required
+    # defaults to reviewer, never a named human. Set by ``block_task``.
+    blocker_owner_kind: Optional[str] = None
+    # Specific owner / required-from string; only meaningful for 'human' /
+    # 'external' kinds, None otherwise.
+    blocker_owner: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -998,6 +1100,16 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            blocker_owner_kind=(
+                row["blocker_owner_kind"]
+                if "blocker_owner_kind" in keys and row["blocker_owner_kind"]
+                else None
+            ),
+            blocker_owner=(
+                row["blocker_owner"]
+                if "blocker_owner" in keys and row["blocker_owner"]
+                else None
             ),
         )
 
@@ -1176,7 +1288,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Structured blocker OWNERSHIP (orthogonal to block_kind above). One of
+    -- VALID_BLOCKER_OWNER_KINDS (human / reviewer / automation / external /
+    -- acceptance / parked) or NULL for legacy/unknown rows. Answers "who is on
+    -- the hook to clear this block" so reports never infer ownership from the
+    -- free-text reason. review-required defaults to reviewer, never human.
+    blocker_owner_kind   TEXT,
+    -- Specific owner / required-from string. Only meaningful (and only
+    -- persisted) when blocker_owner_kind is 'human' or 'external'; NULL
+    -- otherwise so a name can't ride in behind a non-human classification.
+    blocker_owner        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1985,6 +2107,18 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "blocker_owner_kind" not in cols:
+        # Structured blocker ownership. NULL on existing rows = unknown/legacy,
+        # which reports treat conservatively (prose fallback) — no card silently
+        # becomes a human ask on migration.
+        _add_column_if_missing(
+            conn, "tasks", "blocker_owner_kind", "blocker_owner_kind TEXT"
+        )
+    if "blocker_owner" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "blocker_owner", "blocker_owner TEXT"
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -4173,7 +4307,9 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
-                       block_recurrences = 0
+                       block_recurrences = 0,
+                       blocker_owner_kind = NULL,
+                       blocker_owner = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                 """,
@@ -4190,7 +4326,9 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
-                       block_recurrences = 0
+                       block_recurrences = 0,
+                       blocker_owner_kind = NULL,
+                       blocker_owner = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                    AND current_run_id = ?
@@ -4879,6 +5017,8 @@ def block_task(
     *,
     reason: Optional[str] = None,
     kind: Optional[str] = None,
+    blocker_owner_kind: Optional[str] = None,
+    blocker_owner: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
@@ -4905,6 +5045,16 @@ def block_task(
       can use it to signal "this might clear on its own"; it still participates
       in the loop breaker so a forever-flaky task eventually escalates.
 
+    ``blocker_owner_kind`` / ``blocker_owner`` are the ORTHOGONAL ownership
+    dimension (see :data:`VALID_BLOCKER_OWNER_KINDS`). ``kind`` says what retry
+    behaviour the block wants; ``blocker_owner_kind`` says who is on the hook to
+    clear it. They are normalised through :func:`derive_blocker_owner`, so:
+    ``review-required`` reasons default to ``reviewer`` (never a named human),
+    an owner string is only kept for ``human``/``external``, and the kernel
+    never silently defaults a block to ``human``. The classification is
+    persisted on the task row and echoed into the block event payload so
+    reports consume structured fields instead of scanning prose.
+
     Returns True on any successful transition (to ``blocked``, ``todo``, or
     ``triage``), False when the task wasn't in a blockable state.
     """
@@ -4912,6 +5062,18 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+    # Normalise ownership once; raises ValueError on an unknown owner kind.
+    owner_kind_final, owner_final = derive_blocker_owner(
+        reason, blocker_owner_kind, blocker_owner
+    )
+
+    def _stamp_owner() -> None:
+        conn.execute(
+            "UPDATE tasks SET blocker_owner_kind = ?, blocker_owner = ? "
+            "WHERE id = ?",
+            (owner_kind_final, owner_final, task_id),
+        )
+
     routed_to = "blocked"
     recurrences = 0
     with write_txn(conn):
@@ -4950,6 +5112,7 @@ def block_task(
             )
             if cur.rowcount != 1:
                 return False
+            _stamp_owner()
             run_id = _end_run(
                 conn, task_id,
                 outcome="blocked", status="blocked",
@@ -4961,7 +5124,11 @@ def block_task(
                 )
             _append_event(
                 conn, task_id, "dependency_wait",
-                {"reason": reason, "kind": kind}, run_id=run_id,
+                {
+                    "reason": reason, "kind": kind,
+                    "blocker_owner_kind": owner_kind_final,
+                    "blocker_owner": owner_final,
+                }, run_id=run_id,
             )
             routed_to = "todo"
             _blocked_task = get_task(conn, task_id)
@@ -5004,6 +5171,7 @@ def block_task(
             )
             if cur.rowcount != 1:
                 return False
+            _stamp_owner()
             run_id = _end_run(
                 conn, task_id,
                 outcome="blocked", status="blocked",
@@ -5020,6 +5188,8 @@ def block_task(
                     "kind": kind,
                     "recurrences": recurrences,
                     "limit": BLOCK_RECURRENCE_LIMIT,
+                    "blocker_owner_kind": owner_kind_final,
+                    "blocker_owner": owner_final,
                 },
                 run_id=run_id,
             )
@@ -5058,6 +5228,7 @@ def block_task(
                 )
             if cur.rowcount != 1:
                 return False
+            _stamp_owner()
             run_id = _end_run(
                 conn, task_id,
                 outcome="blocked", status="blocked",
@@ -5073,7 +5244,12 @@ def block_task(
                 )
             _append_event(
                 conn, task_id, "blocked",
-                {"reason": reason, "kind": kind, "recurrences": recurrences},
+                {
+                    "reason": reason, "kind": kind,
+                    "recurrences": recurrences,
+                    "blocker_owner_kind": owner_kind_final,
+                    "blocker_owner": owner_final,
+                },
                 run_id=run_id,
             )
         _blocked_task = get_task(conn, task_id)
@@ -5212,7 +5388,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # start for the dispatcher's retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
+            "consecutive_failures = 0, last_failure_error = NULL, "
+            "blocker_owner_kind = NULL, blocker_owner = NULL "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (new_status, task_id),
         )
@@ -7106,7 +7283,8 @@ def _record_task_failure(
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
-                    "consecutive_failures = ?, last_failure_error = ? "
+                    "consecutive_failures = ?, last_failure_error = ?, "
+                    "blocker_owner_kind = 'automation', blocker_owner = NULL "
                     "WHERE id = ? AND status IN ('running', 'ready')",
                     (failures, error[:500], task_id),
                 )
@@ -7116,7 +7294,8 @@ def _record_task_failure(
                 # counter fields.
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked', "
-                    "consecutive_failures = ?, last_failure_error = ? "
+                    "consecutive_failures = ?, last_failure_error = ?, "
+                    "blocker_owner_kind = 'automation', blocker_owner = NULL "
                     "WHERE id = ? AND status IN ('ready', 'running')",
                     (failures, error[:500], task_id),
                 )
@@ -7140,6 +7319,8 @@ def _record_task_failure(
                 "limit_source": limit_source,
                 "error": error[:500],
                 "trigger_outcome": outcome,
+                "blocker_owner_kind": "automation",
+                "blocker_owner": None,
             }
             if event_payload_extra:
                 payload.update(event_payload_extra)

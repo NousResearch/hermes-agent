@@ -304,6 +304,45 @@
   font-weight: 500;
   color: color-mix(in srgb, var(--color-foreground) 80%, var(--color-muted-foreground));
 }
+
+/* Structured blocker ownership badges. Each kind gets a distinct hue AND a
+   text label (rendered in the JS), so ownership is never conveyed by colour
+   alone — it reads legibly in monochrome or for colour-blind operators. */
+.hermes-kanban-blocker-owner {
+  font-size: 0.6rem !important;
+  padding: 0.05rem 0.3rem !important;
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border);
+}
+.hermes-kanban-blocker-owner--human {
+  background: color-mix(in srgb, var(--color-warning, #d4b348) 20%, transparent);
+  border-color: color-mix(in srgb, var(--color-warning, #d4b348) 55%, var(--color-border));
+}
+.hermes-kanban-blocker-owner--reviewer {
+  background: color-mix(in srgb, var(--color-ring) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-ring) 45%, var(--color-border));
+}
+.hermes-kanban-blocker-owner--automation {
+  background: color-mix(in srgb, var(--color-muted-foreground) 14%, transparent);
+}
+.hermes-kanban-blocker-owner--external {
+  background: color-mix(in srgb, var(--color-info, #4a90d9) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-info, #4a90d9) 45%, var(--color-border));
+}
+.hermes-kanban-blocker-owner--acceptance {
+  background: color-mix(in srgb, var(--color-success, #4caf50) 15%, transparent);
+  border-color: color-mix(in srgb, var(--color-success, #4caf50) 45%, var(--color-border));
+}
+.hermes-kanban-blocker-owner--parked {
+  background: color-mix(in srgb, var(--color-muted-foreground) 10%, transparent);
+  color: var(--color-muted-foreground);
+  border-style: dashed;
+}
+.hermes-kanban-blocker-owner--unknown {
+  background: transparent;
+  color: var(--color-muted-foreground);
+  border-style: dotted;
+}
 .hermes-kanban-unassigned {
   font-style: italic;
 }

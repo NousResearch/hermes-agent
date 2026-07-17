@@ -353,6 +353,9 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "completed_at": task.completed_at,
         "current_run_id": task.current_run_id,
         "model_override": task.model_override,
+        "block_kind": task.block_kind,
+        "blocker_owner_kind": task.blocker_owner_kind,
+        "blocker_owner": task.blocker_owner,
         "parents": parents,
         "children": children,
         "parent_count": len(parents),
@@ -398,6 +401,9 @@ def _handle_show(args: dict, **kw) -> str:
                     "result": t.result,
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
+                    "block_kind": t.block_kind,
+                    "blocker_owner_kind": t.blocker_owner_kind,
+                    "blocker_owner": t.blocker_owner,
                 }
 
             def _run_dict(r):
@@ -687,6 +693,8 @@ def _handle_block(args: dict, **kw) -> str:
         return tool_error("reason is required — explain what input you need")
     reason = redact_sensitive_text(str(reason), force=True)
     kind = args.get("kind")
+    blocker_owner_kind = args.get("blocker_owner_kind")
+    blocker_owner = args.get("blocker_owner")
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -694,6 +702,15 @@ def _handle_block(args: dict, **kw) -> str:
             conn.close()
             return tool_error(
                 f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)"
+            )
+        if (
+            blocker_owner_kind is not None
+            and blocker_owner_kind not in kb.VALID_BLOCKER_OWNER_KINDS
+        ):
+            conn.close()
+            return tool_error(
+                f"blocker_owner_kind must be one of "
+                f"{sorted(kb.VALID_BLOCKER_OWNER_KINDS)} (or omit it)"
             )
         # Goal-mode block gate (Issue #38696, sibling of the kanban_complete
         # judge gate in #38367). kanban_block is a second exit path out of
@@ -724,6 +741,11 @@ def _handle_block(args: dict, **kw) -> str:
                 conn, tid,
                 reason=reason,
                 kind=kind,
+                blocker_owner_kind=blocker_owner_kind,
+                blocker_owner=(
+                    redact_sensitive_text(str(blocker_owner), force=True)
+                    if blocker_owner else None
+                ),
                 expected_run_id=_worker_run_id(tid),
             )
             if not ok:
@@ -740,6 +762,8 @@ def _handle_block(args: dict, **kw) -> str:
                 run_id=run.id if run else None,
                 status=landed.status if landed else "blocked",
                 block_kind=kind,
+                blocker_owner_kind=landed.blocker_owner_kind if landed else None,
+                blocker_owner=landed.blocker_owner if landed else None,
             )
         finally:
             conn.close()
@@ -1551,6 +1575,34 @@ KANBAN_BLOCK_SCHEMA = {
                     "Why you're blocked. 'dependency' waits in todo and "
                     "resumes automatically; the others surface to a human. "
                     "Omit only if none apply."
+                ),
+            },
+            "blocker_owner_kind": {
+                "type": "string",
+                "enum": [
+                    "human", "reviewer", "automation",
+                    "external", "acceptance", "parked",
+                ],
+                "description": (
+                    "WHO must clear this block (independent of 'kind'). "
+                    "'human' = a specific person must decide/act (name them "
+                    "in blocker_owner); 'reviewer' = awaiting code/PR review "
+                    "(the review-required lane — this is the default when the "
+                    "reason says 'review-required', never a named person); "
+                    "'automation' = waiting on an agent/cron/pipeline (merge, "
+                    "rebase, packaging); 'external' = a third party/system; "
+                    "'acceptance' = batchable verification (e.g. an in-game "
+                    "walk-through); 'parked' = deliberately shelved, don't "
+                    "nag. Omit for legacy/unknown — the kernel never defaults "
+                    "a block to human."
+                ),
+            },
+            "blocker_owner": {
+                "type": "string",
+                "description": (
+                    "Specific owner / required-from string, kept only for "
+                    "blocker_owner_kind 'human' or 'external' (e.g. a name or "
+                    "an external system). Ignored for other kinds."
                 ),
             },
             "board": _board_schema_prop(),

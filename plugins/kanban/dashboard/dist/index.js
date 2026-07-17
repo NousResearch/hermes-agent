@@ -105,9 +105,31 @@
     todo: "Waiting on dependencies or unassigned",
     ready: "Dependencies satisfied; assign a profile to dispatch",
     running: "Claimed by a worker — in-flight",
-    blocked: "Worker asked for human input",
+    blocked: "Waiting to be cleared (see blocker owner)",
     done: "Completed",
     archived: "Archived",
+  };
+  // Structured blocker ownership (mirrors VALID_BLOCKER_OWNER_KINDS in
+  // hermes_cli/kanban_db.py). Answers WHO clears a block so the board never
+  // implies every blocked card is a human ask. Labels are text, not
+  // colour-only, so ownership is legible without relying on red-vs-green.
+  const BLOCKER_OWNER_LABEL = {
+    human: "Human",
+    reviewer: "Review",
+    automation: "Automation",
+    external: "External",
+    acceptance: "Acceptance",
+    parked: "Parked",
+    unknown: "Unclassified",
+  };
+  const BLOCKER_OWNER_HINT = {
+    human: "A named person must decide or act before this can proceed.",
+    reviewer: "Awaiting code/PR review — owned by a reviewer, not a personal ask.",
+    automation: "Waiting on an autonomous agent / cron / pipeline. No human ask.",
+    external: "Waiting on a third party or external system.",
+    acceptance: "Awaiting batchable acceptance/verification — not a blocking decision.",
+    parked: "Deliberately shelved. Not an ask of anyone; do not nag.",
+    unknown: "Legacy / unclassified block — ownership not yet recorded.",
   };
   const FALLBACK_DESTRUCTIVE = {
     done: "Mark this task as done? The worker's claim is released and dependent children become ready.",
@@ -2865,6 +2887,18 @@
                   className: "hermes-kanban-needs-assignee",
                   title: tx(i18n, "needsAssigneeHint", "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile."),
                 }, tx(i18n, "needsAssignee", "Needs assignee"))
+              : null,
+            t.status === "blocked" && t.blocker_owner_kind
+              ? h(Badge, {
+                  variant: "outline",
+                  className: cn(
+                    "hermes-kanban-blocker-owner",
+                    "hermes-kanban-blocker-owner--" + t.blocker_owner_kind,
+                  ),
+                  title: BLOCKER_OWNER_HINT[t.blocker_owner_kind] || "Blocker ownership.",
+                },
+                  BLOCKER_OWNER_LABEL[t.blocker_owner_kind] || t.blocker_owner_kind,
+                  t.blocker_owner ? ": " + t.blocker_owner : "")
               : null,
           ),
           h("div", { className: "hermes-kanban-card-title" },

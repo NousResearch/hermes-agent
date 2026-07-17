@@ -265,6 +265,47 @@ hermes kanban unblock  t_abc t_def
 hermes kanban block    t_abc "need input" --ids t_def t_hij
 ```
 
+### Blocker ownership — who clears a block
+
+A blocked card has two orthogonal dimensions. `--kind`
+(`dependency`/`needs_input`/`capability`/`transient`) says **what retry
+behaviour** the block wants. `--owner-kind` says **who is on the hook to
+clear it**, so reports and triage never have to guess ownership from the
+free-text reason:
+
+| `--owner-kind` | Meaning | `--owner` used? |
+|---|---|---|
+| `human` | A specific person must decide/act | yes — name them |
+| `reviewer` | Awaiting code/PR review (the review-required lane) | no |
+| `automation` | Waiting on an agent/cron/pipeline (merge, rebase, packaging) | no |
+| `external` | Waiting on a third party / external system | yes |
+| `acceptance` | Batchable verification (e.g. an in-game walk-through) | no |
+| `parked` | Deliberately shelved — do not nag | no |
+
+```bash
+hermes kanban block t_abc "which pricing tier?" --owner-kind human --owner daniel
+hermes kanban block t_def "review-required: PR #9" --owner-kind reviewer
+hermes kanban block t_hij "shelved until Q3"      --owner-kind parked
+```
+
+Rules the kernel enforces (`hermes_cli/kanban_db.py`):
+
+- The kernel **never defaults a block to `human`.** Omit `--owner-kind` and
+  the card stays unclassified (NULL) — legacy rows read the same way. Reports
+  may apply a conservative prose fallback for those old rows only.
+- A `review-required:` reason auto-classifies as `reviewer` when no owner kind
+  is given, so review work never masquerades as a personal ask.
+- `--owner` is retained only for `human`/`external`; it is dropped for every
+  other kind, so a name can't ride in behind a non-human classification.
+- Ownership is persisted on the task row **and** echoed into the block event
+  payload, and is cleared on unblock and completion.
+
+The same fields are available to workers via `kanban_block`
+(`blocker_owner_kind` / `blocker_owner`), to the dashboard's task-update API
+(`PATCH` body), and are surfaced as a labelled badge on each blocked card
+(text, not colour-only).
+
+
 ## How workers interact with the board
 
 **Workers do not shell out to `hermes kanban`.** When the dispatcher spawns a worker it sets `HERMES_KANBAN_TASK=t_abcd` in the child's env, and that env var flips on a dedicated **kanban toolset** in the model's schema. The same toolset is also available to orchestrator profiles that enable `kanban` in their toolsets config. These tools read and mutate the board directly via the Python `kanban_db` layer, same as the CLI does. A running worker calls these like any other tool; it never sees or needs the `hermes kanban` CLI.
@@ -274,7 +315,7 @@ hermes kanban block    t_abc "need input" --ids t_def t_hij
 | `kanban_show` | Read the current task (title, body, prior attempts, parent handoffs, comments, full pre-formatted `worker_context`). Defaults to the env's task id. | — |
 | `kanban_list` | List task summaries with filters for `assignee`, `status`, `tenant`, archived visibility, and limit. Intended for orchestrators discovering board work. | — |
 | `kanban_complete` | Finish with `summary` + `metadata` structured handoff. | at least one of `summary` / `result` |
-| `kanban_block` | Stop work and route by why: `kind=dependency` (waits in `todo`, auto-resumes), `needs_input`/`capability`/`transient` (surface to a human). Repeated same-kind re-blocks auto-escalate to `triage`. | `reason` |
+| `kanban_block` | Stop work and route by why: `kind=dependency` (waits in `todo`, auto-resumes), `needs_input`/`capability`/`transient` (surface to a human). Repeated same-kind re-blocks auto-escalate to `triage`. Optional `blocker_owner_kind` (+ `blocker_owner`) records who clears it — `review-required` reasons default to `reviewer`, never a named human. | `reason` |
 | `kanban_heartbeat` | Signal liveness during long operations. Pure side-effect. | — |
 | `kanban_comment` | Append a durable note to the task thread. | `task_id`, `body` |
 | `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. | `title`, `assignee` |
@@ -666,7 +707,7 @@ hermes kanban comment <id> "<text>" [--author NAME]
 
 # Bulk verbs — accept multiple ids:
 hermes kanban complete <id>... [--result "..."]
-hermes kanban block <id> "<reason>" [--ids <id>...]
+hermes kanban block <id> "<reason>" [--ids <id>...]   # optional: --kind, --owner-kind, --owner
 hermes kanban unblock <id>...
 hermes kanban archive <id>...
 

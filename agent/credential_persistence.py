@@ -100,7 +100,7 @@ def _normalize_key(key: Any) -> str:
     return raw.lower().replace("-", "_").replace(".", "_")
 
 
-def is_borrowed_credential_source(source: Any, provider_id: Any = None) -> bool:
+def is_borrowed_credential_source(source: Any, provider_id: Any = None, payload: Mapping[str, Any] | None = None) -> bool:
     """Return True when ``source`` points at a borrowed/reference-only secret."""
     normalized_source = str(source or "").strip().lower()
     if not normalized_source:
@@ -108,6 +108,16 @@ def is_borrowed_credential_source(source: Any, provider_id: Any = None) -> bool:
     if normalized_source == "manual" or normalized_source.startswith("manual:"):
         return False
     normalized_provider = str(provider_id or "").strip().lower()
+    # A MiniMax OAuth entry that carries source_auth_path was seeded from the
+    # global-root fallback; the active profile does not own the grant and must
+    # not persist the secret pair locally.
+    if (
+        normalized_provider == "minimax-oauth"
+        and normalized_source == "oauth"
+        and isinstance(payload, Mapping)
+        and payload.get("source_auth_path")
+    ):
+        return True
     return (normalized_provider, normalized_source) not in _PERSISTABLE_PROVIDER_SOURCES
 
 
@@ -160,7 +170,7 @@ def sanitize_borrowed_credential_payload(
     fingerprint, but raw secret value fields are removed.
     """
     result = dict(payload)
-    if not is_borrowed_credential_source(result.get("source"), provider_id):
+    if not is_borrowed_credential_source(result.get("source"), provider_id, payload=result):
         return result
 
     fingerprint = _credential_secret_fingerprint(result)

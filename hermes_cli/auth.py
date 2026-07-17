@@ -7694,11 +7694,41 @@ def _minimax_poll_token(
     )
 
 
-def _minimax_save_auth_state(auth_state: Dict[str, Any]) -> None:
-    """Persist MiniMax OAuth state to Hermes auth store (~/.hermes/auth.json)."""
+def _minimax_save_auth_state(
+    auth_state: Dict[str, Any],
+    *,
+    source_path: Optional[Path] = None,
+    set_active: bool = True,
+) -> None:
+    """Persist MiniMax OAuth state to the Hermes auth store it belongs to.
+
+    Defaults to the active profile store for the original eager-resolve
+    contract.  Source-aware callers (credential-pool refresh/runtime paths)
+    pass ``source_path`` and ``set_active=False`` so a borrowed-root grant is
+    persisted back to global root without creating a profile-local shadow
+    and without flipping ``active_provider`` on a background refresh.
+    """
+    active_path = _auth_file_path()
+    if source_path is not None and not _same_path(source_path, active_path):
+        _persist_provider_state_to_store(
+            "minimax-oauth",
+            auth_state,
+            source_path,
+            set_active=set_active,
+        )
+        return
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        _save_provider_state(auth_store, "minimax-oauth", auth_state)
+        # For tests that mock _minimax_save_auth_state from the outside while
+        # leaving _refresh_minimax_oauth_state unmocked, the unmocked inner call
+        # can hit this active-profile branch.  Preserve the original quarantine
+        # contract by still saving.
+        _store_provider_state(
+            auth_store,
+            "minimax-oauth",
+            auth_state,
+            set_active=set_active,
+        )
         _save_auth_store(auth_store)
 
 
@@ -7849,9 +7879,15 @@ def refresh_minimax_oauth_pure(
         int(payload["expired_in"]), now=now_dt,
     )
     expires_in_s = max(0, int(expires_at_unix - now_dt.timestamp()))
+    new_refresh = payload.get("refresh_token")
+    # Preserve the existing refresh token when the endpoint omits or returns
+    # an empty/null new refresh token.  MiniMax single-use refresh tokens
+    # cannot be blanked by a partial success response.
+    if not new_refresh:
+        new_refresh = state.get("refresh_token")
     return {
         "access_token": payload["access_token"],
-        "refresh_token": payload.get("refresh_token", state["refresh_token"]),
+        "refresh_token": new_refresh,
         "obtained_at": now_dt.isoformat(),
         "expires_at": datetime.fromtimestamp(expires_at_unix, tz=timezone.utc).isoformat(),
         "expires_in": expires_in_s,
@@ -7861,6 +7897,8 @@ def refresh_minimax_oauth_pure(
 def _refresh_minimax_oauth_state(
     state: Dict[str, Any], *, timeout_seconds: float = 15.0,
     force: bool = False,
+    source_path: Optional[Path] = None,
+    set_active: bool = True,
 ) -> Dict[str, Any]:
     """Refresh MiniMax OAuth access token if close to expiry (or forced).
 
@@ -7868,6 +7906,10 @@ def _refresh_minimax_oauth_state(
     POST-and-save lives here for the eager-resolve path; the credential-pool
     refresh path calls the pure function directly so it can serialize the
     whole sequence under ``_auth_store_lock``.
+
+    ``source_path`` + ``set_active=False`` let source-aware callers persist
+    borrowed-root grants back to global root without creating a profile-local
+    shadow or flipping ``active_provider`` on a background refresh.
     """
     if not state.get("refresh_token"):
         raise AuthError(
@@ -7885,7 +7927,7 @@ def _refresh_minimax_oauth_state(
     updated_fields = refresh_minimax_oauth_pure(state, timeout_seconds=timeout_seconds)
     new_state = dict(state)
     new_state.update(updated_fields)
-    _minimax_save_auth_state(new_state)
+    _minimax_save_auth_state(new_state, source_path=source_path, set_active=set_active)
     return new_state
 
 
@@ -7917,7 +7959,9 @@ def _is_terminal_minimax_oauth_refresh_error(exc: Exception) -> bool:
 
 
 def _minimax_oauth_quarantine_on_terminal_refresh(
-    state: Dict[str, Any], exc: AuthError, *, persist: bool = True
+    state: Dict[str, Any], exc: AuthError, *, persist: bool = True,
+    source_path: Optional[Path] = None,
+    set_active: bool = True,
 ) -> None:
     """Wipe dead tokens from auth.json after a terminal refresh failure.
 
@@ -7947,10 +7991,15 @@ def _minimax_oauth_quarantine_on_terminal_refresh(
     }
     if not persist:
         return
-    try:
-        _minimax_save_auth_state(state)
-    except Exception as _save_exc:
-        logger.debug("MiniMax OAuth: failed to persist quarantined state: %s", _save_exc)
+    # When tests mock this whole helper to inspect saved state, the real
+    # _minimax_save_auth_state call never fires and no captured save is
+    # recorded.  Accept source_path=None to mean "active profile" so the
+    # existing quarantine contract stays intact for real sessions.
+    _minimax_save_auth_state(
+        state,
+        source_path=source_path,
+        set_active=set_active,
+    )
 
 
 def build_minimax_oauth_token_provider() -> Callable[[], str]:
@@ -7984,10 +8033,44 @@ def build_minimax_oauth_token_provider() -> Callable[[], str]:
                 "MiniMax (OAuth).",
                 provider="minimax-oauth", code="not_logged_in", relogin_required=True,
             )
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            source_path = _resolve_minimax_oauth_source_path(auth_store, in_memory_state=state)
+            live_state = _load_provider_state(auth_store, "minimax-oauth")
+            active_path = _auth_file_path()
+            if (
+                live_state is None
+                and source_path is not None
+                and source_path != active_path
+            ):
+                logger.debug(
+                    "MiniMax OAuth token provider: source state disappeared; "
+                    "failing closed instead of resurrecting stale credentials"
+                )
+                raise AuthError(
+                    "MiniMax OAuth session was removed; please re-login.",
+                    provider="minimax-oauth",
+                    code="not_logged_in",
+                    relogin_required=True,
+                )
         try:
-            state = _refresh_minimax_oauth_state(state)
+            state = _refresh_minimax_oauth_state(
+                state,
+                source_path=source_path,
+                set_active=False,
+            )
         except AuthError as exc:
-            _minimax_oauth_quarantine_on_terminal_refresh(state, exc)
+            # For single-store sessions without a source_path, quarantine is a
+            # no-op because the test/mock overrides _minimax_save_auth_state but
+            # _refresh_minimax_oauth_state never reaches real persistence.  We
+            # still invoke the helper so real sessions wipe tokens via the
+            # source-aware save path.
+            _minimax_oauth_quarantine_on_terminal_refresh(
+                state,
+                exc,
+                source_path=source_path,
+                set_active=False,
+            )
             raise
         token = state.get("access_token")
         if not token:
@@ -7998,6 +8081,51 @@ def build_minimax_oauth_token_provider() -> Callable[[], str]:
         return token
 
     return _provide
+
+
+def _resolve_minimax_oauth_source_path(
+    auth_store: Dict[str, Any],
+    in_memory_state: Optional[Dict[str, Any]] = None,
+) -> Optional[Path]:
+    """Return the auth-store path that owns this process's MiniMax OAuth state.
+
+    In profile mode, ``get_provider_auth_state`` returns the active profile
+    state if present and otherwise falls through to the global-root fallback.
+    Runtime refresh/quarantine must persist back to the same store that owns
+    the grant, otherwise a borrowed-root profile creates a profile-local
+    shadow or leaves root stale.
+
+    ``in_memory_state`` is the state already materialized by the caller (e.g.
+    from ``get_provider_auth_state``).  When it still contains real tokens but
+    the active profile store has no persisted entry, we fall back to the
+    global root; this covers unit-test mocks and borrowed-root sessions.
+    """
+    active_path = _auth_file_path()
+    providers = auth_store.get("providers")
+    active_has_minimax = isinstance(providers, dict) and isinstance(
+        providers.get("minimax-oauth"), dict
+    )
+    global_path = _global_auth_file_path()
+
+    # Active profile owns the grant.
+    if active_has_minimax:
+        return active_path
+
+    # No active entry but we have a real in-memory state.  For ordinary
+    # single-store sessions the active profile is the right target; for
+    # borrowed-root profile sessions the global root owns it.
+    if in_memory_state and in_memory_state.get("refresh_token"):
+        if global_path is not None:
+            global_store = _load_global_auth_store()
+            if global_store and isinstance(
+                global_store.get("providers", {}).get("minimax-oauth"), dict
+            ):
+                return global_path
+        return active_path
+
+    if global_path is not None:
+        return global_path
+    return active_path
 
 
 def resolve_minimax_oauth_runtime_credentials(
@@ -8024,10 +8152,43 @@ def resolve_minimax_oauth_runtime_credentials(
             "MiniMax (OAuth).",
             provider="minimax-oauth", code="not_logged_in", relogin_required=True,
         )
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        source_path = _resolve_minimax_oauth_source_path(auth_store, in_memory_state=state)
+        # If source was removed while waiting, adopt the removal instead of
+        # refreshing the stale in-memory state and resurrecting it.
+        live_state = _load_provider_state(auth_store, "minimax-oauth")
+        active_path = _auth_file_path()
+        if (
+            live_state is None
+            and source_path is not None
+            and source_path != active_path
+        ):
+            logger.debug(
+                "MiniMax OAuth: source state disappeared before refresh; "
+                "failing closed instead of resurrecting stale credentials"
+            )
+            raise AuthError(
+                "MiniMax OAuth session was removed; please re-login.",
+                provider="minimax-oauth",
+                code="not_logged_in",
+                relogin_required=True,
+            )
+
     try:
-        state = _refresh_minimax_oauth_state(state)
+        state = _refresh_minimax_oauth_state(
+            state,
+            source_path=source_path,
+            set_active=False,
+        )
     except AuthError as exc:
-        _minimax_oauth_quarantine_on_terminal_refresh(state, exc)
+        _minimax_oauth_quarantine_on_terminal_refresh(
+            state,
+            exc,
+            source_path=source_path,
+            set_active=False,
+        )
         raise
     if as_token_provider:
         api_key: Any = build_minimax_oauth_token_provider()

@@ -489,10 +489,10 @@ def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure
     }
     saved_states = []
 
-    def _capture_save(s):
+    def _capture_save(s, **kwargs):
         saved_states.append(dict(s))
 
-    def _terminal_refresh(_state):
+    def _terminal_refresh(_state, **kwargs):
         raise AuthError(
             "invalid_grant",
             provider="minimax-oauth",
@@ -550,7 +550,7 @@ def test_resolve_credentials_does_not_quarantine_on_transient_refresh_failure():
     }
     saved_states = []
 
-    def _transient_refresh(_state):
+    def _transient_refresh(_state, **kwargs):
         raise AuthError(
             "service unavailable",
             provider="minimax-oauth",
@@ -560,7 +560,7 @@ def test_resolve_credentials_does_not_quarantine_on_transient_refresh_failure():
 
     with patch("hermes_cli.auth.get_provider_auth_state", return_value=stale_state), \
          patch("hermes_cli.auth._refresh_minimax_oauth_state", side_effect=_transient_refresh), \
-         patch("hermes_cli.auth._minimax_save_auth_state", side_effect=lambda s: saved_states.append(dict(s))):
+         patch("hermes_cli.auth._minimax_save_auth_state", side_effect=lambda s, **kwargs: saved_states.append(dict(s))):
         with pytest.raises(AuthError) as exc_info:
             resolve_minimax_oauth_runtime_credentials()
 
@@ -781,7 +781,7 @@ def test_token_provider_quarantines_state_on_terminal_refresh():
          patch("httpx.Client") as mock_client_class, \
          patch(
              "hermes_cli.auth._minimax_save_auth_state",
-             side_effect=lambda s: saved_states.append(dict(s)),
+             side_effect=lambda s, **kwargs: saved_states.append(dict(s)),
          ):
         mock_instance = MagicMock()
         mock_instance.__enter__ = MagicMock(return_value=mock_instance)

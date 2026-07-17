@@ -33,6 +33,7 @@ from hermes_cli.auth import (
     _is_terminal_minimax_oauth_refresh_error,
     _load_auth_store,
     _load_provider_state,
+    _load_provider_state_with_source,
     _minimax_oauth_quarantine_on_terminal_refresh,
     _provider_state_transaction,
     _resolve_kimi_base_url,
@@ -244,6 +245,14 @@ class PooledCredential:
         for k, v in self.extra.items():
             if v is not None:
                 result[k] = v
+        # A borrowed-root MiniMax OAuth entry must never persist its secret
+        # values into the active profile's credential pool.  Mark the payload
+        # so the credential-persistence sanitizer strips it.
+        if self.provider == "minimax-oauth" and getattr(self, "source_auth_path", None):
+            result["source_auth_path"] = self.source_auth_path
+            # Ensure the sanitizer sees this as a borrowed/reference-only source.
+            result["source"] = self.source
+            return sanitize_borrowed_credential_payload(result, self.provider)
         return sanitize_borrowed_credential_payload(result, self.provider)
 
     @property
@@ -2611,7 +2620,8 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # always refreshes on expiry, so instead read raw state here to avoid
         # surprise network calls during provider discovery.
         try:
-            state, source_path = auth_mod._load_provider_state_with_source(
+            auth_store = _load_auth_store()
+            state, source_path = _load_provider_state_with_source(
                 auth_store, "minimax-oauth"
             )
             if state and state.get("access_token"):
@@ -2633,13 +2643,6 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                         "source": source_name,
                         "auth_type": AUTH_TYPE_OAUTH,
                         "access_token": state["access_token"],
-                        "refresh_token": state.get("refresh_token"),
-                        # Populate BOTH expires_at (ISO string, consumed by
-                        # _entry_needs_refresh) and expires_at_ms (epoch ms,
-                        # consumed by the anthropic-style check and listing
-                        # display). The previous shape only populated
-                        # expires_at_ms, so proactive refresh never fired for
-                        # normally seeded entries (Review A MUST-FIX #3).
                         "expires_at": raw_expires or None,
                         "expires_at_ms": expires_at_ms,
                         "base_url": base_url,
@@ -2647,20 +2650,17 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                             state.get("access_token", ""), source_name
                         ),
                     }
-                    # Record where the singleton was sourced from.  When the
-                    # entry was read from the global-root fallback (not the
-                    # active profile store), the refresh path uses this to
-                    # write rotated tokens back to root rather than creating a
-                    # profile-local shadow (Review A MUST-FIX #2).
-                    try:
-                        active_path = auth_mod._auth_file_path()
-                        if (
-                            source_path is not None
-                            and not auth_mod._same_path(source_path, active_path)
-                        ):
-                            payload["source_auth_path"] = str(source_path)
-                    except Exception:
-                        pass
+                    # Record whether this seeded entry is borrowed from the
+                    # global-root fallback.  The credential-pool disk boundary
+                    # uses this to avoid persisting root-owned secret values
+                    # into the profile credential pool.
+                    active_path = auth_mod._auth_file_path()
+                    borrowed_root = bool(
+                        source_path is not None
+                        and not auth_mod._same_path(source_path, active_path)
+                    )
+                    if borrowed_root:
+                        payload["source_auth_path"] = str(source_path)
                     changed |= _upsert_entry(
                         entries,
                         provider,

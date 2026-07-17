@@ -17,6 +17,7 @@ Usage:
 """
 
 import json
+import sqlite3
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -141,8 +142,8 @@ class InsightsEngine:
             }
 
         # Compute insights
-        overview = self._compute_overview(sessions, message_stats)
-        models = self._compute_model_breakdown(sessions)
+        models = self._compute_model_breakdown(sessions, cutoff, source)
+        overview = self._compute_overview(sessions, message_stats, models)
         platforms = self._compute_platform_breakdown(sessions)
         tools = self._compute_tool_breakdown(tool_usage)
         skills = self._compute_skill_breakdown(skill_usage)
@@ -172,7 +173,7 @@ class InsightsEngine:
                      "message_count, tool_call_count, input_tokens, output_tokens, "
                      "cache_read_tokens, cache_write_tokens, billing_provider, "
                      "billing_base_url, billing_mode, estimated_cost_usd, "
-                     "actual_cost_usd, cost_status, cost_source")
+                     "actual_cost_usd, cost_status, cost_source, api_call_count")
 
     # Pre-computed query strings — f-string evaluated once at class definition,
     # not at runtime, so no user-controlled value can alter the query structure.
@@ -399,7 +400,12 @@ class InsightsEngine:
     # Computation
     # =========================================================================
 
-    def _compute_overview(self, sessions: List[Dict], message_stats: Dict) -> Dict:
+    def _compute_overview(
+        self,
+        sessions: List[Dict],
+        message_stats: Dict,
+        models: Optional[List[Dict]] = None,
+    ) -> Dict:
         """Compute high-level overview statistics."""
         total_input = sum(s.get("input_tokens") or 0 for s in sessions)
         total_output = sum(s.get("output_tokens") or 0 for s in sessions)
@@ -430,6 +436,21 @@ class InsightsEngine:
                 models_with_pricing.add(display)
             else:
                 models_without_pricing.add(display)
+
+        if models:
+            total_cost = sum(float(m.get("cost") or 0.0) for m in models)
+            # Token totals likewise: the per-model breakdown includes
+            # auxiliary usage rows (vision/compression/titles — task
+            # dimension in session_model_usage, #23270) plus reconciled
+            # residuals, while the sessions counters carry main-loop usage
+            # only. Summing the breakdown keeps overview totals consistent
+            # with the per-model table and stops `hermes insights`
+            # undercounting aux spend (#58592, #9979).
+            total_input = sum(int(m.get("input_tokens") or 0) for m in models)
+            total_output = sum(int(m.get("output_tokens") or 0) for m in models)
+            total_cache_read = sum(int(m.get("cache_read_tokens") or 0) for m in models)
+            total_cache_write = sum(int(m.get("cache_write_tokens") or 0) for m in models)
+            total_tokens = total_input + total_output + total_cache_read + total_cache_write
 
         # Session duration stats (guard against negative durations from clock drift)
         durations = []
@@ -473,39 +494,189 @@ class InsightsEngine:
             "included_cost_sessions": included_cost_sessions,
         }
 
-    def _compute_model_breakdown(self, sessions: List[Dict]) -> List[Dict]:
-        """Break down usage by model."""
+    _GET_MODEL_USAGE_WITH_SOURCE = (
+        "SELECT u.session_id, u.model, u.billing_provider, u.billing_base_url,"
+        " u.api_call_count, u.input_tokens, u.output_tokens,"
+        " u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,"
+        " u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,"
+        " u.cost_source, u.billing_mode"
+        " FROM session_model_usage u"
+        " JOIN sessions s ON s.id = u.session_id"
+        " WHERE s.started_at >= ? AND s.source = ?"
+    )
+    _GET_MODEL_USAGE_ALL = (
+        "SELECT u.session_id, u.model, u.billing_provider, u.billing_base_url,"
+        " u.api_call_count, u.input_tokens, u.output_tokens,"
+        " u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,"
+        " u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,"
+        " u.cost_source, u.billing_mode"
+        " FROM session_model_usage u"
+        " JOIN sessions s ON s.id = u.session_id"
+        " WHERE s.started_at >= ?"
+    )
+
+    def _get_model_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+        """Fetch per-model usage rows within the window (issue #51607).
+
+        Returns an empty list when the table is missing (e.g. a DB opened by
+        older code that never created it) so the caller can fall back to the
+        per-session aggregate.
+        """
+        try:
+            if source:
+                cursor = self._conn.execute(
+                    self._GET_MODEL_USAGE_WITH_SOURCE, (cutoff, source)
+                )
+            else:
+                cursor = self._conn.execute(self._GET_MODEL_USAGE_ALL, (cutoff,))
+            return [dict(row) for row in cursor.fetchall()]
+        except sqlite3.OperationalError:
+            return []
+
+    def _compute_model_breakdown(
+        self, sessions: List[Dict], cutoff: float, source: str = None
+    ) -> List[Dict]:
+        """Break down token usage and cost by model.
+
+        Tokens and cost are attributed per model from session_model_usage, so a
+        session that switched models mid-flight (via ``/model``) splits across
+        every model it used instead of dumping everything on the initial model
+        (issue #51607). Sessions without per-model rows — e.g. data written
+        before this table existed and not yet backfilled — fall back to their
+        single recorded (model, billing_provider) aggregate so nothing is lost.
+
+        Tool calls aren't tied to a specific API invocation, so they stay
+        attributed to the session's recorded model.
+        """
         model_data = defaultdict(lambda: {
-            "sessions": 0, "input_tokens": 0, "output_tokens": 0,
+            "sessions": set(), "input_tokens": 0, "output_tokens": 0,
             "cache_read_tokens": 0, "cache_write_tokens": 0,
-            "total_tokens": 0, "tool_calls": 0, "cost": 0.0,
+            "reasoning_tokens": 0, "total_tokens": 0, "api_calls": 0,
+            "tool_calls": 0, "cost": 0.0, "actual_cost": 0.0,
         })
 
-        for s in sessions:
-            model = s.get("model") or "unknown"
+        def _accumulate(model, provider, base_url, session_id, inp, out,
+                        cache_read, cache_write, reasoning, *,
+                        stored_cost=None, actual_cost=None, cost_status=None):
+            model = model or "unknown"
             # Normalize: strip provider prefix for display
             display_model = model.split("/")[-1] if "/" in model else model
-            d = model_data[display_model]
-            d["sessions"] += 1
-            inp = s.get("input_tokens") or 0
-            out = s.get("output_tokens") or 0
-            cache_read = s.get("cache_read_tokens") or 0
-            cache_write = s.get("cache_write_tokens") or 0
+            d: Dict[str, Any] = model_data[display_model]
+            d["sessions"].add(session_id)
             d["input_tokens"] += inp
             d["output_tokens"] += out
             d["cache_read_tokens"] += cache_read
             d["cache_write_tokens"] += cache_write
+            d["reasoning_tokens"] += reasoning
             d["total_tokens"] += inp + out + cache_read + cache_write
-            d["tool_calls"] += s.get("tool_call_count") or 0
-            estimate, status = _estimate_cost(s)
+            if stored_cost is None:
+                estimate, status = _estimate_cost(
+                    model, inp, out,
+                    cache_read_tokens=cache_read, cache_write_tokens=cache_write,
+                    provider=provider or None, base_url=base_url,
+                )
+            else:
+                estimate = float(stored_cost or 0.0)
+                status = cost_status or "unknown"
             d["cost"] += estimate
-            d["has_pricing"] = has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url"))
+            d["actual_cost"] += float(actual_cost or 0.0)
             d["cost_status"] = status
+            if has_known_pricing(model, provider or None, base_url):
+                d["has_pricing"] = True
+            else:
+                d.setdefault("has_pricing", False)
+            return display_model
 
-        result = [
-            {"model": model, **data}
-            for model, data in model_data.items()
-        ]
+        usage_rows = self._get_model_usage(cutoff, source)
+        usage_totals = defaultdict(lambda: {
+            "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
+            "cache_write_tokens": 0, "reasoning_tokens": 0,
+            "api_call_count": 0, "estimated_cost_usd": 0.0,
+            "actual_cost_usd": 0.0,
+        })
+        for r in usage_rows:
+            totals: Dict[str, Any] = usage_totals[r["session_id"]]
+            for key in (
+                "input_tokens", "output_tokens", "cache_read_tokens",
+                "cache_write_tokens", "reasoning_tokens", "api_call_count",
+            ):
+                totals[key] += r[key] or 0
+            totals["estimated_cost_usd"] += r["estimated_cost_usd"] or 0.0
+            totals["actual_cost_usd"] += r["actual_cost_usd"] or 0.0
+            d = _accumulate(
+                r["model"], r["billing_provider"], r.get("billing_base_url"),
+                r["session_id"], r["input_tokens"] or 0, r["output_tokens"] or 0,
+                r["cache_read_tokens"] or 0, r["cache_write_tokens"] or 0,
+                r["reasoning_tokens"] or 0,
+                stored_cost=(
+                    r["estimated_cost_usd"]
+                    if r.get("cost_status") or r.get("cost_source")
+                    else None
+                ),
+                actual_cost=r["actual_cost_usd"],
+                cost_status=r.get("cost_status"),
+            )
+            model_data[d]["api_calls"] += r["api_call_count"] or 0
+
+        # Reconcile against the aggregate row. This covers legacy sessions,
+        # interrupted migrations, and absolute cumulative updates without
+        # double-counting already-attributed route deltas.
+        for s in sessions:
+            totals = usage_totals[s["id"]]
+            inp = max(0, (s.get("input_tokens") or 0) - totals["input_tokens"])
+            out = max(0, (s.get("output_tokens") or 0) - totals["output_tokens"])
+            cache_read = max(
+                0, (s.get("cache_read_tokens") or 0) - totals["cache_read_tokens"]
+            )
+            cache_write = max(
+                0, (s.get("cache_write_tokens") or 0) - totals["cache_write_tokens"]
+            )
+            residual_cost = max(
+                0.0, float(s.get("estimated_cost_usd") or 0.0)
+                - totals["estimated_cost_usd"],
+            )
+            residual_actual = max(
+                0.0, float(s.get("actual_cost_usd") or 0.0)
+                - totals["actual_cost_usd"],
+            )
+            residual_calls = max(
+                0, (s.get("api_call_count") or 0) - totals["api_call_count"]
+            )
+            if not (
+                inp or out or cache_read or cache_write or residual_cost
+                or residual_actual or residual_calls
+            ):
+                continue
+            d = _accumulate(
+                s.get("model"), s.get("billing_provider"),
+                s.get("billing_base_url"), s["id"],
+                inp, out, cache_read, cache_write, 0,
+                stored_cost=residual_cost,
+                actual_cost=residual_actual,
+                cost_status=s.get("cost_status"),
+            )
+            residual_bucket: Dict[str, Any] = model_data[d]
+            residual_bucket["api_calls"] += residual_calls
+
+        # Tool calls are attributed by the session's recorded model.
+        for s in sessions:
+            tool_calls = s.get("tool_call_count") or 0
+            if not tool_calls:
+                continue
+            model = s.get("model") or "unknown"
+            display_model = model.split("/")[-1] if "/" in model else model
+            model_data[display_model]["tool_calls"] += tool_calls
+
+        result = []
+        for model, data in model_data.items():
+            entry = {"model": model, **data}
+            entry["sessions"] = len(data["sessions"])
+            # Models that surfaced only via tool-call attribution (no token
+            # rows) won't have these set by _accumulate — default them so the
+            # output shape is uniform for downstream/JSON consumers.
+            entry.setdefault("has_pricing", False)
+            entry.setdefault("cost_status", "unknown")
+            result.append(entry)
         # Sort by tokens first, fall back to session count when tokens are 0
         result.sort(key=lambda x: (x["total_tokens"], x["sessions"]), reverse=True)
         return result

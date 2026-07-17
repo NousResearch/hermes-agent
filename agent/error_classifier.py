@@ -31,6 +31,9 @@ class FailoverReason(enum.Enum):
     # Billing / quota
     billing = "billing"                  # 402 or confirmed credit exhaustion — rotate immediately
     rate_limit = "rate_limit"            # 429 or quota-based throttling — backoff then rotate
+    # Upstream model rate-limited (aggregator 429) — fallback to a different
+    # model, NOT credential rotation. The user's key is healthy.
+    upstream_rate_limit = "upstream_rate_limit"
 
     # Server-side
     overloaded = "overloaded"            # 503/529 — provider overloaded, backoff
@@ -38,6 +41,11 @@ class FailoverReason(enum.Enum):
 
     # Transport
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
+    # TLS certificate verification failure — deterministic for the host
+    # (TLS-inspecting proxy, missing/expired CA bundle, self-signed cert).
+    # Retrying reproduces the identical handshake failure, so fail fast
+    # with actionable guidance instead of burning retries.
+    ssl_cert_verification = "ssl_cert_verification"
 
     # Context / payload
     context_overflow = "context_overflow"  # Context too large — compress, not failover
@@ -107,12 +115,32 @@ _BILLING_PATTERNS = [
     "exceeded your current quota",
     "account is deactivated",
     "plan does not include",
+    "out of extra usage",  # Anthropic OAuth Pro/Max overage bucket depleted (HTTP 400)
     "out of funds",
     "run out of funds",
     "balance_depleted",
     "model_not_supported_on_free_tier",
     "not available on the free tier",
 ]
+
+# xAI's explicit Grok credit-exhaustion code. Keep the HTTP 403 special case
+# provider-scoped: other providers' generic billing codes historically remain
+# auth failures when they arrive as 403.
+_XAI_SPENDING_LIMIT_ERROR_CODE = "personal-team-blocked:spending-limit"
+
+# Structured provider codes that mean the account cannot serve paid traffic
+# until credits/subscription capacity is restored. xAI returns its explicit
+# Grok spending-limit signal as HTTP 403 rather than 402.
+_BILLING_ERROR_CODES = frozenset({
+    "insufficient_quota",
+    "billing_not_active",
+    "payment_required",
+    "insufficient_credits",
+    "no_usable_credits",
+    "balance_depleted",
+    "model_not_supported_on_free_tier",
+    _XAI_SPENDING_LIMIT_ERROR_CODE,
+})
 
 # Patterns that indicate rate limiting (transient, will resolve)
 _RATE_LIMIT_PATTERNS = [
@@ -131,6 +159,31 @@ _RATE_LIMIT_PATTERNS = [
     "throttlingexception",
     "too many concurrent requests",
     "servicequotaexceededexception",
+]
+
+# Patterns that indicate provider-side overload, NOT a per-credential rate
+# limit or billing problem.  The credential is valid — the server is just
+# busy — so the correct recovery is "back off and retry the same key", never
+# "rotate the credential" (rotating exhausts the pool while the endpoint is
+# still busy; a single-key user has nothing to rotate to).  Some providers
+# (notably Z.AI / Zhipu) reuse HTTP 429 for server-wide overload, so the 429
+# status path matches the body against this list before falling through to
+# the rate_limit default.  Phrases are kept narrow and overload-flavoured so a
+# normal rate-limit message ("you have been rate-limited") doesn't hit this
+# bucket. (#14038, #15297)
+_OVERLOADED_PATTERNS = [
+    "overloaded",
+    "temporarily overloaded",
+    "service is temporarily overloaded",
+    "service may be temporarily overloaded",
+    "server is overloaded",
+    "server overloaded",
+    "service overloaded",
+    "service is overloaded",
+    "upstream overloaded",
+    "currently overloaded",
+    "at capacity",
+    "over capacity",
 ]
 
 # Usage-limit patterns that need disambiguation (could be billing OR rate_limit)
@@ -250,6 +303,15 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "no such model",
     "unknown model",
     "unsupported model",
+    # OpenRouter returns 404 with this message when none of the candidate
+    # endpoints for the selected model support tool/function calling.
+    # Classifying this as model_not_found triggers fallback to a different
+    # model or provider that does support tools.  Without this entry the
+    # pattern falls through to ``unknown`` with ``retryable=True``, the
+    # retry loop burns all attempts on the same deterministic rejection,
+    # and the error surfaces as a confusing "model not found" message
+    # instead of automatically failing over.  See PR #58446.
+    "no endpoints found that support tool use",
 ]
 
 # Request-validation patterns — the request is malformed and will fail
@@ -330,6 +392,14 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = [
     # echo back; the underscore form is provider-specific enough.
     "content_filter",
     "responsibleaipolicyviolation",
+    # MiniMax output-layer safety filter. The error string is surfaced
+    # verbatim by MiniMax SDK / OpenAI-compatible endpoints, usually in the
+    # form "output new_sensitive (1027)" when the model's *output* (often a
+    # large tool-call argument block) trips the upstream safety filter and
+    # the SSE stream is truncated mid-flight. ``new_sensitive`` is the
+    # filter name and is narrow enough that billing / format / auth error
+    # strings will not collide. See #32421.
+    "new_sensitive",
 ]
 
 # Auth patterns (non-status-code signals)
@@ -399,6 +469,29 @@ _SERVER_DISCONNECT_PATTERNS = [
     "network connection lost",
     "unexpected eof",
     "incomplete chunked read",
+]
+
+# SSL certificate verification failures — deterministic, NOT transient.
+#
+# A failed certificate chain (TLS-inspecting corporate proxy, missing
+# custom CA in the trust store, expired certificate, self-signed cert)
+# fails identically on every retry. Burning the retry budget before
+# surfacing the error hides the actionable fix from the user for minutes.
+# Inspired by Claude Code v2.1.199 (July 2026), which made SSL certificate
+# errors fail immediately with a fix hint instead of retrying.
+#
+# Must be checked BEFORE _SSL_TRANSIENT_PATTERNS — "certificate verify
+# failed" messages usually also contain "[SSL:" which would otherwise
+# match the transient list and retry forever.
+_SSL_CERT_VERIFY_PATTERNS = [
+    "certificate verify failed",       # Python ssl module canonical text
+    "certificate_verify_failed",       # OpenSSL error token
+    "unable to get local issuer certificate",
+    "self-signed certificate",
+    "self signed certificate",
+    "certificate has expired",
+    "hostname mismatch, certificate is not valid",
+    "unable to verify the first certificate",  # Node/undici phrasing (MCP bridges)
 ]
 
 # SSL/TLS transient failure patterns — intentionally distinct from
@@ -698,7 +791,22 @@ def classify_api_error(
     if classified is not None:
         return classified
 
-    # ── 5. SSL/TLS transient errors → retry as timeout (not compression) ──
+    # ── 5. SSL certificate verification failures → fail fast ────────
+    # A broken certificate chain (TLS-inspecting proxy, missing custom CA,
+    # expired/self-signed cert) is deterministic for the host — every retry
+    # reproduces the identical handshake failure. Fail immediately with
+    # actionable guidance instead of burning the retry budget first.
+    # Checked BEFORE the transient-SSL patterns: cert-verify messages also
+    # contain "[ssl:" which would otherwise match the transient list.
+    # Inspired by Claude Code v2.1.199 (July 2026).
+    if any(p in error_msg for p in _SSL_CERT_VERIFY_PATTERNS):
+        return _result(
+            FailoverReason.ssl_cert_verification,
+            retryable=False,
+            should_fallback=False,
+        )
+
+    # ── 5b. SSL/TLS transient errors → retry as timeout (not compression) ──
     # SSL alerts mid-stream are transport hiccups, not server-side context
     # overflow signals.  Classify before the disconnect check so a large
     # session doesn't incorrectly trigger context compression when the real
@@ -717,6 +825,26 @@ def classify_api_error(
 
     is_disconnect = any(p in error_msg for p in _SERVER_DISCONNECT_PATTERNS)
     if is_disconnect and not status_code:
+        # Reasoning-model override: a transport disconnect on a reasoning
+        # model is much more likely the upstream proxy idle-killing a
+        # long thinking stream than a true context overflow — even on
+        # large sessions.  The default disconnect+large-session routing
+        # below would otherwise send the user into the compression
+        # branch (should_compress=True) and silently delete
+        # conversation history on a phantom context-length error.
+        # Reasoning models have multi-minute thinking phases that
+        # routinely exceed the cloud gateway's idle window (NVIDIA
+        # NIM ~120s — first-party repro at NVIDIA/NemoClaw#4846;
+        # OpenAI worker / Anthropic stream-idle similar).  The
+        # per-reasoning-model stale-timeout floor in
+        # agent/reasoning_timeouts.py raises the stale-detector
+        # threshold to tolerate long thinking, so a true
+        # transport-layer failure here is recoverable via the retry
+        # path — not via context compression.  Reclassify as timeout.
+        # (Part 1 of Fixes #52310.)
+        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+        if get_reasoning_stale_timeout_floor(model) is not None:
+            return _result(FailoverReason.timeout, retryable=True)
         # Absolute token/message-count thresholds are only a proxy for smaller
         # context windows.  Large-context sessions can have hundreds of
         # messages while still being far below their actual token budget.
@@ -731,12 +859,34 @@ def classify_api_error(
             )
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 7. Transport / timeout heuristics ───────────────────────────
+    # ── 7b. Stale-call circuit breaker → failover immediately ──────
+    # _check_stale_giveup() in agent/chat_completion_helpers.py raises a
+    # RuntimeError when the provider has been unresponsive for N
+    # consecutive stale attempts (default 5).  The error is NOT a transport
+    # timeout — the circuit breaker fires *before* any network call to avoid
+    # an indefinite stall.  Without this classification the RuntimeError
+    # falls through to FailoverReason.unknown (retryable=True), which burns
+    # all max_retries against the same dead provider (each retry hitting the
+    # circuit breaker instantly with zero network overhead) before fallback
+    # is attempted.  Classify as non-retryable + should_fallback so the
+    # retry loop activates the next fallback provider on the first hit.
+    if (
+        error_type == "RuntimeError"
+        and "consecutive stale attempts" in error_msg
+        and "aborting this call" in error_msg
+    ):
+        return _result(
+            FailoverReason.timeout,
+            retryable=False,
+            should_fallback=True,
+        )
+
+    # ── 8. Transport / timeout heuristics ───────────────────────────
 
     if error_type in _TRANSPORT_ERROR_TYPES or isinstance(error, (TimeoutError, ConnectionError, OSError)):
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 8. Fallback: unknown ────────────────────────────────────────
+    # ── 9. Fallback: unknown ────────────────────────────────────────
 
     return _result(FailoverReason.unknown, retryable=True)
 
@@ -775,7 +925,11 @@ def _classify_by_status(
         # OpenRouter 403 "key limit exceeded" is actually billing. Other
         # providers also use 403 for account-plan or credit exhaustion.
         if (
-            "key limit exceeded" in error_msg
+            (
+                provider == "xai-oauth"
+                and error_code.lower() == _XAI_SPENDING_LIMIT_ERROR_CODE
+            )
+            or "key limit exceeded" in error_msg
             or "spending limit" in error_msg
             or any(p in error_msg for p in _BILLING_PATTERNS)
         ):
@@ -843,7 +997,35 @@ def _classify_by_status(
         )
 
     if status_code == 429:
-        # Already checked long_context_tier above; this is a normal rate limit
+        # Already checked long_context_tier above. Some providers (notably
+        # Z.AI / Zhipu) reuse HTTP 429 for server-wide overload — same status
+        # code as a true per-credential rate limit, but the credential is
+        # valid and the correct recovery is "back off and retry the same key",
+        # NOT "rotate the credential" (which exhausts the pool while the
+        # endpoint is still busy, and does nothing for a single-key user).
+        # Disambiguate on the error body so an overload 429 takes the
+        # transient-overload path instead of burning the pool. (#14038)
+        if any(p in error_msg for p in _OVERLOADED_PATTERNS):
+            return result_fn(
+                FailoverReason.overloaded,
+                retryable=True,
+            )
+        # Distinguish an OpenRouter-aggregator upstream 429 (an upstream model
+        # like DeepSeek rate-limited OpenRouter's aggregate traffic) from an
+        # account-level 429 (the user's key is actually throttled). OpenRouter
+        # wraps upstream errors with the outer message "Provider returned
+        # error" — the user's key is healthy, so marking it exhausted / rotating
+        # is wrong and burns the key for ~24min. Fall back to a different model.
+        if _is_openrouter_upstream_error(body, provider):
+            upstream_provider = _extract_upstream_provider_name(body)
+            ctx = {"upstream_provider": upstream_provider} if upstream_provider else {}
+            return result_fn(
+                FailoverReason.upstream_rate_limit,
+                retryable=True,
+                should_rotate_credential=False,
+                should_fallback=True,
+                error_context=ctx,
+            )
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,
@@ -879,10 +1061,43 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=True,
             )
+        # Some local inference servers (notably llama.cpp / llama-server)
+        # report context overflow with an HTTP 500 instead of the standard
+        # 400/413. The request-validation guard above already ran, so any
+        # remaining explicit context-overflow signal routes into the
+        # compression-and-retry path (mirroring _classify_400) instead of
+        # blind server_error retries that exhaust and drop the turn.
+        if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
+            return result_fn(
+                FailoverReason.context_overflow,
+                retryable=True,
+                should_compress=True,
+            )
         return result_fn(FailoverReason.server_error, retryable=True)
 
     if status_code in {503, 529}:
+        # Same overflow-as-5xx variant (server busy / model-load OOM, or a
+        # Cloudflare/Tailscale hop relabeling the status). Route explicit
+        # overflow bodies into compression; otherwise treat as transient
+        # overload and retry.
+        if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
+            return result_fn(
+                FailoverReason.context_overflow,
+                retryable=True,
+                should_compress=True,
+            )
         return result_fn(FailoverReason.overloaded, retryable=True)
+
+    # 408 Request Timeout — a transient timing failure the server itself flags
+    # as safe to retry (RFC 9110 §15.5.9), not a malformed request. Commonly
+    # emitted by reverse proxies sitting in front of self-hosted backends
+    # (llama.cpp / Ollama / vLLM) when a long generation outruns the proxy's
+    # request-read window. Route to the dedicated ``timeout`` reason (rebuild
+    # client + retry) instead of falling through to the generic 4xx bucket
+    # below, which would abort the turn on a retry-safe error the same way it
+    # aborts a 400 Bad Request.
+    if status_code == 408:
+        return result_fn(FailoverReason.timeout, retryable=True)
 
     # Other 4xx — non-retryable
     if 400 <= status_code < 500:
@@ -977,6 +1192,7 @@ def _classify_400(
             "encrypted content for item" in error_msg
             and "could not be verified" in error_msg
         )
+        or "could not decrypt the provided encrypted_content" in error_msg
     ):
         return result_fn(
             FailoverReason.invalid_encrypted_content,
@@ -1099,15 +1315,7 @@ def _classify_by_error_code(
             should_rotate_credential=True,
         )
 
-    if code_lower in {
-        "insufficient_quota",
-        "billing_not_active",
-        "payment_required",
-        "insufficient_credits",
-        "no_usable_credits",
-        "balance_depleted",
-        "model_not_supported_on_free_tier",
-    }:
+    if code_lower in _BILLING_ERROR_CODES:
         return result_fn(
             FailoverReason.billing,
             retryable=False,
@@ -1192,6 +1400,17 @@ def _classify_by_message(
             retryable=False,
             should_rotate_credential=True,
             should_fallback=True,
+        )
+
+    # Overloaded / server-busy patterns — must come BEFORE the rate_limit and
+    # billing checks so that a message-only "overloaded" (no 503/529 status,
+    # e.g. some Anthropic-compatible proxies) classifies as a transient
+    # overload (backoff + retry) instead of falling through to `unknown` or
+    # incorrectly triggering credential rotation.
+    if any(p in error_msg for p in _OVERLOADED_PATTERNS):
+        return result_fn(
+            FailoverReason.overloaded,
+            retryable=True,
         )
 
     # Billing patterns
@@ -1283,19 +1502,25 @@ def _extract_status_code(error: Exception) -> Optional[int]:
 
 
 def _extract_error_body(error: Exception) -> dict:
-    """Extract the structured error body from an SDK exception."""
-    body = getattr(error, "body", None)
-    if isinstance(body, dict):
-        return body
-    # Some errors have .response.json()
-    response = getattr(error, "response", None)
-    if response is not None:
-        try:
-            json_body = response.json()
-            if isinstance(json_body, dict):
-                return json_body
-        except Exception:
-            pass
+    """Extract the structured error body from an SDK exception or its cause chain."""
+    current = error
+    for _ in range(5):  # Match _extract_status_code() traversal depth.
+        body = getattr(current, "body", None)
+        if isinstance(body, dict):
+            return body
+        # Some errors have .response.json()
+        response = getattr(current, "response", None)
+        if response is not None:
+            try:
+                json_body = response.json()
+                if isinstance(json_body, dict):
+                    return json_body
+            except Exception:
+                pass
+        cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if cause is None or cause is current:
+            break
+        current = cause
     return {}
 
 
@@ -1363,3 +1588,49 @@ def _extract_message(error: Exception, body: dict) -> str:
             return msg.strip()[:500]
     # Fallback to str(error)
     return str(error)[:500]
+
+
+def _is_openrouter_upstream_error(body: Any, provider: str) -> bool:
+    """Detect OpenRouter's aggregator-wrapped upstream provider errors.
+
+    OpenRouter returns errors from upstream model providers (DeepSeek,
+    Anthropic, etc.) wrapped with the outer message "Provider returned error"
+    and the real error nested in ``metadata.raw``. This signal means the
+    user's OpenRouter key is healthy — the upstream provider is the one that
+    failed — so credential rotation is the wrong recovery.
+    """
+    if not isinstance(body, dict):
+        return False
+    provider_lower = (provider or "").strip().lower()
+    err = body.get("error")
+    if not isinstance(err, dict):
+        return False
+    outer_msg = str(err.get("message") or "").strip().lower()
+    if outer_msg != "provider returned error":
+        return False
+    # Require either the explicit OpenRouter provider OR the metadata shape
+    # that only OpenRouter produces (metadata.raw / metadata.provider_name).
+    if provider_lower == "openrouter":
+        return True
+    metadata = err.get("metadata")
+    if isinstance(metadata, dict) and (
+        "raw" in metadata or "provider_name" in metadata
+    ):
+        return True
+    return False
+
+
+def _extract_upstream_provider_name(body: Any) -> Optional[str]:
+    """Pull the upstream provider name out of OpenRouter's error metadata."""
+    if not isinstance(body, dict):
+        return None
+    err = body.get("error")
+    if not isinstance(err, dict):
+        return None
+    metadata = err.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    name = metadata.get("provider_name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return None

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -112,6 +113,102 @@ def test_create_task_appears_on_board(client):
     assert ready["tasks"][0]["id"] == task_id
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
+
+
+def test_board_list_recommends_persistent_workspace_for_configured_workdir(
+    client, tmp_path
+):
+    """Board metadata should tell the UI which safe task default to use."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    kb.write_board_metadata("default", default_workdir=str(repo))
+
+    plain_dir = tmp_path / "notes"
+    plain_dir.mkdir()
+    kb.create_board("notes", default_workdir=str(plain_dir))
+    kb.create_board("disposable")
+
+    response = client.get("/api/plugins/kanban/boards")
+
+    assert response.status_code == 200
+    boards = {board["slug"]: board for board in response.json()["boards"]}
+    assert boards["default"]["default_workspace_kind"] == "worktree"
+    assert boards["notes"]["default_workspace_kind"] == "dir"
+    assert boards["disposable"]["default_workspace_kind"] == "scratch"
+
+
+def test_create_board_persists_project_directory(client, tmp_path):
+    """The dashboard board form should anchor future tasks to its project."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    response = client.post(
+        "/api/plugins/kanban/boards",
+        json={
+            "slug": "project-board",
+            "name": "Project Board",
+            "default_workdir": str(project_dir),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    board = response.json()["board"]
+    assert board["default_workdir"] == str(project_dir.resolve())
+    assert board["default_workspace_kind"] == "dir"
+    assert kb.read_board_metadata("project-board")["default_workdir"] == str(
+        project_dir.resolve()
+    )
+
+
+@pytest.mark.parametrize("path", ["relative/project", "~/missing-project"])
+def test_create_board_rejects_invalid_project_directory(client, path):
+    """A board must not persist a path that cannot anchor worker output."""
+    response = client.post(
+        "/api/plugins/kanban/boards",
+        json={"slug": "invalid-project", "default_workdir": path},
+    )
+
+    assert response.status_code == 400
+    assert "project directory" in response.json()["detail"].lower()
+
+
+def test_new_board_dialog_collects_project_directory():
+    """Board creation should expose the setting that controls safe task defaults."""
+    bundle = (
+        Path(__file__).resolve().parents[2]
+        / "plugins"
+        / "kanban"
+        / "dashboard"
+        / "dist"
+        / "index.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'const [projectDirectory, setProjectDirectory] = useState("");' in bundle
+    assert "Project directory" in bundle
+    assert "Absolute path to the project folder" in bundle
+    assert "default_workdir: projectDirectory.trim() || undefined" in bundle
+
+
+def test_dashboard_workspace_picker_explains_persistence_contract():
+    """Task creation must make scratch deletion visible without a hover."""
+    bundle = (
+        Path(__file__).resolve().parents[2]
+        / "plugins"
+        / "kanban"
+        / "dashboard"
+        / "dist"
+        / "index.js"
+    ).read_text(encoding="utf-8")
+
+    assert "Temporary — deleted on completion" in bundle
+    assert "Git worktree — preserved" in bundle
+    assert "Directory — preserved" in bundle
+    assert "defaultWorkspacePath: (props.boardMeta && props.boardMeta.default_workdir) || \"\"" in bundle
+    assert (
+        "This workspace and any files left in it are deleted when the task completes."
+        in bundle
+    )
 
 
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
@@ -2085,13 +2182,10 @@ def _patch_specifier_response(monkeypatch, *, content, model="test-model"):
     resp = MagicMock()
     resp.choices = [MagicMock()]
     resp.choices[0].message.content = content
-    fake_client = MagicMock()
-    fake_client.chat.completions.create = MagicMock(return_value=resp)
-    monkeypatch.setattr(
-        "agent.auxiliary_client.get_text_auxiliary_client",
-        lambda *a, **kw: (fake_client, model),
-    )
-    return fake_client
+    # specify_task routes through call_llm now (#35566) — mock it directly.
+    fake_call = MagicMock(return_value=resp)
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call)
+    return fake_call
 
 
 def test_specify_happy_path(client, monkeypatch):
@@ -2153,11 +2247,11 @@ def test_specify_no_aux_client_surfaces_reason(client, monkeypatch):
         json={"title": "rough", "triage": True},
     ).json()["task"]
 
-    # Simulate "no auxiliary client configured".
-    monkeypatch.setattr(
-        "agent.auxiliary_client.get_text_auxiliary_client",
-        lambda *a, **kw: (None, ""),
-    )
+    # Simulate "no auxiliary client configured" — call_llm raises when
+    # no provider resolves (#35566 routing).
+    def _no_provider(**kwargs):
+        raise RuntimeError("No LLM provider configured")
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", _no_provider)
 
     r = client.post(
         f"/api/plugins/kanban/tasks/{t['id']}/specify",
@@ -2166,7 +2260,8 @@ def test_specify_no_aux_client_surfaces_reason(client, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is False
-    assert "auxiliary client" in body["reason"]
+    # call_llm's no-provider RuntimeError surfaces via the LLM-error branch.
+    assert "LLM error" in body["reason"]
 
     # Task must stay in triage — nothing was touched.
     detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["task"]
@@ -2265,3 +2360,127 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+# ---------------------------------------------------------------------------
+# Final result visibility for Done cards
+# ---------------------------------------------------------------------------
+
+
+def test_task_detail_exposes_result_and_latest_summary_separately(client):
+    """The drawer receives both source fields without a duplicate alias."""
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Task with explicit result"},
+    )
+    task_id = r.json()["task"]["id"]
+    client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"status": "done", "result": "The final answer is 42.", "summary": "short handoff"},
+    )
+    r = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+    assert r.status_code == 200
+    data = r.json()["task"]
+    assert data["result"] == "The final answer is 42."
+    assert data["latest_summary"] == "short handoff"
+    assert "final_result" not in data
+
+
+def test_task_detail_exposes_latest_summary_when_result_is_empty(client):
+    """Summary-only completions remain available to the drawer fallback."""
+    conn = kb.connect()
+    task_id = kb.create_task(conn, title="Task with only run summary")
+    kb.claim_task(conn, task_id)
+    kb.complete_task(conn, task_id, summary="Report written to /output/report.md")
+    conn.close()
+
+    r = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+    assert r.status_code == 200
+    data = r.json()["task"]
+    assert data["status"] == "done"
+    assert not data["result"]
+    assert data["latest_summary"] == "Report written to /output/report.md"
+
+
+def test_task_detail_latest_summary_none_when_nothing_recorded(client):
+    """When no run summary exists, the existing field remains None."""
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Task with no result at all"},
+    )
+    task_id = r.json()["task"]["id"]
+    r = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+    assert r.status_code == 200
+    assert r.json()["task"]["latest_summary"] is None
+
+
+def test_board_tasks_include_latest_summary(client):
+    """Board cards already expose the summary used by the drawer fallback."""
+    conn = kb.connect()
+    task_id = kb.create_task(conn, title="Board card with summary only")
+    kb.claim_task(conn, task_id)
+    kb.complete_task(conn, task_id, summary="Done: see attachment")
+    conn.close()
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    done_col = next(c for c in r.json()["columns"] if c["name"] == "done")
+    card = next((t for t in done_col["tasks"] if t["id"] == task_id), None)
+    assert card is not None
+    assert "Done: see attachment" in card["latest_summary"]
+
+
+def test_dashboard_done_final_result_section_rendered_from_summary():
+    """Frontend must render Final Result section from run summary when task.result is empty."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    assert "t.result || t.latest_summary" in dist
+    assert "Final Result (run summary)" in dist
+    assert "No final result was recorded" in dist
+    assert "orchestrator" in dist or "parent task" in dist
+
+
+def test_task_detail_includes_child_result_summaries(client):
+    """Parent drawers should receive the child results they need to render."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="Research topic")
+        child = kb.create_task(conn, title="Collect sources")
+        kb.link_tasks(conn, parent, child)
+        kb.complete_task(conn, parent, summary="Delegated research to child tasks.")
+        kb.recompute_ready(conn)
+        kb.complete_task(conn, child, summary="Collected five primary sources.")
+
+    response = client.get(f"/api/plugins/kanban/tasks/{parent}")
+
+    assert response.status_code == 200
+    assert response.json()["child_results"] == [
+        {
+            "id": child,
+            "title": "Collect sources",
+            "status": "done",
+            "latest_summary": "Collected five primary sources.",
+            "result": None,
+        }
+    ]
+
+
+def test_dashboard_final_result_uses_existing_fields_without_alias():
+    """The drawer should not duplicate result/summary into another API field."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    api = (repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py").read_text()
+
+    assert "var finalResult = t.result || t.latest_summary || null;" in dist
+    assert "t.final_result" not in dist
+    assert 'd["final_result"]' not in api
+
+
+def test_dashboard_parent_notice_and_child_results_use_detail_links():
+    """Parent detection must use links.children, which exists in task detail."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    detail = dist[dist.index("function TaskDetail"):]
+
+    assert "links.children.length > 0" in detail
+    assert "t.link_counts" not in detail
+    assert "Child Results" in detail
+    assert "props.data.child_results" in detail

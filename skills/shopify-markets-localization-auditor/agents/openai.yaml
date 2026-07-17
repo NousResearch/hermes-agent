@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shopify Localization & Markets Auditor"
+  short_description: "Audit Shopify Markets, languages, shipping, SEO basics, and global growth opportunities in one clear report."
+  default_prompt: "Use $shopify-markets-localization-auditor to audit this store's languages, Markets, shipping, SEO basics, and global growth opportunities, then generate a clear HTML report and an approval-only fix bundle."

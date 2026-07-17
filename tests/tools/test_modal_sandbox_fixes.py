@@ -314,8 +314,12 @@ class TestHostPrefixList:
 class TestDockerHostBindApproval:
     """Docker host bind mounts disable the container approval fast-path."""
 
-    def test_docker_host_access_detection(self):
-        """_docker_has_host_access flags bind-mounted host paths only."""
+    def test_docker_host_access_detection(self, monkeypatch):
+        """_docker_has_host_access includes explicit and implicit authority."""
+        monkeypatch.setattr(
+            "tools.environments.docker.resolve_docker_implicit_mount_specs",
+            lambda: [],
+        )
         # Isolated docker (no host binds) -> not host access.
         assert _tt_mod._docker_has_host_access(
             {"env_type": "docker", "docker_volumes": [],
@@ -333,6 +337,21 @@ class TestDockerHostBindApproval:
         # Windows host path -> host access.
         assert _tt_mod._docker_has_host_access(
             {"env_type": "docker", "docker_volumes": ["C:\\Users:/data"]}) is True
+        # Automatic credential/skill/cache mounts expose host data.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": []},
+            ["/host/credentials:/root/.credentials:ro"],
+        ) is True
+        # Arbitrary run flags can add mounts/devices/privilege and therefore
+        # conservatively disable the isolated-Docker approval fast path.
+        assert _tt_mod._docker_has_host_access(
+            {
+                "env_type": "docker",
+                "docker_volumes": [],
+                "docker_extra_args": ["--privileged"],
+            },
+            [],
+        ) is True
         # Other container backends never report host access.
         assert _tt_mod._docker_has_host_access(
             {"env_type": "modal", "docker_volumes": ["/tmp:/x"]}) is False

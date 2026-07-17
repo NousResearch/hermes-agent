@@ -16,7 +16,9 @@ Core invariant these tests pin:
 """
 
 import os
+import json
 from pathlib import Path, PurePosixPath
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -147,7 +149,19 @@ def test_container_relative_path_keeps_container_cwd_symlink(tmp_path, monkeypat
 
 class _DummyDockerEnvironment:
     cwd = "/workspace"
-    cwd_owner = "default"
+
+
+class _DummyLocalEnvironment:
+    cwd = "/Users/me/project"
+
+
+class _DummySSHEnvironment:
+    cwd = "/srv/host-a"
+    host = "host-a.example"
+    user = "deploy"
+    port = 22
+    key_path = "/keys/a"
+    _persistent = True
 
 
 def test_container_path_detection_uses_live_docker_environment(monkeypatch):
@@ -165,6 +179,96 @@ def test_container_path_detection_uses_live_docker_environment(monkeypatch):
     monkeypatch.delenv("TERMINAL_ENV", raising=False)
 
     assert ft._uses_container_paths("default") is True
+
+
+@pytest.mark.parametrize(
+    ("config", "stale_env", "expected_path"),
+    [
+        (
+            {"env_type": "local", "cwd": "/opt/project"},
+            _DummyDockerEnvironment(),
+            "/opt/project/notes.txt",
+        ),
+        (
+            {"env_type": "docker", "cwd": "/workspace"},
+            _DummyLocalEnvironment(),
+            "/workspace/notes.txt",
+        ),
+        (
+            {
+                "env_type": "ssh",
+                "cwd": "/srv/host-b",
+                "ssh_host": "host-b.example",
+                "ssh_user": "deploy",
+                "ssh_port": 22,
+                "ssh_key": "/keys/b",
+                "ssh_persistent": True,
+            },
+            _DummySSHEnvironment(),
+            "/srv/host-b/notes.txt",
+        ),
+    ],
+)
+def test_relative_read_and_write_use_requested_backend_during_switch(
+    monkeypatch,
+    config,
+    stale_env,
+    expected_path,
+):
+    """Public file tools must resolve before cache replacement in the new namespace."""
+
+    captured = {"read": [], "write": []}
+
+    class _ReadResult:
+        content = "1|hello"
+
+        def to_dict(self):
+            return {
+                "content": self.content,
+                "file_size": 5,
+                "total_lines": 1,
+                "truncated": False,
+            }
+
+    class _FileOps:
+        def read_file(self, path, _offset, _limit):
+            captured["read"].append(path)
+            return _ReadResult()
+
+        def write_file(self, path, _content):
+            captured["write"].append(str(path))
+            result = MagicMock()
+            result.to_dict.return_value = {"status": "success"}
+            return result
+
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: config)
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    monkeypatch.setattr(
+        terminal_tool,
+        "_resolve_docker_runtime_identity",
+        lambda **_kwargs: ({}, "sha256:test", "requested-runtime", []),
+    )
+    monkeypatch.setattr(
+        terminal_tool,
+        "_active_environments",
+        {"default": stale_env},
+    )
+    monkeypatch.setattr(ft, "_file_ops_cache", {})
+    monkeypatch.setattr(ft, "_read_tracker", {})
+    monkeypatch.setattr(ft, "_get_file_ops", lambda _task_id: _FileOps())
+    monkeypatch.setattr(ft, "_mark_verification_stale", lambda *args, **kwargs: None)
+
+    read_result = json.loads(ft.read_file_tool("notes.txt"))
+    write_result = json.loads(ft.write_file_tool("notes.txt", "updated\n"))
+
+    assert "error" not in read_result
+    assert "error" not in write_result
+    assert captured == {
+        "read": [expected_path],
+        "write": [expected_path],
+    }
 
 
 def test_resolution_base_always_absolute_no_terminal_cwd(_isolated_cwd, monkeypatch):
@@ -352,6 +456,9 @@ def test_write_file_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     """write_file_tool must put the absolute on-disk path in files_modified."""
     workspace, decoy = _isolated_cwd
     terminal_tool.record_session_cwd("t1", str(workspace))
+    # macOS pytest roots live below /private/var, which the production safety
+    # guard correctly treats as sensitive; this test exercises cwd dispatch.
+    monkeypatch.setattr(ft, "_check_sensitive_path", lambda *_args, **_kwargs: None)
 
     import json
     out = json.loads(ft.write_file_tool("newfile.txt", "hello\n", task_id="t1"))
@@ -366,6 +473,7 @@ def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     """patch_tool (replace mode) must put the absolute on-disk path in files_modified."""
     workspace, decoy = _isolated_cwd
     terminal_tool.record_session_cwd("t1", str(workspace))
+    monkeypatch.setattr(ft, "_check_sensitive_path", lambda *_args, **_kwargs: None)
 
     import json
     out = json.loads(ft.patch_tool(
@@ -437,6 +545,65 @@ def test_session_with_cd_record_resolves_against_it(_two_worktree_sessions):
     resolved_b = ft._resolve_path_for_task("target.py", task_id="sess-b")
     assert resolved_b == (wt_b / "target.py")
     assert not str(resolved_b).startswith(str(wt_a))
+
+
+def test_relative_file_dispatch_is_bound_to_each_shared_docker_session(
+    _two_worktree_sessions, monkeypatch
+):
+    """Read/search/V4A dispatch uses each session's resolved absolute path."""
+
+    wt_a, wt_b, _main = _two_worktree_sessions
+    file_ops = MagicMock()
+
+    read_result = MagicMock()
+    read_result.content = "target\n"
+    read_result.to_dict.return_value = {
+        "content": "target\n",
+        "total_lines": 1,
+        "truncated": False,
+    }
+    file_ops.read_file.return_value = read_result
+
+    search_result = MagicMock()
+    search_result.matches = []
+    search_result.to_dict.return_value = {
+        "matches": [],
+        "truncated": False,
+    }
+    file_ops.search.return_value = search_result
+
+    patch_result = MagicMock()
+    patch_result.to_dict.return_value = {"status": "ok"}
+    file_ops.patch_v4a.return_value = patch_result
+
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id: file_ops)
+    monkeypatch.setattr(ft, "_read_tracker", {})
+    monkeypatch.setattr(ft, "_check_sensitive_path", lambda *args, **kwargs: None)
+
+    patch_text = (
+        "*** Begin Patch\n"
+        "*** Update File: target.py\n"
+        "@@\n"
+        "-old\n"
+        "+new\n"
+        "*** End Patch\n"
+    )
+    for task_id in ("sess-a", "sess-b"):
+        ft.read_file_tool("target.py", task_id=task_id)
+        ft.search_tool("target", path=".", task_id=task_id)
+        ft.patch_tool(mode="patch", patch=patch_text, task_id=task_id)
+
+    expected_targets = [str(wt_a / "target.py"), str(wt_b / "target.py")]
+    assert [call.args[0] for call in file_ops.read_file.call_args_list] == (
+        expected_targets
+    )
+    assert [call.kwargs["path"] for call in file_ops.search.call_args_list] == [
+        str(wt_a),
+        str(wt_b),
+    ]
+    rewritten_patches = [call.args[0] for call in file_ops.patch_v4a.call_args_list]
+    assert f"*** Update File: {expected_targets[0]}" in rewritten_patches[0]
+    assert f"*** Update File: {expected_targets[1]}" in rewritten_patches[1]
 
 
 def test_sessions_cd_updates_only_its_own_resolution(_two_worktree_sessions, tmp_path):

@@ -43,33 +43,53 @@ def _save_snapshots(data: dict) -> None:
     _save_json_store(_SNAPSHOT_STORE, data)
 
 
-def _direct_snapshot_key(task_id: str) -> str:
-    return f"{_DIRECT_SNAPSHOT_NAMESPACE}:{task_id}"
+def _direct_snapshot_key(task_id: str, runtime_identity: str = "") -> str:
+    suffix = f":{runtime_identity}" if runtime_identity else ""
+    return f"{_DIRECT_SNAPSHOT_NAMESPACE}:{task_id}{suffix}"
 
 
-def _get_snapshot_restore_candidate(task_id: str) -> tuple[str | None, bool]:
+def _get_snapshot_restore_candidate(
+    task_id: str,
+    runtime_identity: str = "",
+) -> tuple[str | None, bool]:
     snapshots = _load_snapshots()
-    namespaced_key = _direct_snapshot_key(task_id)
+    namespaced_key = _direct_snapshot_key(task_id, runtime_identity)
     snapshot_id = snapshots.get(namespaced_key)
     if isinstance(snapshot_id, str) and snapshot_id:
         return snapshot_id, False
+    if runtime_identity:
+        # A task-only snapshot may have been created from a different image or
+        # resource target. Exact runtime binding forbids restoring it.
+        return None, False
     legacy_snapshot_id = snapshots.get(task_id)
     if isinstance(legacy_snapshot_id, str) and legacy_snapshot_id:
         return legacy_snapshot_id, True
     return None, False
 
 
-def _store_direct_snapshot(task_id: str, snapshot_id: str) -> None:
+def _store_direct_snapshot(
+    task_id: str,
+    snapshot_id: str,
+    runtime_identity: str = "",
+) -> None:
     snapshots = _load_snapshots()
-    snapshots[_direct_snapshot_key(task_id)] = snapshot_id
-    snapshots.pop(task_id, None)
+    snapshots[_direct_snapshot_key(task_id, runtime_identity)] = snapshot_id
+    if not runtime_identity:
+        snapshots.pop(task_id, None)
     _save_snapshots(snapshots)
 
 
-def _delete_direct_snapshot(task_id: str, snapshot_id: str | None = None) -> None:
+def _delete_direct_snapshot(
+    task_id: str,
+    snapshot_id: str | None = None,
+    runtime_identity: str = "",
+) -> None:
     snapshots = _load_snapshots()
     updated = False
-    for key in (_direct_snapshot_key(task_id), task_id):
+    keys = [_direct_snapshot_key(task_id, runtime_identity)]
+    if not runtime_identity:
+        keys.append(task_id)
+    for key in keys:
         value = snapshots.get(key)
         if value is None:
             continue
@@ -179,11 +199,13 @@ class ModalEnvironment(BaseEnvironment):
         modal_sandbox_kwargs: Optional[dict[str, Any]] = None,
         persistent_filesystem: bool = True,
         task_id: str = "default",
+        runtime_identity: str = "",
     ):
         super().__init__(cwd=cwd, timeout=timeout)
 
         self._persistent = persistent_filesystem
         self._task_id = task_id
+        self._runtime_identity = runtime_identity
         self._sandbox = None
         self._app = None
         self._worker = _AsyncWorker()
@@ -195,7 +217,8 @@ class ModalEnvironment(BaseEnvironment):
         restored_from_legacy_key = False
         if self._persistent:
             restored_snapshot_id, restored_from_legacy_key = _get_snapshot_restore_candidate(
-                self._task_id
+                self._task_id,
+                self._runtime_identity,
             )
             if restored_snapshot_id:
                 logger.info("Modal: restoring from snapshot %s", restored_snapshot_id[:20])
@@ -268,14 +291,22 @@ class ModalEnvironment(BaseEnvironment):
                     "Modal: failed to restore snapshot %s, retrying with base image: %s",
                     restored_snapshot_id[:20], exc,
                 )
-                _delete_direct_snapshot(self._task_id, restored_snapshot_id)
+                _delete_direct_snapshot(
+                    self._task_id,
+                    restored_snapshot_id,
+                    self._runtime_identity,
+                )
                 base_image = _resolve_modal_image(image)
                 self._app, self._sandbox = self._worker.run_coroutine(
                     _create_sandbox(base_image), timeout=300,
                 )
             else:
                 if restored_snapshot_id and restored_from_legacy_key:
-                    _store_direct_snapshot(self._task_id, restored_snapshot_id)
+                    _store_direct_snapshot(
+                        self._task_id,
+                        restored_snapshot_id,
+                        self._runtime_identity,
+                    )
         except Exception:
             self._worker.stop()
             raise
@@ -460,7 +491,11 @@ class ModalEnvironment(BaseEnvironment):
                     snapshot_id = None
 
                 if snapshot_id:
-                    _store_direct_snapshot(self._task_id, snapshot_id)
+                    _store_direct_snapshot(
+                        self._task_id,
+                        snapshot_id,
+                        self._runtime_identity,
+                    )
                     logger.info(
                         "Modal: saved filesystem snapshot %s for task %s",
                         snapshot_id[:20], self._task_id,

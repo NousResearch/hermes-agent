@@ -558,6 +558,64 @@ def test_patch_drag_drop_move_todo_to_ready(client):
     assert child_after["status"] == "ready"
 
 
+def test_drag_drop_cancels_stale_durable_approval_generation(client):
+    route = {
+        "platform": "telegram",
+        "chat_id": "chat-approval",
+        "thread_id": "thread-approval",
+        "user_id": "user-approval",
+        "notifier_profile": "default",
+    }
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="approval drag generation",
+            assignee="worker",
+            _trusted_gateway_origin=route,
+        )
+        claimed = kb.claim_task(conn, task_id, claimer="test:dashboard")
+        assert claimed is not None
+        request = kb.request_task_approval(
+            conn,
+            task_id=task_id,
+            action_kind="terminal",
+            action_digest=kb.kanban_action_digest(
+                "terminal",
+                "rm -rf /tmp/dashboard",
+                "local",
+                workdir="/tmp",
+            ),
+            display_target="rm -rf /tmp/[redacted]",
+            worker_session_id="dashboard-worker",
+            expected_run_id=claimed.current_run_id,
+            expected_claim_lock=claimed.claim_lock,
+            profile="worker",
+        )
+        assert request is not None
+
+    before_move = client.get(
+        f"/api/plugins/kanban/tasks/{task_id}"
+    ).json()["task"]
+    assert "active_approval_id" not in before_move
+
+    moved = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"status": "todo"},
+    )
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["task"]["status"] == "todo"
+
+    with kb.connect() as conn:
+        assert kb.get_task_approval(conn, request["id"])["status"] == "cancelled"
+        assert kb.get_task(conn, task_id).active_approval_id is None
+        assert kb.decide_task_approval(
+            conn,
+            request["id"],
+            "approve",
+            **route,
+        ) is None
+
+
 def test_reopening_parent_demotes_ready_child(client):
     """Reopening a completed parent must invalidate ready children immediately.
 

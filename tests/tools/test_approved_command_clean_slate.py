@@ -74,6 +74,7 @@ def test_approved_command_clears_stale_interrupt_bit():
     assert "[Command interrupted]" not in result["output"]
 
 
+@pytest.mark.live_system_guard_bypass
 def test_non_approved_command_still_interrupts_on_stale_bit(monkeypatch):
     """A command that is auto-approved but NOT user-approved keeps the current
     interrupt behavior: a pre-existing bit still kills it (DO-NOT-BREAK)."""
@@ -86,6 +87,7 @@ def test_non_approved_command_still_interrupts_on_stale_bit(monkeypatch):
     assert "[Command interrupted]" in result["output"]
 
 
+@pytest.mark.live_system_guard_bypass
 def test_approved_command_genuine_interrupt_after_start_still_kills(tmp_path):
     """The clean-slate clear must NOT make approved commands un-interruptible:
     an interrupt that arrives after execution starts still SIGINTs (130)."""
@@ -112,6 +114,7 @@ def test_approved_command_genuine_interrupt_after_start_still_kills(tmp_path):
     set_interrupt(False, thread_id=t.ident)
 
 
+@pytest.mark.live_system_guard_bypass
 def test_approved_note_enriched_not_misleading_on_interrupt(monkeypatch, tmp_path):
     """On a genuine post-start interrupt of an approved command, the note must
     read '...approved by the user, then interrupted.' — the bare
@@ -247,7 +250,9 @@ def test_execute_code_remote_clears_stale_bit(monkeypatch):
 
     captured = {}
 
-    def fake_remote(code, task_id, enabled_tools):
+    def fake_remote(code, task_id, enabled_tools, *, runtime_snapshot=None):
+        assert runtime_snapshot is not None
+        assert runtime_snapshot["config"]["env_type"] == "ssh"
         captured["interrupted"] = is_interrupted()
         return json.dumps({"status": "success", "output": ""})
 
@@ -257,3 +262,78 @@ def test_execute_code_remote_clears_stale_bit(monkeypatch):
     cet.execute_code(code="print(1)", task_id="remote-clean-slate")
 
     assert captured["interrupted"] is False, "clear must run before the remote dispatch"
+
+
+def test_execute_code_remote_uses_runtime_frozen_before_approval(monkeypatch):
+    """An SSH config change after consent cannot redirect execution."""
+    from tools import code_execution_tool as cet
+    from tools import terminal_tool as tt
+
+    approved_config = {
+        "env_type": "ssh",
+        "cwd": "/srv/approved",
+        "timeout": 60,
+        "ssh_host": "approved.example",
+        "ssh_user": "deploy",
+        "ssh_port": 2202,
+        "ssh_key": "/keys/approved",
+        "ssh_persistent": True,
+        "local_persistent": False,
+    }
+    changed_config = {
+        **approved_config,
+        "ssh_host": "changed-after-approval.example",
+        "ssh_key": "/keys/changed",
+    }
+    current_config = {"value": approved_config}
+    created = []
+
+    class SSHEnvironment:
+        def __init__(self, host, key_path):
+            self.host = host
+            self.user = "deploy"
+            self.port = 2202
+            self.key_path = key_path
+            self._persistent = True
+            self.cwd = "/srv/approved"
+
+        def cleanup(self):
+            pass
+
+    stale = SSHEnvironment("old.example", "/keys/old")
+
+    def create_environment(**kwargs):
+        created.append(kwargs)
+        ssh = kwargs["ssh_config"]
+        return SSHEnvironment(ssh["host"], ssh["key"])
+
+    def execute_remote(code, task_id, enabled_tools, *, runtime_snapshot=None):
+        assert runtime_snapshot is not None
+        current_config["value"] = changed_config
+        env, env_type = cet._get_or_create_env(
+            task_id or "default",
+            runtime_snapshot=runtime_snapshot,
+        )
+        assert env_type == "ssh"
+        assert env.host == "approved.example"
+        return json.dumps({"status": "success", "output": ""})
+
+    monkeypatch.setattr(tt, "_get_env_config", lambda: current_config["value"])
+    monkeypatch.setattr(tt, "_active_environments", {"default": stale})
+    monkeypatch.setattr(tt, "_last_activity", {"default": 1.0})
+    monkeypatch.setattr(tt, "_retired_environments", {})
+    monkeypatch.setattr(tt, "_creation_locks", {})
+    monkeypatch.setattr(tt, "_create_environment", create_environment)
+    monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(cet, "_load_config", lambda: {"timeout": 30})
+    monkeypatch.setattr(cet, "_execute_remote", execute_remote)
+    monkeypatch.setattr(
+        "tools.approval.check_execute_code_guard",
+        lambda *args, **kwargs: {"approved": True, "user_approved": True},
+    )
+
+    result = json.loads(cet.execute_code("print('approved target')"))
+
+    assert result["status"] == "success"
+    assert created[0]["ssh_config"]["host"] == "approved.example"
+    assert created[0]["ssh_config"]["key"] == "/keys/approved"

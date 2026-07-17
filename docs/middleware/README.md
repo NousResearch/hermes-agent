@@ -229,8 +229,11 @@ def annotate_tool_execution(**kwargs):
     return result
 ```
 
-Execution middleware may call `next_call(modified_args)` to pass a changed
-payload to later middleware and the base tool dispatcher.
+Tool execution middleware must pass the supplied arguments unchanged. Those
+arguments have already passed observer blocks, guardrails, and human approval;
+Hermes therefore ignores replacement arguments and isolates in-place mutation
+at this stage. Use `tool_request` middleware for argument changes, since it
+runs before policy and approval checks.
 
 Plugin-specific examples should live with the plugin that owns the behavior.
 For NeMo Relay adaptive execution middleware, see
@@ -242,6 +245,10 @@ For NeMo Relay adaptive execution middleware, see
   routing to a dynamic external system.
 - Request middleware should return complete replacement payloads, not partial
   patches.
+- Tool execution middleware may wrap, observe, short-circuit, or transform the
+  result, but it must not change approved tool arguments. If Hermes cannot copy
+  an approved argument payload safely, it skips the remaining execution
+  wrappers and dispatches that payload unchanged.
 - Execution middleware should call `next_call(...)` exactly once unless it is
   intentionally short-circuiting execution.
 - If execution middleware raises before calling `next_call(...)`, Hermes treats

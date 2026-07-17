@@ -34,6 +34,8 @@ approvals:
   mode: smart                     # smart | manual | off
   timeout: 60                     # seconds to wait for user response (default: 60)
   cron_mode: deny                 # deny | approve — what cron jobs do when they hit a dangerous command
+  kanban_mode: ask                # ask | deny | approve — detached card-owner policy
+  kanban_timeout: 900             # seconds before a pending card approval expires
   mcp_reload_confirm: true        # /reload-mcp asks before invalidating the MCP tool cache
   destructive_slash_confirm: true # /clear, /new, /reset, /undo prompt before discarding state
 ```
@@ -45,6 +47,8 @@ The full set of keys:
 | `mode` | `smart` | Approval policy for dangerous shell commands — see the table below. |
 | `timeout` | `60` | Seconds Hermes waits for an approval reply before timing out. |
 | `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
+| `kanban_mode` | `ask` | How detached Kanban card owners handle a recoverable warning. `ask` parks the card, releases its worker slot, and routes a durable one-use request to the originating gateway chat; `deny` blocks without asking; `approve` trusts recoverable warnings for that worker profile. Hardline blocks and `approvals.deny` still win in every mode. |
+| `kanban_timeout` | `900` | Seconds a durable Kanban approval remains eligible for a decision. Grants are bound to the task, profile, resumed run, resolved working directory, backend target, execution mode, and exact action digest, then consumed once. |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
 | `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. TUI uses its own modal overlay (set `HERMES_TUI_NO_CONFIRM=1` to opt out there). |
 
@@ -65,6 +69,14 @@ YOLO mode bypasses **all** dangerous command approval prompts for the current se
 1. **CLI flag**: Start a session with `hermes --yolo` or `hermes chat --yolo`
 2. **Slash command**: Type `/yolo` during a session to toggle it on/off
 3. **Environment variable**: Set `HERMES_YOLO_MODE=1`
+
+Detached Kanban workers do not inherit process-level or session-level YOLO
+authority from the gateway that spawned them. Configure their explicit policy
+with `approvals.kanban_mode` in the worker profile instead. Auxiliary agents
+and supported child-launch paths are not handed the card owner's one-use
+material, so they use the configured subagent policy. This handoff prevents
+accidental in-process role confusion; it is not an isolation boundary against
+code already running as the same OS user with access to Hermes-owned state.
 
 The `/yolo` command is a **toggle** — each use flips the mode on or off:
 

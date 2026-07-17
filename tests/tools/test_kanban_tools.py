@@ -1413,6 +1413,9 @@ def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
     invalidate_check_fn_cache()
     _clear_tool_defs_cache()
 
+    import run_agent
+
+    monkeypatch.setattr(run_agent, "_hermes_home", home)
     from run_agent import AIAgent
     a = AIAgent(
         api_key="test",
@@ -1441,6 +1444,9 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     invalidate_check_fn_cache()
     _clear_tool_defs_cache()
 
+    import run_agent
+
+    monkeypatch.setattr(run_agent, "_hermes_home", home)
     from run_agent import AIAgent
     a = AIAgent(
         api_key="test",
@@ -2109,15 +2115,22 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     to its own kanban_create result, and the response surfaces the
     ``subscribed`` flag so the orchestrator can react."""
     from tools import kanban_tools as kt
-    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
-    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
-    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "thread-7")
-    monkeypatch.setenv("HERMES_SESSION_USER_ID", "user-9")
+    from gateway.session_context import clear_session_vars, set_session_vars
 
-    out = kt._handle_create({
-        "title": "auto-sub gateway",
-        "assignee": "peer",
-    })
+    tokens = set_session_vars(
+        platform="telegram",
+        chat_id="chat-42",
+        thread_id="thread-7",
+        user_id="user-9",
+        profile="default",
+    )
+    try:
+        out = kt._handle_create({
+            "title": "auto-sub gateway",
+            "assignee": "peer",
+        })
+    finally:
+        clear_session_vars(tokens)
     d = json.loads(out)
     assert d["ok"] is True
     new_tid = d["task_id"]
@@ -2130,6 +2143,12 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     assert s["chat_id"] == "chat-42"
     assert s["thread_id"] == "thread-7"
     assert s["user_id"] == "user-9"
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect() as conn:
+        route = kb.get_task_approval_route(conn, new_tid)
+    assert route["chat_id"] == "chat-42"
+    assert route["user_id"] == "user-9"
 
 
 def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
@@ -2158,6 +2177,10 @@ def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
     assert len(subs) == 1
     assert subs[0]["platform"] == "tui"
     assert subs[0]["chat_id"] == "tui-session-abc"
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect() as conn:
+        assert kb.get_task_approval_route(conn, new_tid) is None
 
 
 def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
@@ -2194,14 +2217,22 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
         "kanban:\n  auto_subscribe_on_create: false\n"
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
-    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "channel-1")
+    from gateway.session_context import clear_session_vars, set_session_vars
 
     from tools import kanban_tools as kt
-    out = kt._handle_create({
-        "title": "no sub gated",
-        "assignee": "peer",
-    })
+    tokens = set_session_vars(
+        platform="discord",
+        chat_id="channel-1",
+        user_id="user-1",
+        profile="default",
+    )
+    try:
+        out = kt._handle_create({
+            "title": "no sub gated",
+            "assignee": "peer",
+        })
+    finally:
+        clear_session_vars(tokens)
     d = json.loads(out)
     assert d["ok"] is True
     assert d["subscribed"] is False, d
@@ -2214,43 +2245,145 @@ def test_create_partial_session_context_no_subscribe(monkeypatch, worker_env):
     Either both are set (gateway) or neither (TUI / CLI); partial is
     ambiguous and the safe default is to skip."""
     from tools import kanban_tools as kt
-    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "slack")
-    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    from gateway.session_context import clear_session_vars, set_session_vars
 
-    out = kt._handle_create({
-        "title": "no sub partial",
-        "assignee": "peer",
-    })
+    tokens = set_session_vars(
+        platform="slack",
+        chat_id="",
+        user_id="user-1",
+        profile="default",
+    )
+    try:
+        out = kt._handle_create({
+            "title": "no sub partial",
+            "assignee": "peer",
+        })
+    finally:
+        clear_session_vars(tokens)
     d = json.loads(out)
     assert d["ok"] is True
     assert d["subscribed"] is False, d
 
 
-def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worker_env):
-    """If add_notify_sub itself raises (e.g. DB locked, schema drift),
-    _maybe_auto_subscribe must NOT bubble that up and fail the parent
-    kanban_create. The function returns False and the parent create
-    still succeeds with subscribed=False."""
+def test_process_environment_cannot_mint_gateway_approval_route(
+    monkeypatch,
+    worker_env,
+):
+    from gateway.session_context import reset_session_vars
+    from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
+
+    reset_session_vars()
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
-    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "spoofed-chat")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "spoofed-user")
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+
+    result = json.loads(kt._handle_create({
+        "title": "spoof-resistant",
+        "assignee": "peer",
+    }))
+
+    assert result["ok"] is True
+    assert result["subscribed"] is False
+    with kb.connect() as conn:
+        assert kb.get_task_approval_route(conn, result["task_id"]) is None
+
+
+def test_worker_child_inherits_only_parent_immutable_approval_route(
+    monkeypatch,
+    worker_env,
+):
+    from gateway.session_context import reset_session_vars
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    reset_session_vars()
+    route = {
+        "platform": "telegram",
+        "chat_id": "origin-chat",
+        "thread_id": "topic-1",
+        "user_id": "origin-user",
+        "notifier_profile": "beta",
+    }
+    with kb.connect() as conn:
+        parent_id = kb.create_task(
+            conn,
+            title="parent",
+            assignee="worker",
+            _trusted_gateway_origin=route,
+        )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", parent_id)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+
+    result = json.loads(kt._handle_create({
+        "title": "child",
+        "assignee": "peer",
+    }))
+
+    assert result["ok"] is True
+    assert result["subscribed"] is True
+    with kb.connect() as conn:
+        child_route = kb.get_task_approval_route(conn, result["task_id"])
+    assert all(child_route[key] == value for key, value in route.items())
+
+    with kb.connect() as conn:
+        unbound_parent = kb.create_task(
+            conn,
+            title="unbound parent",
+            assignee="worker",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=unbound_parent,
+            platform="telegram",
+            chat_id="attacker-chat",
+            user_id="attacker",
+            notifier_profile="default",
+        )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", unbound_parent)
+    unbound_result = json.loads(kt._handle_create({
+        "title": "unbound child",
+        "assignee": "peer",
+    }))
+    assert unbound_result["subscribed"] is False
+    with kb.connect() as conn:
+        assert kb.get_task_approval_route(
+            conn,
+            unbound_result["task_id"],
+        ) is None
+
+
+def test_gateway_origin_binding_failure_rolls_back_create(monkeypatch, worker_env):
+    """A task must not dispatch when its trusted route failed to commit."""
+    from tools import kanban_tools as kt
+    from gateway.session_context import clear_session_vars, set_session_vars
 
     from hermes_cli import kanban_db as kb
 
     def _boom(*a, **kw):
         raise RuntimeError("simulated DB failure")
 
-    monkeypatch.setattr(kb, "add_notify_sub", _boom)
-
-    out = kt._handle_create({
-        "title": "auto-sub tolerates add_notify_sub failure",
-        "assignee": "peer",
-    })
+    with kb.connect() as conn:
+        before_ids = {task.id for task in kb.list_tasks(conn)}
+    monkeypatch.setattr(kb, "_bind_task_approval_route_in_txn", _boom)
+    tokens = set_session_vars(
+        platform="telegram",
+        chat_id="chat-42",
+        user_id="user-9",
+        profile="default",
+    )
+    try:
+        out = kt._handle_create({
+            "title": "atomic route failure",
+            "assignee": "peer",
+        })
+    finally:
+        clear_session_vars(tokens)
     d = json.loads(out)
-    assert d["ok"] is True, d
-    assert d["subscribed"] is False, d
+    assert "error" in d, d
+    with kb.connect() as conn:
+        assert {task.id for task in kb.list_tasks(conn)} == before_ids
 
 
 # ---------------------------------------------------------------------------

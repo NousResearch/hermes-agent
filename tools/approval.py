@@ -12,9 +12,11 @@ import contextvars
 import fnmatch
 import functools
 import hashlib
+import json
 import logging
 import os
 import re
+import secrets
 import shlex
 import sys
 import tempfile
@@ -224,6 +226,25 @@ def _get_session_platform() -> str:
         return os.getenv("HERMES_SESSION_PLATFORM", "") or ""
 
 
+def _is_cron_session() -> bool:
+    """True when the current execution context is a cron job.
+
+    The cron ticker marks its context with the ``HERMES_CRON_SESSION``
+    ContextVar (task-local, set per job in ``run_job``) rather than a
+    process-global env var, so the in-process gateway ticker does not leak the
+    marker into concurrent interactive gateway sessions on the shared process.
+    ``get_session_env`` reads the ContextVar first and falls back to
+    ``os.environ`` for the standalone ``hermes cron`` process and for tests
+    that set the flag directly.
+    """
+    try:
+        from gateway.session_context import get_session_env
+        value = get_session_env("HERMES_CRON_SESSION", "")
+    except Exception:
+        value = os.getenv("HERMES_CRON_SESSION", "")
+    return is_truthy_value(value, default=False)
+
+
 def _is_gateway_approval_context() -> bool:
     """True when this call is inside a gateway/API session.
 
@@ -238,7 +259,7 @@ def _is_gateway_approval_context() -> bool:
     fall through to the gateway branch would submit a pending approval
     with no listener and block the job indefinitely.
     """
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    if _is_cron_session():
         return False
     if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
@@ -2511,6 +2532,423 @@ def _get_cron_approval_mode() -> str:
         return "deny"
 
 
+def _is_kanban_owner_context() -> bool:
+    """Return whether this call belongs to an explicitly-bound card owner.
+
+    ``HERMES_KANBAN_TASK`` by itself is deliberately insufficient: delegated
+    children can inherit task metadata for lifecycle reporting, but they do
+    not own the card's approval principal.  The agent binds the execution role
+    from the dispatcher's one-shot, PID-bound launch capability; the
+    ContextVar propagates into tool executor threads.
+    """
+    try:
+        from agent.execution_context import is_kanban_owner_context
+
+        return bool(is_kanban_owner_context())
+    except Exception:
+        return False
+
+
+def _is_kanban_delegate_context() -> bool:
+    """Return whether a delegated child originated from a card owner."""
+    try:
+        from agent.execution_context import is_kanban_delegate_context
+
+        return bool(is_kanban_delegate_context())
+    except Exception:
+        return False
+
+
+def _resolve_explicit_approval_callback(approval_callback=None):
+    """Return the caller/TLS callback that makes a headless policy explicit."""
+    if approval_callback is not None:
+        return approval_callback
+    try:
+        from tools.terminal_tool import _get_approval_callback
+
+        return _get_approval_callback()
+    except Exception:
+        return None
+
+
+def _get_kanban_approval_mode() -> str:
+    """Return the explicit card-owner policy: ``ask``, ``deny``, or ``approve``.
+
+    ``ask`` is safe because a request is persisted before the worker releases
+    its claim; when no gateway route exists the card remains visibly blocked
+    instead of falling through to the legacy headless auto-approve branch.
+    """
+    try:
+        raw = _get_approval_config().get("kanban_mode", "ask")
+        if isinstance(raw, bool):
+            return "approve" if raw else "deny"
+        mode = str(raw).strip().lower()
+        if mode in {"approve", "allow", "yes"}:
+            return "approve"
+        if mode in {"deny", "block", "no"}:
+            return "deny"
+        if mode in {"ask", "manual", "smart"}:
+            return "ask"
+        logger.warning(
+            "Unknown approvals.kanban_mode %r — defaulting to 'ask'. "
+            "Valid values: ask, deny, approve.",
+            raw,
+        )
+        return "ask"
+    except Exception:
+        return "ask"
+
+
+def _kanban_action_digest(
+    *,
+    action_kind: str,
+    raw_action: str,
+    env_type: str,
+    has_host_access: bool = False,
+    workdir: Optional[str] = None,
+    execution_context: Optional[dict] = None,
+) -> str:
+    """Build the canonical digest that a resumed run must reproduce exactly."""
+    from hermes_cli import kanban_db as kb
+
+    resolved_workdir = workdir
+    if resolved_workdir is None:
+        resolved_workdir = (
+            os.environ.get("TERMINAL_CWD")
+            or os.environ.get("HERMES_KANBAN_WORKSPACE")
+            or os.getcwd()
+        )
+    bound_action = raw_action
+    if execution_context is not None:
+        bound_action = json.dumps(
+            {
+                "action": raw_action,
+                "execution_context": execution_context,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        )
+    return kb.kanban_action_digest(
+        action_kind=action_kind,
+        raw_action=bound_action,
+        env_type=env_type,
+        has_host_access=has_host_access,
+        workdir=resolved_workdir,
+    )
+
+
+def _consume_kanban_approval(
+    *,
+    action_kind: str,
+    raw_action: str,
+    env_type: str,
+    has_host_access: bool = False,
+    workdir: Optional[str] = None,
+    execution_context: Optional[dict] = None,
+) -> bool:
+    """Consume the one-use grant bound by the dispatcher to this exact run."""
+    request_id = os.environ.get("HERMES_KANBAN_APPROVAL_ID", "").strip()
+    grant_nonce = os.environ.get("HERMES_KANBAN_APPROVAL_NONCE", "").strip()
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    run_raw = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+    profile = os.environ.get("HERMES_PROFILE", "").strip()
+    if not all((request_id, grant_nonce, task_id, run_raw, profile)):
+        return False
+    try:
+        resume_run_id = int(run_raw)
+    except ValueError:
+        return False
+
+    try:
+        from hermes_cli import kanban_db as kb
+
+        digest = _kanban_action_digest(
+            action_kind=action_kind,
+            raw_action=raw_action,
+            env_type=env_type,
+            has_host_access=has_host_access,
+            workdir=workdir,
+            execution_context=execution_context,
+        )
+        conn = kb.connect()
+        try:
+            return bool(
+                kb.consume_task_approval(
+                    conn,
+                    request_id=request_id,
+                    grant_nonce=grant_nonce,
+                    task_id=task_id,
+                    resume_run_id=resume_run_id,
+                    profile=profile,
+                    action_digest=digest,
+                )
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning("Kanban approval grant consumption failed closed: %s", exc)
+        return False
+
+
+def _request_kanban_approval(
+    *,
+    action_kind: str,
+    raw_action: str,
+    display_target: str,
+    description: str,
+    env_type: str,
+    has_host_access: bool = False,
+    workdir: Optional[str] = None,
+    execution_context: Optional[dict] = None,
+) -> Optional[dict]:
+    """Persist a route-bound approval and atomically release the worker slot."""
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    run_raw = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+    claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK", "").strip()
+    profile = os.environ.get("HERMES_PROFILE", "").strip()
+    worker_session_id = os.environ.get("HERMES_SESSION_ID", "").strip()
+    if not all((task_id, run_raw, claim_lock, profile, worker_session_id)):
+        logger.error(
+            "Kanban approval request missing owner identity "
+            "(task=%r run=%r claim=%r profile=%r session=%r)",
+            task_id,
+            run_raw,
+            bool(claim_lock),
+            profile,
+            worker_session_id,
+        )
+        return None
+    try:
+        expected_run_id = int(run_raw)
+    except ValueError:
+        return None
+
+    from agent.redact import redact_sensitive_text
+
+    try:
+        from hermes_cli import kanban_db as kb
+
+        digest = _kanban_action_digest(
+            action_kind=action_kind,
+            raw_action=raw_action,
+            env_type=env_type,
+            has_host_access=has_host_access,
+            workdir=workdir,
+            execution_context=execution_context,
+        )
+        timeout = _get_approval_config().get("kanban_timeout", 900)
+        try:
+            timeout = max(1, int(timeout))
+        except (TypeError, ValueError):
+            timeout = 900
+        conn = kb.connect()
+        try:
+            context_label = str(
+                (execution_context or {}).get("display") or ""
+            ).strip()
+            routed_display_target = (
+                f"[{context_label}] {display_target}"
+                if context_label
+                else display_target
+            )
+            request = kb.request_task_approval(
+                conn,
+                task_id=task_id,
+                action_kind=action_kind,
+                action_digest=digest,
+                display_target=redact_sensitive_text(routed_display_target),
+                description=redact_sensitive_text(description),
+                worker_session_id=worker_session_id,
+                expected_run_id=expected_run_id,
+                expected_claim_lock=claim_lock,
+                profile=profile,
+                timeout_seconds=timeout,
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.error("Could not persist Kanban approval request: %s", exc, exc_info=True)
+        return None
+
+    if request and request.get("approval_unavailable") is not True:
+        _fire_approval_hook(
+            "pre_approval_request",
+            command=redact_sensitive_text(display_target),
+            description=redact_sensitive_text(description),
+            pattern_key=f"kanban:{action_kind}",
+            pattern_keys=[f"kanban:{action_kind}"],
+            session_key=worker_session_id,
+            surface="kanban",
+            request_id=request.get("id"),
+        )
+    return request
+
+
+def _kanban_grant_result(
+    *,
+    action_kind: str,
+    raw_action: str,
+    env_type: str,
+    has_host_access: bool = False,
+    workdir: Optional[str] = None,
+    execution_context: Optional[dict] = None,
+    description: str,
+    display_target: Optional[str] = None,
+) -> Optional[dict]:
+    """Resolve a bound grant, returning ``None`` when this is a fresh run."""
+    request_id = os.environ.get("HERMES_KANBAN_APPROVAL_ID", "").strip()
+    nonce = os.environ.get("HERMES_KANBAN_APPROVAL_NONCE", "").strip()
+    if not request_id and not nonce:
+        return None
+    if request_id and nonce and _consume_kanban_approval(
+        action_kind=action_kind,
+        raw_action=raw_action,
+        env_type=env_type,
+        has_host_access=has_host_access,
+        workdir=workdir,
+        execution_context=execution_context,
+    ):
+        from agent.redact import redact_sensitive_text
+
+        _fire_approval_hook(
+            "post_approval_response",
+            command=redact_sensitive_text(display_target or raw_action),
+            description=description,
+            pattern_key=f"kanban:{action_kind}",
+            pattern_keys=[f"kanban:{action_kind}"],
+            session_key=os.environ.get("HERMES_SESSION_ID", ""),
+            surface="kanban",
+            choice="once",
+            request_id=request_id,
+        )
+        return {
+            "approved": True,
+            "message": None,
+            "user_approved": True,
+            "description": description,
+            "kanban_approval_consumed": True,
+        }
+    # A changed or expired action cannot reuse the old grant. Supersede it
+    # with a fresh request while this successor run still owns the card, so the
+    # run is parked cleanly instead of exiting as a lifecycle protocol error.
+    request = _request_kanban_approval(
+        action_kind=action_kind,
+        raw_action=raw_action,
+        display_target=display_target or raw_action,
+        description=description,
+        env_type=env_type,
+        has_host_access=has_host_access,
+        workdir=workdir,
+        execution_context=execution_context,
+    )
+    result = _kanban_pending_result(request, description)
+    result["grant_mismatch"] = True
+    if result.get("status") != "kanban_approval_pending":
+        result["outcome"] = "grant_mismatch"
+    return result
+
+
+def _kanban_pending_result(request: Optional[dict], description: str) -> dict:
+    """Return the structured halt marker consumed by the worker loop."""
+    if not request:
+        # The broker did not attest any durable state transition.  Still stop
+        # this exact authenticated owner process: a stale-CAS result means it
+        # may no longer own the card, and a persistence error must not fall
+        # back into another model/tool iteration.  The distinct outcome is
+        # load-bearing -- consumers must never describe this as a parked card
+        # or a released worker slot.
+        control_id = "kaf_" + secrets.token_hex(12)
+        failure_outcome = "approval_persistence_failed"
+        from agent.execution_context import issue_kanban_approval_pause_token
+
+        pause_token = issue_kanban_approval_pause_token(
+            request_id=control_id,
+            task_id=os.environ.get("HERMES_KANBAN_TASK", ""),
+            run_id=os.environ.get("HERMES_KANBAN_RUN_ID", ""),
+            profile=os.environ.get("HERMES_PROFILE", ""),
+            display_target="",
+            description=description,
+            outcome=failure_outcome,
+        )
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: This Kanban action requires approval, but Hermes "
+                "could not durably persist or verify the request. It was not "
+                "run, and the current worker must stop. Hermes did not confirm "
+                "that the card was parked or that its worker slot was released."
+            ),
+            "description": description,
+            # Reuse the signed approval-control envelope so every wrapper and
+            # the agent loop can halt without exposing a forgeable public flag.
+            "status": "kanban_approval_pending",
+            "kanban_approval_pending": True,
+            "request_id": control_id,
+            "display_target": "",
+            "_hermes_kanban_pause_token": pause_token,
+            "outcome": failure_outcome,
+            "user_consent": False,
+        }
+    request_id = str(request.get("id") or "")
+    display_target = str(request.get("display_target") or "")
+    trusted_description = str(request.get("description") or description)
+    pause_outcome = (
+        "approval_unavailable"
+        if request.get("approval_unavailable") is True
+        else "approval_pending"
+    )
+    from agent.execution_context import issue_kanban_approval_pause_token
+
+    pause_token = issue_kanban_approval_pause_token(
+        request_id=request_id,
+        task_id=os.environ.get("HERMES_KANBAN_TASK", ""),
+        run_id=os.environ.get("HERMES_KANBAN_RUN_ID", ""),
+        profile=os.environ.get("HERMES_PROFILE", ""),
+        display_target=display_target,
+        description=trusted_description,
+        outcome=pause_outcome,
+    )
+    if request.get("approval_unavailable") is True:
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: This Kanban action requires approval, but the card "
+                "has no authorized delivery route. Hermes durably parked the "
+                "task and released the worker slot; repair the trusted route "
+                "and explicitly unblock the card before retrying."
+            ),
+            "description": trusted_description,
+            # The signed internal pause shape is shared with routable requests
+            # so the worker loop halts before another model call. The outcome
+            # remains unavailable and the control id is not an approval id.
+            "status": "kanban_approval_pending",
+            "kanban_approval_pending": True,
+            "request_id": request_id,
+            "display_target": display_target,
+            "_hermes_kanban_pause_token": pause_token,
+            "outcome": "approval_unavailable",
+            "user_consent": False,
+        }
+    return {
+        "approved": False,
+        "message": (
+            f"Kanban task paused for approval request {request_id}. The worker "
+            "slot was released; do not retry or continue this task in the "
+            "current process."
+        ),
+        "description": trusted_description,
+        "status": "kanban_approval_pending",
+        "kanban_approval_pending": True,
+        "request_id": request_id,
+        "display_target": display_target,
+        "_hermes_kanban_pause_token": pause_token,
+        "outcome": "approval_pending",
+        "user_consent": False,
+    }
+
+
 def _strip_shell_comments(command: str) -> str:
     """Strip shell-style comments from a command before LLM assessment.
 
@@ -2645,6 +3083,12 @@ def _run_approval_gate(
     autoapprove_log_prefix: str,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
+    action_kind: str = "terminal",
+    raw_action: Optional[str] = None,
+    env_type: str = "local",
+    has_host_access: bool = False,
+    workdir: Optional[str] = None,
+    execution_context: Optional[dict] = None,
 ) -> dict:
     """Shared human-approval gate for a flagged action (command or tool).
 
@@ -2681,34 +3125,93 @@ def _run_approval_gate(
             plugin-flagged action never runs ungated without a human.
         no_human_block_message: Message returned when
             ``fail_closed_when_no_human`` blocks.
+        action_kind/raw_action/env_type/has_host_access/workdir/execution_context:
+            Canonical action context used only when binding a durable Kanban
+            grant.
 
     Returns:
         ``{"approved": bool, "message": str|None, ...}`` — shape shared with
         ``check_dangerous_command`` so all callers handle it uniformly.
     """
+    # A detached card owner never inherits authority from the parent process.
+    # Its explicit policy and durable one-use grant are evaluated before the
+    # legacy process/session yolo paths below.
+    if _is_kanban_owner_context():
+        canonical_action = raw_action if raw_action is not None else display_target
+        kanban_mode = _get_kanban_approval_mode()
+        if kanban_mode == "deny":
+            return {
+                "approved": False,
+                "message": (
+                    f"BLOCKED: Kanban policy denied this action ({description}). "
+                    "Set approvals.kanban_mode: ask to request a one-use grant, "
+                    "or approve only for an intentionally trusted profile."
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "denied",
+                "user_consent": False,
+            }
+        if kanban_mode == "approve" or _get_approval_mode() == "off":
+            return {"approved": True, "message": None}
+        grant = _kanban_grant_result(
+            action_kind=action_kind,
+            raw_action=canonical_action,
+            env_type=env_type,
+            has_host_access=has_host_access,
+            workdir=workdir,
+            execution_context=execution_context,
+            description=description,
+            display_target=display_target,
+        )
+        if grant is not None:
+            return grant
+        request = _request_kanban_approval(
+            action_kind=action_kind,
+            raw_action=canonical_action,
+            display_target=display_target,
+            description=description,
+            env_type=env_type,
+            has_host_access=has_host_access,
+            workdir=workdir,
+            execution_context=execution_context,
+        )
+        return _kanban_pending_result(request, description)
+
+    is_kanban_delegate = _is_kanban_delegate_context()
+    approval_callback = _resolve_explicit_approval_callback(approval_callback)
+    if is_kanban_delegate and approval_callback is None:
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: A delegated Kanban child requires an explicit "
+                "subagent approval policy, but no callback is installed."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "approval_unavailable",
+            "user_consent": False,
+        }
+
     # --yolo bypasses all approval prompts (session- or process-scoped).
     # Hardline blocks are handled by the caller BEFORE this gate, so yolo
     # here only skips the recoverable approval layer.
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+    if (
+        not is_kanban_delegate
+        and (_YOLO_MODE_FROZEN or is_current_session_yolo_enabled())
+    ):
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
+    if not is_kanban_delegate and is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
-    if approval_callback is None:
-        try:
-            from tools.terminal_tool import _get_approval_callback
-            approval_callback = _get_approval_callback()
-        except Exception:
-            approval_callback = None
-
-    is_cli = _is_interactive_cli()
+    is_cli = _is_interactive_cli() or approval_callback is not None
     is_gateway = _is_gateway_approval_context()
 
     if not is_cli and not is_gateway:
         # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        if _is_cron_session():
             if _get_cron_approval_mode() == "deny":
                 return {
                     "approved": False,
@@ -2869,7 +3372,9 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
 
 def check_dangerous_command(command: str, env_type: str,
                             approval_callback=None,
-                            has_host_access: bool = False) -> dict:
+                            has_host_access: bool = False,
+                            workdir: Optional[str] = None,
+                            execution_context: Optional[dict] = None) -> dict:
     """Check if a command is dangerous and handle approval.
 
     This is the main entry point called by terminal_tool before executing
@@ -2881,6 +3386,8 @@ def check_dangerous_command(command: str, env_type: str,
         approval_callback: Optional CLI callback for interactive prompts.
         has_host_access: True when a Docker sandbox bind-mounts host paths,
             so its commands can reach the host and must not skip approval.
+        workdir: Resolved directory in which the command will execute. It is
+            included in detached Kanban workers' exact-action grant digest.
 
     Returns:
         {"approved": True/False, "message": str or None, ...}
@@ -2909,10 +3416,20 @@ def check_dangerous_command(command: str, env_type: str,
 
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+    is_kanban_owner = _is_kanban_owner_context()
+    is_kanban_delegate = _is_kanban_delegate_context()
+    if (
+        not is_kanban_owner
+        and not is_kanban_delegate
+        and (_YOLO_MODE_FROZEN or is_current_session_yolo_enabled())
+    ):
         return {"approved": True, "message": None}
 
-    if _command_matches_permanent_allowlist(command):
+    if (
+        not is_kanban_owner
+        and not is_kanban_delegate
+        and _command_matches_permanent_allowlist(command)
+    ):
         return {"approved": True, "message": None}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -2934,6 +3451,12 @@ def check_dangerous_command(command: str, env_type: str,
         autoapprove_log_prefix=(
             "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
         ),
+        action_kind="terminal",
+        raw_action=command,
+        env_type=env_type,
+        has_host_access=has_host_access,
+        workdir=workdir,
+        execution_context=execution_context,
     )
 
 
@@ -2943,6 +3466,7 @@ def request_tool_approval(
     *,
     rule_key: str = "",
     approval_callback=None,
+    tool_args: Optional[dict] = None,
 ) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
@@ -2970,6 +3494,9 @@ def request_tool_approval(
             on the same tool).
         approval_callback: Optional CLI callback for interactive prompts
             (same contract as ``check_dangerous_command``).
+        tool_args: Raw structured arguments for a plugin-gated call. They are
+            included only in the exact-action digest; the durable DB stores no
+            raw argument payload.
 
     Returns:
         ``{"approved": True, "message": None}`` when allowed, or
@@ -2999,6 +3526,18 @@ def request_tool_approval(
     # A synthetic "command" string for the display/allowlist layer. It never
     # executes; it only labels the gate. Namespaced identically.
     display_target = f"<{tool_name}> (plugin approval rule)"
+    try:
+        raw_action = json.dumps(
+            {"tool": tool_name, "arguments": tool_args or {}},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        )
+    except Exception:
+        # ``default=str`` should make this unreachable, but the approval path
+        # must fail deterministically rather than lose the action binding.
+        raw_action = f"{tool_name}:{repr(tool_args)}"
 
     return _run_approval_gate(
         pattern_key=pattern_key,
@@ -3021,6 +3560,8 @@ def request_tool_approval(
             "but no interactive user or gateway is present to approve it. "
             "A plugin flagged this action for human confirmation."
         ),
+        action_kind=f"tool:{tool_name}",
+        raw_action=raw_action,
     )
 
 
@@ -3172,7 +3713,9 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False,
+                             workdir: Optional[str] = None,
+                             execution_context: Optional[dict] = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
@@ -3183,6 +3726,10 @@ def check_all_command_guards(command: str, env_type: str,
     ``has_host_access`` is True when a Docker sandbox bind-mounts host paths;
     such a session is no longer isolated, so it goes through the normal flow
     instead of the container fast-path.
+
+    ``workdir`` is the resolved execution directory. Detached Kanban grants
+    bind it into the exact-action digest so an approval cannot be replayed in
+    a different directory.
     """
     # Skip isolated container backends for both checks. Docker stops skipping
     # once host paths are bind-mounted into the sandbox.
@@ -3218,24 +3765,61 @@ def check_all_command_guards(command: str, env_type: str,
                        deny_pattern, command[:200])
         return _user_deny_block_result(deny_pattern)
 
-    # --yolo or approvals.mode=off: bypass all approval prompts.
-    # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
+    # --yolo or approvals.mode=off: bypass all approval prompts for ordinary
+    # sessions. A detached card owner intentionally ignores process/session
+    # yolo inherited from its launcher; its profile config and explicit
+    # Kanban policy are evaluated after warning detection below.
+    is_kanban_owner = _is_kanban_owner_context()
+    is_kanban_delegate = _is_kanban_delegate_context()
+    effective_approval_callback = _resolve_explicit_approval_callback(
+        approval_callback
+    )
     approval_mode = _get_approval_mode()
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
+    if (
+        not is_kanban_owner
+        and not is_kanban_delegate
+        and (
+            _YOLO_MODE_FROZEN
+            or is_current_session_yolo_enabled()
+            or approval_mode == "off"
+        )
+    ):
         return {"approved": True, "message": None}
 
-    if _command_matches_permanent_allowlist(command):
+    if (
+        not is_kanban_owner
+        and not is_kanban_delegate
+        and _command_matches_permanent_allowlist(command)
+    ):
         return {"approved": True, "message": None}
 
     is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
+    if is_kanban_delegate and effective_approval_callback is None:
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: A delegated Kanban child requires an explicit "
+                "subagent approval policy, but no callback is installed."
+            ),
+            "description": "delegate approval policy unavailable",
+            "outcome": "approval_unavailable",
+            "user_consent": False,
+        }
+
+    if effective_approval_callback is not None:
+        # A thread-local auto-deny/opt-in-auto-approve callback is an explicit
+        # unattended policy. Treat it like an interactive surface so the
+        # legacy headless fast path cannot silently auto-approve first.
+        is_cli = True
+
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
-    if not is_cli and not is_gateway and not is_ask:
+    if not is_kanban_owner and not is_cli and not is_gateway and not is_ask:
         # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        if _is_cron_session():
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
@@ -3362,23 +3946,73 @@ def check_all_command_guards(command: str, env_type: str,
         rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
         tirith_key = f"tirith:{rule_id}"
         tirith_desc = _format_tirith_description(tirith_result)
-        if not is_approved(session_key, tirith_key):
+        if (
+            is_kanban_owner
+            or is_kanban_delegate
+            or not is_approved(session_key, tirith_key)
+        ):
             warnings.append((tirith_key, tirith_desc, True))
 
     if is_dangerous:
-        if not is_approved(session_key, pattern_key):
+        if (
+            is_kanban_owner
+            or is_kanban_delegate
+            or not is_approved(session_key, pattern_key)
+        ):
             warnings.append((pattern_key, description, False))
 
     # Nothing to warn about
     if not warnings:
         return {"approved": True, "message": None}
 
+    # Detached card-owner policy is more specific than ambient gateway/yolo
+    # state.  A bound grant is checked before smart reassessment so the exact
+    # approved action is consumed once; mismatches fail closed and cannot be
+    # translated into a fresh request by the resumed worker.
+    if is_kanban_owner:
+        combined_desc_for_kanban = "; ".join(desc for _, desc, _ in warnings)
+        kanban_mode = _get_kanban_approval_mode()
+        if kanban_mode == "deny":
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: Kanban policy denied this recoverable warning "
+                    f"({combined_desc_for_kanban})."
+                ),
+                "description": combined_desc_for_kanban,
+                "outcome": "denied",
+                "user_consent": False,
+            }
+        if kanban_mode == "approve" or approval_mode == "off":
+            return {
+                "approved": True,
+                "message": None,
+                "description": combined_desc_for_kanban,
+                "kanban_policy_approved": True,
+            }
+        grant = _kanban_grant_result(
+            action_kind="terminal",
+            raw_action=command,
+            env_type=env_type,
+            has_host_access=has_host_access,
+            workdir=workdir,
+            execution_context=execution_context,
+            description=combined_desc_for_kanban,
+            display_target=command,
+        )
+        if grant is not None:
+            return grant
+
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
     # Inspired by OpenAI Codex's Smart Approvals guardian subagent
     # (openai/codex#13860).
     smart_denied_for_owner = False
-    if approval_mode == "smart":
+    if (
+        approval_mode == "smart"
+        and not is_kanban_owner
+        and not is_kanban_delegate
+    ):
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
         observer_payload = _prepare_smart_approval_observer(
             command=command,
@@ -3417,6 +4051,19 @@ def check_all_command_guards(command: str, env_type: str,
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
     has_tirith = any(is_t for _, _, is_t in warnings)
+
+    if is_kanban_owner:
+        request = _request_kanban_approval(
+            action_kind="terminal",
+            raw_action=command,
+            display_target=command,
+            description=combined_desc,
+            env_type=env_type,
+            has_host_access=has_host_access,
+            workdir=workdir,
+            execution_context=execution_context,
+        )
+        return _kanban_pending_result(request, combined_desc)
 
     # Gateway/async approval — block the agent thread until the user
     # responds with /approve or /deny, mirroring the CLI's synchronous
@@ -3565,7 +4212,7 @@ def check_all_command_guards(command: str, env_type: str,
         combined_desc,
         allow_permanent=not has_tirith and not smart_denied_for_owner,
         smart_denied=smart_denied_for_owner,
-        approval_callback=approval_callback,
+        approval_callback=effective_approval_callback,
     )
     _fire_approval_hook(
         "post_approval_response",
@@ -3613,7 +4260,8 @@ def check_all_command_guards(command: str, env_type: str,
 
 
 def check_execute_code_guard(code: str, env_type: str,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False,
+                             execution_context: Optional[dict] = None) -> dict:
     """Approve an execute_code script before its child process is spawned.
 
     execute_code runs arbitrary local Python — the script can call
@@ -3647,16 +4295,41 @@ def check_execute_code_guard(code: str, env_type: str,
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
-    # --yolo or approvals.mode=off: bypass (session- or process-scoped).
+    # Detached card owners ignore process/session yolo from their launcher.
+    # Their children also require the explicit delegation callback; they may
+    # neither consume the owner's grant nor inherit its ambient bypasses.
     approval_mode = _get_approval_mode()
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
+    is_kanban_owner = _is_kanban_owner_context()
+    is_kanban_delegate = _is_kanban_delegate_context()
+    delegate_approval_callback = _resolve_explicit_approval_callback()
+    if is_kanban_delegate and delegate_approval_callback is None:
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: A delegated Kanban child requires an explicit "
+                "subagent approval policy, but no callback is installed."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "approval_unavailable",
+            "user_consent": False,
+        }
+    if (
+        not is_kanban_owner
+        and not is_kanban_delegate
+        and (
+            _YOLO_MODE_FROZEN
+            or is_current_session_yolo_enabled()
+            or approval_mode == "off"
+        )
+    ):
         return {"approved": True, "message": None}
 
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
     # Cron: no user is present to approve arbitrary code.
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    if not is_kanban_owner and not is_kanban_delegate and _is_cron_session():
         if _get_cron_approval_mode() == "deny":
             return {
                 "approved": False,
@@ -3680,7 +4353,12 @@ def check_execute_code_guard(code: str, env_type: str,
     #     (context now propagates into the RPC thread, #33057); a whole-script
     #     prompt would fire on every execute_code call.
     #   * Local non-interactive non-gateway: documented limitation above.
-    if not is_gateway and not is_ask:
+    if (
+        not is_kanban_owner
+        and not is_kanban_delegate
+        and not is_gateway
+        and not is_ask
+    ):
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
@@ -3688,17 +4366,118 @@ def check_execute_code_guard(code: str, env_type: str,
     # paths don't pay to copy a potentially-large script into this string.
     command = f"execute_code <<'PY'\n{code}\nPY"
 
+    def _redacted_display_values() -> tuple[str, str, str]:
+        """Build user-visible copies only when this path will render them."""
+        from agent.redact import redact_sensitive_text
+
+        return (
+            redact_sensitive_text(command),
+            redact_sensitive_text(code),
+            redact_sensitive_text(description),
+        )
+
+    if is_kanban_owner:
+        kanban_mode = _get_kanban_approval_mode()
+        if kanban_mode == "deny":
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: Kanban policy denied execute_code. Use normal "
+                    "tools or set approvals.kanban_mode: ask to request a "
+                    "route-bound, one-use grant."
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "denied",
+                "user_consent": False,
+            }
+        if kanban_mode == "approve" or approval_mode == "off":
+            return {
+                "approved": True,
+                "message": None,
+                "kanban_policy_approved": True,
+            }
+        display_command, display_code, display_description = (
+            _redacted_display_values()
+        )
+        grant = _kanban_grant_result(
+            action_kind="execute_code",
+            raw_action=code,
+            env_type=env_type,
+            has_host_access=has_host_access,
+            description=description,
+            display_target=display_command,
+            execution_context=execution_context,
+        )
+        if grant is not None:
+            return grant
     # Check session/permanent approval — same gate as check_all_command_guards.
     # Without this, "Approve session" / "Always" choices are stored but never
     # consulted, so every execute_code call re-prompts the user (#39275).
-    if is_approved(session_key, pattern_key):
+    if (
+        not is_kanban_owner
+        and not is_kanban_delegate
+        and is_approved(session_key, pattern_key)
+    ):
         return {"approved": True, "message": None}
+
+    if is_kanban_delegate:
+        display_command, display_code, display_description = (
+            _redacted_display_values()
+        )
+        _fire_approval_hook(
+            "pre_approval_request",
+            command=display_command,
+            description=display_description,
+            pattern_key=pattern_key,
+            pattern_keys=[pattern_key],
+            session_key=session_key,
+            surface="delegate",
+        )
+        choice = prompt_dangerous_approval(
+            command,
+            description,
+            allow_permanent=False,
+            approval_callback=delegate_approval_callback,
+        )
+        _fire_approval_hook(
+            "post_approval_response",
+            command=display_command,
+            description=display_description,
+            pattern_key=pattern_key,
+            pattern_keys=[pattern_key],
+            session_key=session_key,
+            surface="delegate",
+            choice=choice or "deny",
+        )
+        if choice == "once":
+            return {
+                "approved": True,
+                "message": None,
+                "user_approved": True,
+                "description": description,
+            }
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: delegated Kanban execute_code was denied by its "
+                "explicit subagent approval policy."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "denied",
+            "user_consent": False,
+        }
 
     # Smart mode: ask the aux LLM about the whole script. An APPROVE here only
     # suppresses the redundant whole-script prompt; the per-call terminal()
     # guards (restored by context propagation) still run independently.
     smart_denied_for_owner = False
-    if approval_mode == "smart":
+    if (
+        approval_mode == "smart"
+        and not is_kanban_owner
+        and not is_kanban_delegate
+    ):
         observer_payload = _prepare_smart_approval_observer(
             command=command,
             description=description,
@@ -3730,16 +4509,24 @@ def check_execute_code_guard(code: str, env_type: str,
         # Interactive DENY falls through to one-operation human approval;
         # ESCALATE retains the normal manual approval behavior.
 
-    # Redacted copies for user-visible rendering only. An execute_code script
-    # can embed credentials (e.g. api_key = "sk-..."), and the gateway renders
-    # this payload directly to Discord/Slack — those messages are
-    # screenshottable. The raw `command`/`code` are still what get assessed by
-    # smart approval and executed; redaction is display-only. Approval
-    # persistence keys off pattern_key, so the allowlist is unaffected.
-    from agent.redact import redact_sensitive_text
-    display_command = redact_sensitive_text(command)
-    display_code = redact_sensitive_text(code)
-    display_description = redact_sensitive_text(description)
+    if is_kanban_owner:
+        request = _request_kanban_approval(
+            action_kind="execute_code",
+            raw_action=code,
+            display_target=display_command,
+            description=display_description,
+            env_type=env_type,
+            has_host_access=has_host_access,
+            execution_context=execution_context,
+        )
+        return _kanban_pending_result(request, display_description)
+
+    # Redacted copies for user-visible rendering only. A smart APPROVE returns
+    # above without paying for display redaction; observer redaction remains
+    # independently forced for its audit payload.
+    display_command, display_code, display_description = (
+        _redacted_display_values()
+    )
 
     notify_cb = None
     with _lock:

@@ -124,6 +124,16 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
+# Durable cross-process approval requests used by dispatcher-spawned workers.
+# A grant is deliberately short-lived and single-use: the resumed worker must
+# present the request id, opaque nonce, new run id, profile, and exact action
+# digest before an approval can be consumed.
+KANBAN_APPROVAL_REQUEST_TIMEOUT_SECONDS = 15 * 60
+KANBAN_APPROVAL_GRANT_TTL_SECONDS = 15 * 60
+KANBAN_APPROVAL_STATES = frozenset(
+    {"pending", "approved", "denied", "expired", "consumed", "cancelled"}
+)
+
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
 # unblocker (usually a cron) and routes the task to ``triage`` instead of back
@@ -323,6 +333,45 @@ def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
         return f"{h}h ago"
     d = delta // 86400
     return f"{d}d ago"
+
+
+def kanban_action_digest(
+    action_kind: str,
+    raw_action: str,
+    env_type: str,
+    has_host_access: bool = False,
+    workdir: Optional[str] = None,
+) -> str:
+    """Return the versioned digest for one exact approval-gated action.
+
+    Only the digest crosses the process boundary or reaches the board DB. The
+    raw command/code is never persisted there. Security-relevant execution
+    context is included so a grant for (for example) a container command
+    cannot be replayed against the host, or from a different working tree.
+    """
+    canonical_workdir: Optional[str] = None
+    if workdir:
+        try:
+            canonical_workdir = str(
+                Path(workdir).expanduser().resolve(strict=False)
+            )
+        except (OSError, RuntimeError, ValueError):
+            canonical_workdir = str(workdir)
+    payload = {
+        "action": str(raw_action),
+        "action_kind": str(action_kind).strip().casefold(),
+        "env_type": str(env_type).strip().casefold(),
+        "has_host_access": bool(has_host_access),
+        "version": 1,
+        "workdir": canonical_workdir,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -915,6 +964,18 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Exact durable request responsible for the current approval lifecycle
+    # (pending park, unbound grant, or bound resume). Persisting this marker
+    # lets every transition CAS one state generation and reject stale ABA
+    # decisions.
+    active_approval_id: Optional[str] = None
+    # Transient dispatcher-only fields. They are populated by ``claim_task``
+    # when a human-approved action is bound to the newly-created resume run;
+    # they do not exist in ``tasks`` and are never serialized by from_row().
+    approval_request_id: Optional[str] = None
+    approval_grant_nonce: Optional[str] = None
+    approval_worker_session_id: Optional[str] = None
+    owner_bootstrap_nonce: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -999,6 +1060,11 @@ class Task:
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
             ),
+            active_approval_id=(
+                row["active_approval_id"]
+                if "active_approval_id" in keys
+                else None
+            ),
         )
 
 
@@ -1029,6 +1095,7 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    owner_bootstrap_nonce: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
@@ -1053,6 +1120,11 @@ class Run:
             summary=row["summary"],
             metadata=meta,
             error=row["error"],
+            owner_bootstrap_nonce=(
+                row["owner_bootstrap_nonce"]
+                if "owner_bootstrap_nonce" in row.keys()
+                else None
+            ),
         )
 
 
@@ -1087,6 +1159,93 @@ class Event:
     payload: Optional[dict]
     created_at: int
     run_id: Optional[int] = None
+
+
+@dataclass
+class KanbanApprovalRequest:
+    """Durable approval handoff between a worker and its gateway owner."""
+
+    id: str
+    task_id: str
+    requested_run_id: int
+    resume_run_id: Optional[int]
+    profile: str
+    action_kind: str
+    action_digest: str
+    display_target: str
+    description: Optional[str]
+    worker_session_id: str
+    state: str
+    grant_nonce: Optional[str]
+    platform: Optional[str]
+    chat_id: Optional[str]
+    thread_id: Optional[str]
+    user_id: Optional[str]
+    notifier_profile: Optional[str]
+    requested_at: int
+    notified_at: Optional[int]
+    decided_at: Optional[int]
+    expires_at: int
+    decided_by: Optional[str]
+    decision_reason: Optional[str]
+    consumed_at: Optional[int]
+    cancelled_at: Optional[int]
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "KanbanApprovalRequest":
+        return cls(
+            id=str(row["id"]),
+            task_id=str(row["task_id"]),
+            requested_run_id=int(row["requested_run_id"]),
+            resume_run_id=(
+                int(row["resume_run_id"])
+                if row["resume_run_id"] is not None
+                else None
+            ),
+            profile=str(row["profile"]),
+            action_kind=str(row["action_kind"]),
+            action_digest=str(row["action_digest"]),
+            display_target=str(row["display_target"]),
+            description=row["description"],
+            worker_session_id=str(row["worker_session_id"]),
+            state=str(row["state"]),
+            grant_nonce=row["grant_nonce"],
+            platform=row["platform"],
+            chat_id=row["chat_id"],
+            thread_id=row["thread_id"],
+            user_id=row["user_id"],
+            notifier_profile=row["notifier_profile"],
+            requested_at=int(row["requested_at"]),
+            notified_at=(
+                int(row["notified_at"])
+                if row["notified_at"] is not None
+                else None
+            ),
+            decided_at=(
+                int(row["decided_at"])
+                if row["decided_at"] is not None
+                else None
+            ),
+            expires_at=int(row["expires_at"]),
+            decided_by=row["decided_by"],
+            decision_reason=row["decision_reason"],
+            consumed_at=(
+                int(row["consumed_at"])
+                if row["consumed_at"] is not None
+                else None
+            ),
+            cancelled_at=(
+                int(row["cancelled_at"])
+                if row["cancelled_at"] is not None
+                else None
+            ),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            name: getattr(self, name)
+            for name in self.__dataclass_fields__
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -1176,7 +1335,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Exact request that owns the current pending/granted approval lifecycle.
+    -- Decisions compare-and-swap this marker so an old request cannot mutate a
+    -- task after an operator state change or reassignment.
+    active_approval_id   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1215,7 +1378,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     profile             TEXT,
     step_key            TEXT,
     status              TEXT NOT NULL,
-    -- status: running | done | blocked | crashed | timed_out | failed | released
+    -- status: running | done | blocked | approval_pending | crashed | timed_out | failed | released
     claim_lock          TEXT,
     claim_expires       INTEGER,
     worker_pid          INTEGER,
@@ -1225,10 +1388,11 @@ CREATE TABLE IF NOT EXISTS task_runs (
     ended_at            INTEGER,
     outcome             TEXT,
     -- outcome: completed | blocked | crashed | timed_out | spawn_failed |
-    --          gave_up | reclaimed | (null while still running)
+    --          gave_up | reclaimed | approval_pending | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    owner_bootstrap_nonce TEXT
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -1264,6 +1428,52 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Immutable authorization principal captured only by trusted task-origin
+-- paths. Notification subscriptions are mutable delivery preferences and
+-- MUST NOT be consulted as approval authority.
+CREATE TABLE IF NOT EXISTS kanban_approval_routes (
+    task_id          TEXT PRIMARY KEY,
+    platform         TEXT NOT NULL CHECK (
+        length(trim(platform)) > 0 AND lower(trim(platform)) != 'tui'
+    ),
+    chat_id          TEXT NOT NULL CHECK (length(trim(chat_id)) > 0),
+    thread_id        TEXT NOT NULL DEFAULT '',
+    user_id          TEXT NOT NULL CHECK (length(trim(user_id)) > 0),
+    notifier_profile TEXT NOT NULL CHECK (length(trim(notifier_profile)) > 0),
+    bound_at         INTEGER NOT NULL
+);
+
+-- Durable, board-scoped approval broker for detached Kanban workers. Raw
+-- commands/code are intentionally absent: only a canonical digest and a
+-- redacted display target cross the process boundary.
+CREATE TABLE IF NOT EXISTS kanban_approval_requests (
+    id               TEXT PRIMARY KEY,
+    task_id          TEXT NOT NULL,
+    requested_run_id INTEGER NOT NULL,
+    resume_run_id    INTEGER,
+    profile          TEXT NOT NULL,
+    action_kind      TEXT NOT NULL,
+    action_digest    TEXT NOT NULL,
+    display_target   TEXT NOT NULL,
+    description      TEXT,
+    worker_session_id TEXT NOT NULL,
+    state            TEXT NOT NULL,
+    grant_nonce      TEXT,
+    platform         TEXT,
+    chat_id          TEXT,
+    thread_id        TEXT,
+    user_id          TEXT,
+    notifier_profile TEXT,
+    requested_at     INTEGER NOT NULL,
+    notified_at      INTEGER,
+    decided_at       INTEGER,
+    expires_at       INTEGER NOT NULL,
+    decided_by       TEXT,
+    decision_reason  TEXT,
+    consumed_at      INTEGER,
+    cancelled_at     INTEGER
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1274,6 +1484,12 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_approvals_task_state  ON kanban_approval_requests(task_id, state);
+CREATE INDEX IF NOT EXISTS idx_approvals_route_state ON kanban_approval_requests(platform, chat_id, thread_id, state);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_one_pending_per_task
+    ON kanban_approval_requests(task_id) WHERE state = 'pending';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_one_grant_per_task
+    ON kanban_approval_requests(task_id) WHERE state = 'approved';
 """
 
 
@@ -1987,6 +2203,16 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "active_approval_id" not in cols:
+        # Request-bound block generation marker. Existing rows predate the
+        # durable broker and correctly start unbound/fail-closed.
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "active_approval_id",
+            "active_approval_id TEXT",
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2028,6 +2254,38 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
 
+    approval_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='kanban_approval_requests'"
+    ).fetchone() is not None
+    if approval_table_exists:
+        approval_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(kanban_approval_requests)")
+        }
+        if "notified_at" not in approval_cols:
+            _add_column_if_missing(
+                conn,
+                "kanban_approval_requests",
+                "notified_at",
+                "notified_at INTEGER",
+            )
+
+    run_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
+    ).fetchone() is not None
+    if run_table_exists:
+        run_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+        }
+        if "owner_bootstrap_nonce" not in run_cols:
+            _add_column_if_missing(
+                conn,
+                "task_runs",
+                "owner_bootstrap_nonce",
+                "owner_bootstrap_nonce TEXT",
+            )
+
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
     # Synthesize a matching task_runs row so subsequent end-run / heartbeat
@@ -2035,10 +2293,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # against any concurrent dispatcher, and the per-row UPDATE uses
     # ``current_run_id IS NULL`` as a CAS guard so a racing claim can't
     # produce an orphaned row if it interleaves with the backfill pass.
-    runs_exist = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
-    ).fetchone() is not None
-    if runs_exist:
+    if run_table_exists:
         with write_txn(conn):
             inflight = conn.execute(
                 "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
@@ -2140,7 +2395,7 @@ _REBUILD_SPECS = {
         " worker_pid INTEGER, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
-        " error TEXT)",
+        " error TEXT, owner_bootstrap_nonce TEXT)",
         (
             "CREATE INDEX idx_runs_task ON task_runs(task_id, started_at)",
             "CREATE INDEX idx_runs_status ON task_runs(status)",
@@ -2408,6 +2663,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    _trusted_gateway_origin: Optional[dict[str, Any]] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2491,6 +2747,11 @@ def create_task(
                 project_repo = str(project_obj.primary_path)
 
     parents = tuple(p for p in parents if p)
+    trusted_gateway_origin = (
+        _normalize_task_approval_route(_trusted_gateway_origin)
+        if _trusted_gateway_origin is not None
+        else None
+    )
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -2550,6 +2811,16 @@ def create_task(
             (idempotency_key,),
         ).fetchone()
         if row:
+            if trusted_gateway_origin is not None:
+                existing_route = get_task_approval_route(conn, row["id"])
+                if not _task_approval_route_matches(
+                    existing_route,
+                    trusted_gateway_origin,
+                ):
+                    raise ValueError(
+                        "idempotency key matched a task that is not owned by "
+                        "this gateway origin"
+                    )
             return row["id"]
 
     now = int(time.time())
@@ -2667,6 +2938,16 @@ def create_task(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
                     )
+                if trusted_gateway_origin is not None:
+                    if not _bind_task_approval_route_in_txn(
+                        conn,
+                        task_id=task_id,
+                        route=trusted_gateway_origin,
+                        add_notification=True,
+                    ):
+                        raise RuntimeError(
+                            "could not bind the task's trusted gateway origin"
+                        )
                 _append_event(
                     conn,
                     task_id,
@@ -2793,6 +3074,11 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 "Wait for completion or reclaim the stale lock first."
             )
         if row["assignee"] != profile:
+            _cancel_unbound_task_approvals(
+                conn,
+                task_id,
+                reason="task reassigned to a different profile",
+            )
             # The retry guard is scoped to the task/profile combination. A
             # human reassigning the task is an explicit recovery action, so the
             # new profile should not inherit the previous profile's streak.
@@ -2831,10 +3117,16 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             "SELECT status FROM tasks WHERE id = ?", (parent_id,)
         ).fetchone()["status"]
         if parent_status != "done":
-            conn.execute(
+            demoted = conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
             )
+            if demoted.rowcount == 1:
+                _cancel_unbound_task_approvals(
+                    conn,
+                    child_id,
+                    reason="a new incomplete parent demoted the task",
+                )
         _append_event(
             conn, child_id, "linked",
             {"parent": parent_id, "child": child_id},
@@ -3270,7 +3562,8 @@ def _end_run(
                ended_at      = ?,
                claim_lock    = NULL,
                claim_expires = NULL,
-               worker_pid    = NULL
+               worker_pid    = NULL,
+               owner_bootstrap_nonce = NULL
          WHERE id = ?
            AND ended_at IS NULL
         """,
@@ -3287,6 +3580,40 @@ def _end_run(
     conn.execute(
         "UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,),
     )
+    bound_request = conn.execute(
+        "SELECT id FROM kanban_approval_requests "
+        "WHERE task_id = ? AND resume_run_id = ? AND state = 'approved'",
+        (task_id, run_id),
+    ).fetchone()
+    cancelled = conn.execute(
+        "UPDATE kanban_approval_requests "
+        "SET state = 'cancelled', grant_nonce = NULL, cancelled_at = ?, "
+        "    decision_reason = COALESCE(decision_reason, ?) "
+        "WHERE task_id = ? AND resume_run_id = ? AND state = 'approved'",
+        (
+            now,
+            f"bound run ended before grant consumption: {outcome}",
+            task_id,
+            run_id,
+        ),
+    )
+    if cancelled.rowcount:
+        if bound_request is not None:
+            conn.execute(
+                "UPDATE tasks SET active_approval_id = NULL "
+                "WHERE id = ? AND active_approval_id = ?",
+                (task_id, bound_request["id"]),
+            )
+        _append_event(
+            conn,
+            task_id,
+            "approval_cancelled",
+            {
+                "request_id": bound_request["id"] if bound_request else None,
+                "reason": f"bound run ended before grant consumption: {outcome}",
+            },
+            run_id=run_id,
+        )
     return run_id
 
 
@@ -3349,6 +3676,1121 @@ def _synthesize_ended_run(
 
 
 # ---------------------------------------------------------------------------
+# Durable worker approvals
+# ---------------------------------------------------------------------------
+
+def _approval_as_dict(request: KanbanApprovalRequest) -> dict[str, Any]:
+    data = request.as_dict()
+    # ``status`` is the wire-facing spelling used by gateway/UI callers;
+    # retain ``state`` as the schema-native spelling for DB diagnostics.
+    data["status"] = request.state
+    return data
+
+
+def get_task_approval(
+    conn: sqlite3.Connection,
+    request_id: Optional[str] = None,
+    *,
+    task_id: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Return one approval request by id, or the task's newest request."""
+    if request_id:
+        row = conn.execute(
+            "SELECT * FROM kanban_approval_requests WHERE id = ?",
+            (str(request_id),),
+        ).fetchone()
+    elif task_id:
+        row = conn.execute(
+            "SELECT * FROM kanban_approval_requests WHERE task_id = ? "
+            "ORDER BY requested_at DESC, rowid DESC LIMIT 1",
+            (str(task_id),),
+        ).fetchone()
+    else:
+        raise ValueError("request_id or task_id is required")
+    if row is None:
+        return None
+    return _approval_as_dict(KanbanApprovalRequest.from_row(row))
+
+
+def list_task_approvals(
+    conn: sqlite3.Connection,
+    *,
+    task_id: Optional[str] = None,
+    state: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """List durable approval requests for gateway pollers and diagnostics."""
+    if state is not None and state not in KANBAN_APPROVAL_STATES:
+        raise ValueError(f"unknown approval state: {state}")
+    sql = "SELECT * FROM kanban_approval_requests WHERE 1=1"
+    params: list[Any] = []
+    if task_id is not None:
+        sql += " AND task_id = ?"
+        params.append(str(task_id))
+    if state is not None:
+        sql += " AND state = ?"
+        params.append(state)
+    if notifier_profile is not None:
+        sql += " AND notifier_profile = ?"
+        params.append(notifier_profile)
+    sql += " ORDER BY requested_at ASC, rowid ASC"
+    return [
+        _approval_as_dict(KanbanApprovalRequest.from_row(row))
+        for row in conn.execute(sql, params).fetchall()
+    ]
+
+
+def list_pending_unnotified_task_approvals(
+    conn: sqlite3.Connection,
+    *,
+    task_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """List pending approval notices that have not reached their owner.
+
+    This state is independent of ``kanban_notify_subs.last_event_id``.  The
+    notifier claims event cursors before network I/O, so a process crash after
+    that claim must still be able to discover and retry the approval notice.
+    """
+    sql = (
+        "SELECT * FROM kanban_approval_requests "
+        "WHERE state = 'pending' AND notified_at IS NULL"
+    )
+    params: list[Any] = []
+    if task_id is not None:
+        sql += " AND task_id = ?"
+        params.append(str(task_id))
+    if notifier_profile is not None:
+        sql += " AND notifier_profile = ?"
+        params.append(str(notifier_profile))
+    sql += " ORDER BY requested_at ASC, rowid ASC"
+    return [
+        _approval_as_dict(KanbanApprovalRequest.from_row(row))
+        for row in conn.execute(sql, params).fetchall()
+    ]
+
+
+def mark_task_approval_notified(
+    conn: sqlite3.Connection,
+    request_id: str,
+    *,
+    notified_at: Optional[int] = None,
+) -> bool:
+    """Record successful owner notification without reviving a decision.
+
+    ``False`` means the request no longer exists or is no longer pending.
+    Repeated calls for an already-notified pending request are idempotently
+    successful.  Database errors are allowed to propagate so the notifier can
+    leave the row unmarked and retry on its next tick.
+    """
+    timestamp = int(time.time()) if notified_at is None else int(notified_at)
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT state, notified_at FROM kanban_approval_requests WHERE id = ?",
+            (str(request_id),),
+        ).fetchone()
+        if row is None or row["state"] != "pending":
+            return False
+        if row["notified_at"] is not None:
+            return True
+        changed = conn.execute(
+            "UPDATE kanban_approval_requests SET notified_at = ? "
+            "WHERE id = ? AND state = 'pending' AND notified_at IS NULL",
+            (timestamp, str(request_id)),
+        )
+        return changed.rowcount == 1
+
+
+_APPROVAL_ROUTE_FIELDS = (
+    "platform",
+    "chat_id",
+    "thread_id",
+    "user_id",
+    "notifier_profile",
+)
+
+
+def _normalize_task_approval_route(route: dict[str, Any]) -> dict[str, str]:
+    """Validate one exact, human-resolvable gateway approval principal."""
+    platform = str(route.get("platform") or "").strip().casefold()
+    chat_id = str(route.get("chat_id") or "").strip()
+    thread_id = str(route.get("thread_id") or "").strip()
+    user_id = str(route.get("user_id") or "").strip()
+    raw_profile = str(route.get("notifier_profile") or "").strip()
+    notifier_profile = _canonical_assignee(raw_profile) if raw_profile else None
+    if not platform or platform == "tui":
+        raise ValueError("approval origin requires a real gateway platform")
+    if not chat_id:
+        raise ValueError("approval origin requires a chat_id")
+    if not user_id:
+        raise ValueError("approval origin requires a user_id")
+    if not notifier_profile:
+        raise ValueError("approval origin requires a notifier profile")
+    return {
+        "platform": platform,
+        "chat_id": chat_id,
+        "thread_id": thread_id,
+        "user_id": user_id,
+        "notifier_profile": notifier_profile,
+    }
+
+
+def _task_approval_route_matches(
+    stored: Optional[dict[str, Any]],
+    expected: dict[str, Any],
+) -> bool:
+    if stored is None:
+        return False
+    return all(
+        str(stored.get(field) or "") == str(expected.get(field) or "")
+        for field in _APPROVAL_ROUTE_FIELDS
+    )
+
+
+def get_task_approval_route(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[dict[str, Any]]:
+    """Read the immutable gateway principal authorized for task approvals."""
+    row = conn.execute(
+        "SELECT * FROM kanban_approval_routes WHERE task_id = ?",
+        (str(task_id),),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def _bind_task_approval_route_in_txn(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    route: dict[str, Any],
+    add_notification: bool,
+) -> bool:
+    """Bind once inside an existing write transaction.
+
+    This is deliberately private: only trusted automatic origin paths may
+    mint approval authority. Mutable/manual notification subscriptions never
+    call it and are never consulted by the approval broker.
+    """
+    normalized = _normalize_task_approval_route(route)
+    if conn.execute(
+        "SELECT 1 FROM tasks WHERE id = ?",
+        (str(task_id),),
+    ).fetchone() is None:
+        return False
+    existing = get_task_approval_route(conn, task_id)
+    if existing is not None and not _task_approval_route_matches(
+        existing,
+        normalized,
+    ):
+        return False
+    if existing is None:
+        conn.execute(
+            "INSERT INTO kanban_approval_routes ("
+            "task_id, platform, chat_id, thread_id, user_id, "
+            "notifier_profile, bound_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(task_id),
+                normalized["platform"],
+                normalized["chat_id"],
+                normalized["thread_id"],
+                normalized["user_id"],
+                normalized["notifier_profile"],
+                int(time.time()),
+            ),
+        )
+    if add_notification:
+        _add_notify_sub_in_txn(conn, task_id=task_id, **normalized)
+        # A mutable subscription may have been inserted first with the same
+        # delivery PK but a different/NULL user. The trusted origin wins for
+        # that exact route so the resulting delivery remains resolvable;
+        # conflicting chats/threads cannot affect this row or the immutable
+        # authority above.
+        conn.execute(
+            "UPDATE kanban_notify_subs SET user_id = ?, notifier_profile = ? "
+            "WHERE task_id = ? AND lower(platform) = ? AND chat_id = ? "
+            "  AND thread_id = ?",
+            (
+                normalized["user_id"],
+                normalized["notifier_profile"],
+                str(task_id),
+                normalized["platform"],
+                normalized["chat_id"],
+                normalized["thread_id"],
+            ),
+        )
+    return True
+
+
+def _bind_task_approval_route(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    user_id: str,
+    notifier_profile: str,
+    thread_id: Optional[str] = None,
+    add_notification: bool = True,
+) -> bool:
+    """Trusted auto-origin setter; immutable and idempotent on exact replay."""
+    route = {
+        "platform": platform,
+        "chat_id": chat_id,
+        "thread_id": thread_id or "",
+        "user_id": user_id,
+        "notifier_profile": notifier_profile,
+    }
+    with write_txn(conn):
+        return _bind_task_approval_route_in_txn(
+            conn,
+            task_id=str(task_id),
+            route=route,
+            add_notification=add_notification,
+        )
+
+
+def _approval_route_for_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> dict[str, str]:
+    """Resolve only the immutable trusted origin, never a notification sub."""
+    selected = get_task_approval_route(conn, task_id)
+    if selected is None:
+        raise ValueError("task has no trusted gateway approval origin")
+    normalized = _normalize_task_approval_route(selected)
+    delivery = conn.execute(
+        "SELECT 1 FROM kanban_notify_subs "
+        "WHERE task_id = ? AND lower(platform) = ? AND chat_id = ? "
+        "  AND thread_id = ? AND user_id = ? AND notifier_profile = ?",
+        (
+            str(task_id),
+            normalized["platform"],
+            normalized["chat_id"],
+            normalized["thread_id"],
+            normalized["user_id"],
+            normalized["notifier_profile"],
+        ),
+    ).fetchone()
+    if delivery is None:
+        raise ValueError("task approval origin has no active delivery subscription")
+    return normalized
+
+
+def _claimed_source_status(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: int,
+) -> str:
+    """Return the lane that produced an exact run, defaulting legacy runs.
+
+    The claim event is written in the same transaction that creates the run
+    and is never rewritten by handoff/result updates. Older ready-lane events
+    omitted ``source_status``; treating those as ``ready`` preserves their
+    historical behavior.
+    """
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND run_id = ? AND kind = 'claimed' "
+        "ORDER BY id ASC LIMIT 1",
+        (str(task_id), int(run_id)),
+    ).fetchone()
+    if row is None or not row["payload"]:
+        return "ready"
+    try:
+        payload = json.loads(row["payload"])
+    except (TypeError, ValueError):
+        return "ready"
+    if isinstance(payload, dict) and payload.get("source_status") == "review":
+        return "review"
+    return "ready"
+
+
+_REQUEUE_ANY = object()
+
+
+def _requeue_from_active_run(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    allowed_statuses: tuple[str, ...] = ("running",),
+    expected_run_id: Optional[int] = None,
+    expected_claim_lock: Any = _REQUEUE_ANY,
+    expected_worker_pid: Any = _REQUEUE_ANY,
+    claim_expired_before: Optional[int] = None,
+    clear_heartbeat: bool = False,
+    consecutive_failures: Optional[int] = None,
+    last_failure_error: Optional[str] = None,
+) -> tuple[bool, str, Optional[int]]:
+    """Release a task into the lane recorded by its exact active claim.
+
+    Every involuntary running→retry transition goes through this CAS helper so
+    a review worker returns to ``review`` instead of silently becoming an
+    ordinary ready-lane worker. Legacy/missing claim metadata defaults to
+    ``ready``. The caller must already hold :func:`write_txn`.
+    """
+    row = conn.execute(
+        "SELECT status, current_run_id, claim_lock, claim_expires, worker_pid "
+        "FROM tasks WHERE id = ?",
+        (str(task_id),),
+    ).fetchone()
+    if row is None or row["status"] not in allowed_statuses:
+        return False, "ready", None
+    run_id = (
+        int(row["current_run_id"])
+        if row["current_run_id"] is not None
+        else None
+    )
+    if expected_run_id is not None and run_id != int(expected_run_id):
+        return False, "ready", run_id
+    if (
+        expected_claim_lock is not _REQUEUE_ANY
+        and row["claim_lock"] != expected_claim_lock
+    ):
+        return False, "ready", run_id
+    if (
+        expected_worker_pid is not _REQUEUE_ANY
+        and row["worker_pid"] != expected_worker_pid
+    ):
+        return False, "ready", run_id
+    if claim_expired_before is not None and (
+        row["claim_expires"] is None
+        or int(row["claim_expires"]) >= int(claim_expired_before)
+    ):
+        return False, "ready", run_id
+
+    retry_status = (
+        _claimed_source_status(conn, task_id=str(task_id), run_id=run_id)
+        if run_id is not None
+        else "ready"
+    )
+    assignments = [
+        "status = ?",
+        "claim_lock = NULL",
+        "claim_expires = NULL",
+        "worker_pid = NULL",
+    ]
+    params: list[Any] = [retry_status]
+    if clear_heartbeat:
+        assignments.append("last_heartbeat_at = NULL")
+    if consecutive_failures is not None:
+        assignments.append("consecutive_failures = ?")
+        params.append(int(consecutive_failures))
+    if last_failure_error is not None:
+        assignments.append("last_failure_error = ?")
+        params.append(str(last_failure_error)[:500])
+    params.extend(
+        [
+            str(task_id),
+            row["status"],
+            run_id,
+            row["claim_lock"],
+            row["worker_pid"],
+        ]
+    )
+    changed = conn.execute(
+        "UPDATE tasks SET "
+        + ", ".join(assignments)
+        + " WHERE id = ? AND status = ? AND current_run_id IS ? "
+        "AND claim_lock IS ? AND worker_pid IS ?",
+        params,
+    )
+    return changed.rowcount == 1, retry_status, run_id
+
+
+def _cancel_unbound_task_approvals(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    now: Optional[int] = None,
+) -> int:
+    """Cancel approval authority invalidated by an operator state change.
+
+    Pending requests and approved-but-not-yet-bound grants belong to one exact
+    task state/principal generation. Unblock, re-block, manual promotion, or
+    reassignment must invalidate them transactionally; otherwise an old human
+    decision can release or re-block a newer unrelated state (an ABA bug).
+    The caller must already hold :func:`write_txn`.
+    """
+
+    cancelled_at = int(time.time()) if now is None else int(now)
+    rows = conn.execute(
+        "SELECT id, requested_run_id FROM kanban_approval_requests "
+        "WHERE task_id = ? AND (state = 'pending' OR "
+        "(state = 'approved' AND resume_run_id IS NULL))",
+        (str(task_id),),
+    ).fetchall()
+    cancelled = 0
+    for row in rows:
+        changed = conn.execute(
+            "UPDATE kanban_approval_requests "
+            "SET state = 'cancelled', grant_nonce = NULL, cancelled_at = ?, "
+            "    decision_reason = ? "
+            "WHERE id = ? AND (state = 'pending' OR "
+            "(state = 'approved' AND resume_run_id IS NULL))",
+            (cancelled_at, str(reason)[:500], row["id"]),
+        )
+        if changed.rowcount != 1:
+            continue
+        cancelled += 1
+        _append_event(
+            conn,
+            str(task_id),
+            "approval_cancelled",
+            {"request_id": row["id"], "reason": str(reason)[:500]},
+            run_id=int(row["requested_run_id"]),
+        )
+    # Clear even a stale legacy marker. Every caller is an explicit
+    # generation-changing operation, so no pending request remains entitled
+    # to decide the task after this point.
+    conn.execute(
+        "UPDATE tasks SET active_approval_id = NULL WHERE id = ?",
+        (str(task_id),),
+    )
+    return cancelled
+
+
+def request_task_approval(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    action_kind: str,
+    action_digest: str,
+    display_target: str,
+    worker_session_id: str,
+    expected_run_id: int,
+    profile: str,
+    description: Optional[str] = None,
+    expected_claim_lock: Optional[str] = None,
+    expires_at: Optional[int] = None,
+    timeout_seconds: int = KANBAN_APPROVAL_REQUEST_TIMEOUT_SECONDS,
+) -> Optional[dict[str, Any]]:
+    """Persist an approval request and atomically park its running task.
+
+    The task/run/claim/profile checks form one CAS boundary. A stale worker can
+    therefore never park a newer run or mint a request for a task it no longer
+    owns. Existing identical requests are returned idempotently; a different
+    pending action for the same task is rejected.
+    """
+    task_id = str(task_id).strip()
+    action_kind = str(action_kind).strip().casefold()
+    action_digest = str(action_digest).strip()
+    display_target = str(display_target).strip()
+    worker_session_id = str(worker_session_id).strip()
+    canonical_profile = _canonical_assignee(profile)
+    if not task_id or not action_kind or not action_digest or not display_target:
+        raise ValueError("task, action kind, digest, and display target are required")
+    if not worker_session_id or len(worker_session_id) > 512:
+        raise ValueError("a valid worker_session_id is required")
+    if canonical_profile is None:
+        raise ValueError("profile is required")
+    now = int(time.time())
+    deadline = (
+        int(expires_at)
+        if expires_at is not None
+        else now + max(1, int(timeout_seconds))
+    )
+    if deadline <= now:
+        raise ValueError("approval request expiry must be in the future")
+    with write_txn(conn):
+        existing = conn.execute(
+            "SELECT * FROM kanban_approval_requests "
+            "WHERE task_id = ? AND state = 'pending'",
+            (task_id,),
+        ).fetchone()
+        if existing is not None:
+            request = KanbanApprovalRequest.from_row(existing)
+            if (
+                request.requested_run_id == int(expected_run_id)
+                and request.profile == canonical_profile
+                and request.action_kind == action_kind
+                and request.action_digest == action_digest
+                and request.worker_session_id == worker_session_id
+            ):
+                parked = conn.execute(
+                    "SELECT status, assignee, current_run_id, active_approval_id "
+                    "FROM tasks WHERE id = ?",
+                    (task_id,),
+                ).fetchone()
+                if (
+                    parked is not None
+                    and parked["status"] == "blocked"
+                    and parked["current_run_id"] is None
+                    and parked["assignee"] == canonical_profile
+                    and parked["active_approval_id"] == request.id
+                ):
+                    return _approval_as_dict(request)
+            return None
+
+        task = conn.execute(
+            "SELECT status, assignee, current_run_id, claim_lock "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            task is None
+            or task["status"] != "running"
+            or task["current_run_id"] is None
+            or int(task["current_run_id"]) != int(expected_run_id)
+            or task["assignee"] != canonical_profile
+            or not task["claim_lock"]
+            or (
+                expected_claim_lock is not None
+                and task["claim_lock"] != str(expected_claim_lock)
+            )
+        ):
+            return None
+        run = conn.execute(
+            "SELECT status, ended_at, profile, claim_lock FROM task_runs "
+            "WHERE id = ? AND task_id = ?",
+            (int(expected_run_id), task_id),
+        ).fetchone()
+        if (
+            run is None
+            or run["status"] != "running"
+            or run["ended_at"] is not None
+            or run["profile"] != canonical_profile
+            or run["claim_lock"] != task["claim_lock"]
+        ):
+            return None
+
+        bound_grant = conn.execute(
+            "SELECT id, resume_run_id, profile "
+            "FROM kanban_approval_requests "
+            "WHERE task_id = ? AND state = 'approved'",
+            (task_id,),
+        ).fetchone()
+        if bound_grant is not None:
+            if (
+                bound_grant["resume_run_id"] is None
+                or int(bound_grant["resume_run_id"]) != int(expected_run_id)
+                or bound_grant["profile"] != canonical_profile
+            ):
+                return None
+            # A resumed action can legitimately differ after the model sees
+            # new context, or the short-lived grant can expire before the tool
+            # retries. Supersede only the grant bound to THIS exact active run,
+            # then park a fresh request below. This avoids both replay and the
+            # clean-exit protocol-violation path.
+            cancelled = conn.execute(
+                "UPDATE kanban_approval_requests "
+                "SET state = 'cancelled', grant_nonce = NULL, cancelled_at = ?, "
+                "    decision_reason = 'superseded by a fresh action request' "
+                "WHERE id = ? AND state = 'approved' AND resume_run_id = ?",
+                (now, bound_grant["id"], int(expected_run_id)),
+            )
+            if cancelled.rowcount != 1:
+                return None
+            _append_event(
+                conn,
+                task_id,
+                "approval_cancelled",
+                {
+                    "request_id": bound_grant["id"],
+                    "reason": "superseded by a fresh action request",
+                },
+                run_id=int(expected_run_id),
+            )
+
+        # Resolve the immutable principal and its active delivery row under
+        # the same write lock as the park below. A concurrent unsubscribe
+        # therefore wins before this transaction (and the card is parked as
+        # unavailable) or waits until after a routable request is durable.
+        # It cannot race between the route check and the state transition.
+        normalized_route: Optional[dict[str, str]] = None
+        route_unavailable_reason: Optional[str] = None
+        try:
+            normalized_route = _approval_route_for_task(conn, task_id)
+        except ValueError as exc:
+            route_unavailable_reason = str(exc)
+        unavailable = route_unavailable_reason is not None
+        request_id = None if unavailable else "ka_" + secrets.token_hex(12)
+
+        # CAS the live task before inserting the request. Any later failure in
+        # this transaction rolls the task update back with it.
+        params: list[Any] = [
+            request_id,
+            task_id,
+            int(expected_run_id),
+            canonical_profile,
+        ]
+        claim_sql = ""
+        if expected_claim_lock is not None:
+            claim_sql = " AND claim_lock = ?"
+            params.append(str(expected_claim_lock))
+        updated = conn.execute(
+            "UPDATE tasks "
+            "SET status = 'blocked', claim_lock = NULL, claim_expires = NULL, "
+            "    worker_pid = NULL, current_run_id = NULL, "
+            "    block_kind = 'needs_input', active_approval_id = ? "
+            "WHERE id = ? AND status = 'running' AND current_run_id = ? "
+            "  AND assignee = ?" + claim_sql,
+            params,
+        )
+        if updated.rowcount != 1:
+            return None
+        run_update = conn.execute(
+            "UPDATE task_runs "
+            "SET status = 'approval_pending', outcome = ?, "
+            "    summary = ?, ended_at = ?, "
+            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ? AND task_id = ? AND status = 'running' "
+            "  AND ended_at IS NULL",
+            (
+                "approval_unavailable" if unavailable else "approval_pending",
+                (
+                    "blocked because no authorized approval route is available"
+                    if unavailable
+                    else "paused for a durable human approval"
+                ),
+                now,
+                int(expected_run_id),
+                task_id,
+            ),
+        )
+        if run_update.rowcount != 1:
+            raise RuntimeError("approval request lost active-run CAS")
+        if unavailable:
+            # This is a signed worker-control identifier only. It deliberately
+            # uses a non-actionable prefix and is not inserted into the
+            # approval broker: there is no authenticated human route, so no
+            # request may be listed, notified, decided, or later granted.
+            control_id = "kau_" + secrets.token_hex(12)
+            _append_event(
+                conn,
+                task_id,
+                "approval_unavailable",
+                {
+                    "control_id": control_id,
+                    "action_kind": action_kind,
+                    "display_target": display_target[:2048],
+                    "description": description[:2048] if description else None,
+                    "reason": route_unavailable_reason,
+                },
+                run_id=int(expected_run_id),
+            )
+            return {
+                "id": control_id,
+                "task_id": task_id,
+                "requested_run_id": int(expected_run_id),
+                "profile": canonical_profile,
+                "action_kind": action_kind,
+                "display_target": display_target[:2048],
+                "description": description[:2048] if description else None,
+                "worker_session_id": worker_session_id,
+                "state": "unavailable",
+                "status": "unavailable",
+                "approval_unavailable": True,
+                "outcome": "approval_unavailable",
+                "decision_reason": route_unavailable_reason,
+            }
+
+        assert normalized_route is not None
+        assert request_id is not None
+        conn.execute(
+            """
+            INSERT INTO kanban_approval_requests (
+                id, task_id, requested_run_id, profile,
+                action_kind, action_digest, display_target, description,
+                worker_session_id, state,
+                platform, chat_id, thread_id, user_id, notifier_profile,
+                requested_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                request_id,
+                task_id,
+                int(expected_run_id),
+                canonical_profile,
+                action_kind,
+                action_digest,
+                display_target[:2048],
+                description[:2048] if description else None,
+                worker_session_id,
+                normalized_route["platform"],
+                normalized_route["chat_id"],
+                normalized_route["thread_id"],
+                normalized_route["user_id"],
+                normalized_route["notifier_profile"],
+                now,
+                deadline,
+            ),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "approval_requested",
+            {
+                "request_id": request_id,
+                "action_kind": action_kind,
+                "display_target": display_target[:2048],
+                "description": description[:2048] if description else None,
+            },
+            run_id=int(expected_run_id),
+        )
+        row = conn.execute(
+            "SELECT * FROM kanban_approval_requests WHERE id = ?",
+            (request_id,),
+        ).fetchone()
+        return _approval_as_dict(KanbanApprovalRequest.from_row(row))
+
+
+def decide_task_approval(
+    conn: sqlite3.Connection,
+    request_id: str,
+    decision: str,
+    *,
+    platform: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+    decided_by: Optional[str] = None,
+    reason: Optional[str] = None,
+    grant_ttl_seconds: int = KANBAN_APPROVAL_GRANT_TTL_SECONDS,
+    grant_expires_at: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    """Approve or deny a pending request with optional exact-route checks."""
+    normalized = str(decision).strip().casefold()
+    if normalized in {"approve", "approved", "allow", "yes"}:
+        new_state = "approved"
+    elif normalized in {"deny", "denied", "reject", "no"}:
+        new_state = "denied"
+    else:
+        raise ValueError("decision must be approve or deny")
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM kanban_approval_requests WHERE id = ?",
+            (str(request_id),),
+        ).fetchone()
+        if row is None or row["state"] != "pending":
+            return None
+        request = KanbanApprovalRequest.from_row(row)
+        supplied_route = {
+            "platform": platform,
+            "chat_id": chat_id,
+            "thread_id": thread_id,
+            "user_id": user_id,
+            "notifier_profile": notifier_profile,
+        }
+        for field_name, expected in supplied_route.items():
+            if expected is not None and str(getattr(request, field_name) or "") != str(expected):
+                return None
+        if request.expires_at <= now:
+            conn.execute(
+                "UPDATE kanban_approval_requests "
+                "SET state = 'expired', decided_at = ?, decision_reason = ? "
+                "WHERE id = ? AND state = 'pending'",
+                (now, "request expired before decision", request.id),
+            )
+            conn.execute(
+                "UPDATE tasks SET active_approval_id = NULL "
+                "WHERE id = ? AND active_approval_id = ?",
+                (request.task_id, request.id),
+            )
+            _append_event(
+                conn,
+                request.task_id,
+                "approval_expired",
+                {"request_id": request.id},
+                run_id=request.requested_run_id,
+            )
+            expired = conn.execute(
+                "SELECT * FROM kanban_approval_requests WHERE id = ?",
+                (request.id,),
+            ).fetchone()
+            return _approval_as_dict(KanbanApprovalRequest.from_row(expired))
+
+        task = conn.execute(
+            "SELECT status, assignee, current_run_id, active_approval_id "
+            "FROM tasks WHERE id = ?",
+            (request.task_id,),
+        ).fetchone()
+        if (
+            task is None
+            or task["status"] != "blocked"
+            or task["current_run_id"] is not None
+            or task["assignee"] != request.profile
+            or task["active_approval_id"] != request.id
+        ):
+            return None
+
+        grant_nonce: Optional[str] = None
+        grant_expiry = request.expires_at
+        if new_state == "approved":
+            grant_nonce = secrets.token_urlsafe(32)
+            grant_expiry = (
+                int(grant_expires_at)
+                if grant_expires_at is not None
+                else now + max(1, int(grant_ttl_seconds))
+            )
+            if grant_expiry <= now:
+                raise ValueError("approval grant expiry must be in the future")
+        changed = conn.execute(
+            "UPDATE kanban_approval_requests "
+            "SET state = ?, grant_nonce = ?, decided_at = ?, expires_at = ?, "
+            "    decided_by = ?, decision_reason = ? "
+            "WHERE id = ? AND state = 'pending'",
+            (
+                new_state,
+                grant_nonce,
+                now,
+                grant_expiry,
+                decided_by,
+                reason,
+                request.id,
+            ),
+        )
+        if changed.rowcount != 1:
+            return None
+
+        target_status = "blocked"
+        if new_state == "approved":
+            source_status = _claimed_source_status(
+                conn,
+                task_id=request.task_id,
+                run_id=request.requested_run_id,
+            )
+            if source_status == "review":
+                # Review runs already crossed the dependency gate. Restoring
+                # them to ready would silently drop the sdlc-review dispatch
+                # lane and its mandatory skill.
+                target_status = "review"
+            else:
+                undone_parent = conn.execute(
+                    "SELECT 1 FROM task_links l "
+                    "JOIN tasks p ON p.id = l.parent_id "
+                    "WHERE l.child_id = ? "
+                    "  AND p.status NOT IN ('done', 'archived') LIMIT 1",
+                    (request.task_id,),
+                ).fetchone()
+                target_status = "todo" if undone_parent else "ready"
+            task_update = conn.execute(
+                "UPDATE tasks SET status = ?, block_kind = NULL "
+                "WHERE id = ? AND status = 'blocked' "
+                "  AND current_run_id IS NULL AND assignee = ? "
+                "  AND active_approval_id = ?",
+                (
+                    target_status,
+                    request.task_id,
+                    request.profile,
+                    request.id,
+                ),
+            )
+            if task_update.rowcount != 1:
+                raise RuntimeError("approval decision lost task-state CAS")
+        else:
+            task_update = conn.execute(
+                "UPDATE tasks SET active_approval_id = NULL "
+                "WHERE id = ? AND status = 'blocked' "
+                "  AND current_run_id IS NULL AND assignee = ? "
+                "  AND active_approval_id = ?",
+                (request.task_id, request.profile, request.id),
+            )
+            if task_update.rowcount != 1:
+                raise RuntimeError("approval denial lost task-state CAS")
+        _append_event(
+            conn,
+            request.task_id,
+            "approval_approved" if new_state == "approved" else "approval_denied",
+            {
+                "request_id": request.id,
+                "decided_by": decided_by,
+                "reason": reason,
+                "task_status": target_status,
+                "source_status": (
+                    _claimed_source_status(
+                        conn,
+                        task_id=request.task_id,
+                        run_id=request.requested_run_id,
+                    )
+                    if new_state == "approved"
+                    else None
+                ),
+            },
+            run_id=request.requested_run_id,
+        )
+        decided = conn.execute(
+            "SELECT * FROM kanban_approval_requests WHERE id = ?",
+            (request.id,),
+        ).fetchone()
+        return _approval_as_dict(KanbanApprovalRequest.from_row(decided))
+
+
+def consume_task_approval(
+    conn: sqlite3.Connection,
+    *,
+    request_id: str,
+    grant_nonce: str,
+    task_id: str,
+    resume_run_id: int,
+    profile: str,
+    action_digest: str,
+) -> bool:
+    """Consume one exact, bound grant once; reject every partial match."""
+    canonical_profile = _canonical_assignee(profile)
+    if canonical_profile is None:
+        return False
+    now = int(time.time())
+    with write_txn(conn):
+        changed = conn.execute(
+            "UPDATE kanban_approval_requests "
+            "SET state = 'consumed', consumed_at = ?, grant_nonce = NULL "
+            "WHERE id = ? AND state = 'approved' AND grant_nonce = ? "
+            "  AND task_id = ? AND resume_run_id = ? AND profile = ? "
+            "  AND action_digest = ? AND expires_at > ? AND consumed_at IS NULL "
+            "  AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = ? "
+            "      AND t.status = 'running' AND t.current_run_id = ? "
+            "      AND t.assignee = ? AND t.active_approval_id = ?)",
+            (
+                now,
+                str(request_id),
+                str(grant_nonce),
+                str(task_id),
+                int(resume_run_id),
+                canonical_profile,
+                str(action_digest),
+                now,
+                str(task_id),
+                int(resume_run_id),
+                canonical_profile,
+                str(request_id),
+            ),
+        )
+        if changed.rowcount != 1:
+            return False
+        marker = conn.execute(
+            "UPDATE tasks SET active_approval_id = NULL "
+            "WHERE id = ? AND status = 'running' AND current_run_id = ? "
+            "  AND assignee = ? AND active_approval_id = ?",
+            (
+                str(task_id),
+                int(resume_run_id),
+                canonical_profile,
+                str(request_id),
+            ),
+        )
+        if marker.rowcount != 1:
+            raise RuntimeError("approval consumption lost active task binding")
+        _append_event(
+            conn,
+            str(task_id),
+            "approval_consumed",
+            {"request_id": str(request_id)},
+            run_id=int(resume_run_id),
+        )
+        return True
+
+
+def cancel_bound_task_approval(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    resume_run_id: int,
+    request_id: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> bool:
+    """Unbind an unconsumed grant after a dispatcher spawn failure.
+
+    The approval remains valid for its original digest, but its nonce rotates
+    before a later run can bind it. This preserves the user's decision without
+    leaving a credential tied to a run that never started.
+    """
+    with write_txn(conn):
+        sql = (
+            "SELECT * FROM kanban_approval_requests "
+            "WHERE task_id = ? AND resume_run_id = ? AND state = 'approved'"
+        )
+        params: list[Any] = [str(task_id), int(resume_run_id)]
+        if request_id is not None:
+            sql += " AND id = ?"
+            params.append(str(request_id))
+        row = conn.execute(sql, params).fetchone()
+        if row is None:
+            return False
+        request = KanbanApprovalRequest.from_row(row)
+        # Always restore the unbound generation and rotate its nonce, even if
+        # the wall-clock expiry raced with this spawn failure. The next claim
+        # or dispatcher expiry pass will atomically expire and block the exact
+        # active marker. Marking it expired here would strand a ready task with
+        # no active request for that marker after failure requeue.
+        changed = conn.execute(
+            "UPDATE kanban_approval_requests "
+            "SET resume_run_id = NULL, grant_nonce = ? "
+            "WHERE id = ? AND state = 'approved' AND resume_run_id = ?",
+            (secrets.token_urlsafe(32), request.id, int(resume_run_id)),
+        )
+        if changed.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            request.task_id,
+            "approval_resume_unbound",
+            {"request_id": request.id, "reason": reason},
+            run_id=int(resume_run_id),
+        )
+        return True
+
+
+def expire_task_approvals(
+    conn: sqlite3.Connection,
+    *,
+    now: Optional[int] = None,
+) -> int:
+    """Expire stale pending/granted requests and fail closed when unbound."""
+    current = int(time.time()) if now is None else int(now)
+    expired_count = 0
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT * FROM kanban_approval_requests "
+            "WHERE state IN ('pending', 'approved') AND expires_at <= ?",
+            (current,),
+        ).fetchall()
+        for row in rows:
+            request = KanbanApprovalRequest.from_row(row)
+            changed = conn.execute(
+                "UPDATE kanban_approval_requests "
+                "SET state = 'expired', grant_nonce = NULL, decided_at = COALESCE(decided_at, ?), "
+                "    decision_reason = COALESCE(decision_reason, 'approval expired') "
+                "WHERE id = ? AND state IN ('pending', 'approved') AND expires_at <= ?",
+                (current, request.id, current),
+            )
+            if changed.rowcount != 1:
+                continue
+            expired_count += 1
+            if request.resume_run_id is None:
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input', "
+                    "    active_approval_id = NULL "
+                    "WHERE id = ? AND status IN ('ready', 'todo', 'review') "
+                    "  AND current_run_id IS NULL AND assignee = ? "
+                    "  AND active_approval_id = ?",
+                    (request.task_id, request.profile, request.id),
+                )
+            # Clear the exact generation for both unbound and bound grants.
+            # A bound grant can expire while its resume process is starting;
+            # leaving the marker behind after the request becomes ``expired``
+            # wedges every later claim because no active request can consume
+            # or cancel it.
+            conn.execute(
+                "UPDATE tasks SET active_approval_id = NULL "
+                "WHERE id = ? AND active_approval_id = ?",
+                (request.task_id, request.id),
+            )
+            _append_event(
+                conn,
+                request.task_id,
+                "approval_expired",
+                {"request_id": request.id},
+                run_id=request.resume_run_id or request.requested_run_id,
+            )
+    return expired_count
+
+
+# ---------------------------------------------------------------------------
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
 
@@ -3371,10 +4813,10 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       finish, transient infra error clears).
 
     The cheapest signal that distinguishes the two is the most recent
-    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
-    ``recompute_ready`` must *not* auto-promote it.
+    blocking / ``"unblocked"`` event for the task. Human-denied or expired
+    durable approvals are blocking decisions too; they must not be undone by
+    the next dispatcher tick simply because their parent dependencies are
+    already satisfied.
 
     Returns ``False`` when there is no such event at all (e.g. the task
     was set to ``status='blocked'`` by the circuit breaker or by direct
@@ -3383,11 +4825,20 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "WHERE task_id = ? "
+        "  AND kind IN ("
+        "      'blocked', 'unblocked', 'approval_denied', "
+        "      'approval_expired', 'approval_unavailable'"
+        "  ) "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    return bool(row) and row["kind"] in {
+        "blocked",
+        "approval_denied",
+        "approval_expired",
+        "approval_unavailable",
+    }
 
 
 def recompute_ready(
@@ -3432,6 +4883,15 @@ def recompute_ready(
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            pending_approval = conn.execute(
+                "SELECT 1 FROM kanban_approval_requests "
+                "WHERE task_id = ? AND state = 'pending' LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if pending_approval:
+                # A durable approval request, unlike a dependency/circuit
+                # breaker block, can only be released by its routed decision.
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for human review — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -3497,6 +4957,101 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        initial_task = conn.execute(
+            "SELECT status, assignee, current_run_id, active_approval_id "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if initial_task is None or initial_task["status"] != "ready":
+            # In particular, do not let a losing concurrent claimer mutate a
+            # grant that the winning claimer already bound to a running task.
+            return None
+        approval_row = conn.execute(
+            "SELECT * FROM kanban_approval_requests "
+            "WHERE task_id = ? AND state IN ('pending', 'approved') "
+            "ORDER BY requested_at DESC, rowid DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        approval: Optional[KanbanApprovalRequest] = None
+        if approval_row is not None:
+            approval = KanbanApprovalRequest.from_row(approval_row)
+            if approval.expires_at <= now:
+                conn.execute(
+                    "UPDATE kanban_approval_requests "
+                    "SET state = 'expired', grant_nonce = NULL, "
+                    "    decided_at = COALESCE(decided_at, ?), "
+                    "    decision_reason = COALESCE(decision_reason, 'approval expired') "
+                    "WHERE id = ? AND state IN ('pending', 'approved')",
+                    (now, approval.id),
+                )
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input', "
+                    "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+                    "    active_approval_id = NULL "
+                    "WHERE id = ? AND status = 'ready' AND current_run_id IS NULL "
+                    "  AND active_approval_id = ?",
+                    (task_id, approval.id),
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "approval_expired",
+                    {"request_id": approval.id},
+                    run_id=approval.requested_run_id,
+                )
+                return None
+            if approval.state == "pending":
+                # Defend against a manual status edit: pending means parked,
+                # regardless of what the tasks.status column currently says.
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input', "
+                    "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+                    "WHERE id = ? AND status = 'ready' AND current_run_id IS NULL "
+                    "  AND active_approval_id = ?",
+                    (task_id, approval.id),
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "claim_rejected",
+                    {"reason": "approval_pending", "request_id": approval.id},
+                )
+                return None
+            if (
+                approval.resume_run_id is not None
+                or initial_task["assignee"] != approval.profile
+                or initial_task["active_approval_id"] != approval.id
+                or _claimed_source_status(
+                    conn,
+                    task_id=task_id,
+                    run_id=approval.requested_run_id,
+                )
+                != "ready"
+                or not approval.grant_nonce
+                or not approval.worker_session_id
+            ):
+                # A reassignment invalidates the prior principal's decision;
+                # a pre-bound grant must never be rebound to another run.
+                conn.execute(
+                    "UPDATE kanban_approval_requests "
+                    "SET state = 'cancelled', grant_nonce = NULL, cancelled_at = ? "
+                    "WHERE id = ? AND state = 'approved'",
+                    (now, approval.id),
+                )
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input', "
+                    "    active_approval_id = NULL "
+                    "WHERE id = ? AND status = 'ready' AND current_run_id IS NULL "
+                    "  AND active_approval_id = ?",
+                    (task_id, approval.id),
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "approval_cancelled",
+                    {"request_id": approval.id, "reason": "profile_or_binding_changed"},
+                )
+                return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -3552,8 +5107,15 @@ def claim_task(
              WHERE id = ?
                AND status = 'ready'
                AND claim_lock IS NULL
+               AND active_approval_id IS ?
             """,
-            (lock, expires, now, task_id),
+            (
+                lock,
+                expires,
+                now,
+                task_id,
+                approval.id if approval is not None else None,
+            ),
         )
         if cur.rowcount != 1:
             return None
@@ -3587,12 +5149,30 @@ def claim_task(
             "UPDATE tasks SET current_run_id = ? WHERE id = ?",
             (run_id, task_id),
         )
+        if approval is not None:
+            bound = conn.execute(
+                "UPDATE kanban_approval_requests SET resume_run_id = ? "
+                "WHERE id = ? AND task_id = ? AND state = 'approved' "
+                "  AND resume_run_id IS NULL AND expires_at > ?",
+                (int(run_id), approval.id, task_id, now),
+            )
+            if bound.rowcount != 1:
+                raise RuntimeError("failed to bind approval grant to claimed run")
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
+            {
+                "lock": lock,
+                "expires": expires,
+                "run_id": run_id,
+                "source_status": "ready",
+            },
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
+        if claimed is not None and approval is not None:
+            claimed.approval_request_id = approval.id
+            claimed.approval_grant_nonce = approval.grant_nonce
+            claimed.approval_worker_session_id = approval.worker_session_id
     _fire_kanban_lifecycle_hook(
         "kanban_task_claimed",
         task_id,
@@ -3626,6 +5206,95 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        initial_task = conn.execute(
+            "SELECT status, assignee, current_run_id, active_approval_id "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if initial_task is None or initial_task["status"] != "review":
+            return None
+        approval_row = conn.execute(
+            "SELECT * FROM kanban_approval_requests "
+            "WHERE task_id = ? AND state IN ('pending', 'approved') "
+            "ORDER BY requested_at DESC, rowid DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        approval: Optional[KanbanApprovalRequest] = None
+        if approval_row is not None:
+            approval = KanbanApprovalRequest.from_row(approval_row)
+            if approval.expires_at <= now:
+                conn.execute(
+                    "UPDATE kanban_approval_requests "
+                    "SET state = 'expired', grant_nonce = NULL, "
+                    "    decided_at = COALESCE(decided_at, ?), "
+                    "    decision_reason = COALESCE(decision_reason, 'approval expired') "
+                    "WHERE id = ? AND state IN ('pending', 'approved')",
+                    (now, approval.id),
+                )
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input', "
+                    "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+                    "    active_approval_id = NULL "
+                    "WHERE id = ? AND status = 'review' AND current_run_id IS NULL "
+                    "  AND active_approval_id = ?",
+                    (task_id, approval.id),
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "approval_expired",
+                    {"request_id": approval.id},
+                    run_id=approval.requested_run_id,
+                )
+                return None
+            if approval.state == "pending":
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input', "
+                    "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+                    "WHERE id = ? AND status = 'review' AND current_run_id IS NULL "
+                    "  AND active_approval_id = ?",
+                    (task_id, approval.id),
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "claim_rejected",
+                    {"reason": "approval_pending", "request_id": approval.id},
+                )
+                return None
+            if (
+                approval.resume_run_id is not None
+                or initial_task["assignee"] != approval.profile
+                or initial_task["active_approval_id"] != approval.id
+                or _claimed_source_status(
+                    conn,
+                    task_id=task_id,
+                    run_id=approval.requested_run_id,
+                )
+                != "review"
+                or not approval.grant_nonce
+                or not approval.worker_session_id
+            ):
+                conn.execute(
+                    "UPDATE kanban_approval_requests "
+                    "SET state = 'cancelled', grant_nonce = NULL, cancelled_at = ? "
+                    "WHERE id = ? AND state = 'approved'",
+                    (now, approval.id),
+                )
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input', "
+                    "    active_approval_id = NULL "
+                    "WHERE id = ? AND status = 'review' AND current_run_id IS NULL "
+                    "  AND active_approval_id = ?",
+                    (task_id, approval.id),
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "approval_cancelled",
+                    {"request_id": approval.id, "reason": "profile_or_binding_changed"},
+                )
+                return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -3636,8 +5305,15 @@ def claim_review_task(
              WHERE id = ?
                AND status = 'review'
                AND claim_lock IS NULL
+               AND active_approval_id IS ?
             """,
-            (lock, expires, now, task_id),
+            (
+                lock,
+                expires,
+                now,
+                task_id,
+                approval.id if approval is not None else None,
+            ),
         )
         if cur.rowcount != 1:
             return None
@@ -3669,13 +5345,211 @@ def claim_review_task(
             "UPDATE tasks SET current_run_id = ? WHERE id = ?",
             (run_id, task_id),
         )
+        if approval is not None:
+            bound = conn.execute(
+                "UPDATE kanban_approval_requests SET resume_run_id = ? "
+                "WHERE id = ? AND task_id = ? AND state = 'approved' "
+                "  AND resume_run_id IS NULL AND expires_at > ?",
+                (int(run_id), approval.id, task_id, now),
+            )
+            if bound.rowcount != 1:
+                raise RuntimeError("failed to bind review approval grant to claimed run")
         _append_event(
             conn, task_id, "claimed",
             {"lock": lock, "expires": expires, "run_id": run_id,
              "source_status": "review"},
             run_id=run_id,
         )
-        return get_task(conn, task_id)
+        claimed = get_task(conn, task_id)
+        if claimed is not None and approval is not None:
+            claimed.approval_request_id = approval.id
+            claimed.approval_grant_nonce = approval.grant_nonce
+            claimed.approval_worker_session_id = approval.worker_session_id
+        return claimed
+
+
+_OWNER_BOOTSTRAP_MAX_TTL_SECONDS = 60
+_DISPATCH_OWNER_LAUNCH_CAPABILITY = object()
+
+
+def _owner_bootstrap_record(*, nonce: str, worker_pid: int, expires_at: int) -> str:
+    digest = hashlib.sha256(str(nonce).encode("utf-8")).hexdigest()
+    return f"v2:{int(expires_at)}:{int(worker_pid)}:{digest}"
+
+
+def _arm_task_owner_bootstrap(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: int,
+    profile: str,
+    claim_lock: str,
+    nonce: str,
+    worker_pid: int,
+    expires_at: int,
+    _launch_capability: object = None,
+) -> bool:
+    """Arm one short-lived handoff after the real worker PID exists.
+
+    Public/manual claims deliberately do not mint owner authority. The default
+    dispatcher calls this only after spawning the quiet child and CAS-binding
+    its actual PID; the child remains blocked on the launch pipe until this
+    record is durable. The private sentinel distinguishes that supported call
+    path from ordinary database helpers; it is a provenance invariant inside
+    the same-account trust envelope, not an OS security boundary.
+    """
+    if _launch_capability is not _DISPATCH_OWNER_LAUNCH_CAPABILITY:
+        return False
+    raw_profile = str(profile or "").strip()
+    canonical_profile = _canonical_assignee(raw_profile) if raw_profile else None
+    task_id = str(task_id).strip()
+    claim_lock = str(claim_lock).strip()
+    nonce = str(nonce).strip()
+    try:
+        run_id = int(run_id)
+        worker_pid = int(worker_pid)
+        expires_at = int(expires_at)
+    except (TypeError, ValueError):
+        return False
+    now = int(time.time())
+    if (
+        not task_id
+        or run_id <= 0
+        or not canonical_profile
+        or not claim_lock
+        or len(nonce) < 32
+        or len(nonce) > 512
+        or worker_pid <= 0
+        or expires_at <= now
+        or expires_at > now + _OWNER_BOOTSTRAP_MAX_TTL_SECONDS
+    ):
+        return False
+    record = _owner_bootstrap_record(
+        nonce=nonce,
+        worker_pid=worker_pid,
+        expires_at=expires_at,
+    )
+    with write_txn(conn):
+        changed = conn.execute(
+            "UPDATE task_runs SET owner_bootstrap_nonce = ? "
+            "WHERE id = ? AND task_id = ? AND profile = ? "
+            "  AND status = 'running' AND ended_at IS NULL "
+            "  AND claim_lock = ? AND worker_pid = ? "
+            "  AND owner_bootstrap_nonce IS NULL "
+            "  AND EXISTS ("
+            "      SELECT 1 FROM tasks "
+            "      WHERE tasks.id = task_runs.task_id "
+            "        AND tasks.status = 'running' "
+            "        AND tasks.current_run_id = task_runs.id "
+            "        AND tasks.assignee = task_runs.profile "
+            "        AND tasks.claim_lock = task_runs.claim_lock "
+            "        AND tasks.worker_pid = task_runs.worker_pid"
+            "  )",
+            (
+                record,
+                run_id,
+                task_id,
+                canonical_profile,
+                claim_lock,
+                worker_pid,
+            ),
+        )
+        return changed.rowcount == 1
+
+
+def _consume_task_owner_bootstrap(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: int,
+    profile: str,
+    claim_lock: str,
+    nonce: str,
+    worker_pid: int,
+    expires_at: int,
+) -> bool:
+    """Consume one exact dispatcher launch ticket once, failing closed."""
+
+    raw_profile = str(profile or "").strip()
+    canonical_profile = _canonical_assignee(raw_profile) if raw_profile else None
+    task_id = str(task_id).strip()
+    claim_lock = str(claim_lock).strip()
+    nonce = str(nonce).strip()
+    try:
+        run_id = int(run_id)
+        worker_pid = int(worker_pid)
+        expires_at = int(expires_at)
+    except (TypeError, ValueError):
+        return False
+    now = int(time.time())
+    if (
+        not task_id
+        or run_id <= 0
+        or not canonical_profile
+        or not claim_lock
+        or len(nonce) < 32
+        or len(nonce) > 512
+        or worker_pid <= 0
+        or expires_at <= now
+    ):
+        return False
+    record = _owner_bootstrap_record(
+        nonce=nonce,
+        worker_pid=worker_pid,
+        expires_at=expires_at,
+    )
+    with write_txn(conn):
+        changed = conn.execute(
+            "UPDATE task_runs SET owner_bootstrap_nonce = NULL "
+            "WHERE id = ? AND task_id = ? AND profile = ? "
+            "  AND status = 'running' AND ended_at IS NULL "
+            "  AND claim_lock = ? AND worker_pid = ? "
+            "  AND owner_bootstrap_nonce = ? "
+            "  AND EXISTS ("
+            "      SELECT 1 FROM tasks "
+            "      WHERE tasks.id = task_runs.task_id "
+            "        AND tasks.status = 'running' "
+            "        AND tasks.current_run_id = task_runs.id "
+            "        AND tasks.assignee = task_runs.profile "
+            "        AND tasks.claim_lock = task_runs.claim_lock "
+            "        AND tasks.worker_pid = task_runs.worker_pid"
+            "  )",
+            (
+                run_id,
+                task_id,
+                canonical_profile,
+                claim_lock,
+                worker_pid,
+                record,
+            ),
+        )
+        return changed.rowcount == 1
+
+
+def _revoke_task_owner_bootstrap(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: int,
+    worker_pid: int,
+    nonce: str,
+    expires_at: int,
+) -> bool:
+    """Clear only the exact handoff whose delivery to the child failed."""
+
+    record = _owner_bootstrap_record(
+        nonce=str(nonce),
+        worker_pid=int(worker_pid),
+        expires_at=int(expires_at),
+    )
+    with write_txn(conn):
+        changed = conn.execute(
+            "UPDATE task_runs SET owner_bootstrap_nonce = NULL "
+            "WHERE id = ? AND task_id = ? AND worker_pid = ? "
+            "  AND owner_bootstrap_nonce = ?",
+            (int(run_id), str(task_id), int(worker_pid), record),
+        )
+        return changed.rowcount == 1
 
 
 def heartbeat_claim(
@@ -3815,14 +5689,14 @@ def release_stale_claims(
             )
             continue
         with write_txn(conn):
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
-                "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (row["id"], row["claim_lock"], now),
+            released, _retry_status, _active_run_id = _requeue_from_active_run(
+                conn,
+                row["id"],
+                expected_claim_lock=row["claim_lock"],
+                expected_worker_pid=row["worker_pid"],
+                claim_expired_before=now,
             )
-            if cur.rowcount != 1:
+            if not released:
                 continue
             run_id = _end_run(
                 conn, row["id"],
@@ -3887,15 +5761,20 @@ def reclaim_task(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
     )
     with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
-            "AND claim_lock IS ?",
-            (task_id, prev_lock),
+        released, _retry_status, _active_run_id = _requeue_from_active_run(
+            conn,
+            task_id,
+            allowed_statuses=("running", "ready", "blocked"),
+            expected_claim_lock=prev_lock,
+            expected_worker_pid=row["worker_pid"],
         )
-        if cur.rowcount != 1:
+        if not released:
             return False
+        _cancel_unbound_task_approvals(
+            conn,
+            task_id,
+            reason="task was manually reclaimed by an operator",
+        )
         run_id = _end_run(
             conn, task_id,
             outcome="reclaimed", status="reclaimed",
@@ -4211,6 +6090,12 @@ def complete_task(
                     size=path.stat().st_size,
                     created_at=now,
                 )
+        _cancel_unbound_task_approvals(
+            conn,
+            task_id,
+            reason="task was completed",
+            now=now,
+        )
         run_id = _end_run(
             conn, task_id,
             outcome="completed", status="done",
@@ -4950,6 +6835,11 @@ def block_task(
             )
             if cur.rowcount != 1:
                 return False
+            _cancel_unbound_task_approvals(
+                conn,
+                task_id,
+                reason="task entered a dependency block",
+            )
             run_id = _end_run(
                 conn, task_id,
                 outcome="blocked", status="blocked",
@@ -5004,6 +6894,11 @@ def block_task(
             )
             if cur.rowcount != 1:
                 return False
+            _cancel_unbound_task_approvals(
+                conn,
+                task_id,
+                reason="task entered triage after a new block",
+            )
             run_id = _end_run(
                 conn, task_id,
                 outcome="blocked", status="blocked",
@@ -5058,6 +6953,11 @@ def block_task(
                 )
             if cur.rowcount != 1:
                 return False
+            _cancel_unbound_task_approvals(
+                conn,
+                task_id,
+                reason="task was blocked for a new reason",
+            )
             run_id = _end_run(
                 conn, task_id,
                 outcome="blocked", status="blocked",
@@ -5149,6 +7049,11 @@ def promote_task(
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
+        _cancel_unbound_task_approvals(
+            conn,
+            task_id,
+            reason="task was manually promoted",
+        )
         _append_event(
             conn,
             task_id,
@@ -5218,6 +7123,12 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
+        _cancel_unbound_task_approvals(
+            conn,
+            task_id,
+            reason="task was explicitly unblocked",
+            now=now,
+        )
         _append_event(
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
@@ -5283,6 +7194,11 @@ def specify_triage_task(
         )
         if cur.rowcount != 1:
             return False
+        _cancel_unbound_task_approvals(
+            conn,
+            task_id,
+            reason="triage task was specified and promoted",
+        )
         if changed_fields and author and author.strip():
             # Inline INSERT (rather than ``add_comment``) because we're
             # already inside this function's write_txn — nested BEGIN
@@ -5417,6 +7333,7 @@ def decompose_triage_task(
             return None
         if root_row["status"] != "triage":
             return None
+        root_approval_route = get_task_approval_route(conn, task_id)
         tenant = root_row["tenant"]
         # Children inherit the root's workspace by default so a fan-out
         # of a code-gen task lands in the parent's project dir/worktree
@@ -5463,6 +7380,15 @@ def decompose_triage_task(
                     (author or "decomposer"),
                 ),
             )
+            if root_approval_route is not None and not _bind_task_approval_route_in_txn(
+                conn,
+                task_id=new_id,
+                route=root_approval_route,
+                add_notification=True,
+            ):
+                raise RuntimeError(
+                    "could not inherit the root task's approval origin"
+                )
             _append_event(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
@@ -5505,6 +7431,12 @@ def decompose_triage_task(
         conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",
             tuple(params),
+        )
+        _cancel_unbound_task_approvals(
+            conn,
+            task_id,
+            reason="task was decomposed into child work",
+            now=now,
         )
 
         # Audit comment + event on the root so the timeline shows the fan-out.
@@ -5549,6 +7481,11 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
+        _cancel_unbound_task_approvals(
+            conn,
+            task_id,
+            reason="task was archived",
+        )
         # If archive happened while a run was still in flight (e.g. user
         # archived a running task from the dashboard), close that run with
         # outcome='reclaimed' so attempt history isn't orphaned.
@@ -5587,6 +7524,8 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM kanban_approval_routes WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM kanban_approval_requests WHERE task_id = ?", (task_id,))
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         return cur.rowcount == 1
 
@@ -5610,6 +7549,8 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM kanban_approval_routes WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM kanban_approval_requests WHERE task_id = ?", (task_id,))
     recompute_ready(conn)
     return True
 
@@ -5950,6 +7891,11 @@ def schedule_task(
         cur = conn.execute(sql, params)
         if cur.rowcount != 1:
             return False
+        _cancel_unbound_task_approvals(
+            conn,
+            task_id,
+            reason="task was scheduled",
+        )
         run_id = _end_run(
             conn, task_id,
             outcome="scheduled", status="scheduled",
@@ -6026,6 +7972,8 @@ class DispatchResult:
     """Outcome of a single ``dispatch`` pass."""
 
     reclaimed: int = 0
+    expired_approvals: int = 0
+    """Durable approval requests/grants expired during this tick."""
     promoted: int = 0
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """List of ``(task_id, assignee, workspace_path)`` triples."""
@@ -6440,7 +8388,7 @@ def enforce_max_runtime(
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, "
+        "SELECT t.id, t.worker_pid, t.current_run_id AS active_run_id, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
         "       t.max_runtime_seconds, t.claim_lock "
         "FROM tasks t "
@@ -6489,15 +8437,15 @@ def enforce_max_runtime(
                     pass
 
         with write_txn(conn):
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (tid, pid, row["claim_lock"]),
+            released, retry_status, _active_run_id = _requeue_from_active_run(
+                conn,
+                tid,
+                expected_run_id=row["active_run_id"],
+                expected_claim_lock=row["claim_lock"],
+                expected_worker_pid=pid,
+                clear_heartbeat=True,
             )
-            if cur.rowcount == 1:
+            if released:
                 payload = {
                     "pid": pid,
                     "elapsed_seconds": int(elapsed),
@@ -6519,13 +8467,16 @@ def enforce_max_runtime(
         # breaker trips, this flips the task ``ready → blocked`` and
         # emits a ``gave_up`` event on top of the ``timed_out`` we
         # already emitted.
-        if cur.rowcount == 1:
+        if released:
             _record_task_failure(
                 conn, tid,
                 error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
                 outcome="timed_out",
                 release_claim=False,
                 end_run=False,
+                expected_retry_status=retry_status,
+                require_unclaimed=True,
+                failure_run_id=run_id,
                 event_payload_extra={"pid": pid, "sigkill": killed},
             )
     return timed_out
@@ -6576,6 +8527,7 @@ def detect_stale_running(
 
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "       t.current_run_id AS active_run_id, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -6615,15 +8567,15 @@ def detect_stale_running(
             continue
 
         with write_txn(conn):
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND claim_lock IS ?",
-                (tid, row["claim_lock"]),
+            released, _retry_status, _active_run_id = _requeue_from_active_run(
+                conn,
+                tid,
+                expected_run_id=row["active_run_id"],
+                expected_claim_lock=row["claim_lock"],
+                expected_worker_pid=pid,
+                clear_heartbeat=True,
             )
-            if cur.rowcount != 1:
+            if not released:
                 continue
 
             payload = {
@@ -6752,7 +8704,8 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
 def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
-    Appends a ``crashed`` event and drops the task back to ``ready``.
+    Appends a ``crashed`` event and restores the task to the exact retry lane
+    captured by its active run.
     Different from ``release_stale_claims``: this checks liveness
     immediately rather than waiting for the claim TTL.
 
@@ -6764,9 +8717,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     When the reap registry shows the worker exited cleanly (rc=0) but
     the task was still ``running`` in the DB, treat it as a protocol
     violation (worker answered conversationally without calling
-    ``kanban_complete`` / ``kanban_block``) and trip the circuit breaker
-    on the first occurrence — retrying a worker whose CLI keeps
-    returning 0 without a terminal transition just loops forever.
+    ``kanban_complete`` / ``kanban_block``). These receive a bounded,
+    violation-only retry budget; the breaker trips only when that streak
+    reaches its configured limit.
 
     When the reap registry shows the worker exited with the rate-limit
     sentinel (``KANBAN_RATE_LIMIT_EXIT_CODE``), the worker bailed on a
@@ -6784,12 +8737,16 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # write_txn so can't nest). ``protocol_violation`` flags the
     # clean-exit-but-still-running case, which is accounted against its
     # own bounded violation streak instead of the unified failure
-    # counter (see the post-txn loop below).
-    crash_details: list[tuple[str, int, str, bool, str]] = []
-    # (task_id, pid, claimer, protocol_violation, error_text)
+    # counter (see the post-txn loop below). Retry status and released run
+    # identity bind the later failure-accounting transaction to this exact
+    # reaped run so it cannot mutate a successor claim.
+    crash_details: list[tuple[str, int, str, bool, str, str, Optional[int]]] = []
+    # (task_id, pid, claimer, protocol_violation, error_text,
+    #  retry_status, released_run_id)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, worker_pid, claim_lock, started_at, current_run_id "
+            "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -6873,14 +8830,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
 
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (row["id"], pid, row["claim_lock"]),
+            released, retry_status, _active_run_id = _requeue_from_active_run(
+                conn,
+                row["id"],
+                expected_run_id=row["current_run_id"],
+                expected_claim_lock=row["claim_lock"],
+                expected_worker_pid=pid,
             )
-            if cur.rowcount == 1:
+            if released:
                 # Rate-limited requeues are a clean release, not a crash —
                 # record the run outcome as ``rate_limited`` so the board
                 # history doesn't show a phantom crash for a quota wall.
@@ -6923,7 +8880,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     crashed.append(row["id"])
                     crash_details.append(
                         (row["id"], pid, row["claim_lock"],
-                         protocol_violation, error_text)
+                         protocol_violation, error_text, retry_status, run_id)
                     )
     # Outside the main txn: account each crashed task and maybe trip the
     # breaker (the task transitions ready → blocked with a ``gave_up`` event
@@ -6945,10 +8902,18 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     if crash_details:
         # Fingerprint errors to detect systemic failures.
         _fp_counts: dict[str, int] = {}
-        for _, _, _, _, err_text in crash_details:
+        for _, _, _, _, err_text, _, _ in crash_details:
             fp = _error_fingerprint(err_text)
             _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
-        for tid, pid, claimer, protocol_violation, error_text in crash_details:
+        for (
+            tid,
+            pid,
+            claimer,
+            protocol_violation,
+            error_text,
+            retry_status,
+            released_run_id,
+        ) in crash_details:
             if protocol_violation:
                 streak = _protocol_violation_streak(conn, tid)
                 trow = conn.execute(
@@ -6965,8 +8930,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     else _PROTOCOL_VIOLATION_FAILURE_LIMIT
                 )
                 if streak < violation_limit:
-                    # Below budget: the task is already back at ``ready``
-                    # (respawn allowed) with ``last_failure_error`` stamped.
+                    # Below budget: the task is already back in its exact
+                    # retry lane with ``last_failure_error`` stamped.
                     # Deliberately no ``_record_task_failure`` call — a
                     # below-budget violation must not consume the unified
                     # failure budget, just as other failure kinds don't
@@ -6985,6 +8950,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     force_trip=True,
                     release_claim=False,
                     end_run=False,
+                    expected_retry_status=retry_status,
+                    require_unclaimed=True,
+                    failure_run_id=released_run_id,
                     event_payload_extra={
                         "pid": pid,
                         "claimer": claimer,
@@ -7004,6 +8972,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 failure_limit=1 if is_systemic else None,
                 release_claim=False,
                 end_run=False,
+                expected_retry_status=retry_status,
+                require_unclaimed=True,
+                failure_run_id=released_run_id,
                 event_payload_extra={"pid": pid, "claimer": claimer},
             )
             if tripped:
@@ -7029,6 +9000,11 @@ def _record_task_failure(
     force_trip: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
+    expected_run_id: Optional[int] = None,
+    expected_claim_lock: Any = _REQUEUE_ANY,
+    expected_retry_status: Optional[str] = None,
+    require_unclaimed: bool = False,
+    failure_run_id: Optional[int] = None,
     event_payload_extra: Optional[dict] = None,
 ) -> bool:
     """Record a non-success outcome (spawn_failed / crashed / timed_out)
@@ -7046,14 +9022,15 @@ def _record_task_failure(
 
     * ``release_claim=True, end_run=True`` — spawn-failure path.
       Caller has a running task with an open run; this transitions
-      it back to ``ready`` (or ``blocked`` when the breaker trips),
+      it back to its exact claim's retry lane (or ``blocked`` when the
+      breaker trips),
       releases the claim, and closes the run with ``outcome=<outcome>``.
 
     * ``release_claim=False, end_run=False`` — timeout/crash path.
-      Caller has ALREADY flipped the task to ``ready`` and closed the
+      Caller has ALREADY returned the task to its retry lane and closed the
       run with the appropriate outcome. This just increments the
       counter; if the breaker trips, the task is re-transitioned
-      ``ready → blocked`` and a ``gave_up`` event is emitted.
+      to ``blocked`` and a ``gave_up`` event is emitted.
 
     ``event_payload_extra`` merges into the ``gave_up`` event payload
     when the breaker trips, so callers can include outcome-specific
@@ -7079,13 +9056,38 @@ def _record_task_failure(
     blocked = False
     with write_txn(conn):
         row = conn.execute(
-            "SELECT consecutive_failures, status, max_retries "
+            "SELECT consecutive_failures, status, max_retries, "
+            "       current_run_id, claim_lock, worker_pid "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
             return False
+        current_run_id = (
+            int(row["current_run_id"])
+            if row["current_run_id"] is not None
+            else None
+        )
+        if expected_run_id is not None and current_run_id != int(expected_run_id):
+            return False
+        if (
+            expected_claim_lock is not _REQUEUE_ANY
+            and row["claim_lock"] != expected_claim_lock
+        ):
+            return False
+        if require_unclaimed:
+            if expected_retry_status not in {"ready", "review"}:
+                raise ValueError(
+                    "expected_retry_status must be ready or review when "
+                    "require_unclaimed is true"
+                )
+            if (
+                row["status"] != expected_retry_status
+                or current_run_id is not None
+                or row["claim_lock"] is not None
+                or row["worker_pid"] is not None
+            ):
+                return False
         failures = int(row["consecutive_failures"]) + 1
-        cur_status = row["status"]
 
         # Per-task override wins over both caller-supplied and default
         # thresholds. None (the common case) falls through.
@@ -7101,25 +9103,32 @@ def _record_task_failure(
 
         if force_trip or failures >= effective_limit:
             # Trip the breaker.
-            if release_claim:
-                # Spawn path: still running, also clear claim state.
-                conn.execute(
-                    "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, "
-                    "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status IN ('running', 'ready')",
-                    (failures, error[:500], task_id),
-                )
-            else:
-                # Timeout/crash path: task is already at ``ready``
-                # with claim cleared; just flip to blocked + update
-                # counter fields.
-                conn.execute(
-                    "UPDATE tasks SET status = 'blocked', "
-                    "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status IN ('ready', 'running')",
-                    (failures, error[:500], task_id),
-                )
+            # CAS the exact snapshot inspected above. In particular, stale
+            # failure bookkeeping must never block a successor run claimed
+            # between a reaper's release transaction and this transaction.
+            changed = conn.execute(
+                "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, "
+                "consecutive_failures = ?, last_failure_error = ? "
+                "WHERE id = ? AND status = ? AND current_run_id IS ? "
+                "  AND claim_lock IS ? AND worker_pid IS ?",
+                (
+                    failures,
+                    error[:500],
+                    task_id,
+                    row["status"],
+                    current_run_id,
+                    row["claim_lock"],
+                    row["worker_pid"],
+                ),
+            )
+            if changed.rowcount != 1:
+                return False
+            _cancel_unbound_task_approvals(
+                conn,
+                task_id,
+                reason="dispatcher failure circuit breaker blocked the task",
+            )
             run_id = None
             if end_run:
                 # Only the spawn path has an open run to close.
@@ -7144,28 +9153,51 @@ def _record_task_failure(
             if event_payload_extra:
                 payload.update(event_payload_extra)
             _append_event(
-                conn, task_id, "gave_up", payload, run_id=run_id,
+                conn,
+                task_id,
+                "gave_up",
+                payload,
+                run_id=run_id if run_id is not None else failure_run_id,
             )
             blocked = True
         else:
             # Below threshold.
             if release_claim:
-                # Spawn path: transition running → ready + clear claim.
-                conn.execute(
-                    "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, "
-                    "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status = 'running'",
-                    (failures, error[:500], task_id),
+                # Review workers retain their mandatory review skill, and an
+                # unbound review grant is never exposed to claim_task.
+                released, _retry_status, _active_run_id = (
+                    _requeue_from_active_run(
+                        conn,
+                        task_id,
+                        expected_run_id=expected_run_id,
+                        expected_claim_lock=expected_claim_lock,
+                        expected_worker_pid=row["worker_pid"],
+                        consecutive_failures=failures,
+                        last_failure_error=error,
+                    )
                 )
+                if not released:
+                    return False
             else:
-                # Timeout/crash path: task is already at ``ready`` via
-                # its own UPDATE. Just bookkeep the counter + last error.
-                conn.execute(
+                # Timeout/crash path: bookkeep only the exact unclaimed retry
+                # snapshot validated above.
+                changed = conn.execute(
                     "UPDATE tasks SET consecutive_failures = ?, "
-                    "last_failure_error = ? WHERE id = ?",
-                    (failures, error[:500], task_id),
+                    "last_failure_error = ? "
+                    "WHERE id = ? AND status = ? AND current_run_id IS ? "
+                    "  AND claim_lock IS ? AND worker_pid IS ?",
+                    (
+                        failures,
+                        error[:500],
+                        task_id,
+                        row["status"],
+                        current_run_id,
+                        row["claim_lock"],
+                        row["worker_pid"],
+                    ),
                 )
+                if changed.rowcount != 1:
+                    return False
             if end_run:
                 # Spawn path: close the open run with outcome.
                 run_id = _end_run(
@@ -7190,6 +9222,8 @@ def _record_spawn_failure(
     task_id: str,
     error: str,
     *,
+    expected_run_id: int,
+    expected_claim_lock: str,
     failure_limit: int = None,
 ) -> bool:
     return _record_task_failure(
@@ -7198,28 +9232,84 @@ def _record_spawn_failure(
         failure_limit=failure_limit,
         release_claim=True,
         end_run=True,
+        expected_run_id=int(expected_run_id),
+        expected_claim_lock=str(expected_claim_lock),
     )
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
-    """Record the spawned child's pid + emit a ``spawned`` event.
+def _set_worker_pid(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pid: int,
+    *,
+    expected_run_id: Optional[int] = None,
+    expected_claim_lock: Optional[str] = None,
+) -> bool:
+    """CAS-record the spawned child's pid + emit a ``spawned`` event.
 
     The event's payload carries the pid so a human reading ``hermes kanban
     tail`` can correlate log lines with OS-level traces without opening
-    the drawer.
+    the drawer. Returns ``False`` when the child already completed or parked
+    its run before ``Popen`` returned to the dispatcher; in that race we must
+    not write a stale PID back onto the now-terminal/blocked task.
     """
     with write_txn(conn):
-        conn.execute(
-            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
-            (int(pid), task_id),
-        )
-        run_id = _current_run_id(conn, task_id)
-        if run_id is not None:
-            conn.execute(
-                "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
-                (int(pid), run_id),
+        row = conn.execute(
+            "SELECT status, current_run_id, claim_lock, worker_pid "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            row is None
+            or row["status"] != "running"
+            or row["current_run_id"] is None
+            or (
+                expected_run_id is not None
+                and int(row["current_run_id"]) != int(expected_run_id)
             )
+            or (
+                expected_claim_lock is not None
+                and row["claim_lock"] != expected_claim_lock
+            )
+        ):
+            return False
+        run_id = int(row["current_run_id"])
+        if row["worker_pid"] is not None:
+            if int(row["worker_pid"]) != int(pid):
+                return False
+            run = conn.execute(
+                "SELECT worker_pid, status, ended_at FROM task_runs "
+                "WHERE id = ? AND task_id = ?",
+                (run_id, task_id),
+            ).fetchone()
+            return bool(
+                run is not None
+                and run["worker_pid"] is not None
+                and int(run["worker_pid"]) == int(pid)
+                and run["status"] == "running"
+                and run["ended_at"] is None
+            )
+        task_update = conn.execute(
+            "UPDATE tasks SET worker_pid = ? "
+            "WHERE id = ? AND status = 'running' AND current_run_id = ? "
+            "  AND (? IS NULL OR claim_lock = ?)",
+            (
+                int(pid), task_id, run_id,
+                expected_claim_lock, expected_claim_lock,
+            ),
+        )
+        if task_update.rowcount != 1:
+            return False
+        run_update = conn.execute(
+            "UPDATE task_runs SET worker_pid = ? "
+            "WHERE id = ? AND task_id = ? AND status = 'running' "
+            "  AND ended_at IS NULL",
+            (int(pid), run_id, task_id),
+        )
+        if run_update.rowcount != 1:
+            raise RuntimeError("worker PID registration lost active-run CAS")
         _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        return True
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -7300,6 +9390,20 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return None
 
     now = int(time.time())
+
+    # A route-authenticated human has explicitly approved resuming this exact
+    # paused action. Generic respawn heuristics (old auth text, recent success,
+    # an active PR comment) must not strand that short-lived grant until it
+    # expires. This bypass is deliberately limited to an unbound grant; claim
+    # still enforces profile, parent, status, and one-run binding invariants.
+    approved_resume = conn.execute(
+        "SELECT 1 FROM kanban_approval_requests "
+        "WHERE task_id = ? AND state = 'approved' AND resume_run_id IS NULL "
+        "  AND expires_at > ? LIMIT 1",
+        (task_id, now),
+    ).fetchone()
+    if approved_resume:
+        return None
 
     # 1. Rate-limit cooldown. The most recent run ended ``rate_limited``
     #    (quota wall) — defer while inside the cooldown window, then allow a
@@ -7549,6 +9653,7 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    result.expired_approvals = expire_task_approvals(conn)
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
@@ -7666,10 +9771,18 @@ def _dispatch_once_locked(
                 if not dry_run:
                     try:
                         with write_txn(conn):
-                            conn.execute(
+                            assigned = conn.execute(
                                 "UPDATE tasks SET assignee = ? WHERE id = ? "
                                 "AND (assignee IS NULL OR assignee = '')",
                                 (_default_assignee, row["id"]),
+                            )
+                            if assigned.rowcount != 1:
+                                result.skipped_unassigned.append(row["id"])
+                                continue
+                            _cancel_unbound_task_approvals(
+                                conn,
+                                row["id"],
+                                reason="dispatcher applied the default assignee",
                             )
                             _append_event(
                                 conn, row["id"], "assigned",
@@ -7769,8 +9882,18 @@ def _dispatch_once_locked(
             else:
                 workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
+            if claimed.approval_request_id and claimed.current_run_id is not None:
+                cancel_bound_task_approval(
+                    conn,
+                    task_id=claimed.id,
+                    resume_run_id=claimed.current_run_id,
+                    request_id=claimed.approval_request_id,
+                    reason=f"workspace setup failed: {type(exc).__name__}",
+                )
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
+                expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock,
                 failure_limit=failure_limit,
             )
             if auto:
@@ -7783,20 +9906,34 @@ def _dispatch_once_locked(
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
-            # Back-compat: older spawn_fn signatures accept only
-            # (task, workspace). Test stubs in the suite rely on that.
-            # Introspect the callable and pass `board` only when supported.
-            import inspect
-            try:
-                sig = inspect.signature(_spawn)
-                if "board" in sig.parameters:
-                    pid = _spawn(claimed, str(workspace), board=board)
-                else:
+            if _spawn is _default_spawn:
+                pid = _default_spawn(
+                    claimed,
+                    str(workspace),
+                    board=board,
+                    _launch_capability=_DISPATCH_OWNER_LAUNCH_CAPABILITY,
+                )
+            else:
+                # Back-compat: older spawn_fn signatures accept only
+                # (task, workspace). Test stubs in the suite rely on that.
+                # Introspect the callable and pass `board` only when supported.
+                import inspect
+                try:
+                    sig = inspect.signature(_spawn)
+                    if "board" in sig.parameters:
+                        pid = _spawn(claimed, str(workspace), board=board)
+                    else:
+                        pid = _spawn(claimed, str(workspace))
+                except (TypeError, ValueError):
                     pid = _spawn(claimed, str(workspace))
-            except (TypeError, ValueError):
-                pid = _spawn(claimed, str(workspace))
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                _set_worker_pid(
+                    conn,
+                    claimed.id,
+                    int(pid),
+                    expected_run_id=claimed.current_run_id,
+                    expected_claim_lock=claimed.claim_lock,
+                )
             # NOTE: we intentionally do NOT reset consecutive_failures
             # here. A successful spawn proves the worker can start but
             # doesn't prove the run will succeed. Under unified
@@ -7814,8 +9951,18 @@ def _dispatch_once_locked(
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
         except Exception as exc:
+            if claimed.approval_request_id and claimed.current_run_id is not None:
+                cancel_bound_task_approval(
+                    conn,
+                    task_id=claimed.id,
+                    resume_run_id=claimed.current_run_id,
+                    request_id=claimed.approval_request_id,
+                    reason=f"worker spawn failed: {type(exc).__name__}",
+                )
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
+                expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock,
                 failure_limit=failure_limit,
             )
             if auto:
@@ -7848,6 +9995,21 @@ def _dispatch_once_locked(
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
             continue
+        # Review retries obey the same cooldown/blocker guard as ready-lane
+        # retries. In particular, a rate-limited reviewer must not respawn on
+        # every dispatcher tick merely because its source lane is review.
+        guard_reason = check_respawn_guard(conn, row["id"])
+        if guard_reason is not None:
+            result.respawn_guarded.append((row["id"], guard_reason))
+            if not dry_run:
+                with write_txn(conn):
+                    _append_event(
+                        conn,
+                        row["id"],
+                        "respawn_guarded",
+                        {"reason": guard_reason, "source_status": "review"},
+                    )
+            continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
@@ -7861,8 +10023,18 @@ def _dispatch_once_locked(
             else:
                 workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
+            if claimed.approval_request_id and claimed.current_run_id is not None:
+                cancel_bound_task_approval(
+                    conn,
+                    task_id=claimed.id,
+                    resume_run_id=claimed.current_run_id,
+                    request_id=claimed.approval_request_id,
+                    reason=f"workspace setup failed: {type(exc).__name__}",
+                )
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
+                expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock,
                 failure_limit=failure_limit,
             )
             if auto:
@@ -7881,22 +10053,46 @@ def _dispatch_once_locked(
         claimed.skills = ["sdlc-review"]
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
-            import inspect
-            try:
-                sig = inspect.signature(_spawn)
-                if "board" in sig.parameters:
-                    pid = _spawn(claimed, str(workspace), board=board)
-                else:
+            if _spawn is _default_spawn:
+                pid = _default_spawn(
+                    claimed,
+                    str(workspace),
+                    board=board,
+                    _launch_capability=_DISPATCH_OWNER_LAUNCH_CAPABILITY,
+                )
+            else:
+                import inspect
+                try:
+                    sig = inspect.signature(_spawn)
+                    if "board" in sig.parameters:
+                        pid = _spawn(claimed, str(workspace), board=board)
+                    else:
+                        pid = _spawn(claimed, str(workspace))
+                except (TypeError, ValueError):
                     pid = _spawn(claimed, str(workspace))
-            except (TypeError, ValueError):
-                pid = _spawn(claimed, str(workspace))
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                _set_worker_pid(
+                    conn,
+                    claimed.id,
+                    int(pid),
+                    expected_run_id=claimed.current_run_id,
+                    expected_claim_lock=claimed.claim_lock,
+                )
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:
+            if claimed.approval_request_id and claimed.current_run_id is not None:
+                cancel_bound_task_approval(
+                    conn,
+                    task_id=claimed.id,
+                    resume_run_id=claimed.current_run_id,
+                    request_id=claimed.approval_request_id,
+                    reason=f"worker spawn failed: {type(exc).__name__}",
+                )
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
+                expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock,
                 failure_limit=failure_limit,
             )
             if auto:
@@ -8166,11 +10362,70 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _terminate_failed_bootstrap_worker(proc, *, timeout: float = 2.0) -> None:
+    """Terminate and reap a worker whose launch handoff could not complete.
+
+    Workers start in a new POSIX session, so signal the whole process group
+    when available. A root process that ignores SIGTERM must not survive while
+    the dispatcher releases its claim and permits a replacement worker.
+    """
+
+    group_signalled = False
+    if not _IS_WINDOWS:
+        try:
+            import signal
+
+            os.killpg(int(proc.pid), signal.SIGTERM)  # windows-footgun: ok — POSIX branch guarded by not _IS_WINDOWS
+            group_signalled = True
+        except (AttributeError, ProcessLookupError, PermissionError, OSError):
+            pass
+    if not group_signalled:
+        try:
+            proc.terminate()
+        except (AttributeError, ProcessLookupError, OSError):
+            pass
+
+    wait = getattr(proc, "wait", None)
+    if callable(wait):
+        try:
+            wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if not _IS_WINDOWS:
+                try:
+                    import signal
+
+                    os.killpg(int(proc.pid), signal.SIGKILL)  # windows-footgun: ok — POSIX branch guarded by not _IS_WINDOWS
+                    group_signalled = True
+                except (AttributeError, ProcessLookupError, PermissionError, OSError):
+                    pass
+            if not group_signalled:
+                try:
+                    proc.kill()
+                except (AttributeError, ProcessLookupError, OSError):
+                    pass
+            try:
+                wait(timeout=timeout)
+            except (subprocess.TimeoutExpired, ProcessLookupError, OSError):
+                pass
+
+    # The session leader may exit on SIGTERM while a descendant ignores it.
+    # Reap that remaining process group before the claim can be released.
+    if group_signalled and not _IS_WINDOWS:
+        try:
+            import signal
+
+            os.killpg(int(proc.pid), 0)  # windows-footgun: ok — POSIX branch guarded by not _IS_WINDOWS
+            os.killpg(int(proc.pid), signal.SIGKILL)  # windows-footgun: ok — POSIX branch guarded by not _IS_WINDOWS
+        except (AttributeError, ProcessLookupError, PermissionError, OSError):
+            pass
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
     *,
     board: Optional[str] = None,
+    _launch_capability: object = None,
 ) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
@@ -8191,9 +10446,66 @@ def _default_spawn(
     from hermes_cli.profiles import normalize_profile_name
 
     profile_arg = normalize_profile_name(task.assignee)
+    launch_owner_authority = (
+        _launch_capability is _DISPATCH_OWNER_LAUNCH_CAPABILITY
+    )
 
     prompt = f"work kanban task {task.id}"
+    if task.approval_request_id:
+        prompt = (
+            f"resume kanban task {task.id} after its human approval; "
+            "continue the interrupted action, then finish the task"
+        )
     env = dict(os.environ)
+
+    # The dispatcher commonly lives inside a gateway (and may also have run a
+    # cron turn). Those ambient markers describe the *parent process*, not this
+    # detached worker. Inheriting them puts terminal/code approval into a mode
+    # whose callback queue exists only in the parent process, causing a deadlock
+    # or an unsafe fail-open. Scrub every routing/interactive authority marker
+    # before setting the worker's explicit Kanban identity below.
+    for key in tuple(env):
+        if (
+            key.startswith("HERMES_SESSION_")
+            or key.startswith("HERMES_TUI_")
+            or key.startswith("HERMES_GATEWAY_")
+        ):
+            env.pop(key, None)
+        elif key.startswith("HERMES_CRON_AUTO_DELIVER_"):
+            env.pop(key, None)
+    for key in (
+        "HERMES_CRON_SESSION",
+        "HERMES_EXEC_ASK",
+        "HERMES_GATEWAY",
+        "_HERMES_GATEWAY",
+        "HERMES_GATEWAY_ELEVATED_HANDOFF",
+        "HERMES_GATEWAY_SESSION",
+        "HERMES_INTERACTIVE",
+        "HERMES_KANBAN_SESSION",
+        "HERMES_KANBAN_OWNER_BOOTSTRAP_NONCE",
+        "_HERMES_KANBAN_BOOTSTRAP_STDIN",
+        "HERMES_KANBAN_CLAIM_LOCK",
+        "HERMES_KANBAN_APPROVAL_ID",
+        "HERMES_KANBAN_APPROVAL_NONCE",
+        "HERMES_KANBAN_DELEGATE_SESSION",
+        "HERMES_TUI",
+        "HERMES_YOLO_MODE",
+    ):
+        env.pop(key, None)
+    # Owner authority is delivered later over this child's one-shot stdin
+    # launch channel, after its real PID has been bound to the exact run. No
+    # environment value or public/manual claim can mint owner authority.
+    if launch_owner_authority:
+        env["_HERMES_KANBAN_BOOTSTRAP_STDIN"] = "1"
+        # This is an explicit compatibility fence, not inherited gateway
+        # identity. Current runtimes resolve the Kanban owner branch before
+        # generic ask handling. Older runtimes that do not understand the
+        # bootstrap protocol therefore fail closed instead of reaching their
+        # legacy headless auto-approve path.
+        env["HERMES_EXEC_ASK"] = "1"
+        env["HERMES_KANBAN_DELEGATE_SESSION"] = "1"
+    else:
+        env["HERMES_KANBAN_DELEGATE_SESSION"] = "1"
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
@@ -8237,6 +10549,9 @@ def _default_spawn(
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    if task.approval_request_id and task.approval_grant_nonce:
+        env["HERMES_KANBAN_APPROVAL_ID"] = task.approval_request_id
+        env["HERMES_KANBAN_APPROVAL_NONCE"] = task.approval_grant_nonce
     # Goal-loop mode: the worker reads these and wraps its run in the
     # Ralph-style /goal judge loop (see cli.py quiet-mode path). Only set
     # when enabled so non-goal tasks keep a clean env.
@@ -8262,7 +10577,8 @@ def _default_spawn(
     # dispatcher's. Belt-and-braces with the `get_default_hermes_root()`
     # resolution in `kanban_home()` — symmetric resolution is the norm,
     # but unusual symlink / Docker layouts are caught here too.
-    env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
+    authority_db_path = kanban_db_path(board=board).expanduser().resolve()
+    env["HERMES_KANBAN_DB"] = str(authority_db_path)
     env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root(board=board))
     # Board slug — the final defense-in-depth pin. If the worker ever
     # resolves kanban paths without the DB / workspaces env vars, the
@@ -8286,13 +10602,21 @@ def _default_spawn(
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,
+    ]
+    if launch_owner_authority:
+        # This hidden capability-negotiation flag makes an older Hermes CLI
+        # reject the worker launch before doing any agent work. Environment
+        # markers alone are intentionally insufficient because old releases
+        # ignore unknown markers and may use legacy headless approval policy.
+        cmd.append("--kanban-owner-bootstrap-stdin")
+    cmd.extend([
         "--cli",
         # Worker subprocesses switch to a profile-scoped HERMES_HOME above,
         # so they see that profile's shell-hook allowlist instead of the
         # dispatcher's root allowlist. Pass --accept-hooks explicitly so
         # profile-local worker sessions still register configured hooks.
         "--accept-hooks",
-    ]
+    ])
     # Per-task force-loaded skills. Each name goes in its own
     # `--skills X` pair rather than a single comma-joined arg: the CLI
     # accepts both forms (action='append' + comma-split), but
@@ -8304,6 +10628,11 @@ def _default_spawn(
                 cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
+    if task.approval_worker_session_id:
+        # Resume is a top-level CLI option and must precede the ``chat``
+        # subcommand. This restores the exact conversation whose tool call was
+        # interrupted, rather than asking a new agent to reconstruct intent.
+        cmd.extend(["--resume", task.approval_worker_session_id])
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
@@ -8334,24 +10663,99 @@ def _default_spawn(
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,
             cwd=workspace if os.path.isdir(workspace) else None,
-            stdin=subprocess.DEVNULL,
+            stdin=(
+                subprocess.PIPE
+                if launch_owner_authority
+                else subprocess.DEVNULL
+            ),
             stdout=log_f,
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )
+        # Popen duplicated the descriptor for the child; the dispatcher must
+        # release its own reference so repeated dispatches do not leak FDs.
+        log_f.close()
     except FileNotFoundError:
         log_f.close()
         raise RuntimeError(
             "`hermes` executable not found on PATH. "
             "Install Hermes Agent or activate its venv before running the kanban dispatcher."
         )
-    # NOTE: we intentionally do NOT close log_f here — we want Popen's
-    # child process to keep writing after this function returns.  The
-    # handle is kept alive by the child's inheritance.  The parent's
-    # reference goes out of scope and is GC'd, but the OS-level FD stays
-    # open in the child until the child exits.
+    except Exception:
+        log_f.close()
+        raise
+    if not launch_owner_authority:
+        return proc.pid
+    ticket_nonce = secrets.token_urlsafe(48)
+    ticket_expires_at = int(time.time()) + _OWNER_BOOTSTRAP_MAX_TTL_SECONDS
+    armed = False
+    try:
+        with contextlib.closing(connect(authority_db_path)) as bootstrap_conn:
+            if not _set_worker_pid(
+                bootstrap_conn,
+                task.id,
+                int(proc.pid),
+                expected_run_id=task.current_run_id,
+                expected_claim_lock=task.claim_lock,
+            ):
+                raise RuntimeError("worker PID no longer owns the claimed run")
+            if not _arm_task_owner_bootstrap(
+                bootstrap_conn,
+                task_id=task.id,
+                run_id=int(task.current_run_id or 0),
+                profile=profile_arg,
+                claim_lock=str(task.claim_lock or ""),
+                nonce=ticket_nonce,
+                worker_pid=int(proc.pid),
+                expires_at=ticket_expires_at,
+                _launch_capability=_launch_capability,
+            ):
+                raise RuntimeError("could not arm exact worker launch ticket")
+            armed = True
+
+        ticket = {
+            "v": 1,
+            "token": ticket_nonce,
+            "db_path": str(authority_db_path),
+            "board": resolved_board,
+            "task_id": task.id,
+            "run_id": int(task.current_run_id or 0),
+            "profile": profile_arg,
+            "claim_lock": str(task.claim_lock or ""),
+            "worker_pid": int(proc.pid),
+            "expires_at": ticket_expires_at,
+        }
+        if proc.stdin is None:
+            raise RuntimeError("worker launch pipe is unavailable")
+        proc.stdin.write(
+            (json.dumps(ticket, separators=(",", ":")) + "\n").encode("utf-8")
+        )
+        proc.stdin.flush()
+        proc.stdin.close()
+    except Exception as exc:
+        if armed:
+            try:
+                with contextlib.closing(connect(authority_db_path)) as bootstrap_conn:
+                    _revoke_task_owner_bootstrap(
+                        bootstrap_conn,
+                        task_id=task.id,
+                        run_id=int(task.current_run_id or 0),
+                        worker_pid=int(proc.pid),
+                        nonce=ticket_nonce,
+                        expires_at=ticket_expires_at,
+                    )
+            except Exception:
+                pass
+        try:
+            if proc.stdin is not None and not proc.stdin.closed:
+                proc.stdin.close()
+        except Exception:
+            pass
+        _terminate_failed_bootstrap_worker(proc)
+        log_f.close()
+        raise RuntimeError(f"kanban worker bootstrap failed: {exc}") from exc
     return proc.pid
 
 
@@ -8756,6 +11160,40 @@ def task_age(task: Task) -> dict:
 # Notification subscriptions (used by the gateway kanban-notifier)
 # ---------------------------------------------------------------------------
 
+def _add_notify_sub_in_txn(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+) -> None:
+    """Insert a mutable delivery subscription inside an existing txn."""
+    now = int(time.time())
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO kanban_notify_subs
+            (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+    )
+    if notifier_profile:
+        # Self-heal legacy rows that predate notifier ownership by
+        # backfilling only when the existing value is unset.
+        conn.execute(
+            """
+            UPDATE kanban_notify_subs
+               SET notifier_profile = ?
+             WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+               AND (notifier_profile IS NULL OR notifier_profile = '')
+            """,
+            (notifier_profile, task_id, platform, chat_id, thread_id or ""),
+        )
+
+
 def add_notify_sub(
     conn: sqlite3.Connection,
     *,
@@ -8766,30 +11204,21 @@ def add_notify_sub(
     user_id: Optional[str] = None,
     notifier_profile: Optional[str] = None,
 ) -> None:
-    """Register a gateway source that wants terminal-state notifications
-    for ``task_id``. Idempotent on (task, platform, chat, thread)."""
-    now = int(time.time())
+    """Register a mutable notification preference for ``task_id``.
+
+    This does not grant approval authority. Only trusted auto-origin paths may
+    bind the separate immutable ``kanban_approval_routes`` row.
+    """
     with write_txn(conn):
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+        _add_notify_sub_in_txn(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            notifier_profile=notifier_profile,
         )
-        if notifier_profile:
-            # Self-heal legacy rows that predate notifier ownership by
-            # backfilling only when the existing value is unset.
-            conn.execute(
-                """
-                UPDATE kanban_notify_subs
-                   SET notifier_profile = ?
-                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
-                   AND (notifier_profile IS NULL OR notifier_profile = '')
-                """,
-                (notifier_profile, task_id, platform, chat_id, thread_id or ""),
-            )
 
 
 def list_notify_subs(

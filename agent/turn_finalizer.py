@@ -51,6 +51,10 @@ def finalize_turn(
     """
     from agent.conversation_loop import logger
 
+    kanban_approval_pending = (
+        getattr(agent, "_kanban_approval_pending", None) is not None
+    )
+
     budget_exhausted = (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
@@ -106,50 +110,86 @@ def finalize_turn(
         # We route through ``_record_task_failure(outcome="timed_out")``
         # rather than ``kanban_block`` so this counts toward the dispatcher's
         # consecutive-failure circuit breaker (#29747 gap 2).
-        _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
-        if _kanban_task:
+        _kanban_task = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        try:
+            from agent.execution_context import is_kanban_owner_context
+
+            _is_kanban_owner = bool(is_kanban_owner_context())
+        except Exception:
+            _is_kanban_owner = False
+        if _kanban_task and not _is_kanban_owner:
+            logger.warning(
+                "Skipped budget-exhausted Kanban failure for task %s: "
+                "current execution role is not the card owner",
+                _kanban_task,
+            )
+        elif _kanban_task:
+            _run_raw = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+            _claim_lock = os.environ.get(
+                "HERMES_KANBAN_CLAIM_LOCK", ""
+            ).strip()
             try:
-                from hermes_cli import kanban_db as _kb
-                _conn = _kb.connect()
-                try:
-                    _kb._record_task_failure(
-                        _conn,
-                        _kanban_task,
-                        error=(
-                            f"Iteration budget exhausted "
-                            f"({api_call_count}/{agent.max_iterations}) — "
-                            "task could not complete within the allowed "
-                            "iterations"
-                        ),
-                        outcome="timed_out",
-                        release_claim=True,
-                        end_run=True,
-                        event_payload_extra={
-                            "budget_used": api_call_count,
-                            "budget_max": agent.max_iterations,
-                        },
-                    )
-                    logger.info(
-                        "recorded budget-exhausted failure for task %s (%d/%d)",
-                        _kanban_task, api_call_count, agent.max_iterations,
-                    )
-                finally:
-                    try:
-                        _conn.close()
-                    except Exception:
-                        pass
-            except Exception:
+                _expected_run_id = int(_run_raw)
+            except (TypeError, ValueError):
+                _expected_run_id = None
+            if _expected_run_id is None or not _claim_lock:
                 logger.warning(
-                    "Failed to record budget-exhausted failure for task %s",
+                    "Skipped budget-exhausted Kanban failure for task %s: "
+                    "missing or malformed exact run/claim identity",
                     _kanban_task,
-                    exc_info=True,
                 )
+            else:
+                try:
+                    from hermes_cli import kanban_db as _kb
+                    _conn = _kb.connect()
+                    try:
+                        _kb._record_task_failure(
+                            _conn,
+                            _kanban_task,
+                            error=(
+                                f"Iteration budget exhausted "
+                                f"({api_call_count}/{agent.max_iterations}) — "
+                                "task could not complete within the allowed "
+                                "iterations"
+                            ),
+                            outcome="timed_out",
+                            release_claim=True,
+                            end_run=True,
+                            expected_run_id=_expected_run_id,
+                            expected_claim_lock=_claim_lock,
+                            event_payload_extra={
+                                "budget_used": api_call_count,
+                                "budget_max": agent.max_iterations,
+                            },
+                        )
+                        logger.info(
+                            "recorded budget-exhausted failure for task %s "
+                            "run %s (%d/%d)",
+                            _kanban_task,
+                            _expected_run_id,
+                            api_call_count,
+                            agent.max_iterations,
+                        )
+                    finally:
+                        try:
+                            _conn.close()
+                        except Exception:
+                            pass
+                except Exception:
+                    logger.warning(
+                        "Failed to record budget-exhausted failure for task %s "
+                        "run %s",
+                        _kanban_task,
+                        _expected_run_id,
+                        exc_info=True,
+                    )
 
     # Determine if conversation completed successfully
     normal_text_response = str(_turn_exit_reason).startswith("text_response(")
     completed = (
         final_response is not None
         and not failed
+        and not kanban_approval_pending
         and (
             api_call_count < agent.max_iterations
             or normal_text_response
@@ -301,7 +341,7 @@ def finalize_turn(
     # Gate: only applied when a real text response exists for this
     # turn and the user didn't interrupt.  Empty/interrupted turns
     # already have other surface text that shouldn't be augmented.
-    if final_response and not interrupted:
+    if final_response and not interrupted and not kanban_approval_pending:
         try:
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
             if _failed and agent._file_mutation_verifier_enabled():
@@ -374,7 +414,7 @@ def finalize_turn(
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can transform the LLM's output text before it's returned.
     # First hook to return a string wins; None/empty return leaves text unchanged.
-    if final_response and not interrupted:
+    if final_response and not interrupted and not kanban_approval_pending:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _transform_results = _invoke_hook(
@@ -396,7 +436,7 @@ def finalize_turn(
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can use this to persist conversation data (e.g. sync
     # to an external memory system).
-    if final_response and not interrupted:
+    if final_response and not interrupted and not kanban_approval_pending:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _invoke_hook(
@@ -467,6 +507,9 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    if kanban_approval_pending:
+        result["kanban_approval_pending"] = True
+        result["approval_request"] = dict(agent._kanban_approval_pending)
     # Surface any post-loop cleanup failures so the caller can distinguish a
     # clean turn from one whose trajectory/session/resource teardown raised
     # (the response is still returned either way — #8049).
@@ -499,16 +542,22 @@ def finalize_turn(
         agent._iters_since_skill = 0
 
     # External memory provider: sync the completed turn + queue next prefetch.
-    agent._sync_external_memory_for_turn(
-        original_user_message=original_user_message,
-        final_response=final_response,
-        interrupted=interrupted,
-        messages=messages,
-    )
+    if not kanban_approval_pending:
+        agent._sync_external_memory_for_turn(
+            original_user_message=original_user_message,
+            final_response=final_response,
+            interrupted=interrupted,
+            messages=messages,
+        )
 
     # Background memory/skill review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
-    if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+    if (
+        final_response
+        and not interrupted
+        and not kanban_approval_pending
+        and (_should_review_memory or _should_review_skills)
+    ):
         try:
             agent._spawn_background_review(
                 messages_snapshot=list(messages),

@@ -26,6 +26,259 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def _pending_approval(conn):
+    task_id = kb.create_task(
+        conn,
+        title="approval recovery",
+        assignee="worker1",
+        _trusted_gateway_origin={
+            "platform": "telegram",
+            "chat_id": "chat1",
+            "thread_id": "",
+            "user_id": "user1",
+            "notifier_profile": "default",
+        },
+    )
+    task = kb.claim_task(conn, task_id, claimer="test:notifier")
+    assert task is not None
+    request = kb.request_task_approval(
+        conn,
+        task_id=task_id,
+        action_kind="terminal",
+        action_digest=kb.kanban_action_digest(
+            "terminal",
+            "rm -rf /tmp/generated",
+            "local",
+            workdir="/tmp/workspace",
+        ),
+        display_target="rm -rf /tmp/[redacted]",
+        description="Delete generated files",
+        worker_session_id="20260712_120000_abcdef",
+        expected_run_id=task.current_run_id,
+        expected_claim_lock=task.claim_lock,
+        profile="worker1",
+        timeout_seconds=300,
+    )
+    assert request is not None
+    return task_id, request
+
+
+def _claim_approval_event_without_delivery(conn, task_id):
+    """Model a process crash after the cursor commit but before adapter.send."""
+    old_cursor, cursor, events = kb.claim_unseen_events_for_sub(
+        conn,
+        task_id=task_id,
+        platform="telegram",
+        chat_id="chat1",
+        kinds=("approval_requested",),
+    )
+    assert old_cursor < cursor
+    assert [event.kind for event in events] == ["approval_requested"]
+    return cursor
+
+
+def _approval_notifier_runner():
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    adapter = MagicMock()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    return runner, adapter
+
+
+@pytest.mark.asyncio
+async def test_notifier_recovers_unnotified_approval_after_cursor_advance(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        task_id, request = _pending_approval(conn)
+        claimed_cursor = _claim_approval_event_without_delivery(conn, task_id)
+
+    runner, adapter = _approval_notifier_runner()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    adapter.send = AsyncMock(side_effect=_send_and_stop)
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await real_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    adapter.send.assert_awaited_once()
+    assert request["id"] in adapter.send.await_args.args[1]
+    with kb.connect() as conn:
+        stored = kb.get_task_approval(conn, request["id"])
+        sub = kb.list_notify_subs(conn, task_id)[0]
+    assert stored is not None
+    assert stored["notified_at"] is not None
+    assert sub["last_event_id"] == claimed_cursor
+
+
+@pytest.mark.asyncio
+async def test_notifier_deduplicates_event_and_unnotified_approval(kanban_home):
+    with kb.connect() as conn:
+        _, request = _pending_approval(conn)
+
+    runner, adapter = _approval_notifier_runner()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    adapter.send = AsyncMock(side_effect=_send_and_stop)
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await real_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    adapter.send.assert_awaited_once()
+    assert request["id"] in adapter.send.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_notifier_retries_unnotified_approval_after_send_failure(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        task_id, request = _pending_approval(conn)
+        _claim_approval_event_without_delivery(conn, task_id)
+
+    runner, adapter = _approval_notifier_runner()
+    attempts = 0
+
+    async def _fail_then_send(chat_id, msg, metadata=None):
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 3:
+            raise RuntimeError("transient send failure")
+        runner._running = False
+
+    adapter.send = AsyncMock(side_effect=_fail_then_send)
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await real_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    # Ordinary notifications drop a dead subscription after three failures.
+    # Approval routes remain durable because there is no alternate owner.
+    assert adapter.send.await_count == 4
+    with kb.connect() as conn:
+        stored = kb.get_task_approval(conn, request["id"])
+        subs = kb.list_notify_subs(conn, task_id)
+    assert stored is not None
+    assert stored["notified_at"] is not None
+    assert len(subs) == 1
+
+
+@pytest.mark.asyncio
+async def test_notifier_retries_when_notification_marker_write_fails(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        task_id, request = _pending_approval(conn)
+        _claim_approval_event_without_delivery(conn, task_id)
+
+    runner, adapter = _approval_notifier_runner()
+    sends = 0
+
+    async def _send_twice(chat_id, msg, metadata=None):
+        nonlocal sends
+        sends += 1
+        if sends == 2:
+            runner._running = False
+
+    adapter.send = AsyncMock(side_effect=_send_twice)
+    real_mark = runner._kanban_mark_approval_notified
+    mark_attempts = 0
+
+    def _fail_then_mark(request_id, board=None):
+        nonlocal mark_attempts
+        mark_attempts += 1
+        if mark_attempts == 1:
+            raise RuntimeError("transient sqlite failure")
+        return real_mark(request_id, board)
+
+    runner._kanban_mark_approval_notified = MagicMock(
+        side_effect=_fail_then_mark,
+    )
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await real_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    # The first notice reached the adapter but its acknowledgement did not
+    # commit, so at-least-once delivery intentionally sends it again.
+    assert adapter.send.await_count == 2
+    assert mark_attempts == 2
+    with kb.connect() as conn:
+        stored = kb.get_task_approval(conn, request["id"])
+    assert stored is not None
+    assert stored["notified_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_notifier_does_not_recover_decided_approval(kanban_home):
+    with kb.connect() as conn:
+        task_id, request = _pending_approval(conn)
+        _claim_approval_event_without_delivery(conn, task_id)
+        decided = kb.decide_task_approval(
+            conn,
+            request["id"],
+            "deny",
+            platform="telegram",
+            chat_id="chat1",
+        )
+        assert decided is not None
+        assert decided["status"] == "denied"
+
+    runner, adapter = _approval_notifier_runner()
+    adapter.send = AsyncMock()
+    real_sleep = asyncio.sleep
+    sleeps = 0
+
+    async def _fast_sleep(_):
+        nonlocal sleeps
+        await real_sleep(0)
+        sleeps += 1
+        if sleeps >= 3:
+            runner._running = False
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    adapter.send.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_notifier_unsubs_after_completed_event(kanban_home):
     """
@@ -442,13 +695,7 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
 
 @pytest.mark.asyncio
 async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
-    """`/kanban --board <slug> create ...` must subscribe on that board.
-
-    The gateway handler currently auto-subscribes after `/kanban create`,
-    but the create detection must still work when the shared `--board`
-    flag appears before the subcommand, and the subscription must land in
-    that board's DB rather than the ambient/default board.
-    """
+    """Gateway origin and subscription commit on the explicitly named board."""
     from gateway.run import GatewayRunner
     from gateway.config import Platform
 
@@ -460,6 +707,7 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
         chat_id="chat1",
         thread_id="th1",
         user_id="u1",
+        profile="beta",
     )
     event = SimpleNamespace(
         text='/kanban --board projx create "hello" --assignee alice',
@@ -474,6 +722,7 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     try:
         subs = kb.list_notify_subs(conn)
         tasks = kb.list_tasks(conn)
+        route = kb.get_task_approval_route(conn, tasks[0].id)
     finally:
         conn.close()
 
@@ -481,12 +730,83 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     assert len(subs) == 1
     assert subs[0]["chat_id"] == "chat1"
     assert subs[0]["thread_id"] == "th1"
+    assert route["user_id"] == "u1"
+    assert route["notifier_profile"] == "beta"
 
     conn = kb.connect(board="default")
     try:
         assert kb.list_notify_subs(conn) == []
     finally:
         conn.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_create_without_user_principal_stays_unrouted(kanban_home):
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="anonymous-chat",
+        thread_id=None,
+        user_id=None,
+        profile="default",
+    )
+    event = SimpleNamespace(
+        text='/kanban create "anonymous" --assignee alice',
+        source=source,
+    )
+
+    out = await GatewayRunner._handle_kanban_command(runner, event)
+
+    assert "Created" in out
+    assert "subscribed" not in out.lower()
+    with kb.connect() as conn:
+        task = next(task for task in kb.list_tasks(conn) if task.title == "anonymous")
+        assert kb.get_task_approval_route(conn, task.id) is None
+        assert kb.list_notify_subs(conn, task.id) == []
+
+
+@pytest.mark.asyncio
+async def test_gateway_swarm_binds_origin_to_every_node(kanban_home):
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="swarm-chat",
+        thread_id="swarm-thread",
+        user_id="swarm-user",
+        profile="secondary",
+    )
+    event = SimpleNamespace(
+        text=(
+            '/kanban swarm "Investigate" --worker researcher:Research '
+            "--verifier reviewer --synthesizer writer"
+        ),
+        source=source,
+    )
+
+    out = await GatewayRunner._handle_kanban_command(runner, event)
+
+    assert "Swarm root:" in out
+    assert "subscribed" in out.lower()
+    expected = {
+        "platform": "telegram",
+        "chat_id": "swarm-chat",
+        "thread_id": "swarm-thread",
+        "user_id": "swarm-user",
+        "notifier_profile": "secondary",
+    }
+    with kb.connect() as conn:
+        tasks = kb.list_tasks(conn)
+        assert len(tasks) == 4
+        for task in tasks:
+            route = kb.get_task_approval_route(conn, task.id)
+            assert route is not None
+            assert {key: route[key] for key in expected} == expected
 
 
 @pytest.mark.asyncio

@@ -3277,7 +3277,7 @@ class TestConcurrentToolExecution:
         assert post_call[1]["status"] == "ok"
 
     def test_sequential_agent_level_tool_execution_middleware_wraps_inline_dispatch(self, agent, monkeypatch):
-        """Sequential built-in tool paths should expose the adaptive execution boundary."""
+        """Sequential built-ins preserve approved args at the execution boundary."""
         tool_call = _mock_tool_call(name="todo", arguments='{"todos":[]}', call_id="todo-1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
         messages = []
@@ -3286,13 +3286,17 @@ class TestConcurrentToolExecution:
 
         def request_middleware(**kwargs):
             return {
-                "args": {**kwargs["args"], "request_rewritten": True},
+                "args": {
+                    **kwargs["args"],
+                    "request_rewritten": True,
+                    "merge": True,
+                },
                 "source": "request-test",
             }
 
         def execution_middleware(**kwargs):
             seen["middleware_args"] = kwargs["args"]
-            return kwargs["next_call"]({**kwargs["args"], "merge": True})
+            return kwargs["next_call"]({**kwargs["args"], "merge": False})
 
         manager = SimpleNamespace(_middleware={
             "tool_request": [request_middleware],
@@ -3316,7 +3320,11 @@ class TestConcurrentToolExecution:
         with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
 
-        assert seen["middleware_args"] == {"todos": [], "request_rewritten": True}
+        assert seen["middleware_args"] == {
+            "todos": [],
+            "request_rewritten": True,
+            "merge": True,
+        }
         mock_todo.assert_called_once_with(todos=[], merge=True, store=agent._todo_store)
         post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
         assert post_call[1]["tool_name"] == "todo"
@@ -5538,6 +5546,11 @@ class TestRunConversation:
         agent.max_iterations = 2
 
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test_task_123")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "7")
+        monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "worker:claim")
+        from agent.execution_context import ExecutionRole
+
+        monkeypatch.setattr(agent, "_execution_role", ExecutionRole.KANBAN_OWNER)
 
         # Return a tool call for every iteration to exhaust the budget.
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -5582,6 +5595,8 @@ class TestRunConversation:
         assert call.kwargs.get("outcome") == "timed_out"
         assert call.kwargs.get("release_claim") is True
         assert call.kwargs.get("end_run") is True
+        assert call.kwargs.get("expected_run_id") == 7
+        assert call.kwargs.get("expected_claim_lock") == "worker:claim"
         assert "Iteration budget exhausted" in call.kwargs.get("error", "")
 
     def test_no_kanban_block_when_not_in_kanban_mode(self, agent, monkeypatch):

@@ -1368,6 +1368,11 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            _trusted_gateway_origin=getattr(
+                args,
+                "_trusted_gateway_origin",
+                None,
+            ),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1409,6 +1414,11 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
             created_by=args.created_by or _profile_author(),
             priority=args.priority,
             idempotency_key=getattr(args, "idempotency_key", None),
+            _trusted_gateway_origin=getattr(
+                args,
+                "_trusted_gateway_origin",
+                None,
+            ),
         )
     if getattr(args, "json", False):
         print(json.dumps(created.as_dict(), indent=2, ensure_ascii=False))
@@ -2867,7 +2877,11 @@ Read-only commands are safe while an agent is running.\
 """
 
 
-def run_slash(rest: str) -> str:
+def run_slash(
+    rest: str,
+    *,
+    _trusted_gateway_origin: Optional[dict] = None,
+) -> str:
     """Execute a ``/kanban …`` string and return captured stdout/stderr.
 
     ``rest`` is everything after ``/kanban`` (may be empty).  Used from
@@ -2929,6 +2943,12 @@ def run_slash(rest: str) -> str:
         return f"⚠ /kanban usage error\n{body}" if body else "⚠ /kanban usage error"
     except argparse.ArgumentError as exc:
         return f"⚠ /kanban usage error\n{_usage_for_error()}\n{exc}"
+
+    # This attribute is never populated by argv. The gateway passes its
+    # already-authorized MessageEvent origin directly so task creation can
+    # bind approval authority and the notification subscription in the same
+    # SQLite transaction as the task row.
+    args._trusted_gateway_origin = _trusted_gateway_origin
 
     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
         try:

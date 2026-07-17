@@ -2602,10 +2602,16 @@ DEFAULT_CONFIG = {
     # cron_mode — what to do when a cron job hits a dangerous command:
     #   deny    — block the command and let the agent find another way (default, safe)
     #   approve — auto-approve all dangerous commands in cron jobs
+    # kanban_mode — detached card-owner policy for recoverable warnings:
+    #   ask     — park the card and route a durable one-use approval (default)
+    #   deny    — block without creating a human approval request
+    #   approve — auto-approve recoverable warnings for Kanban workers
     "approvals": {
         "mode": "smart",
         "timeout": 60,
         "cron_mode": "deny",
+        "kanban_mode": "ask",
+        "kanban_timeout": 900,
         # User-defined deny rules: fnmatch globs matched against terminal
         # commands. A match blocks the command unconditionally — BEFORE the
         # --yolo / /yolo / mode=off bypass — making this the user-editable

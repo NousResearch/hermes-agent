@@ -51,6 +51,7 @@ class ManagedModalEnvironment(BaseModalExecutionEnvironment):
         modal_sandbox_kwargs: Optional[Dict[str, Any]] = None,
         persistent_filesystem: bool = True,
         task_id: str = "default",
+        runtime_identity: str = "",
     ):
         super().__init__(cwd=cwd, timeout=timeout)
 
@@ -63,6 +64,7 @@ class ManagedModalEnvironment(BaseModalExecutionEnvironment):
         self._gateway_origin = gateway.gateway_origin.rstrip("/")
         self._nous_user_token = gateway.nous_user_token
         self._task_id = task_id
+        self._runtime_identity = runtime_identity
         self._persistent = persistent_filesystem
         self._image = image
         self._sandbox_kwargs = dict(modal_sandbox_kwargs or {})
@@ -188,7 +190,11 @@ class ManagedModalEnvironment(BaseModalExecutionEnvironment):
             "timeoutMs": 3_600_000,
             "idleTimeoutMs": max(300_000, int(self.timeout * 1000)),
             "persistentFilesystem": self._persistent,
-            "logicalKey": self._task_id,
+            "logicalKey": (
+                f"{self._task_id}:{self._runtime_identity}"
+                if self._runtime_identity
+                else self._task_id
+            ),
         }
         if disk is not None:
             create_payload["diskMiB"] = disk

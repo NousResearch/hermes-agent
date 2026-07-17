@@ -448,6 +448,29 @@ def _inject_session_context_env(env: dict) -> None:
             env.pop(var_name, None)
 
 
+_KANBAN_CHILD_AUTHORITY_VARS = (
+    "_HERMES_KANBAN_BOOTSTRAP_STDIN",
+    "HERMES_KANBAN_SESSION",
+    "HERMES_KANBAN_OWNER_BOOTSTRAP_NONCE",
+    "HERMES_KANBAN_CLAIM_LOCK",
+    "HERMES_KANBAN_APPROVAL_ID",
+    "HERMES_KANBAN_APPROVAL_NONCE",
+)
+
+
+def _scrub_kanban_child_authority(env: dict) -> None:
+    """Downgrade every subprocess spawned beneath a Kanban card owner."""
+    is_delegate = (
+        env.get("HERMES_KANBAN_SESSION") == "1"
+        or env.get("_HERMES_KANBAN_BOOTSTRAP_STDIN") == "1"
+        or env.get("HERMES_KANBAN_DELEGATE_SESSION") == "1"
+    )
+    for key in _KANBAN_CHILD_AUTHORITY_VARS:
+        env.pop(key, None)
+    if is_delegate:
+        env["HERMES_KANBAN_DELEGATE_SESSION"] = "1"
+
+
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
@@ -484,6 +507,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     # Same cross-session leak guard as _make_run_env, for the background/PTY
     # spawn path (process_registry.spawn_local builds env via this function).
     _inject_session_context_env(sanitized)
+    _scrub_kanban_child_authority(sanitized)
 
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         sanitized.pop(_marker, None)
@@ -611,6 +635,7 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # session's identity. Strip _UNSET session vars when engaged so that can't
     # happen; single uniform policy across every spawn surface.
     _inject_session_context_env(env)
+    _scrub_kanban_child_authority(env)
 
     return env
 
@@ -1168,6 +1193,11 @@ def _make_run_env(env: dict) -> dict:
     # cross-session leak guard — strips _UNSET vars when a concurrent host is
     # engaged so a sibling session's os.environ mirror can't leak in).
     _inject_session_context_env(run_env)
+
+    # A dispatched card's owner marker is a single-use capability claimed by
+    # the top-level AIAgent. No terminal child may recreate that owner; nested
+    # Hermes processes inherit only the explicit delegate identity.
+    _scrub_kanban_child_authority(run_env)
 
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         run_env.pop(_marker, None)

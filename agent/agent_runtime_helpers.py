@@ -2261,7 +2261,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         logger.debug("tool_request middleware error: %s", _mw_err)
 
     # Check plugin hooks for a block or approval directive before executing.
-    block_message: Optional[str] = None
+    block_message: Optional[str | Dict[str, Any]] = None
     if not pre_tool_block_checked:
         try:
             from hermes_cli.plugins import resolve_pre_tool_block
@@ -2278,7 +2278,24 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         except Exception:
             block_message = None
     if block_message is not None:
-        result = json.dumps({"error": block_message}, ensure_ascii=False)
+        from agent.execution_context import kanban_approval_pending_metadata
+
+        _kanban_pause = kanban_approval_pending_metadata(block_message)
+        if _kanban_pause is not None:
+            result = json.dumps(_kanban_pause, ensure_ascii=False)
+            control_result = (
+                block_message
+                if isinstance(block_message, str)
+                else json.dumps(block_message, ensure_ascii=False)
+            )
+            _block_error_type = "kanban_approval_pending"
+            _block_error_message = str(
+                _kanban_pause.get("description") or "Kanban approval required"
+            )
+        else:
+            result = json.dumps({"error": block_message}, ensure_ascii=False)
+            _block_error_type = "plugin_block"
+            _block_error_message = str(block_message)
         try:
             from model_tools import _emit_post_tool_call_hook
             _emit_post_tool_call_hook(
@@ -2291,13 +2308,13 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 status="blocked",
-                error_type="plugin_block",
-                error_message=block_message,
+                error_type=_block_error_type,
+                error_message=_block_error_message,
                 middleware_trace=list(_tool_middleware_trace),
             )
         except Exception:
             pass
-        return result
+        return control_result if _kanban_pause is not None else result
 
     tool_start_time = time.monotonic()
 

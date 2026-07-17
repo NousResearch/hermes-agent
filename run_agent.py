@@ -488,6 +488,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        _claim_kanban_owner: bool = False,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -564,6 +565,7 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            _claim_kanban_owner=_claim_kanban_owner,
         )
 
     def _get_session_db_for_recall(self):
@@ -6184,6 +6186,10 @@ class AIAgent:
             set_accounting_context,
         )
         from agent.conversation_loop import run_conversation
+        from agent.execution_context import (
+            bind_agent_execution_context,
+            reset_agent_execution_context,
+        )
         from agent.portal_tags import (
             reset_conversation_context,
             set_conversation_context,
@@ -6201,6 +6207,7 @@ class AIAgent:
         acct_token = set_accounting_context(
             getattr(self, "_session_db", None), getattr(self, "session_id", None)
         )
+        _execution_token = bind_agent_execution_context(self)
         try:
             return run_conversation(
                 self,
@@ -6214,6 +6221,7 @@ class AIAgent:
                 moa_config=moa_config,
             )
         finally:
+            reset_agent_execution_context(_execution_token)
             reset_accounting_context(acct_token)
             reset_conversation_context(token)
 

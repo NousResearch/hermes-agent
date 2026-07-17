@@ -3720,6 +3720,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        _claim_kanban_owner: bool = False,
     ):
         """
         Initialize the Hermes CLI.
@@ -3738,6 +3739,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """
         # Initialize Rich console
         self.console = Console()
+        self._claim_kanban_owner = bool(_claim_kanban_owner)
         self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
@@ -16022,6 +16024,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    _claim_kanban_owner: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -16157,6 +16160,7 @@ def main(
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
+        _claim_kanban_owner=_claim_kanban_owner,
     )
 
     if parsed_skills:

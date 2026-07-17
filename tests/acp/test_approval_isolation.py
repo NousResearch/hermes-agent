@@ -193,18 +193,20 @@ class TestThreadLocalApprovalCallback:
 
 
 class TestAcpExecAskGate:
-    """GHSA-96vc-wcxf-jjff: ACP's _run_agent must set HERMES_INTERACTIVE so
-    that tools.approval.check_all_command_guards takes the CLI-interactive
-    path (consults the registered callback via prompt_dangerous_approval)
-    instead of the non-interactive auto-approve shortcut.
+    """GHSA-96vc-wcxf-jjff: ACP must route dangerous commands through its
+    registered approval callback. An explicit callback is authoritative even
+    without an interactive marker; ACP also carries a context-local marker so
+    concurrent sessions retain the correct interactive policy.
 
     (HERMES_EXEC_ASK takes the gateway-queue path which requires a
     notify_cb registered in _gateway_notify_cbs — not applicable to ACP,
     which uses a direct callback shape.)"""
 
-    def test_interactive_env_var_routes_to_callback(self, monkeypatch):
-        """When HERMES_INTERACTIVE is set and an approval callback is
-        registered, a dangerous command must route through the callback."""
+    def test_explicit_callback_routes_with_or_without_interactive_env(
+        self,
+        monkeypatch,
+    ):
+        """An explicit approval callback is authoritative in every context."""
         # Clean env
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
@@ -219,28 +221,28 @@ class TestAcpExecAskGate:
             called_with.append((command, description))
             return "once"
 
-        # Without HERMES_INTERACTIVE: takes auto-approve path, callback NOT called
+        # Explicit callbacks must not be bypassed merely because the caller is
+        # headless; that would turn a configured approval policy into fail-open.
         result = check_all_command_guards(
-            "rm -rf /tmp/test-exec-ask", "local", approval_callback=fake_cb,
+            "rm -rf /tmp/test-exec-ask",
+            "local",
+            approval_callback=fake_cb,
         )
         assert result["approved"] is True
-        assert called_with == [], (
-            "without HERMES_INTERACTIVE the non-interactive auto-approve "
-            "path should fire without consulting the callback"
-        )
+        assert len(called_with) == 1
+        assert called_with[0][0] == "rm -rf /tmp/test-exec-ask"
 
-        # With HERMES_INTERACTIVE: callback IS called, approval flows through it
+        # The interactive marker continues to route through the same callback.
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         called_with.clear()
         result = check_all_command_guards(
-            "rm -rf /tmp/test-exec-ask", "local", approval_callback=fake_cb,
-        )
-        assert called_with, (
-            "with HERMES_INTERACTIVE the approval path should consult the "
-            "registered callback — this was the ACP bypass in "
-            "GHSA-96vc-wcxf-jjff"
+            "rm -rf /tmp/test-exec-ask",
+            "local",
+            approval_callback=fake_cb,
         )
         assert result["approved"] is True
+        assert len(called_with) == 1
+        assert called_with[0][0] == "rm -rf /tmp/test-exec-ask"
 
     def test_interactive_context_var_routes_to_callback_without_env(
         self, monkeypatch,

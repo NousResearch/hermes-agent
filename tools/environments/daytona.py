@@ -47,6 +47,7 @@ class DaytonaEnvironment(BaseEnvironment):
         disk: int = 10240,
         persistent_filesystem: bool = True,
         task_id: str = "default",
+        runtime_identity: str = "",
     ):
         requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
@@ -68,6 +69,7 @@ class DaytonaEnvironment(BaseEnvironment):
 
         self._persistent = persistent_filesystem
         self._task_id = task_id
+        self._runtime_identity = runtime_identity
         self._SandboxState = SandboxState
         self._daytona = Daytona()
         self._sandbox = None
@@ -84,7 +86,10 @@ class DaytonaEnvironment(BaseEnvironment):
         resources = Resources(cpu=cpu, memory=memory_gib, disk=disk_gib)
 
         labels = {"hermes_task_id": task_id}
-        sandbox_name = f"hermes-{task_id}"
+        identity_suffix = f"-{runtime_identity}" if runtime_identity else ""
+        if runtime_identity:
+            labels["hermes_runtime_identity"] = runtime_identity
+        sandbox_name = f"hermes-{task_id}{identity_suffix}"
 
         if self._persistent:
             try:

@@ -2234,14 +2234,16 @@ def resolve_pre_tool_block(
     turn_id: str = "",
     api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
-) -> Optional[str]:
-    """Resolve the pre_tool_call directive to a final block message (or None).
+) -> Optional[str | Dict[str, Any]]:
+    """Resolve a pre_tool_call directive to a block/pause result (or None).
 
     Single entry point for every tool-dispatch site: fetches the plugin
     directive and, for an ``approve`` escalation, invokes the human-approval
     gate (:func:`tools.approval.request_tool_approval`). Returns the message
-    the tool result should carry when the call is blocked, or ``None`` when
-    the call may proceed.
+    the tool result should carry when the call is blocked, the structured
+    signed ``kanban_approval_pending`` control result when a detached card
+    owner was parked or approval persistence failed closed,
+    or ``None`` when the call may proceed.
 
     Centralizing this keeps the security-critical fail-closed logic in ONE
     place instead of copy-pasted across the concurrent/sequential/helper
@@ -2263,11 +2265,20 @@ def resolve_pre_tool_block(
                 tool_name,
                 details.message or "",
                 rule_key=details.rule_key or tool_name,
+                tool_args=args,
             )
         except Exception:
             # Fail-closed: if the gate itself errors, block rather than
             # silently execute an action a plugin flagged for approval.
             return f"BLOCKED: plugin approval gate failed for {tool_name}"
+        if (
+            result.get("status") == "kanban_approval_pending"
+            and result.get("kanban_approval_pending") is True
+        ):
+            # Do not collapse this to a human-readable block string. The
+            # agent loop needs the durable request id and pause marker to
+            # persist the tool result and exit without another model call.
+            return dict(result)
         if not result.get("approved"):
             return str(
                 result.get("message")

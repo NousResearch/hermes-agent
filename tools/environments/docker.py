@@ -5,6 +5,7 @@ configurable resource limits (CPU, memory, disk), and optional filesystem
 persistence via bind mounts.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -101,6 +102,280 @@ def _load_hermes_env_vars() -> dict[str, str]:
         return load_env() or {}
     except Exception:
         return {}
+
+
+def resolve_docker_init_env(
+    *,
+    env: dict | None = None,
+    forward_env: list[str] | None = None,
+) -> dict[str, str]:
+    """Resolve the exact environment captured by Docker's shell snapshot.
+
+    This is the authority for both execution and durable-approval binding.
+    Explicit ``docker_env`` values form the base. Configured forwards and
+    session-scoped skill passthroughs then resolve from the live process
+    environment, falling back to ``~/.hermes/.env`` just as Docker execution
+    historically did.
+    """
+
+    exec_env = _normalize_env_dict(env)
+    explicit_forward_keys = set(_normalize_forward_env_names(forward_env))
+    passthrough_keys: set[str] = set()
+    try:
+        from tools.env_passthrough import get_all_passthrough
+
+        passthrough_keys = set(get_all_passthrough())
+    except Exception:
+        pass
+
+    # Explicit docker_forward_env entries are an intentional opt-in and win
+    # over the generic Hermes secret blocklist. Implicit skill/config
+    # passthroughs remain subject to the credential and internal-secret gates.
+    implicit_forward = {
+        key for key in passthrough_keys if not _is_hermes_internal_secret(key)
+    }
+    forward_keys = explicit_forward_keys | (
+        implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST
+    )
+    hermes_env = _load_hermes_env_vars() if forward_keys else {}
+    for key in sorted(forward_keys):
+        value = os.getenv(key)
+        if not value:
+            value = hermes_env.get(key)
+        if value:
+            exec_env[key] = value
+    return exec_env
+
+
+def docker_init_env_digest(resolved_env: dict[str, str]) -> str:
+    """Return a deterministic binding for the resolved init environment."""
+
+    encoded = json.dumps(
+        resolved_env,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+_RUNTIME_FINGERPRINT_LABEL = "hermes-runtime-fingerprint"
+
+
+def docker_runtime_fingerprint(
+    *,
+    image: str,
+    cwd: str,
+    cpu: float,
+    memory: int,
+    disk: int,
+    persistent_filesystem: bool,
+    task_id: str,
+    volumes: list | None,
+    network: bool,
+    host_cwd: str | None,
+    auto_mount_cwd: bool,
+    run_as_host_user: bool,
+    extra_args: list | None,
+    persist_across_processes: bool,
+    init_env_digest: str,
+    host_user_spec: str | None = None,
+    persistent_mounts: list[str] | None = None,
+) -> str:
+    """Return a hash-only identity for an effective Docker runtime.
+
+    Cross-process reuse is safe only when every input that can change the
+    container's authority or execution target is identical.  Raw environment
+    values and host paths are hashed into this identity; they are never placed
+    directly in Docker labels.
+    """
+
+    normalized_volumes = [
+        value.strip()
+        for value in (volumes or [])
+        if isinstance(value, str) and value.strip() and ":" in value
+    ]
+    normalized_extra_args = [
+        value for value in (extra_args or []) if isinstance(value, str)
+    ]
+    host_cwd_abs = (
+        os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+    )
+    host_cwd_mounted = bool(
+        auto_mount_cwd and host_cwd_abs and os.path.isdir(host_cwd_abs)
+    )
+    payload = {
+        "auto_mount_cwd": bool(auto_mount_cwd),
+        "cpu": float(cpu or 0),
+        "cwd": str(cwd or ""),
+        "disk": int(disk or 0),
+        "extra_args": normalized_extra_args,
+        "host_cwd": host_cwd_abs,
+        "host_cwd_mounted": host_cwd_mounted,
+        "host_user_spec": str(host_user_spec or ""),
+        "image": str(image or ""),
+        "init_env_digest": str(init_env_digest or ""),
+        "memory": int(memory or 0),
+        "network": bool(network),
+        "persist_across_processes": bool(persist_across_processes),
+        "persistent_mounts": [
+            value.strip()
+            for value in (persistent_mounts or [])
+            if isinstance(value, str) and value.strip() and ":" in value
+        ],
+        "persistent_filesystem": bool(persistent_filesystem),
+        "run_as_host_user": bool(run_as_host_user),
+        "task_id": str(task_id or "default"),
+        "version": 1,
+        "volumes": normalized_volumes,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    # Docker label values are kept below 63 characters for portability.
+    return "v1-" + hashlib.sha256(encoded).hexdigest()[:48]
+
+
+def resolve_docker_persistent_mount_specs(
+    *,
+    persistent_filesystem: bool,
+    task_id: str,
+    bind_host_cwd: bool,
+    workspace_explicitly_mounted: bool,
+    sandbox_root: str | None = None,
+) -> list[str]:
+    """Resolve Hermes-managed persistent binds without creating directories.
+
+    The host paths are runtime identity inputs.  Resolving them before an
+    approval decision lets callers freeze ``TERMINAL_SANDBOX_DIR`` alongside
+    the rest of the Docker authority surface without creating storage as a
+    side effect.
+    """
+
+    if not persistent_filesystem:
+        return []
+
+    if sandbox_root is None:
+        custom = os.getenv("TERMINAL_SANDBOX_DIR")
+        if custom:
+            sandbox_root = custom
+        else:
+            from hermes_constants import get_hermes_home
+
+            sandbox_root = str(get_hermes_home() / "sandboxes")
+
+    task_root = Path(sandbox_root).expanduser().absolute() / "docker" / task_id
+    specs = [f"{task_root / 'home'}:/root"]
+    if not bind_host_cwd and not workspace_explicitly_mounted:
+        specs.append(f"{task_root / 'workspace'}:/workspace")
+    return specs
+
+
+def _normalize_docker_extra_args(
+    extra_args: list | None,
+    *,
+    network: bool,
+) -> list[str]:
+    """Validate arbitrary ``docker run`` arguments and the lockdown contract."""
+
+    if extra_args is not None and not isinstance(extra_args, list):
+        logger.warning("docker_extra_args config is not a list: %r", extra_args)
+        return []
+
+    validated: list[str] = []
+    for arg in extra_args or []:
+        if not isinstance(arg, str):
+            logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
+            continue
+        validated.append(arg)
+
+    if network:
+        return validated
+
+    # Extra args are appended after Hermes' ``--network=none`` flag. Docker
+    # accepts the last network option, so a contradictory user-supplied flag
+    # would silently re-enable egress on a freshly-created container.
+    index = 0
+    while index < len(validated):
+        arg = validated[index]
+        value: str | None = None
+        if arg in {"--network", "--net"}:
+            if index + 1 >= len(validated):
+                raise ValueError(
+                    "docker_network=false requires any docker_extra_args "
+                    "network override to be exactly 'none'"
+                )
+            value = validated[index + 1]
+            index += 1
+        elif arg.startswith("--network=") or arg.startswith("--net="):
+            value = arg.split("=", 1)[1]
+
+        if value is not None and value.strip().lower() != "none":
+            raise ValueError(
+                "docker_network=false conflicts with docker_extra_args "
+                f"network override {value!r}; remove it or use 'none'"
+            )
+        index += 1
+
+    return validated
+
+
+def resolve_docker_implicit_mount_specs() -> list[str]:
+    """Resolve existing skill/credential/cache bind mounts for this runtime."""
+
+    specs: list[str] = []
+    try:
+        from tools.credential_files import (
+            get_cache_directory_mounts,
+            get_credential_file_mounts,
+            get_skills_directory_mount,
+        )
+
+        for mount_entry in get_credential_file_mounts():
+            src = Path(mount_entry["host_path"])
+            if src.is_file():
+                specs.append(
+                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro"
+                )
+            elif src.is_dir():
+                logger.warning(
+                    "Docker: skipping credential mount because source is a "
+                    "directory: %s",
+                    src,
+                )
+            else:
+                logger.warning(
+                    "Docker: skipping credential mount — source not found: %s",
+                    src,
+                )
+        for mount_entry in get_skills_directory_mount():
+            src = Path(mount_entry["host_path"])
+            if src.is_dir():
+                specs.append(
+                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro"
+                )
+            else:
+                logger.warning(
+                    "Docker: skipping skills mount — source is not a directory: %s",
+                    src,
+                )
+        for mount_entry in get_cache_directory_mounts():
+            src = Path(mount_entry["host_path"])
+            if src.is_dir():
+                specs.append(
+                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro"
+                )
+            else:
+                logger.warning(
+                    "Docker: skipping cache mount — source is not a directory: %s",
+                    src,
+                )
+    except Exception as exc:
+        logger.debug("Docker: could not resolve implicit mounts: %s", exc)
+    return specs
 
 
 # Docker label values must match [a-zA-Z0-9_.-] and stay ≤63 chars to round-trip
@@ -596,26 +871,53 @@ class DockerEnvironment(BaseEnvironment):
         run_as_host_user: bool = False,
         extra_args: list = None,
         persist_across_processes: bool = True,
+        resolved_init_env: dict[str, str] | None = None,
+        resolved_implicit_mounts: list[str] | None = None,
     ):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
+        # Immutable creation cwd used when host-side session metadata must be
+        # translated back into the shared container namespace.
+        self._runtime_cwd = cwd
         self._persistent = persistent_filesystem
         self._persist_across_processes = persist_across_processes
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
+        # Freeze the exact values that init_session will capture. Durable
+        # Kanban approval binds a hash of this same snapshot, so a forwarded or
+        # skill-passthrough value cannot change between approval and execution.
+        self._resolved_init_env = (
+            _normalize_env_dict(resolved_init_env)
+            if resolved_init_env is not None
+            else resolve_docker_init_env(
+                env=self._env,
+                forward_env=self._forward_env,
+            )
+        )
         self._container_id: Optional[str] = None
         self._labels: dict[str, str] = {}
         self._image: str = ""
         self._container_name: str = ""
         self._image_uses_s6_init: bool = False
         self._all_run_args: list[str] = []
-        logger.info(f"DockerEnvironment volumes: {volumes}")
+        logger.info(
+            "DockerEnvironment configured with %d explicit volumes",
+            len(volumes) if isinstance(volumes, list) else 0,
+        )
         # Ensure volumes is a list (config.yaml could be malformed)
         if volumes is not None and not isinstance(volumes, list):
             logger.warning(f"docker_volumes config is not a list: {volumes!r}")
             volumes = []
+
+        # Validate before building any Docker run arguments. Extra args are
+        # appended last, so a contradictory --network flag could otherwise
+        # override Hermes' docker_network=false lockdown on fresh creation.
+        validated_extra = _normalize_docker_extra_args(
+            extra_args,
+            network=network,
+        )
 
         # Fail fast if Docker is not available.
         _ensure_docker_available()
@@ -677,18 +979,23 @@ class DockerEnvironment(BaseEnvironment):
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None
         writable_args = []
+        persistent_mount_specs: list[str] = []
         if self._persistent:
             sandbox = get_sandbox_dir() / "docker" / task_id
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
+            persistent_mount_specs.append(f"{self._home_dir}:/root")
             writable_args.extend([
-                "-v", f"{self._home_dir}:/root",
+                "-v", persistent_mount_specs[-1],
             ])
             if not bind_host_cwd and not workspace_explicitly_mounted:
                 self._workspace_dir = str(sandbox / "workspace")
                 os.makedirs(self._workspace_dir, exist_ok=True)
+                persistent_mount_specs.append(
+                    f"{self._workspace_dir}:/workspace"
+                )
                 writable_args.extend([
-                    "-v", f"{self._workspace_dir}:/workspace",
+                    "-v", persistent_mount_specs[-1],
                 ])
         else:
             if not bind_host_cwd and not workspace_explicitly_mounted:
@@ -706,85 +1013,26 @@ class DockerEnvironment(BaseEnvironment):
         elif workspace_explicitly_mounted:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
 
-        # Mount credential files (OAuth tokens, etc.) declared by skills.
-        # Read-only so the container can authenticate but not modify host creds.
-        try:
-            from tools.credential_files import (
-                get_credential_file_mounts,
-                get_skills_directory_mount,
-                get_cache_directory_mounts,
+        # Freeze implicit credential/skill/cache mounts alongside the resolved
+        # init environment.  They are part of both the runtime fingerprint and
+        # the approval authority boundary, so creation must not re-resolve a
+        # different set after consent is granted.
+        implicit_mount_specs = (
+            [
+                value.strip()
+                for value in resolved_implicit_mounts
+                if isinstance(value, str) and value.strip() and ":" in value
+            ]
+            if resolved_implicit_mounts is not None
+            else resolve_docker_implicit_mount_specs()
+        )
+        for mount_spec in implicit_mount_specs:
+            volume_args.extend(["-v", mount_spec])
+        if implicit_mount_specs:
+            logger.info(
+                "Docker: mounting %d resolved credential/skill/cache paths",
+                len(implicit_mount_specs),
             )
-
-            for mount_entry in get_credential_file_mounts():
-                src = Path(mount_entry["host_path"])
-                if src.is_dir():
-                    # Docker-in-Docker: Docker auto-created the source path as
-                    # a directory when it didn't exist on the host.  Mounting a
-                    # directory over a file destination causes exit 125.
-                    logger.warning(
-                        "Docker: skipping credential mount — source is a directory "
-                        "(likely Docker-in-Docker auto-creation): %s",
-                        src,
-                    )
-                    continue
-                if not src.is_file():
-                    logger.warning(
-                        "Docker: skipping credential mount — source not found: %s", src,
-                    )
-                    continue
-                volume_args.extend([
-                    "-v",
-                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro",
-                ])
-                logger.info(
-                    "Docker: mounting credential %s -> %s",
-                    mount_entry["host_path"],
-                    mount_entry["container_path"],
-                )
-
-            # Mount skill directories (local + external) so skill
-            # scripts/templates are available inside the container.
-            for skills_mount in get_skills_directory_mount():
-                src = Path(skills_mount["host_path"])
-                if not src.is_dir():
-                    logger.warning(
-                        "Docker: skipping skills mount — source is not a directory: %s",
-                        src,
-                    )
-                    continue
-                volume_args.extend([
-                    "-v",
-                    f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro",
-                ])
-                logger.info(
-                    "Docker: mounting skills dir %s -> %s",
-                    skills_mount["host_path"],
-                    skills_mount["container_path"],
-                )
-
-            # Mount host-side cache directories (documents, images, audio,
-            # screenshots) so the agent can access uploaded files and other
-            # cached media from inside the container.  Read-only — the
-            # container reads these but the host gateway manages writes.
-            for cache_mount in get_cache_directory_mounts():
-                src = Path(cache_mount["host_path"])
-                if not src.is_dir():
-                    logger.warning(
-                        "Docker: skipping cache mount — source is not a directory: %s",
-                        src,
-                    )
-                    continue
-                volume_args.extend([
-                    "-v",
-                    f"{cache_mount['host_path']}:{cache_mount['container_path']}:ro",
-                ])
-                logger.info(
-                    "Docker: mounting cache dir %s -> %s",
-                    cache_mount["host_path"],
-                    cache_mount["container_path"],
-                )
-        except Exception as e:
-            logger.debug("Docker: could not load credential file mounts: %s", e)
 
         # Explicit environment variables (docker_env config) — set at container
         # creation so they're available to all processes (including entrypoint).
@@ -797,6 +1045,7 @@ class DockerEnvironment(BaseEnvironment):
         # owned by that user on the host instead of by root. Skip cleanly on
         # platforms without POSIX uid/gid (e.g. native Windows Docker).
         user_args: list[str] = []
+        user_spec: str | None = None
         if run_as_host_user:
             user_spec = _resolve_host_user_spec()
             if user_spec is not None:
@@ -833,15 +1082,35 @@ class DockerEnvironment(BaseEnvironment):
             run_exec=image_uses_s6_init,
         )
 
-        logger.info(f"Docker volume_args: {volume_args}")
-        # User-supplied extra docker run flags (docker_extra_args in config.yaml).
-        # Appended last so they can override defaults if needed.
-        validated_extra = []
-        for arg in (extra_args or []):
-            if not isinstance(arg, str):
-                logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
-                continue
-            validated_extra.append(arg)
+        logger.info("Docker configured %d volume arguments", len(volume_args) // 2)
+
+        self._runtime_fingerprint = docker_runtime_fingerprint(
+            image=image,
+            cwd=cwd,
+            cpu=cpu,
+            memory=memory,
+            disk=disk,
+            persistent_filesystem=self._persistent,
+            task_id=task_id,
+            volumes=[
+                value.strip()
+                for value in (volumes or [])
+                if isinstance(value, str) and value.strip() and ":" in value
+            ] + implicit_mount_specs,
+            network=network,
+            host_cwd=host_cwd_abs,
+            auto_mount_cwd=bind_host_cwd,
+            run_as_host_user=run_as_host_user and bool(user_args),
+            extra_args=validated_extra,
+            persist_across_processes=persist_across_processes,
+            init_env_digest=docker_init_env_digest(self._resolved_init_env),
+            host_user_spec=user_spec,
+            persistent_mounts=persistent_mount_specs,
+        )
+        # Any explicit/implicit mount or arbitrary docker run argument can
+        # expand authority beyond the nominal sandbox.  Be conservative when
+        # deciding whether dangerous-command approval may be skipped.
+        self._has_host_access = bool(volume_args or validated_extra)
 
         all_run_args = (
             security_args
@@ -852,7 +1121,11 @@ class DockerEnvironment(BaseEnvironment):
             + env_args
             + validated_extra
         )
-        logger.info(f"Docker run_args: {all_run_args}")
+        logger.info(
+            "Docker runtime prepared (%d args, fingerprint=%s)",
+            len(all_run_args),
+            self._runtime_fingerprint,
+        )
 
         # Start the container directly via `docker run -d`.
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
@@ -869,6 +1142,7 @@ class DockerEnvironment(BaseEnvironment):
             "--label", "hermes-agent=1",
             "--label", f"hermes-task-id={task_label}",
             "--label", f"hermes-profile={profile_name}",
+            "--label", f"{_RUNTIME_FINGERPRINT_LABEL}={self._runtime_fingerprint}",
         ]
         # Save args for container recreation on "No such container" recovery.
         self._image = image
@@ -880,6 +1154,7 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-agent": "1",
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
+            _RUNTIME_FINGERPRINT_LABEL: self._runtime_fingerprint,
         }
 
         # Cross-process container reuse (issue #20561 — docs claim "ONE long-lived
@@ -889,14 +1164,17 @@ class DockerEnvironment(BaseEnvironment):
         # restores the documented contract; opt out via
         # ``terminal.docker_persist_across_processes: false``.
         #
-        # Reuse matches on labels only — we deliberately do NOT compare image
-        # / mounts / resources.  Operators who need a fresh container after
-        # changing those settings should set ``docker_persist_across_processes:
-        # false`` (or run ``docker rm -f`` against the labeled container) to
-        # force a clean start.
+        # The runtime fingerprint label binds image, mounts, resources,
+        # network policy, user mapping, extra args, persistence, and the
+        # resolved init environment. Legacy or differently configured
+        # containers are never eligible for reuse.
         reused = False
         if persist_across_processes:
-            existing = self._find_reusable_container(task_label, profile_name)
+            existing = self._find_reusable_container(
+                task_label,
+                profile_name,
+                self._runtime_fingerprint,
+            )
             if existing is not None:
                 container_id, state = existing
                 # Network-mode guard: reuse must not silently defeat an
@@ -904,8 +1182,9 @@ class DockerEnvironment(BaseEnvironment):
                 # set ``docker_network: false`` keeps its original bridge
                 # NetworkMode, so label-only reuse would hand the agent a
                 # networked container despite the config.  On mismatch we
-                # remove the stale container and start fresh — leaving it in
-                # place would let the next label-based reuse pick it up again.
+                # detach from the stale container and start fresh. It may be
+                # serving another Hermes process, so mismatch handling must
+                # never stop or remove it.
                 # Only the lockdown direction is guarded: a ``none``-mode
                 # container under a default-network config is left alone so
                 # operators using ``docker_extra_args: ["--network=none"]``
@@ -919,22 +1198,11 @@ class DockerEnvironment(BaseEnvironment):
                     logger.warning(
                         "Existing container %s has NetworkMode=%s but "
                         "docker_network=false requests an air-gapped "
-                        "container — removing it and starting fresh "
+                        "container — leaving it untouched and starting fresh "
                         "(task=%s, profile=%s).",
                         container_id[:12], actual_mode or "unknown",
                         task_label, profile_name,
                     )
-                    try:
-                        subprocess.run(
-                            [self._docker_exe, "rm", "-f", container_id],
-                            capture_output=True,
-                            text=True,
-                            timeout=30,
-                            check=False,
-                            stdin=subprocess.DEVNULL,
-                        )
-                    except (subprocess.TimeoutExpired, OSError) as e:
-                        logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
                     existing = None
             if existing is not None:
                 container_id, state = existing
@@ -978,7 +1246,12 @@ class DockerEnvironment(BaseEnvironment):
                 image,
                 "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
             ]
-            logger.debug(f"Starting container: {' '.join(run_cmd)}")
+            logger.debug(
+                "Starting Docker container image=%s cwd=%s fingerprint=%s",
+                image,
+                cwd,
+                self._runtime_fingerprint,
+            )
             try:
                 result = subprocess.run(
                     run_cmd,
@@ -1023,36 +1296,46 @@ class DockerEnvironment(BaseEnvironment):
         These are used once during init_session() so that export -p captures
         them into the snapshot.  Subsequent execute() calls don't need -e flags.
         """
-        exec_env: dict[str, str] = dict(self._env)
-
-        explicit_forward_keys = set(self._forward_env)
-        passthrough_keys: set[str] = set()
-        try:
-            from tools.env_passthrough import get_all_passthrough
-            passthrough_keys = set(get_all_passthrough())
-        except Exception:
-            pass
-        # Explicit docker_forward_env entries are an intentional opt-in and must
-        # win over the generic Hermes secret blocklist. Only implicit passthrough
-        # keys are filtered. Also strip Hermes-internal dynamic secrets
-        # (AUXILIARY_*_API_KEY / _BASE_URL, GATEWAY_RELAY_* auth) that the
-        # name-based blocklist doesn't cover — see _is_hermes_internal_secret.
-        _implicit_forward = {
-            k for k in passthrough_keys if not _is_hermes_internal_secret(k)
-        }
-        forward_keys = explicit_forward_keys | (_implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
-        hermes_env = _load_hermes_env_vars() if forward_keys else {}
-        for key in sorted(forward_keys):
-            value = os.getenv(key)
-            if not value:
-                value = hermes_env.get(key)
-            if value:
-                exec_env[key] = value
+        # Production instances freeze this snapshot in __init__. The fallback
+        # keeps lightweight __new__-constructed test doubles/back-compat callers
+        # working while still going through the same resolver.
+        if hasattr(self, "_resolved_init_env"):
+            exec_env = dict(self._resolved_init_env)
+        else:
+            exec_env = resolve_docker_init_env(
+                env=self._env,
+                forward_env=self._forward_env,
+            )
 
         args = []
         for key in sorted(exec_env):
             args.extend(["-e", f"{key}={exec_env[key]}"])
         return args
+
+    @property
+    def init_env_digest(self) -> str:
+        """Hash of the exact environment snapshot used by init_session."""
+
+        if hasattr(self, "_resolved_init_env"):
+            resolved = self._resolved_init_env
+        else:
+            resolved = resolve_docker_init_env(
+                env=self._env,
+                forward_env=self._forward_env,
+            )
+        return docker_init_env_digest(resolved)
+
+    @property
+    def runtime_fingerprint(self) -> str:
+        """Hash-only identity required for safe in- and cross-process reuse."""
+
+        return self._runtime_fingerprint
+
+    @property
+    def has_host_access(self) -> bool:
+        """Whether user configuration bind-mounted a host path."""
+
+        return bool(self._has_host_access)
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
@@ -1108,7 +1391,12 @@ class DockerEnvironment(BaseEnvironment):
         # 1. Try label-based reuse (another process may have recreated it).
         task_label = self._labels.get("hermes-task-id", "")
         profile_label = self._labels.get("hermes-profile", "")
-        existing = self._find_reusable_container(task_label, profile_label)
+        runtime_fingerprint = self._labels.get(_RUNTIME_FINGERPRINT_LABEL, "")
+        existing = self._find_reusable_container(
+            task_label,
+            profile_label,
+            runtime_fingerprint,
+        )
         if existing is not None:
             cid, state = existing
             if state == "running":
@@ -1267,8 +1555,13 @@ class DockerEnvironment(BaseEnvironment):
         mode = result.stdout.strip()
         return mode or None
 
-    def _find_reusable_container(self, task_label: str, profile_label: str) -> Optional[tuple[str, str]]:
-        """Look for an existing container labeled for this (task, profile).
+    def _find_reusable_container(
+        self,
+        task_label: str,
+        profile_label: str,
+        runtime_fingerprint: str = "",
+    ) -> Optional[tuple[str, str]]:
+        """Look for an exact-runtime container for this (task, profile).
 
         Returns ``(container_id, state)`` on hit, ``None`` on miss / on any
         failure (including ``docker ps`` itself failing). State is one of the
@@ -1276,10 +1569,12 @@ class DockerEnvironment(BaseEnvironment):
         ``created``, ``paused``, ``restarting``, ``dead``. The caller decides
         whether the state warrants ``docker start`` before reuse.
 
-        Restricted to the docker-stored label set this class creates; never
-        matches containers that happened to be named ``hermes-*`` but were
-        started by some other tool.
+        Restricted to the Docker-stored label set this class creates. Legacy
+        containers without a runtime fingerprint and containers created under
+        different mounts/images/environment are deliberately not reusable.
         """
+        if not runtime_fingerprint:
+            return None
         try:
             result = subprocess.run(
                 [
@@ -1287,6 +1582,10 @@ class DockerEnvironment(BaseEnvironment):
                     "--filter", "label=hermes-agent=1",
                     "--filter", f"label=hermes-task-id={task_label}",
                     "--filter", f"label=hermes-profile={profile_label}",
+                    "--filter", (
+                        f"label={_RUNTIME_FINGERPRINT_LABEL}="
+                        f"{runtime_fingerprint}"
+                    ),
                     "--format", "{{.ID}}\t{{.State}}",
                 ],
                 capture_output=True,

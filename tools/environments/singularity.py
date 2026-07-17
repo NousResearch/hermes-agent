@@ -173,6 +173,7 @@ class SingularityEnvironment(BaseEnvironment):
         disk: int = 0,
         persistent_filesystem: bool = False,
         task_id: str = "default",
+        runtime_identity: str = "",
     ):
         super().__init__(cwd=cwd, timeout=timeout)
         self.executable = _ensure_singularity_available()
@@ -181,6 +182,7 @@ class SingularityEnvironment(BaseEnvironment):
         self._instance_started = False
         self._persistent = persistent_filesystem
         self._task_id = task_id
+        self._runtime_identity = runtime_identity
         self._overlay_dir: Optional[Path] = None
         self._cpu = cpu
         self._memory = memory
@@ -188,7 +190,10 @@ class SingularityEnvironment(BaseEnvironment):
         if self._persistent:
             overlay_base = _get_scratch_dir() / "hermes-overlays"
             overlay_base.mkdir(parents=True, exist_ok=True)
-            self._overlay_dir = overlay_base / f"overlay-{task_id}"
+            overlay_suffix = (
+                f"-{runtime_identity}" if runtime_identity else ""
+            )
+            self._overlay_dir = overlay_base / f"overlay-{task_id}{overlay_suffix}"
             self._overlay_dir.mkdir(parents=True, exist_ok=True)
 
         self._start_instance()
@@ -261,5 +266,10 @@ class SingularityEnvironment(BaseEnvironment):
 
         if self._persistent and self._overlay_dir:
             snapshots = _load_snapshots()
-            snapshots[self._task_id] = str(self._overlay_dir)
+            snapshot_key = (
+                f"{self._task_id}:{self._runtime_identity}"
+                if self._runtime_identity
+                else self._task_id
+            )
+            snapshots[snapshot_key] = str(self._overlay_dir)
             _save_snapshots(snapshots)

@@ -114,6 +114,13 @@ _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNS
 # propagates that into this contextvar at session-bind time.
 _SESSION_ASYNC_DELIVERY: ContextVar = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_UNSET)
 
+# Cron-session marker, set per-job in run_job() so the in-process gateway
+# ticker does not leak "this is a cron context" into concurrent interactive
+# gateway sessions on the same process. Task-local, unlike a process-global
+# env var; the approval gate reads it via get_session_env (contextvar first,
+# os.environ fallback for the standalone `hermes cron` process and tests).
+_CRON_SESSION: ContextVar = ContextVar("HERMES_CRON_SESSION", default=_UNSET)
+
 # Cron auto-delivery vars — set per-job in run_job() so concurrent jobs
 # don't clobber each other's delivery targets.
 _CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
@@ -121,6 +128,7 @@ _CRON_AUTO_DELIVER_CHAT_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_CH
 _CRON_AUTO_DELIVER_THREAD_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
 
 _VAR_MAP = {
+    "HERMES_CRON_SESSION": _CRON_SESSION,
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
     "HERMES_SESSION_SOURCE": _SESSION_SOURCE,
     "HERMES_SESSION_CHAT_ID": _SESSION_CHAT_ID,
@@ -325,6 +333,20 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def get_bound_session_env(name: str, default: str = "") -> str:
+    """Read only a value bound in this task's Session ContextVars.
+
+    Unlike :func:`get_session_env`, this never falls back to ``os.environ``.
+    Use it at authorization boundaries where a process-global or inherited
+    environment value must not be mistaken for the current gateway principal.
+    """
+    var = _VAR_MAP.get(name)
+    if var is None:
+        return default
+    value = var.get()
+    return default if value is _UNSET else value
 
 
 def async_delivery_supported() -> bool:

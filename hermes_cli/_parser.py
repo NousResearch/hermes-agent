@@ -252,6 +252,12 @@ def build_top_level_parser():
         default=False,
         help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)",
     )
+    parser.add_argument(
+        "--kanban-owner-bootstrap-stdin",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS,
+    )
     _inherited_flag(
         parser,
         "--dev",

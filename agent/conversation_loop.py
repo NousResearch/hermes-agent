@@ -4991,6 +4991,55 @@ def run_conversation(
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                if getattr(agent, "_kanban_approval_pending", None) is not None:
+                    _approval = agent._kanban_approval_pending
+                    _turn_exit_reason = "kanban_approval_pending"
+                    _description = str(
+                        _approval.get("description")
+                        or "this action requires approval"
+                    )
+                    _approval_outcome = _approval.get("outcome")
+                    if _approval_outcome == "approval_persistence_failed":
+                        final_response = (
+                            "Kanban worker stopped before the action ran because "
+                            "Hermes could not durably persist or verify the approval "
+                            f"request: {_description}. Hermes did not confirm that "
+                            "the card was parked or that its worker slot was released. "
+                            "Inspect the card and approval-broker state before retrying."
+                        )
+                        _approval_status = (
+                            "⛔ Kanban worker stopped: approval persistence failed"
+                        )
+                    elif _approval_outcome == "approval_unavailable":
+                        final_response = (
+                            "Kanban task blocked because no authorized approval "
+                            f"route is available: {_description}. Repair the trusted "
+                            "route, then explicitly unblock the card to retry."
+                        )
+                        _approval_status = (
+                            "⛔ Kanban task blocked: approval route unavailable"
+                        )
+                    else:
+                        final_response = (
+                            f"Kanban task paused pending approval: {_description}. "
+                            "The task will resume automatically if the request is "
+                            "approved."
+                        )
+                        _approval_status = "⏸️ Kanban task paused pending approval"
+                    # Every assistant tool_call already has a matching tool
+                    # result at this point. Close the turn with an assistant
+                    # row so the persisted transcript remains role-valid, but
+                    # do not ask the model to interpret/retry the denial.
+                    messages.append({"role": "assistant", "content": final_response})
+                    agent._emit_status(_approval_status)
+                    if final_response and agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(final_response)
+                            agent.stream_delta_callback(None)
+                        except Exception:
+                            pass
+                    break
+
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
                     _turn_exit_reason = "guardrail_halt"

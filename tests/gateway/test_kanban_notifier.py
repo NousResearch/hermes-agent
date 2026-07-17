@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
@@ -307,3 +309,215 @@ def _unseen_terminal_events_for(tid, chat_id):
         return events
     finally:
         conn.close()
+
+
+def _create_approval_subscription(
+    monkeypatch, *, request_user="u1", payload_key="request_id",
+):
+    request_id = "kapr_12345678"
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="approval test", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            user_id="u1",
+            notifier_profile="default",
+        )
+        kb._append_event(
+            conn,
+            tid,
+            "approval_requested",
+            {
+                payload_key: request_id,
+                "display_target": "redacted target",
+                "description": "write outside workspace",
+            },
+        )
+    finally:
+        conn.close()
+
+    request = {
+        "id": request_id,
+        "task_id": tid,
+        "status": "pending",
+        "platform": "telegram",
+        "chat_id": "chat-1",
+        "thread_id": "",
+        "user_id": request_user,
+        "notifier_profile": "default",
+        "display_target": "redacted target",
+        "description": "write outside workspace",
+        # The notifier must never fall back to an unredacted command field.
+        "command": "curl https://example.invalid/?token=raw-secret",
+    }
+    monkeypatch.setattr(
+        kb,
+        "get_task_approval",
+        lambda _conn, rid: request if rid == request_id else None,
+        raising=False,
+    )
+    return tid, request_id
+
+
+def _unseen_approval_events(tid):
+    conn = kb.connect()
+    try:
+        _, events = kb.unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            kinds=["approval_requested"],
+        )
+        return events
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("payload_key", ["request_id", "approval_id"])
+def test_kanban_notifier_delivers_redacted_durable_approval(
+    tmp_path, monkeypatch, payload_key,
+):
+    db_path = tmp_path / "durable-approval.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    tid, request_id = _create_approval_subscription(
+        monkeypatch, payload_key=payload_key,
+    )
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert "redacted target" in text
+    assert f"/approve {request_id}" in text
+    assert f"/deny {request_id}" in text
+    assert "raw-secret" not in text
+    assert _unseen_approval_events(tid) == []
+
+
+def test_kanban_notifier_hides_approval_for_other_user_route(tmp_path, monkeypatch):
+    db_path = tmp_path / "durable-approval-route.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    tid, _ = _create_approval_subscription(monkeypatch, request_user="other-user")
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    # The mismatched subscriber must not see or repeatedly replay the request.
+    assert _unseen_approval_events(tid) == []
+
+
+def test_kanban_notifier_rewinds_durable_approval_on_send_failure(tmp_path, monkeypatch):
+    db_path = tmp_path / "durable-approval-retry.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    tid, _ = _create_approval_subscription(monkeypatch)
+
+    adapter = FailingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.attempts == 1
+    assert [ev.kind for ev in _unseen_approval_events(tid)] == ["approval_requested"]
+
+
+def test_kanban_notifier_real_request_round_trip(tmp_path, monkeypatch):
+    """The DB event/record spellings feed the gateway without a mock seam."""
+
+    db_path = tmp_path / "durable-approval-real.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(
+            conn,
+            title="real approval notification",
+            assignee="worker",
+            _trusted_gateway_origin={
+                "platform": "telegram",
+                "chat_id": "chat-1",
+                "thread_id": "",
+                "user_id": "u1",
+                "notifier_profile": "default",
+            },
+        )
+        claimed = kb.claim_task(conn, task_id, claimer="test:notifier")
+        assert claimed is not None
+        request = kb.request_task_approval(
+            conn,
+            task_id=task_id,
+            action_kind="terminal",
+            action_digest="sha256:notifier",
+            display_target="redacted real target",
+            worker_session_id="worker-session",
+            expected_run_id=claimed.current_run_id,
+            expected_claim_lock=claimed.claim_lock,
+            profile="worker",
+            description="requires a person",
+        )
+        assert request is not None
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert "redacted real target" in adapter.sent[0]["text"]
+    assert f"/approve {request['id']}" in adapter.sent[0]["text"]
+
+
+def test_approval_notifier_collects_secondary_profile_only_platform(
+    tmp_path,
+    monkeypatch,
+):
+    """A platform connected only by a secondary profile remains active."""
+    db_path = tmp_path / "secondary-profile-approval.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="secondary approval",
+            assignee="worker",
+            _trusted_gateway_origin={
+                "platform": "telegram",
+                "chat_id": "secondary-chat",
+                "thread_id": "topic-1",
+                "user_id": "secondary-user",
+                "notifier_profile": "beta",
+            },
+        )
+        claimed = kb.claim_task(conn, task_id, claimer="test:secondary")
+        request = kb.request_task_approval(
+            conn,
+            task_id=task_id,
+            action_kind="terminal",
+            action_digest="sha256:secondary",
+            display_target="redacted secondary target",
+            worker_session_id="worker-session",
+            expected_run_id=claimed.current_run_id,
+            expected_claim_lock=claimed.claim_lock,
+            profile="worker",
+            description="secondary profile approval",
+        )
+        assert request is not None
+
+    adapter = RecordingAdapter()
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._running = True
+    runner.adapters = {}
+    runner._profile_adapters = {"beta": {Platform.TELEGRAM: adapter}}
+    runner._kanban_sub_fail_counts = {}
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert request["id"] in adapter.sent[0]["text"]
+    assert adapter.sent[0]["metadata"]["thread_id"] == "topic-1"

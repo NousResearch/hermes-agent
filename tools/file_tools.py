@@ -165,10 +165,31 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPa
 # sessions get the same protection. See references/worktree-cwd-discipline.md.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
 _CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona"})
+_KNOWN_TERMINAL_BACKENDS = frozenset(
+    {"local", "ssh", "docker", "singularity", "modal", "daytona"}
+)
+
+
+def _environment_backend_type(env) -> str | None:
+    """Infer a built-in terminal backend from an environment instance."""
+
+    if env is None:
+        return None
+    name = env.__class__.__name__.lower()
+    for backend in ("local", "ssh", "docker", "singularity", "modal", "daytona"):
+        if backend in name:
+            return backend
+    return None
 
 
 def _terminal_env_type_for_task(task_id: str = "default") -> str:
-    """Best-effort terminal backend type for path-resolution decisions."""
+    """Return the backend requested for this task's next file operation.
+
+    Path resolution happens before :func:`_get_file_ops` replaces a stale
+    cached environment.  Therefore the current config is authoritative when
+    it can be read; preferring an old environment here would resolve a Local
+    path in Docker's namespace (or vice versa) during a backend switch.
+    """
     try:
         from tools.terminal_tool import (
             _active_environments,
@@ -178,29 +199,114 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
         )
 
         try:
+            cfg = _get_env_config()
+        except Exception:
+            cfg = None
+        if cfg is not None:
+            requested = str(
+                cfg.get("env_type") or os.getenv("TERMINAL_ENV") or "local"
+            ).lower()
+            if requested in _KNOWN_TERMINAL_BACKENDS:
+                return requested
+
+        # A live environment remains a useful fallback for legacy/partially
+        # initialized callers whose config loader is unavailable.
+        try:
             container_key = _resolve_container_task_id(task_id)
         except Exception:
             container_key = task_id
         with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
-        if env is not None:
-            name = env.__class__.__name__.lower()
-            if "local" in name:
-                return "local"
-            if "ssh" in name:
-                return "ssh"
-            if "docker" in name:
-                return "docker"
-            if "singularity" in name:
-                return "singularity"
-            if "modal" in name:
-                return "modal"
-            if "daytona" in name:
-                return "daytona"
-        cfg = _get_env_config()
-        return str(cfg.get("env_type") or os.getenv("TERMINAL_ENV") or "local").lower()
+            env = _active_environments.get(container_key) or _active_environments.get(
+                task_id
+            )
+        active = _environment_backend_type(env)
+        if active is not None:
+            return active
+        return str(os.getenv("TERMINAL_ENV") or "local").lower()
     except Exception:
         return str(os.getenv("TERMINAL_ENV") or "local").lower()
+
+
+def _environment_uses_requested_path_namespace(env, task_id: str) -> bool:
+    """Whether *env* and current config address the same path namespace."""
+
+    active = _environment_backend_type(env)
+    requested_backend = _terminal_env_type_for_task(task_id)
+    if active is not None and active != requested_backend:
+        return False
+    try:
+        from tools.terminal_tool import _environment_matches_runtime
+
+        return _environment_matches_runtime(
+            env,
+            requested_backend,
+            _requested_runtime_identity_for_task(task_id),
+        )
+    except Exception:
+        return active is None or active == requested_backend
+
+
+def _requested_runtime_identity_for_task(task_id: str = "default") -> tuple:
+    """Resolve the exact runtime identity file paths are about to target."""
+
+    from tools.terminal_tool import (
+        _CONTAINER_BACKENDS,
+        _get_env_config,
+        _is_unusable_container_cwd,
+        _requested_environment_runtime_identity,
+        _resolve_container_task_id,
+        _resolve_docker_runtime_identity,
+        resolve_task_overrides,
+    )
+
+    config = _get_env_config()
+    env_type = str(config.get("env_type") or "local").lower()
+    effective_task_id = _resolve_container_task_id(task_id)
+    overrides = resolve_task_overrides(task_id)
+    image_key = {
+        "docker": "docker_image",
+        "singularity": "singularity_image",
+        "modal": "modal_image",
+        "daytona": "daytona_image",
+    }.get(env_type)
+    image = (
+        overrides.get(image_key) or config.get(image_key, "")
+        if image_key
+        else ""
+    )
+    cwd = str(overrides.get("cwd") or config.get("cwd") or os.getcwd())
+    if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+        cwd = str(config.get("cwd") or "/workspace")
+    creation_cwd = cwd
+    if env_type in _CONTAINER_BACKENDS:
+        if effective_task_id == "default":
+            creation_cwd = str(config.get("cwd") or cwd)
+        else:
+            creation_cwd = str(
+                overrides.get("cwd") or config.get("cwd") or cwd
+            )
+        if _is_unusable_container_cwd(creation_cwd):
+            creation_cwd = str(config.get("cwd") or "/workspace")
+    docker_fingerprint = None
+    if env_type == "docker":
+        (
+            _resolved_env,
+            _env_digest,
+            docker_fingerprint,
+            _implicit_mounts,
+        ) = _resolve_docker_runtime_identity(
+            config=config,
+            image=image,
+            cwd=creation_cwd,
+            task_id=effective_task_id,
+        )
+    return _requested_environment_runtime_identity(
+        config=config,
+        image=image,
+        cwd=creation_cwd,
+        task_id=effective_task_id,
+        docker_runtime_fingerprint=docker_fingerprint,
+    )
 
 
 def _uses_container_paths(task_id: str = "default") -> bool:
@@ -240,14 +346,24 @@ def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
 
 
 def _configured_terminal_cwd() -> str | None:
-    """Return ``$TERMINAL_CWD`` only when it names a real directory anchor.
+    """Return the requested terminal cwd when it names a real anchor.
 
     Sentinel values (see ``_TERMINAL_CWD_SENTINELS``) and relative paths are
     rejected — a relative anchor is meaningless without knowing which cwd it is
     relative to, which is exactly the ambiguity that misroutes worktree edits.
-    Only an absolute, sentinel-free value is honored.
+    Prefer the explicit environment value, then the normalized terminal config
+    used to create the next backend. The latter is essential during a backend
+    switch, before the stale live environment has been replaced.
     """
-    return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+    configured = _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+    if configured:
+        return configured
+    try:
+        from tools.terminal_tool import _get_env_config
+
+        return _sentinel_free_abs_cwd(_get_env_config().get("cwd"))
+    except Exception:
+        return None
 
 
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:
@@ -303,6 +419,93 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     return _configured_terminal_cwd()
 
 
+def _container_runtime_root(task_id: str, candidate: str | None) -> str:
+    """Map host-side session metadata to the reachable container cwd."""
+
+    from tools.terminal_tool import (
+        _active_environments,
+        _env_lock,
+        _get_env_config,
+        _is_unusable_container_cwd,
+        _resolve_container_task_id,
+        resolve_task_overrides,
+    )
+
+    candidate_text = str(candidate or "").strip()
+    if candidate_text and not _is_unusable_container_cwd(candidate_text):
+        return candidate_text
+
+    overrides = resolve_task_overrides(task_id)
+    override_cwd = str(overrides.get("cwd") or "").strip()
+    if override_cwd and not _is_unusable_container_cwd(override_cwd):
+        return override_cwd
+
+    container_key = _resolve_container_task_id(task_id)
+    with _env_lock:
+        env = _active_environments.get(container_key) or _active_environments.get(
+            task_id
+        )
+    runtime_cwd = ""
+    if _environment_uses_requested_path_namespace(env, task_id):
+        runtime_cwd = str(getattr(env, "_runtime_cwd", "") or "").strip()
+    if runtime_cwd and not _is_unusable_container_cwd(runtime_cwd):
+        return runtime_cwd
+
+    config_cwd = str(_get_env_config().get("cwd") or "").strip()
+    if config_cwd and not _is_unusable_container_cwd(config_cwd):
+        return config_cwd
+
+    # Every built-in container backend exposes /workspace. This fallback is
+    # reachable only for a malformed/stale config and is safer than sending a
+    # known host path into the sandbox where it cannot exist.
+    return "/workspace"
+
+
+def _map_registered_host_path_to_container(
+    filepath: str,
+    task_id: str,
+) -> str | None:
+    """Translate an absolute path under a registered host cwd into Docker."""
+
+    from tools.terminal_tool import _is_unusable_container_cwd, resolve_task_overrides
+
+    registered = str(resolve_task_overrides(task_id).get("cwd") or "").strip()
+    if not registered or not _is_unusable_container_cwd(registered):
+        return None
+
+    container_root = _container_runtime_root(task_id, registered)
+    expanded = _expand_tilde(filepath)
+    registered_expanded = _expand_tilde(registered)
+
+    try:
+        if posixpath.isabs(expanded) and posixpath.isabs(registered_expanded):
+            relative = posixpath.relpath(expanded, registered_expanded)
+            if relative != ".." and not relative.startswith("../"):
+                return posixpath.normpath(
+                    posixpath.join(container_root, relative)
+                )
+    except (TypeError, ValueError):
+        pass
+
+    # Native Windows workspace paths are received by a Linux container host as
+    # C:\\... strings, so POSIX path helpers cannot classify them.
+    try:
+        import ntpath
+
+        if ntpath.isabs(expanded) and ntpath.isabs(registered_expanded):
+            relative = ntpath.relpath(expanded, registered_expanded)
+            if relative != ".." and not relative.startswith(("..\\", "../")):
+                return posixpath.normpath(
+                    posixpath.join(
+                        container_root,
+                        relative.replace("\\", "/"),
+                    )
+                )
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
 def _resolve_base_dir(
     task_id: str = "default",
     *,
@@ -338,6 +541,7 @@ def _resolve_base_dir(
     else:
         base_text = os.getcwd()
     if container_paths:
+        base_text = _container_runtime_root(task_id, base_text)
         if not posixpath.isabs(base_text):
             base_text = posixpath.join(os.getcwd(), base_text)
         return _normalize_without_host_deref(base_text)
@@ -375,7 +579,11 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     if container_paths:
         expanded = _expand_tilde(filepath)
         if posixpath.isabs(expanded):
-            return _normalize_without_host_deref(expanded)
+            mapped = _map_registered_host_path_to_container(expanded, task_id)
+            return _normalize_without_host_deref(mapped or expanded)
+        mapped = _map_registered_host_path_to_container(expanded, task_id)
+        if mapped:
+            return _normalize_without_host_deref(mapped)
         resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
         return _normalize_without_host_deref(resolved)
 
@@ -420,7 +628,7 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
         if not workspace_root:
             return None  # No authoritative workspace root to compare against.
         if _uses_container_paths(task_id):
-            root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root)))
+            root = _resolve_base_dir(task_id, container_paths=True)
         else:
             root = Path(_expand_tilde(workspace_root)).resolve()
         # Is `resolved` inside `root`?
@@ -945,39 +1153,139 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks,
         _creation_locks_lock,
+        _container_creation_config,
+        _environment_matches_runtime,
+        _requested_environment_runtime_identity,
+        _retire_environment_locked,
         _resolve_container_task_id,
+        _resolve_docker_runtime_identity,
         _is_unusable_container_cwd,
         _CONTAINER_BACKENDS,
+        get_session_cwd,
+        record_session_cwd,
+        resolve_task_overrides,
     )
     import time
 
     raw_task_id = task_id or "default"
     task_id = _resolve_container_task_id(raw_task_id)
 
-    # Fast path: check cache -- but also verify the underlying environment
-    # is still alive (it may have been killed by the cleanup thread).
+    # Snapshot the cache before resolving creation inputs. If cleanup removed
+    # the environment, its wrapper is the only remaining source for the live
+    # project cwd (#26211), so carry that cwd into this same rebuild.
     with _file_ops_lock:
         cached = _file_ops_cache.get(task_id)
+    with _env_lock:
+        active_before_resolution = _active_environments.get(task_id)
+
+    config = _get_env_config()
+    env_type = config["env_type"]
+    overrides = resolve_task_overrides(raw_task_id)
+
+    cached_env = getattr(cached, "env", None) if cached is not None else None
+    cached_backend = _environment_backend_type(cached_env)
+    cached_backend_matches = cached_backend is None or cached_backend == env_type
+    cached_cwd_fallback = None
+    if cached is not None and cached_backend_matches and (
+        active_before_resolution is None
+        or cached_env is active_before_resolution
+    ):
+        cached_cwd_fallback = getattr(cached, "cwd", None)
+    if cached is not None and active_before_resolution is None:
+        if cached_cwd_fallback:
+            record_session_cwd(raw_task_id, cached_cwd_fallback)
+        with _file_ops_lock:
+            if _file_ops_cache.get(task_id) is cached:
+                _file_ops_cache.pop(task_id, None)
+        cached = None
+
+    if env_type == "docker":
+        image = overrides.get("docker_image") or config["docker_image"]
+    elif env_type == "singularity":
+        image = overrides.get("singularity_image") or config["singularity_image"]
+    elif env_type == "modal":
+        image = overrides.get("modal_image") or config["modal_image"]
+    elif env_type == "daytona":
+        image = overrides.get("daytona_image") or config["daytona_image"]
+    else:
+        image = ""
+
+    cwd = overrides.get("cwd") or get_session_cwd(raw_task_id) or config["cwd"]
+    if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+        if cwd != config["cwd"]:
+            logger.info(
+                "Ignoring host/relative cwd override %r for %s backend "
+                "(won't exist in sandbox). Using %r instead.",
+                cwd, env_type, config["cwd"],
+            )
+        cwd = config["cwd"]
+
+    # A session's recorded cwd is mutable command state, not part of a shared
+    # container's immutable identity.  Use it to resolve this operation, but
+    # seed shared containers from stable config and isolated containers from
+    # their declared override/config so a later `cd` cannot churn runtimes.
+    creation_cwd = cwd
+    if env_type in _CONTAINER_BACKENDS:
+        creation_cwd = (
+            config["cwd"]
+            if task_id == "default"
+            else overrides.get("cwd") or config["cwd"]
+        )
+        if _is_unusable_container_cwd(creation_cwd):
+            creation_cwd = config["cwd"]
+
+    docker_init_env = None
+    docker_implicit_mounts = None
+    expected_docker_fingerprint = None
+    if env_type == "docker":
+        (
+            docker_init_env,
+            _docker_init_env_digest,
+            expected_docker_fingerprint,
+            docker_implicit_mounts,
+        ) = _resolve_docker_runtime_identity(
+            config=config,
+            image=image,
+            cwd=creation_cwd,
+            task_id=task_id,
+        )
+
+    expected_runtime_identity = _requested_environment_runtime_identity(
+        config=config,
+        image=image,
+        cwd=creation_cwd,
+        task_id=task_id,
+        docker_runtime_fingerprint=expected_docker_fingerprint,
+    )
+
+    def _runtime_matches(candidate) -> bool:
+        return _environment_matches_runtime(
+            candidate,
+            env_type,
+            expected_runtime_identity,
+        )
+
+    # Fast path: check cache -- but also verify the underlying environment
+    # is still alive (it may have been killed by the cleanup thread).
     if cached is not None:
         with _env_lock:
-            if task_id in _active_environments:
+            active_env = _active_environments.get(task_id)
+            if (
+                active_env is not None
+                and getattr(cached, "env", None) is active_env
+                and _runtime_matches(active_env)
+            ):
                 _last_activity[task_id] = time.time()
                 return cached
-            else:
-                # Environment was cleaned up -- preserve the old cwd in the
-                # session record before invalidating the stale cache entry
-                # (fixes #26211: silent file-creation failures in long-running
-                # conversations). Usually a no-op: every completed command
-                # already recorded its cwd.
-                old_cwd = getattr(cached, "cwd", None)
-                if old_cwd:
-                    try:
-                        from tools.terminal_tool import record_session_cwd
-                        record_session_cwd(raw_task_id, old_cwd)
-                    except Exception:
-                        pass
-                with _file_ops_lock:
-                    _file_ops_cache.pop(task_id, None)
+        if active_env is None:
+            # The environment disappeared after the initial snapshot. Keep
+            # the cwd before invalidating the wrapper.
+            old_cwd = getattr(cached, "cwd", None)
+            if old_cwd and cached_backend_matches:
+                record_session_cwd(raw_task_id, old_cwd)
+        with _file_ops_lock:
+            if _file_ops_cache.get(task_id) is cached:
+                _file_ops_cache.pop(task_id, None)
 
     # Need to ensure the environment exists before building file_ops.
     # Acquire per-task lock so only one thread creates the sandbox.
@@ -989,71 +1297,23 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     with task_lock:
         # Double-check: another thread may have created it while we waited
         with _env_lock:
-            if task_id in _active_environments:
+            candidate = _active_environments.get(task_id)
+            if candidate is not None and _runtime_matches(candidate):
                 _last_activity[task_id] = time.time()
-                terminal_env = _active_environments[task_id]
+                terminal_env = candidate
             else:
+                # Detach a mismatched runtime without stopping/removing it: a
+                # sibling session or process may still hold and use it.
+                if candidate is not None:
+                    _retire_environment_locked(task_id, candidate)
                 terminal_env = None
 
         if terminal_env is None:
-            from tools.terminal_tool import resolve_task_overrides
-
-            config = _get_env_config()
-            env_type = config["env_type"]
-            overrides = resolve_task_overrides(raw_task_id)
-
-            if env_type == "docker":
-                image = overrides.get("docker_image") or config["docker_image"]
-            elif env_type == "singularity":
-                image = overrides.get("singularity_image") or config["singularity_image"]
-            elif env_type == "modal":
-                image = overrides.get("modal_image") or config["modal_image"]
-            elif env_type == "daytona":
-                image = overrides.get("daytona_image") or config["daytona_image"]
-            else:
-                image = ""
-
-            try:
-                from tools.terminal_tool import get_session_cwd
-                recorded_cwd = get_session_cwd(raw_task_id)
-            except Exception:
-                recorded_cwd = None
-            cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
-            # Re-apply the container cwd guard that _get_env_config() already
-            # ran on config["cwd"] (see #50636).  A per-task cwd override
-            # registered by the gateway/TUI/ACP for workspace tracking is a
-            # raw host path (e.g. a Desktop session's /Users/<me>/workspace or
-            # C:\\Users\\<me>). On a container backend that reaches
-            # ``docker run -w <host-path>`` and the container starts in a
-            # directory that doesn't exist inside the sandbox, so search_files
-            # and friends silently return empty results (#54447).  Sanitize it
-            # back to the already-validated config["cwd"] so the override can't
-            # bypass the guard.  Valid in-container override paths (RL/benchmark
-            # sandboxes that set cwd to /workspace, /root, etc.) are absolute
-            # non-host paths and pass through untouched.
-            if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
-                if cwd != config["cwd"]:
-                    logger.info(
-                        "Ignoring host/relative cwd override %r for %s backend "
-                        "(won't exist in sandbox). Using %r instead.",
-                        cwd, env_type, config["cwd"],
-                    )
-                cwd = config["cwd"]
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
             if env_type in {"docker", "singularity", "modal", "daytona"}:
-                container_config = {
-                    "container_cpu": config.get("container_cpu", 1),
-                    "container_memory": config.get("container_memory", 5120),
-                    "container_disk": config.get("container_disk", 51200),
-                    "container_persistent": config.get("container_persistent", True),
-                    "docker_volumes": config.get("docker_volumes", []),
-                    "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                    "docker_forward_env": config.get("docker_forward_env", []),
-                    "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                    "docker_network": config.get("docker_network", True),
-                }
+                container_config = _container_creation_config(config)
 
             ssh_config = None
             if env_type == "ssh":
@@ -1074,14 +1334,28 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             terminal_env = _create_environment(
                 env_type=env_type,
                 image=image,
-                cwd=cwd,
+                cwd=creation_cwd,
                 timeout=config["timeout"],
                 ssh_config=ssh_config,
                 container_config=container_config,
                 local_config=local_config,
                 task_id=task_id,
                 host_cwd=config.get("host_cwd"),
+                resolved_docker_init_env=docker_init_env,
+                resolved_docker_implicit_mounts=docker_implicit_mounts,
             )
+            if not _runtime_matches(terminal_env):
+                try:
+                    if env_type == "docker":
+                        terminal_env.cleanup(force_remove=True)
+                    else:
+                        terminal_env.cleanup()
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"{env_type} runtime identity changed between file-tool "
+                    "resolution and environment creation"
+                )
 
             with _env_lock:
                 _active_environments[task_id] = terminal_env
@@ -1268,7 +1542,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        # Use the exact path resolved for this session. The shared Docker
+        # environment has one stable creation cwd, while multiple desktop/TUI
+        # sessions may each have a different logical cwd.
+        result = file_ops.read_file(resolved_str, offset, limit)
         result_dict = result.to_dict()
 
         # ── Character-count guard ─────────────────────────────────────
@@ -1652,6 +1929,46 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         return tool_error(str(e))
 
 
+def _rewrite_v4a_paths(
+    patch_content: str,
+    resolved_paths: dict[str, str | None],
+) -> str:
+    """Bind V4A headers to the paths already resolved by the tool layer."""
+
+    import re
+
+    single_header = re.compile(
+        r"^(\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*)(.+)$"
+    )
+    move_header = re.compile(
+        r"^(\*\*\*\s*Move\s+File:\s*)(.+?)(\s*->\s*)(.+)$"
+    )
+    rewritten: list[str] = []
+    for line in patch_content.splitlines(keepends=True):
+        newline = ""
+        body = line
+        if body.endswith("\n"):
+            body = body[:-1]
+            newline = "\n"
+
+        move = move_header.match(body)
+        if move:
+            source = move.group(2).strip()
+            destination = move.group(4).strip()
+            source = resolved_paths.get(source) or source
+            destination = resolved_paths.get(destination) or destination
+            body = (
+                f"{move.group(1)}{source}{move.group(3)}{destination}"
+            )
+        else:
+            single = single_header.match(body)
+            if single:
+                original = single.group(2).strip()
+                body = f"{single.group(1)}{resolved_paths.get(original) or original}"
+        rewritten.append(body + newline)
+    return "".join(rewritten)
+
+
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default", cross_profile: bool = False,
@@ -1775,7 +2092,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
-                result = file_ops.patch_v4a(patch)
+                result = file_ops.patch_v4a(
+                    _rewrite_v4a_paths(patch, _path_to_resolved)
+                )
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -1898,7 +2217,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
 
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
+            pattern=pattern,
+            path=str(resolved_path) if resolved_path is not None else path,
+            target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
         omitted = _filter_read_blocked_search_results(result, task_id)

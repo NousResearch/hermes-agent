@@ -161,6 +161,10 @@ def _task_dict(
     latest_summary: Optional[str] = None,
 ) -> dict[str, Any]:
     d = asdict(task)
+    # Internal approval-generation CAS state is not part of the dashboard API.
+    # Routed approval endpoints expose the appropriate request metadata;
+    # board/task payloads must not leak broker identifiers.
+    d.pop("active_approval_id", None)
     # Add derived age metrics so the UI can colour stale cards without
     # computing deltas client-side.
     try:
@@ -1029,6 +1033,12 @@ def _set_status_direct(
         )
         if cur.rowcount != 1:
             return False
+        if prev["status"] != new_status:
+            kanban_db._cancel_unbound_task_approvals(
+                conn,
+                task_id,
+                reason=f"dashboard changed task status to {new_status}",
+            )
         run_id = None
         if was_running and new_status != "running" and prev["current_run_id"]:
             run_id = kanban_db._end_run(
@@ -1057,6 +1067,11 @@ def _set_status_direct(
                     (child_id,),
                 )
                 if demoted.rowcount == 1:
+                    kanban_db._cancel_unbound_task_approvals(
+                        conn,
+                        child_id,
+                        reason="a reopened parent demoted the task",
+                    )
                     conn.execute(
                         "INSERT INTO task_events (task_id, kind, payload, created_at) "
                         "VALUES (?, 'status', ?, ?)",

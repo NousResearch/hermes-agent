@@ -54,6 +54,154 @@ logger = logging.getLogger("gateway.run")
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
 
+_DURABLE_KANBAN_APPROVAL_ID_RE = re.compile(r"^ka_[0-9a-f]{24}$")
+_LOCAL_APPROVAL_SCOPE_WORDS = {
+    "all", "always", "permanent", "permanently", "session", "ses",
+}
+
+
+def _parse_durable_kanban_approval_args(
+    raw_args: str,
+    *,
+    allow_reason: bool = False,
+) -> tuple[Optional[str], Optional[str]]:
+    """Parse an explicit durable request id without changing local syntax.
+
+    Durable approvals are deliberately one-shot: session/permanent/all scopes
+    remain meaningful only for the in-process approval queue.  A deny may
+    carry a short reason after the id, while an approve must contain only the
+    opaque request id.
+    """
+
+    tokens = raw_args.strip().split()
+    if not tokens or (not allow_reason and len(tokens) != 1):
+        return None, None
+    request_id = tokens[0]
+    if request_id.lower() in _LOCAL_APPROVAL_SCOPE_WORDS:
+        return None, None
+    if not _DURABLE_KANBAN_APPROVAL_ID_RE.fullmatch(request_id):
+        return None, None
+    reason = " ".join(tokens[1:]).strip() if allow_reason else ""
+    return request_id, (reason[:280].strip() or None)
+
+
+def _uses_reserved_kanban_approval_namespace(raw_args: str) -> bool:
+    """Return whether the first argument claims the durable ``ka_`` lane."""
+
+    tokens = raw_args.strip().split()
+    return bool(tokens) and tokens[0].casefold().startswith("ka_")
+
+
+def _durable_approval_route_matches(record: Any, route: dict[str, str]) -> bool:
+    """Require an exact persisted-route match before resolving a request."""
+
+    if not isinstance(record, dict):
+        return False
+
+    def _text(value: Any) -> str:
+        return str(value or "")
+
+    def _platform(value: Any) -> str:
+        return _text(getattr(value, "value", value)).lower()
+
+    def _profile(value: Any) -> str:
+        return _text(value).strip() or "default"
+
+    return (
+        _platform(record.get("platform")) == _platform(route.get("platform"))
+        and _text(record.get("chat_id")) == _text(route.get("chat_id"))
+        and _text(record.get("thread_id")) == _text(route.get("thread_id"))
+        and _text(record.get("user_id")) == _text(route.get("user_id"))
+        and _profile(record.get("notifier_profile"))
+        == _profile(route.get("notifier_profile"))
+    )
+
+
+def _decide_durable_kanban_approval(
+    *,
+    request_id: str,
+    decision: str,
+    route: dict[str, str],
+    reason: Optional[str] = None,
+) -> str:
+    """Resolve a durable Kanban request, returning a user-facing state key.
+
+    Board search is intentionally route-blind until a matching record is
+    found.  A request that exists for another chat/profile is reported as not
+    found so opaque ids cannot be used as a cross-chat existence oracle.
+    """
+
+    from hermes_cli import kanban_db as kb
+
+    try:
+        boards = kb.list_boards(include_archived=True)
+    except Exception:
+        boards = [kb.read_board_metadata(kb.DEFAULT_BOARD)]
+
+    seen_db_paths: set[str] = set()
+    for board_meta in boards:
+        slug = board_meta.get("slug") or kb.DEFAULT_BOARD
+        db_path = board_meta.get("db_path")
+        try:
+            resolved_path = (
+                str(Path(db_path).expanduser().resolve())
+                if db_path
+                else str(kb.kanban_db_path(slug).resolve())
+            )
+        except Exception:
+            resolved_path = f"slug:{slug}"
+        if resolved_path in seen_db_paths:
+            continue
+        seen_db_paths.add(resolved_path)
+
+        try:
+            conn = kb.connect(board=slug)
+        except Exception as exc:
+            logger.debug(
+                "kanban approval: cannot open board %s while resolving %s: %s",
+                slug, request_id, exc,
+            )
+            continue
+        try:
+            record = kb.get_task_approval(conn, request_id)
+            if not record or not _durable_approval_route_matches(record, route):
+                continue
+            if record.get("status") != "pending":
+                return "expired"
+            resolved = kb.decide_task_approval(
+                conn,
+                request_id,
+                decision=decision,
+                # The semantic route match above normalizes legacy default
+                # profile / empty-thread spellings. Pass the stored spellings
+                # into the DB CAS so NULL-vs-"" representation drift cannot
+                # make an otherwise exact inbound route fail spuriously.
+                platform=record.get("platform"),
+                chat_id=record.get("chat_id"),
+                thread_id=record.get("thread_id"),
+                user_id=record.get("user_id"),
+                notifier_profile=record.get("notifier_profile"),
+                decided_by=(
+                    f"{route.get('platform')}:"
+                    f"{route.get('user_id') or route.get('chat_id')}"
+                ),
+                reason=reason,
+            )
+            expected_status = "approved" if decision == "approve" else "denied"
+            if isinstance(resolved, dict):
+                if resolved.get("status") == expected_status:
+                    return expected_status
+                return "expired"
+            if resolved:
+                return "approved" if decision == "approve" else "denied"
+            # A competing gateway may have resolved or expired the request
+            # after our read.  It existed on this exact route, so report a
+            # stale request rather than pretending its id was unknown.
+            return "expired"
+        finally:
+            conn.close()
+    return "not_found"
+
 
 def _model_switch_skew_guard() -> Optional[str]:
     """Refuse a model switch when the gateway is running stale code.
@@ -454,7 +602,6 @@ class GatewaySlashCommandsMixin:
             text = text[len("kanban"):].lstrip()
 
         tokens = shlex.split(text) if text else []
-        requested_board = None
         action = None
         i = 0
         while i < len(tokens):
@@ -462,62 +609,65 @@ class GatewaySlashCommandsMixin:
             if tok == "--board":
                 if i + 1 >= len(tokens):
                     break
-                requested_board = tokens[i + 1]
                 i += 2
                 continue
             if tok.startswith("--board="):
-                requested_board = tok.split("=", 1)[1]
                 i += 1
                 continue
             action = tok
             break
 
-        is_create = action == "create"
+        is_create = action in {"create", "swarm"}
+
+        trusted_gateway_origin = None
+        if is_create:
+            source = event.source
+            platform = getattr(source, "platform", None)
+            platform_str = str(
+                getattr(platform, "value", platform) or ""
+            ).strip().casefold()
+            chat_id = str(getattr(source, "chat_id", "") or "").strip()
+            user_id = str(getattr(source, "user_id", "") or "").strip()
+            source_profile = str(
+                getattr(source, "profile", "") or ""
+            ).strip()
+            notifier_profile = source_profile or self._active_profile_name()
+            if platform_str and chat_id and user_id and notifier_profile:
+                trusted_gateway_origin = {
+                    "platform": platform_str,
+                    "chat_id": chat_id,
+                    "thread_id": str(
+                        getattr(source, "thread_id", "") or ""
+                    ),
+                    "user_id": user_id,
+                    "notifier_profile": notifier_profile,
+                }
 
         try:
-            output = await asyncio.to_thread(run_slash, text)
+            output = await asyncio.to_thread(
+                run_slash,
+                text,
+                _trusted_gateway_origin=trusted_gateway_origin,
+            )
         except Exception as exc:  # pragma: no cover - defensive
             return t("gateway.kanban.error_prefix", error=exc)
 
-        # Auto-subscribe on create. Parse the task id from the CLI's standard
-        # success line ("Created t_abcd  (ready, assignee=...)"). If the user
-        # passed --json we don't subscribe; they're clearly scripting and
-        # can call /kanban notify-subscribe explicitly.
-        if is_create and output:
-            m = re.search(r"Created\s+(t_[0-9a-f]+)\b", output)
+        # The trusted route and its notification subscription were committed
+        # atomically with the task by run_slash/create_task. Parse the standard
+        # human success line only to append the UX confirmation; --json stays
+        # machine-readable while retaining the same durable authorization.
+        if is_create and trusted_gateway_origin and output:
+            m = re.search(
+                r"(?:Created\s+|Swarm root:\s*)(t_[0-9a-f]+)\b",
+                output,
+            )
             if m:
                 task_id = m.group(1)
-                try:
-                    source = event.source
-                    platform = getattr(source, "platform", None)
-                    platform_str = (
-                        platform.value if hasattr(platform, "value") else str(platform or "")
-                    ).lower()
-                    chat_id = str(getattr(source, "chat_id", "") or "")
-                    thread_id = str(getattr(source, "thread_id", "") or "")
-                    user_id = str(getattr(source, "user_id", "") or "") or None
-                    if platform_str and chat_id:
-                        def _sub():
-                            from hermes_cli import kanban_db as _kb
-                            conn = _kb.connect(board=requested_board)
-                            try:
-                                _kb.add_notify_sub(
-                                    conn, task_id=task_id,
-                                    platform=platform_str, chat_id=chat_id,
-                                    thread_id=thread_id or None,
-                                    user_id=user_id,
-                                    notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
-                                )
-                            finally:
-                                conn.close()
-                        await asyncio.to_thread(_sub)
-                        output = (
-                            output.rstrip()
-                            + "\n"
-                            + t("gateway.kanban.subscribed_suffix", task_id=task_id)
-                        )
-                except Exception as exc:
-                    logger.warning("kanban create auto-subscribe failed: %s", exc)
+                output = (
+                    output.rstrip()
+                    + "\n"
+                    + t("gateway.kanban.subscribed_suffix", task_id=task_id)
+                )
 
         # Gateway messages have practical length caps; truncate long
         # listings to keep the UX reasonable.
@@ -4585,6 +4735,7 @@ class GatewaySlashCommandsMixin:
             /approve all session  — approve all + remember for session
             /approve always       — approve oldest + remember permanently
             /approve all always   — approve all + remember permanently
+            /approve ka_<id>      — approve one routed Kanban request once
         """
         source = event.source
         session_key = self._session_key_for_source(source)
@@ -4593,6 +4744,55 @@ class GatewaySlashCommandsMixin:
             resolve_gateway_approval, has_blocking_approval,
         )
 
+        # An explicit durable id names one exact request and must never be
+        # reinterpreted as a scope word for an unrelated process-local queue.
+        # Parse it first; bare/local syntax falls through to the legacy queue.
+        raw_args = event.get_command_args()
+        request_id, _ = _parse_durable_kanban_approval_args(raw_args)
+        if request_id:
+            route = {
+                "platform": str(
+                    getattr(source.platform, "value", source.platform) or ""
+                ).lower(),
+                "chat_id": str(source.chat_id or ""),
+                "thread_id": str(getattr(source, "thread_id", "") or ""),
+                "user_id": str(getattr(source, "user_id", "") or ""),
+                "notifier_profile": str(
+                    getattr(source, "profile", None)
+                    or self._active_profile_name()
+                    or "default"
+                ),
+            }
+            state = await asyncio.to_thread(
+                _decide_durable_kanban_approval,
+                request_id=request_id,
+                decision="approve",
+                route=route,
+            )
+            if state == "approved":
+                logger.info(
+                    "User approved durable Kanban request %s via /approve",
+                    request_id,
+                )
+                return (
+                    f"Approved Kanban request `{request_id}` once. "
+                    "The task can resume."
+                )
+            if state == "expired":
+                return (
+                    f"Kanban approval request `{request_id}` is no longer pending "
+                    "(it may have expired or already been resolved)."
+                )
+            return (
+                f"No pending Kanban approval request `{request_id}` was found "
+                "for this chat."
+            )
+        if _uses_reserved_kanban_approval_namespace(raw_args):
+            return (
+                "Invalid Kanban approval request id or syntax. Copy the exact "
+                "`/approve ka_…` command from the approval notice."
+            )
+
         if not has_blocking_approval(session_key):
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
@@ -4600,7 +4800,12 @@ class GatewaySlashCommandsMixin:
             return t("gateway.approve.no_pending")
 
         # Parse args: support "all", "all session", "all always", "session", "always"
-        args = event.get_command_args().strip().lower().split()
+        args = raw_args.strip().lower().split()
+        if any(arg not in _LOCAL_APPROVAL_SCOPE_WORDS for arg in args):
+            return (
+                "Invalid /approve syntax. Use `/approve`, `/approve all`, "
+                "`/approve session`, or the exact Kanban request id."
+            )
         resolve_all = "all" in args
         remaining = [a for a in args if a != "all"]
 
@@ -4634,6 +4839,9 @@ class GatewaySlashCommandsMixin:
         ``/deny <reason>`` (or ``/deny all <reason>``) attaches a one-line
         reason that is relayed back to the agent so it can adapt instead of
         only hearing "denied". Ported from qwibitai/nanoclaw#2832.
+
+        ``/deny ka_<id> [reason]`` denies one durable Kanban request. The
+        request must be routed to this exact platform/chat/thread/user/profile.
         """
         source = event.source
         session_key = self._session_key_for_source(source)
@@ -4641,6 +4849,56 @@ class GatewaySlashCommandsMixin:
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
         )
+
+        # As with /approve, an explicit durable id takes precedence over an
+        # unrelated process-local approval queue. Strict id parsing preserves
+        # free-form local denial reasons.
+        raw_args = event.get_command_args()
+        request_id, durable_reason = _parse_durable_kanban_approval_args(
+            raw_args, allow_reason=True,
+        )
+        if request_id:
+            route = {
+                "platform": str(
+                    getattr(source.platform, "value", source.platform) or ""
+                ).lower(),
+                "chat_id": str(source.chat_id or ""),
+                "thread_id": str(getattr(source, "thread_id", "") or ""),
+                "user_id": str(getattr(source, "user_id", "") or ""),
+                "notifier_profile": str(
+                    getattr(source, "profile", None)
+                    or self._active_profile_name()
+                    or "default"
+                ),
+            }
+            state = await asyncio.to_thread(
+                _decide_durable_kanban_approval,
+                request_id=request_id,
+                decision="deny",
+                route=route,
+                reason=durable_reason,
+            )
+            if state == "denied":
+                logger.info(
+                    "User denied durable Kanban request %s via /deny%s",
+                    request_id, " (with reason)" if durable_reason else "",
+                )
+                suffix = f" Reason: {durable_reason}" if durable_reason else ""
+                return f"Denied Kanban request `{request_id}`.{suffix}"
+            if state == "expired":
+                return (
+                    f"Kanban approval request `{request_id}` is no longer pending "
+                    "(it may have expired or already been resolved)."
+                )
+            return (
+                f"No pending Kanban approval request `{request_id}` was found "
+                "for this chat."
+            )
+        if _uses_reserved_kanban_approval_namespace(raw_args):
+            return (
+                "Invalid Kanban approval request id or syntax. Copy the exact "
+                "`/deny ka_…` command from the approval notice."
+            )
 
         if not has_blocking_approval(session_key):
             if session_key in self._pending_approvals:
@@ -4651,7 +4909,7 @@ class GatewaySlashCommandsMixin:
         # Parse args: a leading "all" token denies every pending command;
         # anything after it (or the whole arg string when "all" is absent) is
         # captured verbatim as the optional deny reason relayed to the agent.
-        raw_args = event.get_command_args().strip()
+        raw_args = raw_args.strip()
         tokens = raw_args.split()
         resolve_all = bool(tokens) and tokens[0].lower() == "all"
         if resolve_all:

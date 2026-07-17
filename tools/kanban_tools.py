@@ -1121,6 +1121,17 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            gateway_origin = _trusted_gateway_origin_from_context()
+            if gateway_origin is None:
+                parent_task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+                if parent_task_id:
+                    # Detached workers have their ambient gateway markers
+                    # scrubbed. Inherit authority only from the parent's
+                    # immutable origin row, never from mutable subscriptions.
+                    gateway_origin = kb.get_task_approval_route(
+                        conn,
+                        parent_task_id,
+                    )
             # Inherit the spawning worker's own task workspace when the
             # caller didn't specify one (see resolution note above).
             if _inherit_workspace:
@@ -1159,9 +1170,13 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                _trusted_gateway_origin=gateway_origin,
             )
             new_task = kb.get_task(conn, new_tid)
-            subscribed = _maybe_auto_subscribe(conn, new_tid)
+            subscribed = bool(gateway_origin) or _maybe_auto_subscribe(
+                conn,
+                new_tid,
+            )
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
@@ -1174,6 +1189,56 @@ def _handle_create(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_create failed")
         return tool_error(f"kanban_create: {e}")
+
+
+def _auto_subscribe_enabled() -> bool:
+    """Return the user-facing notification gate, defaulting on."""
+    try:
+        cfg = load_config()
+        return bool(
+            cfg_get(
+                cfg,
+                "kanban",
+                "auto_subscribe_on_create",
+                default=True,
+            )
+        )
+    except Exception:
+        return True
+
+
+def _trusted_gateway_origin_from_context() -> Optional[dict[str, str]]:
+    """Resolve an approval principal only from bound gateway ContextVars.
+
+    Process environment values are intentionally ignored. They are inherited
+    across subprocesses and can be stale or attacker-controlled, so they are
+    suitable for compatibility hints but not authorization.
+    """
+    if not _auto_subscribe_enabled():
+        return None
+    try:
+        from gateway.session_context import get_bound_session_env
+
+        platform = get_bound_session_env("HERMES_SESSION_PLATFORM", "")
+        chat_id = get_bound_session_env("HERMES_SESSION_CHAT_ID", "")
+        user_id = get_bound_session_env("HERMES_SESSION_USER_ID", "")
+        if not platform or platform.casefold() == "tui" or not chat_id or not user_id:
+            return None
+        notifier_profile = get_bound_session_env("HERMES_SESSION_PROFILE", "")
+        if not notifier_profile:
+            from hermes_cli.profiles import get_active_profile_name
+
+            notifier_profile = get_active_profile_name() or "default"
+        return {
+            "platform": platform,
+            "chat_id": chat_id,
+            "thread_id": get_bound_session_env("HERMES_SESSION_THREAD_ID", ""),
+            "user_id": user_id,
+            "notifier_profile": notifier_profile,
+        }
+    except Exception as exc:
+        logger.warning("could not resolve trusted gateway origin: %r", exc)
+        return None
 
 
 def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
@@ -1192,44 +1257,50 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
 
     Subscription paths:
 
-    - **Gateway** (telegram/discord/slack/etc): ``HERMES_SESSION_PLATFORM``
-      and ``HERMES_SESSION_CHAT_ID`` are set in ContextVars by the
-      messaging gateway before agent dispatch. The notification poller
-      already keys off these, so we just register a row.
+    - **Gateway** (telegram/discord/slack/etc): a complete platform/chat/user
+      principal must be bound in the current task's ContextVars. The immutable
+      approval route and mutable notification row are written together.
 
     - **TUI** (herm desktop / herm TUI): the platform/chat_id ContextVars
       are intentionally cleared (TUI is a single-channel local UI, not
       a multi-tenant chat surface), but the agent subprocess inherits
       ``HERMES_SESSION_KEY`` from the parent session. We subscribe with
-      ``platform="tui"`` and ``chat_id=<key>``; the TUI notification
-      poller (``tui_gateway/server.py``) reads ``kanban_notify_subs``
-      for these rows and posts the completion message into the running
-      session.
+      ``platform="tui"`` and ``chat_id=<key>`` for notifications only. TUI
+      rows never bind approval authority.
 
     - **CLI / cron / test / unattached**: no persistent delivery channel,
       no-op.
 
-    Failure mode: any exception inside the function is logged at WARNING
-    with the offending exception + diagnostic env vars and swallowed.
-    We never want a notification bookkeeping failure to fail the
-    kanban_create that the agent is mid-conversation about.
+    Failure mode: post-create TUI bookkeeping failures are logged and
+    swallowed. A real gateway origin is instead bound inside create_task's
+    transaction; failure there rolls the new task back so it can never race
+    into dispatch without its authorization route.
     """
-    try:
-        cfg = load_config()
-        if not cfg_get(cfg, "kanban", "auto_subscribe_on_create", default=True):
-            return False
-    except Exception:
-        # If config can't load we still default to True — this is the
-        # user-friendly behaviour that mirrors the pre-gate implementation.
-        pass
+    if not _auto_subscribe_enabled():
+        return False
 
     platform = ""
     chat_id = ""
     try:
-        from gateway.session_context import get_session_env
-        platform = get_session_env("HERMES_SESSION_PLATFORM", "")
-        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
-        if not platform or not chat_id:
+        origin = _trusted_gateway_origin_from_context()
+        from hermes_cli import kanban_db as _kb
+
+        if origin is not None:
+            return _kb._bind_task_approval_route(
+                conn,
+                task_id=task_id,
+                **origin,
+            )
+
+        from gateway.session_context import get_bound_session_env
+
+        platform = get_bound_session_env("HERMES_SESSION_PLATFORM", "")
+        chat_id = get_bound_session_env("HERMES_SESSION_CHAT_ID", "")
+        if platform or chat_id:
+            # A partial or non-gateway ContextVar principal is ambiguous. Do
+            # not reinterpret a process environment session key as a route.
+            return False
+        if not platform and not chat_id:
             # TUI / desktop fallback: platform/chat_id ContextVars are
             # cleared for TUI sessions, but the parent process exports
             # HERMES_SESSION_KEY into the subprocess env. Treat that
@@ -1244,22 +1315,16 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             # behaviour that got #19718 reverted upstream. The TUI
             # poller keys on HERMES_SESSION_KEY.
             session_key = (
-                get_session_env("HERMES_SESSION_KEY", "")
+                get_bound_session_env("HERMES_SESSION_KEY", "")
                 or os.environ.get("HERMES_SESSION_KEY", "")
             )
             if not session_key:
                 return False  # CLI / cron / test — no persistent channel
             platform = "tui"
             chat_id = session_key
-        thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
-        user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
-        notifier_profile = (
-            get_session_env("HERMES_SESSION_PROFILE", "")
-            or os.environ.get("HERMES_PROFILE")
-        )
-
-        # Lazy-import to keep the module-level dependency light
-        from hermes_cli import kanban_db as _kb
+        thread_id = get_bound_session_env("HERMES_SESSION_THREAD_ID", "") or None
+        user_id = get_bound_session_env("HERMES_SESSION_USER_ID", "") or None
+        notifier_profile = get_bound_session_env("HERMES_SESSION_PROFILE", "") or None
         _kb.add_notify_sub(
             conn, task_id=task_id,
             platform=platform, chat_id=chat_id,

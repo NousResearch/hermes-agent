@@ -10143,6 +10143,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "agents":
             return await self._handle_agents_command(event)
 
+        if canonical == "journey":
+            return await self._handle_journey_command(event)
+
         if canonical == "platform":
             return await self._handle_platform_command(event)
 

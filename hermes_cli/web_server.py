@@ -10931,18 +10931,10 @@ async def delete_cron_job(job_id: str, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_delete_cron_job_sync, job_id, profile)
 
 
-def _fire_cron_job_for_profile(profile: str, job_id: str) -> bool:
-    """Run ONE due cron job end-to-end for ``profile`` via the resolved
-    scheduler provider's ``fire_due`` (store CAS claim + ``run_one_job``).
-
-    Scope both cron storage and the runtime Hermes home so the job's store,
-    config, credentials, scripts, skills, and output all belong to the selected
-    profile. Runs with no live adapters; delivery falls back to the per-platform
-    send path.
-    """
+def _fire_cron_job_for_profile(profile: str, job_id: str, reservation) -> bool:
+    """Run one cron job under the already-reserved owner generation."""
     _profile_name, home = _cron_profile_home(profile)
     from cron import jobs as cron_jobs
-    from cron.scheduler_provider import resolve_cron_scheduler
     from hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
@@ -10951,8 +10943,9 @@ def _fire_cron_job_for_profile(profile: str, job_id: str) -> bool:
     token = set_hermes_home_override(str(home))
     try:
         with cron_jobs.use_cron_store(home):
-            provider = resolve_cron_scheduler()
-            return bool(provider.fire_due(job_id, adapters=None, loop=None))
+            return bool(
+                reservation.provider.fire_due(job_id, adapters=None, loop=None)
+            )
     finally:
         reset_hermes_home_override(token)
 
@@ -11008,24 +11001,50 @@ async def cron_fire_webhook(request: Request):
         # does not retry a fire that is intentionally absent.
         return JSONResponse({"status": "gone", "job_id": job_id}, status_code=200)
 
-    # Run in the background; the store CAS claim inside fire_due de-dupes a
-    # NAS/scheduler retry that arrives while this is in flight. Consume worker
-    # failures inside the coroutine so detached-task diagnostics cannot expose
-    # provider exception text.
-    async def _run_cron_fire() -> None:
+    # Reserve the selected home's active scheduler generation before dispatch.
+    # The authoritative worker thread starts before 202 is returned, so event-
+    # loop task cancellation cannot silently drop an accepted fire.
+    _profile_name, fire_home = _cron_profile_home(profile)
+    from cron.scheduler_runtime import reserve_active_scheduler_provider
+
+    scheduler_reservation = reserve_active_scheduler_provider(hermes_home=fire_home)
+    if scheduler_reservation is None:
+        return JSONResponse(
+            {"error": "scheduler owner unavailable"}, status_code=503
+        )
+
+    release_lock = threading.Lock()
+    released = False
+
+    def _release_reservation() -> None:
+        nonlocal released
+        with release_lock:
+            if released:
+                return
+            released = True
         try:
-            await asyncio.to_thread(_fire_cron_job_for_profile, profile, job_id)
-        except asyncio.CancelledError:
-            raise
+            scheduler_reservation.release()
+        except BaseException:
+            _log.error("Cron dashboard fire reservation cleanup failed")
+
+    def _fire_worker() -> None:
+        try:
+            _fire_cron_job_for_profile(profile, job_id, scheduler_reservation)
         except BaseException:
             _log.error("Cron dashboard fire worker failed")
+        finally:
+            _release_reservation()
 
-    fire_coro = _run_cron_fire()
+    worker_thread = threading.Thread(
+        target=_fire_worker,
+        name="hermes-cron-dashboard-fire",
+        daemon=True,
+    )
     try:
-        asyncio.create_task(fire_coro)
+        worker_thread.start()
     except BaseException:
-        fire_coro.close()
-        _log.error("Cron dashboard fire task startup failed")
+        _release_reservation()
+        _log.error("Cron dashboard fire thread startup failed")
         return JSONResponse(
             {"error": "cron fire dispatch unavailable"}, status_code=503
         )

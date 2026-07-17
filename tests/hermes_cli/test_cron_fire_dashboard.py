@@ -14,6 +14,7 @@ hosted agents don't expose). It must:
 """
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -120,34 +121,58 @@ def test_unknown_job_200_gone(monkeypatch):
 
 
 def test_valid_token_accepts_and_fires(monkeypatch):
-    """Valid token + known job -> 202 and fire_due invoked for the resolved
-    profile."""
+    """Valid token + known job -> 202 after the worker thread starts."""
     fired = []
+    released = threading.Event()
+
+    class Reservation:
+        provider = object()
+
+        def release(self):
+            released.set()
+
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire", "aud": "agent:x"}),
     )
     monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")
-    monkeypatch.setattr(web_server, "_fire_cron_job_for_profile",
-                        lambda p, j: fired.append((p, j)) or True)
+    monkeypatch.setattr(
+        "cron.scheduler_runtime.reserve_active_scheduler_provider",
+        lambda **_kw: Reservation(),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_fire_cron_job_for_profile",
+        lambda p, j, r: fired.append((p, j)) or True,
+    )
 
     client, pa, ph = _client(auth_required=False)
     try:
-        resp = client.post("/api/cron/fire",
-                           headers={"Authorization": "Bearer good"},
-                           json={"job_id": "j1"})
+        resp = client.post(
+            "/api/cron/fire",
+            headers={"Authorization": "Bearer good"},
+            json={"job_id": "j1"},
+        )
         assert resp.status_code == 202
         assert resp.json()["job_id"] == "j1"
     finally:
         _restore(pa, ph)
         client.close()
-    # background task ran the fire for the resolved profile
+    assert released.wait(timeout=2)
     assert fired == [("default", "j1")]
 
 
 @pytest.mark.asyncio
 async def test_worker_exception_is_consumed_and_redacted(monkeypatch, caplog):
     raw_secret = "RAW_SECRET_SENTINEL"
+    released = threading.Event()
+
+    class Reservation:
+        provider = object()
+
+        def release(self):
+            released.set()
+
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
@@ -157,6 +182,10 @@ async def test_worker_exception_is_consumed_and_redacted(monkeypatch, caplog):
         return "default"
 
     monkeypatch.setattr(web_server, "_run_cron_dashboard_io", dashboard_io)
+    monkeypatch.setattr(
+        "cron.scheduler_runtime.reserve_active_scheduler_provider",
+        lambda **_kw: Reservation(),
+    )
     monkeypatch.setattr(
         web_server,
         "_fire_cron_job_for_profile",
@@ -166,26 +195,24 @@ async def test_worker_exception_is_consumed_and_redacted(monkeypatch, caplog):
         headers={"Authorization": "Bearer good"},
         json=lambda: asyncio.sleep(0, result={"job_id": "failing"}),
     )
-    created = []
-    original_create_task = asyncio.create_task
-
-    def capture_task(coro):
-        task = original_create_task(coro)
-        created.append(task)
-        return task
-
-    monkeypatch.setattr(web_server.asyncio, "create_task", capture_task)
     response = await web_server.cron_fire_webhook(request)
     assert response.status_code == 202
-    await created[0]
-    assert created[0].exception() is None
+    assert released.wait(timeout=2)
     assert raw_secret not in caplog.text
     assert "Cron dashboard fire worker failed" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_task_start_failure_is_sanitized(monkeypatch, caplog):
-    raw_secret = "TASK_START_SECRET_SENTINEL"
+async def test_thread_start_failure_is_sanitized(monkeypatch, caplog):
+    raw_secret = "THREAD_START_SECRET_SENTINEL"
+    released = threading.Event()
+
+    class Reservation:
+        provider = object()
+
+        def release(self):
+            released.set()
+
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
@@ -196,9 +223,13 @@ async def test_task_start_failure_is_sanitized(monkeypatch, caplog):
 
     monkeypatch.setattr(web_server, "_run_cron_dashboard_io", dashboard_io)
     monkeypatch.setattr(
-        web_server.asyncio,
-        "create_task",
-        lambda _coro: (_ for _ in ()).throw(RuntimeError(raw_secret)),
+        "cron.scheduler_runtime.reserve_active_scheduler_provider",
+        lambda **_kw: Reservation(),
+    )
+    monkeypatch.setattr(
+        web_server.threading.Thread,
+        "start",
+        lambda _thread: (_ for _ in ()).throw(RuntimeError(raw_secret)),
     )
     request = SimpleNamespace(
         headers={"Authorization": "Bearer good"},
@@ -206,5 +237,6 @@ async def test_task_start_failure_is_sanitized(monkeypatch, caplog):
     )
     response = await web_server.cron_fire_webhook(request)
     assert response.status_code == 503
+    assert released.is_set()
     assert raw_secret not in caplog.text
     assert raw_secret not in bytes(response.body).decode()

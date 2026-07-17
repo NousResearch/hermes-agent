@@ -90,14 +90,16 @@ def test_fire_cron_job_scopes_store_and_runtime_home_together(
             captured["jobs_file"] = cron_jobs._current_cron_store().jobs_file
             return True
 
-    monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
-        lambda: RecordingProvider(),
-    )
+    reservation = type("Reservation", (), {"provider": RecordingProvider()})()
 
     outer_token = set_hermes_home_override(default_home)
     try:
-        assert web_server._fire_cron_job_for_profile("worker_alpha", "worker-job") is True
+        assert (
+            web_server._fire_cron_job_for_profile(
+                "worker_alpha", "worker-job", reservation
+            )
+            is True
+        )
         assert captured == {
             "job_id": "worker-job",
             "runtime_home": worker_home,

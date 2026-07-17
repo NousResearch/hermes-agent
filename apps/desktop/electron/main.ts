@@ -150,6 +150,7 @@ import {
 } from './ssh-connection'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
+import { classifyWindowsManualUpdate } from './update-install-kind'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
 import { runRebuildWithRetry } from './update-rebuild'
 import {
@@ -2633,16 +2634,30 @@ async function applyUpdates(opts = {}) {
     }
 
     if (!updater) {
-      // No staged updater binary — this is a CLI-installed user (they ran
+      // No staged updater binary — usually a CLI-installed user (they ran
       // `hermes desktop`, never the Tauri installer that self-copies
-      // hermes-setup.exe into HERMES_HOME). They DO have a working `hermes`
-      // on PATH / in the venv, so the correct path is the one-liner in their
-      // native medium. We show the EXACT command, branch-pinned to the
-      // checkout they're on — bare `hermes update` defaults to main and would
-      // silently switch a bb/gui (or any non-main) install off-branch. Mirror
-      // the GUI button's contract: append --branch <current> for non-main
-      // checkouts, keep it bare for main so the card stays clean.
+      // hermes-setup.exe into HERMES_HOME). But installer-deployed desktops
+      // land here too (#66095): the NSIS/MSI shell's first-launch bootstrap
+      // never stages hermes-setup.exe, and the Tauri installer's self-copy is
+      // best-effort. classifyWindowsManualUpdate tells the two apart so the
+      // dialog doesn't falsely claim "you installed from the command line".
+      // Either way the user DOES have a working `hermes` on PATH / in the
+      // venv (install.ps1's hermes-command stage), so the correct path is the
+      // one-liner in their native medium. We show the EXACT command,
+      // branch-pinned to the checkout they're on — bare `hermes update`
+      // defaults to main and would silently switch a bb/gui (or any non-main)
+      // install off-branch. Mirror the GUI button's contract: append
+      // --branch <current> for non-main checkouts, keep it bare for main so
+      // the card stays clean.
       const updateRoot = resolveUpdateRoot()
+
+      const installKind = classifyWindowsManualUpdate({
+        execPath: process.execPath,
+        updateRoot,
+        isPackaged: IS_PACKAGED,
+        hasInstallerLog: fileExists(path.join(HERMES_HOME, 'logs', 'bootstrap-installer.log'))
+      })
+
       let command = 'hermes update'
 
       try {
@@ -2660,10 +2675,10 @@ async function applyUpdates(opts = {}) {
         // Best-effort: fall back to bare `hermes update` if branch detection fails.
       }
 
-      rememberLog(`[updates] no staged updater; surfacing manual \`${command}\` for CLI install at ${updateRoot}`)
-      emitUpdateProgress({ stage: 'manual', message: command, percent: null })
+      rememberLog(`[updates] no staged updater; surfacing manual \`${command}\` for ${installKind} install at ${updateRoot}`)
+      emitUpdateProgress({ stage: 'manual', message: command, percent: null, installKind })
 
-      return { ok: true, manual: true, command, hermesRoot: updateRoot }
+      return { ok: true, manual: true, command, hermesRoot: updateRoot, installKind }
     }
 
     emitUpdateProgress({

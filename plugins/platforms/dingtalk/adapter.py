@@ -106,6 +106,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     get_document_cache_dir,
+    _read_httpx_body_with_limit,
 )
 
 logger = logging.getLogger(__name__)
@@ -1013,6 +1014,17 @@ class DingTalkAdapter(BasePlatformAdapter):
         message = self._message_contexts.get(chat_id)
         return getattr(message, "sender_staff_id", "") if message else ""
 
+    def _is_dm(self, chat_id: str) -> bool:
+        """True if chat_id corresponds to a DM (conversation_type == '1').
+
+        conversation_type: '1' = DM, '2' = group. Only trust sender_staff_id
+        for actual DMs — group messages also carry a staff_id (the sender).
+        """
+        message = self._message_contexts.get(chat_id)
+        if not message:
+            return False
+        return str(getattr(message, "conversation_type", "1")) == "1"
+
     async def _send_via_openapi(
         self, chat_id: str, msg_key: str, msg_param: str, dm: bool = False
     ) -> SendResult:
@@ -1115,8 +1127,14 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         msg_param = json.dumps({"photoURL": media_id})
 
-        staff_id = self._get_staff_id(chat_id)
-        if staff_id:
+        if self._is_dm(chat_id):
+            staff_id = self._get_staff_id(chat_id)
+            if not staff_id:
+                logger.warning(
+                    "[%s] DM detected but no sender_staff_id available, falling back",
+                    self.name,
+                )
+                return await self._send_image_fallback(chat_id, image_path, caption)
             result = await self._send_via_openapi(staff_id, "sampleImageMsg", msg_param, dm=True)
         else:
             result = await self._send_via_openapi(chat_id, "sampleImageMsg", msg_param)
@@ -1189,8 +1207,14 @@ class DingTalkAdapter(BasePlatformAdapter):
             "fileType": "file",
         })
 
-        staff_id = self._get_staff_id(chat_id)
-        if staff_id:
+        if self._is_dm(chat_id):
+            staff_id = self._get_staff_id(chat_id)
+            if not staff_id:
+                logger.warning(
+                    "[%s] DM detected but no sender_staff_id available, falling back",
+                    self.name,
+                )
+                return await self._send_document_fallback(chat_id, display_name, caption)
             result = await self._send_via_openapi(staff_id, "sampleFile", msg_param, dm=True)
         else:
             result = await self._send_via_openapi(chat_id, "sampleFile", msg_param)
@@ -1662,12 +1686,20 @@ class DingTalkAdapter(BasePlatformAdapter):
             local_path = cache_dir / cached_filename
             
             # Write file
-            local_path.write_bytes(resp.content)
+            try:
+                file_content = await _read_httpx_body_with_limit(resp, media_type="file")
+            except ValueError as e:
+                logger.warning(
+                    "[%s] Inbound file exceeds size limit: %s",
+                    self.name, e,
+                )
+                return None
+            local_path.write_bytes(file_content)
             logger.info(
                 "[%s] Cached DingTalk media file: %s (%d bytes)",
                 self.name,
                 local_path,
-                len(resp.content),
+                len(file_content),
             )
             
             # Step 5: Update the object with local path
@@ -1727,6 +1759,16 @@ class _IncomingHandler(
             super().__init__()
         self._adapter = adapter
         self._loop = loop
+
+    def pre_start(self) -> None:
+        """No-op pre-start hook required by dingtalk-stream SDK.
+
+        The SDK calls ``pre_start()`` on every registered handler before
+        opening the WebSocket connection.  Without this method, the SDK
+        raises ``AttributeError: '_IncomingHandler' object has no
+        attribute 'pre_start'`` and kills the stream connection.
+        """
+        return
 
     async def process(self, message: "CallbackMessage"):
         """Called by dingtalk-stream (>=0.20) when a message arrives.

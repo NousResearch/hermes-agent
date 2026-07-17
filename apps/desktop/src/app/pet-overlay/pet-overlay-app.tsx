@@ -87,6 +87,7 @@ export function PetOverlayApp() {
   }
 
   // Mirror pushed state into the shared atoms so PetSprite/PetBubble just work.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const off = window.hermesDesktop?.petOverlay?.onState(payload => {
       setPetInfo(payload.info)
@@ -185,6 +186,7 @@ export function PetOverlayApp() {
   // input keeps focus); focus it on open. The overlay is a non-activating panel
   // (so it never steals the app's cmd/alt-tab anchor) — flip it focusable while
   // the composer needs the keyboard, then back to non-activating when it closes.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     composerOpenRef.current = composerOpen
 
@@ -317,6 +319,7 @@ export function PetOverlayApp() {
   // wheel anchor we zoom toward the cursor (keep the pixel under it fixed);
   // otherwise we anchor the bottom-center (the pet's feet stay planted). New
   // bounds are persisted so the pet reopens at the right size.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!info.enabled || !info.spritesheetBase64) {
       return

@@ -225,6 +225,7 @@ export function useSessionActions({
   // by A's delayed session.info event and visibly jump back to A.
   const storedIdRotation = useStore($activeSessionStoredIdRotation)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!storedIdRotation) {
       return

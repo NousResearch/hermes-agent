@@ -231,6 +231,7 @@ export function useComposerPopoutGestures({
     [clearTimer, poppedOut]
   )
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     // Coalesce drag updates to one per frame — pointermove can fire several times
     // between paints on high-Hz mice, and each update re-renders + clamps.

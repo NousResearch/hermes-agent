@@ -100,6 +100,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
   const [saveError, setSaveError] = useState<Error | null>(null)
   const localeRef = useRef(locale)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     localeRef.current = locale
     setRuntimeI18nLocale(locale)

@@ -4,18 +4,20 @@ Gate-5 root cause: the same expensive auxiliary checks
 (``control_plane_drift`` subprocess, ``admission_policy_mirror`` sha256,
 ``provenance_memory`` ``PRAGMA integrity_check`` over ~60k rows, ``nova_ssh``,
 route-state) were re-run on *every* invocation of ``hermes-health-check.py``
-(watchdog runs ``--local`` every 120s; the acceptance observer and vault-sync
-add load). Each run costs 2-3s of CPU/disk and, because the gateway is a single
-asyncio process on the same machine, starved the ``/health`` handler past the
-2-second bound.
+(watchdog runs ``--local`` every 120s; the acceptance observer pings
+``--gateway-only`` every 55s while vault-sync does heavy git I/O every 900s).
+Each run costs 2-3s of CPU/disk and, because the gateway is a single asyncio
+process on the same machine, starved the ``/health`` handler past the 2-second
+bound.
 
 This module fixes the *contention*, not the checks:
 * checks are NEVER disabled or weakened;
 * the 2-second session threshold is untouched;
-* each expensive result is computed at most once per ``TTL_SECONDS`` window;
-* concurrent callers (separate processes) share the cached result via a lock
-  file, so two watchdog ticks or a watchdog tick + an observer probe do not run
-  the heavy work twice.
+* the expensive compute is moved OFF the request-critical path: a low-priority
+  ``--refresh`` background job computes and caches the results; interactive and
+  observer runs read the cache (``read_cached``) and never stall;
+* each result is computed at most once per ``TTL_SECONDS`` window across all
+  processes; concurrent callers share the cached result via an ``fcntl`` flock.
 
 The cache is a single small JSON file guarded by an ``fcntl`` flock. A stale or
 corrupt cache is ignored (recompute). Failures fall back to a live compute so
@@ -100,6 +102,23 @@ def compute_with_cache(
         # Lock unavailable (e.g. platform without fcntl on the path): compute
         # live so the check is never dropped.
         return compute(), False
+
+
+def read_cached(name: str, ttl: int = TTL_SECONDS, cache_dir: Optional[str] = None) -> Optional[dict]:
+    """Return the cached result if fresh, else None (do NOT compute).
+
+    Used by request-critical health checks so they never pay the cost of the
+    expensive underlying check — a background refresher populates the cache.
+    """
+    cp = _cache_path(name, cache_dir)
+    now = time.time()
+    try:
+        data = json.loads(cp.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("_ts", 0) + ttl >= now:
+            return data.get("result")
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
 
 
 def cached_check(

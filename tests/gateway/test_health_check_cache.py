@@ -124,5 +124,22 @@ def test_stale_cache_ignored(mod):
         assert calls["n"] == 1
 
 
+def test_read_cached_off_path(mod):
+    # read_cached returns fresh value WITHOUT computing; cold cache -> None.
+    calls = {"n": 0}
+
+    def work():
+        calls["n"] += 1
+        return {"pass": True, "c": calls["n"]}
+
+    with tempfile.TemporaryDirectory() as td:
+        assert mod.read_cached("d5", ttl=60, cache_dir=td) is None, "cold cache must be None"
+        # populate via compute_with_cache
+        mod.compute_with_cache("d5", work, ttl=60, cache_dir=td)
+        val = mod.read_cached("d5", ttl=60, cache_dir=td)
+        assert val is not None and val.get("pass") is True, "fresh read must return value"
+        assert calls["n"] == 1, "read_cached must NOT compute"
+
+
 if __name__ == "__main__":
     raise SystemExit(_run())

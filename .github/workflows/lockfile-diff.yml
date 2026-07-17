@@ -61,7 +61,7 @@ jobs:
 
       - name: Post or update PR comment
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           CHANGED: ${{ steps.diff.outputs.changed }}

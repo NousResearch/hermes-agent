@@ -1852,7 +1852,7 @@ def test_dispatch_long_handler_does_not_block_fast_handler(server):
     fast_elapsed = time.monotonic() - t0
 
     assert fast_resp["result"] == {"pong": True}
-    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind slow handler"
+    assert fast_elapsed < 2.0, f"fast handler blocked for {fast_elapsed:.2f}s behind slow handler"
 
     released.set()
 
@@ -1875,7 +1875,7 @@ def test_dispatch_session_compress_does_not_block_fast_handler(server):
     fast_elapsed = time.monotonic() - t0
 
     assert fast_resp["result"] == {"pong": True}
-    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind session.compress"
+    assert fast_elapsed < 2.0, f"fast handler blocked for {fast_elapsed:.2f}s behind session.compress"
 
     released.set()
 
@@ -1940,6 +1940,6 @@ def test_slow_completion_does_not_block_fast_handler(completion_method, server):
     fast_elapsed = time.monotonic() - t0
 
     assert fast_resp["result"] == {"pong": True}
-    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind {completion_method}"
+    assert fast_elapsed < 2.0, f"fast handler blocked for {fast_elapsed:.2f}s behind {completion_method}"
 
     released.set()

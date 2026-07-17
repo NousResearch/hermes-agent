@@ -1322,6 +1322,7 @@ class TestRefreshLevelLock:
         with lock:
             recording = False
 
-        t.join(timeout=1)
+        t.join(timeout=10)
+        assert not t.is_alive()
         assert not t.is_alive(), "Refresh thread did not stop"
         assert iterations > 0, "Refresh thread never ran"

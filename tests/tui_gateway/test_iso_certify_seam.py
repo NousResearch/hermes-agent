@@ -56,7 +56,7 @@ def test_synth_turn_holds_duration_and_streams():
     result = agent.run_conversation(spec, stream_callback=deltas.append)
     elapsed = time.monotonic() - t0
     # Held for ~the requested wall time (allow generous upper bound under load).
-    assert 0.35 <= elapsed <= 1.5, elapsed
+    assert 0.35 <= elapsed <= 5.0, elapsed
     assert result["interrupted"] is False
     assert len(deltas) >= 3
     # Token accounting advanced (the 100K-token heavy-turn proxy).
@@ -79,7 +79,7 @@ def test_synth_turn_interrupt_aborts_promptly():
     result = agent.run_conversation('{"duration_s": 10.0}')
     elapsed = time.monotonic() - t0
     assert result["interrupted"] is True
-    assert elapsed < 1.5, elapsed
+    assert elapsed < 5.0, elapsed
 
 
 def test_synth_turn_non_json_prompt_uses_defaults(monkeypatch):

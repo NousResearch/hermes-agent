@@ -43,8 +43,12 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 # Git email → GitHub username mapping
 # ──────────────────────────────────────────────────────────────────────
 
-# Auto-extracted from noreply emails + manual overrides
-AUTHOR_MAP = {
+# FROZEN legacy mappings — do NOT add new entries here. New contributor
+# mappings live as one-file-per-email entries under contributors/emails/
+# (see contributors/README.md), which merge-conflict-free by construction.
+# This dict is kept only so existing history keeps resolving; the effective
+# AUTHOR_MAP below merges it with the directory (directory wins).
+LEGACY_AUTHOR_MAP = {
     "122438640+ragingbulld@users.noreply.github.com": "ragingbulld",  # PR #65606 salvage (non-finite API wait deadlines; #65746)
     "zzpigpinggai@users.noreply.github.com": "zzpigpinggai",  # PR #66017 salvage of #63617 (OpenRouter explicit-provider picker visibility)
     "sam7894604@gmail.com": "sam7894604",  # PR #55803 salvage (discord: /reasoning slash choices)
@@ -2043,6 +2047,41 @@ AUTHOR_MAP = {
     "zhchl@hermes-agent.local": "8294",  # PR #50572 salvage (honor config context_length on banner)
     "yansh2017@gmail.com": "ya-nsh",  # PR #26790 salvage (normalize local terminal relative cwd; #26783)
 }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Directory-based mappings: contributors/emails/<email> → login
+# ──────────────────────────────────────────────────────────────────────
+CONTRIBUTORS_EMAILS_DIR = REPO_ROOT / "contributors" / "emails"
+
+
+def _load_contributor_dir(directory: "Path | None" = None) -> dict:
+    """Load one-file-per-email mappings from contributors/emails/.
+
+    Filename = commit-author email, first non-comment line = GitHub login.
+    Additions never merge-conflict (each mapping is a distinct file), which
+    is why new entries go here instead of the frozen LEGACY_AUTHOR_MAP.
+    """
+    directory = directory or CONTRIBUTORS_EMAILS_DIR
+    mapping = {}
+    if not directory.is_dir():
+        return mapping
+    for path in sorted(directory.iterdir()):
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    mapping[path.name] = line.lstrip("@")
+                    break
+        except OSError:
+            continue
+    return mapping
+
+
+# Effective map: frozen legacy dict + directory entries (directory wins).
+AUTHOR_MAP = {**LEGACY_AUTHOR_MAP, **_load_contributor_dir()}
 
 
 def git(*args, cwd=None):

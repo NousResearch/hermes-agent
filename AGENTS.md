@@ -1294,6 +1294,14 @@ scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
 ```
 
+**Flake policy:** the runner auto-retries a failing test FILE once in a fresh
+subprocess (`--file-retries`, default 1; `HERMES_TEST_FILE_RETRIES=0` to
+disable). Pass-on-retry counts as green but is printed in a `⚠ FLAKY` summary
+section with both attempts' output. A FLAKY report is a bug to fix, not noise
+to ignore — timing-sensitive tests must not assume a quiet runner (loose
+wall-clock bounds ≥ 2s, event-based sync, no `assert not _wait_until(...)`
+negative-timing races).
+
 #### Subprocess-per-test-file isolation
 
 Every test file runs in a freshly-spawned Python subprocess via `run_tests_parallel.py`. This means module-level dicts/sets and

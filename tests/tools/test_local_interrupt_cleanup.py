@@ -49,7 +49,7 @@ def _process_group_snapshot(pgid: int) -> str:
     ).stdout.strip()
 
 
-def _wait_for_pgid_exit(pgid: int, timeout: float = 30.0) -> bool:
+def _wait_for_pgid_exit(pgid: int, timeout: float = 60.0) -> bool:
     """Wait for a process group to disappear under loaded xdist hosts.
 
     The cleanup chain is: SIGTERM → 3s TimeoutStopSec → SIGKILL → reap.
@@ -150,7 +150,7 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         # does init_session() (one spawn) before the real command, so we need
         # to wait until a sleep 30 is visible.  Use pgrep-style lookup via
         # /proc to find the bash process running our sleep.
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + 20.0  # generous: init_session + spawn dilate under CI load
         target_pid = None
         while time.monotonic() < deadline:
             # Walk our children and grand-children to find one running 'sleep 30'
@@ -201,8 +201,8 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         # run the except-block cleanup (_kill_process), and exit.  Under
         # xdist load the SIGTERM → 3s wait → SIGKILL chain can take longer
         # than 5s before the worker's join() returns; bumped to 15s.
-        t.join(timeout=15.0)
-        assert not t.is_alive(), "worker didn't exit within 15 s of the interrupt"
+        t.join(timeout=30.0)
+        assert not t.is_alive(), "worker didn't exit within 30 s of the interrupt"
 
         # The critical assertion: the subprocess GROUP must be dead.  Not
         # just the bash wrapper — the 'sleep 30' child too. Under xdist load,

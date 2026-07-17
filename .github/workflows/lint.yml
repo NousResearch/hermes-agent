@@ -177,15 +177,18 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Fetch PR labels
+        id: pr-labels
+        uses: ./.github/actions/retry
+        env:
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+        with:
+          command: gh pr view "${{ github.event.pull_request.number }}" --json labels --jq '.labels[].name'
       - name: Require ci-reviewed label
         id: label-check
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          PR="${{ github.event.pull_request.number }}"
-          LABELS=$(gh pr view "$PR" --json labels --jq '.labels[].name' || true)
-          if echo "$LABELS" | grep -Fxq 'ci-reviewed'; then
+          if echo "${{ steps.pr-labels.outputs.stdout }}" | grep -Fxq 'ci-reviewed'; then
             echo "reviewed=true" >> "$GITHUB_OUTPUT"
             echo "ci-reviewed label present."
             exit 0
@@ -200,7 +203,7 @@ jobs:
       - name: Post or update review warning
         if: steps.label-check.outputs.reviewed != 'true' && github.event.pull_request.head.repo.fork != true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
         run: |
           set -euo pipefail
           PR="${{ github.event.pull_request.number }}"
@@ -248,7 +251,7 @@ jobs:
       - name: Update previous warning to passed
         if: steps.label-check.outputs.reviewed == 'true' && github.event.pull_request.head.repo.fork != true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
         run: |
           set -euo pipefail
           PR="${{ github.event.pull_request.number }}"

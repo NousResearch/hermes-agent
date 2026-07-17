@@ -127,12 +127,13 @@ jobs:
         run: uv python install 3.11
 
       - name: Install Python dependencies (for docker tests)
-        run: |
-          # ``dev`` extra pulls in pytest, pytest-asyncio —
-          # everything tests/docker/ needs.  We deliberately avoid ``all``
-          # here because the docker tests only drive the container via
-          # subprocess and don't import hermes_agent's optional deps.
-          uv sync --locked --python 3.11 --extra dev
+        # ``dev`` extra pulls in pytest, pytest-asyncio —
+        # everything tests/docker/ needs.  We deliberately avoid ``all``
+        # here because the docker tests only drive the container via
+        # subprocess and don't import hermes_agent's optional deps.
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra dev
 
       - name: Run docker integration tests
         env:
@@ -188,15 +189,23 @@ jobs:
             args+=("${IMAGE_NAME}@sha256:${digest_file}")
           done
           if [ "${{ github.event_name }}" = "release" ]; then
-            docker buildx imagetools create \
-              -t "${IMAGE_NAME}:${RELEASE_TAG}" \
-              "${args[@]}"
+            tags=(-t "${IMAGE_NAME}:${RELEASE_TAG}")
           else
-            docker buildx imagetools create \
-              -t "${IMAGE_NAME}:main" \
-              -t "${IMAGE_NAME}:latest" \
-              "${args[@]}"
+            tags=(-t "${IMAGE_NAME}:main" -t "${IMAGE_NAME}:latest")
           fi
+          # Retry: Docker Hub API + just-pushed digest eventual consistency
+          # can transiently fail the create; the operation is idempotent.
+          for i in 1 2 3; do
+            if docker buildx imagetools create "${tags[@]}" "${args[@]}"; then
+              break
+            fi
+            if [ "$i" = 3 ]; then
+              echo "::error::imagetools create failed after 3 attempts"
+              exit 1
+            fi
+            echo "::warning::imagetools create failed (attempt $i); retrying in 20s"
+            sleep 20
+          done
 
       - name: Inspect image
         env:

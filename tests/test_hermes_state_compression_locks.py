@@ -84,8 +84,8 @@ def test_locks_are_per_session(db: SessionDB) -> None:
 def test_expired_lock_is_reclaimable(db: SessionDB) -> None:
     """A crashed compressor must not permanently block the session."""
     # Acquire with a very short TTL
-    db.try_acquire_compression_lock("sess1", "crashed_holder", ttl_seconds=0.05)
-    time.sleep(0.1)
+    db.try_acquire_compression_lock("sess1", "crashed_holder", ttl_seconds=0.5)
+    time.sleep(1.0)
     # Holder check honours expiry
     assert db.get_compression_lock_holder("sess1") is None
     # New holder can claim it

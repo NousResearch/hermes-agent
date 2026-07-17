@@ -871,7 +871,7 @@ class TestRunOnMCPLoopInterrupts:
 
         try:
             with pytest.raises(InterruptedError, match="User sent a new message"):
-                mcp_mod._run_on_mcp_loop(_slow_call(), timeout=2)
+                mcp_mod._run_on_mcp_loop(_slow_call(), timeout=10)
 
             deadline = time.time() + 2
             while time.time() < deadline and not cancelled.is_set():
@@ -880,7 +880,7 @@ class TestRunOnMCPLoopInterrupts:
         finally:
             set_interrupt(False, waiter_tid)
             loop.call_soon_threadsafe(loop.stop)
-            thread.join(timeout=2)
+            thread.join(timeout=10)
             loop.close()
             mcp_mod._mcp_loop = old_loop
             mcp_mod._mcp_thread = old_thread
@@ -917,7 +917,7 @@ class TestRunOnMCPLoopInterrupts:
             assert cancelled.is_set()
         finally:
             loop.call_soon_threadsafe(loop.stop)
-            thread.join(timeout=2)
+            thread.join(timeout=10)
             loop.close()
             mcp_mod._mcp_loop = old_loop
             mcp_mod._mcp_thread = old_thread

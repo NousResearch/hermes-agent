@@ -403,7 +403,7 @@ class TestOrphanedPipeReconciliation:
 
         assert result["status"] == "exited", result
         assert result["exit_code"] == 0
-        assert elapsed < 0.3, f"wait() should wake on completion; took {elapsed:.3f}s"
+        assert elapsed < 0.9  # must stay under the old 1s poll tick being regression-tested, f"wait() should wake on completion; took {elapsed:.3f}s"
 
 
 # =========================================================================
@@ -2110,8 +2110,11 @@ class TestSigkillEscalation:
         sometimes a child). The escalation now re-probes every target directly.
         """
         import psutil
+        # 2.0s grace (not 1.0): with three interpreters mid-startup on a
+        # loaded runner, a 1s SIGTERM->partition window races child spawn and
+        # is how a child PID escaped the live-system guard in CI.
         monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
-                            staticmethod(lambda: 1.0))
+                            staticmethod(lambda: 2.0))
         # Parent spawns 2 children; all trap SIGTERM. Parent prints child pids
         # after the handler is installed.
         parent_src = (
@@ -2125,6 +2128,12 @@ class TestSigkillEscalation:
         )
         parent = subprocess.Popen([sys.executable, "-c", parent_src],
                                   stdout=subprocess.PIPE, text=True)
+        # Bound the readline: if the parent wedges before printing, fail THIS
+        # test with a clear message instead of letting the per-file timeout
+        # SIGKILL the whole pytest process (opaque rc=124 in CI).
+        import select as _select
+        ready, _, _ = _select.select([parent.stdout], [], [], 20.0)
+        assert ready, "parent process failed to print child pids within 20s"
         child_pids = [int(x) for x in parent.stdout.readline().split()]
         all_pids = [parent.pid] + child_pids
         try:

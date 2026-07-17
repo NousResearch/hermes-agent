@@ -507,7 +507,10 @@ class TestResolveActiveHost:
 
     def test_profiles_import_failure_falls_back(self):
         import sys
-        with patch.dict(os.environ, {}, clear=False):
+        with patch.dict(os.environ, {}, clear=False), patch(
+            "plugins.memory.honcho.client.resolve_config_path",
+            return_value=Path("/nonexistent/test-honcho-config.json"),
+        ):
             os.environ.pop("HERMES_HONCHO_HOST", None)
             # Temporarily remove hermes_cli.profiles to simulate import failure
             saved = sys.modules.get("hermes_cli.profiles")

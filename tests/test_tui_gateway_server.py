@@ -17,6 +17,26 @@ from hermes_cli.browser_connect import ChromeDebugLaunch
 from tui_gateway import server
 
 
+@pytest.fixture(autouse=True)
+def _neuter_agent_prewarm_timer(request, monkeypatch):
+    """Stub the deferred agent pre-warm timer for every test in this module.
+
+    ``session.create`` and non-eager ``session.resume`` fire a 50 ms
+    background ``threading.Timer`` (``_schedule_agent_build``) that calls
+    whatever ``server._make_agent`` is patched in AT FIRE TIME. Left live,
+    a timer armed by one test outlives it and lands in the NEXT test's
+    ``_make_agent`` mock, racily corrupting its captured state (the
+    ``'tip' == 'cont_tip'`` flakes in the session_resume tests). Tests that
+    exercise the deferred build itself opt back in with
+    ``@pytest.mark.real_agent_prewarm``.
+    """
+    if request.node.get_closest_marker("real_agent_prewarm"):
+        yield
+        return
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+    yield
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -1420,14 +1440,9 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     monkeypatch.setattr(
         server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None
     )
-    # This resume takes the deferred (non-eager) path, which fires a 50ms
-    # background Timer (`_schedule_agent_build`) that later calls whatever
-    # `server._make_agent` is patched in AT THAT MOMENT. Left un-stubbed, that
-    # timer outlives this test and lands in the *next* test's `_make_agent`
-    # mock, racily corrupting its captured state (the `assert 'tip' ==
-    # 'cont_tip'` flake in test_session_resume_follows_compression_tip). Neuter
-    # the pre-warm here — this test only asserts the returned display history.
-    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+    # The deferred pre-warm timer is neutered module-wide by the autouse
+    # _neuter_agent_prewarm_timer fixture; this test only asserts the
+    # returned display history.
 
     resp = server.handle_request(
         {"id": "1", "method": "session.resume", "params": {"session_id": "tip"}}
@@ -6841,6 +6856,7 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_agent_prewarm
 def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     """Regression guard: if session.close runs while session.create's
     _build thread is still constructing the agent, the build thread
@@ -6967,6 +6983,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
 
 
+@pytest.mark.real_agent_prewarm
 def test_session_create_no_race_keeps_worker_alive(monkeypatch):
     """Regression guard: when session.close does NOT race, the build
     thread must install the worker + notify normally and leave them
@@ -7077,6 +7094,7 @@ def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
     assert server._db_error == "locking protocol"
 
 
+@pytest.mark.real_agent_prewarm
 def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     class _FakeWorker:
         def __init__(self, key, model, profile_home=None):

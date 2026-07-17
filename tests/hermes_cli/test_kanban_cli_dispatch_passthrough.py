@@ -10,12 +10,49 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import subprocess
 import sys
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+def test_console_entrypoint_propagates_kanban_exit_codes(tmp_path):
+    """The installed console wrapper must preserve subcommand return codes."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "kanban:\n  dispatch_in_gateway: true\n", encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(home)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
+    for name in ("HERMES_KANBAN_HOME", "HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
+        env.pop(name, None)
+    entrypoint = [
+        sys.executable,
+        "-c",
+        "from hermes_cli.main import main; raise SystemExit(main())",
+    ]
+
+    rejected = subprocess.run(
+        entrypoint + ["kanban", "dispatch", "--dry-run"],
+        env=env, capture_output=True, text=True, timeout=30,
+    )
+
+    assert rejected.returncode == 2
+    assert "manual dispatch is disabled" in rejected.stderr
+    assert not (home / "kanban.db").exists()
+
+    help_result = subprocess.run(
+        entrypoint + ["kanban", "--help"],
+        env=env, capture_output=True, text=True, timeout=30,
+    )
+
+    assert help_result.returncode == 0
 
 
 @pytest.fixture()

@@ -187,6 +187,12 @@ export const zhHant = defineLocale({
     openStarmap: '開啟記憶圖譜'
   },
 
+  keybinds: {
+    actions: {
+      'composer.dictation': '開始 / 停止聽寫並傳送'
+    }
+  },
+
   language: {
     label: '語言',
     description: '選擇桌面介面的語言。',

@@ -43,7 +43,7 @@ import {
 import { openNewSessionInNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { requestComposerFocus, requestVoiceToggle } from '../chat/composer/focus'
+import { requestComposerFocus, requestDictationToggle, requestVoiceToggle } from '../chat/composer/focus'
 import {
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
@@ -124,6 +124,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
     'composer.focus': () => requestComposerFocus('main'),
     'composer.modelPicker': () => setModelPickerOpen(true),
+    'composer.dictation': requestDictationToggle,
     'composer.voice': requestVoiceToggle,
 
     'nav.commandPalette': toggleCommandPalette,
@@ -243,6 +244,14 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       const actionId = $comboIndex.get().get(combo)
 
       if (!actionId) {
+        return
+      }
+
+      // Holding the push-to-talk chord must not let OS key-repeat turn the
+      // initial start into an immediate stop-and-send.
+      if (event.repeat && actionId === 'composer.dictation') {
+        event.preventDefault()
+
         return
       }
 

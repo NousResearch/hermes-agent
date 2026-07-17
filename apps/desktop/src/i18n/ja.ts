@@ -193,6 +193,12 @@ export const ja = defineLocale({
     openStarmap: 'メモリグラフを開く'
   },
 
+  keybinds: {
+    actions: {
+      'composer.dictation': '音声入力を開始 / 停止して送信'
+    }
+  },
+
   language: {
     label: '言語',
     description: 'デスクトップインターフェイスの言語を選択します。',

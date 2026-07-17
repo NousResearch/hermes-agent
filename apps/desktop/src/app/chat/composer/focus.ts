@@ -37,6 +37,7 @@ const FOCUS_EVENT = 'hermes:composer-focus'
 const INSERT_EVENT = 'hermes:composer-insert'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
 const SUBMIT_EVENT = 'hermes:composer-submit'
+const DICTATION_TOGGLE_EVENT = 'hermes:composer-dictation-toggle'
 const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
 
 interface SubmitDetail {
@@ -45,6 +46,13 @@ interface SubmitDetail {
 }
 
 let activeTarget: ComposerTarget = 'main'
+let nextDictationOwnerId = 1
+let dictationOwner: ComposerDictationOwner | null = null
+
+export interface ComposerDictationOwner {
+  id: number
+  target: ComposerTarget
+}
 
 const resolve = (target: ComposerTarget | 'active') => (target === 'active' ? activeTarget : target)
 
@@ -134,6 +142,52 @@ export const requestComposerSubmit = (
 
 export const onComposerSubmitRequest = (handler: (detail: SubmitDetail) => void) =>
   subscribe<SubmitDetail>(SUBMIT_EVENT, handler)
+
+export const createComposerDictationOwner = (target: ComposerTarget): ComposerDictationOwner => ({
+  id: nextDictationOwnerId++,
+  target
+})
+
+export const claimComposerDictation = (owner: ComposerDictationOwner): boolean => {
+  if (dictationOwner && dictationOwner.id !== owner.id) {
+    return false
+  }
+
+  dictationOwner = owner
+
+  return true
+}
+
+export const ownsComposerDictation = (owner: ComposerDictationOwner): boolean => dictationOwner?.id === owner.id
+
+export const releaseComposerDictation = (owner: ComposerDictationOwner) => {
+  if (dictationOwner?.id === owner.id) {
+    dictationOwner = null
+  }
+}
+
+/** Toggle ONE composer's push-to-talk dictation. Once capture starts, ownership
+ * stays pinned through stop/transcription so a focus change cannot redirect the
+ * second press into another composer. */
+export const requestDictationToggle = (target: ComposerTarget | 'active' = 'active') => {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  const requestedTarget = resolve(target)
+  const ownerAtRequest = dictationOwner
+
+  window.setTimeout(() => {
+    const routedTarget = ownerAtRequest?.target ?? dictationOwner?.target ?? requestedTarget
+
+    window.dispatchEvent(
+      new CustomEvent<{ target: ComposerTarget }>(DICTATION_TOGGLE_EVENT, { detail: { target: routedTarget } })
+    )
+  }, 0)
+}
+
+export const onComposerDictationToggleRequest = (handler: (target: ComposerTarget) => void) =>
+  subscribe<{ target: ComposerTarget }>(DICTATION_TOGGLE_EVENT, ({ target }) => handler(target))
 
 /** Toggle ONE composer's voice conversation — the `composer.voice` hotkey
  *  (Ctrl+B) reaches the composer that owns voice. Defaults to the active

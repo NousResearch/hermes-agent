@@ -676,6 +676,8 @@ export function ChatBar({
   } = useComposerVoice({
     busy,
     clearDraft,
+    dictationEnabled: state.voice.enabled,
+    dictationScopeKey: activeQueueSessionKey,
     disabled,
     focusInput,
     insertText,
@@ -683,6 +685,7 @@ export function ChatBar({
     onSubmit,
     onTranscribeAudio,
     sessionId,
+    submitDraft,
     target: scope.target
   })
 

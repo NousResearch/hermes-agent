@@ -56,6 +56,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── Composer ─────────────────────────────────────────────────────────────
   { id: 'composer.focus', category: 'composer', defaults: [] },
   { id: 'composer.modelPicker', category: 'composer', defaults: [] },
+  { id: 'composer.dictation', category: 'composer', defaults: ['mod+shift+d'] },
   // Voice conversation toggle. Matches the documented `voice.record_key`
   // (Ctrl+B). On macOS that's literally ⌃B — distinct from the ⌘B sidebar
   // toggle. Off macOS `ctrl` folds to `mod`, which IS the ⌘B/Ctrl+B sidebar

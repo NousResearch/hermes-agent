@@ -237,6 +237,7 @@ export const zh: Translations = {
       'workspace.newWorktree': '新建工作树',
       'composer.focus': '聚焦输入框',
       'composer.modelPicker': '打开模型选择器',
+      'composer.dictation': '开始 / 停止听写并发送',
       'composer.voice': '开始 / 停止语音对话',
       'view.toggleSidebar': '切换会话侧边栏',
       'view.toggleRightSidebar': '切换文件浏览器',

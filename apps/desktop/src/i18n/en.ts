@@ -242,6 +242,7 @@ export const en: Translations = {
       'workspace.newWorktree': 'New worktree',
       'composer.focus': 'Focus composer',
       'composer.modelPicker': 'Open model picker',
+      'composer.dictation': 'Start / stop dictation and send',
       'composer.voice': 'Start / stop voice conversation',
       'view.toggleSidebar': 'Toggle sessions sidebar',
       'view.toggleRightSidebar': 'Toggle file browser',

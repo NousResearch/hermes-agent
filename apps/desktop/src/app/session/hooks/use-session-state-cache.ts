@@ -248,7 +248,11 @@ export function useSessionStateCache({
   )
 
   const updateSessionState = useCallback(
-    (sessionId: string, updater: (state: ClientSessionState) => ClientSessionState, storedSessionId?: string | null) => {
+    (
+      sessionId: string,
+      updater: (state: ClientSessionState) => ClientSessionState,
+      storedSessionId?: string | null
+    ) => {
       const previous = ensureSessionState(sessionId, storedSessionId)
       const next = updater({ ...previous, messages: previous.messages })
       sessionStateByRuntimeIdRef.current.set(sessionId, next)

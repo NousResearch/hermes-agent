@@ -59,34 +59,25 @@ _SYNC_DRAIN_TIMEOUT_S = 5.0
 
 # Retry configuration for transient memory provider errors
 # (network timeouts, temporary daemon unavailability, etc.)
+# NOTE: retries are limited to explicitly idempotent/read paths
+# (system_prompt_block, prefetch, queue_prefetch, sync_turn).
+# handle_tool_call is NOT retried — the routed tool may mutate the
+# memory backend, and a post-write transient failure is ambiguous,
+# so a replay could duplicate data. See teknium1 review on PR #44378.
 _MEMORY_RETRY_ATTEMPTS = 3
 _MEMORY_RETRY_WAIT_MIN = 0.5  # seconds
 _MEMORY_RETRY_WAIT_MAX = 2.0  # seconds
 
-def _memory_retry():
-    """Decorator for transient memory provider operations.
-    
-    Retries on common transient exceptions with exponential backoff.
-    """
-    if not _TENACITY_AVAILABLE:
-        def _noop(fn: Callable) -> Callable:
-            return fn
-        return _noop
-    return retry(
-        reraise=True,
-        stop=stop_after_attempt(_MEMORY_RETRY_ATTEMPTS),
-        wait=wait_exponential(
-            multiplier=1,
-            min=_MEMORY_RETRY_WAIT_MIN,
-            max=_MEMORY_RETRY_WAIT_MAX,
-        ),
-        retry=retry_if_exception_type((
-            ConnectionError,
-            TimeoutError,
-            IOError,
-            OSError,
-        )),
-    )
+# Transient exception types that warrant a retry. ``IOError`` is an alias
+# of ``OSError`` in Python 3, but listing bare ``OSError`` would also
+# catch permanent filesystem errors (``FileNotFoundError``,
+# ``PermissionError``, ``IsADirectoryError``, …). Narrow to connection
+# and socket-level errors, which are the only ones worth paying a
+# backoff retry for.
+_MEMORY_RETRY_EXCEPTIONS = (
+    ConnectionError,  # ConnectionResetError / RefusedError / AbortedError
+    TimeoutError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +305,12 @@ class MemoryManager:
         self._sync_executor_lock = threading.Lock()
 
     def _call_with_retry(self, provider: MemoryProvider, method_name: str, *args, **kwargs):
-        """Call a provider method with retry on transient errors."""
+        """Call a provider method with retry on transient errors.
+
+        Only safe for idempotent/read operations — NOT for ``handle_tool_call``
+        or any other path whose effect may mutate the memory backend. Replay
+        after a late-stage transient could duplicate the write.
+        """
         method = getattr(provider, method_name)
         if not _TENACITY_AVAILABLE:
             return method(*args, **kwargs)
@@ -327,12 +323,7 @@ class MemoryManager:
                 min=_MEMORY_RETRY_WAIT_MIN,
                 max=_MEMORY_RETRY_WAIT_MAX,
             ),
-            retry=retry_if_exception_type((
-                ConnectionError,
-                TimeoutError,
-                IOError,
-                OSError,
-            )),
+            retry=retry_if_exception_type(_MEMORY_RETRY_EXCEPTIONS),
         )
         def _retry_call():
             return method(*args, **kwargs)
@@ -665,12 +656,19 @@ class MemoryManager:
 
         Returns JSON string result. Raises ValueError if no provider
         handles the tool.
+
+        NOTE: this path is NOT retried. The routed tool may mutate the
+        memory backend (e.g. ````store````/````forget````), and a
+        post-write transient failure is ambiguous — replay could
+        duplicate the write. Per teknium1 review on PR #44378, retry is
+        limited to idempotent/read operations (``system_prompt_block``,
+        ``prefetch``, ``queue_prefetch``, ``sync_turn``).
         """
         provider = self._tool_to_provider.get(tool_name)
         if provider is None:
             return tool_error(f"No memory provider handles tool '{tool_name}'")
         try:
-            return self._call_with_retry(provider, "handle_tool_call", tool_name, args, **kwargs)
+            return provider.handle_tool_call(tool_name, args, **kwargs)
         except Exception as e:
             logger.error(
                 "Memory provider '%s' handle_tool_call(%s) failed: %s",

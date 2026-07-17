@@ -78,6 +78,22 @@ describe('useBackgroundQueueDrain', () => {
     expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
   })
 
+  it('does not auto-send an entry restored from a previous Desktop process', async () => {
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'month-old ghost prompt', attachments: [] })
+    const entry = getQueuedPrompts('stored-session-a')[0]!
+    $queuedPromptsBySession.set({ 'stored-session-a': [{ ...entry, requiresManualSend: true }] })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+
+    expect(submitText).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+  })
+
   it('does not drain a background session that is still marked working', async () => {
     const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
     const submitText = vi.fn(async () => true)

@@ -5,6 +5,7 @@ import { useI18n } from '@/i18n'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $queuedPromptsBySession,
+  canAutoDrainQueuedPrompt,
   getQueuedPrompts,
   MAX_AUTO_DRAIN_ATTEMPTS,
   type QueuedPromptEntry,
@@ -164,7 +165,11 @@ export function useBackgroundQueueDrain({
 
       const entry = entries[0]
 
-      if (!entry || (drainFailuresRef.current.get(entry.id) ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
+      if (
+        !entry ||
+        !canAutoDrainQueuedPrompt(entry) ||
+        (drainFailuresRef.current.get(entry.id) ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS
+      ) {
         continue
       }
 

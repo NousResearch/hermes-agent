@@ -7,6 +7,7 @@ import { type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $queuedPromptsBySession,
+  canAutoDrainQueuedPrompt,
   enqueueQueuedPrompt,
   getQueuedPrompts,
   MAX_AUTO_DRAIN_ATTEMPTS,
@@ -274,7 +275,11 @@ export function useComposerQueue({
 
     const entry = pickDrainHead(queuedPrompts)
 
-    if (!entry || (drainFailuresRef.current.get(entry.id) ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
+    if (
+      !entry ||
+      !canAutoDrainQueuedPrompt(entry) ||
+      (drainFailuresRef.current.get(entry.id) ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS
+    ) {
       return
     }
 

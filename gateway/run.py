@@ -19446,6 +19446,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else {"thread_id": _progress_thread_id}
         ) if _progress_thread_id else None
         _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
+        if source.platform == Platform.SLACK:
+            # Mark tool-progress bubbles so the Slack adapter can render them
+            # in the muted context style (rich_blocks) instead of full-size
+            # text + code fences. Other platforms are untouched.
+            _progress_metadata = {**(_progress_metadata or {}), "progress_surface": True}
         _progress_reply_to = (
             event_message_id
             if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id

@@ -56,10 +56,16 @@ from gateway.platforms.base import (
 )
 
 try:  # sibling module; support both package and flat plugin-dir import
-    from .block_kit import blocks_fallback_text, render_blocks, segment_blocks
+    from .block_kit import (
+        blocks_fallback_text,
+        progress_context_blocks,
+        render_blocks,
+        segment_blocks,
+    )
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import (  # type: ignore
         blocks_fallback_text,
+        progress_context_blocks,
         render_blocks,
         segment_blocks,
     )
@@ -1486,7 +1492,13 @@ class SlackAdapter(BasePlatformAdapter):
             # text chunks and block segments couldn't be paired coherently).
             # The ``text`` field is always kept as the notification/
             # accessibility fallback.
-            segments = self._maybe_block_segments(content) if len(chunks) == 1 else None
+            progress_blocks = self._maybe_progress_blocks(content, metadata)
+            if progress_blocks and len(chunks) == 1:
+                segments = [progress_blocks]
+            else:
+                segments = (
+                    self._maybe_block_segments(content) if len(chunks) == 1 else None
+                )
 
             if segments:
                 # (fallback text, blocks) per outgoing message. A single
@@ -1607,13 +1619,17 @@ class SlackAdapter(BasePlatformAdapter):
                 "ts": message_id,
                 "text": formatted,
             }
-            # Blocks on the FINAL edit always; on intermediate streaming
-            # frames only when rich_blocks_streaming is enabled (tables and
-            # headers then render live during long runs — the consumer's edit
-            # debounce keeps the render cost bounded). Feedback buttons only
-            # ever belong on the final frame. ``text`` is kept as the
-            # fallback either way.
-            if finalize or self._rich_blocks_streaming_enabled():
+            # Tool-progress bubbles render as muted context blocks on every
+            # edit. Answer messages get blocks on the FINAL edit always; on
+            # intermediate streaming frames only when rich_blocks_streaming
+            # is enabled (tables and headers then render live during long
+            # runs — the consumer's edit debounce keeps the render cost
+            # bounded). Feedback buttons only ever belong on the final
+            # frame. ``text`` is kept as the fallback either way.
+            progress_blocks = self._maybe_progress_blocks(content, metadata)
+            if progress_blocks:
+                update_kwargs["blocks"] = progress_blocks
+            elif finalize or self._rich_blocks_streaming_enabled():
                 blocks = self._maybe_blocks(content, with_feedback=finalize)
                 if blocks:
                     update_kwargs["blocks"] = blocks
@@ -2120,6 +2136,45 @@ class SlackAdapter(BasePlatformAdapter):
         if raw is None:
             return False
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _progress_context_lines(self) -> Optional[int]:
+        """Context-style rendering budget for tool-progress bubbles.
+
+        ``None`` = styling disabled (plain path); an int = keep that many
+        trailing lines (0 = keep all). Configured via
+        ``platforms.slack.extra.progress_context_lines`` — default 10 when
+        rich_blocks is on; "off"/"false" disables.
+        """
+        if not self._rich_blocks_enabled():
+            return None
+        raw = self.config.extra.get("progress_context_lines")
+        if raw is None:
+            return 10
+        s = str(raw).strip().lower()
+        if s in {"off", "false", "no", "none"}:
+            return None
+        try:
+            return max(0, int(s))
+        except ValueError:
+            return 10
+
+    def _maybe_progress_blocks(
+        self, content: str, metadata: Optional[Dict[str, Any]]
+    ) -> Optional[list]:
+        """Context blocks for tool-progress bubbles, or None for normal path."""
+        if not metadata or not metadata.get("progress_surface"):
+            return None
+        max_lines = self._progress_context_lines()
+        if max_lines is None:
+            return None
+        try:
+            return progress_context_blocks(content, max_lines)
+        except Exception:  # pragma: no cover - renderer already guards itself
+            logger.debug(
+                "[Slack] progress context render failed; using plain text",
+                exc_info=True,
+            )
+            return None
 
     def _feedback_buttons_enabled(self) -> bool:
         """Whether to include Slack AI feedback buttons on final responses."""

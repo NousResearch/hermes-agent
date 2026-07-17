@@ -358,3 +358,48 @@ class TestSegmentBlocks:
         assert blocks_fallback_text([{"type": "divider"}]).strip() != "" or (
             blocks_fallback_text([{"type": "divider"}]) == " "
         )
+
+
+class TestProgressContextBlocks:
+    def test_empty_returns_none(self):
+        from plugins.platforms.slack.block_kit import progress_context_blocks
+
+        assert progress_context_blocks("") is None
+        assert progress_context_blocks("   \n ") is None
+
+    def test_fence_collapses_to_inline_code(self):
+        from plugins.platforms.slack.block_kit import progress_context_blocks
+
+        content = "💻 terminal\n```\nset -e && make build\nmake test\n```"
+        [block] = progress_context_blocks(content)
+        assert block["type"] == "context"
+        text = block["elements"][0]["text"]
+        # multi-line command collapses to its first line as inline code;
+        # & is mrkdwn-escaped (Slack renders &amp; back as & inside code)
+        assert "`set -e &amp;&amp; make build …`" in text
+        assert "```" not in text
+
+    def test_keeps_only_trailing_lines_with_elision_note(self):
+        from plugins.platforms.slack.block_kit import progress_context_blocks
+
+        content = "\n".join(f"📖 Reading file{i}.csv" for i in range(25))
+        [block] = progress_context_blocks(content, max_lines=10)
+        text = block["elements"][0]["text"]
+        lines = text.split("\n")
+        assert len(lines) == 11  # elision note + 10 kept lines
+        assert "15 earlier steps" in lines[0]
+        assert lines[-1].endswith("file24.csv")
+
+    def test_zero_keeps_all_lines(self):
+        from plugins.platforms.slack.block_kit import progress_context_blocks
+
+        content = "\n".join(f"line{i}" for i in range(25))
+        [block] = progress_context_blocks(content, max_lines=0)
+        assert len(block["elements"][0]["text"].split("\n")) == 25
+
+    def test_control_chars_escaped(self):
+        from plugins.platforms.slack.block_kit import progress_context_blocks
+
+        [block] = progress_context_blocks("fetch <https://e.io> & parse")
+        text = block["elements"][0]["text"]
+        assert "&lt;" in text and "&amp;" in text

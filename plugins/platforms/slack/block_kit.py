@@ -670,6 +670,51 @@ def _rich_text_plain(block: Block) -> str:
     return "".join(parts).strip()
 
 
+_FENCE_COLLAPSE_RE = re.compile(r"```[^\n]*\n?([\s\S]*?)```")
+
+
+def progress_context_blocks(content: str, max_lines: int = 10) -> Optional[List[Block]]:
+    """Render a tool-progress transcript as a small-print ``context`` block.
+
+    Long agentic runs accumulate dozens of tool-activity lines (terminal
+    fences, "Reading file…" rows) that visually drown the actual answer.
+    This collapses fenced commands to single-line inline code, keeps only
+    the trailing ``max_lines`` lines (0 = keep all; the full transcript
+    stays in the message's ``text`` fallback), and renders the result in
+    Slack's muted context style.
+    """
+    if not content or not content.strip():
+        return None
+
+    def _collapse(m: "re.Match[str]") -> str:
+        body = m.group(1).strip("\n")
+        first = body.splitlines()[0].strip() if body else ""
+        more = " …" if "\n" in body else ""
+        return f"`{first}{more}`" if first else "`…`"
+
+    text = _FENCE_COLLAPSE_RE.sub(_collapse, content)
+    lines = [ln for ln in (raw.rstrip() for raw in text.split("\n")) if ln.strip()]
+    if not lines:
+        return None
+    if max_lines > 0 and len(lines) > max_lines:
+        elided = len(lines) - max_lines
+        lines = lines[-max_lines:]
+        lines.insert(0, f"_… {elided} earlier steps_")
+    joined = "\n".join(lines)
+    # mrkdwn control-character escaping (backticks already delimit code).
+    joined = (
+        joined.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+    if len(joined) > MAX_SECTION_TEXT:
+        joined = "…" + joined[-(MAX_SECTION_TEXT - 1):]
+    return [
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": joined}],
+        }
+    ]
+
+
 def blocks_fallback_text(segment: List[Block], limit: int = 39000) -> str:
     """Derive the notification/accessibility ``text`` fallback for a segment.
 

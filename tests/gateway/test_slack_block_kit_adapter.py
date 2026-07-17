@@ -138,6 +138,58 @@ class TestStreamingBlocks:
         assert "blocks" not in client.chat_update.await_args.kwargs
 
 
+PROGRESS_MD = "💻 terminal\n```\nset -e && make build\n```\n📖 Reading data.csv"
+
+
+class TestProgressSurface:
+    @pytest.mark.asyncio
+    async def test_progress_send_renders_context_blocks(self):
+        adapter, client = _make_adapter({"rich_blocks": True})
+        await adapter.send(
+            "C1", PROGRESS_MD, metadata={"progress_surface": True}
+        )
+        kwargs = client.chat_postMessage.await_args.kwargs
+        assert [b["type"] for b in kwargs["blocks"]] == ["context"]
+        assert kwargs["text"]  # full transcript stays in the fallback
+
+    @pytest.mark.asyncio
+    async def test_progress_edit_renders_context_blocks_without_finalize(self):
+        adapter, client = _make_adapter({"rich_blocks": True})
+        await adapter.edit_message(
+            "C1", "1.2", PROGRESS_MD,
+            finalize=False, metadata={"progress_surface": True},
+        )
+        kwargs = client.chat_update.await_args.kwargs
+        assert [b["type"] for b in kwargs["blocks"]] == ["context"]
+
+    @pytest.mark.asyncio
+    async def test_progress_styling_can_be_disabled(self):
+        adapter, client = _make_adapter(
+            {"rich_blocks": True, "progress_context_lines": "off"}
+        )
+        await adapter.send(
+            "C1", PROGRESS_MD, metadata={"progress_surface": True}
+        )
+        blocks = client.chat_postMessage.await_args.kwargs.get("blocks")
+        # falls through to the normal rich render (no context block)
+        assert blocks and all(b["type"] != "context" for b in blocks)
+
+    @pytest.mark.asyncio
+    async def test_normal_messages_unaffected_by_metadata_absence(self):
+        adapter, client = _make_adapter({"rich_blocks": True})
+        await adapter.send("C1", PROGRESS_MD)
+        blocks = client.chat_postMessage.await_args.kwargs.get("blocks")
+        assert blocks and all(b["type"] != "context" for b in blocks)
+
+    @pytest.mark.asyncio
+    async def test_progress_requires_rich_blocks(self):
+        adapter, client = _make_adapter()  # rich_blocks off
+        await adapter.send(
+            "C1", PROGRESS_MD, metadata={"progress_surface": True}
+        )
+        assert "blocks" not in client.chat_postMessage.await_args.kwargs
+
+
 class TestBlocksRejectionFallback:
     @pytest.mark.asyncio
     async def test_send_retries_without_blocks_on_invalid_blocks(self):

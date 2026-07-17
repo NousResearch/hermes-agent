@@ -4292,26 +4292,71 @@ class APIServerAdapter(BasePlatformAdapter):
 
             loop = asyncio.get_running_loop()
             # Fire in the background (202 immediately). fire_due claims via the
-            # store CAS, so a retry while this is in flight is de-duped.
-            try:
-                task = asyncio.create_task(
-                    asyncio.to_thread(
-                        scheduler_reservation.provider.fire_due,
+            # store CAS, so a retry while this is in flight is de-duped. Keep the
+            # scheduler reservation until the actual worker thread exits:
+            # cancelling asyncio.to_thread() does not stop a running worker.
+            import threading
+
+            worker_started = threading.Event()
+            release_lock = threading.Lock()
+            released = False
+
+            def _release_fire_reservations() -> None:
+                nonlocal released
+                with release_lock:
+                    if released:
+                        return
+                    released = True
+                scheduler_reservation.release()
+                try:
+                    loop.call_soon_threadsafe(
+                        _release_pending_api_work, self, reservation
+                    )
+                except RuntimeError:
+                    # The loop can close during process teardown. The scheduler
+                    # reservation has already been released; finish local
+                    # accounting without leaking the detached reservation.
+                    _release_pending_api_work(self, reservation)
+
+            def _fire_due_worker() -> None:
+                worker_started.set()
+                try:
+                    scheduler_reservation.provider.fire_due(
                         job_id,
                         adapters=None,
                         loop=loop,
                     )
-                )
+                finally:
+                    _release_fire_reservations()
+
+            async def _wait_for_fire_worker() -> None:
+                worker = asyncio.create_task(asyncio.to_thread(_fire_due_worker))
+                cancelled = False
+                while True:
+                    try:
+                        await asyncio.shield(worker)
+                        break
+                    except asyncio.CancelledError:
+                        # Shield the worker from every shutdown cancellation and
+                        # keep this task pending until the worker truly exits.
+                        cancelled = True
+                if cancelled:
+                    raise asyncio.CancelledError
+
+            try:
+                task = asyncio.create_task(_wait_for_fire_worker())
             except BaseException:
-                scheduler_reservation.release()
+                _release_fire_reservations()
                 raise
             reservation["detached"] = True
 
-            def _release_fire_reservations(_task: asyncio.Task) -> None:
-                scheduler_reservation.release()
-                _release_pending_api_work(self, reservation)
+            def _release_if_never_started(_task: asyncio.Task) -> None:
+                # A task can be cancelled before its coroutine gets its first
+                # turn, in which case no worker exists to run its finally block.
+                if not worker_started.is_set():
+                    _release_fire_reservations()
 
-            task.add_done_callback(_release_fire_reservations)
+            task.add_done_callback(_release_if_never_started)
             try:
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)

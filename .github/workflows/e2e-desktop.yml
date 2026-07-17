@@ -98,13 +98,63 @@ jobs:
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
 
+      # ── Save updated baselines to cache (main only) ───────────────────
+      - name: Save updated baselines to cache
+        if: github.ref_name == 'main' && always()
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: apps/desktop/e2e/*-snapshots
+          key: visual-baselines-main
+
+      # ── Upload Playwright report (HTML + traces) ──────────────────────
+      - name: Upload Playwright report
+        id: upload-report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report-${{ github.sha }}
+          path: apps/desktop/playwright-report
+          retention-days: 14
+          overwrite: true
+
+      # ── Upload test results (screenshots, traces, diffs) ───────────────
+      - name: Upload test results
+        id: upload-results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-test-results-${{ github.sha }}
+          path: apps/desktop/test-results
+          retention-days: 14
+          overwrite: true
+
+      # ── Upload just the visual diffs (small, fast to review) ──────────
+      - name: Upload visual diffs
+        id: upload-diffs
+        if: always() && github.ref_name != 'main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: visual-diffs-${{ github.sha }}
+          path: |
+            apps/desktop/test-results/**/*-diff.png
+            apps/desktop/test-results/**/*-actual.png
+            apps/desktop/test-results/**/*-expected.png
+          retention-days: 14
+          overwrite: true
+          if-no-files-found: ignore
+
       # ── Generate step summary with visual diff info ───────────────────
       # Parse the JSON report + scan for diff images, then post a summary
       # to the GitHub Actions step output so reviewers can see what changed
-      # without downloading artifacts.
+      # without downloading artifacts.  Runs AFTER uploads so it can link
+      # the artifact download URLs from their step outputs.
       - name: Generate visual diff summary
         if: always()
         working-directory: apps/desktop
+        env:
+          REPORT_URL: ${{ steps.upload-report.outputs.artifact-url }}
+          RESULTS_URL: ${{ steps.upload-results.outputs.artifact-url }}
+          DIFFS_URL: ${{ steps.upload-diffs.outputs.artifact-url }}
         run: |
           echo "## Desktop E2E — Visual Diff Report" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -130,11 +180,17 @@ jobs:
           fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          echo "📥 Artifacts on the [run page](${RUN_URL}/artifacts):" >> "$GITHUB_STEP_SUMMARY"
+          echo "📥 **Artifacts:**" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`playwright-test-results\` — all screenshots (actual + expected + diff) + traces" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`playwright-report\` — interactive HTML report" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$RESULTS_URL" ]; then
+            echo "- [playwright-test-results]($RESULTS_URL) — all screenshots (actual + expected + diff) + traces" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -n "$REPORT_URL" ]; then
+            echo "- [playwright-report]($REPORT_URL) — interactive HTML report" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -n "$DIFFS_URL" ]; then
+            echo "- [visual-diffs]($DIFFS_URL) — just the diffed screenshots (small, fast to review)" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**To update baselines:** merge to main (baselines auto-update on main runs) or run \`npx playwright test --update-snapshots\` locally." >> "$GITHUB_STEP_SUMMARY"
 
@@ -154,45 +210,3 @@ jobs:
               console.log('| 🔄 Flaky | ' + (stats.flaky || 0) + ' |');
             " >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
           fi
-
-      # ── Save updated baselines to cache (main only) ───────────────────
-      - name: Save updated baselines to cache
-        if: github.ref_name == 'main' && always()
-        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: apps/desktop/e2e/*-snapshots
-          key: visual-baselines-main
-
-      # ── Upload Playwright report (HTML + traces) ──────────────────────
-      - name: Upload Playwright report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: playwright-report-${{ github.sha }}
-          path: apps/desktop/playwright-report
-          retention-days: 14
-          overwrite: true
-
-      # ── Upload test results (screenshots, traces, diffs) ───────────────
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: playwright-test-results-${{ github.sha }}
-          path: apps/desktop/test-results
-          retention-days: 14
-          overwrite: true
-
-      # ── Upload just the visual diffs (small, fast to review) ──────────
-      - name: Upload visual diffs
-        if: always() && github.ref_name != 'main'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: visual-diffs-${{ github.sha }}
-          path: |
-            apps/desktop/test-results/**/*-diff.png
-            apps/desktop/test-results/**/*-actual.png
-            apps/desktop/test-results/**/*-expected.png
-          retention-days: 14
-          overwrite: true
-          if-no-files-found: ignore

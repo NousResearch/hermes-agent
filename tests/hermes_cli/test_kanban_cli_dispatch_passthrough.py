@@ -55,6 +55,39 @@ def test_console_entrypoint_propagates_kanban_exit_codes(tmp_path):
     assert help_result.returncode == 0
 
 
+def test_module_entrypoint_propagates_kanban_exit_codes(tmp_path):
+    """The supported module entrypoint must preserve subcommand return codes."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "kanban:\n  dispatch_in_gateway: true\n", encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path)
+    env["HERMES_HOME"] = str(home)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
+    for name in ("HERMES_KANBAN_HOME", "HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
+        env.pop(name, None)
+    entrypoint = [sys.executable, "-m", "hermes_cli.main"]
+
+    rejected = subprocess.run(
+        entrypoint + ["kanban", "dispatch", "--dry-run"],
+        env=env, capture_output=True, text=True, timeout=30,
+    )
+
+    assert rejected.returncode == 2
+    assert "manual dispatch is disabled" in rejected.stderr
+    assert not (home / "kanban.db").exists()
+    assert not (home / "kanban").exists()
+
+    help_result = subprocess.run(
+        entrypoint + ["kanban"],
+        env=env, capture_output=True, text=True, timeout=30,
+    )
+
+    assert help_result.returncode == 0
+
+
 @pytest.fixture()
 def isolated_kanban_home(monkeypatch):
     """Spin up a fresh HERMES_HOME with a clean kanban DB."""

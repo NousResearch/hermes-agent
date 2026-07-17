@@ -1221,7 +1221,13 @@ clone_repo() {
             # into a multi-minute download that can stall the installer.
             git remote set-branches origin "$BRANCH" 2>/dev/null || true
             git fetch origin "$BRANCH"
-            git checkout "$BRANCH"
+            # A previous pinned-commit install may have left HEAD detached
+            # without a local branch ref. Recreate the managed branch from the
+            # fetched remote instead of aborting the entire bootstrap.
+            if ! git checkout "$BRANCH" 2>/dev/null; then
+                log_info "Local branch '$BRANCH' not found — creating from origin/$BRANCH..."
+                git checkout -B "$BRANCH" "origin/$BRANCH"
+            fi
             # Managed installs should follow origin/$BRANCH exactly. If the
             # checkout has diverged (or has local-only commits), ff-only pull
             # cannot succeed — mirror ``hermes update`` and reset to the

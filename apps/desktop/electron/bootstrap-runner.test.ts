@@ -21,6 +21,26 @@ function mkTmpHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-bootstrap-test-'))
 }
 
+function makeInstallerScript(body: string) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-bootstrap-runner-'))
+  const scriptsDir = path.join(root, 'scripts')
+  fs.mkdirSync(scriptsDir, { recursive: true })
+  fs.writeFileSync(path.join(scriptsDir, 'install.sh'), body, { mode: 0o755 })
+
+  return root
+}
+
+function makeRunnerDirs() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-bootstrap-home-'))
+
+  return {
+    root,
+    activeRoot: path.join(root, 'agent'),
+    hermesHome: path.join(root, 'home'),
+    logRoot: path.join(root, 'logs')
+  }
+}
+
 test('runBootstrap bails immediately when the signal is already aborted', async () => {
   const controller = new AbortController()
   controller.abort()
@@ -43,6 +63,85 @@ test('runBootstrap bails immediately when the signal is already aborted', async 
     events.some(ev => ev.type === 'failed' && /cancelled/i.test(ev.error)),
     'should emit a cancelled failure event'
   )
+})
+
+test('killed bootstrap stage reports captured stderr context', async () => {
+  const sourceRepoRoot = makeInstallerScript(`#!/usr/bin/env bash
+if [[ "$*" == *"--manifest"* ]]; then
+  echo '{"protocol_version":1,"stages":[{"name":"repository","title":"Repository"}]}'
+  exit 0
+fi
+if [[ "$*" == *"--stage repository"* ]]; then
+  echo 'Repository ready'
+  echo 'fatal: detached HEAD state' >&2
+  exec sleep 2
+fi
+`)
+
+  const dirs = makeRunnerDirs()
+  const controller = new AbortController()
+  const events = []
+
+  try {
+    const result = await runBootstrap({
+      installStamp: null,
+      sourceRepoRoot,
+      ...dirs,
+      onEvent: ev => {
+        events.push(ev)
+
+        if (ev.type === 'log' && ev.stage === 'repository' && ev.line.includes('fatal: detached HEAD')) {
+          controller.abort()
+        }
+      },
+      abortSignal: controller.signal
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.failedStage, 'repository')
+    assert.match(result.error, /process killed — last output:/)
+    assert.match(result.error, /fatal: detached HEAD state/)
+    assert.doesNotMatch(result.error, /^cancelled by user$/)
+  } finally {
+    fs.rmSync(sourceRepoRoot, { recursive: true, force: true })
+    fs.rmSync(dirs.root, { recursive: true, force: true })
+  }
+})
+
+test('killed bootstrap stage without captured output still reports user cancellation', async () => {
+  const sourceRepoRoot = makeInstallerScript(`#!/usr/bin/env bash
+if [[ "$*" == *"--manifest"* ]]; then
+  echo '{"protocol_version":1,"stages":[{"name":"repository","title":"Repository"}]}'
+  exit 0
+fi
+if [[ "$*" == *"--stage repository"* ]]; then
+  exec sleep 2
+fi
+`)
+
+  const dirs = makeRunnerDirs()
+  const controller = new AbortController()
+
+  try {
+    const result = await runBootstrap({
+      installStamp: null,
+      sourceRepoRoot,
+      ...dirs,
+      onEvent: ev => {
+        if (ev.type === 'stage' && ev.name === 'repository' && ev.state === 'running') {
+          controller.abort()
+        }
+      },
+      abortSignal: controller.signal
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.failedStage, 'repository')
+    assert.equal(result.error, 'cancelled by user')
+  } finally {
+    fs.rmSync(sourceRepoRoot, { recursive: true, force: true })
+    fs.rmSync(dirs.root, { recursive: true, force: true })
+  }
 })
 
 test('installedAgentInstallScript resolves the installer in the agent checkout', () => {

@@ -671,7 +671,12 @@ async function runStage({
   const durationMs = Date.now() - startedAt
 
   if (result.killed) {
-    const ev = { type: 'stage', name: stage.name, state: 'failed', durationMs, error: 'cancelled by user' }
+    // An abort can come from an internal error cascade as well as an explicit
+    // user cancellation. Preserve captured output so the bootstrap failure
+    // reports the real cause when one exists.
+    const captured = (result.stderr || '').trim() || (result.stdout || '').trim()
+    const reason = captured ? `process killed — last output: ${captured.slice(-300)}` : 'cancelled by user'
+    const ev = { type: 'stage', name: stage.name, state: 'failed', durationMs, error: reason }
     emit(ev)
 
     return ev

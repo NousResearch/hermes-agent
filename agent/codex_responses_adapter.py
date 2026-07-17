@@ -18,7 +18,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.prompt_builder import build_agent_identity, DEFAULT_ATTRIBUTION
 
 logger = logging.getLogger(__name__)
 
@@ -809,7 +809,7 @@ def _preflight_codex_api_kwargs(
         instructions = ""
     if not isinstance(instructions, str):
         instructions = str(instructions)
-    instructions = instructions.strip() or DEFAULT_AGENT_IDENTITY
+    instructions = instructions.strip() or build_agent_identity(DEFAULT_ATTRIBUTION)
 
     normalized_input = _preflight_codex_input_items(api_kwargs.get("input"))
 

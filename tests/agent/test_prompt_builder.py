@@ -1609,3 +1609,174 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 
 
+
+
+# =========================================================================
+# Configurable attribution (#54548 / #54588)
+# =========================================================================
+
+
+class TestConfigurableAttribution:
+    """Regression tests for agent.attribution config.
+
+    Covers the reviewer feedback on #54588:
+    - Default attribution preserves backward compat
+    - Custom attribution propagates to identity + help guidance
+    - Empty attribution omits attribution block
+    - SOUL.md with default content gets attribution replaced
+    - Customized SOUL.md is preserved as-is
+    """
+
+    def test_default_attribution_identity(self):
+        from agent.prompt_builder import build_agent_identity
+        result = build_agent_identity("Nous Research")
+        assert "created by Nous Research" in result
+        assert "Hermes Agent" in result
+
+    def test_custom_attribution_identity(self):
+        from agent.prompt_builder import build_agent_identity
+        result = build_agent_identity("Acme Corp")
+        assert "created by Acme Corp" in result
+        assert "Nous Research" not in result
+
+    def test_empty_attribution_identity(self):
+        from agent.prompt_builder import build_agent_identity
+        result = build_agent_identity("")
+        assert "created by" not in result
+        assert "Hermes Agent" in result
+
+    def test_default_attribution_help_guidance(self):
+        from agent.prompt_builder import build_help_guidance
+        result = build_help_guidance("Nous Research")
+        assert "by Nous Research" in result
+        assert "hermes-agent" in result
+
+    def test_custom_attribution_help_guidance(self):
+        from agent.prompt_builder import build_help_guidance
+        result = build_help_guidance("Acme Corp")
+        assert "by Acme Corp" in result
+        assert "Nous Research" not in result
+
+    def test_empty_attribution_help_guidance_omitted(self):
+        from agent.prompt_builder import build_help_guidance
+        result = build_help_guidance("")
+        assert result == ""
+
+    def test_default_agent_identity_matches_legacy(self):
+        """Legacy constant must still resolve to Nous Research."""
+        from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+        assert "created by Nous Research" in DEFAULT_AGENT_IDENTITY
+
+    def test_hermes_agent_help_guidance_matches_legacy(self):
+        from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE
+        assert "by Nous Research" in HERMES_AGENT_HELP_GUIDANCE
+
+    def test_default_config_has_attribution(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert "attribution" in DEFAULT_CONFIG.get("agent", {})
+        assert DEFAULT_CONFIG["agent"]["attribution"] == "Nous Research"
+
+    def test_soul_md_default_gets_replacement(self, monkeypatch):
+        """When SOUL.md matches the default template and attribution is
+        non-default, the identity string should be replaced."""
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+        class FakeAgent:
+            load_soul_identity = True
+            skip_context_files = False
+            _attribution = "Acme Corp"
+            context_compressor = None
+            valid_tool_names = set()
+            _task_completion_guidance = False
+            _parallel_tool_call_guidance = False
+
+        # Mock load_soul_md to return default content
+        import agent.system_prompt as sp
+        monkeypatch.setattr(sp._r, "load_soul_md", lambda ctx: DEFAULT_SOUL_MD)
+
+        parts, _ = sp.build_system_prompt_parts(FakeAgent())
+        soul_part = parts[0]
+        assert "created by Acme Corp" in soul_part
+        assert "Nous Research" not in soul_part
+
+    def test_soul_md_customized_preserved(self, monkeypatch):
+        """When SOUL.md is user-customized (different from default), the
+        attribution setting must NOT override it."""
+        custom_soul = "You are a coding assistant for Acme Corp's internal use."
+
+        class FakeAgent:
+            load_soul_identity = True
+            skip_context_files = False
+            _attribution = "Evil Corp"
+            context_compressor = None
+            valid_tool_names = set()
+            _task_completion_guidance = False
+            _parallel_tool_call_guidance = False
+
+        import agent.system_prompt as sp
+        monkeypatch.setattr(sp._r, "load_soul_md", lambda ctx: custom_soul)
+
+        parts, _ = sp.build_system_prompt_parts(FakeAgent())
+        soul_part = parts[0]
+        # Custom SOUL.md must be preserved verbatim
+        assert soul_part == custom_soul
+        assert "Evil Corp" not in soul_part
+
+    def test_soul_md_default_no_replacement_when_same(self, monkeypatch):
+        """When attribution is the default 'Nous Research', no replacement
+        should happen (default SOUL.md already has it)."""
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+        class FakeAgent:
+            load_soul_identity = True
+            skip_context_files = False
+            _attribution = "Nous Research"
+            context_compressor = None
+            valid_tool_names = set()
+            _task_completion_guidance = False
+            _parallel_tool_call_guidance = False
+
+        import agent.system_prompt as sp
+        monkeypatch.setattr(sp._r, "load_soul_md", lambda ctx: DEFAULT_SOUL_MD)
+
+        parts, _ = sp.build_system_prompt_parts(FakeAgent())
+        soul_part = parts[0]
+        assert soul_part.strip() == DEFAULT_SOUL_MD.strip()
+
+    def test_fallback_identity_uses_attribution(self, monkeypatch):
+        """When SOUL.md is not loaded, build_agent_identity should use
+        the configured attribution."""
+        class FakeAgent:
+            load_soul_identity = False
+            skip_context_files = True
+            _attribution = "CustomOrg"
+            context_compressor = None
+            valid_tool_names = set()
+            _task_completion_guidance = False
+            _parallel_tool_call_guidance = False
+
+        import agent.system_prompt as sp
+        monkeypatch.setattr(sp._r, "load_soul_md", lambda ctx: None)
+
+        parts, _ = sp.build_system_prompt_parts(FakeAgent())
+        identity_part = parts[0]
+        assert "created by CustomOrg" in identity_part
+
+    def test_help_guidance_skipped_when_empty_attribution(self, monkeypatch):
+        """When attribution is empty, help guidance block should be omitted."""
+        class FakeAgent:
+            load_soul_identity = False
+            skip_context_files = True
+            _attribution = ""
+            context_compressor = None
+            valid_tool_names = set()
+            _task_completion_guidance = False
+            _parallel_tool_call_guidance = False
+
+        import agent.system_prompt as sp
+        monkeypatch.setattr(sp._r, "load_soul_md", lambda ctx: None)
+
+        parts, _ = sp.build_system_prompt_parts(FakeAgent())
+        # Help guidance should not be present when attribution is empty
+        for part in parts:
+            assert "hermes-agent.nousresearch.com" not in part

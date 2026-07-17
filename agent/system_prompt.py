@@ -154,6 +154,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if agent.load_soul_identity or not agent.skip_context_files:
         _soul_content = _r.load_soul_md(_ctx_len)
         if _soul_content:
+            # When SOUL.md matches the default template, apply the
+            # configurable attribution so ``agent.attribution`` controls
+            # the identity even in the normal (SOUL-loaded) path.
+            from hermes_cli.default_soul import DEFAULT_SOUL_MD
+            attribution = getattr(agent, "_attribution", "Nous Research")
+            if _soul_content.strip() == DEFAULT_SOUL_MD.strip() and attribution != "Nous Research":
+                _soul_content = _soul_content.replace(
+                    "created by Nous Research",
+                    f"created by {attribution}",
+                )
             stable_parts.append(_soul_content)
             _soul_loaded = True
 

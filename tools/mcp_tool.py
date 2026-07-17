@@ -5929,6 +5929,21 @@ async def _drain_mcp_loop_tasks(
         )
 
 
+async def _drain_and_stop_mcp_loop() -> None:
+    """Drain pending tasks, then stop the loop from its owning thread.
+
+    Keeping both operations in one loop-owned sequence matters when the caller
+    times out waiting for a blocked loop. Queuing ``loop.stop`` separately from
+    the caller can overtake the scheduled drain before it receives a loop cycle,
+    leaving the drain coroutine itself pending when the loop is closed.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        await _drain_mcp_loop_tasks(timeout=_MCP_LOOP_DRAIN_TIMEOUT)
+    finally:
+        loop.call_soon(loop.stop)
+
+
 def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
     """Stop the background event loop and join its thread."""
     global _mcp_loop, _mcp_thread
@@ -5946,27 +5961,37 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
         # to run cleanup against a loop that is already closed -> "Event loop
         # is closed" (#60197). ``shutdown_mcp_servers`` only reaps servers held
         # in ``_servers``, so anything else left on this loop ends up here.
+        stop_owned_by_loop = False
         if loop.is_running():
             from agent.async_utils import safe_schedule_threadsafe
 
             future = safe_schedule_threadsafe(
-                _drain_mcp_loop_tasks(timeout=_MCP_LOOP_DRAIN_TIMEOUT), loop,
+                _drain_and_stop_mcp_loop(), loop,
                 logger=logger,
                 log_message="MCP loop drain: failed to schedule",
                 log_level=logging.WARNING,
             )
             if future is not None:
+                stop_owned_by_loop = True
                 try:
                     future.result(timeout=_MCP_LOOP_DRAIN_TIMEOUT + 1)
                 except TimeoutError:
-                    future.cancel()
                     logger.warning(
                         "Timed out waiting for MCP loop drain after %.1fs",
                         _MCP_LOOP_DRAIN_TIMEOUT + 1,
                     )
                 except BaseException as exc:
                     logger.warning("Error draining MCP loop tasks: %s", exc)
-        loop.call_soon_threadsafe(loop.stop)
+        elif not loop.is_closed():
+            try:
+                loop.run_until_complete(
+                    _drain_mcp_loop_tasks(timeout=_MCP_LOOP_DRAIN_TIMEOUT)
+                )
+            except BaseException as exc:
+                logger.warning("Error draining stopped MCP loop tasks: %s", exc)
+
+        if not stop_owned_by_loop and loop.is_running():
+            loop.call_soon_threadsafe(loop.stop)
         if thread is not None:
             thread.join(timeout=5)
             if thread.is_alive():

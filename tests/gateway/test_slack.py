@@ -2683,6 +2683,49 @@ class TestIncomingDocumentHandling:
         assert msg_event.text == "hello world"
 
     @pytest.mark.asyncio
+    async def test_rich_text_blocks_do_not_duplicate_semantically_equal_slack_links(
+        self, adapter
+    ):
+        """Slack's plain ``text`` uses mrkdwn links while rich_text blocks use
+        structured links. They are the same authored message and must not be
+        appended as a second copy merely because their serializations differ."""
+        event = self._make_event(
+            text=(
+                "Review <https://github.com/acme/design/pull/7|PR #7> and "
+                "<http://preview.example.com>."
+            ),
+            blocks=[
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_section",
+                            "elements": [
+                                {"type": "text", "text": "Review "},
+                                {
+                                    "type": "link",
+                                    "url": "https://github.com/acme/design/pull/7",
+                                    "text": "PR #7",
+                                },
+                                {"type": "text", "text": " and "},
+                                {
+                                    "type": "link",
+                                    "url": "http://preview.example.com",
+                                },
+                                {"type": "text", "text": "."},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == event["text"]
+
+    @pytest.mark.asyncio
     async def test_rich_text_quotes_and_lists_are_extracted(self, adapter):
         """Nested quote and list content should be surfaced from rich_text blocks."""
         event = self._make_event(

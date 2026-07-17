@@ -719,7 +719,9 @@ class TestNonStringContent:
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
 
-        assert summary == f"{SUMMARY_PREFIX}\nplain summary text"
+        assert summary.startswith(f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\n")
+        assert "do something" in summary
+        assert summary.endswith("plain summary text")
 
     def test_summary_call_does_not_force_temperature(self):
         mock_response = MagicMock()

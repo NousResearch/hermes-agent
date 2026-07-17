@@ -53,7 +53,8 @@ jobs:
         id: classify
         uses: ./.github/actions/detect-changes
         with:
-          github-token: ${{ secrets.AUTOFIX_BOT_PAT }}
+          # Fork PRs cannot read repo secrets; fall back so compare does not fail-open.
+          github-token: ${{ secrets.AUTOFIX_BOT_PAT || github.token }}
 
   # ─────────────────────────────────────────────────────────────────────
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.
@@ -224,7 +225,8 @@ jobs:
 
       - name: Collect timings and generate report
         env:
-          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          # Read-only API for timings; PAT preferred, github.token works for fork PRs.
+          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT || github.token }}
         run: |
           python3 scripts/ci/timings_report.py \
             --baseline ci-timings-baseline.json \

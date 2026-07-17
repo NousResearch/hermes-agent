@@ -181,7 +181,8 @@ jobs:
         id: pr-labels
         uses: ./.github/actions/retry
         env:
-          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          # Fork PRs cannot read repo secrets; label fetch only needs read access.
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT || github.token }}
         with:
           command: gh pr view "${{ github.event.pull_request.number }}" --json labels --jq '.labels[].name'
       - name: Require ci-reviewed label

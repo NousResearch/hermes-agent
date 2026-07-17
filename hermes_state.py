@@ -6477,12 +6477,12 @@ class SessionDB:
         as well. See :meth:`rewind_to_message`.
 
         ``repair_alternation=True`` runs ``repair_message_sequence`` over the
-        loaded list before returning it. Callers that restore a session for
-        LIVE REPLAY should pass it: a durable alternation violation (e.g. a
-        ``user;user`` pair left by a turn that persisted no assistant row)
-        otherwise re-triggers the pre-request defensive repair on every
-        single request for the rest of the session's life — the repair
-        mutates only the per-request list, never the stored transcript.
+        loaded live-replay copy before returning it. This repairs malformed
+        assistant/tool structure such as split assistant turns and orphaned
+        tool results without rewriting the durable transcript. Adjacent
+        ``user`` messages remain distinct canonical source turns; the
+        per-request provider copy later merges them via
+        ``drop_thinking_only_and_merge_users`` for strict role alternation.
         Inspection/export consumers keep the default and see the transcript
         verbatim.
         """
@@ -6638,9 +6638,9 @@ class SessionDB:
             repaired = repair_message_sequence(None, messages)
             if repaired:
                 logger.info(
-                    "Repaired %d message-alternation violation(s) while "
-                    "restoring session %s — durable transcript kept them, "
-                    "see repair_message_sequence",
+                    "Repaired %d malformed assistant/tool sequence violation(s) "
+                    "while restoring session %s — durable transcript retained "
+                    "its original rows; see repair_message_sequence",
                     repaired,
                     session_id,
                 )

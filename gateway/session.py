@@ -3114,10 +3114,10 @@ class SessionStore:
         if not self._db:
             return []
         try:
-            # repair_alternation: this load feeds LIVE REPLAY. A durable
-            # user;user wedge (e.g. a turn that persisted no assistant row)
-            # would otherwise re-trigger the pre-request repair on every
-            # request forever — heal it once at the restore boundary.
+            # repair_alternation: this load feeds LIVE REPLAY. Repair malformed
+            # assistant/tool structure in the restored copy while preserving
+            # adjacent user rows as canonical source boundaries; provider-wire
+            # normalization merges them later on a per-request copy.
             return self._db.get_messages_as_conversation(
                 session_id, repair_alternation=True
             )

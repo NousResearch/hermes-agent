@@ -1,14 +1,14 @@
-"""get_messages_as_conversation(repair_alternation=True) — heal durable
-alternation violations at the restore boundary.
+"""Live restore repairs malformed assistant/tool structure without erasing
+canonical user source boundaries.
 
-A turn that persists a user row but no assistant row (e.g. its reply was
-suppressed, or two concurrent turns interleaved their flushes) leaves a
-``user;user`` pair in state.db. Without repair at restore, the defensive
-pre-request ``repair_message_sequence`` re-fires on EVERY request for the
-rest of the session's life, because it mutates only the per-request list.
+Adjacent persisted ``user;user`` rows are distinct source turns. Live restore
+keeps them separate, while the transient provider copy merges them with an
+explicit boundary marker to satisfy strict role alternation. The
+``repair_alternation=True`` path remains responsible for malformed assistant
+and tool structure.
 
-Default (``repair_alternation=False``) must stay verbatim: inspection and
-export consumers (trace upload, context guard) read the transcript as-is.
+Default (``repair_alternation=False``) stays verbatim for inspection and
+export consumers such as trace upload and the context guard.
 """
 
 import pytest
@@ -24,8 +24,8 @@ def db(tmp_path):
     session_db.close()
 
 
-def _seed_wedged_session(db, session_id="s1"):
-    """assistant → user → user (no assistant row between): the durable wedge."""
+def _seed_adjacent_user_session(db, session_id="s1"):
+    """Persist two adjacent user source turns in otherwise clean history."""
     db.create_session(session_id, "system prompt")
     db.append_message(session_id=session_id, role="user", content="first ask")
     db.append_message(session_id=session_id, role="assistant", content="first reply")
@@ -35,31 +35,69 @@ def _seed_wedged_session(db, session_id="s1"):
 
 
 def test_default_load_is_verbatim(db):
-    _seed_wedged_session(db)
+    _seed_adjacent_user_session(db)
     messages = db.get_messages_as_conversation("s1")
     roles = [m["role"] for m in messages]
     assert roles == ["user", "assistant", "user", "user", "assistant"]
 
 
-def test_repair_alternation_merges_user_pair(db):
-    _seed_wedged_session(db)
+def test_repair_alternation_preserves_user_pair_until_provider_wire(db):
+    from agent.agent_runtime_helpers import drop_thinking_only_and_merge_users
+
+    _seed_adjacent_user_session(db)
     messages = db.get_messages_as_conversation("s1", repair_alternation=True)
-    roles = [m["role"] for m in messages]
-    assert roles == ["user", "assistant", "user", "assistant"]
-    # Both user texts survive, merged in order — no user input is lost.
-    merged = messages[2]["content"]
-    assert "unanswered turn" in merged and "next turn" in merged
-    assert merged.index("unanswered turn") < merged.index("next turn")
+    canonical = [dict(message) for message in messages]
+
+    assert [message["role"] for message in messages] == [
+        "user", "assistant", "user", "user", "assistant"
+    ]
+    assert [messages[2]["content"], messages[3]["content"]] == [
+        "unanswered turn", "next turn"
+    ]
+    assert messages[2] is not messages[3]
+
+    provider_messages = drop_thinking_only_and_merge_users(
+        [dict(message) for message in messages]
+    )
+
+    assert [message["role"] for message in provider_messages] == [
+        "user", "assistant", "user", "assistant"
+    ]
+    assert provider_messages[2]["content"] == (
+        "unanswered turn\n\n[Next user message]\n\nnext turn"
+    )
+    assert messages == canonical
 
 
-def test_repaired_load_is_stable_under_prerequest_repair(db):
-    """The restored list must yield ZERO further repairs — this is the whole
-    point: the pre-request defensive repair stops firing every turn."""
+def test_adjacent_user_load_is_stable_under_canonical_repair(db):
+    """Repeated canonical repair leaves adjacent source turns untouched."""
     from agent.agent_runtime_helpers import repair_message_sequence
 
-    _seed_wedged_session(db)
+    _seed_adjacent_user_session(db)
     messages = db.get_messages_as_conversation("s1", repair_alternation=True)
+    canonical = [dict(message) for message in messages]
+
     assert repair_message_sequence(None, messages) == 0
+    assert messages == canonical
+
+
+def test_repair_alternation_repairs_malformed_assistant_pair(db):
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    db.create_session("s3", "system prompt")
+    db.append_message(session_id="s3", role="user", content="ask")
+    db.append_message(session_id="s3", role="assistant", content="first fragment")
+    db.append_message(session_id="s3", role="assistant", content="second fragment")
+
+    verbatim = db.get_messages_as_conversation("s3")
+    repaired = db.get_messages_as_conversation("s3", repair_alternation=True)
+
+    assert [message["role"] for message in verbatim] == [
+        "user", "assistant", "assistant"
+    ]
+    assert [message["role"] for message in repaired] == ["user", "assistant"]
+    assert repaired[1]["content"] == "first fragment\nsecond fragment"
+    assert repair_message_sequence(None, repaired) == 0
 
 
 def test_repair_noop_on_clean_transcript(db):

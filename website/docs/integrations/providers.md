@@ -858,6 +858,15 @@ Alternatively, use the CLI: `lms load model-name --context-length 64000`
 You can use the CLI to estimate if the model will fit: `lms load model-name --context-length 64000 --estimate-only`
 
 To set persistent per-model defaults: My Models tab → gear icon on the model → set context size.
+
+**Model switching:** By default, when switching between LM Studio models on the same endpoint, Hermes asks LM Studio to unload the previously selected Hermes model before loading the new one. When Hermes loaded that model itself, it remembers the exact LM Studio instance it created and unloads only that instance, even if you have other copies of the same model resident. When Hermes merely used an already-loaded model, it unloads a matching instance only when exactly one is resident; several resident copies are all left alone, since none can be attributed to Hermes. Downloaded-but-unloaded models are never touched. The same caution applies to the model being switched *to*: if it is already loaded with a smaller context than Hermes wants, Hermes reloads it larger only when it is the single resident copy under the default policy. With `never`, Hermes instead loads its own additional copy at the desired context alongside yours and addresses that copy directly in requests, falling back to the resident context if the extra load fails (for example, out of memory). Multiple resident copies under the default policy are left alone — Hermes runs with the largest resident window. This avoids accidental VRAM overcommit on single-GPU systems while staying safe on a shared LM Studio server. If you intentionally keep the previous LM Studio model resident, opt out in `config.yaml`:
+
+```yaml
+model:
+  provider: lmstudio
+  default: qwen/qwen3.6-35b-a3b
+  lmstudio_unload_policy: "never"  # default: "always"
+```
 :::
 
 If you use LM Studio's Just-In-Time loading / Auto-Evict feature and want LM Studio to manage model loading and eviction from normal chat requests, skip Hermes' explicit preload step:
@@ -871,6 +880,8 @@ Set it back to the default explicit preload behavior with:
 ```bash
 hermes config set model.lmstudio_load_mode explicit
 ```
+
+In `jit` mode Hermes does no preloading, switching, or unloading of its own, so `model.lmstudio_unload_policy` has no effect — LM Studio's Auto-Evict manages what stays resident.
 
 **Tool calling:** Supported since LM Studio 0.3.6. Models with native tool-calling training (Qwen 2.5, Llama 3.x, Mistral, Hermes) are auto-detected and shown with a tool badge. Other models use a generic fallback that may be less reliable.
 
@@ -1169,6 +1180,15 @@ model:
   default: "qwen3.5:9b"
   base_url: "http://localhost:8080/v1"
   context_length: 131072  # tokens
+```
+
+For LM Studio, `model.lmstudio_unload_policy` controls whether Hermes unloads the previously selected LM Studio chat model before switching on the same endpoint. The default is `"always"` to avoid VRAM overcommit; set `"never"` if your machine can keep multiple models loaded and you want LM Studio to manage memory. With `"never"`, Hermes also won't evict an already-loaded copy of the model you're switching to in order to grow its context — it loads its own additional copy at the desired context (addressed directly in requests) and falls back to the loaded context if that extra load fails:
+
+```yaml
+model:
+  provider: lmstudio
+  default: qwen/qwen3.6-35b-a3b
+  lmstudio_unload_policy: "never"
 ```
 
 For custom endpoints, you can also set context length per model:

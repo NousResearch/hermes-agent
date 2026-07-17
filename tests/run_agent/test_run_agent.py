@@ -4030,6 +4030,63 @@ class TestHandleMaxIterations:
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         assert "sort" not in kwargs.get("extra_body", {}).get("provider", {})
 
+    def test_summary_routes_to_owned_lmstudio_instance(self, agent):
+        """The iteration-limit summary bypasses the transport, so it must
+        apply the LM Studio instance routing itself — otherwise it addresses
+        the oldest resident instance, not the one Hermes stacked."""
+        from hermes_cli import models as hermes_models
+
+        agent.base_url = "http://localhost:1234/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "lmstudio"
+        agent.model = "qwen/qwen3.6-35b-a3b"
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        server_root = hermes_models._lmstudio_server_root(agent.base_url)
+        key = (server_root, agent.model)
+        hermes_models._lmstudio_routed_instances[key] = "qwen/qwen3.6-35b-a3b:2"
+        try:
+            result = agent._handle_max_iterations(
+                [{"role": "user", "content": "do stuff"}], 60
+            )
+        finally:
+            hermes_models._lmstudio_routed_instances.pop(key, None)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert kwargs["model"] == "qwen/qwen3.6-35b-a3b:2"
+
+    def test_summary_retry_routes_to_owned_lmstudio_instance(self, agent):
+        """The retry branch (taken when the first summary comes back empty)
+        hand-builds its own kwargs, so it needs the same routing."""
+        from hermes_cli import models as hermes_models
+
+        agent.base_url = "http://localhost:1234/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "lmstudio"
+        agent.model = "qwen/qwen3.6-35b-a3b"
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=""),
+            _mock_response(content="Retry summary"),
+        ]
+        agent._cached_system_prompt = "You are helpful."
+
+        server_root = hermes_models._lmstudio_server_root(agent.base_url)
+        key = (server_root, agent.model)
+        hermes_models._lmstudio_routed_instances[key] = "qwen/qwen3.6-35b-a3b:2"
+        try:
+            result = agent._handle_max_iterations(
+                [{"role": "user", "content": "do stuff"}], 60
+            )
+        finally:
+            hermes_models._lmstudio_routed_instances.pop(key, None)
+
+        assert result == "Retry summary"
+        assert agent.client.chat.completions.create.call_count == 2
+        for call in agent.client.chat.completions.create.call_args_list:
+            assert call.kwargs["model"] == "qwen/qwen3.6-35b-a3b:2"
+
     def test_codex_summary_sanitizes_orphan_tool_results(self, agent):
         agent.api_mode = "codex_responses"
         agent.provider = "openai-codex"

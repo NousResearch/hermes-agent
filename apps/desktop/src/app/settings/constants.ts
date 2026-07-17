@@ -270,12 +270,14 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'tts.elevenlabs.model_id': ['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5'],
   // NeuTTS local inference device.
   'tts.neutts.device': ['cpu', 'cuda', 'mps'],
-  'updates.non_interactive_local_changes': ['stash', 'discard']
+  'updates.non_interactive_local_changes': ['stash', 'discard'],
+  model_lmstudio_unload_policy: ['always', 'never']
 }
 
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   model: 'Default Model',
   modelContextLength: 'Context Window',
+  modelLmstudioUnloadPolicy: 'LM Studio Unload Policy',
   fallbackProviders: 'Fallback Models',
   toolsets: 'Enabled Toolsets',
   timezone: 'Timezone',
@@ -430,6 +432,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
 export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   model: 'Used for new chats unless you pick a different model in the composer.',
   modelContextLength: "Leave at 0 to use the selected model's detected context window.",
+  modelLmstudioUnloadPolicy:
+    'Controls whether LM Studio unloads the previously selected local chat model before switching.',
   fallbackProviders: 'Backup provider:model entries to try if the default model fails.',
   display: {
     personality: 'Default assistant style for new sessions.',
@@ -504,7 +508,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'model',
     label: 'Model',
     icon: Box,
-    keys: ['model_context_length', 'fallback_providers']
+    keys: ['model_context_length', 'model_lmstudio_unload_policy', 'fallback_providers']
   },
   {
     id: 'chat',

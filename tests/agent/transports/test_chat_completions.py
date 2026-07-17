@@ -773,6 +773,75 @@ class TestChatCompletionsKimi:
         assert "type" not in kw["tools"][0]["function"]["parameters"]["properties"]["q"]
 
 
+class TestChatCompletionsLmStudioInstanceRouting:
+    """When Hermes stacked its own LM Studio instance next to resident copies
+    it doesn't own, requests must address that instance directly — LM Studio
+    routes bare-name requests to the oldest resident instance, not the
+    largest. The routing claim lives in hermes_cli.models and is keyed by
+    (server root, model), so every other endpoint is untouched.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_routing_claims(self):
+        from hermes_cli import models as hermes_models
+
+        registry = getattr(hermes_models, "_lmstudio_routed_instances", None)
+        if registry is not None:
+            registry.clear()
+        yield
+        if registry is not None:
+            registry.clear()
+
+    @staticmethod
+    def _claim(model_key, instance_id, root="http://localhost:1234"):
+        from hermes_cli import models as hermes_models
+
+        hermes_models._lmstudio_routed_instances[(root, model_key)] = instance_id
+
+    def test_legacy_path_routes_to_claimed_instance(self, transport):
+        self._claim("qwen/qwen3.6-35b-a3b", "qwen/qwen3.6-35b-a3b:2")
+        kw = transport.build_kwargs(
+            model="qwen/qwen3.6-35b-a3b",
+            messages=[{"role": "user", "content": "Hi"}],
+            base_url="http://localhost:1234/v1",
+            is_lmstudio=True,
+        )
+        assert kw["model"] == "qwen/qwen3.6-35b-a3b:2"
+
+    def test_legacy_path_without_claim_keeps_bare_name(self, transport):
+        kw = transport.build_kwargs(
+            model="qwen/qwen3.6-35b-a3b",
+            messages=[{"role": "user", "content": "Hi"}],
+            base_url="http://localhost:1234/v1",
+            is_lmstudio=True,
+        )
+        assert kw["model"] == "qwen/qwen3.6-35b-a3b"
+
+    def test_profile_path_routes_to_claimed_instance(self, transport):
+        import model_tools  # noqa: F401 — triggers profile registration
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("custom")
+        assert profile is not None
+        self._claim("qwen/qwen3.6-35b-a3b", "qwen/qwen3.6-35b-a3b:2")
+        kw = transport.build_kwargs(
+            model="qwen/qwen3.6-35b-a3b",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            base_url="http://localhost:1234/v1",
+        )
+        assert kw["model"] == "qwen/qwen3.6-35b-a3b:2"
+
+    def test_claim_for_other_endpoint_not_applied(self, transport):
+        self._claim("qwen/qwen3.6-35b-a3b", "qwen/qwen3.6-35b-a3b:2")
+        kw = transport.build_kwargs(
+            model="qwen/qwen3.6-35b-a3b",
+            messages=[{"role": "user", "content": "Hi"}],
+            base_url="https://api.example.com/v1",
+        )
+        assert kw["model"] == "qwen/qwen3.6-35b-a3b"
+
+
 class TestChatCompletionsLmStudioReasoning:
     """LM Studio publishes per-model reasoning ``allowed_options``. When the
     user requests an effort the model can't honor (e.g. ``high`` on a

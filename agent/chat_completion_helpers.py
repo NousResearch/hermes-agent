@@ -1876,8 +1876,15 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             _cnr_sum = _ct_sum.normalize_response(summary_response)
             final_response = (_cnr_sum.content or "").strip()
         else:
+            # LM Studio routes bare-name requests to the oldest resident
+            # instance, so — like the message sanitization above — this
+            # transport-bypassing path must apply the instance substitution
+            # itself. lmstudio_request_model() returns the model unchanged for
+            # every non-LM-Studio endpoint and when no instance is claimed.
+            from hermes_cli.models import lmstudio_request_model
+            _summary_model = lmstudio_request_model(agent.model, agent.base_url)
             summary_kwargs = {
-                "model": agent.model,
+                "model": _summary_model,
                 "messages": api_messages,
             }
             if _summary_temperature is not None:
@@ -1978,8 +1985,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_retry_result.content or "").strip()
             else:
+                from hermes_cli.models import lmstudio_request_model
                 summary_kwargs = {
-                    "model": agent.model,
+                    "model": lmstudio_request_model(agent.model, agent.base_url),
                     "messages": api_messages,
                 }
                 if _summary_temperature is not None:

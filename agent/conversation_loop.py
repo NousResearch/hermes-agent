@@ -79,6 +79,27 @@ logger = logging.getLogger(__name__)
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def _should_recover_stale_routed_lmstudio(status_code, sent_model, agent_model) -> bool:
+    """True when a 404 indicates a routed LM Studio instance has vanished.
+
+    Hermes stacks its own LM Studio instance under ``lmstudio_unload_policy:
+    never`` and addresses requests to that instance id. When the sent model
+    differs from the agent's configured model, a routing substitution was
+    applied; a 404 on that request means the stacked instance is gone. The
+    caller clears the stale claim and retries once with the base name.
+
+    (LM Studio itself does not 404 a vanished instance — it silently reroutes
+    to a resident model — so this is defense-in-depth for spec-compliant
+    servers and proxies. The primary staleness guard is the catalog check in
+    ``ensure_lmstudio_model_loaded``.)
+    """
+    if status_code != 404:
+        return False
+    sent = str(sent_model or "").strip()
+    base = str(agent_model or "").strip()
+    return bool(sent and base and sent != base)
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -2689,6 +2710,28 @@ def run_conversation(
                     retryable=classified.retryable,
                     reason=classified.reason.value,
                 )
+
+                if (
+                    not _retry.lmstudio_stale_instance_recovered
+                    and _should_recover_stale_routed_lmstudio(
+                        classified.status_code,
+                        api_kwargs.get("model") if isinstance(api_kwargs, dict) else None,
+                        getattr(agent, "model", "") or "",
+                    )
+                ):
+                    from hermes_cli.models import clear_lmstudio_routed_instance
+
+                    if clear_lmstudio_routed_instance(agent.model, agent.base_url):
+                        # The next loop iteration rebuilds api_kwargs, and with
+                        # the claim cleared lmstudio_request_model() now returns
+                        # the base name — so the retry addresses whatever is
+                        # resident instead of the instance that disappeared.
+                        _retry.lmstudio_stale_instance_recovered = True
+                        agent._buffer_vprint(
+                            "⚠️  LM Studio instance is no longer loaded — "
+                            "retrying with the base model name..."
+                        )
+                        continue
 
                 if (
                     classified.reason == FailoverReason.billing

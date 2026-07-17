@@ -347,6 +347,35 @@ class TestQueryLocalContextLengthLmStudio:
 
         assert result == 131072
 
+    def test_lmstudio_mtp_alias_matches_non_mtp_key(self):
+        """MTP display aliases should match the base LM Studio model key."""
+        from agent.model_metadata import _query_local_context_length
+
+        native_resp = self._make_resp(200, {
+            "models": [
+                {
+                    "key": "qwen/qwen3.6-35b-a3b",
+                    "id": "qwen/qwen3.6-35b-a3b",
+                    "loaded_instances": [
+                        {"config": {"context_length": 131072}},
+                    ],
+                },
+            ]
+        })
+        client_mock = self._make_client(
+            native_resp,
+            self._make_resp(404, {}),
+            self._make_resp(404, {}),
+        )
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "qwen3.6-35b-a3b-mtp", "http://localhost:1234/v1"
+            )
+
+        assert result == 131072
+
     def test_lmstudio_v1_models_list_slug_fuzzy_match(self):
         """Fuzzy match also works for /v1/models list when exact match fails.
 
@@ -755,6 +784,32 @@ class TestGetModelContextLengthLocalFallback:
             result = get_model_context_length(model, base, provider="custom")
 
         assert result == 32768
+        mock_save.assert_not_called()
+
+    def test_lmstudio_local_endpoint_bypasses_stale_persistent_cache(self):
+        """LM Studio context is runtime state, so stale disk cache must not win."""
+        from agent.model_metadata import get_model_context_length
+
+        with patch("agent.model_metadata.get_cached_context_length", return_value=16384) as mock_cache, \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.model_metadata._is_custom_endpoint", return_value=False), \
+             patch("agent.model_metadata.is_local_endpoint", return_value=True), \
+             patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio") as mock_detect, \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None), \
+             patch("agent.model_metadata._query_local_context_length", return_value=131072), \
+             patch("agent.model_metadata.save_context_length") as mock_save:
+            result = get_model_context_length(
+                "qwen3.6-35b-a3b-mtp",
+                "http://localhost:1234/v1",
+                api_key="lm-token",
+                provider="custom",
+            )
+
+        assert result == 131072
+        mock_cache.assert_not_called()
+        mock_detect.assert_any_call("http://localhost:1234/v1", api_key="lm-token")
         mock_save.assert_not_called()
 
     def test_local_endpoint_server_returns_none_falls_back_to_2m(self):

@@ -487,3 +487,107 @@ class TestKeyStabilityAcrossDays:
         assert json.loads(day2["source_dates"]) == ["2026-07-14", "2026-07-15"]
         assert day2["first_seen"] == "2026-07-14"  # unchanged
         assert day2["last_seen"] == "2026-07-15"  # advanced
+
+
+# ---------------------------------------------------------------------------
+# get_stale_todos
+# ---------------------------------------------------------------------------
+
+_MOCK_TODAY = "2026-07-17"
+_EXPECTED_KEYS = {"key", "text", "priority", "recurring", "source_dates", "first_seen", "last_seen"}
+
+
+@pytest.fixture()
+def mock_today(monkeypatch):
+    monkeypatch.setattr("plugins.life_ops.todo_store._today_str", lambda: _MOCK_TODAY)
+
+
+class TestGetStaleTodos:
+    """AC: get_stale_todos(threshold_days=5) — issue #64."""
+
+    def _seed(self, key, last_seen, *, text="fake task", priority="medium", recurring=False):
+        ts.upsert_from_contract(
+            [_item(key, text=text, priority=priority, recurring=recurring)], last_seen
+        )
+
+    # AC: stale todo (last_seen strictly older than threshold) is returned
+    def test_stale_todo_is_returned(self, tmp_path, mock_today):
+        self._seed("stale-key", "2026-07-07")  # 10 days before mock today
+        result = ts.get_stale_todos(threshold_days=5)
+        assert len(result) == 1
+        assert result[0]["key"] == "stale-key"
+
+    # AC: todos within the threshold are excluded
+    def test_recent_todo_is_excluded(self, tmp_path, mock_today):
+        self._seed("fresh-key", "2026-07-14")  # 3 days before mock today
+        result = ts.get_stale_todos(threshold_days=5)
+        assert result == []
+
+    # AC: boundary — last_seen exactly at cutoff is NOT stale (strictly older required)
+    def test_boundary_exactly_at_threshold_is_excluded(self, tmp_path, mock_today):
+        self._seed("boundary-key", "2026-07-12")  # exactly 5 days before mock today
+        result = ts.get_stale_todos(threshold_days=5)
+        assert result == []
+
+    # AC: results are sorted oldest-first by last_seen
+    def test_sort_order_oldest_first(self, tmp_path, mock_today):
+        self._seed("seven-days", "2026-07-10", text="7 days ago")
+        self._seed("fifteen-days", "2026-07-02", text="15 days ago")
+        self._seed("ten-days", "2026-07-07", text="10 days ago")
+        result = ts.get_stale_todos(threshold_days=5)
+        assert [d["key"] for d in result] == ["fifteen-days", "ten-days", "seven-days"]
+
+    # AC: returns [] when store is empty
+    def test_empty_store(self, tmp_path, mock_today):
+        result = ts.get_stale_todos()
+        assert result == []
+
+    # AC: returns [] when all todos are fresh
+    def test_all_fresh_returns_empty(self, tmp_path, mock_today):
+        self._seed("fresh-1", "2026-07-16")
+        self._seed("fresh-2", "2026-07-15")
+        result = ts.get_stale_todos(threshold_days=5)
+        assert result == []
+
+    # AC: recurring todos are NOT exempt; included if last_seen exceeds threshold
+    def test_recurring_todo_is_eligible(self, tmp_path, mock_today):
+        self._seed("recur-key", "2026-07-09", recurring=True)  # 8 days ago
+        result = ts.get_stale_todos(threshold_days=5)
+        assert len(result) == 1
+        assert result[0]["key"] == "recur-key"
+        assert result[0]["recurring"] is True
+
+    # AC: every returned dict contains exactly the required keys
+    def test_row_shape_matches_get_open_todos(self, tmp_path, mock_today):
+        self._seed("shape-key", "2026-07-07")
+        result = ts.get_stale_todos(threshold_days=5)
+        assert len(result) == 1
+        assert set(result[0].keys()) == _EXPECTED_KEYS
+
+    # AC: default parameter behaves as threshold_days=5
+    def test_default_parameter_is_five_days(self, tmp_path, mock_today):
+        self._seed("six-days-ago", "2026-07-11")  # 6 days before mock today
+        result_default = ts.get_stale_todos()
+        result_explicit = ts.get_stale_todos(threshold_days=5)
+        assert result_default == result_explicit
+        assert len(result_default) == 1
+
+    # AC: only open todos are included — closed/snoozed are excluded even if stale
+    def test_closed_stale_todos_are_excluded(self, tmp_path, mock_today):
+        self._seed("old-done", "2026-07-01")
+        self._seed("old-dismissed", "2026-07-01")
+        self._seed("old-snoozed", "2026-07-01")
+        ts.close_todo("old-done", "done", "test")
+        ts.close_todo("old-dismissed", "dismiss", "test")
+        ts.close_todo("old-snoozed", "snooze", "test", snooze_until="2026-08-01")
+        result = ts.get_stale_todos(threshold_days=5)
+        assert result == []
+
+    # AC: get_open_todos() and all other existing function signatures are unmodified
+    def test_get_open_todos_unmodified(self, tmp_path, mock_today):
+        self._seed("open-key", "2026-07-16")
+        self._seed("stale-open", "2026-07-07")
+        open_todos = ts.get_open_todos()
+        assert len(open_todos) == 2
+        for d in open_todos:
+            assert set(d.keys()) == _EXPECTED_KEYS

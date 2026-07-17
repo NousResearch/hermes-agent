@@ -126,6 +126,10 @@ def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat()
 
 
+def _today_str() -> str:
+    return _dt.date.today().isoformat()
+
+
 def _coerce_str(value: object) -> str | None:
     if value is None:
         return None
@@ -431,6 +435,50 @@ def get_open_keys() -> list[dict]:
     for the Discord select menu / journal's ``OPEN_KEYS`` injection.
     """
     return [{"key": d["key"], "text": d["text"]} for d in get_open_todos()]
+
+
+def get_stale_todos(threshold_days: int = 5) -> list[dict]:
+    """Open todos whose ``last_seen`` is strictly older than ``threshold_days`` days ago.
+
+    Returns the same per-item dict shape as :func:`get_open_todos` (keys:
+    ``key``, ``text``, ``priority``, ``recurring``, ``source_dates``,
+    ``first_seen``, ``last_seen``), sorted oldest-first by ``last_seen``.
+    Closed and snoozed todos are never returned regardless of age.
+    Returns ``[]`` when the store is empty or no open todo exceeds the threshold.
+    """
+    cutoff = (
+        _dt.date.fromisoformat(_today_str()) - _dt.timedelta(days=threshold_days)
+    ).isoformat()
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT key, text, priority, recurring, source_dates, first_seen, last_seen "
+            "FROM todos WHERE status='open' AND last_seen < ?",
+            (cutoff,),
+        ).fetchall()
+    finally:
+        conn.close()
+    items: list[dict] = []
+    for r in rows:
+        try:
+            source_dates = json.loads(r["source_dates"]) if r["source_dates"] else []
+        except (TypeError, ValueError):
+            source_dates = []
+        if not isinstance(source_dates, list):
+            source_dates = []
+        items.append(
+            {
+                "key": r["key"],
+                "text": r["text"],
+                "priority": r["priority"],
+                "recurring": bool(r["recurring"]),
+                "source_dates": [d for d in source_dates if isinstance(d, str)],
+                "first_seen": r["first_seen"],
+                "last_seen": r["last_seen"],
+            }
+        )
+    items.sort(key=lambda d: d["last_seen"] or "")
+    return items
 
 
 def get_closed_keys() -> list[str]:

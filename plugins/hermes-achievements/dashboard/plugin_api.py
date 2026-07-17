@@ -599,64 +599,88 @@ def scan_sessions(
     # requests a small sample (e.g. a smoke test).
     db_limit = -1 if (limit is None or limit <= 0) else int(limit)
 
-    db = SessionDB()
-    try:
-        sessions_meta = db.list_sessions_rich(limit=db_limit, include_children=True, project_compression_tips=False)
-        total_sessions = len(sessions_meta)
-        sessions: List[Dict[str, Any]] = []
-        checkpoint_sessions: Dict[str, Any] = {}
-        for idx, meta in enumerate(sessions_meta, start=1):
-            sid = meta.get("id")
-            if not sid:
-                continue
-            fp = session_fingerprint(meta)
-            cached = previous_sessions.get(sid) if isinstance(previous_sessions, dict) else None
-            cached_stats = cached.get("stats") if isinstance(cached, dict) else None
-            cached_fp = cached.get("fingerprint") if isinstance(cached, dict) else None
+    base_home = get_hermes_home()
+    profile_homes = [base_home]
+    profiles_root = base_home / "profiles"
+    if profiles_root.is_dir():
+        profile_homes.extend(
+            entry for entry in sorted(profiles_root.iterdir())
+            if entry.is_dir() and (entry / "state.db").is_file()
+        )
 
-            if isinstance(cached_stats, dict) and cached_fp == fp:
-                stats = dict(cached_stats)
-                reused += 1
-            else:
-                messages = db.get_messages(sid)
-                stats = analyze_messages(sid, meta.get("title") or meta.get("preview") or "Untitled", messages)
-                rescanned += 1
+    sessions: List[Dict[str, Any]] = []
+    checkpoint_sessions: Dict[str, Any] = {}
+    total_sessions = 0
+    scanned_so_far = 0
+    for profile_home in profile_homes:
+        profile_name = "default" if profile_home == base_home else profile_home.name
+        db = (
+            SessionDB()
+            if profile_home == base_home
+            else SessionDB(profile_home / "state.db", read_only=True)
+        )
+        try:
+            sessions_meta = db.list_sessions_rich(
+                limit=db_limit,
+                include_children=True,
+                project_compression_tips=False,
+            )
+            total_sessions += len(sessions_meta)
+            for meta in sessions_meta:
+                sid = meta.get("id")
+                if not sid:
+                    continue
+                cache_id = f"{profile_name}:{sid}"
+                fp = session_fingerprint(meta)
+                cached = previous_sessions.get(cache_id) if isinstance(previous_sessions, dict) else None
+                cached_stats = cached.get("stats") if isinstance(cached, dict) else None
+                cached_fp = cached.get("fingerprint") if isinstance(cached, dict) else None
 
-            stats["session_id"] = sid
-            stats["title"] = meta.get("title") or meta.get("preview") or stats.get("title") or "Untitled"
-            stats["started_at"] = meta.get("started_at")
-            stats["last_active"] = meta.get("last_active")
-            stats["source"] = meta.get("source")
-            if meta.get("model"):
-                stats.setdefault("model_names", set())
-                if isinstance(stats["model_names"], set):
-                    stats["model_names"].add(str(meta.get("model")))
-                elif isinstance(stats["model_names"], list):
-                    if str(meta.get("model")) not in stats["model_names"]:
-                        stats["model_names"].append(str(meta.get("model")))
+                if isinstance(cached_stats, dict) and cached_fp == fp:
+                    stats = dict(cached_stats)
+                    reused += 1
                 else:
-                    stats["model_names"] = {str(meta.get("model"))}
+                    messages = db.get_messages(sid)
+                    stats = analyze_messages(sid, meta.get("title") or meta.get("preview") or "Untitled", messages)
+                    rescanned += 1
 
-            sessions.append(stats)
-            checkpoint_sessions[sid] = {"fingerprint": fp, "stats": _json_safe(stats)}
+                stats["session_id"] = cache_id
+                stats["profile"] = profile_name
+                stats["title"] = meta.get("title") or meta.get("preview") or stats.get("title") or "Untitled"
+                stats["started_at"] = meta.get("started_at")
+                stats["last_active"] = meta.get("last_active")
+                stats["source"] = meta.get("source")
+                if meta.get("model"):
+                    stats.setdefault("model_names", set())
+                    if isinstance(stats["model_names"], set):
+                        stats["model_names"].add(str(meta.get("model")))
+                    elif isinstance(stats["model_names"], list):
+                        if str(meta.get("model")) not in stats["model_names"]:
+                            stats["model_names"].append(str(meta.get("model")))
+                    else:
+                        stats["model_names"] = {str(meta.get("model"))}
 
-            if progress_callback is not None and progress_every > 0 and (idx % progress_every == 0) and idx < total_sessions:
-                try:
-                    progress_callback(list(sessions), idx, total_sessions)
-                except Exception:
-                    # Progress callbacks are advisory — a broken publisher
-                    # must never abort the scan itself.
-                    pass
+                sessions.append(stats)
+                checkpoint_sessions[cache_id] = {"fingerprint": fp, "stats": _json_safe(stats)}
+                scanned_so_far += 1
+                if (
+                    progress_callback is not None
+                    and progress_every > 0
+                    and scanned_so_far % progress_every == 0
+                    and scanned_so_far < total_sessions
+                ):
+                    try:
+                        progress_callback(list(sessions), scanned_so_far, total_sessions)
+                    except Exception:
+                        pass
+        finally:
+            db.close()
 
-        save_checkpoint({
-            "schema_version": 1,
-            "generated_at": int(time.time()),
-            "sessions": checkpoint_sessions,
-        })
-    finally:
-        close = getattr(db, "close", None)
-        if close:
-            close()
+    save_checkpoint({
+        "schema_version": 1,
+        "generated_at": int(time.time()),
+        "sessions": checkpoint_sessions,
+    })
     return {
         "sessions": sessions,
         "aggregate": aggregate_stats(sessions),

@@ -18,6 +18,19 @@ delegate_task(
 )
 ```
 
+Top-level delegations default to `background=True`: Hermes returns a handle
+immediately and posts the child result back into the conversation when it
+finishes. If the current turn must wait for the child result before finalizing
+(for example a cron job or a one-turn synthesis), pass `background=False`:
+
+```python
+delegate_task(
+    goal="Critique this provisional recommendation before I finalize",
+    context="...",
+    background=False,
+)
+```
+
 ## Parallel Batch
 
 Up to 3 concurrent subagents by default (configurable, no hard ceiling):
@@ -119,7 +132,11 @@ delegate_task(
 
 ## Batch Mode Details
 
-When you provide a `tasks` array, subagents run in **parallel** using a thread pool:
+When you provide a `tasks` array, subagents run in **parallel**. With the
+top-level default (`background=True`), Hermes dispatches the batch and returns a
+handle immediately; the consolidated result re-enters the conversation when all
+children finish. With `background=False` (or from an orchestrator subagent), the
+parent waits and the children run in a thread pool:
 
 - **Maximum concurrency:** 3 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
@@ -127,7 +144,7 @@ When you provide a `tasks` array, subagents run in **parallel** using a thread p
 - **Result ordering:** Results are sorted by task index to match input order regardless of completion order
 - **Interrupt propagation:** Interrupting the parent (e.g., sending a new message) interrupts all active children
 
-Single-task delegation runs directly without thread pool overhead.
+Synchronous single-task delegation runs directly without thread pool overhead.
 
 ### Durable background completions
 
@@ -240,11 +257,17 @@ delegate_task(
 
 ## Lifetime and Durability
 
-:::warning Background completion durability is not durable execution
-By default, `delegate_task` runs **inside the parent's current turn** and blocks until every child finishes. With `background=true`, the child may continue after that turn returns while the owning session and Hermes process remain alive:
+:::warning delegate_task is not durable
+Top-level model-facing `delegate_task` calls default to `background=True`: the
+parent returns a dispatch handle immediately and the child result re-enters the
+conversation when it finishes. Pass `background=False` when the parent must block
+until every child finishes (or is cancelled) before the current turn can finalize.
+
+Either mode is **process-local** and is not a durable background job queue:
 
 - If the parent is interrupted (user sends a new message, `/stop`, `/new`), all active children are cancelled and return `status="interrupted"`. Their in-progress work is discarded.
 - Explicit session close/reset interrupts that session's background children. Closing a TUI viewer of a gateway-owned session does not kill the gateway's work.
+- Foreground children do **not** continue running after the parent turn ends.
 - A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened.
 - A child that completed before restart but whose result was not delivered is restored and routed back through the owning session's normal checks.
 - Cancelled children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the parent was interrupted too, that result often never makes it into a user-visible reply.

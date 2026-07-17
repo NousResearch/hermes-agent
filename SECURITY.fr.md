@@ -356,7 +356,7 @@ l'agent va ingérer. Au-delà de cela :
   journal d'audit d'installation constituent la surface de revue.
 - Hermes Agent inclut des garde-fous de chaîne d'approvisionnement pour
   le lancement des serveurs MCP et pour les changements de dépendances
-  / paquets embarqués en CI ; voir `CONTRIBUTING.md` pour les détails.
+  / paquets embarqués en CI ; voir `CONTRIBUTING.fr.md` pour les détails.
 
 ---
 

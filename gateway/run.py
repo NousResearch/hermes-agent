@@ -21602,156 +21602,187 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception as e:
         logger.debug("MCP tool discovery failed: %s", e)
 
-    # Start the gateway
-    success = await runner.start()
-    if not success:
-        return False
-    if runner.should_exit_cleanly:
-        if runner.exit_reason:
-            logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
-        # A clean exit that carries an explicit exit code (e.g. a fatal
-        # config error stamped with GATEWAY_FATAL_CONFIG_EXIT_CODE) must
-        # propagate that code to the process so the s6 finish script can
-        # translate it (78 → 125) and stop the supervisor restart loop.
-        # Without this, the early `return True` below makes main() exit 0,
-        # the finish script's `[ "$1" = "78" ]` check never matches, and
-        # s6 crash-loops the gateway anyway (#51228).
-        if runner.exit_code is not None:
-            raise SystemExit(runner.exit_code)
-        return True
-    if not runner._running:
-        # Startup was intentionally aborted by restart/shutdown before entering
-        # running mode; preserve that lifecycle path without starting cron.
+    # Start monitoring only after this process owns the gateway lock. Every
+    # subsequent lifecycle exit is covered by the finally block below.
+    _memory_monitor_started = False
+    try:
+        from gateway import memory_monitor as _memory_monitor
+
+        _mm_cfg = {}
+        try:
+            from hermes_cli.config import load_config as _load_cli_config
+
+            _mm_cfg = (_load_cli_config() or {}).get("logging", {}).get("memory_monitor", {}) or {}
+        except Exception:
+            pass
+        if _mm_cfg.get("enabled", True):
+            try:
+                _mm_interval = float(_mm_cfg.get("interval_seconds", 300))
+            except (TypeError, ValueError):
+                _mm_interval = 300.0
+            _memory_monitor_started = bool(
+                _memory_monitor.start_memory_monitoring(interval_seconds=_mm_interval)
+            )
+    except Exception as _mm_exc:
+        logger.debug("Failed to start memory monitor: %s", _mm_exc)
+
+    try:
+        # Start the gateway
+        success = await runner.start()
+        if not success:
+            return False
+        if runner.should_exit_cleanly:
+            if runner.exit_reason:
+                logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
+            # A clean exit that carries an explicit exit code (e.g. a fatal
+            # config error stamped with GATEWAY_FATAL_CONFIG_EXIT_CODE) must
+            # propagate that code to the process so the s6 finish script can
+            # translate it (78 → 125) and stop the supervisor restart loop.
+            # Without this, the early `return True` below makes main() exit 0,
+            # the finish script's `[ "$1" = "78" ]` check never matches, and
+            # s6 crash-loops the gateway anyway (#51228).
+            if runner.exit_code is not None:
+                raise SystemExit(runner.exit_code)
+            return True
+        if not runner._running:
+            # Startup was intentionally aborted by restart/shutdown before entering
+            # running mode; preserve that lifecycle path without starting cron.
+            await runner.wait_for_shutdown()
+            if runner.should_exit_with_failure:
+                if runner.exit_reason:
+                    logger.error("Gateway exiting with failure: %s", runner.exit_reason)
+                return False
+            try:
+                from tools.mcp_tool import shutdown_mcp_servers
+                shutdown_mcp_servers()
+            except Exception:
+                pass
+            if runner.exit_code is not None:
+                raise SystemExit(runner.exit_code)
+            return True
+        
+        # Start the background cron scheduler via the resolved provider so
+        # scheduled jobs fire automatically. The built-in provider is the
+        # historical in-process 60s ticker; an external provider (e.g. chronos)
+        # may arm a schedule and return. Pass the event loop so cron delivery can
+        # use live adapters (E2EE support).
+        from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
+        cron_stop = threading.Event()
+        cron_provider = resolve_cron_scheduler()
+        cron_start_kwargs = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
+        # External cron providers own their remote scheduling contract. Only the
+        # in-process ticker polls local due jobs, so only it receives the local
+        # external-drain dispatch gate.
+        if isinstance(cron_provider, InProcessCronScheduler):
+            cron_start_kwargs["can_dispatch"] = lambda: not (
+                runner._draining or runner._external_drain_active
+            )
+        cron_thread = threading.Thread(
+            target=cron_provider.start,
+            args=(cron_stop,),
+            kwargs=cron_start_kwargs,
+            daemon=True,
+            name="cron-scheduler",
+        )
+        cron_thread.start()
+    
+        # Gateway-only periodic housekeeping (channel dir, cache cleanup, paste
+        # sweep, curator) — runs independently of which cron provider is active.
+        # Shares cron_stop as the shutdown signal.
+        housekeeping_thread = threading.Thread(
+            target=_start_gateway_housekeeping,
+            args=(cron_stop,),
+            kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+            daemon=True,
+            name="gateway-housekeeping",
+        )
+        housekeeping_thread.start()
+        
+        # Wait for shutdown
         await runner.wait_for_shutdown()
+    
+        try:
+            from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive
+    
+            stop_nous_auth_keepalive()
+        except Exception:
+            pass
+    
         if runner.should_exit_with_failure:
             if runner.exit_reason:
                 logger.error("Gateway exiting with failure: %s", runner.exit_reason)
             return False
+        
+        # Stop cron scheduler + housekeeping cleanly.
+        #
+        # These MUST be awaited cooperatively, not join()ed. A cron delivery in
+        # flight when the gateway restarts is a coroutine scheduled onto THIS event
+        # loop (safe_schedule_threadsafe); the ticker thread is blocked on its
+        # future.result(). A synchronous cron_thread.join() would block the loop,
+        # so that delivery could never run — it timed out and the message was
+        # silently dropped (#58818). Awaiting keeps the loop alive so the in-flight
+        # delivery finishes before we tear down.
+        cron_stop.set()
+        try:
+            cron_provider.stop()
+        except Exception as e:
+            logger.debug("Cron provider stop() error: %s", e)
+        if not await _await_thread_exit(cron_thread, timeout=_CRON_SHUTDOWN_DRAIN_TIMEOUT):
+            logger.warning(
+                "Cron ticker did not exit within %.0fs of shutdown — an in-flight "
+                "delivery may have been dropped.", _CRON_SHUTDOWN_DRAIN_TIMEOUT,
+            )
+        await _await_thread_exit(
+            housekeeping_thread, timeout=_HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT
+        )
+    
+        # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
+        _planned_stop_watcher_stop.set()
+        _planned_stop_watcher_thread.join(timeout=2)
+    
+        # Close MCP server connections
         try:
             from tools.mcp_tool import shutdown_mcp_servers
             shutdown_mcp_servers()
         except Exception:
             pass
+    
         if runner.exit_code is not None:
             raise SystemExit(runner.exit_code)
+    
+        # When an unexpected SIGTERM caused the shutdown and it wasn't a planned
+        # restart (/restart, /update, SIGUSR1), exit non-zero so systemd's
+        # Restart=on-failure revives the process.  This covers:
+        #   - hermes update killing the gateway mid-work
+        #   - External kill commands
+        #   - WSL2/container runtime sending unexpected signals
+        # `hermes gateway stop` and interactive Ctrl+C are handled above as
+        # planned stops and should not trigger service-manager revival.
+        if _signal_initiated_shutdown and not runner._restart_requested:
+            logger.info(
+                "Exiting with code 1 (signal-initiated shutdown without restart "
+                "request) so systemd Restart=on-failure can revive the gateway."
+            )
+            return False  # → sys.exit(1) in the caller
+    
+        # Older restart paths may reach here without ``runner.exit_code`` set.
+        # Keep the historical non-zero fallback for service-managed restarts.
+        if runner._restart_via_service:
+            logger.info(
+                "Exiting with code 75 (service-restart requested) so the service "
+                "manager relaunches the gateway."
+            )
+            raise SystemExit(75)
+    
         return True
     
-    # Start the background cron scheduler via the resolved provider so
-    # scheduled jobs fire automatically. The built-in provider is the
-    # historical in-process 60s ticker; an external provider (e.g. chronos)
-    # may arm a schedule and return. Pass the event loop so cron delivery can
-    # use live adapters (E2EE support).
-    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
-    cron_stop = threading.Event()
-    cron_provider = resolve_cron_scheduler()
-    cron_start_kwargs = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
-    # External cron providers own their remote scheduling contract. Only the
-    # in-process ticker polls local due jobs, so only it receives the local
-    # external-drain dispatch gate.
-    if isinstance(cron_provider, InProcessCronScheduler):
-        cron_start_kwargs["can_dispatch"] = lambda: not (
-            runner._draining or runner._external_drain_active
-        )
-    cron_thread = threading.Thread(
-        target=cron_provider.start,
-        args=(cron_stop,),
-        kwargs=cron_start_kwargs,
-        daemon=True,
-        name="cron-scheduler",
-    )
-    cron_thread.start()
-
-    # Gateway-only periodic housekeeping (channel dir, cache cleanup, paste
-    # sweep, curator) — runs independently of which cron provider is active.
-    # Shares cron_stop as the shutdown signal.
-    housekeeping_thread = threading.Thread(
-        target=_start_gateway_housekeeping,
-        args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
-        daemon=True,
-        name="gateway-housekeeping",
-    )
-    housekeeping_thread.start()
     
-    # Wait for shutdown
-    await runner.wait_for_shutdown()
-
-    try:
-        from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive
-
-        stop_nous_auth_keepalive()
-    except Exception:
-        pass
-
-    if runner.should_exit_with_failure:
-        if runner.exit_reason:
-            logger.error("Gateway exiting with failure: %s", runner.exit_reason)
-        return False
-    
-    # Stop cron scheduler + housekeeping cleanly.
-    #
-    # These MUST be awaited cooperatively, not join()ed. A cron delivery in
-    # flight when the gateway restarts is a coroutine scheduled onto THIS event
-    # loop (safe_schedule_threadsafe); the ticker thread is blocked on its
-    # future.result(). A synchronous cron_thread.join() would block the loop,
-    # so that delivery could never run — it timed out and the message was
-    # silently dropped (#58818). Awaiting keeps the loop alive so the in-flight
-    # delivery finishes before we tear down.
-    cron_stop.set()
-    try:
-        cron_provider.stop()
-    except Exception as e:
-        logger.debug("Cron provider stop() error: %s", e)
-    if not await _await_thread_exit(cron_thread, timeout=_CRON_SHUTDOWN_DRAIN_TIMEOUT):
-        logger.warning(
-            "Cron ticker did not exit within %.0fs of shutdown — an in-flight "
-            "delivery may have been dropped.", _CRON_SHUTDOWN_DRAIN_TIMEOUT,
-        )
-    await _await_thread_exit(
-        housekeeping_thread, timeout=_HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT
-    )
-
-    # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
-    _planned_stop_watcher_stop.set()
-    _planned_stop_watcher_thread.join(timeout=2)
-
-    # Close MCP server connections
-    try:
-        from tools.mcp_tool import shutdown_mcp_servers
-        shutdown_mcp_servers()
-    except Exception:
-        pass
-
-    if runner.exit_code is not None:
-        raise SystemExit(runner.exit_code)
-
-    # When an unexpected SIGTERM caused the shutdown and it wasn't a planned
-    # restart (/restart, /update, SIGUSR1), exit non-zero so systemd's
-    # Restart=on-failure revives the process.  This covers:
-    #   - hermes update killing the gateway mid-work
-    #   - External kill commands
-    #   - WSL2/container runtime sending unexpected signals
-    # `hermes gateway stop` and interactive Ctrl+C are handled above as
-    # planned stops and should not trigger service-manager revival.
-    if _signal_initiated_shutdown and not runner._restart_requested:
-        logger.info(
-            "Exiting with code 1 (signal-initiated shutdown without restart "
-            "request) so systemd Restart=on-failure can revive the gateway."
-        )
-        return False  # → sys.exit(1) in the caller
-
-    # Older restart paths may reach here without ``runner.exit_code`` set.
-    # Keep the historical non-zero fallback for service-managed restarts.
-    if runner._restart_via_service:
-        logger.info(
-            "Exiting with code 75 (service-restart requested) so the service "
-            "manager relaunches the gateway."
-        )
-        raise SystemExit(75)
-
-    return True
-
-
+    finally:
+        if _memory_monitor_started:
+            try:
+                _memory_monitor.stop_memory_monitoring(timeout=2.0)
+            except Exception:
+                pass
 def main():
     """CLI entry point for the gateway."""
     # Force UTF-8 stdio on Windows — gateway logs and startup banner would

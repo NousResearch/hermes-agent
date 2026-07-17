@@ -177,6 +177,59 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("enabled", "startup_success"),
+    [
+        pytest.param(True, True, id="clean-early-exit"),
+        pytest.param(True, False, id="failed-early-exit"),
+        pytest.param(False, True, id="disabled"),
+    ],
+)
+async def test_start_gateway_manages_memory_monitor_across_early_exits(
+    monkeypatch, tmp_path, enabled, startup_success
+):
+    """A monitor started for a gateway must stop for every startup outcome."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    calls = []
+
+    class _EarlyExitRunner:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = startup_success
+            self.exit_reason = None
+            self.exit_code = None
+            self.adapters = {}
+
+        async def start(self):
+            return startup_success
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _EarlyExitRunner)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"logging": {"memory_monitor": {"enabled": enabled, "interval_seconds": 17}}},
+    )
+    monkeypatch.setattr(
+        "gateway.memory_monitor.start_memory_monitoring",
+        lambda *, interval_seconds: calls.append(("start", interval_seconds)) or True,
+    )
+    monkeypatch.setattr(
+        "gateway.memory_monitor.stop_memory_monitoring",
+        lambda *, timeout: calls.append(("stop", timeout)),
+    )
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
+
+    assert ok is startup_success
+    assert calls == ([('start', 17.0), ('stop', 2.0)] if enabled else [])
+
+
+@pytest.mark.asyncio
 async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

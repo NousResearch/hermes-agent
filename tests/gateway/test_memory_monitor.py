@@ -15,6 +15,15 @@ import pytest
 from gateway import memory_monitor as mm
 
 
+def test_default_config_enables_memory_monitoring():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["logging"]["memory_monitor"] == {
+        "enabled": True,
+        "interval_seconds": 300,
+    }
+
+
 @pytest.fixture(autouse=True)
 def _ensure_monitor_stopped():
     """Every test starts from a clean state and leaves one behind."""

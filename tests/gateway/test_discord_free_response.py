@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+import os
 import sys
 
 import pytest
@@ -109,6 +110,7 @@ def adapter(monkeypatch):
         "DISCORD_REQUIRE_MENTION",
         "DISCORD_THREAD_REQUIRE_MENTION",
         "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_FORCE_THREAD_CHANNELS",
         "DISCORD_AUTO_THREAD",
         "DISCORD_NO_THREAD_CHANNELS",
         "DISCORD_ALLOWED_CHANNELS",
@@ -315,6 +317,24 @@ def test_discord_free_response_channels_int_list(adapter, monkeypatch):
     adapter.config.extra["free_response_channels"] = [1491973769726791812, 99999]
 
     assert adapter._discord_free_response_channels() == {"1491973769726791812", "99999"}
+
+
+def test_discord_force_thread_channels_bare_int(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_FORCE_THREAD_CHANNELS", raising=False)
+    adapter.config.extra["force_thread_channels"] = 1491973769726791812
+
+    assert adapter._discord_force_thread_channels() == {"1491973769726791812"}
+
+
+def test_discord_force_thread_channels_yaml_bridge(monkeypatch):
+    monkeypatch.delenv("DISCORD_FORCE_THREAD_CHANNELS", raising=False)
+
+    discord_platform._apply_yaml_config(
+        {"discord": {"force_thread_channels": [1491973769726791812, "#intake"]}},
+        {"force_thread_channels": [1491973769726791812, "#intake"]},
+    )
+
+    assert os.environ["DISCORD_FORCE_THREAD_CHANNELS"] == "1491973769726791812,#intake"
 
 
 @pytest.mark.asyncio
@@ -656,17 +676,16 @@ async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_t
 
 @pytest.mark.asyncio
 async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypatch):
-    """Free-response channels should reply inline, never spawn a new thread.
+    """Free-response channels should reply inline by default.
 
-    Without this, every message in a free-response channel would auto-create
-    a fresh thread (since the channel bypasses the @mention gate, every
-    message looks like a fresh trigger).  That turns a "lightweight chat"
-    channel into a thread-spawning machine — see the docs at
-    website/docs/user-guide/messaging/discord.md which already describe
-    this as the intended behavior.
+    Without this default, every message in a free-response channel would
+    auto-create a fresh thread. That turns a "lightweight chat" channel into a
+    thread-spawning machine — see the Discord messaging docs which describe
+    inline replies as the free-response contract.
     """
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_FORCE_THREAD_CHANNELS", raising=False)
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
 
     adapter._auto_create_thread = AsyncMock()
@@ -684,6 +703,83 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
     assert event.text == "casual chat in free-response channel"
     assert event.source.chat_type == "group"
 
+
+@pytest.mark.asyncio
+async def test_discord_force_thread_channel_threads_free_response(adapter, monkeypatch):
+    """force_thread_channels opts selected free-response channels back into threads."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+
+    fake_thread = FakeThread(channel_id=555, name="auto-thread", parent=FakeTextChannel(channel_id=789))
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="threaded intake without mention",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.chat_id == "555"
+    assert event.source.thread_id == "555"
+    assert event.source.parent_chat_id == "789"
+
+
+@pytest.mark.asyncio
+async def test_discord_force_thread_channel_can_come_from_config_extra(adapter, monkeypatch):
+    """force_thread_channels accepts config.extra list values like other channel gates."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_FORCE_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    adapter.config.extra["force_thread_channels"] = [789]
+
+    fake_thread = FakeThread(channel_id=556, name="auto-thread", parent=FakeTextChannel(channel_id=789))
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="threaded intake from yaml-style config",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.chat_id == "556"
+
+
+@pytest.mark.asyncio
+async def test_discord_no_thread_overrides_force_thread_channel(adapter, monkeypatch):
+    """no_thread_channels is the stronger inline-reply opt-out."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="forced but explicitly inline",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
 
 
 

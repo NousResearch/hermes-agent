@@ -12,6 +12,7 @@ import pytest
 
 from tests.e2e.conftest import (
     BOT_USER_ID,
+    CHANNEL_ID,
     E2E_MESSAGE_SETTLE_DELAY,
     get_response_text,
     make_discord_message,
@@ -81,6 +82,52 @@ class TestMentionStrippedCommandDispatch:
 
 
 class TestAutoThreadingPreservesCommand:
+    async def test_force_thread_channel_still_auto_threads_free_response(self, discord_adapter, monkeypatch):
+        """Selected mention-free channels can opt back into auto-threading."""
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+        monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", str(CHANNEL_ID))
+        monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", str(CHANNEL_ID))
+        monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+        monkeypatch.delenv("DISCORD_REQUIRE_MENTION", raising=False)
+
+        fake_thread = make_fake_thread(thread_id=90002, name="hello")
+        msg = make_discord_message(content="hello without mention", mentions=[])
+        msg.create_thread = AsyncMock(return_value=fake_thread)
+        discord_adapter._text_batch_delay_seconds = 0
+        discord_adapter.handle_message = AsyncMock()
+
+        await discord_adapter._handle_message(msg)
+
+        msg.create_thread.assert_awaited_once()
+        discord_adapter.handle_message.assert_awaited_once()
+        event = discord_adapter.handle_message.await_args.args[0]
+        assert event.source.chat_type == "thread"
+        assert event.source.chat_id == str(fake_thread.id)
+        assert event.source.thread_id == str(fake_thread.id)
+        assert event.source.parent_chat_id == str(CHANNEL_ID)
+
+    async def test_free_response_channel_can_opt_out_of_auto_threading(self, discord_adapter, monkeypatch):
+        """DISCORD_NO_THREAD_CHANNELS remains the explicit inline-reply opt-out."""
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+        monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", str(CHANNEL_ID))
+        monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", str(CHANNEL_ID))
+        monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", str(CHANNEL_ID))
+        monkeypatch.delenv("DISCORD_REQUIRE_MENTION", raising=False)
+
+        msg = make_discord_message(content="hello inline", mentions=[])
+        msg.create_thread = AsyncMock()
+        discord_adapter._text_batch_delay_seconds = 0
+        discord_adapter.handle_message = AsyncMock()
+
+        await discord_adapter._handle_message(msg)
+
+        msg.create_thread.assert_not_awaited()
+        discord_adapter.handle_message.assert_awaited_once()
+        event = discord_adapter.handle_message.await_args.args[0]
+        assert event.source.chat_type == "group"
+        assert event.source.chat_id == str(CHANNEL_ID)
+        assert event.source.thread_id is None
+
     async def test_command_detected_after_auto_thread(self, discord_adapter, bot_user, monkeypatch):
         """@mention /help in channel with auto-thread → thread created AND command dispatched."""
         monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")

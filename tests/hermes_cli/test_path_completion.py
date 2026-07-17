@@ -1,6 +1,7 @@
 """Tests for file path autocomplete in the CLI completer."""
 
 import os
+import shutil
 from unittest.mock import MagicMock
 
 import pytest
@@ -205,6 +206,31 @@ class TestIntegration:
         names = _display_names(completions)
         # /etc/hosts should exist on Linux
         assert any("host" in n.lower() for n in names)
+
+    @pytest.mark.skipif(shutil.which("rg") is None, reason="rg is required for project file cache tests")
+    def test_bare_at_completion_handles_non_utf8_filenames(self, completer, tmp_path):
+        good = tmp_path / "good.txt"
+        good.write_text("ok", encoding="utf-8")
+
+        bad_path = os.fsencode(tmp_path) + b"/bad-\xff.txt"
+        fd = os.open(bad_path, os.O_WRONLY | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, b"x")
+        finally:
+            os.close(fd)
+
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            doc = Document("@", cursor_position=1)
+            event = MagicMock()
+            completions = list(completer.get_completions(doc, event))
+            texts = [completion.text for completion in completions]
+            assert "@file:good.txt" in texts
+            bad_ref = next(text for text in texts if text.startswith("@file:bad-"))
+            assert os.fsencode(bad_ref.removeprefix("@file:")) == b"bad-\xff.txt"
+        finally:
+            os.chdir(old_cwd)
 
 
 class TestFileSizeLabel:

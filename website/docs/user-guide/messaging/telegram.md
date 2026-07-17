@@ -785,9 +785,40 @@ Every topic gets its own conversation history, model state, tool execution, and 
 
 ### Auto-renamed topics
 
-When Hermes generates a session title for a topic (via the auto-title pipeline, after the first exchange), the Telegram topic itself is renamed to match — e.g. "New Topic" becomes "Database migration plan". The rename is best-effort: failures are logged but don't break the session.
+When Hermes generates a session title for a topic (via the auto-title pipeline, after the first exchange), the Telegram topic itself is renamed to match — e.g. "New Topic" becomes "Database". Titles prefer 1–3 words, favor an explicitly named project or proper name, and avoid filler such as "Fixing", "Update", or "Analysis".
 
-To disable this and keep your manually-chosen topic names untouched, set:
+The title policy is configurable for every Hermes surface:
+
+```yaml
+auxiliary:
+  title_generation:
+    max_words: 2
+    max_characters: 24
+    name_aliases:
+      project atlas: ProjectAtlas
+      atlas app: ProjectAtlas
+```
+
+`name_aliases` is case-insensitive and keeps personal project vocabulary in user config rather than Hermes source code.
+
+Telegram can also choose a semantically matching **full-size topic icon** instead of leaving the default colored bubble. This is opt-in because it makes one additional lightweight title-generation call when a new topic is named:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        auto_topic_icons: true
+        preserve_manual_topic_icons: true
+        topic_icon_overrides:
+          ProjectAtlas: "🔭"
+```
+
+Hermes fetches the currently allowed icons with `getForumTopicIconStickers`, asks the title model to choose only from that live set, and applies the matching `custom_emoji_id`. `topic_icon_overrides` is optional and uses ordinary emoji characters as portable selectors rather than hard-coded Telegram IDs. With `preserve_manual_topic_icons: true` (the default), a custom icon chosen during topic creation is never replaced; if the gateway did not observe topic creation, it also leaves the existing icon untouched.
+
+The rename and icon assignment are best-effort: failures are logged but don't break the session.
+
+To disable renaming entirely and keep your manually-chosen topic names untouched, set:
 
 ```yaml
 gateway:

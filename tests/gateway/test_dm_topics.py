@@ -537,11 +537,58 @@ def test_cache_dm_topic_from_message_no_overwrite():
     assert adapter._dm_topics["111:General"] == 100  # unchanged
 
 
+@pytest.mark.asyncio
+async def test_forum_topic_icon_options_use_live_sticker_ids():
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._bot.get_forum_topic_icon_stickers.return_value = [
+        SimpleNamespace(emoji="🚀", custom_emoji_id="rocket-id"),
+        SimpleNamespace(emoji="📊", custom_emoji_id="chart-id"),
+        SimpleNamespace(emoji=None, custom_emoji_id="missing-label"),
+    ]
+
+    assert await adapter.get_forum_topic_icon_options() == [
+        {"emoji": "🚀", "custom_emoji_id": "rocket-id"},
+        {"emoji": "📊", "custom_emoji_id": "chart-id"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rename_dm_topic_can_apply_full_size_custom_icon():
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+
+    await adapter.rename_dm_topic(
+        chat_id="111",
+        thread_id="42",
+        name="ProjectAtlas",
+        icon_custom_emoji_id="rocket-id",
+    )
+
+    adapter._bot.edit_forum_topic.assert_awaited_once_with(
+        chat_id=111,
+        message_thread_id=42,
+        name="ProjectAtlas",
+        icon_custom_emoji_id="rocket-id",
+    )
+
+
+def test_topic_creation_icon_state_distinguishes_default_manual_and_unknown():
+    adapter = _make_adapter()
+
+    assert adapter.dm_topic_custom_icon_state("111", "42") is None
+    adapter._remember_dm_topic_creation_icon("111", "42", None)
+    assert adapter.dm_topic_custom_icon_state("111", "42") is False
+    adapter._remember_dm_topic_creation_icon("111", "43", "manual-id")
+    assert adapter.dm_topic_custom_icon_state("111", "43") is True
+
+
 # ── _build_message_event: auto_skill binding ──
 
 
 def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id=None,
                        user_id=42, user_name="Test User", forum_topic_created=None,
+                       forum_topic_edited=None,
                        is_topic_message=None, is_forum=None):
     """Create a mock Telegram Message for _build_message_event tests."""
     chat = SimpleNamespace(
@@ -573,6 +620,7 @@ def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id
         reply_to_message=None,
         date=None,
         forum_topic_created=forum_topic_created,
+        forum_topic_edited=forum_topic_edited,
     )
     return msg
 
@@ -663,6 +711,43 @@ def test_build_message_event_preserves_true_dm_topic_thread_id():
 
     assert event.source.thread_id == "200"
     assert event.source.chat_topic == "General"
+
+
+def test_build_message_event_remembers_manual_topic_icon():
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    created = SimpleNamespace(name="ProjectAtlas", icon_custom_emoji_id="rocket-id")
+    msg = _make_mock_message(
+        chat_id=111,
+        thread_id=201,
+        text="",
+        forum_topic_created=created,
+        is_topic_message=True,
+    )
+
+    adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert adapter.dm_topic_custom_icon_state("111", "201") is True
+
+
+def test_build_message_event_tracks_manual_icon_edit_before_auto_title():
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    adapter._remember_dm_topic_creation_icon("111", "201", None)
+    edited = SimpleNamespace(name=None, icon_custom_emoji_id="manual-id")
+    msg = _make_mock_message(
+        chat_id=111,
+        thread_id=201,
+        text="",
+        forum_topic_edited=edited,
+        is_topic_message=True,
+    )
+
+    adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert adapter.dm_topic_custom_icon_state("111", "201") is True
 
 
 # ── _build_message_event: group_topics skill binding ──

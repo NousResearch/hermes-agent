@@ -1696,6 +1696,9 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
             "language": "",
+            "max_words": 3,
+            "max_characters": 40,
+            "name_aliases": {},
         },
         "memory_query_rewrite": {
             "provider": "auto",

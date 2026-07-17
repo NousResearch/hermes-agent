@@ -41,6 +41,9 @@ def test_title_generation_present_in_default_config():
     assert tg["model"] == ""
     assert tg["timeout"] > 0
     assert tg["extra_body"] == {}
+    assert tg["max_words"] == 3
+    assert tg["max_characters"] == 40
+    assert tg["name_aliases"] == {}
 
 
 def test_session_search_no_longer_appears_in_auxiliary_model_config():

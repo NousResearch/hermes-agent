@@ -4,6 +4,7 @@ Runs asynchronously after the first response is delivered so it never
 adds latency to the user-facing reply.
 """
 
+import json
 import logging
 import threading
 from typing import Callable, Optional
@@ -25,19 +26,83 @@ TitleCallback = Callable[[str], None]
 # the request would reload a model the runtime already evicted (#19027).
 RuntimeValidator = Callable[[], bool]
 
-_TITLE_PROMPT = (
-    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
-    "following exchange. The title should capture the main topic or intent. "
-    "Write the title in the same language the user is writing in. "
-    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
-)
+_DEFAULT_TITLE_MAX_WORDS = 3
+_DEFAULT_TITLE_MAX_CHARACTERS = 40
 
-_TITLE_PROMPT_PINNED_LANGUAGE = (
-    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
-    "following exchange. The title should capture the main topic or intent. "
-    "Write the title in {language}. "
-    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
-)
+
+def _coerce_bounded_int(value, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
+def _title_preferences() -> tuple[int, int, dict[str, str]]:
+    """Return compact-title preferences from config with safe bounds."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        title_config = (config.get("auxiliary") or {}).get("title_generation") or {}
+    except Exception:
+        logger.debug("Failed to read title-generation preferences", exc_info=True)
+        title_config = {}
+
+    max_words = _coerce_bounded_int(
+        title_config.get("max_words"),
+        default=_DEFAULT_TITLE_MAX_WORDS,
+        minimum=1,
+        maximum=10,
+    )
+    max_characters = _coerce_bounded_int(
+        title_config.get("max_characters"),
+        default=_DEFAULT_TITLE_MAX_CHARACTERS,
+        minimum=12,
+        maximum=80,
+    )
+
+    aliases: dict[str, str] = {}
+    raw_aliases = title_config.get("name_aliases")
+    if isinstance(raw_aliases, dict):
+        for raw_alias, raw_name in list(raw_aliases.items())[:50]:
+            alias = str(raw_alias or "").strip()
+            canonical = str(raw_name or "").strip()
+            if alias and canonical and len(alias) <= 80 and len(canonical) <= 80:
+                aliases[alias] = canonical
+    return max_words, max_characters, aliases
+
+
+def _build_title_prompt(
+    *,
+    language: str,
+    max_words: int,
+    max_characters: int,
+    name_aliases: dict[str, str],
+) -> str:
+    language_rule = (
+        f"Write the title in {language}."
+        if language
+        else "Write the title in the same language the user is writing in."
+    )
+    prompt = (
+        "Generate a compact, descriptive title for a conversation that starts with the following exchange. "
+        f"Prefer 1-{max_words} words and stay within {max_characters} characters. "
+        "When the user explicitly names a project, product, organization, person, or place, normally use "
+        "that named project or proper name alone and preserve its spelling and capitalization. "
+        "Avoid generic action or filler words such as Fixing, Update, Setup, Analysis, Discussion, Help, "
+        "Working on, and Request unless one is essential to distinguish the subject. Do not include emoji. "
+        f"{language_rule} "
+        "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+    )
+    if name_aliases:
+        prompt += (
+            " Apply these case-insensitive canonical-name replacements whenever an alias appears in the "
+            "exchange: "
+            + json.dumps(name_aliases, ensure_ascii=False, sort_keys=True)
+            + "."
+        )
+    return prompt
 
 
 def _title_language() -> str:
@@ -114,7 +179,13 @@ def generate_title(
     assistant_snippet = assistant_response[:500] if assistant_response else ""
 
     language = _title_language()
-    prompt = _TITLE_PROMPT_PINNED_LANGUAGE.format(language=language) if language else _TITLE_PROMPT
+    max_words, max_characters, name_aliases = _title_preferences()
+    prompt = _build_title_prompt(
+        language=language,
+        max_words=max_words,
+        max_characters=max_characters,
+        name_aliases=name_aliases,
+    )
 
     messages = [
         {"role": "system", "content": prompt},
@@ -143,9 +214,9 @@ def generate_title(
         title = title.strip('"\'')
         if title.lower().startswith("title:"):
             title = title[6:].strip()
-        # Enforce reasonable length
-        if len(title) > 80:
-            title = title[:77] + "..."
+        # Enforce the configured display budget even when the model ignores it.
+        if len(title) > max_characters:
+            title = title[: max_characters - 3].rstrip() + "..."
         return title if title else None
     except Exception as e:
         # Log at WARNING so this shows up in agent.log without debug mode.
@@ -157,6 +228,84 @@ def generate_title(
                 failure_callback("title generation", e)
             except Exception:
                 logger.debug("Title generation failure_callback raised", exc_info=True)
+        return None
+
+
+def choose_topic_icon(
+    title: str,
+    user_message: str,
+    allowed_emojis: list[str],
+    timeout: float = 30.0,
+) -> Optional[str]:
+    """Choose one semantic Telegram topic emoji from a live allowlist.
+
+    This is a best-effort auxiliary call used only when a platform explicitly
+    opts into automatic topic icons. The returned value is a normal emoji key;
+    the Telegram adapter resolves it to the allowed sticker's custom_emoji_id.
+    """
+    allowed = list(
+        dict.fromkeys(
+            str(emoji).strip()
+            for emoji in allowed_emojis
+            if str(emoji).strip()
+        )
+    )
+    if not allowed:
+        return None
+
+    prompt = (
+        "Choose exactly one emoji for a conversation topic. Select only from this allowed list: "
+        + json.dumps(allowed, ensure_ascii=False)
+        + ". Match the topic's meaning rather than its mood. Return exactly one emoji and nothing else."
+    )
+    messages = [
+        {"role": "system", "content": prompt},
+        {
+            "role": "user",
+            "content": (
+                f"Title: {str(title or '')[:120]}\n"
+                f"Opening request: {str(user_message or '')[:500]}"
+            ),
+        },
+    ]
+
+    try:
+        response = call_llm(
+            task="title_generation",
+            messages=messages,
+            max_tokens=32,
+            temperature=0.2,
+            timeout=timeout,
+        )
+        content = response.choices[0].message.content or ""
+        from agent.agent_runtime_helpers import strip_think_blocks
+
+        choice = strip_think_blocks(None, content).strip().strip('"\'')
+        if choice.lower().startswith("emoji:"):
+            choice = choice[6:].strip()
+        if choice in allowed:
+            return choice
+
+        def _emoji_key(value: str) -> str:
+            return value.replace("\ufe0e", "").replace("\ufe0f", "")
+
+        normalized_matches = [
+            emoji for emoji in allowed if _emoji_key(emoji) == _emoji_key(choice)
+        ]
+        if len(normalized_matches) == 1:
+            return normalized_matches[0]
+
+        matches = [emoji for emoji in allowed if emoji in choice]
+        # Variation-selector forms can contain their plain counterpart. Keep the
+        # most specific match so e.g. "⚙️" does not look ambiguous with "⚙".
+        matches = [
+            emoji
+            for emoji in matches
+            if not any(emoji != other and emoji in other for other in matches)
+        ]
+        return matches[0] if len(matches) == 1 else None
+    except Exception:
+        logger.debug("Telegram topic icon selection failed", exc_info=True)
         return None
 
 

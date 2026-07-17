@@ -6,7 +6,8 @@ Telegram topics act as independent Hermes session lanes.
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -67,6 +68,8 @@ def _make_runner(session_db=None):
     adapter._bot = None
     adapter._create_dm_topic = AsyncMock(return_value=None)
     adapter.rename_dm_topic = AsyncMock()
+    adapter.get_forum_topic_icon_options = AsyncMock(return_value=[])
+    adapter.dm_topic_custom_icon_state = MagicMock(return_value=None)
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(
@@ -824,7 +827,7 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
         chat_id="208214988",
         name="Tester DM",
     )
-    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter = cast(Any, runner.adapters[Platform.TELEGRAM])
     adapter.create_handoff_thread = AsyncMock(return_value="17585")
     adapter.send.return_value = SimpleNamespace(success=True)
     captured = {}
@@ -855,7 +858,7 @@ async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkey
 
     session_db = SessionDB(db_path=tmp_path / "state.db")
     runner = _make_runner(session_db=session_db)
-    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter = cast(Any, runner.adapters[Platform.TELEGRAM])
     adapter._create_dm_topic.return_value = 4242
     adapter.send.return_value = SimpleNamespace(success=True, message_id="777")
     bot = AsyncMock()
@@ -910,6 +913,158 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
         chat_id="208214988",
         thread_id="42",
         name="Build Telegram Topic UX",
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_generated_title_assigns_semantic_full_size_icon(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    adapter = cast(Any, runner.adapters[Platform.TELEGRAM])
+    runner.config.platforms[Platform.TELEGRAM].extra["auto_topic_icons"] = True
+    adapter.dm_topic_custom_icon_state.return_value = False
+    adapter.get_forum_topic_icon_options.return_value = [
+        {"emoji": "📊", "custom_emoji_id": "chart-id"},
+        {"emoji": "🚀", "custom_emoji_id": "rocket-id"},
+    ]
+
+    with patch("agent.title_generator.choose_topic_icon", return_value="🚀") as choose:
+        await runner._rename_telegram_topic_for_session_title(
+            _make_source(thread_id="42"),
+            "sess-topic",
+            "ProjectAtlas",
+            user_message="Improve the ProjectAtlas planning flow",
+        )
+
+    choose.assert_called_once_with(
+        "ProjectAtlas",
+        "Improve the ProjectAtlas planning flow",
+        ["📊", "🚀"],
+    )
+    adapter.rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="42",
+        name="ProjectAtlas",
+        icon_custom_emoji_id="rocket-id",
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_topic_icons_preserve_manual_custom_icon(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    adapter = cast(Any, runner.adapters[Platform.TELEGRAM])
+    runner.config.platforms[Platform.TELEGRAM].extra["auto_topic_icons"] = True
+    adapter.dm_topic_custom_icon_state.return_value = True
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "ProjectAtlas",
+        user_message="Improve the onboarding flow",
+    )
+
+    adapter.get_forum_topic_icon_options.assert_not_called()
+    adapter.rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="42",
+        name="ProjectAtlas",
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_topic_icons_recheck_manual_icon_after_llm_choice(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    adapter = cast(Any, runner.adapters[Platform.TELEGRAM])
+    runner.config.platforms[Platform.TELEGRAM].extra["auto_topic_icons"] = True
+    adapter.dm_topic_custom_icon_state.side_effect = [False, True]
+    adapter.get_forum_topic_icon_options.return_value = [
+        {"emoji": "🔭", "custom_emoji_id": "scope-id"},
+    ]
+
+    with patch("agent.title_generator.choose_topic_icon", return_value="🔭"):
+        await runner._rename_telegram_topic_for_session_title(
+            _make_source(thread_id="42"),
+            "sess-topic",
+            "ProjectAtlas",
+            user_message="Improve the ProjectAtlas planning flow",
+        )
+
+    adapter.rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="42",
+        name="ProjectAtlas",
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_topic_icon_override_uses_live_matching_sticker_without_llm(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    adapter = cast(Any, runner.adapters[Platform.TELEGRAM])
+    extra = runner.config.platforms[Platform.TELEGRAM].extra
+    extra["auto_topic_icons"] = True
+    extra["topic_icon_overrides"] = {"projectatlas": "🚀"}
+    adapter.dm_topic_custom_icon_state.return_value = False
+    adapter.get_forum_topic_icon_options.return_value = [
+        {"emoji": "🚀", "custom_emoji_id": "rocket-id"},
+    ]
+
+    with patch("agent.title_generator.choose_topic_icon") as choose:
+        await runner._rename_telegram_topic_for_session_title(
+            _make_source(thread_id="42"),
+            "sess-topic",
+            "ProjectAtlas",
+            user_message="Improve onboarding",
+        )
+
+    choose.assert_not_called()
+    adapter.rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="42",
+        name="ProjectAtlas",
+        icon_custom_emoji_id="rocket-id",
     )
 
 

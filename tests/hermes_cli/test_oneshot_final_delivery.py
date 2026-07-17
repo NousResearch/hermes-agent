@@ -1371,6 +1371,93 @@ def test_logging_stale_add_handler_wrapper_race_delegates_once_without_mutation(
         logger.removeHandler(handler)
 
 
+def test_logging_suppression_entry_rolls_back_after_mutating_values_failure():
+    original_add_handler = logging.Logger.addHandler
+    original_logger_dict = logging.Logger.manager.loggerDict
+    candidate = logging.Logger("transaction-candidate")
+    handler = logging.StreamHandler(io.StringIO())
+    handler.setLevel(logging.INFO)
+    candidate.addHandler(handler)
+
+    class MutatingValues(dict):
+        def values(self):
+            self["created-during-values"] = logging.Logger("created-during-values")
+
+            def iterate():
+                yield candidate
+                raise RuntimeError("loggerDict mutated while snapshotting")
+
+            return iterate()
+
+    logging.Logger.manager.loggerDict = MutatingValues()
+    context = oneshot._suppress_terminal_log_handlers()
+    try:
+        with pytest.raises(RuntimeError, match="loggerDict mutated"):
+            context.__enter__()
+
+        assert handler.level == logging.INFO
+        assert logging.Logger.addHandler is original_add_handler
+        assert oneshot._terminal_suppression_count == 0
+        assert oneshot._terminal_suppressed_levels == {}
+        assert oneshot._terminal_original_add_handler is None
+    finally:
+        logging.Logger.manager.loggerDict = original_logger_dict
+        # Failure diagnostics must not poison the rest of the test worker even
+        # when the implementation under test is still RED.
+        for changed_handler, level in list(oneshot._terminal_suppressed_levels.items()):
+            changed_handler.level = level
+        oneshot._terminal_suppressed_levels.clear()
+        oneshot._terminal_suppression_count = 0
+        oneshot._terminal_original_add_handler = None
+        logging.Logger.addHandler = original_add_handler
+        candidate.removeHandler(handler)
+
+
+def test_logging_concurrent_getlogger_creation_survives_reversed_context_exits():
+    first_context = oneshot._suppress_terminal_log_handlers()
+    second_context = oneshot._suppress_terminal_log_handlers()
+    first_context.__enter__()
+    second_context.__enter__()
+    begin = threading.Event()
+    attached = threading.Event()
+    errors = []
+    state = {}
+
+    def create_logger_and_handler():
+        begin.wait()
+        try:
+            logger = logging.getLogger(
+                f"hermes.tests.oneshot.concurrent.{uuid.uuid4().hex}"
+            )
+            handler = logging.StreamHandler(io.StringIO())
+            handler.setLevel(logging.ERROR)
+            logger.addHandler(handler)
+            state.update(logger=logger, handler=handler)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            attached.set()
+
+    worker = threading.Thread(target=create_logger_and_handler)
+    worker.start()
+    begin.set()
+    assert attached.wait(timeout=2)
+    first_context.__exit__(None, None, None)
+    try:
+        assert errors == []
+        assert state["handler"].level == logging.CRITICAL + 1
+        second_context.__exit__(None, None, None)
+        assert state["handler"].level == logging.ERROR
+        assert oneshot._terminal_suppression_count == 0
+        assert oneshot._terminal_suppressed_levels == {}
+    finally:
+        worker.join(timeout=2)
+        if oneshot._terminal_suppression_count:
+            second_context.__exit__(None, None, None)
+        if "logger" in state:
+            state["logger"].removeHandler(state["handler"])
+
+
 def _run_watchdog_subprocess(
     mode: str,
     usage_path: Path | None = None,
@@ -1529,31 +1616,6 @@ def test_watchdog_during_atomic_usage_preserves_exact_previous_bytes(tmp_path):
     assert completed.stderr == ""
     assert completed.elapsed < 3
     assert usage_path.read_bytes() == original
-
-
-def test_usage_write_cleans_only_safe_stale_owned_temp_siblings(
-    monkeypatch,
-    tmp_path,
-):
-    usage_path = tmp_path / "usage.json"
-    stale = tmp_path / (".usage.json.tmp-424242-" + "a" * 32)
-    stale.write_text("stale private usage", encoding="utf-8")
-    os.utime(stale, (0, 0))
-    target = tmp_path / "must-survive"
-    target.write_text("target", encoding="utf-8")
-    symlink = tmp_path / (".usage.json.tmp-424243-" + "b" * 32)
-    symlink.symlink_to(target)
-    arbitrary = tmp_path / ".usage.json.tmp-not-owned"
-    arbitrary.write_text("arbitrary", encoding="utf-8")
-    monkeypatch.setattr(oneshot, "_usage_temp_pid_is_running", lambda _pid: False)
-
-    oneshot._write_usage_file(str(usage_path), {"completed": True})
-
-    assert usage_path.exists()
-    assert not stale.exists()
-    assert symlink.is_symlink()
-    assert target.read_text(encoding="utf-8") == "target"
-    assert arbitrary.read_text(encoding="utf-8") == "arbitrary"
 
 
 def test_atomic_usage_replace_error_removes_current_temp_and_preserves_target(

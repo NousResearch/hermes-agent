@@ -23,10 +23,8 @@ from __future__ import annotations
 
 import logging
 import os
-import stat
 import sys
 import threading
-import time
 import uuid
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -58,7 +56,38 @@ def _remember_terminal_log_handler(handler: logging.Handler) -> None:
         return
     if handler not in _terminal_suppressed_levels:
         _terminal_suppressed_levels[handler] = handler.level
-    handler.setLevel(logging.CRITICAL + 1)
+    handler.level = logging.CRITICAL + 1
+
+
+@contextmanager
+def _hold_logging_registry_lock() -> Iterator[None]:
+    acquire = getattr(logging, "_acquireLock", None)
+    release = getattr(logging, "_releaseLock", None)
+    if not callable(acquire) or not callable(release):
+        yield
+        return
+    acquire()
+    try:
+        yield
+    finally:
+        release()
+
+
+def _snapshot_terminal_log_handlers_locked() -> list[logging.Handler]:
+    loggers = [logging.root]
+    loggers.extend(
+        candidate
+        for candidate in list(logging.Logger.manager.loggerDict.values())
+        if isinstance(candidate, logging.Logger)
+    )
+    handlers = [
+        handler
+        for candidate in loggers
+        for handler in list(candidate.handlers)
+    ]
+    if logging.lastResort is not None:
+        handlers.append(logging.lastResort)
+    return handlers
 
 
 def _suppressed_add_handler_wrapper(
@@ -72,10 +101,11 @@ def _suppressed_add_handler_wrapper(
         # execute it only after the final owner restores Logger.addHandler.
         # The stable captured original guarantees exactly one delegation; the
         # count check prevents stale calls from mutating handler levels.
-        with _terminal_suppression_lock:
-            if _terminal_suppression_count > 0:
-                _remember_terminal_log_handler(handler)
-            original(target_logger, handler)
+        with _hold_logging_registry_lock():
+            with _terminal_suppression_lock:
+                if _terminal_suppression_count > 0:
+                    _remember_terminal_log_handler(handler)
+                original(target_logger, handler)
 
     return add_handler
 
@@ -85,35 +115,44 @@ def _suppress_terminal_log_handlers() -> Iterator[None]:
     """Refcount console silence while preserving every file handler."""
     global _terminal_original_add_handler, _terminal_suppression_count
 
-    with _terminal_suppression_lock:
-        if _terminal_suppression_count == 0:
-            _terminal_original_add_handler = logging.Logger.addHandler
-            logging.Logger.addHandler = _suppressed_add_handler_wrapper(
-                _terminal_original_add_handler
-            )
-        _terminal_suppression_count += 1
-        for handler in logging.getLogger().handlers:
-            _remember_terminal_log_handler(handler)
-        for candidate in logging.Logger.manager.loggerDict.values():
-            if isinstance(candidate, logging.Logger):
-                for handler in candidate.handlers:
+    with _hold_logging_registry_lock():
+        with _terminal_suppression_lock:
+            starting_count = _terminal_suppression_count
+            starting_levels = set(_terminal_suppressed_levels)
+            starting_add_handler = logging.Logger.addHandler
+            starting_owner = _terminal_original_add_handler
+            try:
+                if starting_count == 0:
+                    _terminal_original_add_handler = starting_add_handler
+                    logging.Logger.addHandler = _suppressed_add_handler_wrapper(
+                        starting_add_handler
+                    )
+                _terminal_suppression_count += 1
+                for handler in _snapshot_terminal_log_handlers_locked():
                     _remember_terminal_log_handler(handler)
-        if logging.lastResort is not None:
-            _remember_terminal_log_handler(logging.lastResort)
+            except BaseException:
+                for handler in set(_terminal_suppressed_levels) - starting_levels:
+                    handler.level = _terminal_suppressed_levels.pop(handler)
+                _terminal_suppression_count = starting_count
+                _terminal_original_add_handler = starting_owner
+                if starting_count == 0:
+                    logging.Logger.addHandler = starting_add_handler
+                raise
 
     try:
         yield
     finally:
-        with _terminal_suppression_lock:
-            _terminal_suppression_count -= 1
-            if _terminal_suppression_count == 0:
-                for handler, level in _terminal_suppressed_levels.items():
-                    handler.setLevel(level)
-                _terminal_suppressed_levels.clear()
-                original = _terminal_original_add_handler
-                _terminal_original_add_handler = None
-                if original is not None:
-                    logging.Logger.addHandler = original
+        with _hold_logging_registry_lock():
+            with _terminal_suppression_lock:
+                _terminal_suppression_count -= 1
+                if _terminal_suppression_count == 0:
+                    for handler, level in _terminal_suppressed_levels.items():
+                        handler.level = level
+                    _terminal_suppressed_levels.clear()
+                    original = _terminal_original_add_handler
+                    _terminal_original_add_handler = None
+                    if original is not None:
+                        logging.Logger.addHandler = original
 
 
 class _IncompleteFinalWriteError(OSError):
@@ -447,84 +486,6 @@ def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     return [item for item in normalized if item] or None
 
 
-_USAGE_TEMP_SCAN_LIMIT = 64
-_USAGE_TEMP_DELETE_LIMIT = 8
-_USAGE_TEMP_MIN_AGE_S = 60
-_LOWER_HEX = frozenset("0123456789abcdef")
-
-
-def _usage_temp_pid_from_name(out: Path, name: str) -> int | None:
-    prefix = f".{out.name}.tmp-"
-    if not name.startswith(prefix):
-        return None
-    remainder = name[len(prefix) :]
-    try:
-        pid_text, token = remainder.split("-", 1)
-    except ValueError:
-        return None
-    if (
-        not pid_text.isascii()
-        or not pid_text.isdigit()
-        or len(pid_text) > 10
-    ):
-        return None
-    if len(token) != 32 or any(character not in _LOWER_HEX for character in token):
-        return None
-    pid = int(pid_text)
-    if pid <= 0 or pid > 2_147_483_647:
-        return None
-    return pid
-
-
-def _usage_temp_pid_is_running(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except (PermissionError, OSError):
-        return True
-    return True
-
-
-def _cleanup_stale_usage_temps(out: Path) -> None:
-    """Bound cleanup to dead-owner regular temp siblings only."""
-    scanned = 0
-    deleted = 0
-    now = time.time()
-    current_uid = os.getuid() if hasattr(os, "getuid") else None
-    try:
-        entries = os.scandir(out.parent)
-    except OSError:
-        return
-    with entries:
-        for entry in entries:
-            scanned += 1
-            if scanned > _USAGE_TEMP_SCAN_LIMIT:
-                break
-            pid = _usage_temp_pid_from_name(out, entry.name)
-            if pid is None:
-                continue
-            try:
-                metadata = entry.stat(follow_symlinks=False)
-            except OSError:
-                continue
-            if not stat.S_ISREG(metadata.st_mode):
-                continue
-            if current_uid is not None and metadata.st_uid != current_uid:
-                continue
-            if now - metadata.st_mtime < _USAGE_TEMP_MIN_AGE_S:
-                continue
-            if _usage_temp_pid_is_running(pid):
-                continue
-            try:
-                os.unlink(entry.path)
-            except OSError:
-                continue
-            deleted += 1
-            if deleted >= _USAGE_TEMP_DELETE_LIMIT:
-                break
-
-
 def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
     normalized = _normalize_toolsets(toolsets)
     if normalized is None:
@@ -638,10 +599,7 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
             report["failure"] = failure
         out = Path(path).expanduser()
         out.parent.mkdir(parents=True, exist_ok=True)
-        _cleanup_stale_usage_temps(out)
-        temporary = out.with_name(
-            f".{out.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}"
-        )
+        temporary = out.with_name(f".{out.name}.tmp-{uuid.uuid4().hex}")
         descriptor = os.open(
             temporary,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL,

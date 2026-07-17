@@ -297,6 +297,47 @@ def test_delivery_swallows_ordinary_callback_failure_after_flush(caplog):
     assert "completion callback failed" in caplog.text
 
 
+def test_delivery_callback_failure_log_is_sanitized_without_secret_text(
+    tmp_path,
+):
+    path = tmp_path / "agent.log"
+    terminal = io.StringIO()
+    handler = logging.FileHandler(path, encoding="utf-8")
+    terminal_handler = logging.StreamHandler(terminal)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    terminal_handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    old_level = oneshot.logger.level
+    old_propagate = oneshot.logger.propagate
+    oneshot.logger.setLevel(logging.WARNING)
+    oneshot.logger.propagate = False
+    oneshot.logger.addHandler(handler)
+    oneshot.logger.addHandler(terminal_handler)
+
+    def fail():
+        raise RuntimeError("private prompt response tool-output secret")
+
+    try:
+        delivery = oneshot._FinalDelivery(io.StringIO(), fail)
+        assert delivery.deliver("private response") is True
+    finally:
+        oneshot.logger.removeHandler(handler)
+        oneshot.logger.removeHandler(terminal_handler)
+        oneshot.logger.setLevel(old_level)
+        oneshot.logger.propagate = old_propagate
+        handler.close()
+        terminal_handler.close()
+
+    body = path.read_text(encoding="utf-8")
+    assert body == (
+        "WARNING oneshot final-delivery completion callback failed "
+        "exception_type=RuntimeError\n"
+    )
+    assert terminal.getvalue() == body
+    for secret in ("private prompt", "private response", "tool-output", "secret"):
+        assert secret not in body
+        assert secret not in terminal.getvalue()
+
+
 @pytest.mark.parametrize("failure", [KeyboardInterrupt(), SystemExit(19)])
 def test_delivery_propagates_control_flow_callback_after_flush_without_retry(failure):
     events: list[tuple[str, object]] = []
@@ -1250,6 +1291,52 @@ def test_oneshot_logging_preserves_file_logs_and_suppresses_preexisting_terminal
     assert terminal_handler.level == logging.INFO
 
 
+def test_logging_terminal_handler_suppression_overlaps_and_restores_once_in_reverse_order():
+    original_add_handler = logging.Logger.addHandler
+    first = logging.StreamHandler(io.StringIO())
+    first.setLevel(logging.INFO)
+    logger = logging.getLogger("hermes.tests.oneshot.task4.overlap")
+    logger.addHandler(first)
+    first_context = oneshot._suppress_terminal_log_handlers()
+    second_context = oneshot._suppress_terminal_log_handlers()
+    try:
+        first_context.__enter__()
+        second_context.__enter__()
+        assert first.level == logging.CRITICAL + 1
+
+        # Exit in the opposite order from context nesting. Suppression must
+        # remain owned by the still-active second context.
+        first_context.__exit__(None, None, None)
+        assert first.level == logging.CRITICAL + 1
+
+        added_during_overlap = logging.StreamHandler(io.StringIO())
+        added_during_overlap.setLevel(logging.ERROR)
+        logger.addHandler(added_during_overlap)
+        assert added_during_overlap.level == logging.CRITICAL + 1
+
+        added_file_handler = logging.FileHandler(os.devnull)
+        added_file_handler.setLevel(logging.WARNING)
+        logger.addHandler(added_file_handler)
+        assert added_file_handler.level == logging.WARNING
+
+        second_context.__exit__(None, None, None)
+        assert first.level == logging.INFO
+        assert added_during_overlap.level == logging.ERROR
+        assert added_file_handler.level == logging.WARNING
+        assert logging.Logger.addHandler is original_add_handler
+        assert oneshot._terminal_suppression_count == 0
+        assert oneshot._terminal_suppressed_levels == {}
+    finally:
+        # __exit__ is idempotent for generator context managers only when it
+        # has not already completed, so cleanup the handlers directly here.
+        logger.removeHandler(first)
+        if "added_during_overlap" in locals():
+            logger.removeHandler(added_during_overlap)
+        if "added_file_handler" in locals():
+            logger.removeHandler(added_file_handler)
+            added_file_handler.close()
+
+
 def _run_watchdog_subprocess(
     mode: str,
     usage_path: Path | None = None,
@@ -1312,12 +1399,39 @@ def _run_watchdog_subprocess(
                 worker = threading.Thread(target=stop.wait, daemon=False)
                 worker.start()
             if mode != "cleanup_without_final":
-                delivery.deliver("final")
-            if mode == "late_hook_after_final":
-                threading.Event().wait()
+                if mode == "late_hook_after_final":
+                    import hermes_cli.plugins as plugins
+
+                    def blocking_late_hook(**_kwargs):
+                        threading.Event().wait()
+
+                    manager = types.SimpleNamespace(
+                        _hooks={{"post_llm_call": [blocking_late_hook]}}
+                    )
+                    plugins.get_plugin_manager = lambda: manager
+                    with oneshot._install_final_delivery_hook(delivery, resources):
+                        for callback in list(manager._hooks["post_llm_call"]):
+                            callback(
+                                assistant_response="final",
+                                task_id=resources.task_id,
+                            )
+                else:
+                    delivery.deliver("final")
             return ("final" if mode != "cleanup_without_final" else "", {{"failed": False}})
 
         oneshot._run_agent = run
+        if mode == "usage_replace_stall":
+            import logging
+
+            terminal_handler = logging.StreamHandler(sys.stderr)
+            logging.getLogger().handlers[:] = [terminal_handler]
+            logging.getLogger().setLevel(logging.INFO)
+
+            def blocking_replace(*_args, **_kwargs):
+                logging.warning("usage bookkeeping must stay terminal-clean")
+                threading.Event().wait()
+
+            oneshot.os.replace = blocking_replace
         raise SystemExit(
             oneshot.run_oneshot("private prompt", usage_file={usage_literal})
         )
@@ -1367,6 +1481,20 @@ def test_watchdog_forces_bounded_exit_during_cleanup_without_final(
         assert json.loads(usage_path.read_text()) == {"sentinel": "earlier-valid"}
     else:
         assert not usage_path.exists()
+
+
+def test_watchdog_during_atomic_usage_preserves_exact_previous_bytes(tmp_path):
+    usage_path = tmp_path / "usage.json"
+    original = b'{ "sentinel" : "earlier-valid", "spacing": true }\n\n'
+    usage_path.write_bytes(original)
+
+    completed = _run_watchdog_subprocess("usage_replace_stall", usage_path)
+
+    assert completed.returncode == 70
+    assert completed.stdout == "final\n"
+    assert completed.stderr == ""
+    assert completed.elapsed < 3
+    assert usage_path.read_bytes() == original
 
 
 def test_normal_cleanup_releases_non_daemon_mcp_like_thread():

@@ -36,41 +36,73 @@ from hermes_cli.fallback_config import get_fallback_chain
 logger = logging.getLogger(__name__)
 
 
+_terminal_suppression_lock = threading.RLock()
+_terminal_suppression_count = 0
+_terminal_suppressed_levels: dict[logging.Handler, int] = {}
+_terminal_original_add_handler: (
+    Callable[[logging.Logger, logging.Handler], None] | None
+) = None
+
+
+def _is_terminal_log_handler(handler: logging.Handler) -> bool:
+    return isinstance(handler, logging.StreamHandler) and not isinstance(
+        handler,
+        logging.FileHandler,
+    )
+
+
+def _remember_terminal_log_handler(handler: logging.Handler) -> None:
+    if not _is_terminal_log_handler(handler):
+        return
+    if handler not in _terminal_suppressed_levels:
+        _terminal_suppressed_levels[handler] = handler.level
+    handler.setLevel(logging.CRITICAL + 1)
+
+
+def _add_handler_while_terminal_suppressed(
+    target_logger: logging.Logger,
+    handler: logging.Handler,
+) -> None:
+    with _terminal_suppression_lock:
+        _remember_terminal_log_handler(handler)
+        original = _terminal_original_add_handler
+        if original is None:
+            raise RuntimeError("terminal log suppression lost addHandler owner")
+        original(target_logger, handler)
+
+
 @contextmanager
 def _suppress_terminal_log_handlers() -> Iterator[None]:
-    """Silence existing console handlers without disabling file logging."""
-    handlers: list[logging.Handler] = []
-    seen: set[int] = set()
+    """Refcount console silence while preserving every file handler."""
+    global _terminal_original_add_handler, _terminal_suppression_count
 
-    def remember(handler: logging.Handler) -> None:
-        if id(handler) in seen:
-            return
-        if not isinstance(handler, logging.StreamHandler):
-            return
-        # FileHandler deliberately subclasses StreamHandler. It is the
-        # persistent diagnostic channel one-shot mode must preserve.
-        if isinstance(handler, logging.FileHandler):
-            return
-        seen.add(id(handler))
-        handlers.append(handler)
+    with _terminal_suppression_lock:
+        if _terminal_suppression_count == 0:
+            _terminal_original_add_handler = logging.Logger.addHandler
+            logging.Logger.addHandler = _add_handler_while_terminal_suppressed
+        _terminal_suppression_count += 1
+        for handler in logging.getLogger().handlers:
+            _remember_terminal_log_handler(handler)
+        for candidate in logging.Logger.manager.loggerDict.values():
+            if isinstance(candidate, logging.Logger):
+                for handler in candidate.handlers:
+                    _remember_terminal_log_handler(handler)
+        if logging.lastResort is not None:
+            _remember_terminal_log_handler(logging.lastResort)
 
-    for handler in logging.getLogger().handlers:
-        remember(handler)
-    for candidate in logging.Logger.manager.loggerDict.values():
-        if isinstance(candidate, logging.Logger):
-            for handler in candidate.handlers:
-                remember(handler)
-    if logging.lastResort is not None:
-        remember(logging.lastResort)
-
-    original_levels = [(handler, handler.level) for handler in handlers]
     try:
-        for handler, _level in original_levels:
-            handler.setLevel(logging.CRITICAL + 1)
         yield
     finally:
-        for handler, level in original_levels:
-            handler.setLevel(level)
+        with _terminal_suppression_lock:
+            _terminal_suppression_count -= 1
+            if _terminal_suppression_count == 0:
+                for handler, level in _terminal_suppressed_levels.items():
+                    handler.setLevel(level)
+                _terminal_suppressed_levels.clear()
+                original = _terminal_original_add_handler
+                _terminal_original_add_handler = None
+                if original is not None:
+                    logging.Logger.addHandler = original
 
 
 class _IncompleteFinalWriteError(OSError):
@@ -134,8 +166,11 @@ class _FinalDelivery:
             self._delivered = True
         try:
             self._on_delivered()
-        except Exception:
-            logger.exception("oneshot final-delivery completion callback failed")
+        except Exception as exc:
+            logger.warning(
+                "oneshot final-delivery completion callback failed exception_type=%s",
+                type(exc).__name__,
+            )
         return True
 
 
@@ -483,6 +518,7 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
     """
     if not path:
         return
+    temporary: Path | None = None
     try:
         import json
 
@@ -513,9 +549,35 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
             report["failure"] = failure
         out = Path(path).expanduser()
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        temporary = out.with_name(f".{out.name}.tmp-{uuid.uuid4().hex}")
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(report, indent=2) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except BaseException:
+            # fdopen owns the descriptor after successful construction. If
+            # construction itself failed, close the still-open descriptor.
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            raise
+        os.replace(temporary, out)
+        temporary = None
     except Exception:
         pass
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def run_oneshot(
@@ -611,6 +673,12 @@ def run_oneshot(
                         failure = exc
                 if failure is None and resources.cleanup_failed:
                     failure = _OneshotCleanupError()
+            if failure is None:
+                _write_usage_file(usage_file, result)
+            elif isinstance(failure, (KeyboardInterrupt, SystemExit)):
+                _write_usage_file(usage_file, result, failure=repr(failure))
+            else:
+                _write_usage_file(usage_file, result, failure=str(failure))
     finally:
         try:
             devnull.close()
@@ -621,14 +689,10 @@ def run_oneshot(
         # Re-raise control-flow exceptions so the parent handles them as usual
         # (Ctrl-C / explicit sys.exit() inside the agent).
         if isinstance(failure, (KeyboardInterrupt, SystemExit)):
-            _write_usage_file(usage_file, result, failure=repr(failure))
             raise failure
-        _write_usage_file(usage_file, result, failure=str(failure))
         real_stderr.write(f"hermes -z: agent failed: {failure}\n")
         real_stderr.flush()
         return 1
-
-    _write_usage_file(usage_file, result)
 
     if (result.get("failed") or result.get("partial")) and not delivery.delivered:
         return 2

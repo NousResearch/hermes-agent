@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-import logging
 import os
-import sys
 import threading
 import time
-
-
-logger = logging.getLogger(__name__)
 
 
 def arm_exit_watchdog(
@@ -30,30 +25,13 @@ def arm_exit_watchdog(
 
     def _watchdog() -> None:
         time.sleep(timeout_s)
-        try:
-            logger.warning(
-                "Exit watchdog fired after %.0fs — forcing process exit "
-                "(a cleanup step or non-daemon thread is wedged).",
-                timeout_s,
-            )
-        except Exception:
-            pass
-        try:
-            logging.shutdown()
-        except Exception:
-            pass
-        for stream in (sys.stdout, sys.stderr):
-            try:
-                stream.flush()
-            except Exception:
-                pass
+        # Nothing may run between the deadline and forced exit: logging,
+        # handler locks, stream flushes, and user callbacks can all block.
+        # Final one-shot stdout is flushed before this watchdog is armed.
         os._exit(exit_code)
 
-    try:
-        threading.Thread(
-            target=_watchdog,
-            daemon=True,
-            name="exit-watchdog",
-        ).start()
-    except Exception:
-        pass
+    threading.Thread(
+        target=_watchdog,
+        daemon=True,
+        name="exit-watchdog",
+    ).start()

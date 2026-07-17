@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import textwrap
 import types
+from pathlib import Path
+
+import pytest
 
 from hermes_cli import exit_watchdog
 
@@ -18,7 +25,6 @@ def _capture_watchdog(monkeypatch, *, timeout_s=None, exit_code=0):
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setattr(exit_watchdog.threading, "Thread", ImmediateThread)
     monkeypatch.setattr(exit_watchdog.time, "sleep", lambda seconds: captured.update(sleep=seconds))
-    monkeypatch.setattr(exit_watchdog.logging, "shutdown", lambda: None)
     monkeypatch.setattr(exit_watchdog.os, "_exit", lambda code: captured.update(exit_code=code))
     exit_watchdog.arm_exit_watchdog(timeout_s=timeout_s, exit_code=exit_code)
     return captured
@@ -65,3 +71,67 @@ def test_watchdog_is_disabled_under_pytest(monkeypatch):
     )
     exit_watchdog.arm_exit_watchdog(timeout_s=0.01)
     assert started == []
+
+
+def test_watchdog_start_failure_propagates_and_oneshot_owner_can_retry(monkeypatch):
+    from hermes_cli.oneshot import _OneshotResources
+
+    starts = []
+
+    class FailingThenStartingThread:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def start(self):
+            starts.append(self.kwargs)
+            if len(starts) == 1:
+                raise RuntimeError("thread start failed")
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(exit_watchdog.threading, "Thread", FailingThenStartingThread)
+    resources = _OneshotResources()
+
+    with pytest.raises(RuntimeError, match="thread start failed"):
+        resources._arm_watchdog_once()
+    resources._arm_watchdog_once()
+    resources._arm_watchdog_once()
+
+    assert len(starts) == 2
+
+
+def test_watchdog_timer_bypasses_blocking_logging_handler_and_exits_bounded():
+    script = textwrap.dedent(
+        """
+        import logging
+        import os
+        import threading
+
+        os.environ.pop("PYTEST_CURRENT_TEST", None)
+        from hermes_cli.exit_watchdog import arm_exit_watchdog
+
+        class BlockingHandler(logging.Handler):
+            def emit(self, record):
+                threading.Event().wait()
+
+        root = logging.getLogger()
+        root.handlers[:] = [BlockingHandler()]
+        root.setLevel(logging.DEBUG)
+        arm_exit_watchdog(timeout_s=0.2, exit_code=70)
+        threading.Event().wait()
+        """
+    )
+    env = os.environ.copy()
+    env.pop("PYTEST_CURRENT_TEST", None)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        capture_output=True,
+        timeout=3,
+    )
+
+    assert completed.returncode == 70
+    assert completed.stdout == b""
+    assert completed.stderr == b""

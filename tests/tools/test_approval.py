@@ -2560,3 +2560,59 @@ class TestApprovalPromptRedaction:
         # The script's credential must not appear in the user-facing message.
         assert "sk-proj-abc123xyz4567890abcdef" not in result["message"]
         assert "sk-proj-abc123xyz4567890abcdef" not in result["command"]
+
+
+class TestPermanentAllowlistLock:
+    """Concurrent permanent grants must all survive to disk.
+
+    Regression guard for the unguarded save_permanent_allowlist(
+    _permanent_approved) reads. The fix snapshots the set under _lock
+    before persisting; without it, interleaved grants can clobber each
+    other's writes and drop entries from the saved allowlist.
+    """
+
+    def test_concurrent_always_grants_persist_all(self, monkeypatch):
+        """Drive N parallel 'always' approvals through the real approval
+        gate (not approve_permanent directly) and confirm every granted
+        pattern_key reaches the persisted command_allowlist.
+        """
+        import threading
+
+        from tools.approval import _run_approval_gate
+
+        import tools.approval as _mod
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.setattr(_mod, "is_current_session_yolo_enabled", lambda: False)
+        monkeypatch.setattr(_mod, "_YOLO_MODE_FROZEN", False)
+
+        written = {}
+
+        def fake_save_config(config):
+            written.update(config)
+
+        monkeypatch.setattr("hermes_cli.config.save_config", fake_save_config)
+
+        keys = [f"dangerous_pattern_{i}" for i in range(20)]
+
+        def grant(key):
+            _run_approval_gate(
+                pattern_key=key,
+                description=f"grant {key}",
+                display_target=f"rm -rf /x{key}",
+                approval_callback=lambda *a, **k: "always",
+                cron_deny_message="denied in cron",
+                autoapprove_log_prefix="test",
+            )
+
+        threads = [threading.Thread(target=grant, args=(k,)) for k in keys]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        persisted = set(written.get("command_allowlist", []))
+        assert persisted == set(keys), (
+            f"lost {set(keys) - persisted} of {len(keys)} grants"
+        )

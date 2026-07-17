@@ -1,6 +1,6 @@
 ---
 name: obsidian
-description: Read, search, create, and edit notes in the Obsidian vault.
+description: "Read or edit files in the local Obsidian markdown vault."
 platforms: [linux, macos, windows]
 ---
 

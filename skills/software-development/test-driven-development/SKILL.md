@@ -1,6 +1,6 @@
 ---
 name: test-driven-development
-description: "TDD: enforce RED-GREEN-REFACTOR, tests before code."
+description: "Write code using TDD with a unit/integration test suite."
 version: 1.1.0
 author: Hermes Agent (adapted from obra/superpowers)
 license: MIT
@@ -23,18 +23,20 @@ Write the test first. Watch it fail. Write minimal code to pass.
 
 ## When to Use
 
-**Always:**
+**Use when writing or changing testable production source code:**
 - New features
 - Bug fixes
 - Refactoring
 - Behavior changes
 
-**Exceptions (ask the user first):**
-- Throwaway prototypes
-- Generated code
-- Configuration files
+Once it applies, "skip TDD just this once" is rationalization — stop.
 
-Thinking "skip TDD just this once"? Stop. That's rationalization.
+**Do NOT load this skill for (it does not apply):**
+- Research, exploration, or optimization loops (e.g. perf/benchmark tuning, kernel/leaderboard work)
+- Tasks where "test", "gate", "verify", "PASS", "prove", or "correctness" mean an **external** checker, acceptance gate, or submission mode — not a code-level unit/integration test suite
+- Data/ML experiments, throwaway prototypes, generated code, configuration files
+
+If the prompt is saturated with testing/verification vocabulary but isn't asking you to write production code against a test suite, this is a keyword false-positive — do not load TDD.
 
 ## The Iron Law
 

@@ -508,6 +508,11 @@ def refresh_hermes_dotenv_strict(
         _sanitize_loaded_credentials()
         for name, applied in report.provenance.items():
             _SECRET_SOURCES[name] = applied.source
+
+    # Preserve normal startup precedence: managed scope is authoritative and
+    # must be applied after external sources, even when a source is configured
+    # to override existing environment values.
+    _apply_managed_env()
     return loaded
 
 

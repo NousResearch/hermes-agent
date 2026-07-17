@@ -2648,7 +2648,7 @@ def _prepare_no_agent_child_environment() -> tuple[Path, Mapping[str, str]]:
     """
     from agent.secret_sources.registry import _ordered_enabled_sources
     from hermes_cli.env_loader import (
-        _load_secrets_config,
+        _load_secrets_config_strict,
         refresh_hermes_dotenv_strict,
     )
     from tools.environments.local import _sanitize_subprocess_env
@@ -2658,7 +2658,7 @@ def _prepare_no_agent_child_environment() -> tuple[Path, Mapping[str, str]]:
         refresh_hermes_dotenv_strict(hermes_home=pinned_home)
 
         child_env = _sanitize_subprocess_env(os.environ.copy())
-        secrets_cfg = _load_secrets_config(pinned_home)
+        secrets_cfg = _load_secrets_config_strict(pinned_home)
         for source in _ordered_enabled_sources(secrets_cfg):
             source_cfg = secrets_cfg.get(source.name)
             source_cfg = source_cfg if isinstance(source_cfg, dict) else {}

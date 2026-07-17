@@ -49,7 +49,7 @@ def _patch_enabled_source(monkeypatch, *, alias: str = "CUSTOM_BOOTSTRAP") -> No
 
     monkeypatch.setattr(
         env_loader,
-        "_load_secrets_config",
+        "_load_secrets_config_strict",
         lambda _home: {
             "test-source": {"enabled": True, "token_alias": alias},
         },
@@ -75,9 +75,7 @@ def test_prepare_no_agent_child_env_is_immutable_and_strips_bootstrap_vars(
     monkeypatch.setenv("CUSTOM_BOOTSTRAP", "configured-bootstrap")
     _patch_enabled_source(monkeypatch)
 
-    with patch("hermes_cli.env_loader.reset_secret_source_cache"), patch(
-        "hermes_cli.env_loader.load_hermes_dotenv"
-    ):
+    with patch("hermes_cli.env_loader.refresh_hermes_dotenv_strict"):
         pinned_home, child_env = scheduler._prepare_no_agent_child_environment()
 
     assert pinned_home == home.resolve()
@@ -88,6 +86,32 @@ def test_prepare_no_agent_child_env_is_immutable_and_strips_bootstrap_vars(
     assert "CUSTOM_BOOTSTRAP" not in child_env
     with pytest.raises(TypeError):
         child_env["MUTATION"] = "blocked"
+
+
+def test_prepare_strips_environment_expanded_bootstrap_alias(tmp_path, monkeypatch):
+    import agent.secret_sources.registry as registry
+    import cron.scheduler as scheduler
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "secrets:\n"
+        "  test-source:\n"
+        "    enabled: true\n"
+        "    token_alias: ${BOOTSTRAP_ALIAS_NAME}\n"
+    )
+    monkeypatch.setattr(scheduler, "_hermes_home", home)
+    monkeypatch.setenv("BOOTSTRAP_ALIAS_NAME", "EXPANDED_BOOTSTRAP_TOKEN")
+    monkeypatch.setenv("EXPANDED_BOOTSTRAP_TOKEN", "must-not-reach-child")
+    monkeypatch.setattr(
+        registry, "_ordered_enabled_sources", lambda _cfg: [_ProtectedSource()]
+    )
+
+    with patch("hermes_cli.env_loader.refresh_hermes_dotenv_strict"):
+        _pinned_home, child_env = scheduler._prepare_no_agent_child_environment()
+
+    assert "EXPANDED_BOOTSTRAP_TOKEN" not in child_env
+    assert "${BOOTSTRAP_ALIAS_NAME}" not in child_env
 
 
 def test_prepare_no_agent_child_env_loads_exact_canonical_home(
@@ -368,6 +392,33 @@ def test_strict_refresh_rejects_unresolved_environment_reference(tmp_path, monke
         env_loader.refresh_hermes_dotenv_strict(hermes_home=home)
     assert raised.value.stage == "config"
     assert "UNSET_STRICT_TOKEN_ALIAS" not in str(raised.value)
+
+
+def test_strict_refresh_reapplies_managed_env_after_external_sources(
+    tmp_path, monkeypatch
+):
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / ".env").write_text("LOCKED_API_KEY=managed-value\n")
+    (home / "config.yaml").write_text(
+        "secrets:\n"
+        "  stricttest:\n"
+        "    enabled: true\n"
+        "    override_existing: true\n"
+    )
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    source = _StrictTestSource(
+        FetchResult(secrets={"LOCKED_API_KEY": "external-value"})
+    )
+    _install_strict_source(monkeypatch, source)
+
+    env_loader.refresh_hermes_dotenv_strict(hermes_home=home)
+
+    assert os.environ["LOCKED_API_KEY"] == "managed-value"
 
 
 def test_strict_refresh_success_replaces_stale_value(tmp_path, monkeypatch):

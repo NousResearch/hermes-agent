@@ -15,6 +15,11 @@ metadata:
 
 Use [OpenCode](https://opencode.ai) as an autonomous coding worker orchestrated by Hermes terminal/process tools. OpenCode is a provider-agnostic, open-source AI coding agent with a TUI and CLI.
 
+When the current conversation originates from Telegram, use the structured
+`telegram_coding_worker` tool with `provider="opencode"` instead of launching
+OpenCode through `terminal`. The tool derives its delivery target from the
+authenticated current-session context; never supply or infer a target.
+
 ## When to Use
 
 - User explicitly asks to use OpenCode

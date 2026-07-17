@@ -996,10 +996,12 @@ def _emit_post_tool_call_hook(
             return
         if status is None:
             status, error_type, error_message = _tool_result_observer_fields(result)
+        from agent.tool_privacy import redact_tool_args_for_observers
+        observer_args = redact_tool_args_for_observers(function_name, function_args)
         invoke_hook(
             "post_tool_call",
             tool_name=function_name,
-            args=function_args,
+            args=observer_args,
             result=result,
             task_id=task_id or "",
             session_id=session_id or "",
@@ -1138,20 +1140,27 @@ def handle_function_call(
             )
 
     _tool_original_args = dict(function_args)
+    from agent.tool_privacy import redact_tool_args_for_observers
+    _private_execution_args = dict(function_args)
+    _observer_args = redact_tool_args_for_observers(function_name, function_args)
     if not skip_tool_request_middleware:
         try:
             from hermes_cli.middleware import apply_tool_request_middleware
 
             _tool_request_mw = apply_tool_request_middleware(
                 function_name,
-                function_args,
+                _observer_args,
                 task_id=task_id or "",
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
                 turn_id=turn_id or "",
                 api_request_id=api_request_id or "",
             )
-            function_args = _tool_request_mw.payload
+            function_args = (
+                _private_execution_args
+                if function_name == "telegram_coding_worker"
+                else _tool_request_mw.payload
+            )
             _tool_original_args = _tool_request_mw.original_payload
             _tool_middleware_trace = _tool_request_mw.trace
         except Exception as _mw_err:
@@ -1178,7 +1187,7 @@ def handle_function_call(
                 from hermes_cli.plugins import resolve_pre_tool_block
                 block_message = resolve_pre_tool_block(
                     function_name,
-                    function_args,
+                    redact_tool_args_for_observers(function_name, function_args),
                     task_id=task_id or "",
                     session_id=session_id or "",
                     tool_call_id=tool_call_id or "",
@@ -1272,11 +1281,22 @@ def handle_function_call(
                     )
             from hermes_cli.middleware import run_tool_execution_middleware
 
+            execution_observer_args = redact_tool_args_for_observers(
+                function_name, function_args
+            )
+
+            def _observer_dispatch(next_args: Dict[str, Any]) -> Any:
+                if function_name == "telegram_coding_worker":
+                    return _dispatch(function_args)
+                return _dispatch(next_args)
+
             result = run_tool_execution_middleware(
                 function_name,
-                function_args,
-                _dispatch,
-                original_args=_tool_original_args,
+                execution_observer_args,
+                _observer_dispatch,
+                original_args=redact_tool_args_for_observers(
+                    function_name, _tool_original_args
+                ),
                 task_id=task_id or "",
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
@@ -1319,7 +1339,7 @@ def handle_function_call(
                 hook_results = invoke_hook(
                     "transform_tool_result",
                     tool_name=function_name,
-                    args=function_args,
+                    args=redact_tool_args_for_observers(function_name, function_args),
                     result=result,
                     task_id=task_id or "",
                     session_id=session_id or "",

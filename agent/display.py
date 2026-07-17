@@ -389,6 +389,16 @@ def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | No
     """
     if not isinstance(args, dict):
         return args
+    if tool_name == "telegram_coding_worker":
+        # This tool runs inside a messaging gateway. Its target is deliberately
+        # absent from model arguments, and every remaining value may contain a
+        # prompt, local path, provider option, or provider session identifier.
+        # Keep progress/log callbacks useful without echoing any of those values
+        # into Telegram or ordinary Hermes logs.
+        safe_args = {key: "<redacted>" for key in args}
+        if "provider" in args:
+            safe_args["provider"] = "coding worker"
+        return safe_args
     if tool_name == "browser_type" and isinstance(args.get("text"), str):
         safe_args = dict(args)
         safe_args["text"] = redact_sensitive_text(args["text"], force=True)
@@ -420,6 +430,8 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     if not args:
         return None
     args = redact_tool_args_for_display(tool_name, args) or args
+    if tool_name == "telegram_coding_worker":
+        return "coding worker"
     primary_args = {
         "terminal": "command", "web_search": "query", "web_extract": "urls",
         "read_file": "path", "write_file": "path", "patch": "path",
@@ -1436,5 +1448,4 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
 

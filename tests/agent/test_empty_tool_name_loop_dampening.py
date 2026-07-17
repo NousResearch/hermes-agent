@@ -22,6 +22,7 @@ of the message string.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import sys
@@ -181,3 +182,28 @@ def test_unknown_nonempty_name_keeps_catalog(agent_env):
     assert "frobnicate_xyz" in joined
     assert "Available tools:" in joined
     assert "tool name was empty" not in joined
+
+
+def test_verbose_tool_call_log_omits_telegram_worker_arguments(
+    agent_env, caplog, monkeypatch
+):
+    """Verbose diagnostics expose metadata, never raw coding-worker prompts."""
+    agent, handler = agent_env
+    sentinel = "TELEGRAM_WORKER_PROMPT_MUST_NOT_REACH_LOGS_7f24"
+    arguments = json.dumps({"provider": "codex", "prompt": sentinel})
+    handler.response_queue.append(_tc_resp("telegram_coding_worker", arguments))
+    handler.response_queue.append(_text_resp("done"))
+    agent.valid_tool_names.add("telegram_coding_worker")
+    agent.verbose_logging = True
+
+    monkeypatch.setattr("run_agent.handle_function_call", lambda *_a, **_kw: "ok")
+    with caplog.at_level(logging.DEBUG):
+        agent.run_conversation(
+            "delegate this task", conversation_history=[], task_id="t"
+        )
+
+    verbose_log = caplog.text
+    assert "Tool call: telegram_coding_worker" in verbose_log
+    assert f"argument length: {len(arguments)}" in verbose_log
+    assert sentinel not in verbose_log
+    assert arguments not in verbose_log

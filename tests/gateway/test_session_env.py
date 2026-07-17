@@ -7,6 +7,7 @@ from gateway.config import Platform
 from gateway.run import GatewayRunner
 from gateway.session import SessionContext, SessionSource
 from gateway.session_context import (
+    get_bound_session_env,
     get_session_env,
     set_session_vars,
     clear_session_vars,
@@ -145,6 +146,18 @@ def test_get_session_env_default_when_nothing_set(monkeypatch):
 
     assert get_session_env("HERMES_SESSION_PLATFORM") == ""
     assert get_session_env("HERMES_SESSION_PLATFORM", "fallback") == "fallback"
+
+
+def test_get_bound_session_env_never_falls_back_to_process_environment(monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+
+    assert get_bound_session_env("HERMES_SESSION_PLATFORM") == ""
+    assert get_bound_session_env("HERMES_SESSION_PLATFORM", "fallback") == "fallback"
+    assert get_bound_session_env("HERMES_SESSION_UNKNOWN", "fallback") == "fallback"
+
+    tokens = set_session_vars(platform="telegram")
+    assert get_bound_session_env("HERMES_SESSION_PLATFORM") == "telegram"
+    clear_session_vars(tokens)
 
 
 def test_set_session_env_handles_missing_optional_fields():
@@ -393,4 +406,3 @@ async def test_gateway_executor_refuses_resurrection_after_shutdown():
             await runner._run_in_executor_with_context(lambda: "second")
     finally:
         runner._shutdown_executor()
-

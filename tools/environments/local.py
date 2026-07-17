@@ -431,7 +431,11 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
 })
 
 
-def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:
+def hermes_subprocess_env(
+    *,
+    inherit_credentials: bool = False,
+    exclude_keys: frozenset[str] | set[str] | tuple[str, ...] = (),
+) -> dict[str, str]:
     """Build a sanitized environment dict for a spawned subprocess.
 
     Centralized helper for the **non-terminal** spawn surface (browser,
@@ -463,7 +467,16 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     ``inherit_credentials=False`` and copy just those keys back from
     ``os.environ`` into the returned dict.
     """
-    env = os.environ.copy()
+    # Skip Tier-1 and caller-owned secret names *before* reading their values.
+    # This is stronger than copying os.environ and popping afterward: a caller
+    # such as the Telegram Threadwire boundary can guarantee that Hermes never
+    # even materializes the transport credential in its child-env dictionary.
+    pre_excluded = _ALWAYS_STRIP_KEYS | frozenset(exclude_keys)
+    env = {
+        key: os.environ[key]
+        for key in os.environ
+        if key not in pre_excluded and not _is_hermes_internal_secret(key)
+    }
 
     # Tier 1 — always strip.
     for key in _ALWAYS_STRIP_KEYS:

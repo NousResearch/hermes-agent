@@ -316,6 +316,20 @@ def get_session_env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
+def get_bound_session_env(name: str, default: str = "") -> str:
+    """Read a session value only when its ContextVar is bound here.
+
+    Unlike :func:`get_session_env`, this helper never falls back to the
+    process environment. Unknown names and ContextVars that are ``_UNSET`` in
+    the current context return *default*.
+    """
+    var = _VAR_MAP.get(name)
+    if var is None:
+        return default
+    value = var.get()
+    return default if value is _UNSET else value
+
+
 def async_delivery_supported() -> bool:
     """Whether the current session can deliver a background completion later.
 

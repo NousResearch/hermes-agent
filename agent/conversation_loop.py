@@ -4423,7 +4423,13 @@ def run_conversation(
                 
                 if agent.verbose_logging:
                     for tc in assistant_message.tool_calls:
-                        logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
+                        arguments = tc.function.arguments
+                        argument_length = len(arguments) if arguments is not None else 0
+                        logging.debug(
+                            "Tool call: %s (argument length: %d)",
+                            tc.function.name,
+                            argument_length,
+                        )
                 
                 # Validate tool call names - detect model hallucinations
                 # Repair mismatched tool names before validating
@@ -4658,7 +4664,13 @@ def run_conversation(
                 agent._post_tool_empty_retried = False
 
                 messages.append(assistant_msg)
-                agent._emit_interim_assistant_message(assistant_msg)
+                # Interim callbacks are observers, not execution surfaces.
+                # Give them a safe copy while retaining raw arguments in the
+                # live message until dispatch has completed below.
+                from agent.tool_privacy import redact_message_for_persistence
+                agent._emit_interim_assistant_message(
+                    redact_message_for_persistence(assistant_msg)
+                )
                 try:
                     # Persist the assistant tool-call turn before any tool
                     # side effects run. If a destructive tool restarts or
@@ -4685,7 +4697,17 @@ def run_conversation(
                     except Exception:
                         pass
 
-                agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                try:
+                    agent._execute_tool_calls(
+                        assistant_message, messages, effective_task_id, api_call_count
+                    )
+                finally:
+                    # Private dispatch arguments are needed through immediate
+                    # execution and guardrail/post-hook bookkeeping, but must
+                    # not survive even when dispatch raises. Keep IDs and call
+                    # structure intact for assistant/tool protocol pairing.
+                    from agent.tool_privacy import redact_executed_tool_calls_in_place
+                    redact_executed_tool_calls_in_place(assistant_msg)
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision

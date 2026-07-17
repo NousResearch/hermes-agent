@@ -3447,6 +3447,9 @@ class SessionDB:
             json.dumps(codex_message_items)
             if codex_message_items else None
         )
+        if tool_calls:
+            from agent.tool_privacy import redact_tool_calls_for_persistence
+            tool_calls = redact_tool_calls_for_persistence(tool_calls)
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
@@ -3553,6 +3556,9 @@ class SessionDB:
             codex_message_items_json = (
                 json.dumps(codex_message_items) if codex_message_items else None
             )
+            if tool_calls:
+                from agent.tool_privacy import redact_tool_calls_for_persistence
+                tool_calls = redact_tool_calls_for_persistence(tool_calls)
             tool_calls_json = json.dumps(tool_calls) if tool_calls else None
             # Accept either `platform_message_id` (new explicit name) or
             # `message_id` (yuanbao's existing convention on message dicts).

@@ -255,9 +255,11 @@ def _apply_tool_request_middleware_for_agent(
     try:
         from hermes_cli.middleware import apply_tool_request_middleware
 
+        from agent.tool_privacy import redact_tool_args_for_observers
+        observer_args = redact_tool_args_for_observers(function_name, function_args)
         result = apply_tool_request_middleware(
             function_name,
-            function_args,
+            observer_args,
             task_id=effective_task_id or "",
             session_id=getattr(agent, "session_id", "") or "",
             tool_call_id=tool_call_id or "",
@@ -265,6 +267,8 @@ def _apply_tool_request_middleware_for_agent(
             api_request_id=getattr(agent, "_current_api_request_id", "") or "",
         )
         payload = result.payload if isinstance(result.payload, dict) else function_args
+        if function_name == "telegram_coding_worker":
+            payload = function_args
         return payload, list(result.trace)
     except Exception as exc:
         logger.debug("tool_request middleware error: %s", exc)
@@ -280,20 +284,28 @@ def _run_agent_tool_execution_middleware(
     tool_call_id: str,
     execute,
 ) -> tuple[Any, dict]:
+    from agent.tool_privacy import redact_tool_args_for_observers
+
+    private_tool = function_name == "telegram_coding_worker"
+    observer_args = redact_tool_args_for_observers(function_name, function_args)
     observed_args = function_args
 
     def _execute(next_args: dict) -> Any:
         nonlocal observed_args
-        observed_args = next_args if isinstance(next_args, dict) else function_args
+        observed_args = (
+            function_args
+            if private_tool
+            else next_args if isinstance(next_args, dict) else function_args
+        )
         return execute(observed_args)
 
     from hermes_cli.middleware import run_tool_execution_middleware
 
     result = run_tool_execution_middleware(
         function_name,
-        function_args,
+        observer_args,
         _execute,
-        original_args=function_args,
+        original_args=observer_args,
         task_id=effective_task_id or "",
         session_id=getattr(agent, "session_id", "") or "",
         tool_call_id=tool_call_id or "",
@@ -415,10 +427,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             )
         else:
             try:
+                from agent.tool_privacy import redact_tool_args_for_observers
                 from hermes_cli.plugins import resolve_pre_tool_block
                 block_message = resolve_pre_tool_block(
                     function_name,
-                    function_args,
+                    redact_tool_args_for_observers(function_name, function_args),
                     task_id=effective_task_id or "",
                     session_id=getattr(agent, "session_id", "") or "",
                     tool_call_id=getattr(tool_call, "id", "") or "",
@@ -1034,10 +1047,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             _block_error_type = "tool_scope_block"
         else:
             try:
+                from agent.tool_privacy import redact_tool_args_for_observers
                 from hermes_cli.plugins import resolve_pre_tool_block
                 _block_msg = resolve_pre_tool_block(
                     function_name,
-                    function_args,
+                    redact_tool_args_for_observers(function_name, function_args),
                     task_id=effective_task_id or "",
                     session_id=getattr(agent, "session_id", "") or "",
                     tool_call_id=getattr(tool_call, "id", "") or "",

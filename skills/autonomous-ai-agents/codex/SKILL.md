@@ -15,6 +15,11 @@ metadata:
 
 Delegate coding tasks to [Codex](https://github.com/openai/codex) via the Hermes terminal. Codex is OpenAI's autonomous coding agent CLI.
 
+When the current conversation originates from Telegram, use the structured
+`telegram_coding_worker` tool with `provider="codex"` instead of launching
+Codex through `terminal`. The tool derives its delivery target from the
+authenticated current-session context; never supply or infer a target.
+
 ## When to use
 
 - Building features

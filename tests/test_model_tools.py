@@ -19,6 +19,44 @@ from model_tools import (
 # =========================================================================
 
 class TestHandleFunctionCall:
+    def test_private_worker_args_are_redacted_for_observers_but_raw_for_dispatch(self, monkeypatch):
+        sentinel = "telegram-worker-prompt-sentinel"
+        observed = []
+        executed = []
+
+        def request_middleware(kind, **kwargs):
+            observed.append((kind, kwargs))
+            return []
+
+        def execution_middleware(**kwargs):
+            observed.append(("tool_execution", kwargs))
+            return kwargs["next_call"](kwargs["args"])
+
+        manager = type("Manager", (), {"_middleware": {
+            "tool_request": [request_middleware],
+            "tool_execution": [execution_middleware],
+        }})()
+        monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", request_middleware)
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda name, **kwargs: observed.append((name, kwargs)) or [],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda _name: True)
+        monkeypatch.setattr(
+            "model_tools.registry.dispatch",
+            lambda _name, args, **_kwargs: executed.append(args) or '{"ok":true}',
+        )
+
+        result = handle_function_call(
+            "telegram_coding_worker",
+            {"provider": "codex", "prompt": sentinel},
+        )
+
+        assert result == '{"ok":true}'
+        assert executed == [{"provider": "codex", "prompt": sentinel}]
+        assert sentinel not in json.dumps(observed, default=str)
+
     def test_agent_loop_tool_returns_error(self):
         for tool_name in _AGENT_LOOP_TOOLS:
             result = json.loads(handle_function_call(tool_name, {}))

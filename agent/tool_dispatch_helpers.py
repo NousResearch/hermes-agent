@@ -344,6 +344,9 @@ def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     """
     if not isinstance(msg, dict):
         return msg
+    from agent.tool_privacy import redact_message_for_persistence
+
+    msg = redact_message_for_persistence(msg)
     content = msg.get("content")
     if _is_multimodal_tool_result(content):
         return {**msg, "content": _multimodal_text_summary(content)}

@@ -1860,6 +1860,9 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
+                if tool_calls_data is not None:
+                    from agent.tool_privacy import redact_tool_calls_for_persistence
+                    tool_calls_data = redact_tool_calls_for_persistence(tool_calls_data)
                 self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,
@@ -2562,6 +2565,8 @@ class AIAgent:
                 # internal retry state, never durable transcript content.
                 if _is_ephemeral_scaffolding(msg):
                     continue
+                from agent.tool_privacy import redact_message_for_persistence
+                msg = redact_message_for_persistence(msg)
                 if msg.get("role") == "assistant" and msg.get("content"):
                     msg = dict(msg)
                     msg["content"] = self._clean_session_content(msg["content"])

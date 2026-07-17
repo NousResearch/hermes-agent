@@ -15,6 +15,11 @@ metadata:
 
 Delegate coding tasks to [Claude Code](https://code.claude.com/docs/en/cli-reference) (Anthropic's autonomous coding agent CLI) via the Hermes terminal. Claude Code v2.x can read files, write code, run shell commands, spawn subagents, and manage git workflows autonomously.
 
+When the current conversation originates from Telegram, use the structured
+`telegram_coding_worker` tool with `provider="claude"` instead of launching
+Claude Code through `terminal`. The tool derives its delivery target from the
+authenticated current-session context; never supply or infer a target.
+
 ## Prerequisites
 
 - **Install:** `npm install -g @anthropic-ai/claude-code`

@@ -23,9 +23,12 @@ a frozen prefix and the live ``messages`` list stays untouched.
 """
 
 import copy
+import os
+import tempfile
 import threading
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -502,3 +505,363 @@ class TestFeatureFlagAndShadow:
         db.end_session.assert_not_called()
         db.create_session.assert_not_called()
         db.update_system_prompt.assert_not_called()
+
+
+# ── loop integration (task 6): prepare between turns, apply in preflight ───
+
+
+def _fake_engine(*, context_length=100_000, last_prompt_tokens=0,
+                 can_prepare=True, prepare_fn=_default_prepare_fn):
+    """Duck-typed ContextEngine exposing exactly the hooks the loop uses."""
+    eng = SimpleNamespace()
+    eng.context_length = context_length
+    eng.last_prompt_tokens = last_prompt_tokens
+    eng.can_prepare_compression = (
+        lambda messages, current_tokens=None: can_prepare
+    )
+    eng.prepare_compression = (
+        lambda messages, current_tokens=None, focus_topic=None: prepare_fn(messages)
+    )
+    return eng
+
+
+def _fake_agent(cfg, engine, *, controller=None, session_id="sess-1"):
+    return SimpleNamespace(
+        background_compression_config=cfg,
+        background_compression=controller,
+        context_compressor=engine,
+        session_id=session_id,
+        compression_enabled=True,
+    )
+
+
+class TestPreparationTriggers:
+    """maybe_prepare_background_compression() trigger conditions (task 6)."""
+
+    def test_prepare_starts_above_threshold_without_mutating_live_messages(self):
+        msgs = _make_messages()
+        snapshot = copy.deepcopy(msgs)
+        agent = _fake_agent(_enabled_config(), _fake_engine())
+
+        started = maybe_prepare_background_compression(
+            agent, msgs, current_tokens=80_000, current_turn=2
+        )
+        assert started is True
+        ctl = agent.background_compression
+        assert isinstance(ctl, BackgroundCompressionController)
+        assert ctl.wait_until_settled(timeout=5.0)
+        assert ctl.state is CandidateState.READY
+        assert ctl.peek_candidate() is not None
+        assert msgs == snapshot
+
+    def test_prepare_skipped_below_prepare_threshold(self):
+        agent = _fake_agent(_enabled_config(), _fake_engine())
+        assert maybe_prepare_background_compression(
+            agent, _make_messages(), current_tokens=30_000, current_turn=2
+        ) is False
+        assert agent.background_compression is None
+
+    def test_prepare_skipped_when_engine_opts_out(self):
+        agent = _fake_agent(_enabled_config(), _fake_engine(can_prepare=False))
+        assert maybe_prepare_background_compression(
+            agent, _make_messages(), current_tokens=80_000, current_turn=2
+        ) is False
+        assert agent.background_compression is None
+
+    def test_prepare_skipped_when_tool_call_open(self):
+        msgs = _make_messages() + _tool_call_group(7, answered=False)
+        agent = _fake_agent(_enabled_config(), _fake_engine())
+        assert maybe_prepare_background_compression(
+            agent, msgs, current_tokens=80_000, current_turn=2
+        ) is False
+
+    def test_prepare_skipped_while_preparation_in_flight(self):
+        msgs = _make_messages()
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocked(prefix):
+            started.set()
+            assert release.wait(timeout=5.0)
+            return _default_prepare_fn(prefix)
+
+        cfg = _enabled_config()
+        agent = _fake_agent(cfg, _fake_engine(prepare_fn=blocked))
+        assert maybe_prepare_background_compression(
+            agent, msgs, current_tokens=80_000, current_turn=2
+        ) is True
+        assert started.wait(timeout=5.0)
+        # In flight — a second trigger must not supersede the running one.
+        assert maybe_prepare_background_compression(
+            agent, msgs, current_tokens=90_000, current_turn=3
+        ) is False
+        release.set()
+        assert agent.background_compression.wait_until_settled(timeout=5.0)
+
+    def test_prepare_respects_min_delta_tokens(self):
+        msgs = _make_messages()
+        cfg = _enabled_config(min_delta_tokens=20_000)
+        agent = _fake_agent(cfg, _fake_engine())
+        assert maybe_prepare_background_compression(
+            agent, msgs, current_tokens=80_000, current_turn=2
+        ) is True
+        assert agent.background_compression.wait_until_settled(timeout=5.0)
+        # Barely grown context: don't re-summarise on every message.
+        assert maybe_prepare_background_compression(
+            agent, msgs, current_tokens=85_000, current_turn=3
+        ) is False
+        # Past the delta: a fresh candidate is worth preparing.
+        assert maybe_prepare_background_compression(
+            agent, msgs, current_tokens=101_000, current_turn=4
+        ) is True
+        assert agent.background_compression.wait_until_settled(timeout=5.0)
+
+
+class TestApplyGate:
+    """maybe_apply_prepared_candidate() must respect apply_threshold."""
+
+    def test_apply_below_threshold_keeps_candidate_warm(self):
+        msgs = _make_messages()
+        cfg = _enabled_config(shadow_only=False)
+        ctl = _prepare_ready_controller(msgs, config=cfg)
+        agent = _fake_agent(cfg, _fake_engine(), controller=ctl)
+
+        result = maybe_apply_prepared_candidate(
+            agent, msgs, "sys", current_tokens=70_000, current_turn=4
+        )
+        assert result is None
+        # Below the gate is a temporal refusal — the candidate survives and
+        # no apply/fallback was even attempted.
+        assert ctl.peek_candidate() is not None
+        assert ctl.state is CandidateState.READY
+        assert "sync_fallback_count" not in ctl.stats
+        assert "candidate_applied" not in ctl.stats
+
+    def test_shadow_above_threshold_records_and_drops(self):
+        msgs = _make_messages()
+        cfg = _enabled_config(shadow_only=True)
+        ctl = _prepare_ready_controller(msgs, config=cfg)
+        agent = _fake_agent(cfg, _fake_engine(), controller=ctl)
+
+        result = maybe_apply_prepared_candidate(
+            agent, msgs, "sys", current_tokens=90_000, current_turn=4
+        )
+        assert result is None
+        assert ctl.peek_candidate() is None
+        assert ctl.stats.get("candidate_shadow_validated") == 1
+
+
+class _FinalizeStubAgent:
+    """Minimal duck-typed agent surface for finalize_turn wiring tests."""
+
+    def __init__(self):
+        self.max_iterations = 10
+        self.iteration_budget = SimpleNamespace(used=1, max_total=10, remaining=9)
+        self.context_compressor = SimpleNamespace(last_prompt_tokens=0)
+        self.model = "stub/model"
+        self.provider = "stub"
+        self.base_url = "http://stub"
+        self.session_id = "sess-1"
+        self.quiet_mode = True
+        self.platform = "cli"
+        self._interrupt_requested = False
+        self._interrupt_message = None
+        self._tool_guardrail_halt_decision = None
+        self._response_was_previewed = False
+        self._skill_nudge_interval = 0
+        self._iters_since_skill = 0
+        for attr in (
+            "session_input_tokens", "session_output_tokens",
+            "session_cache_read_tokens", "session_cache_write_tokens",
+            "session_reasoning_tokens", "session_prompt_tokens",
+            "session_completion_tokens", "session_total_tokens",
+            "session_estimated_cost_usd",
+        ):
+            setattr(self, attr, 0)
+        self.session_cost_status = "ok"
+        self.session_cost_source = "stub"
+        self.prepare_calls = []
+
+    def _maybe_prepare_background_compression(self, messages, **kwargs):
+        self.prepare_calls.append(list(messages))
+        return True
+
+    # -- inert surfaces --------------------------------------------------
+    def _save_trajectory(self, *a, **k): pass
+    def _cleanup_task_resources(self, *a, **k): pass
+    def _drop_trailing_empty_response_scaffolding(self, *a, **k): pass
+    def _persist_session(self, *a, **k): pass
+    def _emit_status(self, *a, **k): pass
+    def _safe_print(self, *a, **k): pass
+    def _handle_max_iterations(self, messages, n): return "SUMMARY"
+    def _file_mutation_verifier_enabled(self): return False
+    def _turn_completion_explainer_enabled(self): return False
+    def _drain_pending_steer(self): return None
+    def clear_interrupt(self): pass
+    def _sync_external_memory_for_turn(self, **k): pass
+
+
+def _run_finalize(agent, *, interrupted=False, failed=False,
+                  final_response="done"):
+    from agent.turn_finalizer import finalize_turn
+
+    messages = [
+        {"role": "user", "content": "question"},
+        {"role": "assistant", "content": final_response or "answer"},
+    ]
+    return finalize_turn(
+        agent,
+        final_response=final_response,
+        api_call_count=1,
+        interrupted=interrupted,
+        failed=failed,
+        messages=messages,
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="question",
+        original_user_message="question",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+
+class TestFinalizeTurnWiring:
+    """The between-turns finalizer must trigger background preparation."""
+
+    def test_completed_turn_triggers_preparation(self):
+        agent = _FinalizeStubAgent()
+        result = _run_finalize(agent)
+        assert result["final_response"] == "done"
+        assert len(agent.prepare_calls) == 1
+        assert agent.prepare_calls[0][-1]["role"] == "assistant"
+
+    def test_interrupted_turn_does_not_trigger_preparation(self):
+        agent = _FinalizeStubAgent()
+        result = _run_finalize(agent, interrupted=True, final_response=None)
+        assert result["interrupted"] is True
+        assert agent.prepare_calls == []
+
+    def test_preparation_hook_exception_never_breaks_the_turn(self):
+        agent = _FinalizeStubAgent()
+
+        def _boom(messages, **kwargs):
+            raise RuntimeError("background exploded")
+
+        agent._maybe_prepare_background_compression = _boom
+        result = _run_finalize(agent)
+        assert result["final_response"] == "done"
+
+    def test_agent_without_hook_still_finalizes(self):
+        # Backward compatibility: stubs/forks without the hook keep working.
+        agent = _FinalizeStubAgent()
+        agent._maybe_prepare_background_compression = None  # not callable
+        result = _run_finalize(agent)
+        assert result["final_response"] == "done"
+
+
+class TestAgentLifecycleIntegration:
+    """Real-agent surface: hooks exist, are safe, and honor session boundaries."""
+
+    def _make_real_agent(self, session_db, session_id):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+            from run_agent import AIAgent
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                session_db=session_db,
+                session_id=session_id,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        agent._compression_feasibility_checked = True
+        return agent
+
+    def test_feature_disabled_by_default_and_hooks_are_noops(self):
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "state.db")
+            sid = "bg-defaults"
+            db.create_session(sid, "cli", model="test/model")
+            agent = self._make_real_agent(db, sid)
+            try:
+                cfg = agent.background_compression_config
+                assert isinstance(cfg, BackgroundCompressionConfig)
+                assert cfg.enabled is False
+                assert cfg.shadow_only is True
+                assert agent.background_compression is None
+
+                msgs = _make_messages()
+                assert agent._maybe_prepare_background_compression(msgs) is False
+                assert agent._maybe_apply_prepared_compression(msgs, "sys") is None
+                assert agent.background_compression is None
+            finally:
+                agent.close()
+                db.close()
+
+    def test_reset_session_state_invalidates_candidate(self):
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "state.db")
+            sid = "bg-reset"
+            db.create_session(sid, "cli", model="test/model")
+            agent = self._make_real_agent(db, sid)
+            try:
+                msgs = _make_messages()
+                ctl = _prepare_ready_controller(msgs, session_id=sid)
+                agent.background_compression_config = ctl.config
+                agent.background_compression = ctl
+                assert ctl.peek_candidate() is not None
+
+                agent.reset_session_state()
+                assert ctl.peek_candidate() is None
+                assert ctl.state is CandidateState.IDLE
+            finally:
+                agent.close()
+                db.close()
+
+    def test_close_shuts_down_controller(self):
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "state.db")
+            sid = "bg-close"
+            db.create_session(sid, "cli", model="test/model")
+            agent = self._make_real_agent(db, sid)
+            msgs = _make_messages()
+            ctl = _prepare_ready_controller(msgs, session_id=sid)
+            agent.background_compression_config = ctl.config
+            agent.background_compression = ctl
+
+            agent.close()
+            assert agent.background_compression is None
+            assert ctl.peek_candidate() is None
+            db.close()
+
+    def test_apply_hook_swallows_controller_exceptions(self):
+        from hermes_state import SessionDB
+
+        class _BrokenController(BackgroundCompressionController):
+            def take_valid_candidate(self, **kwargs):
+                raise RuntimeError("controller exploded")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "state.db")
+            sid = "bg-broken"
+            db.create_session(sid, "cli", model="test/model")
+            agent = self._make_real_agent(db, sid)
+            try:
+                cfg = _enabled_config(shadow_only=False)
+                agent.background_compression_config = cfg
+                agent.background_compression = _BrokenController(cfg)
+                # Invariant 7: background failures never reach the foreground.
+                assert agent._maybe_apply_prepared_compression(
+                    _make_messages(), "sys", current_tokens=250_000
+                ) is None
+            finally:
+                agent.close()
+                db.close()

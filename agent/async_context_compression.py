@@ -695,6 +695,21 @@ def maybe_apply_prepared_candidate(
     if not isinstance(controller, BackgroundCompressionController):
         return None
 
+    # Apply gate: below ``apply_threshold`` the candidate stays warm — the
+    # apply limit sits deliberately under the synchronous threshold so the
+    # swap happens before the sync path would have paused the user. When the
+    # context length is unknown (plugin engines) the gate is skipped and the
+    # in-lock validation remains the only arbiter.
+    engine = getattr(agent, "context_compressor", None)
+    tokens = _numeric(current_tokens)
+    if tokens <= 0 and engine is not None:
+        tokens = _numeric(getattr(engine, "last_prompt_tokens", 0))
+    context_length = (
+        _numeric(getattr(engine, "context_length", 0)) if engine is not None else 0.0
+    )
+    if context_length > 0 and tokens < cfg.apply_threshold * context_length:
+        return None
+
     session_id = getattr(agent, "session_id", "") or ""
     candidate = controller.take_valid_candidate(
         session_id=session_id,

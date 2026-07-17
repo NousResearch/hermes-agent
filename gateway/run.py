@@ -18753,8 +18753,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # streaming text on Matrix, but suppress the cursor.
                         _buffer_only = False
                         if source.platform == Platform.MATRIX:
-                            _effective_cursor = ""
-                            _buffer_only = True
+                            _effective_cursor = ""  # ▉ tofu on most Matrix clients
                         # Fresh-final applies to Telegram only — other
                         # platforms either edit in place cheaply or don't
                         # have the edit-timestamp-stays-stale problem.

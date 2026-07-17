@@ -3244,6 +3244,20 @@ class SessionDB:
             row = cursor.fetchone()
         return dict(row) if row else None
 
+    def get_last_message_timestamp(self, session_id: str) -> Optional[float]:
+        """Return the most recent message timestamp for *session_id*, or None
+        if the session has no messages.
+
+        Used to recover a session's real last-activity time (as opposed to
+        ``started_at``, which only reflects when the session was created).
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(timestamp) AS ts FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return row["ts"] if row is not None and row["ts"] is not None else None
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
 

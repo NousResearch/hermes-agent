@@ -24,6 +24,7 @@ import re
 import ssl
 import threading
 import time
+import traceback
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -5519,7 +5520,44 @@ def run_conversation(
                 break
             
         except Exception as e:
-            error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
+            # Phase-aware error classification. The huge outer try/except spans
+            # both the actual API request and all local post-processing of the
+            # returned assistant message. Deterministic local bugs (e.g.
+            # passing a multimodal content list into a regex helper after a
+            # vision turn or context compaction) should not be retried: they
+            # will fail identically on every iteration and only burn the
+            # iteration budget. We classify an error as local by inspecting the
+            # traceback: if the exception propagated through any of the known
+            # local post-processing helpers and never entered the interruptible
+            # API-call helpers, it is almost certainly a local processing bug.
+            # (#66267)
+            _local_processing_modules = {
+                "agent_runtime_helpers",
+                "conversation_loop",
+                "message_content",
+                "run_agent",
+            }
+            _api_call_modules = {
+                "chat_completion_helpers",
+            }
+
+            tb_stack = traceback.extract_tb(e.__traceback__)
+            tb_module_names = {
+                os.path.splitext(os.path.basename(frame.filename))[0]
+                for frame in tb_stack
+            }
+            _hit_local = bool(tb_module_names & _local_processing_modules)
+            _hit_api = bool(tb_module_names & _api_call_modules)
+
+            _is_local_processing_error = _hit_local and not _hit_api
+
+            if _is_local_processing_error:
+                error_msg = (
+                    f"Error during local message processing after "
+                    f"OpenAI-compatible API call #{api_call_count}: {str(e)}"
+                )
+            else:
+                error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
             try:
                 print(f"❌ {error_msg}")
             except (OSError, ValueError):
@@ -5566,10 +5604,19 @@ def run_conversation(
             # message pollutes history, burns tokens, and risks violating
             # role-alternation invariants.
 
-            # If we're near the limit, break to avoid infinite loops
-            if api_call_count >= agent.max_iterations - 1:
-                _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
-                final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
+            # If we're near the limit, break to avoid infinite loops.
+            # Local processing errors are deterministic — stop immediately
+            # rather than retrying until the budget is exhausted.
+            if (
+                _is_local_processing_error
+                or api_call_count >= agent.max_iterations - 1
+            ):
+                if _is_local_processing_error:
+                    _turn_exit_reason = f"local_processing_error({error_msg[:80]})"
+                    final_response = f"I apologize, but I encountered an error while processing the model response: {error_msg}"
+                else:
+                    _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
+                    final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
                 # Append as assistant so the history stays valid for
                 # session resume (avoids consecutive user messages).
                 messages.append({"role": "assistant", "content": final_response})

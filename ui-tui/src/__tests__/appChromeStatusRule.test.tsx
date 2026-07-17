@@ -112,14 +112,14 @@ describe('StatusRule active credential label', () => {
       credentialLabel: 'personal'
     })
 
-    expect(textContent(element)).toContain('opus 4.8 | personal')
+    expect(textContent(element)).toContain('opus 4.8 · personal')
   })
 
   it('does not add an account separator when no pooled label is available', () => {
     const element = StatusRule({ ...baseProps })
 
     expect(textContent(element)).toContain('opus 4.8')
-    expect(textContent(element)).not.toContain('opus 4.8 |')
+    expect(textContent(element)).not.toContain('opus 4.8 ·')
   })
 
   it('hides account identity before the compact-context breakpoint', () => {

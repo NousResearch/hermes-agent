@@ -398,7 +398,7 @@ export function credentialStatusLabel(label: string, maxWidth = CREDENTIAL_LABEL
 const modelLabel = (model: string, effort?: string, fast?: boolean, credentialLabel?: string) => {
   const modelText = [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
 
-  return credentialLabel ? `${modelText} | ${credentialStatusLabel(credentialLabel)}` : modelText
+  return credentialLabel ? `${modelText} · ${credentialStatusLabel(credentialLabel)}` : modelText
 }
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {

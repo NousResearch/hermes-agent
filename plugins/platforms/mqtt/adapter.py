@@ -14,7 +14,7 @@ the registry — no edits to core files required.
 Requires:
 - paho-mqtt (install via ``pip install paho-mqtt``)
 - MQTT_USER / MQTT_PASSWORD env vars (or set in PlatformConfig.extra)
-- MQTT_BROKER env var (default: 192.168.1.212)
+- MQTT_BROKER env var (default: localhost)
 - MQTT_CA_CERT env var (optional — flips port to 8883 + TLS when set)
 """
 
@@ -383,7 +383,7 @@ class MQTTAdapter(BasePlatformAdapter):
         — "respond on the same channel" — are wrong for an event bus.
 
         Behavior: only publishes to topics under `self_topic_prefix`
-        (default `phoebe/hermes/`). Everything else is suppressed silently with
+        (default `hermes/`). Everything else is suppressed silently with
         a successful SendResult so the agent loop doesn't see a fake failure.
 
         Intentional outbound (e.g., a future command-topic for orion control)
@@ -404,7 +404,7 @@ class MQTTAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, message_id=f"suppressed_{topic}")
 
-        # Allow phoebe/hermes/* publishes (intentional outbound only).
+        # Allow hermes/* publishes (intentional outbound only).
         if not self._client or not self._connected:
             return SendResult(success=False, error="MQTT client not connected")
 

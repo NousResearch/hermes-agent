@@ -4951,35 +4951,32 @@ def test_write_txn_post_commit_check_fires_every_call(tmp_path):
     conn.close()
 
 
-def test_connect_sets_wal_autocheckpoint_1000(tmp_path):
-    """connect() sets wal_autocheckpoint to 1000 (the SQLite default,
-    asserted explicitly): every checkpoint rewrites main-DB pages — the
-    torn-write window on a weak-durability FS and the contention window
-    integrity probes race against. 100 forced near-constant checkpoint
-    churn under a worker swarm; durability is unchanged because
-    synchronous=FULL fsyncs the WAL at commit."""
+def test_connect_sets_wal_autocheckpoint_100(tmp_path):
+    """connect() sets wal_autocheckpoint=100 on the init path.
+
+    100 is a labeled precaution while the 2026-07-15 corruption root cause is
+    unproven — not a mechanism-backed fix (both prior theories failed direct
+    testing; see ~/kanban-db-investigation/REVIEW.md). What this test actually
+    protects is the DECISION, whatever the value: change it deliberately, in
+    both call sites at once, never as a drive-by."""
     from hermes_cli.kanban_db import connect
     db = tmp_path / "test.db"
     conn = connect(db_path=db)
     val = conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0]
-    assert val == 1000
+    assert val == 100
     conn.close()
 
 
 def test_connect_sets_wal_autocheckpoint_100_on_fast_path(tmp_path):
-    """wal_autocheckpoint is 1000 on the init path but 100 on the fast path.
+    """wal_autocheckpoint is 100 on BOTH connect paths.
 
-    The steady-state fast path is what long-lived writers (gateway dispatcher,
-    webui) take on every tick, so their threshold sets the effective WAL
-    ceiling for every process sharing the board: any of their commits past
-    ~100 pages checkpoints ~400KB. Raising the fast path to 1000 (2026-07-15)
-    made checkpoints ~4MB bursts 10x rarer, and on a weak-durability FS (WSL2
-    vhdx) each burst is the torn-write window — three real index-tear
-    corruptions followed within hours on a board that had run a month clean
-    at 100, at far lighter load. The read-only-first guard fails open on
-    contention, so the small-checkpoint churn no longer causes probe false
-    positives. Assert the init connect keeps 1000 and a subsequent fast-path
-    connect drops to 100.
+    The two call sites briefly shipped different values (fast 100 / init
+    1000) with contradictory justifying comments. Because the pragma is
+    per-connection, a mixed fleet makes any field observation about the value
+    uninterpretable — every new process's first connect takes the init path,
+    while long-lived writers (gateway dispatcher, webui) re-connect on the
+    fast path. Assert both paths agree so a future change has to touch both
+    deliberately.
     """
     db = tmp_path / "kanban.db"
     resolved = str(db.resolve())
@@ -4988,10 +4985,10 @@ def test_connect_sets_wal_autocheckpoint_100_on_fast_path(tmp_path):
     # First connect: slow/init path. Populates _INITIALIZED_PATHS.
     conn = kb.connect(db_path=db)
     assert resolved in kb._INITIALIZED_PATHS  # next connect takes the fast path
-    assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 1000
+    assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 100
     conn.close()
 
-    # Second connect: fast path (already initialized) — the pacemaker.
+    # Second connect: fast path (already initialized) — must match.
     conn = kb.connect(db_path=db)
     assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 100
     conn.close()

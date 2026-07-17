@@ -1640,6 +1640,26 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     resolved = path.resolve()
     parent = resolved.parent
     base_name = resolved.name  # basename only
+    # Capture WAL/SHM bytes FIRST, before the multi-MB hash+copy pass over the
+    # main file. Every 2026-07-15 quarantine recorded a 0-byte WAL because the
+    # sidecars were copied last — by then a checkpoint/truncate had already
+    # emptied them. The WAL is the primary forensic artifact for
+    # index-vs-table damage; grab its bytes at T0 and write them out once the
+    # content-addressed backup name is known. Size-capped so a pathological
+    # WAL cannot balloon memory (falls back to a late copy2 in that case).
+    sidecar_bytes: dict[str, Optional[bytes]] = {}
+    _SIDECAR_CAPTURE_MAX = 256 * 1024 * 1024
+    for suffix in ("-wal", "-shm"):
+        sidecar = parent / (base_name + suffix)
+        try:
+            if sidecar.parent != parent or not sidecar.exists():
+                continue
+            if sidecar.stat().st_size > _SIDECAR_CAPTURE_MAX:
+                sidecar_bytes[suffix] = None  # marker: copy late instead
+            else:
+                sidecar_bytes[suffix] = sidecar.read_bytes()
+        except OSError:
+            continue
     digest = hashlib.sha256()
     try:
         with resolved.open("rb") as handle:
@@ -1657,18 +1677,136 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
             shutil.copy2(resolved, candidate)
         except OSError:
             return None
-    for suffix in ("-wal", "-shm"):
-        sidecar = parent / (base_name + suffix)
-        if sidecar.parent != parent or not sidecar.exists():
-            continue
+    for suffix, data in sidecar_bytes.items():
         sidecar_backup = parent / (candidate.name + suffix)
         if sidecar_backup.parent != parent or sidecar_backup.exists():
             continue
         try:
-            shutil.copy2(sidecar, sidecar_backup)
+            if data is not None:
+                sidecar_backup.write_bytes(data)
+            else:
+                # Oversized sidecar: late direct copy is better than nothing.
+                shutil.copy2(parent / (base_name + suffix), sidecar_backup)
         except OSError:
             pass
     return candidate
+
+
+def _statvfs_free_mb(mount: str) -> Optional[int]:
+    """Free MB on a filesystem, or None if unavailable (e.g. no /mnt/c)."""
+    try:
+        st = os.statvfs(mount)
+        return int(st.f_bavail * st.f_frsize // (1024 * 1024))
+    except OSError:
+        return None
+
+
+def _mem_available_mb() -> Optional[int]:
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _collect_db_holders(target: Path, limit: int = 32) -> list[dict[str, Any]]:
+    """Best-effort /proc scan for processes holding an fd on the DB or its
+    sidecars. Answers "who was still writing?" at quarantine time — the
+    2026-07-15 17:04 double-quarantine proved open holders keep committing to
+    a condemned file after new connects start failing closed.
+    """
+    needle = str(target)
+    holders: list[dict[str, Any]] = []
+    me = os.getpid()
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return holders
+    for proc in proc_root.iterdir():
+        if len(holders) >= limit:
+            break
+        if not proc.name.isdigit() or int(proc.name) == me:
+            continue
+        try:
+            fds = list((proc / "fd").iterdir())
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                fd_target = os.readlink(fd)
+            except OSError:
+                continue
+            if fd_target.startswith(needle):
+                try:
+                    cmdline = (
+                        (proc / "cmdline").read_bytes()
+                        .replace(b"\x00", b" ").decode(errors="replace").strip()
+                    )
+                except OSError:
+                    cmdline = "?"
+                holders.append({"pid": int(proc.name), "cmdline": cmdline[:300]})
+                break
+    return holders
+
+
+def _integrity_report_lines(resolved: Path, limit: int = 20) -> list[str]:
+    """Up to ``limit`` lines of integrity_check output over a fresh ro
+    connection (the guard's probes only keep the first row)."""
+    try:
+        conn = sqlite3.connect(
+            f"{resolved.as_uri()}?mode=ro", uri=True, timeout=5,
+        )
+        try:
+            rows = conn.execute(f"PRAGMA integrity_check({int(limit)})").fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return [f"<integrity re-read failed: {exc}>"]
+    lines: list[str] = []
+    for row in rows:
+        lines.extend(str(row[0]).splitlines())
+    return lines[:limit]
+
+
+def _write_quarantine_forensics(
+    resolved: Path, reason: str, backup: Optional[Path],
+) -> None:
+    """Append one JSON line of incident context next to the board.
+
+    The 2026-07-15 incident was undiagnosable after the fact: WAL sizes,
+    memory/disk pressure, and the set of live writers were all gone by the
+    time a human looked. Capture them at the only moment they exist — the
+    confirmed-damage verdict. Best-effort by design: forensics must never
+    turn a quarantine into a crash.
+    """
+    try:
+        def _size(p: Path) -> Optional[int]:
+            try:
+                return p.stat().st_size if p.exists() else None
+            except OSError:
+                return None
+
+        record = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "db": str(resolved),
+            "reason": reason,
+            "backup": str(backup) if backup is not None else None,
+            "db_bytes": _size(resolved),
+            "wal_bytes": _size(resolved.with_name(resolved.name + "-wal")),
+            "shm_bytes": _size(resolved.with_name(resolved.name + "-shm")),
+            "mem_available_mb": _mem_available_mb(),
+            "free_mb": {"/": _statvfs_free_mb("/"), "/mnt/c": _statvfs_free_mb("/mnt/c")},
+            "holders": _collect_db_holders(resolved),
+            "integrity": _integrity_report_lines(resolved),
+            "pid": os.getpid(),
+            "argv": sys.argv[:6],
+        }
+        out = resolved.parent / "quarantine-forensics.jsonl"
+        with out.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        _log.exception("quarantine forensics capture failed (non-fatal)")
 
 
 def _guard_existing_db_is_healthy(path: Path) -> None:
@@ -1764,6 +1902,11 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     # Damage confirmed by every spaced read-only probe over a multi-second
     # window: this is the permanent kind. Quarantine and fail closed.
     backup = _backup_corrupt_db(resolved)
+    _write_quarantine_forensics(
+        resolved,
+        f"{reason} (read-only verification x{_HEALTH_CONFIRM_ATTEMPTS}: {confirmed})",
+        backup,
+    )
     raise KanbanDbCorruptError(
         resolved,
         backup,
@@ -1906,20 +2049,19 @@ def connect(
                 from hermes_state import apply_wal_with_fallback
                 apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
                 conn.execute("PRAGMA synchronous=FULL")
-                # 100 on the steady-state path, NOT 1000 like the init path
-                # below. Long-lived writers (gateway dispatcher, webui) take
-                # this path on every tick, so their threshold sets the
-                # effective WAL ceiling for the whole fleet: any of their
-                # commits past ~100 pages checkpoints ~400KB. At 1000 the
-                # writeback grows to ~4MB bursts 10x rarer — and on a
-                # weak-durability FS (WSL2 vhdx, no FUA) each burst is the
-                # torn-write window. Field data 2026-07-15: raising this to
-                # 1000 preceded three real index-tear corruptions within
-                # hours on a board that had run a month clean at 100, at 6x
-                # LIGHTER load than its heaviest clean day. The FP-contention
-                # rationale for 1000 no longer applies here: the read-only
-                # first guard fails open on contention, so frequent small
-                # checkpoints cost nothing but keep the torn window small.
+                # 100, matching the init path below — the two call sites MUST
+                # agree (they shipped contradictory values + theories for a
+                # day; wal_autocheckpoint is per-connection, so a mixed fleet
+                # makes any field observation uninterpretable). This value is
+                # a labeled PRECAUTION, not a root-cause fix: the 2026-07-15
+                # corruptions were index-ahead-of-table damage with an EMPTY
+                # WAL, which no checkpoint-burst-size mechanism explains, and
+                # in this fleet checkpoint cadence is dominated by
+                # last-connection-close checkpoints (short-lived CLI/webui
+                # connections), not by this threshold. Do not "fix" this to
+                # 1000 (or defend 100) on the strength of any earlier comment
+                # here — both prior theories failed direct testing. Full
+                # analysis: ~/kanban-db-investigation/REVIEW.md.
                 conn.execute("PRAGMA wal_autocheckpoint=100")
                 conn.execute("PRAGMA foreign_keys=ON")
                 conn.execute("PRAGMA secure_delete=ON")
@@ -1954,15 +2096,11 @@ def connect(
                 # FULL (was NORMAL): fsync before each checkpoint to narrow the
                 # crash window that can leave a b-tree page header torn.
                 conn.execute("PRAGMA synchronous=FULL")
-                # 1000 (SQLite default; was 100): every checkpoint rewrites
-                # main-DB pages, which is exactly the torn-write window on a
-                # weak-durability FS — and the contention window the health
-                # probes race against. 100 forced a checkpoint roughly every
-                # ~400KB written, i.e. near-constant churn under a worker
-                # swarm. Fewer, larger checkpoints shrink both windows; the
-                # WAL staying a few MB longer costs nothing (synchronous=FULL
-                # fsyncs the WAL at commit, so durability is unchanged).
-                conn.execute("PRAGMA wal_autocheckpoint=1000")
+                # 100, matching the fast path above — keep the call sites in
+                # agreement. Labeled precaution, not a root-cause fix; see the
+                # fast-path comment and ~/kanban-db-investigation/REVIEW.md
+                # before changing either value.
+                conn.execute("PRAGMA wal_autocheckpoint=100")
                 conn.execute("PRAGMA foreign_keys=ON")
                 # Zero freed pages so a later torn write cannot expose stale
                 # cell content; persisted in the DB header for new DBs.

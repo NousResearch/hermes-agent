@@ -368,7 +368,29 @@ def main():
             continue
 
         method = req.get("method") if isinstance(req, dict) else None
-        resp = dispatch(req)
+        try:
+            resp = dispatch(req)
+        except Exception as exc:
+            print(
+                f"[gateway-dispatch] {type(exc).__name__}: {exc}",
+                file=sys.stderr, flush=True,
+            )
+            try:
+                os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+                with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+                    import traceback
+                    f.write(
+                        f"\n=== dispatch exception · "
+                        f"{time.strftime('%Y-%m-%d %H:%M:%S')} · method={method!r} ===\n"
+                    )
+                    traceback.print_exc(file=f)
+            except Exception:
+                pass
+            resp = {
+                "jsonrpc": "2.0",
+                "error": {"code": -32000, "message": f"internal error: {exc}"},
+                "id": req.get("id") if isinstance(req, dict) else None,
+            }
         if resp is not None:
             if not write_json(resp):
                 _log_exit(f"response write failed for method={method!r} (broken stdout pipe)")

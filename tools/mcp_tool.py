@@ -2199,6 +2199,16 @@ class MCPServerTask:
                 timeout=timeout,
             )
         finally:
+            # The event loop may already be closing/closed during process
+            # shutdown. At that point the parked task can still be woken by a
+            # pending timer; calling t.cancel() schedules on a closed loop
+            # (call_soon -> _check_closed) and raises
+            # "RuntimeError: Event loop is closed", which asyncio then prints
+            # as an "Exception ignored" traceback (#65111). Bail out of
+            # cleanup rather than touching the dead loop.
+            loop = asyncio.get_event_loop()
+            if getattr(loop, "is_closed", None) and loop.is_closed():
+                return "shutdown"
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
                     t.cancel()

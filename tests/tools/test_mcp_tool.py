@@ -1394,6 +1394,41 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    def test_parked_shutdown_on_closed_event_loop_does_not_raise(self):
+        """A parked MCP task woken after the event loop closed must return
+        'shutdown' instead of raising 'Event loop is closed' (#65111).
+
+        At process exit the loop can be closed before the parked
+        _wait_for_reconnect_or_shutdown finally-block runs; calling
+        task.cancel() on a dead loop re-raises RuntimeError via
+        call_soon -> _check_closed, which asyncio prints as an
+        'Exception ignored' traceback.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("srv")
+
+            # Simulate process shutdown: loop reports closed (not running).
+            real_loop = asyncio.get_event_loop()
+
+            class _ClosedLoop:
+                def is_closed(self):
+                    return True
+
+                def is_running(self):
+                    return False
+
+            asyncio.get_event_loop = lambda: _ClosedLoop()  # type: ignore[assignment]
+            try:
+                reason = await server._wait_for_reconnect_or_shutdown(timeout=0.01)
+            finally:
+                asyncio.get_event_loop = lambda: real_loop  # type: ignore[assignment]
+
+            assert reason == "shutdown"
+
+        asyncio.run(_test())
+
 
 # ---------------------------------------------------------------------------
 # discover_mcp_tools toolset injection

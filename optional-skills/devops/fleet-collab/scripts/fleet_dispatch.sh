@@ -27,13 +27,13 @@ FLEET_MAP=(
   "worker-<name1>|<ssh_user>|<tailscale_ip>|<remote_hermes_path>"
   "worker-<name2>|<ssh_user>|<tailscale_ip>|<remote_hermes_path>"
   # 示例：
-  # "worker-beefy|alice|100.112.35.71|/home/alice/.local/bin/hermes"
-  # "worker-mini|bob|100.112.232.110|/home/bob/.local/bin/hermes"
+  # "worker-beefy|alice|100.64.0.10|/home/alice/.local/bin/hermes"
+  # "worker-mini|bob|100.64.0.11|/home/bob/.local/bin/hermes"
 )
 # ================================================
 
 # 本机 hermes 命令
-LOCAL_HERMES="/home/test/.local/bin/hermes"
+LOCAL_HERMES="<path_to_hermes_on_hub>"
 
 # ========== 工具函数 ==========
 
@@ -108,7 +108,7 @@ dispatch_task() {
         "export PATH=\"\$HOME/.local/bin:\$PATH\";
          # 显式清掉代理，确保 hermes 对 Tailscale 内网直连（各机器都有 Clash 代理会劫持 100.x）
          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy;
-         export NO_PROXY='localhost,127.0.0.1,::1,100.64.0.0/10,100.112.35.71,100.65.252.24,100.112.232.110,100.83.245.24';
+         export NO_PROXY='localhost,127.0.0.1,::1,100.64.0.0/10,<hub_tailscale_ip>,<worker_ips...>';
          export no_proxy=\"\$NO_PROXY\";
          BODY=\$(cat $remote_body);
          timeout 600 \"\$HOME/.local/bin/hermes\" chat --yolo -q \"\$BODY\" 2>&1;

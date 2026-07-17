@@ -14,14 +14,14 @@
 set -euo pipefail
 
 # ===== 按你的环境修改以下三行 =====
-HUB_USER="test"
-HUB_IP="100.83.245.24"
-HUB_HERMES="/home/test/.local/bin/hermes"
+HUB_USER="<hub_ssh_user>"
+HUB_IP="<hub_tailscale_ip>"
+HUB_HERMES="<path_to_hermes_on_hub>"
 # ================================
 
 # 判断当前是否在 hub 上（改成你的 hub 主机名）
 IS_HUB=0
-hostname | grep -qi "latitude-5550" && IS_HUB=1
+hostname | grep -qi "<hub_hostname>" && IS_HUB=1
 
 # 核心函数：在本机执行 hermes kanban <subcmd> <args...>
 # 参数通过临时文件 + scp 传输，避免 shell 引号问题

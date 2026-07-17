@@ -1046,6 +1046,8 @@ stt:
     #                          # only implements one format
     # timeout: 60              # seconds; raise for slow CPU-bound servers (default 30)
     # language: ""             # ISO-639-1 hint forwarded to the server; "" = auto-detect
+    # request_format: "multipart"  # or "json" — send a base64 input_audio JSON body
+    #                          # instead of a multipart upload (OpenWebUI-style contract)
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
   # deepinfra:

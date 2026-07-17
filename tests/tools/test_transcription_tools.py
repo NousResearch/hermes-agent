@@ -439,6 +439,65 @@ class TestSelfHostedOpenAISTT:
         assert base == self.SELF
         assert key == "local-token"
 
+    def test_json_request_format_sends_base64_body(self, monkeypatch, sample_wav):
+        """request_format=json posts an OpenWebUI-style JSON body
+        (input_audio.data base64 + format) instead of a multipart upload."""
+        import base64
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            text = '{"text": "hallo welt"}'
+
+            @staticmethod
+            def json():
+                return {"text": "hallo welt"}
+
+        def _fake_post(url, json=None, headers=None, timeout=None):
+            captured.update(url=url, payload=json, headers=headers, timeout=timeout)
+            return _Resp()
+
+        import requests
+        monkeypatch.setattr(requests, "post", _fake_post)
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: self._cfg(base_url=self.SELF, request_format="json", timeout=45),
+        )
+        from tools.transcription_tools import transcribe_audio, _PLACEHOLDER_OPENAI_KEY
+        result = transcribe_audio(sample_wav, language="de")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hallo welt"
+        assert captured["url"] == self.SELF.rstrip("/") + "/audio/transcriptions"
+        assert captured["timeout"] == 45.0
+        assert captured["headers"]["Authorization"] == f"Bearer {_PLACEHOLDER_OPENAI_KEY}"
+        payload = captured["payload"]
+        assert payload["model"] == "nemotron"
+        assert payload["language"] == "de"
+        audio = payload["input_audio"]
+        assert audio["format"] == "wav"
+        base64.b64decode(audio["data"])  # decodes cleanly
+
+    def test_json_request_format_error_status(self, monkeypatch, sample_wav):
+        class _Resp:
+            status_code = 500
+            text = "boom"
+
+            @staticmethod
+            def json():
+                return {}
+
+        import requests
+        monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp())
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: self._cfg(base_url=self.SELF, request_format="json"),
+        )
+        from tools.transcription_tools import transcribe_audio
+        result = transcribe_audio(sample_wav)
+        assert result["success"] is False
+        assert "500" in result["error"]
+
     def test_base_url_is_private_classification(self):
         from tools.transcription_tools import _base_url_is_private
         assert _base_url_is_private("http://192.168.1.50:8000/v1") is True

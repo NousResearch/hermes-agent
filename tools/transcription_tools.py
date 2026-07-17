@@ -1385,6 +1385,7 @@ def _transcribe_openai(
     response_format: Optional[str] = None,
     timeout: Optional[float] = None,
     language: Optional[str] = None,
+    request_format: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Transcribe via the OpenAI ``audio.transcriptions.create`` SDK shape.
 
@@ -1395,9 +1396,14 @@ def _transcribe_openai(
     name.
 
     ``response_format`` and ``timeout`` let self-hosted / OpenAI-compatible
-    servers override the defaults (some only implement ``json``; CPU-bound
-    servers need more than 30s). ``language`` is forwarded as an ISO-639-1
-    hint when set (empty/None = auto-detect).
+    servers override the defaults (some only implement ``json`` responses;
+    CPU-bound servers need more than 30s). ``language`` is forwarded as an
+    ISO-639-1 hint when set (empty/None = auto-detect).
+
+    ``request_format`` selects the upload shape: ``multipart`` (default,
+    the standard OpenAI file upload) or ``json`` — a JSON body with the
+    audio base64-encoded as ``input_audio: {data, format}``, matching the
+    OpenWebUI contract for servers that only accept JSON.
     """
     if api_key is None:
         try:
@@ -1405,6 +1411,13 @@ def _transcribe_openai(
         except ValueError as exc:
             return {"success": False, "transcript": "", "error": str(exc)}
         base_url = base_url or fallback_base
+
+    if str(request_format or "").strip().lower() in ("json", "json_base64"):
+        return _transcribe_openai_json_b64(
+            file_path, model_name, api_key, base_url,
+            provider_label=provider_label,
+            response_format=response_format, timeout=timeout, language=language,
+        )
 
     if not _HAS_OPENAI:
         return {"success": False, "transcript": "", "error": "openai package not installed"}
@@ -1460,6 +1473,84 @@ def _transcribe_openai(
     except Exception as e:
         logger.error("%s transcription failed: %s", provider_label, e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
+
+def _transcribe_openai_json_b64(
+    file_path: str,
+    model_name: str,
+    api_key: str,
+    base_url: Optional[str],
+    provider_label: str = "openai",
+    response_format: Optional[str] = None,
+    timeout: Optional[float] = None,
+    language: Optional[str] = None,
+) -> Dict[str, Any]:
+    """JSON/base64 upload variant for OpenAI-compatible STT servers.
+
+    POSTs ``{model, input_audio: {data: <b64>, format: <ext>}, ...}`` to
+    ``{base_url}/audio/transcriptions`` with a JSON body — the OpenWebUI
+    ``api_request_format: json`` contract, for servers that don't accept
+    multipart uploads.
+    """
+    import base64
+
+    try:
+        import requests
+    except ImportError:
+        return {"success": False, "transcript": "", "error": "requests package not installed"}
+
+    try:
+        client_timeout = float(timeout) if timeout is not None else 30.0
+    except (TypeError, ValueError):
+        client_timeout = 30.0
+    base = (base_url or OPENAI_BASE_URL).rstrip("/")
+    ext = (Path(file_path).suffix or "").lstrip(".").lower() or "wav"
+    if ext == "oga":
+        ext = "ogg"
+
+    try:
+        with open(file_path, "rb") as fh:
+            audio_b64 = base64.b64encode(fh.read()).decode("utf-8")
+        payload: Dict[str, Any] = {
+            "model": model_name,
+            "input_audio": {"data": audio_b64, "format": ext},
+        }
+        if response_format:
+            payload["response_format"] = response_format
+        if language:
+            payload["language"] = language
+        resp = requests.post(
+            f"{base}/audio/transcriptions",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=client_timeout,
+        )
+        if resp.status_code != 200:
+            snippet = (resp.text or "")[:200]
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"API error: HTTP {resp.status_code}: {snippet}",
+            }
+        try:
+            data = resp.json()
+            transcript_text = str(data.get("text") or "").strip() if isinstance(data, dict) else str(data).strip()
+        except ValueError:
+            transcript_text = (resp.text or "").strip()
+        logger.info(
+            "Transcribed %s via %s json-b64 (%s, %d chars)",
+            Path(file_path).name, provider_label, model_name, len(transcript_text),
+        )
+        return {"success": True, "transcript": transcript_text, "provider": provider_label}
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except requests.exceptions.Timeout as e:
+        return {"success": False, "transcript": "", "error": f"Request timeout: {e}"}
+    except requests.exceptions.ConnectionError as e:
+        return {"success": False, "transcript": "", "error": f"Connection error: {e}"}
+    except Exception as e:
+        logger.error("%s json-b64 transcription failed: %s", provider_label, e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
+
 
 # ---------------------------------------------------------------------------
 # Provider: mistral (Voxtral Transcribe API)
@@ -1775,6 +1866,10 @@ def transcribe_audio(
                    that accept one (OpenAI-compatible); None = auto-detect.
                    Falls back to ``stt.<provider>.language`` from config.
 
+    ``stt.openai.request_format`` ("multipart" default | "json") selects the
+    upload shape for OpenAI-compatible servers; "json" sends a base64
+    ``input_audio`` JSON body (OpenWebUI contract).
+
     Returns:
         dict with keys:
           - "success" (bool): Whether transcription succeeded
@@ -1825,6 +1920,7 @@ def transcribe_audio(
             response_format=openai_cfg.get("response_format"),
             timeout=openai_cfg.get("timeout"),
             language=language or openai_cfg.get("language"),
+            request_format=openai_cfg.get("request_format"),
         )
 
     if provider == "mistral":

@@ -380,11 +380,10 @@ Write the manifest:
   "version": "1.0.0",
   "tab": {
     "path": "/my-plugin",
-    "position": "after:skills"
+    "position": "end"
   },
   "entry": "dist/index.js"
 }
-```
 
 Write the JS bundle (a plain IIFE — no build step needed):
 
@@ -414,7 +413,7 @@ Write the JS bundle (a plain IIFE — no build step needed):
 })();
 ```
 
-Refresh the dashboard — your tab appears in the nav bar, after **Skills**.
+Refresh the dashboard — your tab appears in the **Plugins** section at the bottom of the sidebar nav.
 
 :::tip Skip React.createElement
 If you prefer JSX, use any bundler (esbuild, Vite, rollup) with React as an external and IIFE output. The only hard requirement is that the final file is a single JS file loadable via `<script>`. React is never bundled; it comes from `SDK.React`.
@@ -472,7 +471,7 @@ None of them are required; include only the layers you need.
 | `icon` | No | Lucide icon name. Defaults to `Puzzle`. Unknown names fall back to `Puzzle`. |
 | `version` | No | Semver string. Defaults to `0.0.0`. |
 | `tab.path` | Yes | URL path for the tab (e.g. `/my-plugin`). |
-| `tab.position` | No | Where to insert the tab. `"end"` (default), `"after:<path>"`, or `"before:<path>"` — value after the colon is the **path segment** of the target tab (no leading slash). Examples: `"after:skills"`, `"before:config"`. |
+| `tab.position` | No | Where to place the tab within the **Plugins** section of the sidebar. `"end"` (default) appends it at the end; `"after:<path>"` inserts after another plugin tab; `"before:<path>"` inserts before another plugin tab — value after the colon is the **path segment** of the target tab (no leading slash). Plugin tabs are always rendered in a separate "Plugins" group below all built-in sidebar items, so `before:`/`after:` targets must be other plugin paths (referencing a built-in path like `"after:skills"` has no visible effect relative to that built-in item).|
 | `tab.override` | No | Set to a built-in route path (`"/"`, `"/sessions"`, `"/config"`, ...) to **replace** that page instead of adding a new tab. See [Replacing built-in pages](#replacing-built-in-pages-taboverride). |
 | `tab.hidden` | No | When true, register the component and any slots without adding a tab to the nav. Used by slot-only plugins. See [Slot-only plugins](#slot-only-plugins-tabhidden). |
 | `slots` | No | Named shell slots this plugin populates. **Documentation aid only** — actual registration happens from the JS bundle via `registerSlot()`. Listing slots here makes discovery surfaces more informative. |

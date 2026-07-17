@@ -11,7 +11,7 @@ import {
   storedStringArray,
   storedStringRecord
 } from '@/lib/storage'
-import { $gateway, ensureGatewayForProfile } from '@/store/gateway'
+import { $gateway, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -192,14 +192,15 @@ export const $gatewaySwapTarget = atom<string | null>(null)
 // ── Hover-intent backend pre-warm ───────────────────────────────────────────
 // A cold switch to a profile whose pool backend isn't running pays the full
 // spawn (Python boot + port announce + readiness probe — measured ~2.5-3s)
-// before its gateway can even open. The pointer entering a profile square in
-// the rail signals the switch a few hundred ms before the click lands, so we
-// start the spawn then. `getConnection` → `ensureBackend` in the Electron main
-// is idempotent (a pooled profile returns its existing connectionPromise), so
-// the real switch's getConnection joins the in-flight spawn instead of
-// starting it — and a pre-warm for an already-live backend is a cheap no-op.
+// plus the socket connect before the sidebar can repopulate. The pointer
+// entering a profile square in the rail signals the switch a few hundred ms
+// before the click lands, so we run the same spawn + connect chain then
+// (openGatewayForProfile — without activating). `ensureBackend` in the
+// Electron main is idempotent (a pooled profile returns its existing
+// connectionPromise), so the real switch joins the in-flight work instead of
+// duplicating it — and a pre-warm for an already-open profile is a no-op.
 // Throttled per profile so drive-by hovers can't spam spawn attempts; failures
-// stay silent here and surface on the real switch, which owns error UX.
+// stay silent here and surface on the real switch, which owns retry/error UX.
 const PREWARM_MIN_INTERVAL_MS = 60_000
 
 const prewarmedAt = new Map<string, number>()
@@ -218,7 +219,7 @@ export function prewarmProfileBackend(name: string): void {
   }
 
   prewarmedAt.set(key, now)
-  window.hermesDesktop?.getConnection?.(key).catch(() => undefined)
+  openGatewayForProfile(key).catch(() => undefined)
 }
 
 let gatewaySwitch: Promise<void> | null = null

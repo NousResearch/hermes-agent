@@ -75,7 +75,7 @@ _SYNC_TRACE_ENV = "HERMES_OPENVIKING_SYNC_TRACE"
 _DEFAULT_RECALL_LIMIT = 6
 _DEFAULT_RECALL_SCORE_THRESHOLD = 0.15
 _DEFAULT_RECALL_MAX_INJECTED_CHARS = 4000
-_DEFAULT_PROFILE_MAX_CHARS = 4000
+_DEFAULT_PROFILE_TOKEN_BUDGET = 6000
 _DEFAULT_RECALL_TIMEOUT_SECONDS = 4.0
 _DEFAULT_RECALL_REQUEST_TIMEOUT_SECONDS = 3.0
 _DEFAULT_RECALL_FULL_READ_LIMIT = 2
@@ -83,12 +83,15 @@ _RECALL_QUERY_MIN_CHARS = 5
 _RECALL_MIN_TIMEOUT_SECONDS = 0.05
 _READ_BATCH_LIMIT = 3
 _READ_BATCH_FULL_LIMIT = 2500
-_PROFILE_READS = (
-    ("viking://user/memories/profile.md", "full"),
-)
-_PREFERENCES_OVERVIEW_URI = "viking://user/memories/preferences/"
-_ENTITIES_OVERVIEW_URI = "viking://user/memories/entities/"
-_SESSION_START_TRUNCATION_SUFFIX = "[...] truncated"
+_PROFILE_URI = "viking://user/memories/profile.md"
+_PREFERENCES_URI = "viking://user/memories/preferences"
+_ENTITIES_URI = "viking://user/memories/entities"
+_SESSION_START_LIST_PARAMS = {
+    "output": "agent",
+    "recursive": True,
+    "abs_limit": 512,
+    "node_limit": 512,
+}
 
 # Maps the viking_remember `category` enum to a viking:// subdirectory.
 # Keep in sync with REMEMBER_SCHEMA.parameters.properties.category.enum.
@@ -1903,10 +1906,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 "env_var": "OPENVIKING_RECALL_MAX_INJECTED_CHARS",
             },
             {
-                "key": "profile_max_chars",
-                "description": "Maximum session-start memory characters injected",
-                "default": _DEFAULT_PROFILE_MAX_CHARS,
-                "env_var": "OPENVIKING_PROFILE_MAX_CHARS",
+                "key": "profile_token_budget",
+                "description": "Maximum session-start memory tokens injected",
+                "default": _DEFAULT_PROFILE_TOKEN_BUDGET,
+                "env_var": "OPENVIKING_PROFILE_TOKEN_BUDGET",
             },
             {
                 "key": "recall_timeout_seconds",
@@ -2649,11 +2652,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
             "resources": self._env_bool("OPENVIKING_RECALL_RESOURCES", False),
         }
 
-    def _profile_max_chars(self) -> int:
+    def _profile_token_budget(self) -> int:
         return self._env_int(
-            "OPENVIKING_PROFILE_MAX_CHARS",
-            _DEFAULT_PROFILE_MAX_CHARS,
-            minimum=200,
+            "OPENVIKING_PROFILE_TOKEN_BUDGET",
+            _DEFAULT_PROFILE_TOKEN_BUDGET,
+            minimum=500,
             maximum=50000,
         )
 
@@ -2667,215 +2670,274 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return ""
 
     @staticmethod
-    def _is_placeholder_overview(content: str) -> bool:
-        normalized = " ".join((content or "").strip().lower().split())
-        return normalized in {
-            "[directory overview is not ready]",
-            "[directory overview is not generated]",
-            "[directory abstract is not ready]",
-            "[directory abstract is not generated]",
-        } or normalized.endswith((
-            "[directory overview is not ready]",
-            "[directory overview is not generated]",
-            "[directory abstract is not ready]",
-            "[directory abstract is not generated]",
-        ))
+    def _extract_memory_listing(resp: Any) -> List[Dict[str, str]]:
+        result = OpenVikingMemoryProvider._unwrap_result(resp)
+        if not isinstance(result, list):
+            return []
+
+        entries: List[Dict[str, str]] = []
+        for raw in result:
+            if not isinstance(raw, dict) or raw.get("isDir"):
+                continue
+            name = str(raw.get("rel_path") or raw.get("name") or "").strip()
+            if not name.endswith(".md"):
+                continue
+            abstract = " ".join(str(raw.get("abstract") or "").split())[:200]
+            entries.append({"name": name, "abstract": abstract})
+        entries.sort(key=lambda entry: entry["name"])
+        return entries
 
     @staticmethod
-    def _weighted_context_len(content: str) -> int:
-        total = 0
-        for ch in content:
-            total += 2 if ord(ch) >= 0x3000 else 1
-        return total
+    def _token_units(content: str) -> int:
+        """Return quarter-token units using the shared OpenViking estimator."""
+        return sum(6 if ord(ch) >= 0x3000 else 1 for ch in content)
 
     @classmethod
-    def _take_weighted_prefix(cls, content: str, max_chars: int) -> str:
-        if max_chars <= 0:
+    def _estimate_tokens(cls, content: str) -> int:
+        units = cls._token_units(content)
+        return (units + 3) // 4
+
+    @classmethod
+    def _take_token_prefix(cls, content: str, max_units: int) -> str:
+        if max_units <= 0:
             return ""
         used = 0
-        end = 0
-        for end, ch in enumerate(content):
-            used += 2 if ord(ch) >= 0x3000 else 1
-            if used > max_chars:
-                return content[:end]
+        for index, ch in enumerate(content):
+            used += 6 if ord(ch) >= 0x3000 else 1
+            if used > max_units:
+                return content[:index]
         return content
 
     @classmethod
-    def _take_weighted_suffix(cls, content: str, max_chars: int) -> str:
-        if max_chars <= 0:
+    def _take_token_suffix(cls, content: str, max_units: int) -> str:
+        if max_units <= 0:
             return ""
         used = 0
         start = len(content)
         for idx in range(len(content) - 1, -1, -1):
             ch = content[idx]
-            used += 2 if ord(ch) >= 0x3000 else 1
-            if used > max_chars:
+            used += 6 if ord(ch) >= 0x3000 else 1
+            if used > max_units:
                 return content[start:]
             start = idx
         return content
 
     @classmethod
-    def _truncate_text_content(cls, content: str, max_chars: int) -> str:
+    def _truncate_profile_content(cls, content: str, max_units: int) -> str:
         content = content.strip()
-        if cls._weighted_context_len(content) <= max_chars:
+        if cls._token_units(content) <= max_units:
             return content
-        suffix = f"\n\n{_SESSION_START_TRUNCATION_SUFFIX}"
-        suffix_len = cls._weighted_context_len(suffix)
-        if max_chars <= suffix_len:
-            return cls._take_weighted_prefix(content, max_chars)
-        return cls._take_weighted_prefix(content, max_chars - suffix_len).rstrip() + suffix
 
-    @classmethod
-    def _truncate_profile_content(cls, content: str, max_chars: int) -> str:
-        content = content.strip()
-        if cls._weighted_context_len(content) <= max_chars:
-            return content
-        marker = f"\n\n{_SESSION_START_TRUNCATION_SUFFIX}\n\n"
-        marker_len = cls._weighted_context_len(marker)
-        if max_chars <= marker_len + 40:
-            return cls._truncate_text_content(content, max_chars)
-        remaining = max_chars - marker_len
-        head_budget = max(1, remaining // 2)
-        tail_budget = max(1, remaining - head_budget)
-        head = cls._take_weighted_prefix(content, head_budget).rstrip()
-        tail = cls._take_weighted_suffix(content, tail_budget).lstrip()
-        if not head or not tail:
-            return cls._truncate_text_content(content, max_chars)
-        return f"{head}{marker}{tail}"
+        def _head_only() -> str:
+            marker = "\n... [profile truncated]"
+            marker_units = cls._token_units(marker)
+            if marker_units >= max_units:
+                return cls._take_token_prefix(content, max_units)
+            head = cls._take_token_prefix(content, max_units - marker_units).rstrip()
+            return f"{head}{marker}" if head else cls._take_token_prefix(content, max_units)
 
-    def _read_session_start_text(
+        lines = content.split("\n")
+        head_line_count = 8
+        if len(lines) <= head_line_count + 4:
+            return _head_only()
+
+        marker = "\n... [profile middle elided] ...\n"
+        remaining = max_units - cls._token_units(marker)
+        if remaining <= 0:
+            return _head_only()
+
+        head = cls._take_token_prefix(
+            "\n".join(lines[:head_line_count]),
+            remaining // 2,
+        ).rstrip()
+        tail = cls._take_token_suffix(
+            "\n".join(lines[head_line_count:]),
+            remaining - cls._token_units(head),
+        ).lstrip()
+        return f"{head}{marker}{tail}" if tail else _head_only()
+
+    def _read_session_start_profile(
         self,
         client: _VikingClient,
-        endpoint: str,
-        uri: str,
         *,
-        skip_placeholder: bool = False,
-        timeout: Optional[float] = None,
+        deadline: float,
+        request_timeout: float,
     ) -> Optional[str]:
         try:
-            kwargs = {"timeout": timeout} if timeout is not None else {}
-            resp = client.get(endpoint, params={"uri": uri}, **kwargs)
+            timeout = self._remaining_recall_timeout(deadline, request_timeout)
+            resp = client.get(
+                "/api/v1/content/read",
+                params={"uri": _PROFILE_URI},
+                timeout=timeout,
+            )
         except Exception as e:
             if _status_code_from_error(e) in {404, 410}:
                 return ""
             return None
-        content = self._extract_text_content(resp)
-        if skip_placeholder and self._is_placeholder_overview(content):
-            return ""
-        return content
+        return self._extract_text_content(resp)
+
+    def _list_session_start_memories(
+        self,
+        client: _VikingClient,
+        uri: str,
+        *,
+        deadline: float,
+        request_timeout: float,
+    ) -> List[Dict[str, str]]:
+        try:
+            timeout = self._remaining_recall_timeout(deadline, request_timeout)
+            resp = client.get(
+                "/api/v1/fs/ls",
+                params={"uri": uri, **_SESSION_START_LIST_PARAMS},
+                timeout=timeout,
+            )
+        except Exception:
+            return []
+        return self._extract_memory_listing(resp)
 
     def _read_session_start_memory_parts(
         self,
         *,
         client: Optional[_VikingClient] = None,
-        request_timeout: Optional[float] = None,
-    ) -> Dict[str, Optional[str]]:
+        deadline: float,
+        request_timeout: float,
+    ) -> Dict[str, Any]:
         active_client = client or self._client
         if not active_client:
             return {}
 
-        profile_uri, _level = _PROFILE_READS[0]
+        profile = self._read_session_start_profile(
+            active_client,
+            deadline=deadline,
+            request_timeout=request_timeout,
+        )
+        if profile is None:
+            return {"profile": None, "preferences": [], "entities": []}
         return {
-            "profile": self._read_session_start_text(
+            "profile": profile,
+            "preferences": self._list_session_start_memories(
                 active_client,
-                "/api/v1/content/read",
-                profile_uri,
-                timeout=request_timeout,
+                _PREFERENCES_URI,
+                deadline=deadline,
+                request_timeout=request_timeout,
             ),
-            "preferences": self._read_session_start_text(
+            "entities": self._list_session_start_memories(
                 active_client,
-                "/api/v1/content/overview",
-                _PREFERENCES_OVERVIEW_URI,
-                skip_placeholder=True,
-                timeout=request_timeout,
-            ),
-            "entities": self._read_session_start_text(
-                active_client,
-                "/api/v1/content/overview",
-                _ENTITIES_OVERVIEW_URI,
-                skip_placeholder=True,
-                timeout=request_timeout,
+                _ENTITIES_URI,
+                deadline=deadline,
+                request_timeout=request_timeout,
             ),
         }
 
     @staticmethod
-    def _format_session_start_memory_block(
-        *,
-        profile: str = "",
-        preferences: str = "",
-        entities: str = "",
+    def _assemble_session_start_memory_block(
+        profile: str,
+        preference_lines: List[str],
+        entity_lines: List[str],
     ) -> str:
-        lines: List[str] = ["## Session Memory"]
+        lines: List[str] = []
         if profile:
             lines.extend([
-                '  <user-profile uri="viking://user/memories/profile.md">',
+                f'<user-profile uri="{_PROFILE_URI}">',
                 profile,
-                "  </user-profile>",
+                "</user-profile>",
             ])
-        if preferences or entities:
-            lines.append("  <available-memories>")
-            if preferences:
-                lines.extend([
-                    f'    <preferences uri="{_PREFERENCES_OVERVIEW_URI}">',
-                    preferences,
-                    "    </preferences>",
-                ])
-            if entities:
-                lines.extend([
-                    f'    <entities uri="{_ENTITIES_OVERVIEW_URI}">',
-                    entities,
-                    "    </entities>",
-                ])
-            lines.append("  </available-memories>")
-        if len(lines) == 1:
-            return ""
+        if preference_lines or entity_lines:
+            lines.append("<available-memories>")
+            lines.extend(preference_lines)
+            lines.extend(entity_lines)
+            lines.append("</available-memories>")
         return "\n".join(lines)
 
-    def _budget_session_start_memory_parts(self, parts: Dict[str, str], max_chars: int) -> Dict[str, str]:
-        profile = parts.get("profile", "").strip()
-        preferences = parts.get("preferences", "").strip()
-        entities = parts.get("entities", "").strip()
-        full = self._format_session_start_memory_block(
-            profile=profile,
-            preferences=preferences,
-            entities=entities,
-        )
-        if not full or self._weighted_context_len(full) <= max_chars:
-            return {"profile": profile, "preferences": preferences, "entities": entities}
+    @classmethod
+    def _format_memory_listing(
+        cls,
+        uri: str,
+        entries: List[Dict[str, str]],
+        max_units: int,
+    ) -> tuple[List[str], int]:
+        if not entries or max_units <= 0:
+            return [], 0
+
+        header = f"  {uri}/"
+        header_units = cls._token_units(header)
+        if header_units > max_units:
+            stub = f"  {uri}/  ({len(entries)} entries; use `viking_search`)"
+            stub_units = cls._token_units(stub)
+            return ([stub], stub_units) if stub_units <= max_units else ([], 0)
+
+        lines = [header]
+        used = header_units
+        newline_units = cls._token_units("\n")
+        for index, entry in enumerate(entries):
+            abstract = entry.get("abstract", "")
+            description = f" — {abstract}" if abstract else ""
+            line = f"    - {entry['name']}{description}"
+            line_units = newline_units + cls._token_units(line)
+            if used + line_units > max_units:
+                remaining = len(entries) - index
+                tail = f"    ... +{remaining} more, use `viking_search`"
+                tail_units = newline_units + cls._token_units(tail)
+                if used + tail_units <= max_units:
+                    lines.append(tail)
+                    used += tail_units
+                break
+            lines.append(line)
+            used += line_units
+        return lines, used
+
+    @classmethod
+    def _build_session_start_memory_block(
+        cls,
+        *,
+        profile: str,
+        preferences: List[Dict[str, str]],
+        entities: List[Dict[str, str]],
+        token_budget: int,
+    ) -> str:
+        profile = profile.strip()
+        if not profile and not preferences and not entities:
+            return ""
 
         placeholder = "\0"
-        placeholder_block = self._format_session_start_memory_block(
-            profile=placeholder if profile else "",
-            preferences=placeholder if preferences else "",
-            entities=placeholder if entities else "",
+        scaffold = cls._assemble_session_start_memory_block(
+            placeholder if profile else "",
+            [placeholder] if preferences else [],
+            [placeholder] if entities else [],
         )
-        present_count = sum(1 for value in (profile, preferences, entities) if value)
-        overhead = self._weighted_context_len(placeholder_block) - present_count
-        content_budget = max_chars - overhead
-        if content_budget <= 0:
-            return {"profile": "", "preferences": "", "entities": ""}
+        placeholder_count = int(bool(profile)) + int(bool(preferences)) + int(bool(entities))
+        overhead_units = cls._token_units(scaffold) - placeholder_count
+        available_units = max(0, (token_budget * 4) - overhead_units)
 
-        has_listings = bool(preferences or entities)
-        result = {"profile": "", "preferences": "", "entities": ""}
-        remaining = content_budget
-        if profile:
-            profile_budget = remaining if not has_listings else min(
-                self._weighted_context_len(profile),
-                max(0, int(content_budget * 0.6)),
-            )
-            result["profile"] = self._truncate_profile_content(profile, profile_budget)
-            remaining -= self._weighted_context_len(result["profile"])
+        profile_text = ""
+        if profile and available_units > 0:
+            profile_units = min(available_units, token_budget * 2)
+            profile_text = cls._truncate_profile_content(profile, profile_units)
+            available_units -= cls._token_units(profile_text)
 
-        listing_values = {"preferences": preferences, "entities": entities}
-        listing_keys = [key for key, value in listing_values.items() if value]
-        for idx, key in enumerate(listing_keys):
-            if remaining <= 0:
-                break
-            value = listing_values[key]
-            budget = remaining if idx == len(listing_keys) - 1 else max(0, remaining // 2)
-            result[key] = self._truncate_text_content(value, budget)
-            remaining -= self._weighted_context_len(result[key])
-        return result
+        preference_lines: List[str] = []
+        entity_lines: List[str] = []
+        if preferences and entities:
+            preference_budget = available_units // 2
+        else:
+            preference_budget = available_units
+        preference_lines, preference_units = cls._format_memory_listing(
+            _PREFERENCES_URI,
+            preferences,
+            preference_budget,
+        )
+        available_units -= preference_units
+        entity_lines, _ = cls._format_memory_listing(
+            _ENTITIES_URI,
+            entities,
+            available_units,
+        )
+
+        return cls._assemble_session_start_memory_block(
+            profile_text,
+            preference_lines,
+            entity_lines,
+        )
 
     def _session_start_memory_context(self, session_id: str) -> str:
         session_key = session_id or self._session_id or "__openviking_default_session__"
@@ -2883,27 +2945,24 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return ""
         try:
             cfg = self._recall_config()
+            deadline = time.monotonic() + cfg["timeout_seconds"]
             raw_parts = self._read_session_start_memory_parts(
+                deadline=deadline,
                 request_timeout=cfg["request_timeout_seconds"],
             )
         except Exception as e:
             logger.debug("OpenViking session-start memory prefetch failed: %s", e)
             return ""
-        profile_failed = raw_parts.get("profile") is None
-        parts = {key: value or "" for key, value in raw_parts.items()}
-        if not any(value.strip() for value in parts.values()):
-            if not profile_failed:
-                self._profile_prefetched_sessions.add(session_key)
+        profile = raw_parts.get("profile")
+        if profile is None:
             return ""
-        budgeted = self._budget_session_start_memory_parts(parts, self._profile_max_chars())
-        block = self._format_session_start_memory_block(**budgeted)
-        if not block:
-            if not profile_failed:
-                self._profile_prefetched_sessions.add(session_key)
-            return ""
-        if not profile_failed:
-            self._profile_prefetched_sessions.add(session_key)
-        return block
+        self._profile_prefetched_sessions.add(session_key)
+        return self._build_session_start_memory_block(
+            profile=profile,
+            preferences=raw_parts.get("preferences") or [],
+            entities=raw_parts.get("entities") or [],
+            token_budget=self._profile_token_budget(),
+        )
 
     @staticmethod
     def _clamp_score(value: Any) -> float:

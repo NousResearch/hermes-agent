@@ -1054,6 +1054,10 @@ export const ja = defineLocale({
       system: 'ステータス、ログ、システムアクション',
       usage: 'トークン、コスト、スキルの活動履歴'
     },
+    maintenance: {
+      viewMemory: '記憶を表示',
+      viewUser: 'プロフィールを表示'
+    },
     nav: {
       newChat: { title: '新しいセッション', detail: '新しいセッションを開始' },
       settings: { title: '設定', detail: 'Hermes デスクトップを設定' },

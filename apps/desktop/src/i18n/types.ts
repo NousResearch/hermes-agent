@@ -1048,6 +1048,8 @@ export interface Translations {
       resetMemory: string
       resetUser: string
       resetAll: string
+      viewMemory: string
+      viewUser: string
       resetConfirm: (target: string) => string
       resetDone: (files: string) => string
       resetFailed: string

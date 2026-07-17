@@ -1186,6 +1186,8 @@ export const en: Translations = {
       resetMemory: 'Reset memory',
       resetUser: 'Reset profile',
       resetAll: 'Reset both',
+      viewMemory: 'View memory',
+      viewUser: 'View profile',
       resetConfirm: target => `Delete ${target}? This cannot be undone.`,
       resetDone: files => `Deleted ${files}.`,
       resetFailed: 'Memory reset failed',

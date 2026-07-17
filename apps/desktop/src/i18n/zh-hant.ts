@@ -1026,6 +1026,10 @@ export const zhHant = defineLocale({
       system: '狀態、記錄和系統動作',
       usage: '一段時間內的詞元、費用和技能活動'
     },
+    maintenance: {
+      viewMemory: '查看記憶',
+      viewUser: '查看畫像'
+    },
     nav: {
       newChat: { title: '新工作階段', detail: '開始新的工作階段' },
       settings: { title: '設定', detail: '設定 Hermes 桌面端' },

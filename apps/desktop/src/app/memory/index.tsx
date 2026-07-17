@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import { Codicon } from '@/components/ui/codicon'
 import { getMemoryContent } from '@/hermes'
@@ -12,11 +13,17 @@ type MemoryTab = 'memory' | 'user'
 export function MemoryViewer({ onClose }: { onClose: () => void }) {
   const { t } = useI18n()
   const mt = t.memoryViewer
+  const [searchParams] = useSearchParams()
 
   const [content, setContent] = useState<MemoryContentResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<MemoryTab>('memory')
+
+  const [activeTab, setActiveTab] = useState<MemoryTab>(() => {
+    const tab = searchParams.get('tab')
+
+    return tab === 'user' ? 'user' : 'memory'
+  })
 
   useEffect(() => {
     let cancelled = false

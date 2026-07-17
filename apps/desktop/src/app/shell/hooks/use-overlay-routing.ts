@@ -64,7 +64,11 @@ export function useOverlayRouting() {
 
   const openAgents = useCallback(() => navigate(AGENTS_ROUTE), [navigate])
   const openStarmap = useCallback(() => navigate(STARMAP_ROUTE), [navigate])
-  const openMemory = useCallback(() => navigate(MEMORY_ROUTE), [navigate])
+
+  const openMemory = useCallback(
+    (tab?: 'memory' | 'user') => navigate(tab ? `${MEMORY_ROUTE}?tab=${tab}` : MEMORY_ROUTE),
+    [navigate]
+  )
 
   return {
     agentsOpen,

@@ -1367,6 +1367,8 @@ export const zh: Translations = {
       resetMemory: '重置记忆',
       resetUser: '重置画像',
       resetAll: '全部重置',
+      viewMemory: '查看记忆',
+      viewUser: '查看画像',
       resetConfirm: target => `删除 ${target}？此操作不可撤销。`,
       resetDone: files => `已删除 ${files}。`,
       resetFailed: '记忆重置失败',

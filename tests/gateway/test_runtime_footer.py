@@ -153,7 +153,7 @@ def test_format_footer_unknown_field_silently_ignored():
 
 def test_resolve_defaults_off_empty_config():
     cfg = resolve_footer_config({}, "telegram")
-    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"]}
+    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"], "style": None}
 
 
 def test_resolve_global_enable():
@@ -260,3 +260,90 @@ def test_build_footer_no_data_returns_empty_even_when_enabled():
     # With no TERMINAL_CWD env either
     if not os.environ.get("TERMINAL_CWD"):
         assert out == ""
+
+
+# ---------------------------------------------------------------------------
+# OpenClaw-style labeled footer
+# ---------------------------------------------------------------------------
+
+def test_openclaw_style_via_fields_trio():
+    from gateway.runtime_footer import format_runtime_footer
+
+    out = format_runtime_footer(
+        model="k3",
+        context_tokens=0,
+        context_length=None,
+        provider="kimi",
+        agent="main",
+        fields=["agent", "model", "provider"],
+    )
+    assert out == "Agent: main | Model: k3 | Provider: kimi"
+
+
+def test_openclaw_style_via_style_flag():
+    from gateway.runtime_footer import format_runtime_footer
+
+    out = format_runtime_footer(
+        model="moonshot/k3",
+        context_tokens=0,
+        context_length=None,
+        provider="kimi",
+        agent="chief",
+        fields=["agent", "model", "provider"],
+        style="openclaw",
+    )
+    # model vendor prefix dropped, custom agent id honoured
+    assert out == "Agent: chief | Model: k3 | Provider: kimi"
+
+
+def test_openclaw_style_missing_provider_omits_segment():
+    from gateway.runtime_footer import format_runtime_footer
+
+    out = format_runtime_footer(
+        model="k3",
+        context_tokens=0,
+        context_length=None,
+        provider=None,
+        agent="main",
+        fields=["agent", "model", "provider"],
+    )
+    assert out == "Agent: main | Model: k3"
+
+
+def test_openclaw_style_config_resolves_style():
+    user = {"display": {"runtime_footer": {"enabled": True, "style": "openclaw"}}}
+    cfg = resolve_footer_config(user, "feishu")
+    assert cfg["style"] == "openclaw"
+
+
+def test_openclaw_style_platform_override():
+    user = {
+        "display": {
+            "runtime_footer": {"enabled": True},
+            "platforms": {
+                "feishu": {"runtime_footer": {"style": "openclaw"}},
+            },
+        },
+    }
+    assert resolve_footer_config(user, "feishu")["style"] == "openclaw"
+    assert resolve_footer_config(user, "telegram")["style"] is None
+
+
+def test_build_footer_openclaw_end_to_end():
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["agent", "model", "provider"],
+                },
+            },
+        },
+        platform_key="feishu",
+        model="k3",
+        context_tokens=0,
+        context_length=None,
+        provider="kimi",
+        agent="main",
+    )
+    assert out == "Agent: main | Model: k3 | Provider: kimi"

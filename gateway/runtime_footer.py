@@ -31,6 +31,13 @@ from typing import Any, Iterable, Optional
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
 
+# OpenClaw-style labeled footer: "Agent: main | Model: k3 | Provider: kimi".
+# Opt-in via ``display.runtime_footer.style: openclaw`` (or by setting
+# ``fields`` to the agent/model/provider trio).  Uses a pipe separator and a
+# "Label: value" format so it mirrors OpenClaw's card note exactly.
+_OPENCLAW_STYLE_FIELDS: tuple[str, ...] = ("agent", "model", "provider")
+_OPENCLAW_SEP = " | "
+
 
 def _home_relative_cwd(cwd: str) -> str:
     """Return *cwd* with ``$HOME`` collapsed to ``~``.  Empty string if unset."""
@@ -64,7 +71,7 @@ def resolve_footer_config(
         2. ``display.runtime_footer``
         3. ``display.platforms.<platform_key>.runtime_footer``
     """
-    resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS)}
+    resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS), "style": None}
     cfg = (user_config or {}).get("display") or {}
 
     global_cfg = cfg.get("runtime_footer")
@@ -73,6 +80,8 @@ def resolve_footer_config(
             resolved["enabled"] = bool(global_cfg.get("enabled"))
         if isinstance(global_cfg.get("fields"), list) and global_cfg["fields"]:
             resolved["fields"] = [str(f) for f in global_cfg["fields"]]
+        if isinstance(global_cfg.get("style"), str) and global_cfg["style"].strip():
+            resolved["style"] = global_cfg["style"].strip()
 
     if platform_key:
         platforms = cfg.get("platforms") or {}
@@ -84,6 +93,8 @@ def resolve_footer_config(
                     resolved["enabled"] = bool(plat_footer.get("enabled"))
                 if isinstance(plat_footer.get("fields"), list) and plat_footer["fields"]:
                     resolved["fields"] = [str(f) for f in plat_footer["fields"]]
+                if isinstance(plat_footer.get("style"), str) and plat_footer["style"].strip():
+                    resolved["style"] = plat_footer["style"].strip()
 
     return resolved
 
@@ -95,14 +106,45 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    provider: Optional[str] = None,
+    agent: Optional[str] = None,
+    style: Optional[str] = None,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
     Fields are skipped silently when their underlying data is missing — a
     partially-populated footer is better than a line with ``?%`` or empty slots.
+
+    When ``style`` is ``"openclaw"`` (or ``fields`` is exactly the
+    agent/model/provider trio), render the OpenClaw labeled form
+    ``Agent: x | Model: y | Provider: z`` joined by pipes.  Otherwise render
+    the compact form joined by `` · ``.
     """
-    parts: list[str] = []
-    for field in fields:
+    field_list = [str(f) for f in fields]
+    openclaw = (style == "openclaw") or (
+        tuple(field_list) == _OPENCLAW_STYLE_FIELDS
+    )
+
+    if openclaw:
+        parts: list[str] = []
+        for field in field_list:
+            key = field.strip().lower()
+            if key == "agent":
+                val = (agent or "main").strip()
+                if val:
+                    parts.append(f"Agent: {val}")
+            elif key == "model":
+                m = _model_short(model)
+                if m:
+                    parts.append(f"Model: {m}")
+            elif key == "provider":
+                p = (provider or "").strip()
+                if p:
+                    parts.append(f"Provider: {p}")
+        return _OPENCLAW_SEP.join(parts) if parts else ""
+
+    parts = []
+    for field in field_list:
         if field == "model":
             m = _model_short(model)
             if m:
@@ -115,6 +157,14 @@ def format_runtime_footer(
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field == "agent":
+            val = (agent or "main").strip()
+            if val:
+                parts.append(val)
+        elif field == "provider":
+            p = (provider or "").strip()
+            if p:
+                parts.append(p)
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -130,6 +180,8 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    provider: Optional[str] = None,
+    agent: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -146,4 +198,7 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        provider=provider,
+        agent=agent,
+        style=cfg.get("style"),
     )

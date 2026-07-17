@@ -7674,34 +7674,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _process_handoff(self, row: Dict[str, Any]) -> None:
         """Execute one handoff row. Raises on failure (caller marks failed)."""
-        from gateway.config import Platform
+        from gateway.config import resolve_handoff_destination
         from gateway.session import SessionSource, build_session_key
         from gateway.platforms.base import MessageEvent
 
         cli_session_id = row["id"]
-        platform_name = (row.get("handoff_platform") or "").strip().lower()
-        if not platform_name:
+        platform_ref = (row.get("handoff_platform") or "").strip().lower()
+        if not platform_ref:
             raise RuntimeError("handoff_platform is empty")
 
-        # Resolve platform enum
         try:
-            platform = Platform(platform_name)
-        except (ValueError, KeyError):
-            raise RuntimeError(f"unknown platform '{platform_name}'")
+            platform, home, _target_alias = resolve_handoff_destination(
+                self.config, platform_ref,
+            )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        platform_name = platform.value
 
         # Adapter must be live
         adapter = self.adapters.get(platform)
         if not adapter:
             raise RuntimeError(
                 f"platform '{platform_name}' is not active in this gateway"
-            )
-
-        # Home channel must be configured
-        home = self.config.get_home_channel(platform)
-        if not home or not home.chat_id:
-            raise RuntimeError(
-                f"no home channel configured for {platform_name}; "
-                f"run /sethome on the desired chat first"
             )
 
         cli_title = row.get("title") or cli_session_id[:8]

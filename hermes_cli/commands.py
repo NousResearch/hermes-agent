@@ -1879,6 +1879,8 @@ class SlashCommandCompleter(Completer):
         first arg (the platform); once one is chosen, stop.
         """
         parts = sub_text.split()
+        if Completion is None:
+            return
         trailing_space = sub_text.endswith(" ")
         if len(parts) > 1 or (len(parts) == 1 and trailing_space):
             return
@@ -1893,19 +1895,46 @@ class SlashCommandCompleter(Completer):
             return
         for platform in platforms:
             name = platform.value
-            if not name.startswith(partial_lower):
-                continue
+            if name.startswith(partial_lower):
+                try:
+                    home = gw.get_home_channel(platform)
+                except Exception:
+                    home = None
+                meta = f"→ {home.name}" if home and getattr(home, "name", None) else "send this session here"
+                yield Completion(
+                    name,
+                    start_position=-len(partial),
+                    display=name,
+                    display_meta=meta,
+                )
+
             try:
-                home = gw.get_home_channel(platform)
+                platform_cfg = gw.platforms.get(platform)
+                raw_targets = (
+                    (platform_cfg.extra or {}).get("handoff_targets")
+                    if platform_cfg else {}
+                )
             except Exception:
-                home = None
-            meta = f"→ {home.name}" if home and getattr(home, "name", None) else "send this session here"
-            yield Completion(
-                name,
-                start_position=-len(partial),
-                display=name,
-                display_meta=meta,
-            )
+                raw_targets = {}
+            if not isinstance(raw_targets, dict):
+                continue
+            for alias, target in raw_targets.items():
+                alias_name = str(alias).strip().lower()
+                if not alias_name:
+                    continue
+                full_name = f"{name}:{alias_name}"
+                if not full_name.startswith(partial_lower):
+                    continue
+                target_name = ""
+                if isinstance(target, dict):
+                    target_name = str(target.get("name") or target.get("chat_id") or "")
+                meta = f"→ {target_name}" if target_name else "send this session to this configured target"
+                yield Completion(
+                    full_name,
+                    start_position=-len(partial),
+                    display=full_name,
+                    display_meta=meta,
+                )
 
     @staticmethod
     def _personality_completions(sub_text: str, sub_lower: str):

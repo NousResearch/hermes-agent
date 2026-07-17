@@ -542,19 +542,26 @@ class CLICommandsMixin:
             _cprint("  The CLI session ends here; resume it later with /resume.")
             return True
 
-        platform_name = parts[1].strip().lower()
+        platform_ref = parts[1].strip().lower()
 
-        # Validate platform name + home channel via the live gateway config.
+        # Validate platform name + destination via the live gateway config.
+        # ``/handoff slack`` keeps the legacy home-channel behaviour, while
+        # ``/handoff slack:pm`` resolves a configured alias from
+        # platforms.slack.extra.handoff_targets.
         try:
-            from gateway.config import load_gateway_config, Platform
+            from gateway.config import (
+                load_gateway_config,
+                parse_handoff_platform_ref,
+                resolve_handoff_destination,
+            )
         except Exception as exc:  # pragma: no cover — gateway pkg always shipped
             _cprint(f"  Could not load gateway config: {exc}")
             return True
 
         try:
-            platform = Platform(platform_name)
-        except (ValueError, KeyError):
-            _cprint(f"  Unknown platform '{platform_name}'.")
+            platform, target_alias = parse_handoff_platform_ref(platform_ref)
+        except ValueError as exc:
+            _cprint(f"  {exc}")
             return True
 
         try:
@@ -565,13 +572,19 @@ class CLICommandsMixin:
 
         pcfg = gw_config.platforms.get(platform)
         if not pcfg or not pcfg.enabled:
-            _cprint(f"  Platform '{platform_name}' is not configured/enabled in the gateway.")
+            _cprint(f"  Platform '{platform.value}' is not configured/enabled in the gateway.")
             return True
 
-        home = gw_config.get_home_channel(platform)
-        if not home or not home.chat_id:
-            _cprint(f"  No home channel configured for {platform_name}.")
-            _cprint("  Set one with /sethome on the destination chat first.")
+        try:
+            _platform, home, _target_alias = resolve_handoff_destination(
+                gw_config, platform_ref,
+            )
+        except ValueError as exc:
+            if target_alias:
+                _cprint(f"  {exc}")
+            else:
+                _cprint(f"  No home channel configured for {platform.value}.")
+                _cprint("  Set one with /sethome on the destination chat first.")
             return True
 
         # Refuse mid-turn: an in-flight agent run would race with the
@@ -620,12 +633,12 @@ class CLICommandsMixin:
             session_title = self.session_id[:8]
 
         # Mark pending — gateway watcher will pick this up.
-        ok = self._session_db.request_handoff(self.session_id, platform_name)
+        ok = self._session_db.request_handoff(self.session_id, platform_ref)
         if not ok:
             _cprint("  Session is already in flight for handoff. Wait for it to settle, then retry.")
             return True
 
-        _cprint(f"  Queued handoff of '{session_title}' → {platform_name} (home: {home.name}).")
+        _cprint(f"  Queued handoff of '{session_title}' → {platform_ref} (home: {home.name}).")
         _cprint("  Waiting for the gateway to pick it up...")
 
         # Poll-block on terminal state. Tick every 0.5s; bail at ~60s.
@@ -644,7 +657,7 @@ class CLICommandsMixin:
                 last_state = current
             if current == "completed":
                 _cprint("")
-                _cprint(f"  ↻ Handoff complete. The session is now active on {platform_name}.")
+                _cprint(f"  ↻ Handoff complete. The session is now active on {platform_ref}.")
                 _cprint(f"  Resume it on this CLI later with: /resume {session_title}")
                 _cprint("")
                 # End the CLI cleanly — same exit semantics as /quit.

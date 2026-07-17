@@ -892,13 +892,17 @@ def _reap_idle_sessions() -> None:
 def _max_live_sessions() -> int:
     try:
         from hermes_cli.active_sessions import coerce_max_concurrent_sessions
+        from hermes_cli.config import DEFAULT_CONFIG
 
         cfg = _load_cfg() or {}
-        raw = cfg.get("max_live_sessions")
-        if raw is None:
+        missing = object()
+        raw = cfg.get("max_live_sessions", missing)
+        if raw is missing:
             gateway_cfg = cfg.get("gateway")
-            if isinstance(gateway_cfg, dict):
+            if isinstance(gateway_cfg, dict) and "max_live_sessions" in gateway_cfg:
                 raw = gateway_cfg.get("max_live_sessions")
+        if raw is missing:
+            raw = DEFAULT_CONFIG.get("max_live_sessions", 16)
         coerced = coerce_max_concurrent_sessions(raw, key="max_live_sessions")
         return int(coerced) if coerced else 0
     except Exception:
@@ -6702,21 +6706,26 @@ def _(rid, params: dict) -> dict:
             "session busy — wait for the current turn to finish, then retry the handoff",
         )
 
-    platform_name = (params.get("platform", "") or "").strip().lower()
-    if not platform_name:
+    platform_ref = (params.get("platform", "") or "").strip().lower()
+    if not platform_ref:
         return _err(rid, 4023, "platform required")
 
-    # Validate against the live gateway config — an unconfigured platform or a
-    # missing home channel would leave the handoff pending forever, so reject
-    # up front with a clear, actionable message (mirrors cli.py).
+    # Validate against the live gateway config — an unconfigured platform,
+    # missing home channel, or unknown explicit target would leave the handoff
+    # pending forever, so reject up front with a clear actionable message
+    # (mirrors cli.py).
     try:
-        from gateway.config import Platform, load_gateway_config
+        from gateway.config import (
+            load_gateway_config,
+            parse_handoff_platform_ref,
+            resolve_handoff_destination,
+        )
     except Exception as e:  # pragma: no cover — gateway pkg always ships
         return _err(rid, 5021, f"could not load gateway config: {e}")
     try:
-        platform = Platform(platform_name)
-    except (ValueError, KeyError):
-        return _err(rid, 4024, f"unknown platform '{platform_name}'")
+        platform, target_alias = parse_handoff_platform_ref(platform_ref)
+    except ValueError as e:
+        return _err(rid, 4024, str(e))
     try:
         gw_config = load_gateway_config()
     except Exception as e:
@@ -6726,16 +6735,21 @@ def _(rid, params: dict) -> dict:
         return _err(
             rid,
             4025,
-            f"platform '{platform_name}' is not configured/enabled in the gateway",
+            f"platform '{platform.value}' is not configured/enabled in the gateway",
         )
-    home = gw_config.get_home_channel(platform)
-    if not home or not home.chat_id:
-        return _err(
-            rid,
-            4026,
-            f"no home channel configured for {platform_name} — set one with "
-            "/sethome on the destination chat first",
+    try:
+        _platform, home, _target_alias = resolve_handoff_destination(
+            gw_config, platform_ref,
         )
+    except ValueError as e:
+        if target_alias:
+            msg = str(e)
+        else:
+            msg = (
+                f"no home channel configured for {platform.value} — set one with "
+                "/sethome on the destination chat first"
+            )
+        return _err(rid, 4026, msg)
 
     # The watcher transfers a persisted DB row, so make sure one exists even
     # for a brand-new empty chat (mirrors the CLI's set_session_title stub).
@@ -6748,7 +6762,7 @@ def _(rid, params: dict) -> dict:
         try:
             if not db.get_session(key):
                 db.set_session_title(key, f"handoff-{key[:8]}")
-            ok = db.request_handoff(key, platform_name)
+            ok = db.request_handoff(key, platform_ref)
         except Exception as e:
             return _err(rid, 5007, str(e))
 
@@ -6763,7 +6777,7 @@ def _(rid, params: dict) -> dict:
         {
             "queued": True,
             "session_key": key,
-            "platform": platform_name,
+            "platform": platform_ref,
             "home_name": home.name,
         },
     )

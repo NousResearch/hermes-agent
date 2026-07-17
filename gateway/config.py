@@ -1047,6 +1047,95 @@ class GatewayConfig:
         return "public"
 
 
+def parse_handoff_platform_ref(ref: str) -> tuple[Platform, Optional[str]]:
+    """Parse a `/handoff` destination reference.
+
+    The legacy form is just a platform name, e.g. ``slack``.  A bounded target
+    alias may be appended as ``platform:alias`` (for example ``slack:pm``).
+    The alias is intentionally narrow: it must resolve through configuration,
+    not an arbitrary prompt-supplied channel id.
+    """
+    raw = str(ref or "").strip().lower()
+    if not raw:
+        raise ValueError("platform required")
+
+    platform_name, sep, target_alias = raw.partition(":")
+    platform_name = platform_name.strip()
+    target_alias = target_alias.strip() if sep else ""
+    if not platform_name:
+        raise ValueError("platform required")
+    if sep and not target_alias:
+        raise ValueError(f"handoff target missing in '{raw}'")
+    if target_alias and not all(
+        ch.isalnum() or ch in {"_", "-"} for ch in target_alias
+    ):
+        raise ValueError(
+            f"invalid handoff target '{target_alias}' — use a configured alias"
+        )
+
+    try:
+        platform = Platform(platform_name)
+    except (ValueError, KeyError) as exc:
+        raise ValueError(f"unknown platform '{platform_name}'") from exc
+    return platform, target_alias or None
+
+
+def _configured_handoff_targets(platform_cfg: Optional[PlatformConfig]) -> Dict[str, Any]:
+    if not platform_cfg or not isinstance(platform_cfg.extra, dict):
+        return {}
+    targets = platform_cfg.extra.get("handoff_targets")
+    return targets if isinstance(targets, dict) else {}
+
+
+def resolve_handoff_destination(
+    config: GatewayConfig,
+    ref: str,
+) -> tuple[Platform, HomeChannel, Optional[str]]:
+    """Resolve a handoff reference to a concrete destination channel.
+
+    ``/handoff slack`` keeps the existing behaviour and returns Slack's
+    configured ``home_channel``.  ``/handoff slack:pm`` resolves only through
+    ``platforms.slack.extra.handoff_targets.pm``; raw channel IDs/names are not
+    accepted here.
+    """
+    platform, target_alias = parse_handoff_platform_ref(ref)
+    platform_cfg = config.platforms.get(platform)
+
+    if target_alias:
+        targets = _configured_handoff_targets(platform_cfg)
+        target = None
+        for key, value in targets.items():
+            if str(key).strip().lower() == target_alias:
+                target = value
+                break
+        if not isinstance(target, dict):
+            raise ValueError(
+                f"no handoff target '{target_alias}' configured for {platform.value}"
+            )
+        chat_id = target.get("chat_id") or target.get("id")
+        if not chat_id:
+            raise ValueError(
+                f"handoff target '{target_alias}' for {platform.value} has no chat_id"
+            )
+        return (
+            platform,
+            HomeChannel(
+                platform=platform,
+                chat_id=str(chat_id),
+                name=str(target.get("name") or f"{platform.value}:{target_alias}"),
+                thread_id=str(target["thread_id"]) if target.get("thread_id") else None,
+            ),
+            target_alias,
+        )
+
+    home = config.get_home_channel(platform)
+    if not home or not home.chat_id:
+        raise ValueError(
+            f"no home channel configured for {platform.value}; run /sethome on the desired chat first"
+        )
+    return platform, home, None
+
+
 def load_gateway_config() -> GatewayConfig:
     """
     Load gateway configuration from multiple sources.

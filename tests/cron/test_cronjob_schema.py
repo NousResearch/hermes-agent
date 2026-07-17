@@ -39,3 +39,16 @@ def test_cronjob_schema_required_array_unchanged():
     from tools.cronjob_tools import CRONJOB_SCHEMA
 
     assert CRONJOB_SCHEMA["parameters"]["required"] == ["action"]
+
+
+def test_cronjob_schema_warns_cli_tui_origin_is_local_only():
+    from tools.cronjob_tools import CRONJOB_SCHEMA
+
+    desc = CRONJOB_SCHEMA["description"]
+    deliver_desc = CRONJOB_SCHEMA["parameters"]["properties"]["deliver"]["description"]
+
+    for surface in (desc, deliver_desc):
+        assert "CLI/TUI" in surface
+        assert "no live" in surface
+        assert "telegram" in surface
+        assert "all" in surface

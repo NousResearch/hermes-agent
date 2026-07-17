@@ -271,3 +271,187 @@ class TestFeishuFallbackThreadRouting:
         )
 
         mock_client.im.v1.message.create.assert_called_once()
+
+
+class TestFeishu99992402Handling:
+    """Regression tests for 99992402 (field validation failed) handling.
+
+    Covers the auto-resume path where reply_to=None but thread_id is present,
+    and Feishu's thread_id create API returns 99992402 for certain msg_types.
+    """
+
+    @pytest.mark.asyncio
+    async def test_error_code_in_fallback_set(self):
+        """99992402 must be in _FEISHU_REPLY_FALLBACK_CODES."""
+        from plugins.platforms.feishu.adapter import _FEISHU_REPLY_FALLBACK_CODES
+
+        assert 99992402 in _FEISHU_REPLY_FALLBACK_CODES, (
+            "99992402 (field validation failed) must be in _FEISHU_REPLY_FALLBACK_CODES"
+        )
+
+    @pytest.mark.asyncio
+    async def test_interactive_card_skips_thread_id_routing(self):
+        """Interactive cards must NOT use receive_id_type='thread_id'.
+
+        Feishu rejects interactive card creation with thread_id (99992402).
+        """
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        mock_client = MagicMock()
+        mock_create_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="new_msg_1"),
+        )
+        mock_client.im.v1.message.create = MagicMock(return_value=mock_create_response)
+
+        adapter = MagicMock(spec=FeishuAdapter)
+        adapter._client = mock_client
+        adapter._build_create_message_body = FeishuAdapter._build_create_message_body
+        adapter._build_create_message_request = FeishuAdapter._build_create_message_request
+
+        async def _run_blocking_passthrough(func, *args):
+            return func(*args)
+        adapter._run_blocking = _run_blocking_passthrough
+
+        import json
+        result = await FeishuAdapter._send_raw_message(
+            adapter,
+            chat_id="oc_main_chat",
+            msg_type="interactive",
+            payload=json.dumps({"config": {}, "elements": []}),
+            reply_to=None,
+            metadata={"thread_id": "omt_topic_abc"},
+        )
+
+        mock_client.im.v1.message.create.assert_called_once()
+        call_args = mock_client.im.v1.message.create.call_args[0][0]
+        receive_id_type = getattr(call_args, "receive_id_type", None)
+        assert receive_id_type != "thread_id", (
+            "Interactive cards must not use receive_id_type='thread_id'"
+        )
+
+    @pytest.mark.asyncio
+    async def test_text_message_still_uses_thread_id_routing(self):
+        """Non-interactive messages should still use thread_id routing."""
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        mock_client = MagicMock()
+        mock_create_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="new_msg_1"),
+        )
+        mock_client.im.v1.message.create = MagicMock(return_value=mock_create_response)
+
+        adapter = MagicMock(spec=FeishuAdapter)
+        adapter._client = mock_client
+        adapter._build_create_message_body = FeishuAdapter._build_create_message_body
+        adapter._build_create_message_request = FeishuAdapter._build_create_message_request
+
+        async def _run_blocking_passthrough(func, *args):
+            return func(*args)
+        adapter._run_blocking = _run_blocking_passthrough
+
+        import json
+        result = await FeishuAdapter._send_raw_message(
+            adapter,
+            chat_id="oc_main_chat",
+            msg_type="text",
+            payload=json.dumps({"text": "hello"}),
+            reply_to=None,
+            metadata={"thread_id": "omt_topic_abc"},
+        )
+
+        mock_client.im.v1.message.create.assert_called_once()
+        call_args = mock_client.im.v1.message.create.call_args[0][0]
+        receive_id_type = getattr(call_args, "receive_id_type", None)
+        assert receive_id_type == "thread_id", (
+            "Text messages should use receive_id_type='thread_id' when thread_id is present"
+        )
+
+    @pytest.mark.asyncio
+    async def test_retry_suppresses_chat_fallback_for_omt_topics(self):
+        """When thread_id starts with 'omt_' and routing fails, chat_id
+        fallback must be suppressed to prevent unwanted new topic creation."""
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = MagicMock(spec=FeishuAdapter)
+        fail_response = SimpleNamespace(
+            success=lambda: False,
+            code=99992402,
+            msg="field validation failed",
+        )
+        adapter._send_raw_message = AsyncMock(return_value=fail_response)
+        adapter._response_succeeded = FeishuAdapter._response_succeeded
+
+        import json
+        result = await FeishuAdapter._feishu_send_with_retry(
+            adapter,
+            chat_id="oc_main_chat",
+            msg_type="text",
+            payload=json.dumps({"text": "hello"}),
+            reply_to=None,
+            metadata={"thread_id": "omt_topic_abc"},
+        )
+
+        # Should return the fail response (not fall back to chat_id)
+        assert result is fail_response
+        # _send_raw_message should have been called only once (no retry)
+        adapter._send_raw_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_retry_downgrades_post_to_text_on_99992402(self):
+        """When post msg_type fails with 99992402, should downgrade to text
+        and retry with same thread_id."""
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = MagicMock(spec=FeishuAdapter)
+        fail_response = SimpleNamespace(
+            success=lambda: False,
+            code=99992402,
+            msg="field validation failed",
+        )
+        ok_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_1"),
+        )
+        # First call (post) fails, second call (text) succeeds
+        adapter._send_raw_message = AsyncMock(side_effect=[fail_response, ok_response])
+        adapter._response_succeeded = FeishuAdapter._response_succeeded
+
+        import json
+        result = await FeishuAdapter._feishu_send_with_retry(
+            adapter,
+            chat_id="oc_main_chat",
+            msg_type="post",
+            payload=json.dumps({"content": [[{"tag": "md", "text": "hello"}]]}),
+            reply_to=None,
+            metadata={"thread_id": "omt_topic_abc"},
+        )
+
+        assert result is ok_response
+        assert adapter._send_raw_message.call_count == 2
+        # Second call should have msg_type="text"
+        second_call_kwargs = adapter._send_raw_message.call_args_list[1]
+        assert second_call_kwargs[1]["msg_type"] == "text"
+
+    @pytest.mark.asyncio
+    async def test_resolve_chat_type_promotes_topic_mode_to_forum(self):
+        """Chats with chat_mode='topic' should resolve to 'forum'."""
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        result = FeishuAdapter._resolve_source_chat_type(
+            chat_info={"type": "dm", "chat_mode": "topic"},
+            event_chat_type="group",
+        )
+        assert result == "forum"
+
+    @pytest.mark.asyncio
+    async def test_resolve_chat_type_preserves_regular_group(self):
+        """Regular groups without topic chat_mode should stay 'group'."""
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        result = FeishuAdapter._resolve_source_chat_type(
+            chat_info={"type": "group", "chat_mode": None},
+            event_chat_type="group",
+        )
+        assert result == "group"

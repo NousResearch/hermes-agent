@@ -381,6 +381,18 @@ def _hermetic_environment(tmp_path, monkeypatch):
             raising=False,
         )
         monkeypatch.setattr(cron_jobs, "OUTPUT_DIR", cron_dir / "output", raising=False)
+        # Newer cron.jobs compares compatibility constants with an import snapshot;
+        # align it so this fixture rebind is not mistaken for a caller override.
+        if hasattr(cron_jobs, "_CronStorePaths") and hasattr(cron_jobs, "_IMPORT_STORE"):
+            monkeypatch.setattr(
+                cron_jobs,
+                "_IMPORT_STORE",
+                cron_jobs._CronStorePaths(
+                    cron_dir,
+                    cron_dir / "jobs.json",
+                    cron_dir / "output",
+                ),
+            )
 
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
@@ -32,6 +33,17 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
 
 
 def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
+    # Config values written through `hermes config set` may be stored as JSON
+    # strings. Decode at most two layers to cover legacy double-encoding
+    # without allowing unbounded recursion.
+    for _ in range(2):
+        if not isinstance(raw, str):
+            break
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+
     if isinstance(raw, dict):
         candidates = [raw]
     elif isinstance(raw, list):

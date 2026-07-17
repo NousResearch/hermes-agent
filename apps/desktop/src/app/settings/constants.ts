@@ -331,6 +331,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   voice: {
     recordKey: 'Voice Shortcut',
     maxRecordingSeconds: 'Max Recording Length',
+    synthesisTimeoutSeconds: 'Speech Synthesis Timeout',
     autoTts: 'Read Responses Aloud'
   },
   stt: {
@@ -474,7 +475,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     enabled: 'Summarize older context when conversations get large.'
   },
   voice: {
-    autoTts: 'Automatically speak assistant responses.'
+    autoTts: 'Automatically speak assistant responses.',
+    synthesisTimeoutSeconds: 'Seconds Desktop waits for speech generation before reporting a timeout.'
   },
   tts: {
     xai: {
@@ -601,7 +603,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.elevenlabs.tag_audio_events',
       'stt.elevenlabs.diarize',
       'voice.record_key',
-      'voice.max_recording_seconds'
+      'voice.max_recording_seconds',
+      'voice.synthesis_timeout_seconds'
     ]
   },
   {

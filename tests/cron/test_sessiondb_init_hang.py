@@ -205,6 +205,13 @@ class TestDispatchGuardReleasedAfterHang:
                  patch("run_agent.AIAgent") as mock_agent_cls, \
                  patch.object(sched, "get_due_jobs", return_value=[job]), \
                  patch.object(sched, "claim_dispatch", return_value=True), \
+                 patch.object(
+                     sched,
+                     "create_execution",
+                     return_value={"id": "guard-sessiondb-hang-execution"},
+                 ), \
+                 patch.object(sched, "mark_execution_running"), \
+                 patch.object(sched, "finish_execution"), \
                  patch.object(sched, "advance_next_run"), \
                  patch.object(sched, "save_job_output", return_value="/tmp/out"), \
                  patch.object(sched, "mark_job_run"), \

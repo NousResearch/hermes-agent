@@ -322,12 +322,22 @@ export function unpinSession(sessionId: string) {
 // Replace the whole pinned order at once (drag-reorder hands back the new order
 // rather than a single move). Keep only ids that are actually pinned so a stale
 // row can't smuggle an unpinned id into the store.
+export function reorderedPinnedSessionIds(prev: string[], ids: string[]): string[] {
+  const pinned = new Set(prev)
+  const seen = new Set<string>()
+  const visibleOrder = ids.filter(id => pinned.has(id) && !seen.has(id) && Boolean(seen.add(id)))
+
+  // The rendered list can contain fewer rows than the durable pin store after
+  // compression/lineage dedup or when an old pin is temporarily unresolved.
+  // Keep those hidden ids, but do not let them veto reordering the visible rows.
+  return [...visibleOrder, ...prev.filter(id => !seen.has(id))]
+}
+
 export function setPinnedSessionOrder(ids: string[]) {
   const prev = $pinnedSessionIds.get()
-  const pinned = new Set(prev)
-  const next = ids.filter(id => pinned.has(id))
+  const next = reorderedPinnedSessionIds(prev, ids)
 
-  if (next.length === prev.length && !arraysEqual(prev, next)) {
+  if (!arraysEqual(prev, next)) {
     $pinnedSessionIds.set(next)
   }
 }

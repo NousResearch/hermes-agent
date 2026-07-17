@@ -23,6 +23,7 @@ import {
 import { ReorderableList, useSortableBindings } from './reorderable-list'
 import { SidebarSessionSkeletons } from './section-states'
 import { SidebarSessionRow } from './session-row'
+import { sessionEntriesForSection } from './sessions-section-order'
 import { VirtualSessionList } from './virtual-session-list'
 
 export const VIRTUALIZE_THRESHOLD = 25
@@ -189,7 +190,7 @@ export function SidebarSessionsSection({
   // The flat recents/pinned list is the only place sessions reorder by hand;
   // grouped/tree views always sort by creation date and never drag.
   const sessionsDraggable = sortable && !!onReorderSessions
-  const displayEntries = useMemo(() => flattenSessionsWithBranches(sessions), [sessions])
+  const displayEntries = useMemo(() => sessionEntriesForSection(sessions, pinned), [pinned, sessions])
 
   const renderRow = (session: SessionInfo, draggable: boolean, branchStem?: string) => {
     const rowProps = {

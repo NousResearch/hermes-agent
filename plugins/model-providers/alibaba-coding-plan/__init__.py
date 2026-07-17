@@ -16,6 +16,9 @@ alibaba_coding_plan = ProviderProfile(
     env_vars=("ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY", "ALIBABA_CODING_PLAN_BASE_URL"),
     base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
     auth_type="api_key",
+    # The Coding Plan gateway reports a fixed model name in responses
+    # regardless of the requested model.
+    misreports_model_identity=True,
 )
 
 register_provider(alibaba_coding_plan)

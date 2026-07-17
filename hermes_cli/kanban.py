@@ -942,7 +942,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             return 1
         board_scope = kb.scoped_current_board(normed)
 
-    # Auto-initialize the DB before dispatching any subcommand. init_db
+    # Auto-initialize the DB before dispatching every non-dispatch subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one
     # SELECT against sqlite_master when tables already exist) and
     # prevents "no such table: tasks" on first use from a fresh
@@ -950,6 +950,10 @@ def kanban_command(args: argparse.Namespace) -> int:
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
     with board_scope:
+        # Standalone dispatch must be admitted before touching the DB. Its
+        # handler initializes only after it holds the machine-global lock.
+        if action == "dispatch":
+            return _cmd_dispatch(args)
         try:
             kb.init_db()
         except Exception as exc:
@@ -983,7 +987,6 @@ def kanban_command(args: argparse.Namespace) -> int:
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
             "tail":     _cmd_tail,
-            "dispatch": _cmd_dispatch,
             "daemon":   _cmd_daemon,
             "watch":    _cmd_watch,
             "stats":    _cmd_stats,
@@ -2286,6 +2289,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
         return 2
     try:
+        try:
+            kb.init_db()
+        except Exception as exc:
+            print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
+            return 1
         with kb.connect_closing() as conn:
             res = kb.dispatch_once(
                 conn,

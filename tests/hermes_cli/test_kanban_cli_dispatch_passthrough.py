@@ -8,6 +8,7 @@ operator footgun that only manifests in long-running setups.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import sys
 import tempfile
@@ -101,19 +102,36 @@ def test_cli_dispatch_refuses_mutation_when_gateway_owns_dispatch(
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_cli_dispatch_refuses_gateway_owned_dispatch_before_db_access(
-    isolated_kanban_home, monkeypatch, capsys, dry_run,
+@pytest.mark.parametrize(
+    "config",
+    [
+        {},
+        {"kanban": {"dispatch_in_gateway": True}},
+        {"kanban": {"dispatch_in_gateway": None}},
+        {"kanban": {"dispatch_in_gateway": 0}},
+        {"kanban": {"dispatch_in_gateway": ""}},
+        {"kanban": {"dispatch_in_gateway": "false"}},
+        {"kanban": {"dispatch_in_gateway": []}},
+        {"kanban": {"dispatch_in_gateway": {}}},
+    ],
+)
+def test_cli_dispatch_refuses_without_db_access_until_literal_false_admission(
+    isolated_kanban_home, monkeypatch, capsys, dry_run, config,
 ):
-    """Manual dispatch must not overlap the gateway, even for dry runs."""
+    """Only literal false allows either CLI dispatch mode to touch the DB."""
     from hermes_cli import kanban as kb_cli
     from hermes_cli import kanban_db
 
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
-        lambda: {"kanban": {"dispatch_in_gateway": True}},
+        lambda: config,
     )
-    dispatch_once = MagicMock()
-    monkeypatch.setattr(kanban_db, "dispatch_once", dispatch_once)
+    for name in ("init_db", "connect_closing", "dispatch_once"):
+        monkeypatch.setattr(
+            kanban_db, name, lambda *args, _name=name, **kwargs: pytest.fail(
+                f"rejected admission must not call {_name}"
+            ),
+        )
 
     rc = kb_cli.kanban_command(argparse.Namespace(
         kanban_action="dispatch", dry_run=dry_run, max=None,
@@ -122,36 +140,6 @@ def test_cli_dispatch_refuses_gateway_owned_dispatch_before_db_access(
 
     assert rc == 2
     assert "manual dispatch is disabled" in capsys.readouterr().err
-    dispatch_once.assert_not_called()
-
-
-@pytest.mark.parametrize("dispatch_in_gateway", [None, 0, "", [], {}])
-def test_cli_dispatch_refuses_malformed_falsy_gateway_admission_before_db_access(
-    isolated_kanban_home, monkeypatch, capsys, dispatch_in_gateway,
-):
-    """Only literal false grants standalone dispatch authority."""
-    from hermes_cli import kanban as kb_cli
-    from hermes_cli import kanban_db
-
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {"kanban": {"dispatch_in_gateway": dispatch_in_gateway}},
-    )
-    monkeypatch.setattr(
-        kanban_db, "connect_closing",
-        lambda: pytest.fail("malformed admission must not open the DB"),
-    )
-    dispatch_once = MagicMock()
-    monkeypatch.setattr(kanban_db, "dispatch_once", dispatch_once)
-
-    rc = kb_cli.kanban_command(argparse.Namespace(
-        kanban_action="dispatch", dry_run=True, max=None,
-        failure_limit=2, json=False,
-    ))
-
-    assert rc == 2
-    assert "manual dispatch is disabled" in capsys.readouterr().err
-    dispatch_once.assert_not_called()
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -206,8 +194,12 @@ def test_cli_dispatch_refuses_when_config_admission_fails(
         "hermes_cli.config.load_config",
         lambda: (_ for _ in ()).throw(RuntimeError("config unavailable")),
     )
-    dispatch_once = MagicMock()
-    monkeypatch.setattr(kanban_db, "dispatch_once", dispatch_once)
+    for name in ("init_db", "connect_closing", "dispatch_once"):
+        monkeypatch.setattr(
+            kanban_db, name, lambda *args, _name=name, **kwargs: pytest.fail(
+                f"failed admission must not call {_name}"
+            ),
+        )
 
     rc = kb_cli.kanban_command(argparse.Namespace(
         kanban_action="dispatch", dry_run=dry_run, max=None,
@@ -216,7 +208,91 @@ def test_cli_dispatch_refuses_when_config_admission_fails(
 
     assert rc == 2
     assert "manual dispatch is disabled" in capsys.readouterr().err
-    dispatch_once.assert_not_called()
+
+
+def test_cli_dispatch_admits_before_init_and_releases_after_dispatch(
+    isolated_kanban_home, monkeypatch,
+):
+    """Standalone dispatch keeps board scope across admission, lock, and DB work."""
+    from gateway import kanban_watchers
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    events = []
+    handle = object()
+    kanban_db.create_board("beta", name="Beta")
+
+    def record(event):
+        assert kanban_db.get_current_board() == "beta"
+        events.append(event)
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: record("admit") or {"kanban": {"dispatch_in_gateway": False}},
+    )
+    monkeypatch.setattr(
+        kanban_watchers, "_acquire_singleton_lock",
+        lambda path: record("lock") or (handle, "held"),
+    )
+    monkeypatch.setattr(
+        kanban_watchers, "_release_singleton_lock",
+        lambda released: record("release"),
+    )
+    monkeypatch.setattr(kanban_db, "init_db", lambda: record("init"))
+
+    @contextlib.contextmanager
+    def connect():
+        record("connect")
+        yield object()
+
+    monkeypatch.setattr(kanban_db, "connect_closing", connect)
+    monkeypatch.setattr(
+        kanban_db, "dispatch_once",
+        lambda conn, **kwargs: record("dispatch") or kanban_db.DispatchResult(),
+    )
+
+    rc = kb_cli.kanban_command(argparse.Namespace(
+        kanban_action="dispatch", board="beta", dry_run=False, max=None,
+        failure_limit=2, json=False,
+    ))
+
+    assert rc == 0
+    assert events == ["admit", "lock", "init", "connect", "dispatch", "release"]
+
+
+def test_cli_dispatch_releases_lock_when_init_fails(
+    isolated_kanban_home, monkeypatch, capsys,
+):
+    """A standalone init failure releases the singleton lock and returns an error."""
+    from gateway import kanban_watchers
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    handle = object()
+    released = []
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": False}},
+    )
+    monkeypatch.setattr(
+        kanban_watchers, "_acquire_singleton_lock", lambda path: (handle, "held"),
+    )
+    monkeypatch.setattr(kanban_watchers, "_release_singleton_lock", released.append)
+    monkeypatch.setattr(
+        kanban_db, "init_db", lambda: (_ for _ in ()).throw(RuntimeError("broken DB")),
+    )
+    monkeypatch.setattr(
+        kanban_db, "connect_closing",
+        lambda: pytest.fail("failed initialization must not connect"),
+    )
+
+    rc = kb_cli.kanban_command(argparse.Namespace(
+        kanban_action="dispatch", dry_run=False, max=None, failure_limit=2, json=False,
+    ))
+
+    assert rc == 1
+    assert "could not initialize database: broken DB" in capsys.readouterr().err
+    assert released == [handle]
 
 
 def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypatch):

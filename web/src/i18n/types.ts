@@ -578,6 +578,21 @@ export interface Translations {
 
   // ── Achievements plugin (plugins/hermes-achievements) ──
   achievements: {
+    /** Optional achievement copy keyed by the stable ACHIEVEMENTS id. */
+    catalog?: Record<string, {
+      name?: string;
+      description?: string;
+    }>;
+    /** Optional labels keyed by METRIC_LABELS keys. */
+    metrics?: Record<string, string>;
+    /** Optional templates for locale-aware achievement criteria. */
+    criteria?: {
+      tiered?: string;
+      requirements?: string;
+      secret_hidden?: string;
+    };
+    /** Optional labels keyed by the canonical achievement category. */
+    categories?: Record<string, string>;
     hero: {
       kicker: string;
       title: string;

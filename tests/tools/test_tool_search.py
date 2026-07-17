@@ -676,3 +676,54 @@ class TestDeferCoreTrue:
         assert "memory" not in names, (
             "always-core tool 'memory' must NOT appear in scoped set even with defer_core=True"
         )
+
+    def test_tool_call_bridge_dispatches_deferrable_core_tool_end_to_end(self):
+        """E2E: with defer_core=True, tool_call dispatches a deferrable-core tool via
+        the full handle_function_call → resolve_underlying_call → registry dispatch path,
+        against a temp HERMES_HOME config with defer_core enabled.
+        """
+        import json
+        import os
+        import tempfile
+        import model_tools
+        from tools.registry import registry
+        from tools.tool_search import ToolSearchConfig
+
+        # Register a synthetic deferrable-core-shaped tool in the file toolset.
+        captured = {}
+
+        def _handler(args, task_id=None, **kw):
+            captured["called_with"] = args
+            return json.dumps({"ok": True, "wrote": args.get("path", "")})
+
+        registry.register(
+            name="write_file",
+            handler=_handler,
+            schema=_td("write_file", "Write a file", {"path": {"type": "string"}, "content": {"type": "string"}}),
+            toolset="file",
+        )
+
+        # Patch load_config so the bridge uses a defer_core=True config for this call.
+        import tools.tool_search as _ts_mod
+        original_load = _ts_mod.load_config
+
+        def _patched_load():
+            return ToolSearchConfig.from_raw({"enabled": "on", "defer_core": True})
+
+        _ts_mod.load_config = _patched_load
+        try:
+            result = model_tools.handle_function_call(
+                function_name="tool_call",
+                function_args={"name": "write_file", "arguments": {"path": "/tmp/test.txt", "content": "hi"}},
+                enabled_toolsets=["file"],
+            )
+        finally:
+            _ts_mod.load_config = original_load
+
+        parsed = json.loads(result)
+        assert parsed.get("ok") is True, (
+            f"Expected deferrable-core tool to be dispatched successfully via bridge, got: {parsed!r}"
+        )
+        assert captured.get("called_with", {}).get("path") == "/tmp/test.txt", (
+            f"Handler was not called with the correct arguments: {captured!r}"
+        )

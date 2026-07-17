@@ -1905,10 +1905,10 @@ class DiscordAdapter(BasePlatformAdapter):
     def _missed_message_backfill_channels(self) -> set[str]:
         """Channels to scan for missed messages after Discord reconnects.
 
-        Defaults to free-response channels because those are the places where
-        mention-free posts are expected to start work. Operators can set
-        DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS="*" to scan every reachable
-        text channel, but the safe default is scoped.
+        Defaults to the union of allowed and free-response channels so both
+        mention-gated requests and mention-free work can be recovered.
+        Operators can set ``DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS="*"``
+        to scan every reachable text channel, but the safe default is scoped.
         """
         raw = os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "")
         if not raw.strip():

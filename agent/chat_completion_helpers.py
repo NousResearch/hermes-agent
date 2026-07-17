@@ -2179,6 +2179,33 @@ def try_activate_fallback(
                     "Fallback %s/%s: failed to apply reasoning_effort '%s': %s",
                     fb_provider, fb_model, _fb_reasoning_effort, _re_exc,
                 )
+        else:
+            # No per-entry override → layer on upstream's shared chokepoint
+            # (#21256 upstream shape): re-resolve for the FALLBACK model from
+            # config (per-model ``agent.reasoning_overrides`` > global
+            # ``agent.reasoning_effort``; YAML boolean False = disabled).
+            # Failure keeps the current effort — never break the swap. This
+            # replaces the fork's old keep-current-only behavior so a
+            # model-keyed override applies to fallback tiers too; the fork's
+            # per-entry key above still wins when present (upstream cannot
+            # express per-provider-tier efforts for the same model).
+            try:
+                from hermes_cli.config import load_config
+                from hermes_constants import resolve_reasoning_config
+
+                agent.reasoning_config = resolve_reasoning_config(
+                    load_config() or {}, fb_model
+                )
+                logger.info(
+                    "Fallback %s/%s: reasoning_config resolved via chokepoint: %s",
+                    fb_provider, fb_model, agent.reasoning_config,
+                )
+            except Exception as _reasoning_err:  # noqa: BLE001
+                logger.debug(
+                    "Fallback %s/%s: failed to resolve reasoning_config; "
+                    "keeping current: %s",
+                    fb_provider, fb_model, _reasoning_err,
+                )
 
         # Re-sync the auxiliary-routing runtime globals to the fallback tuple.
         # ``turn_context`` set these to the PRIMARY (provider+model) at turn

@@ -42,6 +42,14 @@ def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
     (profile_home / "config.yaml").write_text(
         yaml.safe_dump(
             {
+                # The default mcp_discovery_timeout (1.5s) races the FastMCP
+                # probe's subprocess spawn+connect on slow CI shards: discovery
+                # misses the first tool snapshot and /tools lacks the probe
+                # tool (the recurring shard-8 flake, root-caused 2026-07-16 by
+                # reproducing with timeout=0.01). Production is unaffected
+                # (late-binding refresh), but THIS test requires discovery to
+                # complete before the snapshot — pin a generous bound.
+                "mcp_discovery_timeout": 30,
                 "mcp_servers": {
                     "profileprobe": {
                         "enabled": True,

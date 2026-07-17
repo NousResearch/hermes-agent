@@ -803,7 +803,12 @@ class TestFallbackReasoningEffort:
             assert agent._restore_primary_runtime() is True
         assert agent.reasoning_config == primary_cfg
 
-    def test_absent_key_leaves_reasoning_unchanged(self):
+    def test_absent_key_resolves_via_chokepoint(self):
+        """2026-07-16 convergence: absent per-entry key no longer means
+        keep-current — it re-resolves via upstream's shared chokepoint
+        (per-model reasoning_overrides > global reasoning_effort) for the
+        FALLBACK model. Here the config carries a per-model override for the
+        fallback model, which must be applied."""
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
         )
@@ -811,10 +816,50 @@ class TestFallbackReasoningEffort:
         agent.reasoning_config = primary_cfg
 
         mock_client = _mock_resolve()
-        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+        fake_config = {
+            "agent": {
+                "reasoning_effort": "high",
+                "reasoning_overrides": {"anthropic/claude-sonnet-4": "low"},
+            },
+        }
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)), \
+                patch("hermes_cli.config.load_config", return_value=fake_config):
             agent._try_activate_fallback()
 
-        # No reasoning_effort on the entry → keep whatever was active.
+        # Chokepoint resolution: the fallback model's per-model override wins.
+        assert agent.reasoning_config == {"enabled": True, "effort": "low"}
+
+    def test_absent_key_and_no_override_resolves_global(self):
+        """Absent per-entry key + no per-model override → the chokepoint
+        resolves the GLOBAL effort (same value or not, it comes from config
+        rather than being frozen to whatever was active)."""
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+
+        mock_client = _mock_resolve()
+        fake_config = {"agent": {"reasoning_effort": "medium"}}
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)), \
+                patch("hermes_cli.config.load_config", return_value=fake_config):
+            agent._try_activate_fallback()
+
+        assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
+
+    def test_absent_key_config_failure_keeps_current(self):
+        """Chokepoint resolution failure must never break the swap — keep the
+        currently-active reasoning config."""
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        primary_cfg = {"enabled": True, "effort": "high"}
+        agent.reasoning_config = primary_cfg
+
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)), \
+                patch("hermes_cli.config.load_config", side_effect=RuntimeError("config unreadable")):
+            agent._try_activate_fallback()
+
         assert agent.reasoning_config == primary_cfg
 
     def test_ultra_level_applied(self):

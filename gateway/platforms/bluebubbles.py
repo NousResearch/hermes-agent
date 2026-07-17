@@ -812,16 +812,55 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._edit_counts[new_id] = used + 1
         while len(self._edit_counts) > _GUID_CACHE_SIZE:
             self._edit_counts.popitem(last=False)
-        last = SendResult(success=True, message_id=new_id, raw_response=res)
         # Overflow past MAX_TEXT_LENGTH: edit holds the first chunk and the
         # tail goes out as follow-up messages, mirroring the Telegram
         # adapter's split-and-deliver contract (subsequent edits then target
         # the returned last message id).
+        continuation_ids: List[str] = []
+        delivered_chunks: List[str] = [first]
+        prev_id = new_id
         for chunk in rest:
             tail = await self.send(chat_id, chunk)
-            if tail.success and tail.message_id:
-                last = tail
-        return last
+            if not (tail.success and tail.message_id):
+                # Continuation failed — the user has the edited first chunk
+                # plus however many tails landed, but NOT the full response.
+                # Reporting success here would let the stream consumer mark a
+                # clipped answer as delivered and suppress fallback delivery,
+                # so surface the partial-delivery contract instead.
+                logger.warning(
+                    "[bluebubbles] Overflow split: stopped at %d/%d chunks delivered",
+                    1 + len(continuation_ids),
+                    len(chunks),
+                )
+                return SendResult(
+                    success=False,
+                    message_id=prev_id,
+                    error="overflow_continuation_failed",
+                    retryable=True,
+                    raw_response={
+                        "partial_overflow": True,
+                        "delivered_chunks": 1 + len(continuation_ids),
+                        "total_chunks": len(chunks),
+                        "last_message_id": prev_id,
+                        "delivered_prefix": "".join(delivered_chunks),
+                        "continuation_message_ids": tuple(continuation_ids),
+                    },
+                    continuation_message_ids=tuple(continuation_ids),
+                )
+            tail_id = str(tail.message_id)
+            continuation_ids.append(tail_id)
+            delivered_chunks.append(chunk)
+            prev_id = tail_id
+
+        # ``message_id`` is the LAST visible bubble so subsequent edits target
+        # the most recent chunk; the consumer only adopts it when
+        # ``continuation_message_ids`` is populated.
+        return SendResult(
+            success=True,
+            message_id=prev_id,
+            raw_response=res,
+            continuation_message_ids=tuple(continuation_ids),
+        )
 
     # ------------------------------------------------------------------
     # Chat info

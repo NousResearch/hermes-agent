@@ -23,6 +23,7 @@ import {
 import { parseTodos } from '@/lib/todos'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
+import { broadcastTranscriptChanged } from '@/store/transcript-sync'
 import { upsertSubagent } from '@/store/subagents'
 import { setSessionTodos } from '@/store/todos'
 
@@ -553,6 +554,16 @@ export function useMessageStream({
       })
 
       scheduleSessionsRefresh()
+
+      // Ping peers viewing the same stored session so a stale secondary window
+      // can re-pull history before the user sends into an out-of-date context.
+      if (completedState.storedSessionId) {
+        broadcastTranscriptChanged({
+          sessionId: completedState.storedSessionId,
+          messageCount: completedState.messages.length,
+          updatedAt: Date.now()
+        })
+      }
 
       if (compactedTurnRef.current.delete(sessionId)) {
         shouldHydrate = false

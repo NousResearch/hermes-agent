@@ -12213,6 +12213,14 @@ def _(rid, params: dict) -> dict:
                     qtype = qc.get("type", "")
                     if qtype == "exec":
                         default_desc = f"exec: {qc.get('command', '')}"
+                    elif qtype == "argv":
+                        argv = qc.get("command", [])
+                        default_desc = (
+                            "argv: " + " ".join(argv)
+                            if isinstance(argv, list)
+                            and all(isinstance(item, str) for item in argv)
+                            else "argv quick command"
+                        )
                     elif qtype == "alias":
                         default_desc = f"alias → {qc.get('target', '')}"
                     else:
@@ -12344,6 +12352,8 @@ def _(rid, params: dict) -> dict:
     qcmds = _load_cfg().get("quick_commands", {})
     if name in qcmds:
         qc = qcmds[name]
+        if not isinstance(qc, dict):
+            return _err(rid, 4018, "quick command has malformed configuration")
         if qc.get("type") == "exec":
             # Sanitize env to prevent credential leakage —
             # quick commands run in the TUI server process which
@@ -12374,6 +12384,40 @@ def _(rid, params: dict) -> dict:
                     output or f"quick command failed with exit code {r.returncode}",
                 )
             return _ok(rid, {"type": "exec", "output": output})
+        if qc.get("type") == "argv":
+            from hermes_cli.quick_commands import (
+                QUICK_COMMAND_TIMEOUT_SECONDS,
+                QuickCommandConfigError,
+                QuickCommandOutputError,
+                bounded_quick_command_output,
+                build_argv_environment,
+                prepare_argv_command,
+                run_bounded_argv,
+            )
+
+            try:
+                argv = prepare_argv_command(qc, arg)
+                r = run_bounded_argv(
+                    argv,
+                    timeout=QUICK_COMMAND_TIMEOUT_SECONDS,
+                    env=build_argv_environment(),
+                )
+                output = bounded_quick_command_output(r.stdout, r.stderr)
+            except (QuickCommandConfigError, QuickCommandOutputError) as exc:
+                return _err(rid, 4018, str(exc))
+            except subprocess.TimeoutExpired:
+                return _err(
+                    rid, 4018, f"quick command timed out ({QUICK_COMMAND_TIMEOUT_SECONDS}s)"
+                )
+            except Exception as exc:
+                return _err(rid, 4018, f"quick command failed: {exc}")
+            if r.returncode != 0:
+                return _err(
+                    rid,
+                    4018,
+                    output or f"quick command failed with exit code {r.returncode}",
+                )
+            return _ok(rid, {"type": "argv", "output": output})
         if qc.get("type") == "alias":
             return _ok(rid, {"type": "alias", "target": qc.get("target", "")})
 

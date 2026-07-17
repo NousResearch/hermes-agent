@@ -236,8 +236,11 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     runner._reset_notice_session_info = lambda source: ""
 
     runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
     runner.pairing_store._is_rate_limited = MagicMock(return_value=False)
     runner.pairing_store.generate_code = MagicMock(return_value="ABC123")
+    runner.pairing_store.list_approved.return_value = []
+    runner.pairing_stores = {}
 
     return runner
 

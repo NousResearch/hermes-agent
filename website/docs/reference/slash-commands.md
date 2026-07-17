@@ -137,7 +137,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 
 ### Quick Commands
 
-User-defined quick commands map a short slash command to either a shell command or another slash command. Configure them in `~/.hermes/config.yaml`:
+User-defined quick commands map a short slash command to a shell command, a no-shell argv command, or another slash command. Configure them in `~/.hermes/config.yaml`:
 
 ```yaml
 quick_commands:
@@ -150,9 +150,16 @@ quick_commands:
   inbox:
     type: alias
     target: /gmail unread
+  remember:
+    type: argv
+    command: [remember-spool-append, --type, fact]
+    argument_mode: text
+    destination_alias: owner
 ```
 
 Then type `/status`, `/deploy`, or `/inbox` in the CLI or a messaging platform. Quick commands are resolved at dispatch time and may not appear in every built-in autocomplete/help table.
+
+Use `type: argv` when trailing user text must reach a deterministic program. Hermes appends the complete trailing text as one literal argument, never invokes a shell, passes only a minimal credential-free environment, enforces fixed input/output limits, and forces output redaction. On messaging gateways, `destination_alias` is exposed to the child as `HERMES_QUICK_COMMAND_DESTINATION_ALIAS`; message and update IDs are exposed only through the provenance variables documented in the configuration guide.
 
 String-only prompt shortcuts are not supported as quick commands. Put longer reusable prompts in a skill, or use `type: alias` to point at an existing slash command.
 

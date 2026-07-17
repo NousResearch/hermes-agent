@@ -50,6 +50,7 @@ def test_cron_create_options():
         "cron", "create", "0 9 * * *", "daily task prompt",
         "--name", "daily", "--deliver", "origin", "--repeat", "3",
         "--skill", "a", "--skill", "b", "--no-agent",
+        "--deduplicate-delivery",
         "--workdir", "/tmp/x",
     ])
     assert ns.schedule == "0 9 * * *"
@@ -59,6 +60,7 @@ def test_cron_create_options():
     assert ns.repeat == 3
     assert ns.skills == ["a", "b"]
     assert ns.no_agent is True
+    assert ns.deduplicate_delivery is True
     assert ns.workdir == "/tmp/x"
 
 
@@ -68,6 +70,23 @@ def test_cron_edit_no_agent_tristate():
     assert parser.parse_args(["cron", "edit", "j", "--no-agent"]).no_agent is True
     assert parser.parse_args(["cron", "edit", "j", "--agent"]).no_agent is False
     assert parser.parse_args(["cron", "edit", "j"]).no_agent is None
+
+
+def test_cron_edit_delivery_dedup_tristate():
+    parser = _build()
+    assert (
+        parser.parse_args(
+            ["cron", "edit", "j", "--deduplicate-delivery"]
+        ).deduplicate_delivery
+        is True
+    )
+    assert (
+        parser.parse_args(
+            ["cron", "edit", "j", "--allow-duplicate-delivery"]
+        ).deduplicate_delivery
+        is False
+    )
+    assert parser.parse_args(["cron", "edit", "j"]).deduplicate_delivery is None
 
 
 def test_cron_dispatch_func_is_injected_handler():

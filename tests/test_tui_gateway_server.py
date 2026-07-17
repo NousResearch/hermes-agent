@@ -5645,6 +5645,10 @@ def test_commands_catalog_surfaces_quick_commands(monkeypatch):
             "quick_commands": {
                 "build": {"type": "exec", "command": "npm run build"},
                 "git": {"type": "alias", "target": "/shell git"},
+                "remember": {
+                    "type": "argv",
+                    "command": ["remember-spool-append", "--type", "fact"],
+                },
                 "notes": {
                     "type": "exec",
                     "command": "cat NOTES.md",
@@ -5661,13 +5665,14 @@ def test_commands_catalog_surfaces_quick_commands(monkeypatch):
     pairs = dict(resp["result"]["pairs"])
     assert "npm run build" in pairs["/build"]
     assert pairs["/git"].startswith("alias →")
+    assert pairs["/remember"].startswith("argv:")
     assert pairs["/notes"] == "Open design notes"
 
     user_cat = next(
         c for c in resp["result"]["categories"] if c["name"] == "User commands"
     )
     user_pairs = dict(user_cat["pairs"])
-    assert set(user_pairs) == {"/build", "/git", "/notes"}
+    assert set(user_pairs) == {"/build", "/git", "/notes", "/remember"}
 
     assert resp["result"]["canon"]["/build"] == "/build"
     assert resp["result"]["canon"]["/notes"] == "/notes"
@@ -5823,6 +5828,50 @@ def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
 
     assert "error" in resp
     assert "failed" in resp["error"]["message"]
+
+
+def test_command_dispatch_argv_passes_text_as_one_item_without_shell(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "quick_commands": {
+                "remember": {
+                    "type": "argv",
+                    "command": ["remember-spool-append", "--type", "fact"],
+                    "argument_mode": "text",
+                }
+            }
+        },
+    )
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="saved", stderr="")
+
+    monkeypatch.setattr(
+        "hermes_cli.quick_commands.run_bounded_argv", fake_run
+    )
+    monkeypatch.setenv("BOT_TOKEN", "secret")
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "command.dispatch",
+            "params": {"name": "remember", "arg": "hello; echo not-a-shell"},
+        }
+    )
+
+    assert resp["result"] == {"type": "argv", "output": "saved"}
+    assert calls[0][0][0] == [
+        "remember-spool-append",
+        "--type",
+        "fact",
+        "hello; echo not-a-shell",
+    ]
+    assert "shell" not in calls[0][1]
+    assert "BOT_TOKEN" not in calls[0][1]["env"]
 
 
 def test_plugins_list_surfaces_loader_error(monkeypatch):

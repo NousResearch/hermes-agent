@@ -10,6 +10,7 @@ Uses python-telegram-bot library for:
 import asyncio
 import dataclasses
 import faulthandler
+import hashlib
 import inspect
 import json
 import logging
@@ -3974,23 +3975,18 @@ class TelegramAdapter(BasePlatformAdapter):
                                 pass  # Typing failures are non-fatal
                     return rich_result
 
-            # Format and split message if needed
-            formatted = self.format_message(content)
-            chunks = self.truncate_message(
-                formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
-            )
-            if len(chunks) > 1:
-                # truncate_message appends a raw " (1/2)" suffix. Escape the
-                # MarkdownV2-special parentheses so Telegram doesn't reject the
-                # chunk and fall back to plain text.
-                chunks = [
-                    _separate_chunk_indicator_from_fence(
-                        re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
-                    )
-                    for chunk in chunks
-                ]
+            # Format and split through the shared deterministic plan. The live
+            # canary recomputes this exact plan and binds its receipt to the
+            # chunks acknowledged by Telegram.
+            chunks = prepare_legacy_text_chunks(content)
             
             message_ids = []
+            attempt_counts = []
+            sent_chunk_texts = []
+            inject_synthetic_pre_send_failure = bool(
+                (metadata or {}).get("hermes_synthetic_pre_send_connect_failure")
+            )
+            synthetic_pre_send_failures = 0
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
             used_thread_fallback = False
@@ -4054,8 +4050,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 effective_thread_id = thread_kwargs.get("message_thread_id")
 
                 msg = None
+                sent_chunk_text = chunk
                 for _send_attempt in range(3):
                     try:
+                        if (
+                            inject_synthetic_pre_send_failure
+                            and synthetic_pre_send_failures == 0
+                        ):
+                            # Canary-only, pre-transport fault injection. No
+                            # Bot API call has happened, so the existing
+                            # NetworkError retry path is safe to exercise.
+                            synthetic_pre_send_failures += 1
+                            raise _NetErr("synthetic pre-send connection failure")
                         # Try Markdown first, fall back to plain text if it fails
                         try:
                             msg = await self._bot.send_message(
@@ -4081,6 +4087,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
                                 )
+                                sent_chunk_text = plain_chunk
                             else:
                                 raise
                         break  # success
@@ -4203,6 +4210,8 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
+                attempt_counts.append(_send_attempt + 1)
+                sent_chunk_texts.append(sent_chunk_text)
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,
@@ -4225,6 +4234,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 message_id=message_ids[0] if message_ids else None,
                 raw_response={
                     "message_ids": message_ids,
+                    "attempt_counts": attempt_counts,
+                    "chunk_count": len(chunks),
+                    "chunk_sha256": [
+                        "sha256:" + hashlib.sha256(chunk.encode("utf-8")).hexdigest()
+                        for chunk in sent_chunk_texts
+                    ],
+                    "chunk_utf16_units": [
+                        utf16_len(chunk) for chunk in sent_chunk_texts
+                    ],
+                    "synthetic_pre_send_failures": synthetic_pre_send_failures,
                     "requested_thread_id": requested_thread_id,
                     "thread_fallback": used_thread_fallback,
                 },
@@ -4233,6 +4252,31 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             safe_error = _redact_telegram_error_text(e)
             logger.error("[%s] Failed to send Telegram message: %s", self.name, safe_error)
+            delivered_ids = list(locals().get("message_ids") or [])
+            all_chunks = list(locals().get("chunks") or [])
+            if delivered_ids and all_chunks:
+                # At least one ordinary text chunk is already visible. A full
+                # retry in BasePlatformAdapter._send_with_retry would duplicate
+                # that prefix, so return an explicit non-retryable partial
+                # receipt. The generic retry layer recognizes partial_send and
+                # returns it unchanged.
+                delivered_count = len(delivered_ids)
+                return SendResult(
+                    success=False,
+                    message_id=delivered_ids[0],
+                    error=f"partial_send after {delivered_count}/{len(all_chunks)} chunks: {safe_error}",
+                    raw_response={
+                        "partial_send": True,
+                        "message_ids": delivered_ids,
+                        "delivered_chunks": delivered_count,
+                        "total_chunks": len(all_chunks),
+                        "remaining_chunks": len(all_chunks) - delivered_count,
+                        "requested_thread_id": locals().get("requested_thread_id"),
+                        "thread_fallback": bool(locals().get("used_thread_fallback", False)),
+                    },
+                    retryable=False,
+                    error_kind="partial_send",
+                )
             err_str = str(e).lower()
             error_kind = classify_send_error(e)
             # Message too long — content exceeded 4096 chars. Return failure so
@@ -9152,6 +9196,28 @@ def _resolve_notifications_mode() -> str:
         )
         mode = "important"
     return mode
+
+
+def prepare_legacy_text_chunks(content: str) -> List[str]:
+    """Return the exact MarkdownV2 chunks used by ordinary Telegram sends."""
+    formatter = object.__new__(TelegramAdapter)
+    formatted = TelegramAdapter.format_message(formatter, content)
+    chunks = BasePlatformAdapter.truncate_message(
+        formatted,
+        TelegramAdapter.MAX_MESSAGE_LENGTH,
+        len_fn=utf16_len,
+    )
+    if len(chunks) > 1:
+        # truncate_message appends a raw " (1/2)" suffix. Escape the
+        # MarkdownV2-special parentheses so Telegram doesn't reject the chunk
+        # and fall back to plain text.
+        chunks = [
+            _separate_chunk_indicator_from_fence(
+                re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+            )
+            for chunk in chunks
+        ]
+    return chunks
 
 
 def _build_adapter(config):

@@ -342,6 +342,34 @@ async def test_non_admin_denied_for_unlisted_quick_command_exec():
 
 
 @pytest.mark.asyncio
+async def test_non_admin_denied_before_quick_command_argv_spawn(monkeypatch):
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": [],
+        }
+    )
+    runner.config.quick_commands = {
+        "remember": {
+            "type": "argv",
+            "command": ["remember-spool-append", "--type", "fact"],
+            "argument_mode": "text",
+            "destination_alias": "owner",
+        }
+    }
+    spawn = AsyncMock()
+    monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
+
+    result = await runner._handle_message(
+        _make_event("/remember never-run", _make_source(user_id="999"))
+    )
+
+    assert result is not None
+    assert "/remember is admin-only here" in result
+    spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_listed_quick_command_runs_for_non_admin():
     """When the operator lists the quick command in user_allowed_commands, a
     non-admin can run it — the gate must allow, not blanket-deny."""
@@ -458,6 +486,47 @@ async def test_running_agent_fastpath_status_always_works():
     result = await runner._handle_message(_make_event("/status", src))
     assert result == "status-handled"
     assert "⛔" not in (result or "")
+
+
+@pytest.mark.asyncio
+async def test_multiplex_running_agent_gate_uses_routed_profile_config(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(platform_extra={})
+    runner.config.multiplex_profiles = True
+    src = _make_source(
+        platform=Platform.DISCORD,
+        user_id="secondary-user",
+    )
+    src.profile = "secondary"
+    secondary_home = tmp_path / "profiles" / "secondary"
+    secondary_config = GatewayConfig(
+        multiplex_profiles=True,
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                token="***",
+                extra={
+                    "allow_admin_from": ["secondary-admin"],
+                    "user_allowed_commands": [],
+                },
+            )
+        },
+    )
+    runner._resolve_profile_home_for_source = MagicMock(return_value=secondary_home)
+    session_key = build_session_key(src, profile="secondary")
+    runner._running_agents[session_key] = MagicMock()
+    runner._running_agents_ts[session_key] = 0
+    runner._handle_restart_command = AsyncMock(return_value="restart-handled")
+    monkeypatch.setattr(
+        "gateway.config.load_gateway_config", lambda: secondary_config
+    )
+
+    result = await runner._handle_message(_make_event("/restart", src))
+
+    assert result is not None
+    assert "/restart is admin-only here" in result
+    runner._handle_restart_command.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

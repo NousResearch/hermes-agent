@@ -1751,7 +1751,7 @@ whatsapp:
 
 ## Quick Commands
 
-Define custom commands that either run shell commands without invoking the LLM, or alias one slash command to another. Exec quick commands are zero-token and useful from messaging platforms (Telegram, Discord, etc.) for quick server checks or utility scripts.
+Define custom commands that run shell commands, run a bounded no-shell argv program, or alias one slash command to another. Quick commands are zero-token and useful from messaging platforms (Telegram, Discord, etc.) for quick server checks or utility scripts.
 
 ```yaml
 quick_commands:
@@ -1770,15 +1770,31 @@ quick_commands:
   restart:
     type: alias
     target: /gateway restart
+  remember:
+    type: argv
+    command: [remember-spool-append, --type, fact]
+    argument_mode: text
+    destination_alias: owner
+  gateway-canary:
+    type: argv
+    command: [/absolute/path/to/hermes/venv/bin/python, -m, hermes_cli.telegram_canary, payload, --runtime-sha, 0123456789abcdef0123456789abcdef01234567]
+    argument_mode: none
+    destination_alias: owner
+    delivery_receipt: telegram_canary
+    runtime_sha: 0123456789abcdef0123456789abcdef01234567
 ```
 
-Usage: type `/status`, `/disk`, `/update`, `/gpu`, or `/restart` in the CLI or any messaging platform. `exec` commands run locally on the host and return the output directly — no LLM call, no tokens consumed. `alias` commands rewrite to the configured slash command target.
+Usage: type `/status`, `/disk`, `/update`, `/gpu`, `/remember a fact`, or `/restart` in the CLI or any messaging platform. `exec` commands run a trusted static shell string. `argv` commands require a non-empty list-valued `command`; `argument_mode: text` appends all trailing user text as exactly one literal argument. `alias` commands rewrite to the configured slash command target.
 
 - **30-second timeout** — long-running commands are killed with an error message
 - **Priority** — quick commands are checked before skill commands, so you can override skill names
 - **Autocomplete** — quick commands are resolved at dispatch time and are not shown in the built-in slash-command autocomplete tables
-- **Type** — supported types are `exec` and `alias`; other types show an error
+- **Type** — supported types are `exec`, `argv`, and `alias`; other types show an error
 - **Works everywhere** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant
+
+`argv` commands never invoke a shell. They receive no stdin, have an 8,192-byte UTF-8 input limit and a streaming-enforced 65,536-byte combined output limit, use a minimal environment without Hermes credentials, and force secret redaction before output is displayed. Messaging gateways additionally expose bounded provenance as `HERMES_QUICK_COMMAND_PLATFORM`, `HERMES_QUICK_COMMAND_MESSAGE_ID`, and `HERMES_QUICK_COMMAND_UPDATE_ID`. If the command config includes `destination_alias`, it is exposed as `HERMES_QUICK_COMMAND_DESTINATION_ALIAS`. Raw chat IDs, usernames, and bot tokens are not passed.
+
+`delivery_receipt: telegram_canary` is a narrow Telegram-only verification mode for the bundled synthetic payload command. It requires the exact sole owner in a direct message, `destination_alias: owner`, and an exact deployed Git SHA in both the command and `runtime_sha`. Before claiming delivery, Hermes verifies that the running checkout is that SHA with no tracked, staged, or untracked files, and no ignored importable artifacts outside dependency/build roots. It then claims the triggering update, suppresses duplicate producer attempts, injects one safe pre-send connection failure into the existing Telegram retry loop, and binds Telegram API acknowledgements to the exact formatted multi-chunk plan. Canary claims are retained without age- or count-based eviction so an old trigger cannot become replayable after later runs. It appends a `hermes.telegram-canary/v1` receipt under `$HERMES_HOME/receipts`; receipt, state, and lock files are owner-only and crash-safe. Raw trigger, update, chat, user, and delivered-message identifiers are never persisted. The receipt explicitly records `private_data: false`, `qualifies_for_external_acceptance: false`, `checks.idempotency.scope: canary_producer`, and `checks.delivery.confirmation: api_acknowledged`; it does not claim gateway-wide inbound deduplication, any production or domain acceptance result, or Telegram client display proof.
 
 String-only prompt shortcuts are not valid quick commands. For reusable prompt workflows, create a skill or alias to an existing slash command.
 

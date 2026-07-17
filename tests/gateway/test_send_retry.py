@@ -191,6 +191,39 @@ class TestSendWithRetryNetworkRetry:
         assert len(adapter._send_calls) == 2
 
     @pytest.mark.asyncio
+    async def test_partial_send_on_retry_never_falls_back_with_full_payload(self):
+        adapter = _StubAdapter()
+        partial = SendResult(
+            success=False,
+            error="partial_send after 1/2 chunks",
+            error_kind="partial_send",
+            retryable=False,
+            raw_response={
+                "partial_send": True,
+                "message_ids": ["already-visible-prefix"],
+                "delivered_chunks": 1,
+                "total_chunks": 2,
+            },
+        )
+        adapter._send_results = [
+            SendResult(
+                success=False,
+                error="ConnectTimeout: connection timed out",
+                retryable=True,
+            ),
+            partial,
+            SendResult(success=True, message_id="unsafe-full-fallback"),
+        ]
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await adapter._send_with_retry(
+                "chat1", "payload", max_retries=2, base_delay=0
+            )
+
+        assert result is partial
+        assert len(adapter._send_calls) == 2
+
+    @pytest.mark.asyncio
     async def test_network_to_nonnetwork_transition_falls_back_to_plaintext(self):
         """If error switches from network to formatting mid-retry, fall through to plain-text fallback."""
         adapter = _StubAdapter()

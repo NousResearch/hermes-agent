@@ -9308,6 +9308,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
+
+        # Resolve slash capabilities and policy from the inbound source's
+        # profile once per command.  In multiplex mode ``self.config`` belongs
+        # to the primary gateway process; consulting it here would let primary
+        # aliases or access rules override a secondary profile before the
+        # routed quick-command sink gets a chance to load its own config.
+        _source_gateway_config = getattr(self, "config", {})
+        _source_profile_home = None
+        _multiplex_profiles = (
+            bool(_source_gateway_config.get("multiplex_profiles", False))
+            if isinstance(_source_gateway_config, dict)
+            else bool(getattr(_source_gateway_config, "multiplex_profiles", False))
+        )
+        if _multiplex_profiles and event.get_command():
+            _source_profile_home = self._resolve_profile_home_for_source(source)
+            from gateway.config import load_gateway_config
+
+            with _profile_runtime_scope(_source_profile_home):
+                _source_gateway_config = load_gateway_config()
         
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
@@ -9562,7 +9581,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # session state. /help and /whoami fall under the always-allowed
             # floor inside _check_slash_access.
             if _evt_cmd and _cmd_def_inner is not None:
-                _denied = self._check_slash_access(source, _cmd_def_inner.name)
+                _denied = self._check_slash_access(
+                    source,
+                    _cmd_def_inner.name,
+                    gateway_config=_source_gateway_config,
+                )
                 if _denied is not None:
                     return _denied
 
@@ -9949,13 +9972,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Preserve built-in precedence; aliases only need early handling when
         # the typed command is not already known.
         if command and _cmd_def is None:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
+            if isinstance(_source_gateway_config, dict):
+                quick_commands = _source_gateway_config.get("quick_commands", {}) or {}
             else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
+                quick_commands = (
+                    getattr(_source_gateway_config, "quick_commands", {}) or {}
+                )
             if isinstance(quick_commands, dict) and command in quick_commands:
                 qcmd = quick_commands[command]
-                if qcmd.get("type") == "alias":
+                if isinstance(qcmd, dict) and qcmd.get("type") == "alias":
                     target = (qcmd.get("target") or "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
@@ -9973,7 +9998,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # ``user_allowed_commands`` (plus the always-allowed floor: /help,
         # /whoami). Plain chat is unaffected — only slash commands gate.
         if command and canonical and is_gateway_known_command(canonical):
-            _denied = self._check_slash_access(source, canonical)
+            _denied = self._check_slash_access(
+                source, canonical, gateway_config=_source_gateway_config
+            )
             if _denied is not None:
                 return _denied
 
@@ -10330,10 +10357,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
+            quick_config = _source_gateway_config
+            quick_profile_home = _source_profile_home
+
+            if isinstance(quick_config, dict):
+                quick_commands = quick_config.get("quick_commands", {}) or {}
             else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
+                quick_commands = getattr(quick_config, "quick_commands", {}) or {}
             if not isinstance(quick_commands, dict):
                 quick_commands = {}
             if command in quick_commands:
@@ -10344,11 +10374,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # dispatch sink unchecked. Apply the same admin/user policy to
                 # the raw typed name here so non-admins can't invoke admin-only
                 # quick commands. (#44727)
-                _denied = self._check_slash_access(source, command)
+                _denied = self._check_slash_access(
+                    source, command, gateway_config=quick_config
+                )
                 if _denied is not None:
                     return _denied
                 qcmd = quick_commands[command]
-                if qcmd.get("type") == "exec":
+                if not isinstance(qcmd, dict):
+                    return f"Quick command '/{command}' has malformed configuration."
+                qcmd_type = qcmd.get("type")
+                if qcmd_type == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
@@ -10376,7 +10411,301 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             return f"Quick command error: {e}"
                     else:
                         return f"Quick command '/{command}' has no command defined."
-                elif qcmd.get("type") == "alias":
+                elif qcmd_type == "argv":
+                    from hermes_cli.quick_commands import (
+                        QUICK_COMMAND_TIMEOUT_SECONDS,
+                        QuickCommandConfigError,
+                        QuickCommandOutputError,
+                        bounded_quick_command_output,
+                        build_gateway_argv_environment,
+                        communicate_bounded_async,
+                        prepare_argv_command,
+                        _new_process_group_kwargs,
+                    )
+
+                    canary_claim = None
+                    canary_authentication = None
+                    canary_duplicate_probe = False
+                    canary_payload_builder = None
+                    canary_receipt_path = None
+                    canary_state_path = None
+                    delivery_receipt = qcmd.get("delivery_receipt")
+                    if delivery_receipt not in (None, "telegram_canary"):
+                        return (
+                            f"Quick command '/{command}' configuration error: "
+                            "unsupported delivery_receipt."
+                        )
+                    if delivery_receipt == "telegram_canary":
+                        from hermes_cli.telegram_canary import (
+                            _auth_checks as telegram_canary_auth_checks,
+                            build_live_payload,
+                            canary_paths,
+                            claim_live_canary,
+                            mark_live_canary_pre_send_failure,
+                            recover_sealed_live_canary,
+                            strict_single_owner_id,
+                            verify_running_runtime_sha,
+                        )
+
+                        platform_name = getattr(source.platform, "value", source.platform)
+                        if platform_name != "telegram":
+                            return "Telegram canary is only available on Telegram."
+                        owner_id = strict_single_owner_id()
+                        destination_alias = str(qcmd.get("destination_alias", ""))
+                        source_chat_type = str(getattr(source, "chat_type", "")).lower()
+                        source_user_id = str(getattr(source, "user_id", "") or "")
+                        if (
+                            destination_alias != "owner"
+                            or source_chat_type not in {"dm", "private"}
+                            or owner_id is None
+                            or source_user_id != owner_id
+                        ):
+                            return "Telegram canary refused: exact owner DM authorization is required."
+                        runtime_sha = str(qcmd.get("runtime_sha", ""))
+                        if not verify_running_runtime_sha(runtime_sha):
+                            return "Telegram canary refused: running source does not match its clean runtime SHA."
+                        canary_authentication = telegram_canary_auth_checks(
+                            self, source
+                        )
+                        canary_authentication["source_authorized"] = bool(
+                            self._is_user_authorized(source)
+                            and source_user_id == owner_id
+                            and source_chat_type in {"dm", "private"}
+                        )
+                        if not all(canary_authentication.values()):
+                            return "Telegram canary refused: strict owner authorization is not active."
+                        # The multiplex dispatcher has already resolved the
+                        # routed profile.  Pass its home explicitly so durable
+                        # canary state cannot fall back to the primary process
+                        # profile after the temporary config scope exits.
+                        canary_receipt_path, canary_state_path = canary_paths(
+                            quick_profile_home
+                        )
+                        try:
+                            canary_claim, duplicate = claim_live_canary(
+                                runtime_sha=runtime_sha,
+                                destination_alias=destination_alias,
+                                message_id=event.message_id,
+                                update_id=getattr(event, "platform_update_id", None),
+                                state_path=canary_state_path,
+                            )
+                        except ValueError as exc:
+                            return f"Quick command '/{command}' configuration error: {exc}."
+                        if duplicate:
+                            # Producer-level idempotency: an identical Telegram
+                            # update never spawns or emits a second response. A
+                            # post-delivery transaction that already sealed its
+                            # exact receipt may still finish its local append.
+                            if canary_claim is not None:
+                                try:
+                                    receipt, receipt_sha256 = (
+                                        recover_sealed_live_canary(
+                                            canary_claim,
+                                            receipt_path=canary_receipt_path,
+                                            state_path=canary_state_path,
+                                        )
+                                    )
+                                    logger.info(
+                                        "Recovered Telegram gateway canary "
+                                        "receipt result=%s sha256=%s",
+                                        receipt.get("result"),
+                                        receipt_sha256,
+                                    )
+                                except Exception:
+                                    logger.exception(
+                                        "Telegram gateway canary sealed-receipt "
+                                        "recovery failed"
+                                    )
+                            return None
+                        _, canary_duplicate_probe = claim_live_canary(
+                            runtime_sha=runtime_sha,
+                            destination_alias=destination_alias,
+                            message_id=event.message_id,
+                            update_id=getattr(event, "platform_update_id", None),
+                            state_path=canary_state_path,
+                        )
+                        if not canary_duplicate_probe:
+                            mark_live_canary_pre_send_failure(
+                                canary_claim,
+                                state_path=canary_state_path,
+                                reason="idempotency_probe_failed",
+                            )
+                            return "Telegram canary refused: idempotency probe failed."
+                        canary_payload_builder = build_live_payload
+
+                    def _mark_canary_failure(reason: str) -> None:
+                        if canary_claim is None or canary_state_path is None:
+                            return
+                        try:
+                            from hermes_cli.telegram_canary import (
+                                mark_live_canary_pre_send_failure,
+                            )
+
+                            mark_live_canary_pre_send_failure(
+                                canary_claim,
+                                state_path=canary_state_path,
+                                reason=reason,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Telegram canary failure-state write failed",
+                                exc_info=True,
+                            )
+
+                    try:
+                        argv = prepare_argv_command(qcmd, event.get_command_args())
+                        platform_name = getattr(source.platform, "value", source.platform)
+                        if quick_profile_home is None:
+                            child_env = build_gateway_argv_environment(
+                                qcmd,
+                                platform=platform_name,
+                                message_id=event.message_id,
+                                update_id=getattr(event, "platform_update_id", None),
+                            )
+                        else:
+                            with _profile_runtime_scope(quick_profile_home):
+                                child_env = build_gateway_argv_environment(
+                                    qcmd,
+                                    platform=platform_name,
+                                    message_id=event.message_id,
+                                    update_id=getattr(event, "platform_update_id", None),
+                                )
+                    except QuickCommandConfigError as exc:
+                        _mark_canary_failure("quick_command_configuration_error")
+                        return f"Quick command '/{command}' configuration error: {exc}."
+
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            *argv,
+                            stdin=asyncio.subprocess.DEVNULL,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            env=child_env,
+                            **_new_process_group_kwargs(),
+                        )
+                        stdout, stderr = await communicate_bounded_async(
+                            proc, timeout=QUICK_COMMAND_TIMEOUT_SECONDS
+                        )
+                    except asyncio.TimeoutError:
+                        _mark_canary_failure("quick_command_timeout")
+                        return f"Quick command timed out ({QUICK_COMMAND_TIMEOUT_SECONDS}s)."
+                    except QuickCommandOutputError as exc:
+                        _mark_canary_failure("quick_command_output_error")
+                        return f"Quick command '/{command}' {exc}."
+                    except Exception as exc:
+                        _mark_canary_failure("quick_command_spawn_error")
+                        return f"Quick command error: {exc}"
+
+                    try:
+                        output = bounded_quick_command_output(stdout, stderr)
+                    except QuickCommandOutputError as exc:
+                        _mark_canary_failure("quick_command_output_error")
+                        return f"Quick command '/{command}' {exc}."
+                    if proc.returncode != 0:
+                        _mark_canary_failure("quick_command_nonzero_exit")
+                        detail = output or f"exit code {proc.returncode}"
+                        return f"Quick command '/{command}' failed: {detail}"
+                    if canary_claim is not None:
+                        expected_payload = canary_payload_builder(
+                            canary_claim.runtime_sha
+                        )
+                        if output != expected_payload:
+                            _mark_canary_failure("unexpected_canary_payload")
+                            return "Telegram canary refused: payload did not match its runtime."
+                        adapter = self._adapter_for_source(source)
+                        active = (
+                            getattr(adapter, "_active_sessions", {}).get(_quick_key)
+                            if adapter is not None
+                            else None
+                        )
+                        if (
+                            adapter is None
+                            or active is None
+                            or not hasattr(adapter, "register_post_delivery_callback")
+                        ):
+                            _mark_canary_failure("delivery_observer_unavailable")
+                            return "Telegram canary refused: delivery observer is unavailable."
+
+                        # Quick commands run before the ordinary agent-turn
+                        # generation claim below. Claim and bind one concrete
+                        # generation now so this callback can never occupy or
+                        # consume the generation-less slot used by a fresher run.
+                        generation = self._begin_session_run_generation(_quick_key)
+                        self._bind_adapter_run_generation(
+                            adapter,
+                            _quick_key,
+                            generation,
+                        )
+                        setattr(event, "_hermes_preclaimed_run_generation", generation)
+
+                        setattr(
+                            active,
+                            "_hermes_synthetic_pre_send_connect_failure",
+                            True,
+                        )
+
+                        def _write_canary_receipt() -> None:
+                            from hermes_cli.telegram_canary import (
+                                finalize_live_canary,
+                                recover_sealed_live_canary,
+                            )
+
+                            delivery_result = None
+                            if getattr(
+                                active,
+                                "_hermes_last_delivery_result_generation",
+                                None,
+                            ) == generation:
+                                delivery_result = getattr(
+                                    active,
+                                    "_hermes_last_delivery_result",
+                                    None,
+                                )
+
+                            try:
+                                receipt, receipt_sha256 = finalize_live_canary(
+                                    canary_claim,
+                                    result=delivery_result,
+                                    payload=output,
+                                    authentication=canary_authentication,
+                                    duplicate_probe_suppressed=canary_duplicate_probe,
+                                    receipt_path=canary_receipt_path,
+                                    state_path=canary_state_path,
+                                )
+                            except Exception:
+                                # If finalization failed after sealing the exact
+                                # post-delivery record, finish the append/readback
+                                # immediately. The adapter intentionally isolates
+                                # callback failures, so recovery must happen here.
+                                receipt, receipt_sha256 = recover_sealed_live_canary(
+                                    canary_claim,
+                                    receipt_path=canary_receipt_path,
+                                    state_path=canary_state_path,
+                                )
+                            logger.info(
+                                "Telegram gateway canary receipt result=%s sha256=%s",
+                                receipt.get("result"),
+                                receipt_sha256,
+                            )
+
+                        try:
+                            adapter.register_post_delivery_callback(
+                                _quick_key,
+                                _write_canary_receipt,
+                                generation=generation,
+                            )
+                        except Exception:
+                            try:
+                                delattr(
+                                    active,
+                                    "_hermes_synthetic_pre_send_connect_failure",
+                                )
+                            except AttributeError:
+                                pass
+                            _mark_canary_failure("delivery_observer_registration_failed")
+                            return "Telegram canary refused: delivery observer registration failed."
+                    return output if output else "Command returned no output."
+                elif qcmd_type == "alias":
                     target = (qcmd.get("target") or "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
@@ -10388,7 +10717,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else:
                         return f"Quick command '/{command}' has no target defined."
                 else:
-                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
+                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'argv', 'alias')."
 
         # Plugin-registered slash commands
         if command:
@@ -10610,7 +10939,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         self._running_agents_ts[_quick_key] = time.time()
         self._persist_active_agents()
-        _run_generation = self._begin_session_run_generation(_quick_key)
+        _run_generation = getattr(event, "_hermes_preclaimed_run_generation", None)
+        if _run_generation is None:
+            _run_generation = self._begin_session_run_generation(_quick_key)
+        else:
+            try:
+                delattr(event, "_hermes_preclaimed_run_generation")
+            except AttributeError:
+                pass
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
@@ -12872,7 +13208,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
     def _check_slash_access(
-        self, source: SessionSource, canonical_cmd: str
+        self,
+        source: SessionSource,
+        canonical_cmd: str,
+        *,
+        gateway_config: Any = None,
     ) -> Optional[str]:
         """Return a denial message if ``source`` cannot run ``canonical_cmd``,
         else None. Used by both the cold and running-agent dispatch paths
@@ -12888,7 +13228,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if not canonical_cmd:
             return None
-        policy = _policy_for_source(self.config, source)
+        policy = _policy_for_source(
+            self.config if gateway_config is None else gateway_config,
+            source,
+        )
         if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
             return None
         logger.info(

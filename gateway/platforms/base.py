@@ -4176,6 +4176,16 @@ class BasePlatformAdapter(ABC):
         if result.success:
             return result
 
+        # A platform may have delivered a prefix of a multi-message payload
+        # before a later chunk failed. Retrying or plain-text-falling-back with
+        # the whole payload would duplicate that visible prefix. Preserve the
+        # partial receipt for the caller and never resend the full content.
+        if (
+            isinstance(result.raw_response, dict)
+            and result.raw_response.get("partial_send") is True
+        ):
+            return result
+
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
 
@@ -4208,6 +4218,15 @@ class BasePlatformAdapter(ABC):
                 )
                 if result.success:
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
+                    return result
+                if (
+                    isinstance(result.raw_response, dict)
+                    and result.raw_response.get("partial_send") is True
+                ):
+                    # A retry can itself deliver an initial chunk before a
+                    # later chunk fails. Returning immediately is mandatory:
+                    # falling through to the full plain-text fallback would
+                    # duplicate the visible prefix.
                     return result
                 error_str = result.error or ""
                 if result.retry_after is not None:
@@ -4679,11 +4698,45 @@ class BasePlatformAdapter(ABC):
         # Offloaded: the sync hook must not block the loop.
         await asyncio.to_thread(self._apply_topic_recovery, event)
 
-        session_key = build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
+        session_key = None
+        runner = getattr(self, "gateway_runner", None)
+        resolver = getattr(runner, "_session_key_for_source", None)
+        if callable(resolver):
+            try:
+                resolved = resolver(event.source)
+                if isinstance(resolved, str) and resolved:
+                    session_key = resolved
+            except Exception:
+                logger.debug(
+                    "[%s] Runner session-key resolution failed; using adapter fallback",
+                    self.name,
+                    exc_info=True,
+                )
+        if session_key is None:
+            session_store = getattr(self, "_session_store", None)
+            resolver = getattr(session_store, "_generate_session_key", None)
+            if callable(resolver):
+                try:
+                    resolved = resolver(event.source)
+                    if isinstance(resolved, str) and resolved:
+                        session_key = resolved
+                except Exception:
+                    logger.debug(
+                        "[%s] Session-store key resolution failed; using legacy fallback",
+                        self.name,
+                        exc_info=True,
+                    )
+        if session_key is None:
+            session_key = build_session_key(
+                event.source,
+                group_sessions_per_user=self.config.extra.get(
+                    "group_sessions_per_user", True
+                ),
+                thread_sessions_per_user=self.config.extra.get(
+                    "thread_sessions_per_user", False
+                ),
+                profile=event.source.profile,
+            )
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or
@@ -4893,6 +4946,16 @@ class BasePlatformAdapter(ABC):
             nonlocal delivery_attempted, delivery_succeeded
             if result is None:
                 return
+            # A one-shot post-delivery callback may need the exact result from
+            # this already-existing send path (for example, a synthetic
+            # transport canary). Bind it to the session guard instead of
+            # adding another observer registry or transport.
+            setattr(interrupt_event, "_hermes_last_delivery_result", result)
+            setattr(
+                interrupt_event,
+                "_hermes_last_delivery_result_generation",
+                getattr(interrupt_event, "_hermes_run_generation", None),
+            )
             delivery_attempted = True
             if getattr(result, "success", False):
                 delivery_succeeded = True
@@ -4902,6 +4965,67 @@ class BasePlatformAdapter(ABC):
         # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
+        # A queued follow-up reuses the same Event.  Delivery evidence is
+        # generation-local, so erase the prior turn's result before invoking
+        # the next handler.  A suppressed/no-send turn must observe no result,
+        # never stale success from the previous delivery.
+        for attr in (
+            "_hermes_last_delivery_result",
+            "_hermes_last_delivery_result_generation",
+        ):
+            try:
+                delattr(interrupt_event, attr)
+            except AttributeError:
+                pass
+
+        # A queued follow-up reuses this interrupt Event and may bind a newer
+        # generation to it before this task reaches ``finally``. Claim this
+        # task's callback immediately after its handler returns (or, on an
+        # exception, before the first cleanup await), then invoke it only after
+        # delivery. This makes callback ownership task-local and immutable.
+        _post_cb = None
+        _post_callback_claimed = False
+        _post_callback_ran = False
+
+        def _claim_post_delivery_callback() -> None:
+            nonlocal _post_cb, _post_callback_claimed
+            if _post_callback_claimed:
+                return
+            _post_callback_claimed = True
+            callback_generation = getattr(
+                interrupt_event,
+                "_hermes_run_generation",
+                None,
+            )
+            if hasattr(self, "pop_post_delivery_callback"):
+                _post_cb = self.pop_post_delivery_callback(
+                    session_key,
+                    generation=callback_generation,
+                )
+            else:
+                _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(
+                    session_key,
+                    None,
+                )
+
+        async def _run_post_delivery_callback() -> None:
+            nonlocal _post_cb, _post_callback_ran
+            if _post_callback_ran:
+                return
+            _post_callback_ran = True
+            callback = _post_cb
+            _post_cb = None
+            if not callable(callback):
+                return
+            try:
+                callback_result = callback()
+                if inspect.isawaitable(callback_result):
+                    await asyncio.wait_for(
+                        callback_result,
+                        timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
+                    )
+            except (asyncio.TimeoutError, Exception):
+                pass
         
         # Start continuous typing indicator (refreshes every 2 seconds).
         # Gated per-platform: when typing_indicator=False the refresh loop is
@@ -4936,6 +5060,7 @@ class BasePlatformAdapter(ABC):
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
+            _claim_post_delivery_callback()
             is_ephemeral_response = isinstance(response, EphemeralReply)
 
             # Slash-command handlers may return an EphemeralReply sentinel to
@@ -5027,6 +5152,27 @@ class BasePlatformAdapter(ABC):
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                _inject_synthetic_pre_send_failure = bool(
+                    getattr(
+                        interrupt_event,
+                        "_hermes_synthetic_pre_send_connect_failure",
+                        False,
+                    )
+                )
+                if _inject_synthetic_pre_send_failure:
+                    # This is a one-send fault, not session state. Consume it
+                    # before any await so a queued follow-up reusing the same
+                    # active-session Event can never inherit the canary fault.
+                    try:
+                        delattr(
+                            interrupt_event,
+                            "_hermes_synthetic_pre_send_connect_failure",
+                        )
+                    except AttributeError:
+                        pass
+                    _final_thread_metadata[
+                        "hermes_synthetic_pre_send_connect_failure"
+                    ] = True
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
@@ -5265,6 +5411,11 @@ class BasePlatformAdapter(ABC):
                 # exhaust at ~2000 frames and SIGSEGV the process.
                 # Mirror the late-arrival drain pattern below: hand off
                 # to a new task and return so this frame can unwind.
+                # Run this generation's already-claimed callback before the
+                # follow-up can reuse the Event and overwrite its delivery
+                # result. This also prevents generation N+1 registration from
+                # replacing generation N's single registry slot.
+                await _run_post_delivery_callback()
                 drain_task = asyncio.create_task(
                     self._process_message_background(pending_event, session_key)
                 )
@@ -5309,43 +5460,16 @@ class BasePlatformAdapter(ABC):
                     self.name, notify_err, exc_info=True,
                 )  # Last resort — don't let error reporting crash the handler
         finally:
+            # Claim before any cleanup await can let a queued follow-up bind a
+            # newer generation to the shared interrupt Event.
+            _claim_post_delivery_callback()
             # Stop typing before any deferred callback work.  Post-delivery
             # callbacks may perform platform I/O; a stuck callback must not
             # leave the typing refresh task running indefinitely.
             await _stop_typing_task()
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
-            #
-            # Snapshot the callback generation HERE (after the agent has run),
-            # not at the top of this task.  _hermes_run_generation is set on
-            # the interrupt event by GatewayRunner._bind_adapter_run_generation
-            # during _handle_message_with_agent — which happens DURING the
-            # self._message_handler(event) await above.  Snapshotting earlier
-            # always captured None, which bypassed the generation-ownership
-            # check in pop_post_delivery_callback and let stale runs fire a
-            # fresher run's callbacks.
-            _callback_generation = getattr(
-                interrupt_event,
-                "_hermes_run_generation",
-                None,
-            )
-            if hasattr(self, "pop_post_delivery_callback"):
-                _post_cb = self.pop_post_delivery_callback(
-                    session_key,
-                    generation=_callback_generation,
-                )
-            else:
-                _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
-            if callable(_post_cb):
-                try:
-                    _post_result = _post_cb()
-                    if inspect.isawaitable(_post_result):
-                        await asyncio.wait_for(
-                            _post_result,
-                            timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
-                        )
-                except (asyncio.TimeoutError, Exception):
-                    pass
+            await _run_post_delivery_callback()
             # Some adapters keep platform-level typing tasks.  If callback
             # work or a late refresh recreated one, make one final bounded stop
             # before releasing the session guard.

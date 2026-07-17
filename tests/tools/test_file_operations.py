@@ -467,6 +467,61 @@ class TestShellFileOpsHelpers:
         # Should be safely escaped
         assert result.count("'") >= 4  # wrapping + escaping
 
+    def test_escape_shell_arg_rewrites_windows_drive_paths_to_msys(self, monkeypatch, file_ops):
+        # bash eats backslashes and MSYS mangles ``C:\...``; the Git Bash
+        # ``/c/...`` form is the reliable one (reuses _windows_to_msys_path).
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert file_ops._escape_shell_arg(r"C:\Users\alice\notes.txt") == "'/c/Users/alice/notes.txt'"
+        # Non-drive paths are untouched.
+        assert file_ops._escape_shell_arg("/tmp/foo") == "'/tmp/foo'"
+
+    def test_escape_shell_arg_normalizes_mixed_msys_paths(self, monkeypatch, file_ops):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        mixed = r"/c/Users/Alexander\Documents\NewTEST\readme.txt"
+        assert file_ops._escape_shell_arg(mixed) == (
+            "'/c/Users/Alexander/Documents/NewTEST/readme.txt'"
+        )
+
+    def test_escape_shell_arg_rewrites_forward_slash_native_paths(self, monkeypatch, file_ops):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert file_ops._escape_shell_arg(
+            "C:/Users/alice/notes.txt"
+        ) == "'/c/Users/alice/notes.txt'"
+
+    def test_read_file_uses_bash_safe_windows_paths(self, mock_env, monkeypatch):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            if command.startswith("wc -c"):
+                return {"output": "5\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "hello", "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": "hello\n", "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": "1\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file(r"C:\Users\alice\notes.txt")
+
+        assert result.error is None
+        assert commands[0] == "wc -c < '/c/Users/alice/notes.txt' 2>/dev/null"
+        assert commands[1] == "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null"
+        assert commands[2] == "sed -n '1,500p' '/c/Users/alice/notes.txt'"
+        assert commands[3] == "wc -l < '/c/Users/alice/notes.txt'"
+
     def test_is_likely_binary_by_extension(self, file_ops):
         assert file_ops._is_likely_binary("photo.png") is True
         assert file_ops._is_likely_binary("data.db") is True
@@ -700,6 +755,113 @@ class TestSearchFilesFallbackHiddenPaths:
 
         assert result.error is None
         assert set(result.files) == {str(visible_file), str(visible_nested_file)}
+
+
+class TestSearchFilesRgEmptyDirs:
+    """_search_files_rg directories supplement: empty directories appear in results."""
+
+    def _make_env(self):
+        env = MagicMock()
+        env.cwd = "/"
+
+        def execute(command, **kwargs):
+            completed = subprocess.run(
+                command,
+                shell=True,
+                text=True,
+                capture_output=True,
+            )
+            return {
+                "output": completed.stdout,
+                "returncode": completed.returncode,
+            }
+
+        env.execute = execute
+        return env
+
+    def test_rg_path_includes_empty_dirs(self, tmp_path, monkeypatch):
+        """_search_files_rg should include empty directories matching the glob."""
+        root = tmp_path / "project"
+        root.mkdir()
+        # A file matching the glob
+        (root / "data.txt").write_text("hello")
+        # An empty directory matching the glob
+        (root / "data").mkdir()
+        # A non-matching dir (should not appear)
+        (root / "other").mkdir()
+        # A dir with content matching the glob (should appear as a dir)
+        nested = root / "data_backup"
+        nested.mkdir()
+        (nested / "file.txt").write_text("x")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command in ("rg", "find"))
+        result = ops._search_files_rg("*data*", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        found = set(result.files)
+        # Should include the file and both matching directories
+        assert str(root / "data.txt") in found, "file matching glob should be included"
+        assert str(root / "data") in found, "empty directory matching glob should be included"
+        assert str(root / "data_backup") in found, "non-empty directory matching glob should be included"
+        # Non-matching directory should NOT be included
+        assert str(root / "other") not in found, "non-matching directory should be excluded"
+
+    def test_rg_path_only_matching_dirs_included(self, tmp_path, monkeypatch):
+        """_search_files_rg should not include directories that don't match the pattern."""
+        root = tmp_path / "src"
+        root.mkdir()
+        (root / "utils").mkdir()
+        (root / "build").mkdir()
+        (root / "README.md").write_text("docs")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command in ("rg", "find"))
+        result = ops._search_files_rg("*.md", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        found = set(result.files)
+        assert str(root / "README.md") in found
+        # Directories don't match *.md
+        assert str(root / "utils") not in found
+        assert str(root / "build") not in found
+
+    def test_rg_path_empty_dir_with_no_matching_files(self, tmp_path, monkeypatch):
+        """_search_files_rg returns ONLY empty directories when no files match."""
+        root = tmp_path / "empty_root"
+        root.mkdir()
+        (root / "config").mkdir()
+        (root / "logs").mkdir()
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command in ("rg", "find"))
+        result = ops._search_files_rg("*", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        found = set(result.files)
+        # With * pattern, everything matches: rg returns no files (empty dirs),
+        # find returns the directories
+        assert str(root / "config") in found
+        assert str(root / "logs") in found
+
+    def test_rg_path_dedup_path_no_duplicates(self, tmp_path, monkeypatch):
+        """_search_files_rg should not dedup directories that share a name with files (different paths)."""
+        root = tmp_path / "dedup_test"
+        root.mkdir()
+        # A file and a dir with the same name in different locations
+        (root / "data.txt").write_text("x")
+        sub = root / "sub"
+        sub.mkdir()
+        (sub / "data").mkdir()  # directory
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command in ("rg", "find"))
+        result = ops._search_files_rg("*data*", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        found = set(result.files)
+        assert str(root / "data.txt") in found
+        assert str(sub / "data") in found
 
 
 class TestShellFileOpsWriteDenied:

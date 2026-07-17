@@ -357,6 +357,60 @@ class TestSearch:
             _assert_clean(m.content)
             _assert_clean(m.path)
 
+    def test_file_search_returns_empty_dir(self, ops, tmp_path):
+        """search(target='files') should return empty directories matching the glob."""
+        (tmp_path / "data").mkdir()
+        (tmp_path / "logs").mkdir()
+        (tmp_path / "config").mkdir()
+        (tmp_path / "data.txt").write_text("hello")
+
+        result = ops.search("*", str(tmp_path), target="files")
+        assert result.error is None
+        found = {Path(f).name for f in result.files}
+        assert "data" in found, "empty dir 'data' should appear in search results"
+        assert "logs" in found, "empty dir 'logs' should appear in search results"
+        assert "config" in found, "empty dir 'config' should appear in search results"
+        assert "data.txt" in found, "file 'data.txt' should also appear"
+
+    def test_file_search_empty_dir_with_pattern(self, ops, tmp_path):
+        """search(target='files') with a specific pattern returns only matching dirs."""
+        (tmp_path / "components").mkdir()
+        (tmp_path / "pages").mkdir()
+        (tmp_path / "utils").mkdir()
+        (tmp_path / "index.tsx").write_text("export default function Home() {}")
+
+        result = ops.search("*comp*", str(tmp_path), target="files")
+        assert result.error is None
+        found = {Path(f).name for f in result.files}
+        assert "components" in found, "empty dir matching pattern should appear"
+        assert "index.tsx" not in found, "non-matching file should be excluded"
+
+    def test_file_search_empty_dir_via_rg_path(self, ops, tmp_path, monkeypatch):
+        """Force the rg code path and verify empty directories are still found."""
+        (tmp_path / "static").mkdir()
+        (tmp_path / "templates").mkdir()
+
+        # Make rg available so _search_files dispatches to _search_files_rg
+        monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd in ("rg", "find"))
+        result = ops._search_files("*", str(tmp_path), limit=50, offset=0)
+        assert result.error is None
+        found = {Path(f).name for f in result.files}
+        assert "static" in found
+        assert "templates" in found
+
+    def test_file_search_empty_dir_via_find_fallback(self, ops, tmp_path, monkeypatch):
+        """Force the find fallback path and verify empty directories are found."""
+        (tmp_path / "uploads").mkdir()
+        (tmp_path / "assets").mkdir()
+
+        # Disable rg, enable find so _search_files uses the find fallback
+        monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == "find")
+        result = ops._search_files("*", str(tmp_path), limit=50, offset=0)
+        assert result.error is None
+        found = {Path(f).name for f in result.files}
+        assert "uploads" in found
+        assert "assets" in found
+
 
 # ── _expand_path ─────────────────────────────────────────────────────────
 

@@ -37,6 +37,7 @@ from tools.binary_extensions import BINARY_EXTENSIONS
 from agent.file_safety import (
     build_write_denied_paths,
     build_write_denied_prefixes,
+    get_write_denied_error,
     is_write_denied as _shared_is_write_denied,
 )
 
@@ -614,6 +615,18 @@ def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
     """In-process YAML syntax check.  Returns (ok, error_message).
 
     Skipped gracefully if PyYAML isn't installed — YAML parsing is optional.
+
+    Deliberately a *syntax-only* scan (``yaml.parse``), not ``safe_load``:
+    loading rejects perfectly valid YAML that merely isn't a single plain
+    document — multi-document streams (``---``-separated Kubernetes
+    manifests raise ``ComposerError``) and application-defined tags
+    (CloudFormation ``!Sub``/``!Ref``, Ansible ``!vault`` raise
+    ``ConstructorError``).  Those are content conventions for whatever
+    consumes the file, not syntax errors, and this linter's verdict is
+    used as a fail-closed WRITE gate in ``write_file`` — a false positive
+    here refuses a legitimate write outright.  ``yaml.parse`` still
+    catches real scanner/parser failures (unclosed quotes, bad
+    indentation, tab-mangled block maps).
     """
     try:
         import yaml as _yaml
@@ -621,7 +634,8 @@ def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
         # PyYAML not available — skip silently, caller treats as no linter.
         return True, "__SKIP__"
     try:
-        _yaml.safe_load(content)
+        for _event in _yaml.parse(content):
+            pass
         return True, ""
     except _yaml.YAMLError as e:
         return False, f"YAMLError: {e}"
@@ -676,6 +690,21 @@ LINTERS_INPROC = {
     '.yml': _lint_yaml_inproc,
     '.toml': _lint_toml_inproc,
 }
+
+# Subset of LINTERS_INPROC that the pre-write fail-closed gate in
+# ``write_file`` (see below) refuses on, rather than merely reporting.
+# Deliberately excludes ``.py``: unlike JSON/YAML/TOML (atomic structured
+# data blobs where "doesn't parse" always means "corrupt"), ``.py`` is
+# used throughout this codebase's own test fixtures as a generic
+# stand-in extension for arbitrary non-Python text content (e.g.
+# ``tests/tools/test_file_operations.py``'s
+# ``TestPatchReplacePostWriteVerification`` writes "hello world" /
+# "hi world" through a ``*.py`` path purely to exercise write-mechanics,
+# not Python validity). Hard-refusing on invalid Python would treat that
+# established, exercised pattern as an error and break it. Python source
+# keeps the existing (unchanged) post-write lint-delta *report* — still
+# visible to the caller, just not a write-blocking refusal.
+_FAIL_CLOSED_INPROC_EXTS = frozenset({'.json', '.yaml', '.yml', '.toml'})
 
 # Max limits for read operations
 MAX_LINES = 2000
@@ -930,7 +959,19 @@ class ShellFileOperations(FileOperations):
         return path
     
     def _escape_shell_arg(self, arg: str) -> str:
-        """Escape a string for safe use in shell commands."""
+        """Escape a string for safe use in shell commands.
+
+        On Windows native drive paths (``C:\\Users\\x`` / ``C:/Users/x``)
+        and mixed MSYS leftovers (``/c/Users\\x``) are rewritten to the
+        Git Bash ``/c/Users/x`` form via ``_bash_safe_path``: bash eats
+        backslashes and MSYS otherwise mangles drive paths into the
+        ``Directory \\drivers\\etc does not exist`` failure class. Reuses
+        the env-layer translator so shell file ops and the terminal ``cd``
+        agree on the path form. No-op off Windows and for plain POSIX paths.
+        """
+        from tools.environments.local import _bash_safe_path
+
+        arg = _bash_safe_path(arg)
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
@@ -1249,8 +1290,9 @@ class ShellFileOperations(FileOperations):
 
     def _python_delete(self, path: str, recursive: bool) -> WriteResult:
         path = self._expand_path(path)
-        if _is_write_denied(path):
-            return WriteResult(error=f"Delete denied: {path} is a protected path")
+        denied = get_write_denied_error(path, verb="Delete")
+        if denied:
+            return WriteResult(error=denied)
 
         # We can't shell out to ``rm`` here — it doesn't exist on Windows
         # ``cmd.exe`` or PowerShell, so this code path is what's left when
@@ -1295,8 +1337,9 @@ class ShellFileOperations(FileOperations):
         src = self._expand_path(src)
         dst = self._expand_path(dst)
         for p in (src, dst):
-            if _is_write_denied(p):
-                return WriteResult(error=f"Move denied: {p} is a protected path")
+            denied = get_write_denied_error(p, verb="Move")
+            if denied:
+                return WriteResult(error=denied)
         result = self._exec(
             f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
         )
@@ -1316,12 +1359,21 @@ class ShellFileOperations(FileOperations):
         files. The content never appears in the shell command string —
         only the file path does.
 
-        After the write, runs a post-first / pre-lazy lint check via
-        ``_check_lint_delta()``.  If the new content is clean, the lint
-        call is O(one parse).  If the new content has errors, the pre-write
-        content is linted too and only errors newly introduced by this
-        write are surfaced — pre-existing problems are filtered out so
-        the agent isn't distracted chasing them.
+        Before anything touches disk, a fail-closed syntax gate runs
+        against the CANDIDATE content: if ``path``'s extension is in
+        ``_FAIL_CLOSED_INPROC_EXTS`` (JSON/YAML/TOML — structured data
+        formats where a parse failure always means corruption) and the
+        candidate content doesn't parse, the write is refused outright.
+        No temp file, no rename, nothing on disk changes.
+
+        After a write that clears the gate, runs a post-first / pre-lazy
+        lint check via ``_check_lint_delta()``.  If the new content is
+        clean, the lint call is O(one parse).  If the new content has
+        errors the gate didn't already catch (i.e. errors from a linter
+        outside ``_FAIL_CLOSED_INPROC_EXTS``, such as Python), the
+        pre-write content is linted too and only errors newly introduced
+        by this write are surfaced — pre-existing problems are filtered
+        out so the agent isn't distracted chasing them.
 
         Args:
             path: File path to write
@@ -1334,8 +1386,47 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
-            return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+        denied = get_write_denied_error(path)
+        if denied:
+            return WriteResult(error=denied)
+
+        # ── Fail-closed pre-write syntax gate ───────────────────────────
+        # Validate the CANDIDATE content BEFORE any bytes touch disk —
+        # previously this only ran as a post-write lint *report* that the
+        # caller could ignore (or that ``files_modified`` gating wouldn't
+        # catch, since a lint failure never set the top-level ``error``
+        # key). A structured-format write that doesn't even parse (mashed
+        # quotes, truncated generation, wrong indentation dialect) is a
+        # corrupt write, not a style nit — refuse it outright instead of
+        # writing first and reporting the damage afterward.
+        #
+        # Scope: only extensions in ``_FAIL_CLOSED_INPROC_EXTS`` (JSON/
+        # YAML/TOML). ``.py`` deliberately keeps its pre-existing,
+        # non-blocking lint-delta *report* instead of a hard refusal — see
+        # ``_FAIL_CLOSED_INPROC_EXTS``'s docstring above for why. Extensions
+        # with no in-process linter at all (including ones only covered by
+        # a shell linter) are completely unaffected — this gate never runs
+        # for them, so behavior there is unchanged.
+        #
+        # Checked against the raw ``content`` argument, before the
+        # BOM/CRLF preservation shims below run. Those shims exist purely
+        # to match the on-disk file's existing conventions; linting
+        # post-shim would false-positive a JSONDecodeError on a
+        # legitimately BOM-marked JSON file purely because this method
+        # re-adds the marker the read layer strips — see
+        # ``_file_has_bom``/``_UTF8_BOM`` below.
+        ext = os.path.splitext(path)[1].lower()
+        inproc_linter = LINTERS_INPROC.get(ext) if ext in _FAIL_CLOSED_INPROC_EXTS else None
+        if inproc_linter is not None:
+            _ok, _lint_err = inproc_linter(content)
+            if not _ok and _lint_err != "__SKIP__":
+                return WriteResult(
+                    error=(
+                        f"Refusing to write '{path}': candidate content fails "
+                        f"{ext} syntax validation ({_lint_err}). The file was "
+                        "NOT created or modified. Fix the content and retry."
+                    )
+                )
 
         # Capture pre-write content.  Two consumers want it:
         #
@@ -1352,7 +1443,6 @@ class ShellFileOperations(FileOperations):
         # the UNION of in-process lint coverage and LSP coverage.  For
         # extensions outside both sets (binaries, opaque formats),
         # skipping the read keeps the hot path fast.
-        ext = os.path.splitext(path)[1].lower()
         pre_content: Optional[str] = None
         want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
         if want_pre:
@@ -1480,8 +1570,9 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
-            return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+        denied = get_write_denied_error(path)
+        if denied:
+            return PatchResult(error=denied)
 
         # Read current content
         read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
@@ -2061,7 +2152,7 @@ class ShellFileOperations(FileOperations):
         if not has_hidden_path_ancestor:
             pagination_expr = f" | tail -n +{offset + 1} | head -n {limit}"
 
-        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} \\( -type f -o -type d \\) -name {self._escape_shell_arg(search_pattern)} " \
+        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} \( -type f -o -type d \) -name {self._escape_shell_arg(search_pattern)} " \
               f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
 
         result = self._exec(cmd, timeout=60)
@@ -2069,7 +2160,7 @@ class ShellFileOperations(FileOperations):
 
         if not stdout.strip() and not limit_reason:
             # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} \\( -type f -o -type d \\) -name {self._escape_shell_arg(search_pattern)} " \
+            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} \( -type f -o -type d \) -name {self._escape_shell_arg(search_pattern)} " \
                         f"2>/dev/null | sort -rn{pagination_expr}"
             result = self._exec(cmd_simple, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
@@ -2109,12 +2200,17 @@ class ShellFileOperations(FileOperations):
         )
 
     def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
-        """Search for files by name using ripgrep's --files mode.
+        """Search for files by name using ripgrep's --files mode, plus directories.
 
         rg --files respects .gitignore and excludes hidden directories by
         default, and uses parallel directory traversal for ~200x speedup
         over find on wide trees.  Results are sorted by modification time
         (most recently edited first) when rg >= 13.0 supports --sortr.
+
+        Since rg --files cannot return empty directories (it only lists files),
+        we supplement with a ``find -type d`` call and merge the two lists.
+        The merged result preserves mtime ordering: files first (from rg),
+        then directories (from find), each group sorted by mtime.
         """
         # rg --files -g uses glob patterns; wrap bare names so they match
         # at any depth (equivalent to find -name).
@@ -2145,11 +2241,68 @@ class ShellFileOperations(FileOperations):
             stdout, limit_reason = _search_stdout_and_limit(result)
             all_files = [f for f in stdout.strip().split('\n') if f]
 
-        page = all_files[offset:offset + limit]
+        # ── Directory enumeration ───────────────────────────────────────
+        # rg --files never emits directory paths, so empty directories are
+        # invisible.  Supplement with find -type d when available, merging
+        # into a single result list with the same dedup and hidden-path
+        # filtering that the find fallback path applies.
+        all_dirs: list[str] = []
+        if self._has_command('find'):
+            search_root = Path(path)
+            has_hidden = any(
+                part not in {".", ".."} and part.startswith(".")
+                for part in search_root.parts
+            )
+            hidden_exclude = "-not -path '*/.*'" if not has_hidden else ""
+            hidden_filter = f" {hidden_exclude}" if hidden_exclude else ""
+
+            cmd_dirs = (
+                f"find {self._escape_shell_arg(path)}{hidden_filter} "
+                f"-type d -name {self._escape_shell_arg(pattern)} "
+                f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn"
+            )
+            result_dirs = self._exec(cmd_dirs, timeout=60)
+            dir_stdout, _ = _search_stdout_and_limit(result_dirs)
+
+            seen = set(all_files)  # dedup: skip if already a file result
+            for line in dir_stdout.strip().split('\n'):
+                if not line:
+                    continue
+                parts = line.split(' ', 1)
+                dir_path = (
+                    parts[1]
+                    if len(parts) == 2 and parts[0].replace('.', '').isdigit()
+                    else line
+                )
+                if dir_path in seen:
+                    continue
+                seen.add(dir_path)
+                all_dirs.append(dir_path)
+
+            # Hidden-descendant filtering for explicit hidden roots.
+            if has_hidden:
+                normalized_root = search_root.resolve()
+                filtered: list[str] = []
+                for d in all_dirs:
+                    try:
+                        rel = Path(d).resolve().relative_to(normalized_root).parts
+                    except ValueError:
+                        rel = Path(d).parts
+                    if any(p not in {".", ".."} and p.startswith(".") for p in rel):
+                        continue
+                    filtered.append(d)
+                all_dirs = filtered
+
+        # ── Merge and paginate ──────────────────────────────────────────
+        # Files first (mtime-sorted from rg), then directories (mtime-sorted
+        # from find).  This matches the find fallback behaviour of interleaving
+        # both types by mtime while keeping the fast rg path for files.
+        all_entries = all_files + all_dirs
+        page = all_entries[offset:offset + limit]
 
         return SearchResult(
             files=page,
-            total_count=len(all_files),
+            total_count=len(all_entries),
             truncated=len(all_files) >= fetch_limit or bool(limit_reason),
             limit_reason=limit_reason,
         )

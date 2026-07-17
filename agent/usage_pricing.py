@@ -999,7 +999,16 @@ def get_pricing_entry(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    ssl_ca_cert: Optional[str] = None,
+    ssl_verify: Optional[Any] = None,
 ) -> Optional[PricingEntry]:
+    """Resolve a pricing entry for ``model_name`` on ``provider``.
+
+    ``ssl_ca_cert`` / ``ssl_verify`` carry the per-provider TLS settings so
+    the metadata/pricing probe for a custom endpoint honours the same CA
+    bundle as the provider's inference clients (issue #66544). When omitted,
+    the probe falls back to the process-wide CA env vars / default.
+    """
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
         return PricingEntry(
@@ -1014,7 +1023,12 @@ def get_pricing_entry(
         return _openrouter_pricing_entry(route)
     if route.base_url:
         entry = _pricing_entry_from_metadata(
-            fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),
+            fetch_endpoint_model_metadata(
+                route.base_url,
+                api_key=api_key or "",
+                ssl_ca_cert=ssl_ca_cert,
+                ssl_verify=ssl_verify,
+            ),
             route.model,
             source_url=f"{route.base_url.rstrip('/')}/models",
             pricing_version="openai-compatible-models-api",

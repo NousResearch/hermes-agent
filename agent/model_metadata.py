@@ -35,12 +35,17 @@ def _resolve_requests_verify() -> bool | str:
 
     Returns either a filesystem path to a CA bundle, or True to defer to
     the requests default (certifi).
+
+    This no-arg shim is retained for env-only callsites (the OpenRouter
+    catalog fetch, the Anthropic and Codex first-party probes). Provider-
+    scoped TLS resolution for custom-endpoint ``/models`` probes goes
+    through :func:`agent.ssl_verify.resolve_requests_verify` directly so
+    the provider ``ssl_ca_cert`` / ``ssl_verify`` overrides are honoured
+    (issue #66544).
     """
-    for env_var in ("HERMES_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"):
-        val = os.getenv(env_var)
-        if val and os.path.isfile(val):
-            return val
-    return True
+    from agent.ssl_verify import resolve_requests_verify
+
+    return resolve_requests_verify()
 
 # Provider names that can appear as a "provider:" prefix before a model ID.
 # Only these are stripped — Ollama-style "model:tag" colons (e.g. "qwen3.5:27b")
@@ -951,15 +956,34 @@ def fetch_endpoint_model_metadata(
     base_url: str,
     api_key: str = "",
     force_refresh: bool = False,
+    ssl_ca_cert: Optional[str] = None,
+    ssl_verify: Any = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Fetch model metadata from an OpenAI-compatible ``/models`` endpoint.
 
     This is used for explicit custom endpoints where hardcoded global model-name
     defaults are unreliable. Results are cached in memory per base URL.
+
+    ``ssl_ca_cert`` / ``ssl_verify`` carry the per-provider TLS settings from
+    the calling provider's config (issue #66544). When supplied they are used
+    as the ``verify=`` value for every ``requests`` call in this probe so the
+    metadata/pricing fetch honours the same CA bundle as the provider's
+    inference clients. When omitted, resolution falls back to the process-wide
+    CA env vars / ``requests`` default — preserving the previous behaviour for
+    unconfigured and public endpoints.
     """
+    from agent.ssl_verify import resolve_requests_verify
+
     normalized = _normalize_base_url(base_url)
     if not normalized or _is_openrouter_base_url(normalized):
         return {}
+
+    def _verify_value() -> bool | str:
+        return resolve_requests_verify(
+            ca_bundle=ssl_ca_cert,
+            ssl_verify=ssl_verify,
+            base_url=normalized,
+        )
 
     if not force_refresh:
         cached = _endpoint_model_metadata_cache.get(normalized)
@@ -986,7 +1010,7 @@ def fetch_endpoint_model_metadata(
                     server_url.rstrip("/") + "/api/v1/models",
                     headers=headers,
                     timeout=(5, 10),
-                    verify=_resolve_requests_verify(),
+                    verify=_verify_value(),
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -1033,7 +1057,7 @@ def fetch_endpoint_model_metadata(
     for candidate in candidates:
         url = candidate.rstrip("/") + "/models"
         try:
-            response = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
+            response = requests.get(url, headers=headers, timeout=(5, 10), verify=_verify_value())
             response.raise_for_status()
             payload = response.json()
             cache: Dict[str, Dict[str, Any]] = {}
@@ -1064,7 +1088,7 @@ def fetch_endpoint_model_metadata(
                 try:
                     # Try /v1/props first (current llama.cpp); fall back to /props for older builds
                     base = candidate.rstrip("/").replace("/v1", "")
-                    _verify = _resolve_requests_verify()
+                    _verify = _verify_value()
                     props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5, verify=_verify)
                     if not props_resp.ok:
                         props_resp = requests.get(base + "/props", headers=headers, timeout=5, verify=_verify)
@@ -1095,9 +1119,16 @@ def _resolve_endpoint_context_length(
     model: str,
     base_url: str,
     api_key: str = "",
+    ssl_ca_cert: Optional[str] = None,
+    ssl_verify: Any = None,
 ) -> Optional[int]:
     """Resolve context length from an endpoint's live ``/models`` metadata."""
-    endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+    endpoint_metadata = fetch_endpoint_model_metadata(
+        base_url,
+        api_key=api_key,
+        ssl_ca_cert=ssl_ca_cert,
+        ssl_verify=ssl_verify,
+    )
     matched = endpoint_metadata.get(model)
     if not matched:
         if len(endpoint_metadata) == 1:

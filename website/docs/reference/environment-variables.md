@@ -203,19 +203,6 @@ These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) 
 | `TOOL_GATEWAY_USER_TOKEN` | Auth token for the Tool Gateway (normally auto-populated from Nous auth) |
 | `FIRECRAWL_GATEWAY_URL` | Override URL for the Firecrawl gateway endpoint specifically |
 
-## Gateway and Discord WebSocket health
-
-The Discord Gateway WebSocket health settings are non-secret and belong in `config.yaml`, not `.env`:
-
-| Config key | Default | Meaning |
-|------------|---------|---------|
-| `discord.websocket_liveness_interval_seconds` | `15` | Seconds between Gateway samples |
-| `discord.websocket_liveness_failure_threshold` | `2` | Consecutive unhealthy samples before retryable reconnect |
-| `discord.websocket_heartbeat_ack_max_age_seconds` | `60` | Maximum heartbeat ACK age |
-| `discord.websocket_max_latency_seconds` | `30` | Maximum finite heartbeat latency |
-
-REST HTTP 200 is not a Gateway WebSocket health signal. Runtime status and `hermes gateway status --full` report redacted WebSocket evidence only; they do not include bot tokens, raw Gateway frames, or Discord user/channel/Guild identifiers. The legacy `discord.liveness_interval_seconds` and `discord.liveness_failure_threshold` names are compatibility aliases and no longer describe a REST probe.
-
 ## Terminal Backend
 
 | Variable | Description |
@@ -695,8 +682,8 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_TELEGRAM_DISABLE_FALLBACK_IPS` | Disable the hard-coded Cloudflare fallback IPs used when DNS fails (`true`/`false`). |
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | Grace window before flushing a queued Discord text chunk (default: `0.6`). |
 | `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | Delay between split chunks when a Discord message exceeds the length limit (default: `2.0`). |
-| `HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS` | Internal bridge for `discord.liveness_interval_seconds` (config.yaml). Interval for the Discord REST liveness probe that detects zombie clients behind dead proxies/NATs (default: `60`; set to `0` to disable). Prefer setting `discord.liveness_interval_seconds` in `config.yaml`. |
-| `HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD` | Internal bridge for `discord.liveness_failure_threshold` (config.yaml). Consecutive probe failures before forcing a Discord reconnect (default: `3`). Prefer setting `discord.liveness_failure_threshold` in `config.yaml`. |
+| `HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS` | Compatibility/manual override for `discord.websocket_liveness_interval_seconds`. Interval for sampling the active Discord Gateway WebSocket (default: `15`; set to `0` to disable). Prefer the `config.yaml` key. |
+| `HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD` | Compatibility/manual override for `discord.websocket_liveness_failure_threshold`. Consecutive unhealthy WebSocket samples before forcing a reconnect (default: `2`). Prefer the `config.yaml` key. |
 | `HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS` / `_SPLIT_DELAY_SECONDS` | Matrix equivalents of the Telegram batch knobs. |
 | `HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS` / `_SPLIT_DELAY_SECONDS` / `_MAX_CHARS` / `_MAX_MESSAGES` | Feishu batcher tuning — delay, split delay, max chars per message, max messages per batch. |
 | `HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS` | Feishu media flush delay. |

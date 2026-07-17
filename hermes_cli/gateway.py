@@ -7,7 +7,6 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 import asyncio
 import json
 import logging
-import math
 import os
 import shlex
 import shutil
@@ -5254,49 +5253,19 @@ def _runtime_health_lines() -> list[str]:
         return []
 
     lines: list[str] = []
-
-    def _safe_runtime_text(value: object, *, limit: int = 240) -> str:
-        """Render persisted diagnostics as one bounded, force-redacted line."""
-        try:
-            from gateway.status import redact_runtime_text
-
-            text = redact_runtime_text(str(value or ""))
-        except Exception:
-            text = "[REDACTED]"
-        text = " ".join(text.split())
-        return text[:limit] if text else "unknown error"
-
     gateway_state = state.get("gateway_state")
     exit_reason = state.get("exit_reason")
     active_agents = state.get("active_agents")
     restart_requested = state.get("restart_requested")
     platforms = state.get("platforms", {}) or {}
 
-    # Surface retrying/degraded states without dumping raw exception text.
     for platform, pdata in platforms.items():
-        if not isinstance(pdata, dict):
-            continue
-        state = pdata.get("state")
-        health = pdata.get("health") if isinstance(pdata.get("health"), dict) else {}
-        if state in {"fatal", "retrying", "degraded"}:
-            reason = _safe_runtime_text(
-                health.get("last_health_reason") or pdata.get("error_message")
-            )
-            if platform == "discord" and health.get("transport") == "websocket":
-                ack_age = health.get("heartbeat_ack_age_seconds")
-                latency = health.get("latency_ms")
-                details = []
-                if isinstance(ack_age, (int, float)) and math.isfinite(ack_age):
-                    details.append(f"ACK age {ack_age:.1f}s")
-                if isinstance(latency, (int, float)) and math.isfinite(latency):
-                    details.append(f"latency {latency:.0f}ms")
-                suffix = f" ({', '.join(details)})" if details else ""
-                lines.append(f"⚠ {platform}: WebSocket {state}: {reason}{suffix}")
-            elif state == "fatal":
-                lines.append(f"⚠ {platform}: {reason}")
+        if pdata.get("state") == "fatal":
+            message = pdata.get("error_message") or "unknown error"
+            lines.append(f"⚠ {platform}: {message}")
 
     if gateway_state == "startup_failed" and exit_reason:
-        lines.append(f"⚠ Last startup issue: {_safe_runtime_text(exit_reason)}")
+        lines.append(f"⚠ Last startup issue: {exit_reason}")
     elif gateway_state == "draining":
         action = "restart" if restart_requested else "shutdown"
         from gateway.status import parse_active_agents
@@ -5304,7 +5273,7 @@ def _runtime_health_lines() -> list[str]:
         count = parse_active_agents(active_agents)
         lines.append(f"⏳ Gateway draining for {action} ({count} active agent(s))")
     elif gateway_state == "stopped" and exit_reason:
-        lines.append(f"⚠ Last shutdown reason: {_safe_runtime_text(exit_reason)}")
+        lines.append(f"⚠ Last shutdown reason: {exit_reason}")
 
     return lines
 

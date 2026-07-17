@@ -495,8 +495,6 @@ class TestLoadGatewayConfig:
         for key in (
             "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
             "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
-            "HERMES_DISCORD_HEARTBEAT_ACK_MAX_AGE_SECONDS",
-            "HERMES_DISCORD_MAX_LATENCY_SECONDS",
         ):
             monkeypatch.delenv(key, raising=False)
 

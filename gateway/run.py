@@ -308,16 +308,6 @@ def _gateway_loop_exception_handler(
     loop.default_exception_handler(context)
 
 
-def _redact_gateway_diagnostic(value: object) -> str:
-    """Return a fail-closed redaction for persisted or logged diagnostics."""
-    try:
-        from gateway.status import redact_runtime_text
-
-        return redact_runtime_text(str(value or ""))
-    except Exception:
-        return "[REDACTED]"
-
-
 def _redact_gateway_user_facing_secrets(text: str) -> str:
     """Secret redaction before text can leave the gateway.
 
@@ -2979,7 +2969,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _restart_command_source: Optional[SessionSource] = None
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
-    _profile_failed_platforms: Optional[Dict[str, Dict[Platform, Dict[str, Any]]]] = None
+    _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     _startup_restore_in_progress: bool = False
@@ -3054,7 +3044,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._exit_reason: Optional[str] = None
         self._exit_code: Optional[int] = None
         self._draining = False
-        self._profile_failed_platforms: Dict[str, Dict[Platform, Dict[str, Any]]] = {}
+        self._profile_failed_platforms: Dict[str, Dict[Platform, asyncio.Task]] = {}
         # External (NAS-driven) drain state — distinct from the shutdown
         # ``_draining`` flag above. Set by ``_drain_control_watcher`` when the
         # ``.drain_request.json`` marker is present: the gateway flips
@@ -4239,7 +4229,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "Fatal %s adapter error (%s): %s",
             adapter.platform.value,
             adapter.fatal_error_code or "unknown",
-            _redact_gateway_diagnostic(adapter.fatal_error_message or "unknown error"),
+            adapter.fatal_error_message or "unknown error",
         )
         # Phase 7 Unit 7d-B: a relay credential revoked by opt-out is not an
         # error to retry — render it as a clean "disabled" state, not red
@@ -4286,9 +4276,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         if not self.adapters and not self._failed_platforms:
-            self._exit_reason = _redact_gateway_diagnostic(
-                adapter.fatal_error_message or "All messaging adapters disconnected"
-            )
+            self._exit_reason = adapter.fatal_error_message or "All messaging adapters disconnected"
             if adapter.fatal_error_retryable:
                 self._exit_with_failure = True
                 logger.error("No connected messaging platforms remain. Shutting down gateway for service restart.")
@@ -7433,8 +7421,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             else startup_nonretryable_errors
                         )
                         target.append(
-                            f"{platform.value}: "
-                            f"{_redact_gateway_diagnostic(adapter.fatal_error_message)}"
+                            f"{platform.value}: {adapter.fatal_error_message}"
                         )
                         # Queue for reconnection if the error is retryable
                         if adapter.fatal_error_retryable:
@@ -8303,8 +8290,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         logger.warning(
                             "Reconnect %s: non-retryable error (%s), removing from retry queue",
-                            platform.value,
-                            _redact_gateway_diagnostic(adapter.fatal_error_message),
+                            platform.value, adapter.fatal_error_message,
                         )
                         # The adapter is about to be dropped from the queue
                         # without ever being installed on self.adapters, so
@@ -8387,7 +8373,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         not finish in time, the stopped runner state still prevents it from
         installing an adapter when it eventually resumes.
         """
-        pending = getattr(self, "_profile_failed_platforms", None)
+        pending = self._profile_failed_platforms
         if not isinstance(pending, dict):
             return
         current = asyncio.current_task()
@@ -8395,8 +8381,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         for profile_pending in pending.values():
             if not isinstance(profile_pending, dict):
                 continue
-            for entry in profile_pending.values():
-                task = entry.get("task") if isinstance(entry, dict) else None
+            for task in profile_pending.values():
                 if isinstance(task, asyncio.Task) and task is not current and not task.done():
                     tasks.append(task)
         for task in tasks:
@@ -9019,19 +9004,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     continue
                 claimed[(platform, fp)] = profile_name
 
-            # Stamp every inbound event from this adapter with its profile so
-            # the agent turn (and session key) resolve to the right home.
-            adapter.set_message_handler(self._make_profile_message_handler(profile_name))
-            adapter.set_fatal_error_handler(
-                self._make_profile_fatal_error_handler(profile_name, adapter.platform)
-            )
-            adapter.set_session_store(self.session_store)
-            adapter.set_busy_session_handler(self._handle_active_session_busy_message)
-            adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
-            adapter.set_authorization_check(
-                self._make_adapter_auth_check(adapter.platform, profile_name=profile_name)
-            )
-            adapter._busy_text_mode = self._busy_text_mode
+            self._configure_profile_adapter(adapter, profile_name, platform)
 
             try:
                 with _profile_runtime_scope(profile_home):
@@ -9047,6 +9020,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e)
                 await self._safe_adapter_disconnect(adapter, platform)
         return connected
+
+    def _configure_profile_adapter(
+        self,
+        adapter: BasePlatformAdapter,
+        profile_name: str,
+        platform: Platform,
+    ) -> None:
+        """Install the profile-scoped handlers shared by startup and reconnect."""
+        adapter.set_message_handler(self._make_profile_message_handler(profile_name))
+        adapter.set_fatal_error_handler(
+            self._make_profile_fatal_error_handler(profile_name, platform)
+        )
+        adapter.set_session_store(self.session_store)
+        adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+        adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+        adapter.set_authorization_check(
+            self._make_adapter_auth_check(platform, profile_name=profile_name)
+        )
+        adapter._busy_text_mode = self._busy_text_mode
 
     async def _run_secondary_profile_reconnect(
         self, profile_name: str, platform: Platform
@@ -9074,25 +9066,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 profile_name,
                             )
                             return
-                        adapter.set_message_handler(
-                            self._make_profile_message_handler(profile_name)
+                        self._configure_profile_adapter(
+                            adapter, profile_name, platform
                         )
-                        adapter.set_fatal_error_handler(
-                            self._make_profile_fatal_error_handler(profile_name, platform)
-                        )
-                        adapter.set_session_store(self.session_store)
-                        adapter.set_busy_session_handler(
-                            self._handle_active_session_busy_message
-                        )
-                        adapter.set_topic_recovery_fn(
-                            self._recover_telegram_topic_thread_id
-                        )
-                        adapter.set_authorization_check(
-                            self._make_adapter_auth_check(
-                                platform, profile_name=profile_name
-                            )
-                        )
-                        adapter._busy_text_mode = self._busy_text_mode
                         success = await self._connect_adapter_with_timeout(
                             adapter, platform, is_reconnect=True
                         )
@@ -9152,11 +9128,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 await asyncio.sleep(backoff)
         finally:
-            pending = getattr(self, "_profile_failed_platforms", None)
+            pending = self._profile_failed_platforms
             if isinstance(pending, dict):
                 profile_pending = pending.get(profile_name)
-                entry = profile_pending.get(platform) if isinstance(profile_pending, dict) else None
-                if not isinstance(entry, dict) or entry.get("task") is current_task:
+                task = profile_pending.get(platform) if isinstance(profile_pending, dict) else None
+                if not isinstance(task, asyncio.Task) or task is current_task:
                     if isinstance(profile_pending, dict):
                         profile_pending.pop(platform, None)
                         if not profile_pending:
@@ -9168,7 +9144,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Schedule one runner-owned reconnect without sharing primary secrets."""
         if not self._running or not adapter.fatal_error_retryable:
             return
-        pending = getattr(self, "_profile_failed_platforms", None)
+        pending = self._profile_failed_platforms
         if not isinstance(pending, dict):
             pending = {}
             self._profile_failed_platforms = pending
@@ -9179,7 +9155,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._run_secondary_profile_reconnect(profile_name, platform),
             name=f"secondary-reconnect:{profile_name}:{platform.value}",
         )
-        profile_pending[platform] = {"task": task}
+        profile_pending[platform] = task
         background_tasks = getattr(self, "_background_tasks", None)
         if not isinstance(background_tasks, set):
             background_tasks = set()
@@ -9223,11 +9199,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
         self._schedule_secondary_profile_reconnect(profile_name, platform, adapter)
         logger.error(
-            "Fatal %s adapter error for multiplexed profile %s (%s): %s",
+            "Fatal %s adapter error for multiplexed profile %s (%s)",
             platform.value,
             profile_name,
             adapter.fatal_error_code or "unknown",
-            _redact_gateway_diagnostic(adapter.fatal_error_message or "unknown error"),
         )
         # Reconnect is scoped to the profile's own config and secret mapping;
         # never rebuild a secondary adapter with the default profile's credentials.

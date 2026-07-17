@@ -9,7 +9,6 @@ heartbeat-latency state rather than ``fetch_user()``.
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -99,9 +98,16 @@ def _make_adapter(
 ) -> DiscordAdapter:
     monkeypatch.setenv("HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS", str(interval))
     monkeypatch.setenv("HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD", str(threshold))
-    monkeypatch.setenv("HERMES_DISCORD_HEARTBEAT_ACK_MAX_AGE_SECONDS", str(max_ack_age))
-    monkeypatch.setenv("HERMES_DISCORD_MAX_LATENCY_SECONDS", str(max_latency))
-    return DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    return DiscordAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={
+                "websocket_heartbeat_ack_max_age_seconds": max_ack_age,
+                "websocket_max_latency_seconds": max_latency,
+            },
+        )
+    )
 
 
 class _BrokenWebSocket:
@@ -113,15 +119,15 @@ class _BrokenWebSocket:
 @pytest.mark.parametrize(
     ("key", "attribute", "raw"),
     [
-        ("HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS", "_liveness_interval_seconds", "nan"),
-        ("HERMES_DISCORD_HEARTBEAT_ACK_MAX_AGE_SECONDS", "_heartbeat_ack_max_age_seconds", "inf"),
-        ("HERMES_DISCORD_MAX_LATENCY_SECONDS", "_max_latency_seconds", "-inf"),
+        ("websocket_liveness_interval_seconds", "_liveness_interval_seconds", "nan"),
+        ("websocket_heartbeat_ack_max_age_seconds", "_heartbeat_ack_max_age_seconds", "inf"),
+        ("websocket_max_latency_seconds", "_max_latency_seconds", "-inf"),
     ],
 )
 def test_nonfinite_liveness_config_disables_that_probe_dimension(monkeypatch, key, attribute, raw):
-    monkeypatch.setenv(key, raw)
-
-    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter = DiscordAdapter(
+        PlatformConfig(enabled=True, token="test-token", extra={key: raw})
+    )
 
     assert getattr(adapter, attribute) == 0.0
 
@@ -130,8 +136,6 @@ def test_default_liveness_bounds_trigger_timed_recovery(monkeypatch):
     for key in (
         "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
         "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
-        "HERMES_DISCORD_HEARTBEAT_ACK_MAX_AGE_SECONDS",
-        "HERMES_DISCORD_MAX_LATENCY_SECONDS",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -143,84 +147,9 @@ def test_default_liveness_bounds_trigger_timed_recovery(monkeypatch):
     assert adapter._max_latency_seconds == 30.0
 
 
-def test_gateway_debug_logging_keeps_only_safe_lifecycle_events(caplog):
-    gateway_logger = logging.getLogger("discord.gateway")
-    client_logger = logging.getLogger("discord.client")
-    original_state = {
-        item: (item.level, list(item.filters))
-        for item in (gateway_logger, client_logger)
-    }
-    try:
-        discord_platform._enable_discord_gateway_lifecycle_debug_logging()
-        discord_platform._enable_discord_gateway_lifecycle_debug_logging()
-        caplog.set_level(logging.INFO, logger=discord_platform.logger.name)
-
-        gateway_logger.debug("Received RECONNECT opcode.")
-        gateway_logger.debug(
-            "Websocket closed with %s, attempting a reconnect.",
-            1000,
-        )
-        gateway_logger.debug(
-            "Received %s",
-            SimpleNamespace(
-                type=SimpleNamespace(name="CLOSE"),
-                data=1000,
-                extra="close-test-sentinel",
-            ),
-        )
-        gateway_logger.debug(
-            "For Shard ID %s: WebSocket Event: %s",
-            0,
-            {"content": "payload-test-sentinel"},
-        )
-        gateway_logger.info("Gateway lifecycle info remains visible")
-        client_logger.debug("Got a request to %s the websocket.", "RESUME")
-        client_logger.debug(
-            "Got a request to %s the websocket.",
-            {"value": "operation-test-sentinel"},
-        )
-        gateway_logger.debug(
-            "Websocket closed with %s, cannot reconnect.",
-            "code-test-sentinel",
-        )
-        client_logger.debug("Discord client payload: %s", "client-test-sentinel")
-
-        assert "Received RECONNECT opcode" in caplog.text
-        assert "Discord Gateway requested a RESUME websocket" in caplog.text
-        assert "Discord Gateway requested a UNKNOWN websocket" in caplog.text
-        assert "Websocket closed with unknown, cannot reconnect" in caplog.text
-        assert "operation-test-sentinel" not in caplog.text
-        assert "code-test-sentinel" not in caplog.text
-        assert "client-test-sentinel" not in caplog.text
-        assert "Websocket closed with 1000" in caplog.text
-        assert "Received Discord Gateway CLOSE frame (code=1000)" in caplog.text
-        assert "close-test-sentinel" not in caplog.text
-        assert "payload-test-sentinel" not in caplog.text
-        assert "Gateway lifecycle info remains visible" in caplog.text
-        reconnect_records = [
-            record
-            for record in caplog.records
-            if "Received RECONNECT opcode" in record.getMessage()
-        ]
-        assert len(reconnect_records) == 1
-        assert reconnect_records[0].levelno == logging.INFO
-        assert reconnect_records[0].name == discord_platform.logger.name
-        for target_logger in (gateway_logger, client_logger):
-            assert sum(
-                isinstance(item, discord_platform._DiscordGatewayLifecycleFilter)
-                for item in target_logger.filters
-            ) == 1
-    finally:
-        for target_logger, (level, filters) in original_state.items():
-            target_logger.setLevel(level)
-            target_logger.filters[:] = filters
-
-
 def test_platform_config_extra_overrides_process_liveness_bridge(monkeypatch):
     monkeypatch.setenv("HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS", "99")
     monkeypatch.setenv("HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD", "9")
-    monkeypatch.setenv("HERMES_DISCORD_HEARTBEAT_ACK_MAX_AGE_SECONDS", "999")
-    monkeypatch.setenv("HERMES_DISCORD_MAX_LATENCY_SECONDS", "99")
 
     adapter = DiscordAdapter(
         PlatformConfig(
@@ -255,6 +184,14 @@ async def _connect(adapter: DiscordAdapter, monkeypatch, bot_factory):
     monkeypatch.setattr(discord_platform.commands, "Bot", bot_factory)
     monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
     assert await adapter.connect() is True
+
+
+async def _wait_until(predicate, message: str, timeout: float = 2.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() >= deadline:
+            pytest.fail(message)
+        await asyncio.sleep(0.01)
 
 
 @pytest.mark.asyncio
@@ -293,33 +230,6 @@ async def test_liveness_probe_disabled_when_threshold_zero(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_successful_connection_clears_stale_websocket_health(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    adapter = _make_adapter(monkeypatch, interval=60)
-
-    from gateway import status
-
-    status.write_runtime_status(
-        platform="discord",
-        platform_state="degraded",
-        health={"transport": "websocket", "last_health_reason": "ack_stale"},
-    )
-
-    def factory(**kwargs):
-        return _LiveBot(
-            intents=kwargs["intents"],
-            allowed_mentions=kwargs.get("allowed_mentions"),
-        )
-
-    await _connect(adapter, monkeypatch, factory)
-
-    payload = status.read_runtime_status()
-    assert payload["platforms"]["discord"]["state"] == "connected"
-    assert payload["platforms"]["discord"]["health"] is None
-    await adapter.disconnect()
-
-
-@pytest.mark.asyncio
 async def test_liveness_probe_does_not_call_rest_while_websocket_is_healthy(monkeypatch):
     """A fresh Gateway ACK is sufficient; REST is not a transport health probe."""
     adapter = _make_adapter(monkeypatch, interval=0.01, threshold=3)
@@ -339,36 +249,6 @@ async def test_liveness_probe_does_not_call_rest_while_websocket_is_healthy(monk
 
 
 @pytest.mark.asyncio
-async def test_bot_task_exit_redacts_diagnostic_before_logging_and_notification(caplog, monkeypatch):
-    adapter = _make_adapter(monkeypatch)
-    diagnostic = (
-        "request failed at https://user:pass@example.invalid:8443/path?access_token=opaque#fragment "
-        "Bearer x"
-    )
-    adapter._running = True
-    adapter._notify_fatal_error = AsyncMock()
-
-    async def fail():
-        raise RuntimeError(diagnostic)
-
-    task = asyncio.create_task(fail())
-    await asyncio.sleep(0)
-    adapter._bot_task = task
-    caplog.set_level("ERROR", logger="plugins.platforms.discord.adapter")
-
-    adapter._handle_bot_task_done(task)
-    await asyncio.sleep(0)
-
-    assert "user:pass@" not in caplog.text
-    assert ":8443" not in caplog.text
-    assert "access_token=opaque" not in caplog.text
-    assert "opaque-token-value-1234567890" not in caplog.text
-    assert "user:pass@" not in (adapter.fatal_error_message or "")
-    assert "opaque-token-value-1234567890" not in (adapter.fatal_error_message or "")
-    adapter._running = False
-
-
-@pytest.mark.asyncio
 async def test_liveness_probe_forces_reconnect_when_rest_succeeds_but_gateway_ack_is_stale(monkeypatch):
     """A REST response must not hide a stale Gateway heartbeat failure."""
     adapter = _make_adapter(monkeypatch, interval=0.005, threshold=2, max_ack_age=0.01)
@@ -384,22 +264,14 @@ async def test_liveness_probe_forces_reconnect_when_rest_succeeds_but_gateway_ac
     await _connect(adapter, monkeypatch, factory)
     wedged = adapter._client
 
-    for _ in range(200):
-        if adapter._liveness_task and adapter._liveness_task.done():
-            break
-        await asyncio.sleep(0.01)
-    else:
-        pytest.fail("liveness loop did not terminate within 2s")
-
     # The sampler schedules the close + supervisor callback in a sibling task
     # so the fatal path cannot cancel/await itself through disconnect().
-    for _ in range(200):
-        if handler.await_count:
-            break
-        await asyncio.sleep(0.01)
-    else:
-        pytest.fail("liveness recovery notification did not complete within 2s")
+    await _wait_until(
+        lambda: handler.await_count,
+        "liveness recovery notification did not complete within 2s",
+    )
 
+    assert adapter._liveness_task and adapter._liveness_task.done()
     assert wedged.is_closed() is True
     assert adapter.has_fatal_error is True
     assert adapter.fatal_error_code == "discord_websocket_health_stale"
@@ -431,12 +303,10 @@ async def test_liveness_fatal_queues_primary_runner_reconnect_without_self_cance
     adapter.set_fatal_error_handler(runner._handle_adapter_fatal_error)
     await _connect(adapter, monkeypatch, factory)
 
-    for _ in range(200):
-        if Platform.DISCORD in runner._failed_platforms:
-            break
-        await asyncio.sleep(0.01)
-    else:
-        pytest.fail("liveness fatal did not reach the runner reconnect queue")
+    await _wait_until(
+        lambda: Platform.DISCORD in runner._failed_platforms,
+        "liveness fatal did not reach the runner reconnect queue",
+    )
 
     assert adapter._liveness_notification_task is None or adapter._liveness_notification_task.done()
     assert runner._failed_platforms[Platform.DISCORD]["attempts"] == 0
@@ -465,19 +335,13 @@ async def test_liveness_probe_reports_gateway_health_failure_reason(monkeypatch,
     adapter.set_fatal_error_handler(handler)
     await _connect(adapter, monkeypatch, factory)
 
-    for _ in range(200):
-        if adapter.has_fatal_error:
-            break
-        await asyncio.sleep(0.01)
-    else:
-        pytest.fail("liveness loop did not surface a websocket health failure")
+    await _wait_until(
+        lambda: handler.await_count,
+        "liveness loop did not surface a websocket health failure",
+    )
 
     assert expected_reason in (adapter.fatal_error_message or "")
     adapter._client.fetch_user.assert_not_awaited()
-    for _ in range(200):
-        if handler.await_count:
-            break
-        await asyncio.sleep(0.01)
     handler.assert_awaited_once()
     await adapter.disconnect()
 
@@ -497,18 +361,12 @@ async def test_liveness_probe_treats_websocket_state_read_error_as_unhealthy(mon
     adapter.set_fatal_error_handler(handler)
     await _connect(adapter, monkeypatch, factory)
 
-    for _ in range(200):
-        if adapter.has_fatal_error:
-            break
-        await asyncio.sleep(0.01)
-    else:
-        pytest.fail("liveness loop did not surface a WebSocket state read error")
+    await _wait_until(
+        lambda: handler.await_count,
+        "liveness loop did not surface a WebSocket state read error",
+    )
 
     assert "socket_state_unavailable" in (adapter.fatal_error_message or "")
-    for _ in range(200):
-        if handler.await_count:
-            break
-        await asyncio.sleep(0.01)
     handler.assert_awaited_once()
     await adapter.disconnect()
 
@@ -532,18 +390,12 @@ async def test_liveness_probe_recovers_when_health_reader_raises(monkeypatch):
         lambda _client: (_ for _ in ()).throw(RuntimeError("unexpected state")),
     )
 
-    for _ in range(200):
-        if adapter.has_fatal_error:
-            break
-        await asyncio.sleep(0.01)
-    else:
-        pytest.fail("liveness loop did not recover from health-reader failure")
+    await _wait_until(
+        lambda: handler.await_count,
+        "liveness loop did not recover from health-reader failure",
+    )
 
     assert "health_check_error" in (adapter.fatal_error_message or "")
-    for _ in range(200):
-        if handler.await_count:
-            break
-        await asyncio.sleep(0.01)
     handler.assert_awaited_once()
     await adapter.disconnect()
 
@@ -562,13 +414,12 @@ async def test_liveness_recovery_keeps_websocket_fatal_when_client_task_exits(mo
     adapter.set_fatal_error_handler(handler)
     await _connect(adapter, monkeypatch, factory)
 
-    for _ in range(200):
-        if adapter._bot_task and adapter._bot_task.done():
-            break
-        await asyncio.sleep(0.01)
-    else:
-        pytest.fail("closed client task did not finish within 2s")
+    await _wait_until(
+        lambda: handler.await_count,
+        "closed client task did not finish within 2s",
+    )
 
+    assert adapter._bot_task and adapter._bot_task.done()
     assert adapter.fatal_error_code == "discord_websocket_health_stale"
     assert handler.await_count == 1
     await adapter.disconnect()

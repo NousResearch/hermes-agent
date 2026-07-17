@@ -179,19 +179,6 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `TOOL_GATEWAY_USER_TOKEN` | Tool Gateway 的认证 token（通常由 Nous 认证自动填充） |
 | `FIRECRAWL_GATEWAY_URL` | 专门覆盖 Firecrawl gateway 端点的 URL |
 
-## Gateway 与 Discord WebSocket 健康
-
-Discord Gateway WebSocket 健康参数属于 `config.yaml` 的非秘密配置，不应写入 `.env`：
-
-| 配置项 | 默认值 | 含义 |
-|--------|--------|------|
-| `discord.websocket_liveness_interval_seconds` | `15` | Gateway 采样间隔（秒） |
-| `discord.websocket_liveness_failure_threshold` | `2` | 触发可重试重连所需的连续异常次数 |
-| `discord.websocket_heartbeat_ack_max_age_seconds` | `60` | heartbeat ACK 最大年龄 |
-| `discord.websocket_max_latency_seconds` | `30` | 有限 heartbeat latency 上限 |
-
-REST HTTP 200 不是 Gateway WebSocket 健康信号。runtime status 和 `hermes gateway status --full` 只展示脱敏的 WebSocket 证据，不包含 bot token、原始 Gateway 帧或 Discord 用户/频道/Guild 标识。旧的 `discord.liveness_interval_seconds` 和 `discord.liveness_failure_threshold` 仅作为兼容别名，不再表示 REST probe。
-
 ## 终端后端
 
 | 变量 | 描述 |

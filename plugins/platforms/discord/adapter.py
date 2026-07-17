@@ -23,75 +23,10 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
-
-
-class _DiscordGatewayLifecycleFilter(logging.Filter):
-    """Keep only payload-free discord.py reconnect lifecycle diagnostics."""
-
-    _SAFE_MESSAGES = {
-        "Received RECONNECT opcode.",
-        "Timed out receiving packet. Attempting a reconnect.",
-    }
-    _CLOSE_MESSAGES = {
-        "Websocket closed with %s, attempting a reconnect.",
-        "Websocket closed with %s, cannot reconnect.",
-    }
-    _CLOSE_FRAME_TYPES = {"CLOSE", "CLOSED", "CLOSING"}
-
-    @staticmethod
-    def _safe_integer(value: object) -> str:
-        return str(value) if isinstance(value, int) and not isinstance(value, bool) else "unknown"
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        if record.levelno != logging.DEBUG:
-            return True
-        if not isinstance(record.msg, str):
-            return False
-        if record.msg in self._SAFE_MESSAGES:
-            logger.info("%s", record.msg)
-            return False
-        if record.msg == "Got a request to %s the websocket.":
-            operation = record.args[0] if isinstance(record.args, tuple) and record.args else None
-            safe_operation = operation if operation in {"IDENTIFY", "RESUME"} else "UNKNOWN"
-            logger.info("Discord Gateway requested a %s websocket.", safe_operation)
-            return False
-        if record.msg in self._CLOSE_MESSAGES:
-            code = record.args[0] if isinstance(record.args, tuple) and record.args else None
-            logger.info(record.msg, self._safe_integer(code))
-            return False
-        if record.msg == "Received %s":
-            frame = record.args[0] if isinstance(record.args, tuple) and record.args else None
-            try:
-                frame_type = getattr(getattr(frame, "type", None), "name", None)
-                code = getattr(frame, "data", None)
-            except Exception:
-                return False
-            if frame_type not in self._CLOSE_FRAME_TYPES:
-                return False
-            logger.info(
-                "Received Discord Gateway %s frame (code=%s)",
-                frame_type,
-                self._safe_integer(code),
-            )
-            return False
-        return False
-
-
-def _enable_discord_gateway_lifecycle_debug_logging() -> None:
-    """Enable bounded reconnect diagnostics without logging Gateway payloads."""
-    for logger_name in ("discord.gateway", "discord.client"):
-        lifecycle_logger = logging.getLogger(logger_name)
-        if not any(
-            isinstance(item, _DiscordGatewayLifecycleFilter)
-            for item in lifecycle_logger.filters
-        ):
-            lifecycle_logger.addFilter(_DiscordGatewayLifecycleFilter())
-        lifecycle_logger.setLevel(logging.DEBUG)
 
 
 class _Snowflake:
@@ -197,29 +132,6 @@ from tools.url_safety import is_safe_url
 def _truncate_discord_component_text(text: str, limit: int) -> str:
     """Return text within Discord's UTF-16 component field budget."""
     return _prefix_within_utf16_limit(str(text or ""), max(0, limit))
-
-
-def _discord_health_timestamp() -> str:
-    """Return a UTC timestamp for redacted Discord transport diagnostics."""
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _discord_health_timestamp_for_monotonic(value: float) -> Optional[str]:
-    """Map a monotonic timestamp to an approximate UTC diagnostic timestamp."""
-    age = time.perf_counter() - value
-    if not math.isfinite(age):
-        return None
-    return (datetime.now(timezone.utc) - timedelta(seconds=max(0.0, age))).isoformat()
-
-
-def _redact_discord_runtime_text(value: object) -> str:
-    """Return a fail-closed redaction for transport diagnostics."""
-    try:
-        from gateway.status import redact_runtime_text
-
-        return redact_runtime_text(str(value or ""))
-    except Exception:
-        return "[REDACTED]"
 
 
 def _abort_discord_websocket_transport(websocket: Any) -> bool:
@@ -981,37 +893,24 @@ class DiscordAdapter(BasePlatformAdapter):
         # the probe without changing the rest of the adapter lifecycle.
         self._liveness_interval_seconds = self._finite_positive_config_float(
             "websocket_liveness_interval_seconds",
-            "liveness_interval_seconds",
-            "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
             15.0,
+            env_key="HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
         )
         self._liveness_failure_threshold = self._config_int(
             "websocket_liveness_failure_threshold",
-            "liveness_failure_threshold",
-            "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
             2,
+            env_key="HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
         )
         self._heartbeat_ack_max_age_seconds = self._finite_positive_config_float(
             "websocket_heartbeat_ack_max_age_seconds",
-            None,
-            "HERMES_DISCORD_HEARTBEAT_ACK_MAX_AGE_SECONDS",
             60.0,
         )
         self._max_latency_seconds = self._finite_positive_config_float(
             "websocket_max_latency_seconds",
-            None,
-            "HERMES_DISCORD_MAX_LATENCY_SECONDS",
             30.0,
         )
         self._liveness_task: Optional[asyncio.Task] = None
         self._liveness_notification_task: Optional[asyncio.Task] = None
-        self._liveness_recovery_started = False
-        self._liveness_consecutive_failures = 0
-        self._liveness_last_reason = "not_sampled"
-        self._liveness_last_ack_at: Optional[str] = None
-        self._liveness_last_ready_at: Optional[str] = None
-        self._liveness_last_disconnect_at: Optional[str] = None
-        self._liveness_last_resumed_at: Optional[str] = None
         # True while disconnect() is intentionally closing discord.py. The
         # bot task's done callback uses this to distinguish an operator/service
         # shutdown from a runtime websocket crash.
@@ -1039,31 +938,31 @@ class DiscordAdapter(BasePlatformAdapter):
         self._last_overflow_preview: Dict[tuple, str] = {}
         self._warned_fail_closed_default = False
 
-    def _config_value(self, primary_key: str, legacy_key: Optional[str], env_key: str, default: Any) -> Any:
-        """Resolve a liveness value: adapter config, legacy config, env bridge, default."""
+    def _config_value(
+        self, key: str, default: Any, *, env_key: Optional[str] = None
+    ) -> Any:
+        """Resolve a liveness value from profile config, legacy env, or default."""
         extra = self.config.extra if isinstance(getattr(self.config, "extra", None), dict) else {}
-        value = extra.get(primary_key)
-        if value is None and legacy_key:
-            value = extra.get(legacy_key)
-        if value is None:
+        value = extra.get(key)
+        if value is None and env_key:
             value = os.getenv(env_key)
         return default if value is None or value == "" else value
 
     def _finite_positive_config_float(
-        self, primary_key: str, legacy_key: Optional[str], env_key: str, default: float
+        self, key: str, default: float, *, env_key: Optional[str] = None
     ) -> float:
         """Resolve a finite positive liveness duration; invalid values disable it."""
         try:
-            value = float(self._config_value(primary_key, legacy_key, env_key, default))
+            value = float(self._config_value(key, default, env_key=env_key))
         except (TypeError, ValueError):
             return 0.0
         return value if math.isfinite(value) and value > 0 else 0.0
 
     def _config_int(
-        self, primary_key: str, legacy_key: Optional[str], env_key: str, default: int
+        self, key: str, default: int, *, env_key: Optional[str] = None
     ) -> int:
         """Resolve a positive liveness count; invalid values disable it."""
-        value = self._config_value(primary_key, legacy_key, env_key, default)
+        value = self._config_value(key, default, env_key=env_key)
         if isinstance(value, bool):
             return 0
         try:
@@ -1112,12 +1011,9 @@ class DiscordAdapter(BasePlatformAdapter):
         if exc is None:
             message = "Discord gateway task exited without an exception"
         else:
-            message = (
-                "Discord gateway task exited: "
-                f"{_redact_discord_runtime_text(exc)}"
-            )
+            message = f"Discord gateway task exited: {exc}"
 
-        logger.error("[%s] %s", self.name, message)
+        logger.error("[%s] %s", self.name, message, exc_info=exc if exc else False)
         self._set_fatal_error("discord_gateway_task_exited", message, retryable=True)
 
         async def _notify() -> None:
@@ -1127,7 +1023,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 logger.warning(
                     "[%s] Failed to notify gateway supervisor about Discord task exit: %s",
                     self.name,
-                    _redact_discord_runtime_text(notify_exc),
+                    notify_exc,
+                    exc_info=True,
                 )
 
         asyncio.create_task(_notify())
@@ -1137,8 +1034,6 @@ class DiscordAdapter(BasePlatformAdapter):
         if not DISCORD_AVAILABLE:
             logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)
             return False
-
-        _enable_discord_gateway_lifecycle_debug_logging()
 
         # Load opus codec for voice channel support
         if not discord.opus.is_loaded():
@@ -1257,8 +1152,6 @@ class DiscordAdapter(BasePlatformAdapter):
             @self._client.event
             async def on_ready():
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
-                adapter_self._liveness_last_ready_at = _discord_health_timestamp()
-                adapter_self._liveness_last_resumed_at = None
 
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
@@ -1269,15 +1162,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 adapter_self._post_connect_task = asyncio.create_task(
                     adapter_self._run_post_connect_initialization()
                 )
-
-            @self._client.event
-            async def on_disconnect():
-                adapter_self._liveness_last_disconnect_at = _discord_health_timestamp()
-
-            @self._client.event
-            async def on_resumed():
-                adapter_self._liveness_last_resumed_at = _discord_health_timestamp()
-                logger.info("[%s] Discord Gateway session resumed", adapter_self.name)
 
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -1441,16 +1325,6 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             self._running = True
-            # A replacement client must not inherit a stale health diagnosis
-            # from the prior transport. The first liveness sample will publish
-            # fresh ACK/socket evidence after this connection is established.
-            self._write_runtime_status_safe(
-                "discord_websocket_connected",
-                platform_state="connected",
-                error_code=None,
-                error_message=None,
-                health=None,
-            )
             self._start_liveness_probe()
             return True
 
@@ -1497,94 +1371,50 @@ class DiscordAdapter(BasePlatformAdapter):
             return
         if self._liveness_task and not self._liveness_task.done():
             return
-        self._liveness_recovery_started = False
         self._liveness_task = asyncio.create_task(self._liveness_loop())
 
-    def _read_websocket_health(self, client: Any) -> tuple[bool, str, dict[str, Any]]:
+    def _read_websocket_health(self, client: Any) -> tuple[bool, str]:
         """Return current Discord Gateway health without making a REST request."""
-        details: dict[str, Any] = {
-            "transport": "websocket",
-            "ready": False,
-            "socket_open": False,
-            "heartbeat_ack_age_seconds": None,
-            "latency_ms": None,
-        }
         try:
-            details["ready"] = bool(client.is_ready())
+            ready = bool(client.is_ready())
         except Exception:
-            return False, "not_ready", details
-        if not details["ready"]:
-            return False, "not_ready", details
+            return False, "not_ready"
+        if not ready:
+            return False, "not_ready"
 
         try:
             if client.is_closed():
-                return False, "client_closed", details
+                return False, "client_closed"
         except Exception:
-            return False, "client_closed", details
+            return False, "client_closed"
 
         websocket = getattr(client, "ws", None)
         try:
-            details["socket_open"] = bool(
+            socket_open = bool(
                 websocket is not None and getattr(websocket, "open", False)
             )
         except Exception:
             # A transport object that cannot report its open state is not a
             # usable event stream. Treat it as unhealthy rather than letting
             # the periodic liveness task crash silently.
-            return False, "socket_state_unavailable", details
-        if not details["socket_open"]:
-            return False, "socket_closed", details
+            return False, "socket_state_unavailable"
+        if not socket_open:
+            return False, "socket_closed"
 
         keep_alive = getattr(websocket, "_keep_alive", None)
         last_ack = getattr(keep_alive, "_last_ack", None)
         if not isinstance(last_ack, (int, float)):
-            return False, "ack_unavailable", details
+            return False, "ack_unavailable"
         ack_age = time.perf_counter() - last_ack
-        details["heartbeat_ack_age_seconds"] = round(max(0.0, ack_age), 3)
-        if math.isfinite(ack_age):
-            self._liveness_last_ack_at = _discord_health_timestamp_for_monotonic(last_ack)
         if not math.isfinite(ack_age) or ack_age > self._heartbeat_ack_max_age_seconds:
-            return False, "ack_stale", details
+            return False, "ack_stale"
 
         latency = getattr(client, "latency", None)
-        if isinstance(latency, (int, float)):
-            details["latency_ms"] = round(latency * 1000, 3)
         if not isinstance(latency, (int, float)) or not math.isfinite(latency):
-            return False, "latency_non_finite", details
+            return False, "latency_non_finite"
         if latency > self._max_latency_seconds:
-            return False, "latency_exceeded", details
-        return True, "healthy", details
-
-    def _record_websocket_health(
-        self, *, healthy: bool, reason: str, details: dict[str, Any], failures: int
-    ) -> None:
-        """Persist a redacted WebSocket health state transition.
-
-        Healthy samples only write after recovery/a reason transition. This avoids
-        turning a 60-second diagnostic probe into an unnecessary state-file write
-        loop while still preserving each failure-count transition and recovery.
-        """
-        previous = self._liveness_last_reason
-        previous_failures = self._liveness_consecutive_failures
-        self._liveness_last_reason = reason
-        self._liveness_consecutive_failures = failures
-        if healthy and previous == reason and previous_failures == failures:
-            return
-        self._write_runtime_status_safe(
-            "discord_websocket_health",
-            platform_state="connected" if healthy else "degraded",
-            error_code=None if healthy else "discord_websocket_health_unhealthy",
-            error_message=None if healthy else f"Discord Gateway WebSocket unhealthy: {reason}",
-            health={
-                **details,
-                "last_heartbeat_ack_at": self._liveness_last_ack_at,
-                "last_ready_at": self._liveness_last_ready_at,
-                "last_disconnect_at": self._liveness_last_disconnect_at,
-                "last_resumed_at": self._liveness_last_resumed_at,
-                "consecutive_failures": failures,
-                "last_health_reason": reason,
-            },
-        )
+            return False, "latency_exceeded"
+        return True, "healthy"
 
     async def _liveness_loop(self) -> None:
         """Force a reconnect after repeated unhealthy Discord Gateway samples."""
@@ -1600,31 +1430,18 @@ class DiscordAdapter(BasePlatformAdapter):
             if not self._running or client is None or self._disconnecting:
                 return
             try:
-                healthy, reason, details = self._read_websocket_health(client)
+                healthy, reason = self._read_websocket_health(client)
             except Exception:
-                # Diagnostics must fail closed: an unexpected discord.py
+                # Health sampling must fail closed: an unexpected discord.py
                 # attribute change cannot be allowed to kill this watchdog
                 # task and leave an apparently-running adapter unrecovered.
                 healthy = False
                 reason = "health_check_error"
-                details = {
-                    "transport": "websocket",
-                    "ready": None,
-                    "socket_open": None,
-                    "heartbeat_ack_age_seconds": None,
-                    "latency_ms": None,
-                }
             if healthy:
                 failures = 0
-                self._record_websocket_health(
-                    healthy=True, reason=reason, details=details, failures=failures
-                )
                 continue
 
             failures += 1
-            self._record_websocket_health(
-                healthy=False, reason=reason, details=details, failures=failures
-            )
             logger.warning(
                 "[%s] Discord Gateway WebSocket unhealthy (%s, %d/%d)",
                 self.name,
@@ -1634,9 +1451,6 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             if failures < threshold:
                 continue
-            if self._liveness_recovery_started:
-                return
-            self._liveness_recovery_started = True
             # Mark intentional recovery before closing the client. Closing a
             # healthy-looking but stale transport can complete Bot.start(); its
             # done callback must not overwrite this more specific fatal reason.
@@ -8871,18 +8685,13 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if _discord_rtm is not None and not os.getenv("DISCORD_REPLY_TO_MODE"):
         _rtm_str = "off" if _discord_rtm is False else str(_discord_rtm).lower()
         os.environ["DISCORD_REPLY_TO_MODE"] = _rtm_str
-    _websocket_nested_cfg = discord_cfg.get("websocket_liveness")
-    if not isinstance(_websocket_nested_cfg, dict):
-        _websocket_nested_cfg = {}
     _websocket_extra_cfg = discord_cfg.get("extra")
     if not isinstance(_websocket_extra_cfg, dict):
         _websocket_extra_cfg = {}
-    # Public config keys win over grouped and legacy forms. Flattening here
-    # keeps the supported layouts compatible without making environment variables
-    # part of the user-facing configuration surface.
+    # Public config keys win over the generic ``extra`` form used by nested
+    # platform configuration.
     _websocket_liveness_cfg = {
         **_websocket_extra_cfg,
-        **_websocket_nested_cfg,
         **discord_cfg,
     }
     # WebSocket health knobs: REST 200 is deliberately not used as Gateway
@@ -8899,16 +8708,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             "liveness_failure_threshold",
             "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
         ),
-        (
-            "websocket_heartbeat_ack_max_age_seconds",
-            None,
-            "HERMES_DISCORD_HEARTBEAT_ACK_MAX_AGE_SECONDS",
-        ),
-        (
-            "websocket_max_latency_seconds",
-            None,
-            "HERMES_DISCORD_MAX_LATENCY_SECONDS",
-        ),
+        ("websocket_heartbeat_ack_max_age_seconds", None, None),
+        ("websocket_max_latency_seconds", None, None),
     )
     seeded = {}
     for primary_key, legacy_key, env_key in _websocket_liveness_keys:
@@ -8917,7 +8718,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             value = _websocket_liveness_cfg.get(legacy_key)
         if value is not None:
             seeded[primary_key] = value
-            if not os.getenv(env_key):
+            if env_key and not os.getenv(env_key):
                 os.environ[env_key] = str(value)
     return seeded or None
 

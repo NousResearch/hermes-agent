@@ -1615,6 +1615,50 @@ def resolve_runtime_provider(
     # margin) by get_vertex_config(); mid-session expiry is additionally
     # recovered on 401 by run_agent._try_refresh_vertex_client_credentials().
     if requested_provider in ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"):
+        _vx_model = str(target_model or _get_model_config().get("default") or "").strip()
+
+        # Claude-on-Vertex speaks the Anthropic Messages protocol (rawPredict /
+        # streamRawPredict), NOT the OpenAI-compat endpoint used by Gemini and
+        # partner MaaS models. Route Claude models through the AnthropicVertex
+        # SDK for full feature parity (prompt caching, thinking budgets,
+        # fine-grained tool streaming). The SDK holds the google-auth
+        # Credentials object and refreshes the OAuth2 token itself, so no
+        # per-turn 401 refresh hack is needed (unlike the Gemini path below).
+        from agent.vertex_adapter import is_anthropic_vertex_model
+
+        if is_anthropic_vertex_model(_vx_model):
+            from agent.vertex_adapter import get_vertex_anthropic_config
+
+            creds, project_id, region = get_vertex_anthropic_config()
+            if not project_id:
+                raise AuthError(
+                    "Vertex AI credentials could not be resolved for Claude. "
+                    "Vertex uses OAuth2 (not a static API key): provide a "
+                    "service-account JSON via GOOGLE_APPLICATION_CREDENTIALS "
+                    "(or VERTEX_CREDENTIALS_PATH) in ~/.hermes/.env, or run "
+                    "'gcloud auth application-default login' for ADC. Set the "
+                    "GCP project/region under vertex: in config.yaml if they "
+                    "aren't embedded in the credentials. Install the extra "
+                    "with: pip install 'hermes-agent[vertex]'."
+                )
+            host = (
+                "aiplatform.googleapis.com"
+                if region == "global"
+                else f"{region}-aiplatform.googleapis.com"
+            )
+            return {
+                "provider": "vertex",
+                "api_mode": "anthropic_messages",
+                "base_url": f"https://{host}/v1",
+                "api_key": "vertex-oauth",
+                "source": "vertex-oauth",
+                "region": region,
+                "vertex_project_id": project_id,
+                "vertex_anthropic": True,  # Signal to use AnthropicVertex client
+                "vertex_credentials": creds,  # google-auth Credentials (self-refresh)
+                "requested_provider": requested_provider,
+            }
+
         from agent.vertex_adapter import get_vertex_config
 
         token, base_url = get_vertex_config()

@@ -98,3 +98,95 @@ def test_vertex_extra_body_empty_without_reasoning():
 
     p = get_provider_profile("vertex")
     assert p.build_extra_body(model="google/gemini-3-flash-preview") == {}
+
+
+# ---------------------------------------------------------------------------
+# Claude-on-Vertex: dual-path routing (Anthropic Messages vs OpenAI-compat).
+# ---------------------------------------------------------------------------
+
+def test_claude_on_vertex_routes_to_anthropic_messages(monkeypatch):
+    """A Claude model on the vertex provider must route through the
+    AnthropicVertex SDK path (api_mode=anthropic_messages), carrying the
+    google-auth Credentials object and project/region — NOT a static token."""
+    import agent.vertex_adapter as va
+    from hermes_cli import runtime_provider as rp
+
+    class _Creds:
+        token = "ya29.TOKEN"
+
+    fake_creds = _Creds()
+    monkeypatch.setattr(
+        va, "get_vertex_anthropic_config",
+        lambda *a, **k: (fake_creds, "my-proj", "us-east5"),
+    )
+    rt = rp.resolve_runtime_provider(
+        requested="vertex", target_model="claude-sonnet-4-5@20250929",
+    )
+    assert rt["provider"] == "vertex"
+    assert rt["api_mode"] == "anthropic_messages"
+    assert rt["vertex_anthropic"] is True
+    assert rt["vertex_project_id"] == "my-proj"
+    assert rt["region"] == "us-east5"
+    assert rt["vertex_credentials"] is fake_creds
+    # regional base_url shape (Anthropic SDK appends the rawPredict path itself)
+    assert rt["base_url"] == "https://us-east5-aiplatform.googleapis.com/v1"
+
+
+def test_claude_on_vertex_global_region_base_url(monkeypatch):
+    import agent.vertex_adapter as va
+    from hermes_cli import runtime_provider as rp
+
+    monkeypatch.setattr(
+        va, "get_vertex_anthropic_config",
+        lambda *a, **k: (object(), "my-proj", "global"),
+    )
+    rt = rp.resolve_runtime_provider(
+        requested="vertex", target_model="claude-opus-4-1@20250805",
+    )
+    assert rt["base_url"] == "https://aiplatform.googleapis.com/v1"
+
+
+def test_gemini_on_vertex_still_uses_openai_compat(monkeypatch):
+    """Non-Claude models must keep the OpenAI-compat (chat_completions) path."""
+    import agent.vertex_adapter as va
+    from hermes_cli import runtime_provider as rp
+
+    monkeypatch.setattr(
+        va, "get_vertex_config",
+        lambda: ("ya29.TOKEN", "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"),
+    )
+    rt = rp.resolve_runtime_provider(
+        requested="vertex", target_model="gemini-2.5-flash",
+    )
+    assert rt["api_mode"] == "chat_completions"
+    assert rt.get("vertex_anthropic") is None
+    assert rt["api_key"] == "ya29.TOKEN"
+
+
+def test_claude_on_vertex_raises_autherror_when_unresolved(monkeypatch):
+    import agent.vertex_adapter as va
+    from hermes_cli import runtime_provider as rp
+    from hermes_cli.auth import AuthError
+
+    monkeypatch.setattr(va, "get_vertex_anthropic_config", lambda *a, **k: (None, None, None))
+    with pytest.raises(AuthError) as exc:
+        rp.resolve_runtime_provider(requested="vertex", target_model="claude-sonnet-4-5@20250929")
+    assert "Claude" in str(exc.value)
+
+
+def test_build_anthropic_vertex_client_shape():
+    """The AnthropicVertex client must be built with self-refreshing creds,
+    max_retries=0 (hermes owns retry), and NO 1M-context beta."""
+    pytest.importorskip("anthropic")
+    from unittest.mock import MagicMock
+    from agent.anthropic_adapter import build_anthropic_vertex_client
+
+    creds = MagicMock()
+    client = build_anthropic_vertex_client("my-proj", "us-east5", credentials=creds)
+    assert type(client).__name__ == "AnthropicVertex"
+    assert client.project_id == "my-proj"
+    assert client.region == "us-east5"
+    assert client.max_retries == 0
+    beta = client._custom_headers.get("anthropic-beta", "")
+    assert "context-1m" not in beta
+    assert "interleaved-thinking-2025-05-14" in beta

@@ -5019,6 +5019,21 @@ class AIAgent:
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
             self._anthropic_client = build_anthropic_bedrock_client(region)
+        elif getattr(self, "provider", None) == "vertex":
+            from agent.anthropic_adapter import build_anthropic_vertex_client
+            from agent.vertex_adapter import get_vertex_anthropic_config
+            # Re-resolve so a credentials object refreshed by another path is
+            # picked up; falls back to the cached attrs when resolution fails.
+            _creds, _project, _region = get_vertex_anthropic_config()
+            project = _project or getattr(self, "_vertex_project_id", None)
+            region = _region or getattr(self, "_vertex_region", "global") or "global"
+            creds = _creds or getattr(self, "_vertex_credentials", None)
+            self._vertex_project_id = project
+            self._vertex_region = region
+            self._vertex_credentials = creds
+            self._anthropic_client = build_anthropic_vertex_client(
+                project, region, credentials=creds,
+            )
         else:
             from agent.anthropic_adapter import build_anthropic_client
             self._anthropic_client = build_anthropic_client(

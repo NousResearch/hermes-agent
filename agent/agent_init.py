@@ -943,6 +943,11 @@ def init_agent(
         # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
         # (prompt caching, thinking budgets, adaptive thinking).
         _is_bedrock_anthropic = agent.provider == "bedrock"
+        # Vertex + Claude → use AnthropicVertex SDK. The SDK holds the
+        # google-auth Credentials object and refreshes the OAuth2 token
+        # itself, so the client survives long-lived sessions without a
+        # per-turn refresh hook.
+        _is_vertex_anthropic = agent.provider == "vertex"
         if _is_bedrock_anthropic:
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
@@ -957,6 +962,36 @@ def init_agent(
             agent._client_kwargs = {}
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
+        elif _is_vertex_anthropic:
+            from agent.anthropic_adapter import build_anthropic_vertex_client
+            from agent.vertex_adapter import get_vertex_anthropic_config
+
+            # Cached resolve (runtime_provider already built + validated the
+            # Credentials object moments ago); this is a cheap cache read.
+            _vx_creds, _vx_project, _vx_region = get_vertex_anthropic_config()
+            if not _vx_project:
+                raise RuntimeError(
+                    "Claude-on-Vertex selected but Vertex credentials could "
+                    "not be resolved. Provide a service-account JSON via "
+                    "GOOGLE_APPLICATION_CREDENTIALS / VERTEX_CREDENTIALS_PATH, "
+                    "or run 'gcloud auth application-default login', and set "
+                    "the GCP project/region under vertex: in config.yaml. "
+                    "Install with: pip install 'hermes-agent[vertex]'."
+                )
+            agent._vertex_project_id = _vx_project
+            agent._vertex_region = _vx_region or "global"
+            agent._vertex_credentials = _vx_creds
+            agent._anthropic_client = build_anthropic_vertex_client(
+                _vx_project, agent._vertex_region, credentials=_vx_creds,
+            )
+            agent._anthropic_api_key = "vertex-oauth"
+            agent._anthropic_base_url = base_url
+            agent._is_anthropic_oauth = False
+            agent.api_key = "vertex-oauth"
+            agent.client = None
+            agent._client_kwargs = {}
+            if not agent.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {agent.model} (Google Vertex AI + AnthropicVertex SDK, project={_vx_project}, {agent._vertex_region})")
         else:
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.

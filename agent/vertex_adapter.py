@@ -226,3 +226,66 @@ def has_vertex_credentials() -> bool:
     if _resolve_project_override():
         return True
     return False
+
+
+def is_anthropic_vertex_model(model_id: str) -> bool:
+    """Return True if the model is an Anthropic Claude model on Vertex AI.
+
+    Claude-on-Vertex speaks the Anthropic Messages protocol (rawPredict /
+    streamRawPredict) — NOT the OpenAI-compatible endpoint that Gemini and
+    partner MaaS models use. It must be routed through the AnthropicVertex
+    SDK for full feature parity (prompt caching, thinking budgets,
+    fine-grained tool streaming), so it needs its own detection.
+
+    Matches Vertex Claude model IDs such as:
+      - ``claude-sonnet-4-5@20250929``
+      - ``claude-opus-4-1@20250805``
+      - ``claude-3-5-sonnet-v2@20241022``
+    and the OpenRouter-style ``anthropic/claude-*`` alias.
+    """
+    lower = (model_id or "").strip().lower()
+    if lower.startswith("anthropic/"):
+        lower = lower[len("anthropic/"):]
+    return lower.startswith("claude")
+
+
+def get_vertex_anthropic_config(
+    credentials_path: Optional[str] = None,
+    region: Optional[str] = None,
+) -> Tuple[Optional[object], Optional[str], Optional[str]]:
+    """Resolve (google-auth Credentials, project_id, region) for Claude-on-Vertex.
+
+    Unlike ``get_vertex_config`` — which mints a short-lived bearer token for
+    the OpenAI-compatible Gemini endpoint — the Anthropic SDK's
+    ``AnthropicVertex`` client takes the google-auth Credentials object
+    directly and refreshes the OAuth2 access token itself on expiry. Handing
+    over the Credentials object (rather than a frozen token) means long-lived
+    gateway sessions don't 401 after the ~1-hour token lifetime, with no
+    per-turn refresh hack needed on Hermes's side.
+
+    Returns ``(None, None, None)`` on any failure (missing google-auth,
+    unresolvable credentials, no project ID).
+    """
+    if google is None:
+        logger.warning(
+            "google-auth package not installed. Cannot use Claude on Vertex AI. "
+            "Install with: pip install 'hermes-agent[vertex]'."
+        )
+        return None, None, None
+
+    # Reuse get_vertex_credentials so the Credentials object is built, cached,
+    # and validated (it also refreshes when near expiry). We only need the
+    # side effect of populating _creds_cache plus the resolved project_id.
+    token, project_id = get_vertex_credentials(credentials_path)
+    if not token or not project_id:
+        return None, None, None
+
+    resolved_path = _resolve_credentials_path(credentials_path)
+    cache_key = resolved_path or "__adc__"
+    cached = _creds_cache.get(cache_key)
+    creds = cached[0] if cached else None
+    if creds is None:
+        return None, None, None
+
+    effective_region = _resolve_region(region)
+    return creds, project_id, effective_region

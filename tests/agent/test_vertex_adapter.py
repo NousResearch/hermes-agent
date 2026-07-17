@@ -230,3 +230,57 @@ def test_adc_failure_falls_back_to_service_account(monkeypatch, tmp_path):
     token, project = va.get_vertex_credentials()
     assert token == "ya29.FAKE"
     assert project == "sa-project"
+
+
+# ---------------------------------------------------------------------------
+# Claude-on-Vertex (Anthropic Messages protocol) — added for the
+# AnthropicVertex routing path.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "model_id,expected",
+    [
+        ("claude-sonnet-4-5@20250929", True),
+        ("claude-opus-4-1@20250805", True),
+        ("claude-3-5-sonnet-v2@20241022", True),
+        ("anthropic/claude-3-5-haiku@20241022", True),
+        ("CLAUDE-SONNET-4-5@20250929", True),
+        ("gemini-2.5-flash", False),
+        ("gemini-3-pro-preview", False),
+        ("meta/llama-4-scout", False),
+        ("", False),
+    ],
+)
+def test_is_anthropic_vertex_model(vertex_adapter, model_id, expected):
+    assert vertex_adapter.is_anthropic_vertex_model(model_id) is expected
+
+
+def test_get_vertex_anthropic_config_returns_credentials_object(vertex_adapter):
+    """Claude path must hand back the google-auth Credentials object (for the
+    SDK to self-refresh), plus resolved project_id and region — not a frozen
+    token like the Gemini/OpenAI-compat path."""
+    creds, project_id, region = vertex_adapter.get_vertex_anthropic_config()
+    assert creds is not None
+    assert hasattr(creds, "refresh")  # it's a Credentials object, not a str
+    assert project_id == "adc-project"
+    assert region == "global"
+
+
+def test_get_vertex_anthropic_config_honors_region_and_project(vertex_adapter, monkeypatch):
+    monkeypatch.setattr(
+        vertex_adapter, "_vertex_config",
+        lambda: {"project_id": "cfg-proj", "region": "us-east5"},
+    )
+    creds, project_id, region = vertex_adapter.get_vertex_anthropic_config()
+    assert creds is not None
+    assert project_id == "cfg-proj"
+    assert region == "us-east5"
+
+
+def test_get_vertex_anthropic_config_fails_closed_without_creds(monkeypatch):
+    """No google-auth installed → (None, None, None), never a partial tuple."""
+    monkeypatch.setitem(sys.modules, "google", None)
+    import agent.vertex_adapter as va
+    va = importlib.reload(va)
+    monkeypatch.setattr(va, "_vertex_config", lambda: {})
+    assert va.get_vertex_anthropic_config() == (None, None, None)

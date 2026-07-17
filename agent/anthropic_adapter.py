@@ -892,6 +892,62 @@ def build_anthropic_bedrock_client(region: str):
     )
 
 
+def build_anthropic_vertex_client(
+    project_id: Optional[str],
+    region: str,
+    credentials=None,
+):
+    """Create an AnthropicVertex client for Claude-on-Vertex (Google Cloud).
+
+    Uses the Anthropic SDK's native Vertex adapter, which speaks the
+    Anthropic Messages protocol over Vertex's rawPredict / streamRawPredict
+    endpoints. This gives Claude on Google Cloud the same enhanced features
+    as native Anthropic — prompt caching, thinking budgets, adaptive
+    thinking, fine-grained tool streaming — that the OpenAI-compatible
+    Gemini endpoint cannot express.
+
+    Auth: passes the google-auth ``credentials`` object straight through so
+    the SDK mints and refreshes short-lived OAuth2 access tokens itself
+    (see anthropic.lib.vertex._client._ensure_access_token). Long-lived
+    gateway sessions therefore survive the ~1-hour token lifetime without a
+    per-turn refresh hook. When ``credentials`` is None the SDK falls back to
+    Application Default Credentials.
+
+    The 1M-context beta is intentionally NOT attached: Vertex Claude does not
+    honor the ``context-1m-2025-08-07`` beta the way Bedrock does, and sending
+    it can trigger a 400 on some model/region combos. Callers that want it can
+    add it per-request once Google enables it.
+    """
+    _anthropic_sdk = _get_anthropic_sdk()
+    if _anthropic_sdk is None:
+        raise ImportError(
+            "The 'anthropic' package is required for the Vertex provider. "
+            "Install it with: pip install 'anthropic>=0.39.0'"
+        )
+    if not hasattr(_anthropic_sdk, "AnthropicVertex"):
+        raise ImportError(
+            "anthropic.AnthropicVertex not available. "
+            "Upgrade with: pip install 'anthropic>=0.39.0'"
+        )
+    from httpx import Timeout
+
+    _kwargs = dict(
+        region=region,
+        credentials=credentials,
+        timeout=Timeout(timeout=900.0, connect=10.0),
+        # Delegate retry to hermes's outer loop (honors Retry-After); the SDK
+        # default max_retries=2 ignores it and double-retries. Mirrors the
+        # Bedrock client (#26293).
+        max_retries=0,
+        default_headers={"anthropic-beta": ",".join(_COMMON_BETAS)},
+    )
+    # Only pin project_id when we actually have one; otherwise let the SDK
+    # resolve it from the credentials / ADC (passing None would override that).
+    if project_id:
+        _kwargs["project_id"] = project_id
+    return _anthropic_sdk.AnthropicVertex(**_kwargs)
+
+
 def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     """Read Claude Code OAuth credentials from the macOS Keychain.
 

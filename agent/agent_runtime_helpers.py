@@ -1025,11 +1025,19 @@ def recover_with_credential_pool(
                 if refresh_counts[refresh_key] > _MAX_AUTH_REFRESH_ATTEMPTS:
                     _ra().logger.warning(
                         "Credential auth failure persists after %s refreshes for "
-                        "pool entry %s — treating as unrecoverable and allowing "
-                        "fallback to activate.",
+                        "pool entry %s — marking entry exhausted and rotating to next entry.",
                         refresh_counts[refresh_key] - 1,
                         refreshed_id,
                     )
+                    rotate_status = status_code if status_code is not None else 401
+                    next_entry = pool.mark_exhausted_and_rotate(
+                        status_code=rotate_status,
+                        error_context=error_context,
+                        api_key_hint=getattr(agent, "api_key", None),
+                    )
+                    if next_entry is not None:
+                        agent._swap_credential(next_entry)
+                        return True, False
                     return False, has_retried_429
             _ra().logger.info(f"Credential auth failure — refreshed pool entry {getattr(refreshed, 'id', '?')}")
             agent._swap_credential(refreshed)

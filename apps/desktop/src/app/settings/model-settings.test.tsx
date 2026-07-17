@@ -25,7 +25,7 @@ const startManualProviderOAuth = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: () => getGlobalModelInfo(),
-  getGlobalModelOptions: () => getGlobalModelOptions(),
+  getGlobalModelOptions: (options?: unknown) => getGlobalModelOptions(options),
   getAuxiliaryModels: () => getAuxiliaryModels(),
   getMoaModels: () => getMoaModels(),
   setModelAssignment: (body: unknown) => setModelAssignment(body),
@@ -96,6 +96,94 @@ describe('ModelSettings', () => {
     // "Nous" shows in both the trigger and the open list.
     expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
     expect(screen.queryByText(/DeepSeek/)).toBeNull()
+  })
+
+  it('retains the current model during initial provider hydration', async () => {
+    await renderModelSettings()
+
+    const triggers = await screen.findAllByRole('combobox')
+
+    expect(triggers[1].textContent).toContain('hermes-4')
+    expect(getGlobalModelOptions).toHaveBeenCalledTimes(1)
+    expect(getGlobalModelOptions).not.toHaveBeenCalledWith({ refresh: true })
+  })
+
+  it('clears a stale model and probes an empty user-defined provider after a user switch', async () => {
+    getGlobalModelOptions
+      .mockResolvedValueOnce({
+        providers: [
+          {
+            name: 'Nous',
+            slug: 'nous',
+            models: ['hermes-4'],
+            authenticated: true
+          },
+          {
+            name: 'Local Gateway',
+            slug: 'local-gateway',
+            models: [],
+            authenticated: true,
+            is_user_defined: true
+          }
+        ]
+      })
+      .mockResolvedValueOnce({
+        providers: [
+          {
+            name: 'Nous',
+            slug: 'nous',
+            models: ['hermes-4'],
+            authenticated: true
+          },
+          {
+            name: 'Local Gateway',
+            slug: 'local-gateway',
+            models: ['local-model-a', 'local-model-b'],
+            authenticated: true,
+            is_user_defined: true
+          }
+        ]
+      })
+
+    await renderModelSettings()
+
+    const triggers = await screen.findAllByRole('combobox')
+    fireEvent.click(triggers[0])
+    fireEvent.click(await screen.findByRole('option', { name: 'Local Gateway' }))
+
+    await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalledWith({ refresh: true }))
+    await waitFor(() => expect(screen.getAllByRole('combobox')[1].textContent).toContain('local-model-a'))
+    expect(screen.getAllByRole('combobox')[1].textContent).not.toContain('hermes-4')
+  })
+
+  it('does not live-probe an empty built-in provider after a user switch', async () => {
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Nous',
+          slug: 'nous',
+          models: ['hermes-4'],
+          authenticated: true
+        },
+        {
+          name: 'Built-in Empty',
+          slug: 'built-in-empty',
+          models: [],
+          authenticated: true,
+          is_user_defined: false
+        }
+      ]
+    })
+
+    await renderModelSettings()
+
+    const triggers = await screen.findAllByRole('combobox')
+    fireEvent.click(triggers[0])
+    fireEvent.click(await screen.findByRole('option', { name: 'Built-in Empty' }))
+
+    await waitFor(() => expect(screen.getAllByRole('combobox')[1].textContent).not.toContain('hermes-4'))
+    expect(getGlobalModelOptions).toHaveBeenCalledTimes(1)
+    expect(getGlobalModelOptions).not.toHaveBeenCalledWith({ refresh: true })
   })
 
   it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {

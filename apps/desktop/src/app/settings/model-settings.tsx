@@ -219,6 +219,9 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   // so a request in flight when the user switches profiles can't paint profile
   // A's models/providers into profile B (or fire onMainModelChanged for A).
   const profileEpoch = useRef(0)
+  // Keep user-driven provider probes ordered independently of profile loads.
+  // A slower reply for an earlier selection must not repaint a later one.
+  const providerSelectionEpoch = useRef(0)
 
   const refresh = useCallback(async () => {
     const epoch = profileEpoch.current
@@ -293,31 +296,45 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const needsSetup = !!selectedProvider && !isProviderReady(selectedProviderRow)
   const setupIsApiKey = needsSetup && selectedProviderRow?.auth_type === 'api_key' && !!selectedProviderRow?.key_env
 
-  // Clear any half-typed key and stale model when switching provider.
-  // Without this, switching to a custom provider whose models haven't been
-  // probed yet (empty models list) leaves the previous provider's model
-  // visible in the Select via withActive(), making it look like the model
-  // list didn't refresh.  For empty-but-authenticated providers, call
-  // with refresh=true so the backend probes the live /models endpoint.
-  useEffect(() => {
-    setApiKeyDraft('')
-    setSelectedModel('')
+  // This must be an event handler, not a selectedProvider effect: refresh()
+  // hydrates the provider and model together, and an effect would erase that
+  // valid initial model. Only an actual user provider change invalidates it.
+  const selectMainProvider = useCallback(
+    (provider: string) => {
+      const selectionEpoch = providerSelectionEpoch.current + 1
+      providerSelectionEpoch.current = selectionEpoch
 
-    const row = providers.find(p => p.slug === selectedProvider)
-    if (row && row.authenticated !== false && (row.models?.length ?? 0) === 0) {
+      setSelectedProvider(provider)
+      setSelectedModel('')
+      setApiKeyDraft('')
+
+      const row = providers.find(candidate => candidate.slug === provider)
+
+      // Built-ins use their curated/cached catalogs. Live probing is only the
+      // fallback for user-defined endpoints that arrived empty because they
+      // were not the active custom provider during the initial inventory.
+      if (!row?.is_user_defined || row.authenticated === false || (row.models?.length ?? 0) > 0) {
+        return
+      }
+
       const epoch = profileEpoch.current
-      getGlobalModelOptions({ refresh: true })
+      void getGlobalModelOptions({ refresh: true })
         .then(opts => {
-          if (profileEpoch.current !== epoch) return
+          if (profileEpoch.current !== epoch || providerSelectionEpoch.current !== selectionEpoch) {
+            return
+          }
+
           setProviders(opts.providers || [])
-          const refreshed = opts.providers?.find(p => p.slug === selectedProvider)
+          const refreshed = opts.providers?.find(candidate => candidate.slug === provider)
+
           if (refreshed?.models?.length) {
             setSelectedModel(refreshed.models[0])
           }
         })
         .catch(() => {})
-    }
-  }, [selectedProvider])
+    },
+    [providers]
+  )
 
   const auxDraftProviderModels = useMemo(
     () => providers.find(provider => provider.slug === auxDraft.provider)?.models ?? [],
@@ -716,7 +733,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       <section>
         <p className="mb-3 text-xs text-muted-foreground">{m.appliesDesc}</p>
         <div className="flex flex-wrap items-center gap-2">
-          <Select onValueChange={setSelectedProvider} value={selectedProvider}>
+          <Select onValueChange={selectMainProvider} value={selectedProvider}>
             <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
               <SelectValue placeholder={m.provider} />
             </SelectTrigger>

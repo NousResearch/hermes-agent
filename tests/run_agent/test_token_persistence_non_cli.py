@@ -70,11 +70,15 @@ def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeyp
     captured = {}
 
     class FakeSessionDB:
-        def __new__(cls):
+        @classmethod
+        def for_home(cls, home):
             return sentinel_db
 
     hermes_state = ModuleType("hermes_state")
     hermes_state.SessionDB = FakeSessionDB
+    hermes_state.format_session_db_unavailable = (
+        lambda: "Session database not available."
+    )
     monkeypatch.setitem(sys.modules, "hermes_state", hermes_state)
 
     session_search_mod = ModuleType("tools.session_search_tool")

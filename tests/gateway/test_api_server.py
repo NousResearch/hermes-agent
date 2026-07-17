@@ -801,7 +801,12 @@ class TestHealthDetailedEndpoint:
             "active_agents": 2,
             "exit_reason": None,
             "updated_at": "2026-04-14T00:00:00Z",
-        }), patch("gateway.run._resolve_gateway_model", return_value="test/model"):
+        }), patch(
+            "gateway.run._resolve_gateway_model", return_value="test/model"
+        ), patch(
+            "gateway.platforms.api_server.collect_runtime_readiness",
+            return_value={"status": "ok", "checks": {}},
+        ):
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed")
                 assert resp.status == 200

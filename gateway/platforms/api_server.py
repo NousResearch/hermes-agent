@@ -5593,7 +5593,9 @@ class APIServerAdapter(BasePlatformAdapter):
         (OSError: [Errno 24] Too many open files, #37011).
         """
         self._mark_disconnected()
-        self._start_session_db_drain()
+        has_session_db_lifecycle = hasattr(self, "_session_db_lifecycle")
+        if has_session_db_lifecycle:
+            self._start_session_db_drain()
         if self._response_store is not None:
             try:
                 self._response_store.close()
@@ -5601,8 +5603,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug(
                     "Failed to close response store for %s", self.name, exc_info=True,
                 )
-        await asyncio.to_thread(self._drain_and_close_cached_session_dbs)
-        self._async_session_dbs.clear()
+        if has_session_db_lifecycle:
+            await asyncio.to_thread(self._drain_and_close_cached_session_dbs)
+            self._async_session_dbs.clear()
         if self._site:
             await self._site.stop()
             self._site = None

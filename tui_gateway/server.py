@@ -12594,12 +12594,32 @@ def _resolve_name(name: str) -> str:
         return name
 
 
+def _resolve_bundle_command_key_for_dispatch(name: str) -> Optional[str]:
+    """Resolve a slash/bundle command key using the live bundle mapping.
+
+    Keep this local to the gateway so hot-reload tests that patch
+    ``agent.skill_bundles.get_skill_bundles`` see the same mapping used here.
+    """
+    if not name:
+        return None
+    try:
+        from hermes_cli.commands import resolve_command
+
+        if resolve_command(name.lstrip("/")) is not None:
+            return None
+
+        from agent import skill_bundles
+
+        cmd_key = f"/{name.lstrip('/').replace('_', '-')}"
+        return cmd_key if cmd_key in skill_bundles.get_skill_bundles() else None
+    except Exception:
+        return None
+
+
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
-    name, arg = params.get("name", "").lstrip("/"), params.get("arg", "")
-    resolved = _resolve_name(name)
-    if resolved != name:
-        name = resolved
+    raw_name, arg = params.get("name", "").lstrip("/"), params.get("arg", "")
+    name = raw_name
     session = _sessions.get(params.get("session_id", ""))
 
     qcmds = _load_cfg().get("quick_commands", {})
@@ -12652,25 +12672,15 @@ def _(rid, params: dict) -> dict:
         pass
 
     try:
-        from agent.skill_bundles import (
-            build_bundle_invocation_message,
-            get_skill_bundles,
-            resolve_bundle_command_key,
-        )
+        from agent import skill_bundles
 
-        from hermes_cli.commands import resolve_command
-
-        bundle_key = (
-            resolve_bundle_command_key(name)
-            if resolve_command(name) is None
-            else None
-        )
+        bundle_key = _resolve_bundle_command_key_for_dispatch(name)
     except Exception:
         bundle_key = None
 
     if bundle_key is not None:
         try:
-            bundle_result = build_bundle_invocation_message(
+            bundle_result = skill_bundles.build_bundle_invocation_message(
                 bundle_key,
                 arg,
                 task_id=session.get("session_key", "") if session else "",
@@ -12683,7 +12693,7 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4018, f"failed to load bundle: {bundle_key}")
 
         msg, loaded_names, missing = bundle_result
-        bundle_info = get_skill_bundles().get(bundle_key, {})
+        bundle_info = skill_bundles.get_skill_bundles().get(bundle_key, {})
         bundle_name = bundle_info.get("name", bundle_key.lstrip("/"))
         notice = f"⚡ Loading bundle: {bundle_name} ({len(loaded_names)} skills)"
         if missing:
@@ -14231,14 +14241,7 @@ def _(rid, params: dict) -> dict:
             )
 
     try:
-        from agent.skill_bundles import resolve_bundle_command_key
-        from hermes_cli.commands import resolve_command
-
-        _bundle_key = (
-            resolve_bundle_command_key(_cmd_base)
-            if resolve_command(_cmd_base) is None
-            else None
-        )
+        _bundle_key = _resolve_bundle_command_key_for_dispatch(_cmd_base)
         if _bundle_key is not None:
             return _methods["command.dispatch"](
                 rid,

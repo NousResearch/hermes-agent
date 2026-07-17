@@ -32,6 +32,7 @@ def server():
         import importlib
 
         mod = importlib.import_module("tui_gateway.server")
+        orig_methods = mod._methods.copy()
         yield mod
         # Reset module-level session state without re-importing. importlib.reload
         # would re-register the module's atexit hooks (ThreadPoolExecutor
@@ -41,6 +42,8 @@ def server():
         # next test a clean slate; _methods is NOT cleared because it's
         # populated at module import time and re-registration only happens
         # via reload (which we don't do).
+        mod._methods.clear()
+        mod._methods.update(orig_methods)
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()

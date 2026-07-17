@@ -38,6 +38,15 @@ from agent.model_metadata import (
 logger = logging.getLogger(__name__)
 
 
+def _turn_log_preview(agent, user_message, summarize_user_message_for_log) -> str:
+    """Return a bounded turn preview without logging reduced-authority data."""
+    if getattr(agent, "_reduced_authority", False):
+        return "[reduced-authority untrusted context]"
+    preview_text = summarize_user_message_for_log(user_message)
+    preview = (preview_text[:80] + "...") if len(preview_text) > 80 else preview_text
+    return preview.replace("\n", " ")
+
+
 def _compression_made_progress(
     orig_len: int, new_len: int, orig_tokens: int, new_tokens: int
 ) -> bool:
@@ -263,9 +272,7 @@ def build_turn_context(
     agent.iteration_budget = IterationBudget(agent.max_iterations)
 
     # Log conversation turn start for debugging/observability.
-    _preview_text = summarize_user_message_for_log(user_message)
-    _msg_preview = (_preview_text[:80] + "...") if len(_preview_text) > 80 else _preview_text
-    _msg_preview = _msg_preview.replace("\n", " ")
+    _msg_preview = _turn_log_preview(agent, user_message, summarize_user_message_for_log)
     logger.info(
         "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
         agent.session_id or "none", agent.model, agent.provider or "unknown",
@@ -363,7 +370,9 @@ def build_turn_context(
             pass
 
     if not agent.quiet_mode:
-        _print_preview = summarize_user_message_for_log(user_message)
+        _print_preview = _turn_log_preview(
+            agent, user_message, summarize_user_message_for_log
+        )
         agent._safe_print(
             f"💬 Starting conversation: '{_print_preview[:60]}"
             f"{'...' if len(_print_preview) > 60 else ''}'"
@@ -522,8 +531,9 @@ def build_turn_context(
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _pre_results = _invoke_hook(
+        from agent.plugin_hook_policy import invoke_agent_hook
+        _pre_results = invoke_agent_hook(
+            agent,
             "pre_llm_call",
             session_id=agent.session_id,
             task_id=effective_task_id,

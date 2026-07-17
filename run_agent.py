@@ -488,6 +488,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        reduced_authority: bool = False,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -564,6 +565,7 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            reduced_authority=reduced_authority,
         )
 
     def _get_session_db_for_recall(self):
@@ -2544,6 +2546,8 @@ class AIAgent:
         retryable: Optional[bool] = None,
         reason: Optional[str] = None,
     ) -> None:
+        if getattr(self, "_reduced_authority", False):
+            return
         # Lazy module import (not from-import) so tests that
         # ``monkeypatch.setattr("hermes_cli.plugins.has_hook", ...)`` still
         # take effect on this call site. After first call the import is a
@@ -2591,6 +2595,8 @@ class AIAgent:
         error: Optional[Exception] = None,
     ) -> Optional[Path]:
         """Forwarder — see ``agent.agent_runtime_helpers.dump_api_request_debug``."""
+        if getattr(self, "_reduced_authority", False):
+            return None
         from agent.agent_runtime_helpers import dump_api_request_debug
         return dump_api_request_debug(self, api_kwargs, reason=reason, error=error)
 
@@ -2649,6 +2655,8 @@ class AIAgent:
         fewer messages") is preserved so resume + branch don't clobber a
         fuller existing snapshot.
         """
+        if getattr(self, "_reduced_authority", False):
+            return
         if not getattr(self, "_session_json_enabled", False):
             return
         messages = messages or self._session_messages

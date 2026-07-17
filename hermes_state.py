@@ -4146,6 +4146,89 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def append_reduced_authority_turn(
+        self,
+        session_id: str,
+        *,
+        correlation_id: str,
+        user_content: str,
+        assistant_content: str,
+        finish_reason: str = None,
+    ) -> tuple[int, int]:
+        """Atomically append or replay one reduced-authority Workspace turn.
+
+        The correlation ID is scoped to the session and checked under the same
+        ``BEGIN IMMEDIATE`` transaction as both inserts. A retry returns the
+        original row IDs, while a partial or content-mismatched prior write
+        fails closed instead of creating duplicate or alternating-broken rows.
+        """
+        if not isinstance(correlation_id, str) or not re.fullmatch(r"[0-9a-f]{32}", correlation_id):
+            raise ValueError("Invalid reduced-authority turn correlation ID")
+        if not isinstance(user_content, str) or not isinstance(assistant_content, str):
+            raise TypeError("Reduced-authority turn content must be text")
+
+        user_marker = f"workspace-run:{correlation_id}"
+        assistant_marker = f"workspace-reduced-output:{correlation_id}"
+        stored_user = self._encode_content(user_content)
+        stored_assistant = self._encode_content(assistant_content)
+
+        def _do(conn):
+            existing = conn.execute(
+                """
+                SELECT id, role, content, platform_message_id
+                FROM messages
+                WHERE session_id = ? AND platform_message_id IN (?, ?)
+                ORDER BY id
+                """,
+                (session_id, user_marker, assistant_marker),
+            ).fetchall()
+            if existing:
+                by_marker = {row["platform_message_id"]: row for row in existing}
+                user_row = by_marker.get(user_marker)
+                assistant_row = by_marker.get(assistant_marker)
+                if user_row is None or assistant_row is None:
+                    raise RuntimeError("Reduced-authority turn persistence is incomplete")
+                if (
+                    user_row["role"] != "user"
+                    or assistant_row["role"] != "assistant"
+                    or self._decode_content(user_row["content"]) != user_content
+                    or self._decode_content(assistant_row["content"]) != assistant_content
+                ):
+                    raise RuntimeError("Reduced-authority turn correlation ID was reused with different content")
+                return int(user_row["id"]), int(assistant_row["id"])
+
+            now = time.time()
+            user_cursor = conn.execute(
+                """
+                INSERT INTO messages
+                    (session_id, role, content, timestamp, platform_message_id, observed, active)
+                VALUES (?, 'user', ?, ?, ?, 0, 1)
+                """,
+                (session_id, stored_user, now, user_marker),
+            )
+            assistant_cursor = conn.execute(
+                """
+                INSERT INTO messages
+                    (session_id, role, content, timestamp, finish_reason,
+                     platform_message_id, observed, active)
+                VALUES (?, 'assistant', ?, ?, ?, ?, 0, 1)
+                """,
+                (
+                    session_id,
+                    stored_assistant,
+                    now,
+                    finish_reason,
+                    assistant_marker,
+                ),
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = message_count + 2 WHERE id = ?",
+                (session_id,),
+            )
+            return int(user_cursor.lastrowid), int(assistant_cursor.lastrowid)
+
+        return self._execute_write(_do)
+
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.
 

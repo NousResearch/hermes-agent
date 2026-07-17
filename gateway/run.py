@@ -1984,7 +1984,7 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
 _AGENT_PENDING_SENTINEL = object()
 
 
-def _resolve_runtime_agent_kwargs() -> dict:
+def _resolve_runtime_agent_kwargs(*, allow_fallback: bool = True) -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
     Provider is read from ``config.yaml`` ``model.provider`` (the single
@@ -2007,6 +2007,8 @@ def _resolve_runtime_agent_kwargs() -> dict:
     try:
         runtime = resolve_runtime_provider()
     except AuthError as auth_exc:
+        if not allow_fallback:
+            raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
         # Distinguish a transient rate-limit/quota cap (credentials are fine,
         # re-auth cannot help) from a genuine auth failure (expired/revoked
         # token). Both fall through to the fallback chain, but the log message

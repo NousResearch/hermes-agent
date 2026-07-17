@@ -275,6 +275,17 @@ def test_no_review_when_memory_disabled():
     assert ctx.should_review_memory is False
 
 
+def test_reduced_authority_skips_pre_llm_plugin_hook():
+    agent = _FakeAgent()
+    agent._skip_plugin_hooks = True
+
+    with patch("hermes_cli.plugins.invoke_hook") as invoke_hook:
+        ctx = _build(agent)
+
+    assert ctx.plugin_user_context == ""
+    invoke_hook.assert_not_called()
+
+
 def test_ensure_db_session_runs_after_system_prompt_restore():
     """Regression for #45499.
 

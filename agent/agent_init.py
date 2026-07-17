@@ -346,6 +346,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    reduced_authority: bool = False,
 ):
     """
     Initialize the AI Agent.
@@ -398,7 +399,23 @@ def init_agent(
     """
     _install_safe_stdio()
 
+    # Reduced-authority turns process untrusted attachment text. Establish the
+    # boundary before tool, memory, context, plugin, or fallback setup.
+    if reduced_authority:
+        enabled_toolsets = []
+        skip_memory = True
+        skip_context_files = True
+        fallback_model = None
+        max_iterations = 1
+        compression_enabled = False
+        save_trajectories = False
+        verbose_logging = False
+
     agent.model = model
+    agent._reduced_authority = bool(reduced_authority)
+    agent._skip_mcp_refresh = bool(reduced_authority)
+    agent._skip_plugin_hooks = bool(reduced_authority)
+    agent._skip_extension_middleware = bool(reduced_authority)
     agent.max_iterations = max_iterations
     # Shared iteration budget — parent creates, children inherit.
     # Consumed by every LLM turn across parent + all subagents.
@@ -677,7 +694,7 @@ def init_agent(
     # Opt-out flag for the between-turns MCP tool refresh (build_turn_context).
     # Set on internal forks (e.g. background_review) that must keep ``tools[]``
     # byte-identical to a parent for provider cache parity.
-    agent._skip_mcp_refresh = False
+    agent._skip_mcp_refresh = bool(reduced_authority)
     # Registry generation the current tool snapshot was derived from. Lets a
     # late/concurrent refresh reject a stale (older-generation) rebuild instead
     # of clobbering a newer one. Set adjacent to the tool snapshot below.
@@ -1553,7 +1570,10 @@ def init_agent(
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics
     # are noisy.
-    agent._environment_probe = bool(_agent_section.get("environment_probe", True))
+    agent._environment_probe = (
+        bool(_agent_section.get("environment_probe", True))
+        and not reduced_authority
+    )
     # Warm the probe off-thread: it shells out to python3/pip (~0.5s of
     # subprocess round-trips) and its result lands in the FIRST system
     # prompt build, which sits on the time-to-first-token critical path.
@@ -1645,6 +1665,8 @@ def init_agent(
     except Exception:
         pass
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
+    if reduced_authority:
+        compression_enabled = False
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
     # protect_first_n is the number of non-system messages to protect at
@@ -1832,6 +1854,8 @@ def init_agent(
         _engine_name = _ctx_cfg.get("engine", "compressor") or "compressor"
     except Exception:
         pass
+    if reduced_authority:
+        _engine_name = "compressor"
 
     if _engine_name != "compressor":
         # Try loading from plugins/context_engine/<name>/
@@ -2194,6 +2218,12 @@ def init_agent(
             "anthropic_base_url": agent._anthropic_base_url,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
+
+    if reduced_authority:
+        # Defense in depth against environment-mandated or plugin-injected
+        # tools that may have appeared during shared initialization.
+        agent.tools = []
+        agent.valid_tool_names = set()
 
 
 

@@ -305,6 +305,13 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     (which constructs a fresh ``AIAgent`` per turn and depends on this
     DB roundtrip).
     """
+    if getattr(agent, "_reduced_authority", False):
+        safe_prompt = system_message or getattr(agent, "ephemeral_system_prompt", None)
+        if not isinstance(safe_prompt, str) or not safe_prompt.strip():
+            raise ValueError("Reduced-authority turns require an explicit safe system prompt")
+        agent._cached_system_prompt = safe_prompt.strip()
+        return
+
     stored_prompt = None
     stored_state = "missing"
     if conversation_history and agent._session_db:
@@ -363,8 +370,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # session is created (not on continuation).  Plugins can use this
     # to initialise session-scoped state (e.g. warm a memory cache).
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _invoke_hook(
+        from agent.plugin_hook_policy import invoke_agent_hook
+        invoke_agent_hook(
+            agent,
             "on_session_start",
             session_id=agent.session_id,
             model=agent.model,
@@ -562,6 +570,15 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     return sp
 
 
+def _decode_allowed_moa_turn(agent, user_message):
+    """Decode an MoA envelope only for ordinary full-authority turns."""
+    if getattr(agent, "_reduced_authority", False):
+        return user_message, None
+    from hermes_cli.moa_config import decode_moa_turn
+
+    return decode_moa_turn(user_message)
+
+
 def run_conversation(
     agent,
     user_message: Any,
@@ -594,11 +611,13 @@ def run_conversation(
     Returns:
         Dict: Complete conversation result with final response and message history
     """
-    if moa_config is None:
+    if getattr(agent, "_reduced_authority", False):
+        moa_config = None
+    elif moa_config is None:
         try:
-            from hermes_cli.moa_config import decode_moa_turn
-
-            _decoded_message, _decoded_moa_config = decode_moa_turn(user_message)
+            _decoded_message, _decoded_moa_config = _decode_allowed_moa_turn(
+                agent, user_message
+            )
             if _decoded_moa_config is not None:
                 user_message = _decoded_message
                 moa_config = _decoded_moa_config
@@ -896,7 +915,7 @@ def run_conversation(
         # bytes are byte-stable across turns and upstream prompt caches
         # stay warm.
         effective_system = active_system_prompt or ""
-        if agent.ephemeral_system_prompt:
+        if agent.ephemeral_system_prompt and not getattr(agent, "_reduced_authority", False):
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
@@ -1244,9 +1263,12 @@ def run_conversation(
                     api_kwargs["extra_headers"] = _xh
                     agent._is_user_initiated_turn = False
                 try:
-                    from hermes_cli.middleware import apply_llm_request_middleware
+                    from agent.extension_middleware_policy import (
+                        apply_agent_llm_request_middleware,
+                    )
 
-                    _llm_request_mw = apply_llm_request_middleware(
+                    _llm_request_mw = apply_agent_llm_request_middleware(
+                        agent,
                         api_kwargs,
                         task_id=effective_task_id,
                         turn_id=turn_id,
@@ -1267,11 +1289,11 @@ def run_conversation(
                     _llm_middleware_trace = []
 
                 try:
-                    from hermes_cli.plugins import (
-                        has_hook,
-                        invoke_hook as _invoke_hook,
-                    )
-                    if has_hook("pre_api_request"):
+                    from hermes_cli.plugins import has_hook
+                    if (
+                        not getattr(agent, "_skip_plugin_hooks", False)
+                        and has_hook("pre_api_request")
+                    ):
                         request_messages = api_kwargs.get("messages")
                         if not isinstance(request_messages, list):
                             request_messages = api_kwargs.get("input")
@@ -1294,7 +1316,9 @@ def run_conversation(
                         # provider client.  New consumers should read the
                         # sanitised view from ``request["body"]["messages"]``.
                         _request_payload = agent._api_request_payload_for_hook(api_kwargs)
-                        _invoke_hook(
+                        from agent.plugin_hook_policy import invoke_agent_hook
+                        invoke_agent_hook(
+                            agent,
                             "pre_api_request",
                             task_id=effective_task_id,
                             turn_id=turn_id,
@@ -1393,9 +1417,12 @@ def run_conversation(
                         )
                     return agent._interruptible_api_call(next_api_kwargs)
 
-                from hermes_cli.middleware import run_llm_execution_middleware
+                from agent.extension_middleware_policy import (
+                    run_agent_llm_execution_middleware,
+                )
 
-                response = run_llm_execution_middleware(
+                response = run_agent_llm_execution_middleware(
+                    agent,
                     api_kwargs,
                     _perform_api_call,
                     original_request=_original_api_kwargs,
@@ -4403,17 +4430,19 @@ def run_conversation(
                     assistant_message.content = str(raw)
 
             try:
-                from hermes_cli.plugins import (
-                    has_hook,
-                    invoke_hook as _invoke_hook,
-                )
-                if has_hook("post_api_request"):
+                from hermes_cli.plugins import has_hook
+                if (
+                    not getattr(agent, "_skip_plugin_hooks", False)
+                    and has_hook("post_api_request")
+                ):
                     _assistant_tool_calls = (
                         getattr(assistant_message, "tool_calls", None) or []
                     )
                     _assistant_text = assistant_message.content or ""
                     _api_ended_at = api_start_time + api_duration
-                    _invoke_hook(
+                    from agent.plugin_hook_policy import invoke_agent_hook
+                    invoke_agent_hook(
+                        agent,
                         "post_api_request",
                         task_id=effective_task_id,
                         turn_id=turn_id,

@@ -1836,6 +1836,7 @@ export const zh: Translations = {
       finishedUnread: '已完成 — 未读',
       backgroundRunning: '后台任务运行中',
       handoffOrigin: platform => `从 ${platform} 转接`,
+      ownedByProfile: profile => `配置档：${profile}`,
       renamed: '已重命名',
       renameFailed: '重命名失败',
       renameTitle: '重命名会话',
@@ -2144,6 +2145,7 @@ export const zh: Translations = {
     recommended: '推荐',
     connected: '已连接',
     featuredPitch: '一个订阅，300+ 前沿模型 — 运行 Hermes 的推荐方式',
+    fireworksPitch: '直接模型 API — Fireworks 托管的前沿模型',
     openRouterPitch: '一个密钥，数百个模型 — 稳妥的默认选择',
     apiKeyOptions: {
       fireworks: { short: '直接模型 API', description: '直接访问 Fireworks AI 托管的模型。' },
@@ -2338,6 +2340,7 @@ export const zh: Translations = {
       noModel: '无模型',
       switchModel: '切换模型',
       openModelPicker: '打开模型选择器',
+      modelPinned: '已由你固定；新对话将使用此模型而非“设置”中的默认模型',
       modelTitle: (provider, model) => `模型 · ${provider}: ${model}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }

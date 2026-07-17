@@ -1582,6 +1582,22 @@ class SessionStore:
                         "Session DB expiry_finalized write failed for %s: %s",
                         entry.session_id, exc,
                     )
+            try:
+                # Expiry finalization is a real conversation boundary. Without
+                # a durable ``session_reset`` end_reason, later agent cleanup can
+                # close the row as ``agent_close``; stale-route recovery treats
+                # that as resumable and resurrects the expired full history.
+                #
+                # promote_to_session_reset is conditional: it only promotes
+                # live rows or rows ended with ``agent_close``.  Explicit
+                # boundaries (compression, session_reset, new_command, etc.)
+                # are preserved — the first writer wins.
+                self._db.promote_to_session_reset(entry.session_id)
+            except Exception as exc:
+                logger.debug(
+                    "Session DB promote_to_session_reset failed for %s: %s",
+                    entry.session_id, exc,
+                )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.

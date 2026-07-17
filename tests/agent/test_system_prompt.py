@@ -46,16 +46,28 @@ def _captured_context_cwd(agent):
 
 
 class TestPlatformIdentity:
+    def test_qqbot_identity_is_prominent_in_volatile_prompt(self):
+        parts = build_system_prompt_parts(_make_agent(platform="qqbot"))
+
+        assert "Platform identity: QQ (qqbot)" in parts["volatile"]
+        assert "do not guess or ask the user" in parts["volatile"]
+
     def test_wecom_identity_is_prominent_in_volatile_prompt(self):
         parts = build_system_prompt_parts(_make_agent(platform="wecom"))
 
         assert "Platform identity: WeCom (wecom)" in parts["volatile"]
         assert "do not guess or ask the user" in parts["volatile"]
 
-    def test_qqbot_identity_is_prominent_in_volatile_prompt(self):
-        parts = build_system_prompt_parts(_make_agent(platform="qqbot"))
+    def test_wecom_callback_identity_is_prominent_in_volatile_prompt(self):
+        parts = build_system_prompt_parts(_make_agent(platform="wecom_callback"))
 
-        assert "Platform identity: QQ (qqbot)" in parts["volatile"]
+        assert "Platform identity: WeCom (wecom_callback)" in parts["volatile"]
+        assert "do not guess or ask the user" in parts["volatile"]
+
+    def test_weixin_identity_is_prominent_in_volatile_prompt(self):
+        parts = build_system_prompt_parts(_make_agent(platform="weixin"))
+
+        assert "Platform identity: Weixin/WeChat (weixin)" in parts["volatile"]
         assert "do not guess or ask the user" in parts["volatile"]
 
     def test_other_platforms_keep_existing_volatile_prompt(self):

@@ -481,8 +481,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # models that may overlook the longer formatting/capability hint above.
     # Keep this deliberately free of chat/user identifiers.
     _prominent_platform_names = {
-        "wecom": "WeCom",
         "qqbot": "QQ",
+        "wecom": "WeCom",
+        "wecom_callback": "WeCom",
+        "weixin": "Weixin/WeChat",
     }
     _platform_name = _prominent_platform_names.get(platform_key)
     if _platform_name:

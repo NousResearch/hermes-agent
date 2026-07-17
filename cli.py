@@ -6836,6 +6836,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _cli_visible_print("(._.) No conversation history yet.")
             return
 
+        from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
+
         preview_limit = 400
         visible_index = 0
         hidden_tool_messages = 0
@@ -6885,7 +6887,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             visible_index += 1
 
             content = msg.get("content")
-            content_text = "" if content is None else str(content)
+            # Stored history is untrusted for display: strip escape sequences /
+            # control chars so replaying a message via /history can't clear the
+            # screen, retitle the window, or move the cursor — the same guard
+            # the /resume and /status recaps use (tools/ansi_strip).
+            content_text = _sanitize_display_text(
+                "" if content is None else str(content)
+            )
 
             if role == "user":
                 _cli_visible_print(f"\n  [You #{visible_index}]{_ts_suffix(msg)}")

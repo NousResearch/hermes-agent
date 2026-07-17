@@ -23,6 +23,10 @@ def tmp_cron_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
     monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
     monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"cron": {"trusted_workdirs": [str(tmp_path)]}},
+    )
     return tmp_path
 
 
@@ -69,6 +73,29 @@ class TestNormalizeWorkdir:
         with pytest.raises(ValueError, match="not a directory"):
             _normalize_workdir(str(f))
 
+    def test_untrusted_agent_workdir_rejected(self, tmp_path, monkeypatch):
+        from cron.jobs import _normalize_workdir
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"cron": {"trusted_workdirs": []}},
+        )
+
+        with pytest.raises(ValueError, match="cron.trusted_workdirs"):
+            _normalize_workdir(str(tmp_path), require_trusted=True)
+
+    def test_trusted_agent_workdir_allowed(self, tmp_path, monkeypatch):
+        from cron.jobs import _normalize_workdir
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"cron": {"trusted_workdirs": [str(tmp_path)]}},
+        )
+
+        assert _normalize_workdir(str(tmp_path), require_trusted=True) == str(
+            tmp_path.resolve()
+        )
+
 
 # ---------------------------------------------------------------------------
 # jobs.create_job and update_job
@@ -102,6 +129,40 @@ class TestCreateJobWorkdir:
                 workdir="not/absolute",
             )
 
+    def test_create_rejects_untrusted_agent_workdir(self, tmp_cron_dir, monkeypatch):
+        from cron.jobs import create_job
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"cron": {"trusted_workdirs": []}},
+        )
+
+        with pytest.raises(ValueError, match="unattended context-file ingestion"):
+            create_job(
+                prompt="hello",
+                schedule="every 1h",
+                workdir=str(tmp_cron_dir),
+            )
+
+    def test_no_agent_workdir_does_not_require_context_trust(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        from cron.jobs import create_job, get_job
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"cron": {"trusted_workdirs": []}},
+        )
+
+        job = create_job(
+            prompt=None,
+            schedule="every 1h",
+            script="noop.py",
+            no_agent=True,
+            workdir=str(tmp_cron_dir),
+        )
+        assert get_job(job["id"])["workdir"] == str(tmp_cron_dir.resolve())
+
 
 class TestUpdateJobWorkdir:
     def test_set_workdir_via_update(self, tmp_cron_dir):
@@ -131,6 +192,65 @@ class TestUpdateJobWorkdir:
         job = create_job(prompt="x", schedule="every 1h")
         with pytest.raises(ValueError):
             update_job(job["id"], {"workdir": "nope/relative"})
+
+    def test_update_to_no_agent_allows_untrusted_workdir(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        from cron.jobs import create_job, get_job, update_job
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"cron": {"trusted_workdirs": []}},
+        )
+        job = create_job(prompt="x", schedule="every 1h")
+
+        update_job(
+            job["id"],
+            {"no_agent": True, "script": "noop.py", "workdir": str(tmp_cron_dir)},
+        )
+
+        stored = get_job(job["id"])
+        assert stored["no_agent"] is True
+        assert stored["workdir"] == str(tmp_cron_dir.resolve())
+
+    def test_pause_legacy_untrusted_agent_workdir_is_allowed(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        from cron.jobs import create_job, get_job, pause_job
+
+        job = create_job(
+            prompt="x", schedule="every 1h", workdir=str(tmp_cron_dir)
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"cron": {"trusted_workdirs": []}},
+        )
+
+        pause_job(job["id"])
+
+        stored = get_job(job["id"])
+        assert stored["enabled"] is False
+        assert stored["state"] == "paused"
+
+    def test_update_from_no_agent_to_agent_revalidates_existing_workdir(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        from cron.jobs import create_job, update_job
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"cron": {"trusted_workdirs": []}},
+        )
+        job = create_job(
+            prompt=None,
+            schedule="every 1h",
+            script="noop.py",
+            no_agent=True,
+            workdir=str(tmp_cron_dir),
+        )
+
+        with pytest.raises(ValueError, match="not trusted"):
+            update_job(job["id"], {"no_agent": False, "prompt": "x"})
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +438,56 @@ class TestRunJobTerminalCwd:
         import dotenv
         monkeypatch.setattr(dotenv, "load_dotenv", lambda *_a, **_kw: True)
 
+    def test_untrusted_workdir_job_fails_before_agent_init(self, tmp_path, monkeypatch):
+        import sys
+        import cron.scheduler as sched
+
+        observed = {"agent_init": False}
+
+        class FakeAgent:
+            def __init__(self, **_kwargs):
+                observed["agent_init"] = True
+
+        fake_mod = type(sys)("run_agent")
+        fake_mod.AIAgent = FakeAgent
+        monkeypatch.setitem(sys.modules, "run_agent", fake_mod)
+        monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None: "hi")
+        monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
+        monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)
+        monkeypatch.setattr(sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None)
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
+        monkeypatch.setattr(
+            sched,
+            "load_config",
+            lambda: {"cron": {"trusted_workdirs": []}, "model": "test-model"},
+        )
+
+        from hermes_cli import runtime_provider as _rtp
+
+        monkeypatch.setattr(
+            _rtp,
+            "resolve_runtime_provider",
+            lambda **_kw: {
+                "provider": "test",
+                "api_key": "k",
+                "base_url": "http://test.local",
+                "api_mode": "chat_completions",
+            },
+        )
+
+        success, _output, response, error = sched.run_job(
+            {
+                "id": "abc",
+                "name": "wd-job",
+                "workdir": str(tmp_path),
+                "schedule_display": "manual",
+            }
+        )
+
+        assert success is False
+        assert observed["agent_init"] is False
+        assert "cron.trusted_workdirs" in (error or response)
+
     def test_workdir_sets_and_restores_terminal_cwd(
         self, tmp_path, monkeypatch
     ):
@@ -331,6 +501,9 @@ class TestRunJobTerminalCwd:
 
         observed: dict = {}
         self._install_stubs(monkeypatch, observed)
+        monkeypatch.setattr(
+            sched, "validate_trusted_cron_workdir", lambda *_args, **_kwargs: None
+        )
 
         job = {
             "id": "abc",

@@ -3222,16 +3222,24 @@ class SessionDB:
         ).fetchone()
         return row is not None
 
-    def set_session_title(self, session_id: str, title: str) -> bool:
-        """Set or update a session's title.
-
-        Returns True if session was found and title was set.
-        Raises ValueError if title is already in use by another session,
-        or if the title fails validation (too long, invalid characters).
-        Empty/whitespace-only strings are normalized to None (clearing the title).
-        """
+    def _set_session_title(
+        self,
+        session_id: str,
+        title: str,
+        *,
+        only_if_empty: bool,
+    ) -> bool:
         title = self.sanitize_title(title)
+
         def _do(conn):
+            if only_if_empty:
+                current = conn.execute(
+                    "SELECT title FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
+                if current is None or current["title"] is not None:
+                    return 0
+
             if title:
                 # Check uniqueness (allow the same session to keep its own title)
                 cursor = conn.execute(
@@ -3263,13 +3271,34 @@ class SessionDB:
                         raise ValueError(
                             f"Title '{title}' is already in use by session {conflict_id}"
                         )
+            predicate = " AND title IS NULL" if only_if_empty else ""
             cursor = conn.execute(
-                "UPDATE sessions SET title = ? WHERE id = ?",
+                f"UPDATE sessions SET title = ? WHERE id = ?{predicate}",
                 (title, session_id),
             )
             return cursor.rowcount
+
         rowcount = self._execute_write(_do)
         return rowcount > 0
+
+    def set_session_title(self, session_id: str, title: str) -> bool:
+        """Set or update a session's title.
+
+        Returns True if session was found and title was set.
+        Raises ValueError if title is already in use by another session,
+        or if the title fails validation (too long, invalid characters).
+        Empty/whitespace-only strings are normalized to None (clearing the title).
+        """
+        return self._set_session_title(session_id, title, only_if_empty=False)
+
+    def set_auto_title_if_empty(self, session_id: str, title: str) -> bool:
+        """Set an auto-generated title only when the current title is NULL.
+
+        The predicate and write run in one transaction so a concurrent manual
+        rename cannot be overwritten. Validation and uniqueness behavior match
+        :meth:`set_session_title`.
+        """
+        return self._set_session_title(session_id, title, only_if_empty=True)
 
     def get_session_title(self, session_id: str) -> Optional[str]:
         """Get the title for a session, or None."""

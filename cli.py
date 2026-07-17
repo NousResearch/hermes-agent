@@ -12686,6 +12686,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     _title_failure_cb = getattr(
                         self.agent, "_emit_auxiliary_failure", None
                     ) if self.agent else None
+                    # Snapshot the runtime identity; the validator lets the
+                    # background titler skip its LLM call if the user switches
+                    # models before it fires (a stale request would reload an
+                    # unloaded Ollama model, #19027).
+                    _title_model = self.model
+                    _title_provider = self.provider
                     maybe_auto_title(
                         self._session_db,
                         self.session_id,
@@ -12700,6 +12706,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             "api_key": self.api_key,
                             "api_mode": self.api_mode,
                         },
+                        runtime_validator=lambda: (
+                            getattr(self, "model", None) == _title_model
+                            and getattr(self, "provider", None) == _title_provider
+                        ),
                     )
                 except Exception:
                     pass

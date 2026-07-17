@@ -261,6 +261,40 @@ class TestClassifyApiError:
         result = classify_api_error(e, provider="openrouter")
         assert result.reason == FailoverReason.billing
 
+    def test_xai_403_structured_spending_limit_code_classified_as_billing(self):
+        """xAI reports exhausted Grok credits as a provider-specific 403 code."""
+        e = MockAPIError(
+            "Error code: 403",
+            status_code=403,
+            body={
+                "code": "personal-team-blocked:spending-limit",
+                "error": (
+                    "You have run out of credits or need a Grok subscription. "
+                    "Add credits at Grok or upgrade at Grok."
+                ),
+            },
+        )
+
+        result = classify_api_error(e, provider="xai-oauth")
+
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_non_xai_403_generic_billing_code_remains_auth(self):
+        """Do not broaden generic providers' historical structured-403 behavior."""
+        e = MockAPIError(
+            "Error code: 403",
+            status_code=403,
+            body={"code": "insufficient_quota", "error": "Forbidden"},
+        )
+
+        result = classify_api_error(e, provider="openrouter")
+
+        assert result.reason == FailoverReason.auth
+        assert result.should_rotate_credential is False
+
     # ── Billing ──
 
     def test_402_plain_billing(self):

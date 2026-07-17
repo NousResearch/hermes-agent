@@ -237,6 +237,69 @@ def test_compression_restores_user_turn_when_compressor_drops_all_users(tmp_path
     assert user_messages == [{"role": "user", "content": "please continue from here"}]
 
 
+def test_synthetic_user_scaffolding_does_not_replace_human_anchor(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "SYNTHETIC_USER_AFTER_COMPRESS"
+    db.create_session(parent_sid, source="cli")
+
+    agent = _build_agent_with_db(db, parent_sid)
+    agent.context_compressor.compress.side_effect = lambda *_a, **_kw: [
+        {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
+        {
+            "role": "user",
+            "content": "[Your active task list was preserved across context compression]",
+            "_todo_snapshot_synthetic": True,
+        },
+    ]
+    messages = [
+        {"role": "user", "content": "the actual human objective"},
+        {"role": "assistant", "content": "working"},
+    ]
+
+    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert any(
+        msg.get("role") == "user" and msg.get("content") == "the actual human objective"
+        for msg in compressed
+    )
+
+
+def test_compression_persists_child_handoff_immediately(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "HEADLESS_PREFLIGHT_PARENT"
+    db.create_session(parent_sid, source="cli")
+
+    agent = _build_agent_with_db(db, parent_sid)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+    child_sid = agent.session_id
+
+    assert child_sid != parent_sid
+    assert db.get_session(parent_sid)["end_reason"] == "compression"
+    assert len(db.get_messages(child_sid)) == len(compressed)
+
+    agent._flush_messages_to_session_db(compressed, None)
+    assert len(db.get_messages(child_sid)) == len(compressed)
+
+
+def test_empty_compression_result_does_not_rotate_session(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "EMPTY_COMPRESS_PARENT"
+    db.create_session(parent_sid, source="cli")
+
+    agent = _build_agent_with_db(db, parent_sid)
+    agent.context_compressor.compress.side_effect = lambda *_a, **_kw: []
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    returned, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert returned is messages or returned == messages
+    assert agent.session_id == parent_sid
+    assert _count_children(db, parent_sid) == 0
+    assert db.get_session(parent_sid)["end_reason"] is None
+
+
 def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypatch) -> None:
     """The owning compression call must keep its lease alive while it runs."""
     real_try_acquire = SessionDB.try_acquire_compression_lock

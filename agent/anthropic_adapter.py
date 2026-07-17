@@ -931,6 +931,14 @@ def build_anthropic_vertex_client(
         )
     from httpx import Timeout
 
+    _headers = {"anthropic-beta": ",".join(_COMMON_BETAS)}
+    # User ADC (authorized_user) requires the quota-project header on every
+    # aiplatform request — without it Vertex returns 403 "requires a quota
+    # project". Service accounts don't need it but tolerate it. google-auth's
+    # own transports attach this automatically; the Anthropic SDK uses its
+    # own httpx client, so we must set it explicitly.
+    if project_id:
+        _headers["x-goog-user-project"] = project_id
     _kwargs = dict(
         region=region,
         credentials=credentials,
@@ -939,7 +947,7 @@ def build_anthropic_vertex_client(
         # default max_retries=2 ignores it and double-retries. Mirrors the
         # Bedrock client (#26293).
         max_retries=0,
-        default_headers={"anthropic-beta": ",".join(_COMMON_BETAS)},
+        default_headers=_headers,
     )
     # Only pin project_id when we actually have one; otherwise let the SDK
     # resolve it from the credentials / ADC (passing None would override that).

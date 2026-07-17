@@ -9,7 +9,7 @@ function parseArgs(argv) {
     outDir: '/tmp/hermes-inapp-browser-cdp-smoke',
     port: 9333,
     selector: 'body',
-    targetUrl: 'https://www.midjourney.com/'
+    targetUrl: 'https://example.com/'
   }
 
   for (let index = 0; index < argv.length; index += 1) {

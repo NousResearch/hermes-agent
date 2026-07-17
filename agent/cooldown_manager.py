@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import threading
@@ -27,8 +28,20 @@ def build_cooldown_key(provider: str, api_key: Optional[str], reason: str) -> st
     provider = (provider or "").strip().lower()
     if reason == "billing" or not api_key:
         return provider
-    fingerprint = api_key[:8]
+    # Never persist or log a raw credential fragment. A digest keeps cooldowns
+    # key-specific even when structured provider keys share a common prefix.
+    fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
     return f"{provider}:{fingerprint}"
+
+
+def _is_safe_persisted_key(key: str) -> bool:
+    """Return whether a persisted key contains no legacy credential fragment."""
+    provider, separator, fingerprint = key.rpartition(":")
+    if not separator:
+        return True  # provider-scoped billing key
+    return bool(provider) and len(fingerprint) == 16 and all(
+        char in "0123456789abcdef" for char in fingerprint
+    )
 
 
 class CooldownManager:
@@ -76,6 +89,7 @@ class CooldownManager:
         self,
         key: str,
         reason: Literal["rate_limit", "billing"],
+        cooldown_seconds: Optional[float] = None,
     ) -> float:
         """Record a failure and return the new cooldown in seconds."""
         with self._lock:
@@ -83,10 +97,13 @@ class CooldownManager:
             if state is None:
                 state = _CooldownState()
                 self._states[key] = state
-            state.count += 1
+            if cooldown_seconds is None:
+                state.count += 1
             state.reason = reason
 
-            if reason == "billing":
+            if cooldown_seconds is not None:
+                cooldown_seconds = max(0.0, cooldown_seconds)
+            elif reason == "billing":
                 hours = min(
                     self._billing_base_hours * (2 ** (state.count - 1)),
                     self._billing_max_hours,
@@ -155,8 +172,12 @@ class CooldownManager:
                 data = json.load(fh)
             now_wall = time.time()
             now_mono = time.monotonic()
+            discarded_legacy_key = False
             with self._lock:
                 for key, entry in data.items():
+                    if not _is_safe_persisted_key(key):
+                        discarded_legacy_key = True
+                        continue
                     until_wall = float(entry.get("until_wall", 0))
                     remaining = until_wall - now_wall
                     if remaining <= 0:
@@ -167,6 +188,8 @@ class CooldownManager:
                         reason=str(entry.get("reason", "rate_limit")),
                     )
                     self._states[key] = state
+            if discarded_legacy_key:
+                self._persist()
         except Exception as exc:
             logger.warning("Failed to load cooldown state from %s: %s", self._storage_path, exc)
 

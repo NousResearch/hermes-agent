@@ -1452,7 +1452,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             _ck_exhaust = build_cooldown_key(_exhaust_provider, _exhaust_key_raw or None, "rate_limit")
             _mgr = get_cooldown_manager()
             if not _mgr.is_cooling(_ck_exhaust):
-                _mgr.mark_failure(_ck_exhaust, "rate_limit")
+                _mgr.mark_failure(
+                    _ck_exhaust,
+                    "rate_limit",
+                    cooldown_seconds=_FALLBACK_EXHAUSTED_COOLDOWN_S,
+                )
         return False
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1

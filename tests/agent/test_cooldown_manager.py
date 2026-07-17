@@ -297,3 +297,43 @@ class TestSingleton:
     def test_singleton_is_cooldown_manager_instance(self):
         mgr = get_cooldown_manager()
         assert isinstance(mgr, CooldownManager)
+
+
+class TestCooldownKeySafety:
+    def test_distinct_keys_with_a_shared_prefix_have_distinct_fingerprints(self):
+        from agent.cooldown_manager import build_cooldown_key
+
+        first = build_cooldown_key("openai", "sk-shared-abcdefgh", "rate_limit")
+        second = build_cooldown_key("openai", "sk-shared-ijklmnop", "rate_limit")
+
+        assert first != second
+        assert "sk-shared" not in first
+        assert "sk-shared" not in second
+
+    def test_fixed_duration_override_does_not_advance_rate_limit_backoff(self):
+        manager = _make_mgr(base_seconds=60.0, multiplier=5.0, max_seconds=999.0)
+
+        assert manager.mark_failure("openai:key", "rate_limit", cooldown_seconds=5.0) == 5.0
+        assert manager.mark_failure("openai:key", "rate_limit") == 60.0
+
+    def test_load_discards_legacy_raw_key_prefixes(self, tmp_path):
+        import json
+
+        storage_path = tmp_path / "cooldowns.json"
+        storage_path.write_text(
+            json.dumps(
+                {
+                    "openai:sk-shared": {
+                        "count": 1,
+                        "reason": "rate_limit",
+                        "until_wall": time.time() + 60.0,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        manager = _make_mgr(storage_path=storage_path)
+
+        assert manager.get_all_states() == {}
+        assert json.loads(storage_path.read_text(encoding="utf-8")) == {}

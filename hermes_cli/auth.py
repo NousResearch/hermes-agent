@@ -5311,6 +5311,18 @@ def _agent_key_is_usable(state: Dict[str, Any], min_ttl_seconds: int) -> bool:
     )
 
 
+# Per-process memo for resolve_nous_access_token. Startup runs
+# check_tool_availability once per managed-tool check_fn (browser, image_gen,
+# etc.), and each one independently triggers a ~15s blocking token-refresh
+# network call when the stored token is expired. On a slow/constrained host that
+# serial burst stretches startup to many minutes. A short-TTL memo collapses the
+# burst into a single network round-trip; callers that need freshness use
+# separate flows (force_fresh / refresh_nous_oauth_pure) and are unaffected.
+_RESOLVE_TOKEN_CACHE_LOCK = threading.Lock()
+_RESOLVE_TOKEN_CACHE: "tuple[float, str] | None" = None
+_RESOLVE_TOKEN_CACHE_TTL_S = 5.0
+
+
 def resolve_nous_access_token(
     *,
     timeout_seconds: float = 15.0,
@@ -5319,6 +5331,16 @@ def resolve_nous_access_token(
     refresh_skew_seconds: int = ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> str:
     """Resolve a refresh-aware Nous Portal access token for managed tool gateways."""
+    global _RESOLVE_TOKEN_CACHE
+    # Memo: collapse the startup burst of managed-tool check_fns into one
+    # network refresh. Only cache a successful, non-forced resolution for a
+    # short window; force_fresh / error paths bypass and don't populate it.
+    if not insecure and ca_bundle is None:
+        with _RESOLVE_TOKEN_CACHE_LOCK:
+            if _RESOLVE_TOKEN_CACHE is not None:
+                cached_at, cached_token = _RESOLVE_TOKEN_CACHE
+                if (time.monotonic() - cached_at) < _RESOLVE_TOKEN_CACHE_TTL_S:
+                    return cached_token
     with _provider_state_transaction("nous") as (
         auth_store,
         state,
@@ -5430,7 +5452,11 @@ def resolve_nous_access_token(
             }
             _save_provider_state_to_source(auth_store, "nous", state, state_source_path)
             _write_shared_nous_state(state)
-            return state["access_token"]
+            resolved = state["access_token"]
+            if not insecure and ca_bundle is None:
+                with _RESOLVE_TOKEN_CACHE_LOCK:
+                    _RESOLVE_TOKEN_CACHE = (time.monotonic(), resolved)
+            return resolved
 
 
 def refresh_nous_oauth_pure(

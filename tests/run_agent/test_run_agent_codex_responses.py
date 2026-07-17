@@ -2421,6 +2421,30 @@ def test_interim_commentary_redacts_secrets_from_codex_commentary_items(monkeypa
     assert "Using credential" in observed[0]
 
 
+def test_interim_top_level_content_fallback_redacts_secrets(monkeypatch):
+    """A mid-turn assistant message with no Codex commentary falls back to
+    top-level content for interim delivery — that fallback must be redacted
+    too, not just the commentary path (otherwise the interim callback surfaces
+    secrets from raw content to the UI)."""
+    agent = _build_agent(monkeypatch)
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+    observed = []
+    agent.interim_assistant_callback = (
+        lambda text, *, already_streamed=False: observed.append(text)
+    )
+    secret = "sk-" + ("B" * 32)
+
+    agent._emit_interim_assistant_message({
+        "role": "assistant",
+        "content": f"Reading credential {secret} from the config.",
+        # No codex_message_items → interim delivery falls back to content.
+    })
+
+    assert len(observed) == 1
+    assert secret not in observed[0]
+    assert "Reading credential" in observed[0]
+
+
 def test_interim_commentary_respects_show_commentary_off(monkeypatch):
     """display.show_commentary=false keeps commentary off the interim path."""
     agent = _build_agent(monkeypatch)

@@ -4821,7 +4821,15 @@ class AIAgent:
         if visible:
             return visible
         content = assistant_msg.get("content")
-        return self._strip_think_blocks(content or "").strip()
+        # Redact the top-level-content fallback too. The Codex-commentary
+        # branch above is already redacted (via
+        # _extract_codex_interim_visible_parts), but a mid-turn message with no
+        # commentary falls through to raw content here, which
+        # _emit_interim_assistant_message would otherwise surface to the UI
+        # with any secrets intact — the same leak the commentary path guards.
+        return redact_sensitive_text(
+            self._strip_think_blocks(content or "").strip()
+        )
 
     def _interim_text_was_delivered(self, text: str) -> bool:
         normalized = self._normalize_interim_visible_text(text)

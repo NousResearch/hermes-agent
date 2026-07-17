@@ -545,12 +545,26 @@ def test_payload_beyond_segment_scan_cap_fails_closed():
     assert description == "command parser limit exceeded"
 
 
+def _best_of_three_detect(command):
+    """Time detect_dangerous_command, taking the fastest of three runs.
+
+    These are guards against quadratic parser blowup, where a regression
+    inflates every run by orders of magnitude. A single-shot sample also
+    picks up scheduler stalls on busy CI runners (8 parallel workers), which
+    the min across runs filters out.
+    """
+    best = float("inf")
+    for _ in range(3):
+        started = time.perf_counter()
+        result = detect_dangerous_command(command)
+        best = min(best, time.perf_counter() - started)
+    return best, result
+
+
 @pytest.mark.parametrize("size", [200_000, 500_000])
 def test_long_separator_free_token_hits_early_cap_before_regexes(size):
     command = "x" * size
-    started = time.perf_counter()
-    result = detect_dangerous_command(command)
-    elapsed = time.perf_counter() - started
+    elapsed, result = _best_of_three_detect(command)
 
     assert result == (
         True,
@@ -564,9 +578,7 @@ def test_max_accepted_separator_free_input_is_fast():
     from tools.approval import _MAX_SEPARATOR_FREE_COMMAND_CHARS
 
     command = "x" * _MAX_SEPARATOR_FREE_COMMAND_CHARS
-    started = time.perf_counter()
-    result = detect_dangerous_command(command)
-    elapsed = time.perf_counter() - started
+    elapsed, result = _best_of_three_detect(command)
 
     assert result == (False, None, None)
     assert elapsed < 0.15, f"max accepted token took {elapsed:.3f}s"

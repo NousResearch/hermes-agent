@@ -5437,6 +5437,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    @staticmethod
+    def _should_auto_queue_busy_followup(event: MessageEvent) -> bool:
+        """Return True when a busy follow-up should wait for the next turn.
+
+        Telegram is the platform where users most often send multi-part
+        instructions as separate text bubbles or voice notes. Treating those
+        ordinary follow-ups as interrupts aborts long tool/subagent work and
+        makes voice users especially stuck because they cannot prefix
+        ``/queue``. Commands still use the explicit command paths; ``/stop``
+        remains the cancellation mechanism.
+        """
+        return (
+            getattr(event, "source", None) is not None
+            and getattr(event.source, "platform", None) == Platform.TELEGRAM
+            and not getattr(event, "internal", False)
+            and not event.get_command()
+        )
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -5579,11 +5597,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         running_agent = self._running_agents.get(session_key)
 
         effective_mode = self._busy_input_mode
+        auto_queued_for_platform = False
+        if (
+            effective_mode == "interrupt"
+            and self._should_auto_queue_busy_followup(event)
+        ):
+            logger.info(
+                "Demoting Telegram busy follow-up from interrupt to queue for session %s",
+                session_key,
+            )
+            effective_mode = "queue"
+            auto_queued_for_platform = True
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
             and effective_mode != "steer"
+            and not auto_queued_for_platform
         ):
             return False
 
@@ -5762,6 +5792,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             message = (
                 f"⏳ Compressing context{status_detail} — your message is queued for "
                 f"when it finishes (use /stop to cancel everything)."
+            )
+        elif is_queue_mode and auto_queued_for_platform:
+            message = (
+                f"⏳ Queued for the next turn{status_detail}. "
+                f"I'll respond once the current task finishes. Use /stop to cancel the current task."
             )
         elif is_queue_mode:
             message = (

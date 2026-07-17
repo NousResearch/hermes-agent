@@ -466,7 +466,10 @@ def load_cli_config() -> Dict[str, Any]:
             # Print a one-line summary of resolved modal prompts (approval /
             # clarify) into scrollback so the decision survives the repaint.
             "persist_prompts": True,
-
+            "account_usage_footer": {
+                "enabled": False,
+                "refresh_seconds": 300,
+            },
             "skin": "default",
         },
         "clarify": {
@@ -4105,6 +4108,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        # OAuth account usage is fetched off the prompt-toolkit render path.
+        # The status bar reads these cached windows; a render may only schedule
+        # a refresh, never block on provider network I/O.
+        self._status_bar_usage_lock = threading.Lock()
+        self._status_bar_usage_inflight = False
+        self._status_bar_usage_last_attempt = 0.0
+        self._status_bar_usage_provider = None
+        self._status_bar_usage_session = None
+        self._status_bar_usage_weekly = None
         # When True, the input separator rules and the dynamic status bar are
         # hidden until the next user input. Set by _recover_after_resize() so a
         # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that
@@ -4527,6 +4539,86 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         idle = max(0.0, time.time() - last_finished_at)
         return f"✓ {format_duration_compact(idle)}"
 
+    def _get_status_bar_account_usage(self, agent):
+        """Return cached OAuth quota windows and schedule a non-blocking refresh."""
+        display_cfg = getattr(self, "config", {}).get("display") or {}
+        usage_cfg = display_cfg.get("account_usage_footer") or {}
+        provider = str(getattr(agent, "provider", "") or "").strip().lower()
+        if not usage_cfg.get("enabled") or provider != "openai-codex":
+            return None, None
+
+        try:
+            refresh_seconds = max(60.0, float(usage_cfg.get("refresh_seconds", 300)))
+        except (TypeError, ValueError):
+            refresh_seconds = 300.0
+
+        lock = getattr(self, "_status_bar_usage_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._status_bar_usage_lock = lock
+
+        now = time.monotonic()
+        with lock:
+            if getattr(self, "_status_bar_usage_provider", None) != provider:
+                self._status_bar_usage_provider = provider
+                self._status_bar_usage_last_attempt = 0.0
+                self._status_bar_usage_session = None
+                self._status_bar_usage_weekly = None
+            session_window = getattr(self, "_status_bar_usage_session", None)
+            weekly_window = getattr(self, "_status_bar_usage_weekly", None)
+            inflight = bool(getattr(self, "_status_bar_usage_inflight", False))
+            last_attempt = float(getattr(self, "_status_bar_usage_last_attempt", 0.0) or 0.0)
+            should_refresh = not inflight and now - last_attempt >= refresh_seconds
+            if should_refresh:
+                self._status_bar_usage_inflight = True
+                self._status_bar_usage_last_attempt = now
+
+        if should_refresh:
+            base_url = getattr(agent, "base_url", None)
+            api_key = getattr(agent, "api_key", None)
+
+            def _refresh() -> None:
+                try:
+                    from agent.account_usage import fetch_account_usage
+
+                    snapshot = fetch_account_usage(
+                        provider,
+                        base_url=base_url,
+                        api_key=api_key,
+                    )
+                    session = None
+                    weekly = None
+                    for window in getattr(snapshot, "windows", ()) if snapshot else ():
+                        if window.label == "Session":
+                            session = window
+                        elif window.label == "Weekly":
+                            weekly = window
+                    with lock:
+                        self._status_bar_usage_session = session
+                        self._status_bar_usage_weekly = weekly
+                except Exception:
+                    # Footer diagnostics are optional UI. Provider/auth/network
+                    # failures must never escape the refresh thread or disrupt
+                    # the active conversation.
+                    pass
+                finally:
+                    with lock:
+                        self._status_bar_usage_inflight = False
+                    app = getattr(self, "_app", None)
+                    if app is not None:
+                        try:
+                            app.invalidate()
+                        except Exception:
+                            pass
+
+            try:
+                threading.Thread(target=_refresh, daemon=True).start()
+            except Exception:
+                with lock:
+                    self._status_bar_usage_inflight = False
+
+        return session_window, weekly_window
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -4566,6 +4658,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "session_quota_used": None,
+            "session_quota_remaining": None,
+            "weekly_quota_used": None,
+            "weekly_quota_remaining": None,
             "active_background_tasks": 0,
             "active_background_processes": 0,
             "active_background_subagents": 0,
@@ -4602,6 +4698,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         if not agent:
             return snapshot
+
+        session_window, weekly_window = self._get_status_bar_account_usage(agent)
+        for prefix, window in (("session", session_window), ("weekly", weekly_window)):
+            if window is None or window.used_percent is None:
+                continue
+            used = max(0, min(100, round(float(window.used_percent))))
+            snapshot[f"{prefix}_quota_used"] = used
+            snapshot[f"{prefix}_quota_remaining"] = 100 - used
 
         snapshot["session_input_tokens"] = getattr(agent, "session_input_tokens", 0) or 0
         snapshot["session_output_tokens"] = getattr(agent, "session_output_tokens", 0) or 0
@@ -5059,6 +5163,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                session_remaining = snapshot.get("session_quota_remaining")
+                weekly_remaining = snapshot.get("weekly_quota_remaining")
+                if session_remaining is not None:
+                    parts.append(f"5h {session_remaining}%")
+                if weekly_remaining is not None:
+                    parts.append(f"week {weekly_remaining}%")
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -5085,6 +5195,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             compressions = snapshot.get("compressions", 0)
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            session_remaining = snapshot.get("session_quota_remaining")
+            weekly_remaining = snapshot.get("weekly_quota_remaining")
+            if session_remaining is not None:
+                parts.append(f"5h {session_remaining}%")
+            if weekly_remaining is not None:
+                parts.append(f"week {weekly_remaining}%")
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -5138,6 +5254,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 percent = snapshot["context_percent"]
                 percent_label = f"{percent}%" if percent is not None else "--"
                 if width < 76:
+                    session_used = snapshot.get("session_quota_used")
+                    session_remaining = snapshot.get("session_quota_remaining")
+                    weekly_used = snapshot.get("weekly_quota_used")
+                    weekly_remaining = snapshot.get("weekly_quota_remaining")
                     compressions = snapshot.get("compressions", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
@@ -5148,6 +5268,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
+                    if session_remaining is not None:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(
+                            (
+                                self._status_bar_context_style(session_used),
+                                f"5h {session_remaining}%",
+                            )
+                        )
+                    if weekly_remaining is not None:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(
+                            (
+                                self._status_bar_context_style(weekly_used),
+                                f"week {weekly_remaining}%",
+                            )
+                        )
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -5177,6 +5313,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         context_label = "ctx --"
 
                     bar_style = self._status_bar_context_style(percent)
+                    session_used = snapshot.get("session_quota_used")
+                    session_remaining = snapshot.get("session_quota_remaining")
+                    weekly_used = snapshot.get("weekly_quota_used")
+                    weekly_remaining = snapshot.get("weekly_quota_remaining")
                     compressions = snapshot.get("compressions", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
@@ -5191,6 +5331,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
                     ]
+                    if session_remaining is not None:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(
+                            (
+                                self._status_bar_context_style(session_used),
+                                f"5h {session_remaining}%",
+                            )
+                        )
+                    if weekly_remaining is not None:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(
+                            (
+                                self._status_bar_context_style(weekly_used),
+                                f"week {weekly_remaining}%",
+                            )
+                        )
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))

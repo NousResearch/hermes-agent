@@ -1,9 +1,12 @@
+import threading
 import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import cli as cli_mod
+from agent import account_usage
+from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from cli import HermesCLI
 
 
@@ -81,6 +84,209 @@ class TestCLIStatusBar:
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_openai_weekly_quota_appears_in_wide_status_bar(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.6-luna"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.agent.provider = "openai-codex"
+        cli_obj.config = {
+            "display": {
+                "account_usage_footer": {
+                    "enabled": True,
+                    "refresh_seconds": 300,
+                }
+            }
+        }
+        cli_obj._status_bar_usage_lock = threading.Lock()
+        cli_obj._status_bar_usage_inflight = False
+        cli_obj._status_bar_usage_last_attempt = time.monotonic()
+        cli_obj._status_bar_usage_provider = "openai-codex"
+        cli_obj._status_bar_usage_session = None
+        cli_obj._status_bar_usage_weekly = AccountUsageWindow(
+            label="Weekly",
+            used_percent=27,
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+        text = cli_obj._build_status_bar_text(width=140)
+        cli_obj._status_bar_visible = True
+        cli_obj._get_tui_terminal_width = lambda: 140
+        fragment_text = "".join(text for _, text in cli_obj._get_status_bar_fragments())
+
+        assert snapshot["weekly_quota_remaining"] == 73
+        assert "week 73%" in text
+        assert "week 73%" in fragment_text
+        assert "5h" not in text
+        assert "5h" not in fragment_text
+
+    def test_openai_five_hour_and_weekly_quotas_both_appear_when_available(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.6-luna"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.agent.provider = "openai-codex"
+        cli_obj.config = {
+            "display": {
+                "account_usage_footer": {
+                    "enabled": True,
+                    "refresh_seconds": 300,
+                }
+            }
+        }
+        cli_obj._status_bar_usage_lock = threading.Lock()
+        cli_obj._status_bar_usage_inflight = False
+        cli_obj._status_bar_usage_last_attempt = time.monotonic()
+        cli_obj._status_bar_usage_provider = "openai-codex"
+        cli_obj._status_bar_usage_session = AccountUsageWindow(
+            label="Session",
+            used_percent=18,
+        )
+        cli_obj._status_bar_usage_weekly = AccountUsageWindow(
+            label="Weekly",
+            used_percent=27,
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+        text = cli_obj._build_status_bar_text(width=160)
+        cli_obj._status_bar_visible = True
+        cli_obj._get_tui_terminal_width = lambda: 160
+        fragment_text = "".join(text for _, text in cli_obj._get_status_bar_fragments())
+
+        assert snapshot["session_quota_remaining"] == 82
+        assert snapshot["weekly_quota_remaining"] == 73
+        assert "5h 82%" in text
+        assert "week 73%" in text
+        assert "5h 82%" in fragment_text
+        assert "week 73%" in fragment_text
+
+    def test_openai_weekly_quota_refresh_is_nonblocking_and_cached(self, monkeypatch):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.6-luna"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.agent.provider = "openai-codex"
+        cli_obj.agent.base_url = "https://chatgpt.com/backend-api/codex"
+        cli_obj.agent.api_key = "oauth-token"
+        cli_obj.config = {
+            "display": {
+                "account_usage_footer": {
+                    "enabled": True,
+                    "refresh_seconds": 300,
+                }
+            }
+        }
+        cli_obj._status_bar_usage_lock = threading.Lock()
+        cli_obj._status_bar_usage_inflight = False
+        cli_obj._status_bar_usage_last_attempt = 0.0
+        cli_obj._status_bar_usage_provider = None
+        cli_obj._status_bar_usage_session = None
+        cli_obj._status_bar_usage_weekly = None
+
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def _fetch(provider, *, base_url=None, api_key=None):
+            calls.append((provider, base_url, api_key))
+            started.set()
+            assert release.wait(timeout=2)
+            return AccountUsageSnapshot(
+                provider="openai-codex",
+                source="usage_api",
+                fetched_at=datetime.now().astimezone(),
+                windows=(AccountUsageWindow(label="Weekly", used_percent=27),),
+            )
+
+        monkeypatch.setattr(account_usage, "fetch_account_usage", _fetch)
+
+        before = time.monotonic()
+        first = cli_obj._get_status_bar_snapshot()
+        elapsed = time.monotonic() - before
+
+        assert elapsed < 0.2
+        assert first["weekly_quota_remaining"] is None
+        assert started.wait(timeout=1)
+
+        release.set()
+        deadline = time.monotonic() + 2
+        while cli_obj._status_bar_usage_inflight and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        second = cli_obj._get_status_bar_snapshot()
+        third = cli_obj._get_status_bar_snapshot()
+
+        assert second["weekly_quota_remaining"] == 73
+        assert third["weekly_quota_remaining"] == 73
+        assert calls == [
+            (
+                "openai-codex",
+                "https://chatgpt.com/backend-api/codex",
+                "oauth-token",
+            )
+        ]
+
+    def test_openai_quota_refresh_failure_is_fail_open(self, monkeypatch):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.6-luna"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.agent.provider = "openai-codex"
+        cli_obj.config = {
+            "display": {
+                "account_usage_footer": {
+                    "enabled": True,
+                    "refresh_seconds": 300,
+                }
+            }
+        }
+        cli_obj._status_bar_usage_lock = threading.Lock()
+        cli_obj._status_bar_usage_inflight = False
+        cli_obj._status_bar_usage_last_attempt = 0.0
+        cli_obj._status_bar_usage_provider = None
+        cli_obj._status_bar_usage_session = None
+        cli_obj._status_bar_usage_weekly = None
+
+        finished = threading.Event()
+        uncaught = []
+
+        def _fetch(*args, **kwargs):
+            finished.set()
+            raise RuntimeError("usage endpoint unavailable")
+
+        monkeypatch.setattr(account_usage, "fetch_account_usage", _fetch)
+        monkeypatch.setattr(threading, "excepthook", lambda args: uncaught.append(args))
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert finished.wait(timeout=1)
+        deadline = time.monotonic() + 2
+        while cli_obj._status_bar_usage_inflight and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert snapshot["session_quota_remaining"] is None
+        assert snapshot["weekly_quota_remaining"] is None
+        assert uncaught == []
 
     def test_post_compression_sentinel_does_not_render_negative(self):
         """Right after a compression, last_prompt_tokens is parked at the -1

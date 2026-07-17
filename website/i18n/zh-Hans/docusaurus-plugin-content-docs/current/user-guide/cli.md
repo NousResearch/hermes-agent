@@ -68,6 +68,7 @@ hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 | Token 计数 | 已使用的上下文 token 数 / 最大上下文窗口 |
 | 上下文进度条 | 带颜色阈值编码的可视填充指示器 |
 | 费用 | 预估会话费用（未知或零价格模型显示 `n/a`） |
+| `5h N%` / `week N%` | OpenAI Codex OAuth 剩余额度。通过 `display.account_usage_footer.enabled` 启用；API 未返回的窗口不显示。 |
 | 🗜️ N | **上下文压缩次数**——当前运行会话被自动压缩的次数。首次压缩触发后显示。 |
 | ▶ N | **活跃后台任务数**——当前会话中仍在运行的 `/background` prompt（提示词）数量。至少有一个任务进行中时显示。 |
 | 时长 | 会话已用时间 |

@@ -1156,6 +1156,9 @@ display:
   show_reasoning: false   # 在每次响应上方显示模型推理/思考（用 /reasoning show|hide 切换）
   streaming: false        # 将 token 实时流式传输到终端
   show_cost: false        # 在 CLI 状态栏中显示估计 $ 成本
+  account_usage_footer:   # CLI 状态栏显示 OpenAI Codex OAuth 剩余额度
+    enabled: false
+    refresh_seconds: 300
   timestamps: false       # 为 true 时，在 CLI/TUI 记录中为用户和 assistant 标签添加 [HH:MM] 时间戳前缀
   tool_preview_length: 0  # 工具调用预览的最大字符数（0 = 无限制，显示完整路径/命令）
   runtime_footer:         # Gateway：在最终回复中附加运行时上下文页脚

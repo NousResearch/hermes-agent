@@ -72,6 +72,7 @@ A persistent status bar sits above the input area, updating in real time:
 | Token count | Context tokens used / max context window |
 | Context bar | Visual fill indicator with color-coded thresholds |
 | Cost | Estimated session cost (or `n/a` for unknown/zero-priced models) |
+| `5h N%` / `week N%` | OpenAI Codex OAuth quota remaining. Enable with `display.account_usage_footer.enabled`; unavailable windows are omitted. |
 | 🗜️ N | **Context compression count** — how many times the running session has been auto-compressed. Appears once the first compression fires. |
 | ▶ N | **Active background tasks** — how many `/background` prompts are still running in the current session. Appears whenever at least one task is in flight. |
 | Duration | Elapsed session time |

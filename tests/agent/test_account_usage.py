@@ -237,6 +237,38 @@ def test_codex_usage_treats_wham_used_percent_as_used_not_remaining(monkeypatch)
     assert "86% used" not in rendered
 
 
+def test_codex_usage_labels_single_seven_day_primary_window_as_weekly(monkeypatch):
+    """Some Codex plans expose only one 7-day primary window."""
+    payload = {
+        "plan_type": "pro",
+        "rate_limit": {
+            "primary_window": {
+                "used_percent": 27,
+                "limit_window_seconds": 604800,
+                "reset_at": 1784784391,
+            },
+            "secondary_window": None,
+        },
+        "credits": {"has_credits": False},
+    }
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, payload),
+    )
+
+    snapshot = account_usage.fetch_account_usage(
+        "openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="live-agent-token",
+    )
+
+    assert snapshot is not None
+    assert [window.label for window in snapshot.windows] == ["Weekly"]
+    assert snapshot.windows[0].used_percent == 27
+
+
 # ── Banked rate-limit reset credits (`/usage reset`) ─────────────────────────
 
 

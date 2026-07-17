@@ -617,18 +617,18 @@ gateway:
 
 Use `/whoami` to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run.
 
-## Private Queue Manager
+## Session Queue Manager
 
 Discord exposes `/queue` and its alias `/q`, plus `/dequeue` (alias `/dq`) for removal from a displayed view.
 
 - **With a non-empty prompt:** Hermes treats the entire value as one explicit queue item and processes explicit items in FIFO order. It never interrupts the current agent. The first word is always prompt text, never an operation. Queued messages that include media keep the normal queued-media behavior.
-- **Without a prompt:** Hermes opens a short-lived, numbered view of the caller's manageable queued turns. In a native Discord slash interaction it is an ephemeral, caller-only card; plain Gateway text receives the equivalent text view. Use `/dequeue N` or `/dq N` for one displayed turn, or `/dequeue all` for all turns in that view.
+- **Without a prompt:** Hermes posts a short-lived, numbered view of the current session's manageable queued user turns. In a native Discord slash interaction this is a public card in the source channel or thread; plain Gateway text receives the equivalent public text view. Use `/dequeue N` or `/dq N` for one displayed turn, or `/dequeue all` for all turns frozen in that view.
 
-The manager can view and selectively delete only the caller's unconsumed queued turns in the source conversation, including explicit `/queue` submissions and ordinary user follow-ups queued while the agent is busy. Clearing in the Discord card requires a second confirmation step. Internal continuation work and items queued by other users are not shown and cannot be deleted. Viewing or changing the queue does not interrupt the running agent.
+The queue belongs to the routed session, not to one submitter. Every authorized participant routed to that same session can see and selectively delete its unconsumed user turns, including explicit `/queue` submissions and ordinary user follow-ups queued while the agent is busy. Threads are shared by default (`thread_sessions_per_user: false`); setting that option to `true` isolates them per participant. Non-thread groups and channels use the opposite default: `group_sessions_per_user: true` keeps them isolated per participant, while `false` makes the room and its queue shared. Internal continuation work is never shown or deleted. Viewing or changing the queue does not interrupt the running agent.
 
-The displayed positions are a short-lived snapshot, not live queue indexes. A new view, a successful deletion, consumption of an item, `/new` or `/reset`, a session change, or a gateway restart can make an older view stale; open `/queue` again before retrying. Discord card actions carry a private snapshot token and receive a replacement snapshot after a successful mutation. Queue IDs and those tokens are opaque, process-local, and never rendered in the text view. Deleting the original Discord message does not cancel its in-memory queue item.
+The displayed positions are a short-lived snapshot, not live queue indexes. Each participant gets an independent snapshot capability for the current session. A new view from that participant, a successful deletion, consumption of an item, `/new` or `/reset`, a session change, or a gateway restart can make their older view stale; open `/queue` again before retrying. The public Discord card's buttons remain bound to the member who opened it; another authorized member should run `/queue` to create their own snapshot. Successful mutations return a replacement snapshot. Queue IDs and snapshot tokens are opaque and process-local; prompt text is visible, but those internal values are never rendered. Clearing in the Discord card requires confirmation and removes only the IDs frozen at confirmation time, so later arrivals survive.
 
-In a shared chat, text queue details are sent through a platform-private notice when available. If Hermes cannot make that private delivery, it sends only a safe retry hint and revokes the undelivered view snapshot, so no queue details or hidden removal capability remain exposed. The manager may show that an item contains media, but it does not expose local media paths or the contents of a message that the queued prompt replied to.
+The manager may show that an item contains media, but it does not expose local media paths or the contents of a message that the queued prompt replied to. Deleting the original Discord message does not cancel its in-memory queue item.
 
 ## Interactive Model Picker
 

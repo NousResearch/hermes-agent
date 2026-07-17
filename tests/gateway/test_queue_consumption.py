@@ -424,7 +424,7 @@ class TestExplicitQueueManagement:
         assert runner._queued_events[session_key] == [events[2]]
         assert adapter._pending_messages[other_key] is other
 
-    def test_list_returns_only_calling_owner_explicit_items_in_owner_order(self):
+    def test_list_returns_all_manageable_user_items_in_session_order(self):
         runner = self._runner()
         adapter = _StubAdapter()
         session_key = "telegram:shared:list"
@@ -437,16 +437,37 @@ class TestExplicitQueueManagement:
         for event in events:
             runner._enqueue_fifo(session_key, event, adapter)
 
-        items = runner._list_owned_explicit_queue_items(
-            session_key, "alice", adapter=adapter
-        )
+        items = runner._list_manageable_queue_items(session_key, adapter=adapter)
 
-        assert [item["id"] for item in items] == ["q-a1", "q-a2"]
-        assert [item["position"] for item in items] == [1, 2]
+        assert [item["id"] for item in items] == ["q-a1", "q-b1", "q-a2"]
+        assert [item["position"] for item in items] == [1, 2, 3]
         assert all("owner_user_id" not in item for item in items)
         assert all("media_urls" not in item for item in items)
-        assert all("bob secret" not in str(item) for item in items)
-        assert "@everyone" not in items[1]["preview"]
+        assert items[1]["preview"] == "bob secret"
+        assert "@everyone" not in items[2]["preview"]
+
+    def test_internal_turn_with_copied_queue_marker_is_never_manageable(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:shared:internal"
+        user_turn = self._event("user turn", queue_id="q-user", owner="alice")
+        internal_turn = self._event(
+            "continue autonomously", queue_id="q-internal", owner="alice"
+        )
+        internal_turn.internal = True
+        for event in (user_turn, internal_turn):
+            runner._enqueue_fifo(session_key, event, adapter)
+
+        items = runner._list_manageable_queue_items(session_key, adapter=adapter)
+
+        assert [item["id"] for item in items] == ["q-user"]
+        assert runner._remove_manageable_queue_item(
+            session_key, "q-internal", adapter=adapter
+        ) is False
+        assert runner._clear_manageable_queue_items(
+            session_key, adapter=adapter, queue_ids=["q-user", "q-internal"]
+        ) == 1
+        assert runner._snapshot_fifo_events(session_key, adapter) == [internal_turn]
 
     def test_remove_head_promotes_next_event_and_preserves_other_items(self):
         runner = self._runner()
@@ -459,8 +480,8 @@ class TestExplicitQueueManagement:
         for event in (head, ordinary, other_owner, tail):
             runner._enqueue_fifo(session_key, event, adapter)
 
-        assert runner._remove_owned_explicit_queue_item(
-            session_key, "alice", "q-a", adapter=adapter
+        assert runner._remove_manageable_queue_item(
+            session_key, "q-a", adapter=adapter
         ) is True
 
         assert runner._snapshot_fifo_events(session_key, adapter) == [
@@ -469,14 +490,14 @@ class TestExplicitQueueManagement:
             tail,
         ]
         assert adapter._pending_messages[session_key] is ordinary
-        assert runner._remove_owned_explicit_queue_item(
-            session_key, "alice", "q-a", adapter=adapter
+        assert runner._remove_manageable_queue_item(
+            session_key, "q-a", adapter=adapter
         ) is False
-        assert runner._remove_owned_explicit_queue_item(
-            session_key, "alice", "q-b", adapter=adapter
-        ) is False
+        assert runner._remove_manageable_queue_item(
+            session_key, "q-b", adapter=adapter
+        ) is True
 
-    def test_clear_removes_only_owner_explicit_items_and_keeps_exact_order(self):
+    def test_clear_removes_frozen_manageable_ids_and_keeps_exact_order(self):
         runner = self._runner()
         adapter = _StubAdapter()
         session_key = "telegram:shared:clear"
@@ -488,34 +509,33 @@ class TestExplicitQueueManagement:
         for event in (alice_head, ordinary, bob, identity_less, alice_tail):
             runner._enqueue_fifo(session_key, event, adapter)
 
-        removed = runner._clear_owned_explicit_queue_items(
-            session_key, "alice", adapter=adapter
+        removed = runner._clear_manageable_queue_items(
+            session_key,
+            adapter=adapter,
+            queue_ids=["q-a1", "q-b1", "q-a2"],
         )
 
-        assert removed == 2
+        assert removed == 3
         assert runner._snapshot_fifo_events(session_key, adapter) == [
             ordinary,
-            bob,
             identity_less,
         ]
 
-    def test_missing_owner_cannot_list_remove_or_clear_but_submission_survives(self):
+    def test_identity_less_marked_user_turn_remains_manageable_in_session(self):
         runner = self._runner()
         adapter = _StubAdapter()
         session_key = "telegram:anonymous"
         event = self._event("anonymous", queue_id="q-anon", owner=None)
         runner._enqueue_fifo(session_key, event, adapter)
 
-        assert runner._list_owned_explicit_queue_items(
-            session_key, None, adapter=adapter
-        ) == []
-        assert runner._remove_owned_explicit_queue_item(
-            session_key, None, "q-anon", adapter=adapter
-        ) is False
-        assert runner._clear_owned_explicit_queue_items(
-            session_key, None, adapter=adapter
-        ) == 0
-        assert runner._snapshot_fifo_events(session_key, adapter) == [event]
+        assert [
+            item["id"]
+            for item in runner._list_manageable_queue_items(session_key, adapter=adapter)
+        ] == ["q-anon"]
+        assert runner._remove_manageable_queue_item(
+            session_key, "q-anon", adapter=adapter
+        ) is True
+        assert runner._snapshot_fifo_events(session_key, adapter) == []
 
     def test_clear_does_not_interrupt_or_delete_queued_media(self, tmp_path):
         runner = self._runner()
@@ -534,8 +554,8 @@ class TestExplicitQueueManagement:
         running_agent = MagicMock()
         runner._running_agents[session_key] = running_agent
 
-        assert runner._clear_owned_explicit_queue_items(
-            session_key, "alice", adapter=adapter
+        assert runner._clear_manageable_queue_items(
+            session_key, adapter=adapter, queue_ids=["q-media"]
         ) == 1
 
         running_agent.interrupt.assert_not_called()

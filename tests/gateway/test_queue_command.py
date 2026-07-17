@@ -236,11 +236,32 @@ def test_busy_user_turn_is_manageable_but_internal_turn_is_hidden():
         adapter,
     )
 
-    items = runner._list_owned_explicit_queue_items(sk, "u1", adapter=adapter)
+    items = runner._list_manageable_queue_items(sk, adapter=adapter)
 
     assert [item["preview"] for item in items] == ["busy follow-up"]
     marker = adapter._pending_messages[sk].metadata["_hermes_explicit_queue"]
     assert marker["owner_user_id"] == "u1"
+    assert marker["origin"] == "busy"
+
+
+def test_identity_less_busy_user_turn_is_still_session_manageable():
+    runner, adapter = _make_runner(_session_entry())
+    source = _make_source()
+    source.user_id = None
+    source.user_id_alt = None
+    session_key = build_session_key(source)
+
+    runner._queue_or_replace_pending_event(
+        session_key,
+        MessageEvent(text="identity-less follow-up", source=source, message_id="busy"),
+    )
+
+    items = runner._list_manageable_queue_items(session_key, adapter=adapter)
+    assert [item["preview"] for item in items] == ["identity-less follow-up"]
+    marker = adapter._pending_messages[session_key].metadata[
+        "_hermes_explicit_queue"
+    ]
+    assert marker["owner_user_id"] is None
     assert marker["origin"] == "busy"
 
 
@@ -288,9 +309,8 @@ async def test_explicit_queue_uses_stable_alt_user_identity_for_management():
 
 
 @pytest.mark.asyncio
-async def test_group_text_queue_management_without_private_delivery_never_opens_or_mutates_view():
+async def test_group_text_queue_management_is_public_in_source_session():
     runner, adapter = _make_runner(_session_entry())
-    adapter.supports_private_notice = False
     source = SessionSource(
         platform=Platform.TELEGRAM,
         user_id="u1",
@@ -303,7 +323,7 @@ async def test_group_text_queue_management_without_private_delivery_never_opens_
     runner._running_agents[session_key] = MagicMock()
 
     await runner._handle_message(
-        MessageEvent(text="/queue confidential turn", source=source, message_id="q1")
+        MessageEvent(text="/queue shared turn", source=source, message_id="q1")
     )
     listed = await runner._handle_message(
         MessageEvent(text="/queue", source=source, message_id="list")
@@ -312,52 +332,72 @@ async def test_group_text_queue_management_without_private_delivery_never_opens_
         MessageEvent(text="/dequeue 1", source=source, message_id="remove")
     )
 
-    assert "private" in listed.lower()
-    assert "confidential" not in listed
-    assert "1." not in listed
-    assert "private" in removed.lower()
-    assert "confidential" not in removed
-    assert [event.text for event in runner._snapshot_fifo_events(session_key, adapter)] == [
-        "confidential turn"
-    ]
+    assert "1. shared turn" in listed
+    assert "removed 1" in removed.lower()
+    assert "no queued turns" in removed.lower()
+    assert runner._snapshot_fifo_events(session_key, adapter) == []
 
 
 @pytest.mark.asyncio
-async def test_group_text_queue_management_private_delivery_returns_only_safe_public_hint():
+async def test_group_text_queue_lists_all_users_and_allows_cross_user_removal():
     runner, adapter = _make_runner(_session_entry())
-    adapter.supports_private_notice = True
     adapter.send_private_notice = AsyncMock(return_value=SimpleNamespace(success=True))
-    source = SessionSource(
+    alice = SessionSource(
         platform=Platform.TELEGRAM,
-        user_id="u1",
+        user_id="alice",
         chat_id="group-1",
-        user_name="tester",
+        user_name="Alice",
         chat_type="group",
         scope_id="workspace-1",
     )
-    session_key = build_session_key(source)
+    bob = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="bob",
+        chat_id="group-1",
+        user_name="Bob",
+        chat_type="group",
+        scope_id="workspace-1",
+    )
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+        group_sessions_per_user=False,
+    )
+    runner.session_store._generate_session_key = MagicMock(
+        side_effect=lambda source: build_session_key(
+            source, group_sessions_per_user=False
+        )
+    )
+    session_key = runner._session_key_for_source(alice)
+    assert runner._session_key_for_source(bob) == session_key
     runner._running_agents[session_key] = MagicMock()
 
     await runner._handle_message(
-        MessageEvent(text="/queue confidential turn", source=source, message_id="q1")
+        MessageEvent(text="/queue alice turn", source=alice, message_id="q1")
+    )
+    await runner._handle_message(
+        MessageEvent(text="/queue bob turn", source=bob, message_id="q2")
     )
     listed = await runner._handle_message(
-        MessageEvent(text="/queue", source=source, message_id="list")
+        MessageEvent(text="/queue", source=bob, message_id="list")
+    )
+    removed = await runner._handle_message(
+        MessageEvent(text="/dequeue 1", source=bob, message_id="remove")
     )
 
-    adapter.send_private_notice.assert_awaited_once()
-    private_content = adapter.send_private_notice.await_args.args[2]
-    assert "1. confidential turn" in private_content
-    assert isinstance(listed, str)
-    assert "private" in listed.lower()
-    assert "confidential" not in listed
-    assert "1." not in listed
+    assert "1. alice turn" in listed
+    assert "2. bob turn" in listed
+    assert "removed 1" in removed.lower()
+    assert "alice turn" not in removed
+    assert "1. bob turn" in removed
+    assert [event.text for event in runner._snapshot_fifo_events(session_key, adapter)] == [
+        "bob turn"
+    ]
+    adapter.send_private_notice.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_group_text_queue_management_private_delivery_failure_invalidates_snapshot():
+async def test_group_text_queue_management_does_not_depend_on_private_delivery():
     runner, adapter = _make_runner(_session_entry())
-    adapter.supports_private_notice = True
     adapter.send_private_notice = AsyncMock(return_value=SimpleNamespace(success=False))
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -371,29 +411,23 @@ async def test_group_text_queue_management_private_delivery_failure_invalidates_
     runner._running_agents[session_key] = MagicMock()
 
     await runner._handle_message(
-        MessageEvent(text="/queue confidential turn", source=source, message_id="q1")
+        MessageEvent(text="/queue shared turn", source=source, message_id="q1")
     )
     listed = await runner._handle_message(
         MessageEvent(text="/queue", source=source, message_id="list")
     )
-    removed = runner._handle_text_dequeue(
-        MessageEvent(text="/dequeue 1", source=source, message_id="remove"),
-        runner._queue_control_key(source) or "",
-        "1",
-        adapter,
+    removed = await runner._handle_message(
+        MessageEvent(text="/dequeue 1", source=source, message_id="remove")
     )
 
-    assert "couldn't deliver" in listed.lower()
-    assert "confidential" not in listed
-    assert "run `/queue`" in removed.lower()
-    assert [event.text for event in runner._snapshot_fifo_events(session_key, adapter)] == [
-        "confidential turn"
-    ]
+    assert "1. shared turn" in listed
+    assert "removed 1" in removed.lower()
+    assert runner._snapshot_fifo_events(session_key, adapter) == []
+    adapter.send_private_notice.assert_not_awaited()
 
 
-def test_queue_snapshot_can_be_managed_from_another_chat_in_same_scope():
+def test_queue_snapshot_cannot_be_managed_from_another_chat_in_same_scope():
     runner, adapter = _make_runner(_session_entry())
-    adapter.supports_private_notice = True
     source_a = SessionSource(
         platform=Platform.TELEGRAM,
         user_id="u1",
@@ -421,19 +455,19 @@ def test_queue_snapshot_can_be_managed_from_another_chat_in_same_scope():
 
     result = runner._handle_text_dequeue(
         MessageEvent(text="/dequeue 1", source=source_b, message_id="remove-b"),
-        runner._queue_control_key(source_b) or "",
+        build_session_key(source_b),
         "1",
         adapter,
     )
 
-    assert "removed 1" in result.lower()
-    assert "Group A" in result
-    assert runner._snapshot_fifo_events(session_a, adapter) == []
+    assert "run `/queue`" in result.lower()
+    assert [event.text for event in runner._snapshot_fifo_events(session_a, adapter)] == [
+        "only in group a"
+    ]
 
 
 def test_queue_snapshot_isolated_from_another_scope():
     runner, adapter = _make_runner(_session_entry())
-    adapter.supports_private_notice = True
     source_a = SessionSource(
         platform=Platform.TELEGRAM,
         user_id="u1",
@@ -634,7 +668,7 @@ async def test_repeated_queue_ids_are_unique_within_session():
 
 
 @pytest.mark.asyncio
-async def test_queue_without_owner_still_submits_but_is_not_manageable():
+async def test_queue_without_owner_still_submits_and_is_session_manageable():
     runner, adapter = _make_runner(_session_entry())
     source = _make_source()
     source.user_id = None
@@ -644,11 +678,17 @@ async def test_queue_without_owner_still_submits_but_is_not_manageable():
     result = await runner._handle_message(
         MessageEvent(text="/queue anonymous", source=source, message_id="q-anon")
     )
+    listed = await runner._handle_message(
+        MessageEvent(text="/queue", source=source, message_id="list-anon")
+    )
+    removed = await runner._handle_message(
+        MessageEvent(text="/dequeue 1", source=source, message_id="remove-anon")
+    )
 
     assert result is not None and "queued" in result.lower()
-    queued = adapter._pending_messages[sk]
-    assert queued.metadata["_hermes_explicit_queue"]["owner_user_id"] is None
-    assert runner._list_owned_explicit_queue_items(sk, None, adapter=adapter) == []
+    assert "1. anonymous" in listed
+    assert "removed 1" in removed.lower()
+    assert runner._snapshot_fifo_events(sk, adapter) == []
 
 
 @pytest.mark.parametrize(
@@ -674,7 +714,7 @@ async def test_queue_words_never_become_text_subcommands(command_text, expected_
 
 
 @pytest.mark.asyncio
-async def test_native_discord_bare_queue_management_returns_structured_safe_result():
+async def test_native_discord_bare_queue_management_returns_all_user_items_in_session():
     source = SessionSource(
         platform=Platform.DISCORD,
         user_id="u1",
@@ -699,7 +739,7 @@ async def test_native_discord_bare_queue_management_returns_structured_safe_resu
     sk = build_session_key(source)
     runner._running_agents[sk] = MagicMock()
     explicit = MessageEvent(
-        text="private prompt",
+        text="first prompt",
         source=source,
         metadata={
             "_hermes_explicit_queue": {
@@ -711,7 +751,7 @@ async def test_native_discord_bare_queue_management_returns_structured_safe_resu
         },
     )
     other_owner = MessageEvent(
-        text="other secret",
+        text="second prompt",
         source=source,
         metadata={
             "_hermes_explicit_queue": {
@@ -736,9 +776,11 @@ async def test_native_discord_bare_queue_management_returns_structured_safe_resu
 
     assert result["type"] == "queue_management"
     assert result["action"] == "list"
-    assert [item["id"] for item in result["items"]] == ["q-owned"]
-    assert "other secret" not in str(result)
-    assert "q-other" not in str(result)
+    assert [item["id"] for item in result["items"]] == ["q-owned", "q-other"]
+    assert [item["preview"] for item in result["items"]] == [
+        "first prompt",
+        "second prompt",
+    ]
 
 
 @pytest.mark.asyncio
@@ -882,7 +924,7 @@ async def test_native_discord_card_snapshot_is_superseded_by_new_text_view():
 
 
 @pytest.mark.asyncio
-async def test_native_discord_remove_and_clear_are_owner_scoped_and_structured():
+async def test_native_discord_remove_and_clear_are_session_scoped_and_structured():
     source = SessionSource(
         platform=Platform.DISCORD,
         user_id="u1",
@@ -950,7 +992,7 @@ async def test_native_discord_remove_and_clear_are_owner_scoped_and_structured()
             },
         )
     )
-    hidden_remove = await runner._handle_message(
+    other_remove = await runner._handle_message(
         MessageEvent(
             text="/queue",
             source=source,
@@ -973,7 +1015,7 @@ async def test_native_discord_remove_and_clear_are_owner_scoped_and_structured()
                     "action": "clear",
                     "queue_ids": ["q-owned-2"],
                     "session_key": sk,
-                    "snapshot_id": remove_result["snapshot_id"],
+                    "snapshot_id": other_remove["snapshot_id"],
                 }
             },
         )
@@ -981,6 +1023,7 @@ async def test_native_discord_remove_and_clear_are_owner_scoped_and_structured()
 
     assert [item["id"] for item in opened_view["items"]] == [
         "q-owned-1",
+        "q-other",
         "q-owned-2",
     ]
     assert remove_result["ok"] is True
@@ -988,16 +1031,20 @@ async def test_native_discord_remove_and_clear_are_owner_scoped_and_structured()
     assert remove_result["queue_id"] == "q-owned-1"
     assert remove_result["session_key"] == sk
     assert isinstance(remove_result["snapshot_id"], str)
-    assert [item["id"] for item in remove_result["items"]] == ["q-owned-2"]
-    assert hidden_remove["ok"] is False
-    assert hidden_remove["error"] == "not_found"
-    assert "q-other" not in str(hidden_remove)
+    assert [item["id"] for item in remove_result["items"]] == [
+        "q-other",
+        "q-owned-2",
+    ]
+    assert other_remove["ok"] is True
+    assert other_remove["removed"] is True
+    assert other_remove["queue_id"] == "q-other"
+    assert [item["id"] for item in other_remove["items"]] == ["q-owned-2"]
     assert clear_result["ok"] is True
     assert clear_result["removed_count"] == 1
     assert clear_result["session_key"] == sk
     assert clear_result["items"] == []
     assert isinstance(clear_result["snapshot_id"], str)
-    assert runner._snapshot_fifo_events(sk, adapter) == [other, ordinary]
+    assert runner._snapshot_fifo_events(sk, adapter) == [ordinary]
     running_agent.interrupt.assert_not_called()
 
 

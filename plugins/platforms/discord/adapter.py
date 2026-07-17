@@ -4969,7 +4969,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _queue_manager_session_key(result: Any) -> str:
-        """Read the private session continuity token from a list response."""
+        """Read the interaction's session continuity token."""
         if not isinstance(result, dict):
             raise RuntimeError("Invalid queue manager session response")
         session_key = result.get("session_key")
@@ -4979,7 +4979,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _queue_manager_snapshot_id(result: Any) -> str:
-        """Read the private active-snapshot token from a list response."""
+        """Read the interaction's active-snapshot token."""
         if not isinstance(result, dict):
             raise RuntimeError("Invalid queue manager snapshot response")
         snapshot_id = result.get("snapshot_id")
@@ -4996,12 +4996,12 @@ class DiscordAdapter(BasePlatformAdapter):
         interaction: discord.Interaction,
         typed_command: str,
     ) -> None:
-        """Open the native queue manager without posting in the channel."""
+        """Open the current session's queue manager in the source channel."""
         if not await self._check_slash_authorization(interaction, typed_command):
             return
 
         try:
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer(ephemeral=False)
         except Exception as exc:
             if not self._is_discord_unknown_interaction(exc):
                 raise
@@ -5017,7 +5017,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 interaction, typed_command, "list"
             )
         except Exception:
-            logger.exception("[Discord] Failed to open private queue manager")
+            logger.exception("[Discord] Failed to open session queue manager")
             try:
                 await interaction.edit_original_response(
                     content="Queue manager is temporarily unavailable.",
@@ -5059,7 +5059,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             view._message = message
         except Exception:
-            logger.exception("[Discord] Failed to open private queue manager")
+            logger.exception("[Discord] Failed to open session queue manager")
             try:
                 await interaction.edit_original_response(
                     content="Queue manager is temporarily unavailable.",
@@ -8036,7 +8036,7 @@ def _define_discord_view_classes() -> None:
     global ModelPickerView, ClarifyChoiceView, ChoicePickerView, QueueManagerView
 
     class QueueManagerView(discord.ui.View):
-        """Ephemeral owner-scoped manager for explicitly queued prompts."""
+        """Public session queue view with operator-bound snapshot actions."""
 
         PAGE_SIZE = 10
         PREVIEW_LIMIT = 160
@@ -8140,17 +8140,17 @@ def _define_discord_view_classes() -> None:
             if self.confirming_clear:
                 return (
                     f"**Clear all {len(self._items)} queued prompt(s)?**\n"
-                    "This only clears prompts queued by you in this session and "
-                    "cannot be undone."
+                    "This clears the displayed user turns from this session and "
+                    "cannot be undone. New arrivals are preserved."
                 )
             if not self._items:
                 return (
-                    "**Your queue is empty.**\n"
-                    "Only prompts explicitly queued by you in this session appear here."
+                    "**This session's queue is empty.**\n"
+                    "Queued user turns from this channel or thread appear here."
                 )
 
             start = self.page * self.PAGE_SIZE
-            lines = ["**Your queued prompts**"]
+            lines = ["**Queued prompts in this session**"]
             for offset, item in enumerate(self._page_items(), start=1):
                 media = " 📎" if item["has_media"] else ""
                 selected = " ← selected" if item["queue_id"] == self.selected_queue_id else ""
@@ -8161,7 +8161,7 @@ def _define_discord_view_classes() -> None:
                 (
                     "",
                     f"Page {self.page + 1}/{self.page_count} · {len(self._items)} item(s)",
-                    "Select one prompt to delete it, or clear your whole queue.",
+                    "Select one prompt to delete it, or clear the displayed session queue.",
                 )
             )
             return "\n".join(lines)
@@ -8284,7 +8284,8 @@ def _define_discord_view_classes() -> None:
             if str(getattr(user, "id", "")) != self.owner_user_id:
                 await self._send_neutral(
                     interaction,
-                    "This private queue manager belongs to another user.",
+                    "This queue view was opened by another user. Run `/queue` "
+                    "to open your own snapshot for this session.",
                 )
                 return False
             if self.expired:
@@ -8330,7 +8331,7 @@ def _define_discord_view_classes() -> None:
             )
 
         async def _apply_snapshot_result(self, result: Any) -> bool:
-            """Apply the latest private snapshot returned by the gateway."""
+            """Apply the latest operator-bound snapshot returned by the gateway."""
             try:
                 session_key = self.adapter._queue_manager_session_key(result)
                 snapshot_id = self.adapter._queue_manager_snapshot_id(result)
@@ -8462,7 +8463,9 @@ def _define_discord_view_classes() -> None:
             if not await self._refresh_items(interaction):
                 return
             if not self._items:
-                await self._send_neutral(interaction, "Your queue is already empty.")
+                await self._send_neutral(
+                    interaction, "This session's queue is already empty."
+                )
                 return
             self.confirming_clear = True
             # Snapshot opaque IDs after the live list refresh. New submissions
@@ -8503,7 +8506,7 @@ def _define_discord_view_classes() -> None:
             except Exception:
                 logger.exception("[Discord] Queue manager clear failed")
                 await self._send_neutral(
-                    interaction, "Your queue could not be cleared. No change was made."
+                    interaction, "The session queue could not be cleared. No change was made."
                 )
                 return
             if isinstance(result, str):
@@ -8518,7 +8521,7 @@ def _define_discord_view_classes() -> None:
                 and result.get("ok") is True
             ):
                 await self._send_neutral(
-                    interaction, "Your queue could not be cleared. No change was made."
+                    interaction, "The session queue could not be cleared. No change was made."
                 )
                 return
             removed_count = int(result.get("removed_count", 0) or 0)

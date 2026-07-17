@@ -266,7 +266,6 @@ def test_clear_session_boundary_security_state_is_scoped():
     other_snapshot = runner._queue_snapshot_store.open(
         "queue-control-other", "u2", other_key, [{"id": "q-other", "preview": "other"}]
     )
-    runner._queue_snapshot_targets = {session_key: (source, MagicMock())}
 
     async def _target_handler(choice):
         return f"target:{choice}"
@@ -289,7 +288,6 @@ def test_clear_session_boundary_security_state_is_scoped():
     assert runner._queue_snapshot_store.resolve(
         "queue-control", "u1", "1", snapshot_id=target_snapshot.snapshot_id
     ).status == "missing"
-    assert session_key not in runner._queue_snapshot_targets
     # Other session untouched
     assert is_approved(other_key, "recursive delete") is True
     assert is_session_yolo_enabled(other_key) is True

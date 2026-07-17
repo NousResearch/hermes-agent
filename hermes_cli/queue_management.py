@@ -47,7 +47,7 @@ def _preview_payload(value: Any, *, limit: int = DEFAULT_QUEUE_PREVIEW_CHARS) ->
 
 @dataclass(frozen=True)
 class QueueDisplayItem:
-    """Safe projection of one user-owned pending turn."""
+    """Safe projection of one manageable pending user turn."""
 
     queue_id: str
     preview: str

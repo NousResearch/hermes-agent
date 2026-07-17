@@ -2125,13 +2125,13 @@ def _invalidate_pending_stt_cache(event: MessageEvent) -> None:
             delattr(event, attr)
 
 class PrivateInteractionResult(dict):
-    """Structured handler result that must never enter public chat delivery.
+    """Structured native-interaction result that generic delivery must suppress.
 
     Native platform interactions may call the registered gateway handler
-    directly and need a structured response back (for example, an ephemeral
-    Discord view). A distinct ``dict`` subtype keeps the direct caller API
-    ergonomic while making the private-only contract explicit. Generic adapter
-    delivery paths suppress this result in
+    directly and need a structured response back (for example, a Discord
+    component view). A distinct ``dict`` subtype keeps the direct caller API
+    ergonomic while preventing raw routing tokens and opaque IDs from being
+    stringified. Generic adapter delivery paths suppress this result in
     :meth:`BasePlatformAdapter._unwrap_ephemeral`, so an accidental dispatch
     through ``handle_message()`` cannot stringify or publish the payload.
     """
@@ -2394,12 +2394,6 @@ class BasePlatformAdapter(ABC):
     # a delivery promise they can't keep. A new stateless adapter only needs to
     # set this to False to stay correct-by-default.
     supports_async_delivery: bool = True
-
-    # Whether ``send_private_notice`` is guaranteed to remain visible only to
-    # the addressed user on a shared surface.  The base method intentionally
-    # stays a public-send fallback for legacy operational notices, so callers
-    # handling sensitive content must check this explicit capability first.
-    supports_private_notice: bool = False
 
     # Whether this adapter's ``send()`` splits long content into multiple
     # messages via ``truncate_message()``.  When True, the delivery router
@@ -4284,7 +4278,7 @@ class BasePlatformAdapter(ABC):
         platforms silently degrade to normal sends.
         """
         if isinstance(response, PrivateInteractionResult):
-            # Private native-interaction payloads are consumed only by the
+            # Structured native-interaction payloads are consumed only by the
             # adapter method that directly awaited the gateway handler. If a
             # caller accidentally routes one through generic delivery, fail
             # closed instead of publishing the payload's repr.

@@ -1,4 +1,4 @@
-"""Behavior tests for Discord's private owner-scoped queue manager."""
+"""Behavior tests for Discord's public session-scoped queue manager."""
 
 from __future__ import annotations
 
@@ -221,7 +221,7 @@ def _assert_management_event(
     assert actual_marker == marker
 
 
-def _assert_no_public_delivery(adapter, runner):
+def _assert_no_generic_delivery(adapter, runner):
     runner.assert_no_direct_calls()
     adapter.handle_message.assert_not_awaited()
     adapter.send.assert_not_awaited()
@@ -240,7 +240,7 @@ async def test_open_manager_authorizes_then_defers_before_gateway_dispatch(adapt
     interaction = _interaction()
 
     async def defer(**kwargs):
-        assert kwargs == {"ephemeral": True}
+        assert kwargs == {"ephemeral": False}
         events.append("defer")
 
     adapter._check_slash_authorization = AsyncMock(side_effect=authorize)
@@ -258,8 +258,9 @@ async def test_open_manager_authorizes_then_defers_before_gateway_dispatch(adapt
     kwargs = interaction.edit_original_response.await_args.kwargs
     assert kwargs["view"].owner_user_id == "123"
     assert "queued prompt 1" in kwargs["content"]
+    assert "session" in kwargs["content"].lower()
     assert "allowed_mentions" in kwargs
-    _assert_no_public_delivery(adapter, runner)
+    _assert_no_generic_delivery(adapter, runner)
 
 
 @pytest.mark.asyncio
@@ -274,7 +275,7 @@ async def test_open_manager_rejection_stops_before_defer_and_gateway_dispatch(ad
     interaction.response.defer.assert_not_awaited()
     interaction.edit_original_response.assert_not_awaited()
     adapter._message_handler.assert_not_awaited()
-    _assert_no_public_delivery(adapter, runner)
+    _assert_no_generic_delivery(adapter, runner)
 
 
 @pytest.mark.asyncio
@@ -290,14 +291,14 @@ async def test_unknown_interaction_on_defer_performs_zero_gateway_handler_calls(
 
     await adapter._open_queue_manager_slash(interaction, "/queue")
 
-    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    interaction.response.defer.assert_awaited_once_with(ephemeral=False)
     interaction.edit_original_response.assert_not_awaited()
     adapter._message_handler.assert_not_awaited()
-    _assert_no_public_delivery(adapter, runner)
+    _assert_no_generic_delivery(adapter, runner)
 
 
 @pytest.mark.asyncio
-async def test_open_manager_slash_access_denial_stays_private_without_view(adapter):
+async def test_open_manager_slash_access_denial_has_no_view(adapter):
     denial = "⛔ /queue is admin-only here."
     runner = _install_runner(adapter, StubQueueRunner([_queue_item(1)]))
     runner.refusal = denial
@@ -305,7 +306,7 @@ async def test_open_manager_slash_access_denial_stays_private_without_view(adapt
 
     await adapter._open_queue_manager_slash(interaction, "/q")
 
-    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    interaction.response.defer.assert_awaited_once_with(ephemeral=False)
     adapter._message_handler.assert_awaited_once()
     _assert_management_event(runner.handler_calls[0], interaction, "/q", "list")
     interaction.edit_original_response.assert_awaited_once_with(
@@ -315,7 +316,7 @@ async def test_open_manager_slash_access_denial_stays_private_without_view(adapt
             "allowed_mentions"
         ],
     )
-    _assert_no_public_delivery(adapter, runner)
+    _assert_no_generic_delivery(adapter, runner)
 
 
 @pytest.mark.asyncio
@@ -369,7 +370,7 @@ async def test_queue_manager_delete_clear_and_refresh_dispatch_through_gateway(a
             snapshot_id=snapshot_id,
         )
     assert adapter._message_handler.await_count == len(expected)
-    _assert_no_public_delivery(adapter, runner)
+    _assert_no_generic_delivery(adapter, runner)
 
 
 @pytest.mark.asyncio
@@ -394,11 +395,11 @@ async def test_component_gateway_denial_is_neutral_and_has_zero_ui_mutation(adap
     assert "view" not in kwargs
     assert "allowed_mentions" in kwargs
     _assert_management_event(runner.handler_calls[-1], denied, "/queue", "list")
-    _assert_no_public_delivery(adapter, runner)
+    _assert_no_generic_delivery(adapter, runner)
 
 
 @pytest.mark.asyncio
-async def test_queue_manager_requires_owner_and_live_adapter_authorization(adapter):
+async def test_queue_manager_requires_view_creator_and_live_adapter_authorization(adapter):
     runner = _install_runner(adapter, StubQueueRunner([_queue_item(1)]))
     opening = _interaction()
     await adapter._open_queue_manager_slash(opening, "/queue")
@@ -408,6 +409,7 @@ async def test_queue_manager_requires_owner_and_live_adapter_authorization(adapt
     await _component(view, "queue_manager_select").callback(foreign)
     foreign.response.send_message.assert_awaited_once()
     assert foreign.response.send_message.await_args.kwargs["ephemeral"] is True
+    assert "run `/queue`" in foreign.response.send_message.await_args.args[0].lower()
     assert view.selected_queue_id is None
     assert len(runner.handler_calls) == 1
 
@@ -418,7 +420,7 @@ async def test_queue_manager_requires_owner_and_live_adapter_authorization(adapt
     owner.response.edit_message.assert_not_awaited()
     assert view.selected_queue_id is None
     assert len(runner.handler_calls) == 1
-    _assert_no_public_delivery(adapter, runner)
+    _assert_no_generic_delivery(adapter, runner)
 
 
 @pytest.mark.asyncio
@@ -455,7 +457,7 @@ async def test_queue_manager_rechecks_live_authorization_on_every_component(adap
         interaction = _interaction(data=setup.get("data", {}))
         await _component(view, custom_id).callback(interaction)
         assert runner.handler_calls
-        _assert_no_public_delivery(adapter, runner)
+        _assert_no_generic_delivery(adapter, runner)
 
     commands = [
         call.args[1] for call in adapter._check_slash_authorization.await_args_list
@@ -492,7 +494,7 @@ async def test_queue_manager_consumed_delete_refreshes_view_without_removing_ano
         session_key="session:456",
         snapshot_id="snapshot-1",
     )
-    _assert_no_public_delivery(adapter, runner)
+    _assert_no_generic_delivery(adapter, runner)
 
 
 @pytest.mark.asyncio
@@ -515,7 +517,7 @@ async def test_queue_manager_consumed_clear_refreshes_view_without_removing_new_
         confirm.response.edit_message.await_args.kwargs["content"].lower()
     )
     confirm.response.send_message.assert_not_awaited()
-    _assert_no_public_delivery(adapter, runner)
+    _assert_no_generic_delivery(adapter, runner)
 
 
 @pytest.mark.asyncio
@@ -538,7 +540,7 @@ async def test_queue_manager_clear_requires_confirmation_and_cancel_has_no_queue
         event.metadata["_hermes_native_discord_queue_management"]["action"] != "clear"
         for event in runner.handler_calls
     )
-    _assert_no_public_delivery(adapter, runner)
+    _assert_no_generic_delivery(adapter, runner)
 
 
 @pytest.mark.asyncio
@@ -565,7 +567,7 @@ async def test_queue_manager_clear_confirm_applies_returned_snapshot(adapter):
         snapshot_id="snapshot-2",
     )
     assert len(runner.handler_calls) == 3
-    _assert_no_public_delivery(adapter, runner)
+    _assert_no_generic_delivery(adapter, runner)
 
 
 @pytest.mark.asyncio
@@ -593,7 +595,7 @@ async def test_queue_manager_clear_preserves_items_added_after_confirmation(adap
         snapshot_id="snapshot-2",
     )
     assert len(runner.handler_calls) == 3
-    _assert_no_public_delivery(adapter, runner)
+    _assert_no_generic_delivery(adapter, runner)
 
 
 @pytest.mark.asyncio
@@ -623,7 +625,7 @@ async def test_queue_manager_session_change_blocks_delete_without_ui_mutation(ad
         "opaque-1",
         session_key="session:456",
     )
-    _assert_no_public_delivery(adapter, runner)
+    _assert_no_generic_delivery(adapter, runner)
 
 
 
@@ -669,7 +671,7 @@ async def test_queue_manager_next_previous_and_refresh_edit_ephemeral_message(ad
         (next_interaction, previous_interaction, refresh_interaction),
     ):
         _assert_management_event(event, interaction, "/queue", "list")
-    _assert_no_public_delivery(adapter, runner)
+    _assert_no_generic_delivery(adapter, runner)
 
 
 def test_queue_manager_neutralizes_mentions_and_limits_utf16_fields():

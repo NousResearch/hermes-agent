@@ -179,11 +179,7 @@ async def test_gateway_debounced_busy_turn_remains_queue_manageable():
     await adapter.handle_message(event)
     await asyncio.sleep(0.15)
 
-    items = runner._list_owned_explicit_queue_items(
-        session_key,
-        "u1",
-        adapter=adapter,
-    )
+    items = runner._list_manageable_queue_items(session_key, adapter=adapter)
     assert [item["preview"] for item in items] == ["manageable follow-up"]
     marker = adapter._pending_messages[session_key].metadata[
         "_hermes_explicit_queue"

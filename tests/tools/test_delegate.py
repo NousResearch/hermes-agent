@@ -261,6 +261,38 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("total_duration_seconds", result)
 
     @patch("tools.delegate_tool._run_single_child")
+    def test_batch_interrupt_teardown_does_not_wait_on_children(self, mock_run):
+        """On parent interrupt the batch executor must tear down without waiting
+        (wait=False) so a stuck child can't block the parent. The context
+        manager's implicit shutdown(wait=True) on __exit__ would re-join running
+        children and defeat that, so no shutdown call may use wait=True."""
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed", "summary": "x",
+            "api_calls": 1, "duration_seconds": 0.0,
+        }
+        shutdown_calls = []
+
+        class _RecordingExecutor(DaemonThreadPoolExecutor):
+            def shutdown(self, wait=True, cancel_futures=False):
+                shutdown_calls.append({"wait": wait, "cancel_futures": cancel_futures})
+                return super().shutdown(wait=wait, cancel_futures=cancel_futures)
+
+        parent = _make_mock_parent()
+        parent._interrupt_requested = True  # trip the interrupt branch on entry
+        tasks = [{"goal": "A"}, {"goal": "B"}]
+
+        with patch("tools.daemon_pool.DaemonThreadPoolExecutor", _RecordingExecutor):
+            json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+
+        self.assertTrue(shutdown_calls, "executor was never shut down")
+        self.assertTrue(
+            all(c["wait"] is False for c in shutdown_calls),
+            f"interrupt teardown waited on running children: {shutdown_calls}",
+        )
+
+    @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode_accepts_json_string_tasks(self, mock_run):
         mock_run.side_effect = [
             {

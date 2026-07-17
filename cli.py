@@ -15873,9 +15873,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     except (Exception, KeyboardInterrupt) as e:
                         logger.debug("Could not delete session on exit: %s", e)
             # Plugin hook: on_session_end — safety net for interrupted exits.
-            # run_conversation() already fires this per-turn on normal completion,
-            # so only fire here if the agent was mid-turn (_agent_running) when
-            # the exit occurred, meaning run_conversation's hook didn't fire.
+            # run_conversation() fires on_turn_end per-message, not
+            # on_session_end, so only fire here if the agent was mid-turn
+            # (_agent_running) when the exit occurred.
             if self.agent and getattr(self, '_agent_running', False):
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook

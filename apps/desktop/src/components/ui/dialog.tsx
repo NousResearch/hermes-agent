@@ -48,6 +48,16 @@ const DIALOG_BANNER_TONES: Record<DialogBannerTone, string> = {
   info: 'bg-[color-mix(in_srgb,var(--ui-chat-bubble-background),white_30%)] text-[color-mix(in_srgb,var(--ui-chat-bubble-background),black_60%)] dark:bg-[color-mix(in_srgb,var(--ui-chat-bubble-background),black_20%)] dark:text-[color-mix(in_srgb,var(--ui-chat-bubble-background),white_60%)]'
 }
 
+// Radix focuses the first focusable element inside Dialog.Content on open —
+// for us that's almost always the close button. Tooltip shows on focus as well
+// as hover, so that autofocus made the "Close" tip appear immediately, with no
+// pointer ever near the button. Dialogs don't have a more meaningful default
+// focus target than "nothing in particular", so just suppress the autofocus
+// instead of moving it somewhere arbitrary.
+function preventCloseButtonAutoFocus(event: Event) {
+  event.preventDefault()
+}
+
 function DialogContent({
   className,
   children,
@@ -55,6 +65,7 @@ function DialogContent({
   fitContent = false,
   banner,
   bannerTone = 'error',
+  onOpenAutoFocus,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -72,9 +83,18 @@ function DialogContent({
 
   const widthClass = fitContent ? 'w-auto max-w-[92vw]' : 'w-full max-w-lg'
 
+  // Callers can still opt into their own autofocus behavior via `onOpenAutoFocus`
+  // — ours only runs as the default when none is supplied.
+  const handleOpenAutoFocus = onOpenAutoFocus ?? preventCloseButtonAutoFocus
+
+  // `Tip` wraps `DialogPrimitive.Close asChild` (not the other way around) so
+  // Radix's `Slot` can forward `Close`'s `onClick` straight through to the
+  // `Button`. When `Tip` was the innermost wrapper, `onClick` was absorbed by
+  // `Tip`'s passthrough `...props` and forwarded to `TooltipContent` instead of
+  // the button, so clicking the close button silently did nothing.
   const closeButton = showCloseButton ? (
-    <DialogPrimitive.Close asChild data-slot="dialog-close-button">
-      <Tip label={t.common.close}>
+    <Tip label={t.common.close}>
+      <DialogPrimitive.Close asChild data-slot="dialog-close-button">
         <Button
           aria-label={t.common.close}
           className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
@@ -84,8 +104,8 @@ function DialogContent({
           <X className="size-4" />
           <span className="sr-only">{t.common.close}</span>
         </Button>
-      </Tip>
-    </DialogPrimitive.Close>
+      </DialogPrimitive.Close>
+    </Tip>
   ) : null
 
   // With a banner, the border can't live on the scroll/clip box (it would draw a
@@ -106,6 +126,7 @@ function DialogContent({
             'gap-0'
           )}
           data-slot="dialog-content"
+          onOpenAutoFocus={handleOpenAutoFocus}
           {...props}
         >
           {/* Scroll lives on an inner box so this shell keeps a painted bottom radius. */}
@@ -143,6 +164,7 @@ function DialogContent({
           className
         )}
         data-slot="dialog-content"
+        onOpenAutoFocus={handleOpenAutoFocus}
         {...props}
       >
         {children}

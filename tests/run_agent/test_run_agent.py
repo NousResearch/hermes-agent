@@ -2028,6 +2028,12 @@ class TestBuildApiKwargs:
 
         assert agent._github_models_reasoning_extra_body() == {"effort": "xhigh"}
 
+    def test_core_responses_preserves_gpt56_max(self, agent):
+        agent.model = "gpt-5.6-sol"
+        agent.reasoning_config = {"enabled": True, "effort": "max"}
+
+        assert agent._github_models_reasoning_extra_body() == {"effort": "max"}
+
     def test_reasoning_omitted_for_non_reasoning_copilot_model(self, agent):
         agent.base_url = "https://api.githubcopilot.com"
         agent.model = "gpt-4.1"

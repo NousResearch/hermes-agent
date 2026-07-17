@@ -304,15 +304,10 @@ class ResponsesApiTransport(ProviderTransport):
         if request_overrides:
             kwargs.update(request_overrides)
 
-        # xAI Responses API rejects ``service_tier`` (HTTP 400 "Argument not
-        # supported: service_tier") — hit when ``/fast`` priority-processing
-        # mode lingers from a prior model in the same session, or when a
-        # user explicitly sets ``agent.service_tier`` in config.yaml.  The
-        # main-loop guard (``resolve_fast_mode_overrides`` only returns
-        # ``service_tier`` for OpenAI fast-eligible models) doesn't cover
-        # those leak paths, so strip defensively when targeting xAI.  See
-        # #28490 for the original report.
-        if is_xai_responses:
+        # GitHub Copilot and xAI Responses reject ``service_tier``. This can
+        # linger after a provider/model switch or arrive from persistent config,
+        # so strip it at the transport boundary regardless of the caller.
+        if is_github_responses or is_xai_responses:
             kwargs.pop("service_tier", None)
 
         # Forward per-request timeout to the SDK so OpenAI/Anthropic clients

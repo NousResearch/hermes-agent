@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 from hermes_cli.inventory import (
     ConfigContext,
+    _apply_capabilities,
     build_models_payload,
     load_picker_context,
 )
@@ -211,6 +212,18 @@ def test_build_models_payload_does_not_call_provider_model_ids():
          patch("hermes_cli.models.provider_model_ids") as mock_pm:
         build_models_payload(ctx)
     mock_pm.assert_not_called()
+
+
+def test_copilot_capabilities_hide_fast_and_publish_exact_efforts():
+    rows = [{"slug": "copilot", "models": ["gpt-5.6-sol"]}]
+
+    _apply_capabilities(rows)
+
+    assert rows[0]["capabilities"]["gpt-5.6-sol"] == {
+        "fast": False,
+        "reasoning": True,
+        "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+    }
 
 
 def test_build_models_payload_uses_cached_nous_tier_by_default():

@@ -29,6 +29,7 @@ COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
 COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
+COPILOT_REASONING_EFFORTS_GPT56 = ["none", "low", "medium", "high", "xhigh", "max"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
 def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: float):
@@ -3460,6 +3461,8 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
     if raw.startswith(("openai/o1", "openai/o3", "openai/o4", "o1", "o3", "o4")):
         return list(COPILOT_REASONING_EFFORTS_O_SERIES)
     normalized = normalize_copilot_model_id(model_id).lower()
+    if normalized.startswith("gpt-5.6"):
+        return list(COPILOT_REASONING_EFFORTS_GPT56)
     if normalized.startswith("gpt-5"):
         return list(COPILOT_REASONING_EFFORTS_GPT5)
     return []

@@ -209,6 +209,55 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "qqbot", "yuanbao",
 })
 
+# Maximum repeat count for cron jobs — a safeguard against accidental
+# high values.  Configurable via cron.max_repeat in config.yaml.
+_MAX_REPEAT_DEFAULT = 1000
+
+
+def _get_max_repeat(cfg: Optional[dict] = None) -> int:
+    """Read ``max_repeat`` from the cron config section.
+
+    Returns the configured value cast to int, or ``_MAX_REPEAT_DEFAULT``
+    (1000) if unset or on any parse error.  Accepts an optional pre-loaded
+    ``cfg`` dict to avoid re-reading config.yaml when the caller already
+    has one.
+    """
+    try:
+        if cfg is None:
+            cfg = load_config() or {}
+        cron_cfg = (cfg.get("cron", {}) or {}) if isinstance(cfg, dict) else {}
+        value = cron_cfg.get("max_repeat", _MAX_REPEAT_DEFAULT)
+        return int(value) if value is not None else _MAX_REPEAT_DEFAULT
+    except Exception:
+        return _MAX_REPEAT_DEFAULT
+
+
+def _apply_max_repeat_to_job(job: dict, max_repeat: Optional[int] = None) -> bool:
+    """Clamp ``repeat.times`` on a job dict to ``max_repeat``.
+
+    If ``max_repeat`` is None, reads it from config via ``_get_max_repeat``.
+    Infinite repeats (``times`` is None) are left untouched.
+
+    Returns True if the value was clamped, False if unchanged.
+    """
+    if max_repeat is None:
+        max_repeat = _get_max_repeat()
+    repeat = job.get("repeat")
+    if not isinstance(repeat, dict):
+        return False
+    times = repeat.get("times")
+    if times is None:
+        return False  # infinite — intentional, don't clamp
+    if times > max_repeat:
+        repeat["times"] = max_repeat
+        logger.warning(
+            "Job '%s': repeat count %d exceeds max_repeat=%d — clamped to %d",
+            job.get("name", job.get("id", "?")), times, max_repeat, max_repeat,
+        )
+        return True
+    return False
+
+
 # Platforms that support a configured cron/notification home target, mapped to
 # the environment variable used by gateway setup/runtime config.
 _HOME_TARGET_ENV_VARS = {

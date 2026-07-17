@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
+import { getSession } from '@/hermes'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
 import { getRememberedRoute, getRememberedSessionId, setRememberedRoute, setRememberedSessionId } from '@/store/session'
@@ -9,7 +10,9 @@ import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/
 import { isSecondaryWindow } from '@/store/windows'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
-import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
+import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
+
+import { resolveRememberedSessionId } from './remembered-session'
 
 interface DesktopIntegrationsParams {
   chatOpen: boolean
@@ -63,7 +66,23 @@ export function useDesktopIntegrations({
   // you don't want to boot into a modal.
   useEffect(() => {
     if (routedSessionId) {
-      setRememberedSessionId(routedSessionId)
+      let cancelled = false
+
+      void resolveRememberedSessionId(routedSessionId, getSession)
+        .then(rememberedSessionId => {
+          if (cancelled) {
+            return
+          }
+
+          setRememberedSessionId(rememberedSessionId)
+          setRememberedRoute(rememberedSessionId ? sessionRoute(rememberedSessionId) : null)
+        })
+        // Keep the last known-good value while a backend is temporarily unavailable.
+        .catch(() => undefined)
+
+      return () => {
+        cancelled = true
+      }
     }
 
     if (!isOverlayView(appViewForPath(locationPathname))) {
@@ -86,6 +105,23 @@ export function useDesktopIntegrations({
     restoredRef.current = true
     const route = getRememberedRoute()
 
+    const rememberedSessionId = route ? routeSessionId(route) : null
+
+    if (route && rememberedSessionId) {
+      void resolveRememberedSessionId(rememberedSessionId, getSession)
+        .then(safeSessionId => {
+          setRememberedSessionId(safeSessionId)
+          setRememberedRoute(safeSessionId ? sessionRoute(safeSessionId) : null)
+
+          if (safeSessionId) {
+            navigate(sessionRoute(safeSessionId), { replace: true })
+          }
+        })
+        .catch(() => navigate(route, { replace: true }))
+
+      return
+    }
+
     if (route && route !== NEW_CHAT_ROUTE && !isOverlayView(appViewForPath(route))) {
       navigate(route, { replace: true })
 
@@ -95,7 +131,16 @@ export function useDesktopIntegrations({
     const last = getRememberedSessionId()
 
     if (last) {
-      navigate(sessionRoute(last), { replace: true })
+      void resolveRememberedSessionId(last, getSession)
+        .then(safeSessionId => {
+          setRememberedSessionId(safeSessionId)
+          setRememberedRoute(safeSessionId ? sessionRoute(safeSessionId) : null)
+
+          if (safeSessionId) {
+            navigate(sessionRoute(safeSessionId), { replace: true })
+          }
+        })
+        .catch(() => navigate(sessionRoute(last), { replace: true }))
     }
   }, [locationPathname, navigate])
 

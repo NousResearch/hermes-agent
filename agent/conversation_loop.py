@@ -5012,14 +5012,37 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
-                
+
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
                 # status messages.  _mute_post_response was set during a
                 # prior housekeeping tool turn and should not silence the
                 # final response path.
                 agent._mute_post_response = False
-                
+
+                # Post-response compression check (mirrors tool-call branch at ~line 4956).
+                # A long pure-chat session can cross the compression threshold without
+                # ever hitting the tool-call compression site — guard against that.
+                _compressor = agent.context_compressor
+                if _compressor.last_prompt_tokens > 0:
+                    _real_tokens = _compressor.last_prompt_tokens
+                elif _compressor.last_prompt_tokens == -1:
+                    _real_tokens = 0
+                else:
+                    _real_tokens = estimate_request_tokens_rough(
+                        messages, tools=agent.tools or None
+                    )
+                if agent.compression_enabled and _compressor.should_compress(_real_tokens):
+                    agent._safe_print("  ⟳ compacting context…")
+                    messages, active_system_prompt = agent._compress_context(
+                        messages, system_message,
+                        approx_tokens=agent.context_compressor.last_prompt_tokens,
+                        task_id=effective_task_id,
+                    )
+                    conversation_history = conversation_history_after_compression(
+                        agent, messages
+                    )
+
                 # Check if response only has think block with no actual content after it
                 if not agent._has_content_after_think_block(final_response):
                     # ── Partial stream recovery ─────────────────────

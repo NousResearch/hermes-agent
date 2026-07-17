@@ -83,6 +83,8 @@ _MAX_MESSAGE_LENGTH = 8000
 _DEDUP_MAX_SIZE = 4000
 _DEDUP_WINDOW_SECONDS = 48 * 3600
 
+_FFFC_WAIT_SECONDS = 15.0  # Timeout for waiting on an attachment after a U+FFFC placeholder.
+
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
 
 # Cap on a self-heal `npm ci`/`npm install` of the sidecar deps. A cold
@@ -333,6 +335,8 @@ class PhotonAdapter(BasePlatformAdapter):
         self._last_inbound_by_chat: Dict[str, str] = {}
         # Last time we sent a typing indicator per chat, for cooldown gating.
         self._typing_last_sent: Dict[str, float] = {}
+
+        self._pending_fffc: Dict[str, tuple[float, Any]] = {}  # chat_key → (timestamp, asyncio.Task)
 
         # Group-chat mention gating (parity with BlueBubbles). When enabled,
         # group messages are ignored unless they match a wake word; DMs are
@@ -611,6 +615,14 @@ class PhotonAdapter(BasePlatformAdapter):
                 del seen[old]
         return False
 
+    async def _fffc_timeout_handler(self, chat_key: str, message_id: str) -> None:
+        await asyncio.sleep(_FFFC_WAIT_SECONDS)
+        if self._pending_fffc.pop(chat_key, None):
+            logger.warning(
+                "[photon] wait for attachment was too long, can't retrieve attachment data "
+                "(message %s, chat %s)", message_id, chat_key,
+            )
+
     async def _dispatch_inbound(self, event: Dict[str, Any]) -> None:
         """Normalize a sidecar inbound event and dispatch it to the gateway.
 
@@ -751,8 +763,25 @@ class PhotonAdapter(BasePlatformAdapter):
         self._record_last_inbound(space_id, event.get("messageId"))
         if ctype == "text":
             text = content.get("text") or ""
+            # U+FFFC placeholder — wait for the real attachment instead of dispatching.
+            if text.strip() == "\ufffc":
+                chat_key = space_id
+                prev = self._pending_fffc.pop(chat_key, None)
+                if prev and prev[1] and not prev[1].done():
+                    prev[1].cancel()
+                task = asyncio.create_task(
+                    self._fffc_timeout_handler(chat_key, event.get("messageId") or "")
+                )
+                self._pending_fffc[chat_key] = (time.monotonic(), task)
+                logger.debug("[photon] U+FFFC placeholder received — waiting for attachment")
+                return
             mtype = MessageType.TEXT
         elif ctype in {"attachment", "voice"}:
+            # Cancel any pending U+FFFC timeout — the real attachment arrived.
+            prev = self._pending_fffc.pop(space_id, None)
+            if prev and prev[1] and not prev[1].done():
+                prev[1].cancel()
+                logger.debug("[photon] attachment arrived — cancelling U+FFFC timeout")
             text, mtype, media_urls, media_types = _normalize_binary_payload(content)
         elif ctype == "group":
             text_parts: List[str] = []

@@ -8616,7 +8616,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._pending_approvals.clear()
             if hasattr(self, '_busy_ack_ts'):
                 self._busy_ack_ts.clear()
-            self._shutdown_event.set()
 
             # Global cleanup: kill any remaining tool subprocesses not tied
             # to a specific agent (catch-all for zombie prevention). On the
@@ -8698,7 +8697,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if active_agents:
                 self._increment_restart_failure_counts(set(active_agents.keys()))
 
-            if self._restart_requested and self._restart_command_source is None:
+            # Persist the home-startup notification before releasing the shutdown
+            # event. start_gateway() waits on that event and may otherwise exit
+            # before a confirmed non-chat restart handoff is durable.
+            #
+            # An unexpected SIGTERM is deliberately not enough evidence: the same
+            # signal path covers OOM recovery and a bare `kill`, after which a
+            # later manual cold start must not emit a stale recovery notice.
+            is_non_chat_restart = (
+                self._restart_requested and self._restart_command_source is None
+            )
+            if is_non_chat_restart:
                 try:
                     atomic_json_write(
                         _planned_restart_notification_path(),
@@ -8767,6 +8776,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 self._update_runtime_status("stopped", self._exit_reason)
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
+            # Release wait_for_shutdown() only after lifecycle markers and
+            # terminal status are durable; this prevents the replacement path
+            # from racing past a supervisor-restart notification.
+            self._shutdown_event.set()
 
         self._stop_task = asyncio.create_task(_stop_impl())
         await self._stop_task

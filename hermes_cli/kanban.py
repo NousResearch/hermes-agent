@@ -950,11 +950,11 @@ def kanban_command(args: argparse.Namespace) -> int:
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
     with board_scope:
-        # Standalone dispatch must be admitted before touching the DB. Its
-        # handler initializes only after it holds the machine-global lock.
-        if action == "dispatch":
+        # Standalone dispatchers must be admitted before touching the DB. Their
+        # handlers initialize only after they hold the machine-global lock.
+        if action in {"dispatch", "daemon"}:
             try:
-                return _cmd_dispatch(args)
+                return (_cmd_dispatch if action == "dispatch" else _cmd_daemon)(args)
             except (ValueError, RuntimeError) as exc:
                 print(f"kanban: {exc}", file=sys.stderr)
                 return 1
@@ -991,7 +991,6 @@ def kanban_command(args: argparse.Namespace) -> int:
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
             "tail":     _cmd_tail,
-            "daemon":   _cmd_daemon,
             "watch":    _cmd_watch,
             "stats":    _cmd_stats,
             "log":      _cmd_log,
@@ -2419,7 +2418,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    if kanban_config.get("dispatch_in_gateway", True):
+    if kanban_config.get("dispatch_in_gateway", True) is not False:
         print(
             "hermes kanban daemon: refusing --force while "
             "kanban.dispatch_in_gateway=true; use the gateway dispatcher or set it false first.",

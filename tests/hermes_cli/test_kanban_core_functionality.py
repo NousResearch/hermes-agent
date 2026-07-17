@@ -3573,6 +3573,34 @@ def test_cli_daemon_without_force_prints_deprecation_exits_2(kanban_home, capsys
     assert "hermes gateway start" in err
 
 
+@pytest.mark.parametrize("force", [False, True])
+def test_public_cli_daemon_rejects_before_db_init(
+    kanban_home, monkeypatch, force,
+):
+    """Daemon admission runs before the public command can touch the DB."""
+    from hermes_cli import kanban as kb_cli
+
+    calls = []
+    monkeypatch.setattr(kb, "init_db", lambda: calls.append("init"))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True}},
+    )
+    ns = argparse.Namespace(
+        kanban_action="daemon",
+        board=None,
+        force=force,
+        interval=60.0,
+        max=None,
+        failure_limit=3,
+        pidfile=None,
+        verbose=False,
+    )
+
+    assert kb_cli.kanban_command(ns) == 2
+    assert calls == []
+
+
 def test_cli_daemon_force_refuses_gateway_owned_dispatch(kanban_home, monkeypatch, capsys):
     """--force must not start a second dispatcher while gateway mode is on."""
     from hermes_cli import kanban as kb_cli
@@ -3591,6 +3619,41 @@ def test_cli_daemon_force_refuses_gateway_owned_dispatch(kanban_home, monkeypatc
     assert kb_cli._cmd_daemon(ns) == 2
     assert calls == []
     assert "dispatch_in_gateway=true" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("dispatch_in_gateway", [None, 0, "", [], {}])
+def test_cli_daemon_force_refuses_until_literal_false_admission(
+    tmp_path, monkeypatch, capsys, dispatch_in_gateway,
+):
+    """Malformed falsy config cannot reach standalone dispatcher state."""
+    from gateway import kanban_watchers
+    from hermes_cli import kanban as kb_cli
+
+    home = tmp_path / ".hermes"
+    calls = []
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": dispatch_in_gateway}},
+    )
+    monkeypatch.setattr(
+        kanban_watchers, "_acquire_singleton_lock",
+        lambda path: calls.append("lock") or (object(), "held"),
+    )
+    monkeypatch.setattr(
+        kanban_watchers, "_release_singleton_lock",
+        lambda value: calls.append("unlock"),
+    )
+    monkeypatch.setattr(kb, "run_daemon", lambda **kwargs: calls.append("run_daemon"))
+    ns = argparse.Namespace(
+        force=True, interval=60.0, max=None, failure_limit=3,
+        pidfile=None, verbose=False,
+    )
+
+    assert kb_cli._cmd_daemon(ns) == 2
+    assert calls == []
+    assert not home.exists()
+    assert "refusing --force" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("lock_state", ["contended", "unavailable"])

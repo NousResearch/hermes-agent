@@ -1528,6 +1528,7 @@ class TestShutdown:
         shutdown_started = threading.Event()
         parked_task_done = threading.Event()
         scheduled_shutdown = {}
+        schedule_count = 0
 
         class StalledShutdownServer(MCPServerTask):
             async def shutdown(self):
@@ -1557,7 +1558,12 @@ class TestShutdown:
             mcp_mod._servers[server.name] = server
 
         def schedule_then_report_timeout(coro, target_loop, **_kwargs):
+            nonlocal schedule_count
+            schedule_count += 1
             future = asyncio.run_coroutine_threadsafe(coro, target_loop)
+            if schedule_count > 1:
+                return future
+
             scheduled_shutdown["future"] = future
 
             class TimedOutFuture:
@@ -1581,6 +1587,7 @@ class TestShutdown:
             )
             assert parked_task.done()
             assert scheduled_shutdown["future"].done()
+            assert schedule_count == 2
         finally:
             with mcp_mod._lock:
                 mcp_mod._servers.clear()

@@ -348,6 +348,11 @@ _RECYCLED_RECONNECT_TIMEOUT = 15.0
 _DEFAULT_KEEPALIVE_INTERVAL = 180  # seconds between liveness pings
 _MIN_KEEPALIVE_INTERVAL = 5        # clamp floor for configured intervals
 
+# Final shutdown gives pending MCP-loop tasks one bounded cancellation cycle
+# before closing their owning loop. Cooperative parked/reconnect waiters finish
+# immediately; cancellation-resistant tasks must not hang process exit.
+_MCP_LOOP_DRAIN_TIMEOUT = 3.0
+
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
@@ -5887,12 +5892,16 @@ def _stop_mcp_loop_if_idle() -> bool:
     return _stop_mcp_loop(only_if_idle=True)
 
 
-async def _drain_mcp_loop_tasks() -> None:
+async def _drain_mcp_loop_tasks(
+    *,
+    timeout: float = _MCP_LOOP_DRAIN_TIMEOUT,
+) -> None:
     """Cancel every task still pending on the MCP loop and reap it.
 
     Cancelling is not enough on its own: ``Task.cancel()`` only schedules the
-    throw, so the task must be awaited before the loop goes away. Gather them
-    here — while the loop is still open — so each one runs its own ``finally``.
+    throw, so tasks need a cancellation cycle before the loop goes away. Wait
+    for them here — on their owning loop — but keep the final drain bounded so
+    a task that suppresses cancellation cannot hang process exit indefinitely.
     """
     current = asyncio.current_task()
     pending = [t for t in asyncio.all_tasks() if t is not current and not t.done()]
@@ -5901,7 +5910,23 @@ async def _drain_mcp_loop_tasks() -> None:
     logger.debug("Draining %d pending task(s) from the MCP loop", len(pending))
     for task in pending:
         task.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
+
+    done, still_pending = await asyncio.wait(pending, timeout=timeout)
+    for task in done:
+        if task.cancelled():
+            continue
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.debug("Pending MCP loop task ended during shutdown: %s", exc)
+
+    if still_pending:
+        logger.warning(
+            "%d MCP loop task(s) still pending after %.1fs drain",
+            len(still_pending), timeout,
+        )
 
 
 def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
@@ -5925,22 +5950,31 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
             from agent.async_utils import safe_schedule_threadsafe
 
             future = safe_schedule_threadsafe(
-                _drain_mcp_loop_tasks(), loop,
+                _drain_mcp_loop_tasks(timeout=_MCP_LOOP_DRAIN_TIMEOUT), loop,
                 logger=logger,
                 log_message="MCP loop drain: failed to schedule",
+                log_level=logging.WARNING,
             )
             if future is not None:
                 try:
-                    future.result(timeout=5)
+                    future.result(timeout=_MCP_LOOP_DRAIN_TIMEOUT + 1)
+                except TimeoutError:
+                    future.cancel()
+                    logger.warning(
+                        "Timed out waiting for MCP loop drain after %.1fs",
+                        _MCP_LOOP_DRAIN_TIMEOUT + 1,
+                    )
                 except BaseException as exc:
-                    logger.debug("Error draining MCP loop tasks: %s", exc)
+                    logger.warning("Error draining MCP loop tasks: %s", exc)
         loop.call_soon_threadsafe(loop.stop)
         if thread is not None:
             thread.join(timeout=5)
+            if thread.is_alive():
+                logger.warning("MCP event loop thread did not stop within 5.0s")
         try:
             loop.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Unable to close MCP event loop cleanly: %s", exc)
         # After closing the loop, any stdio subprocesses that survived the
         # graceful shutdown are now orphaned — include active PIDs too
         # since the loop is gone and no session can still be in flight.

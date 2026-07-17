@@ -795,7 +795,23 @@ class TestMCPLoopDrainOnStop:
                 time.sleep(0.01)
             assert state["started"], "task never started on the MCP loop"
 
-            mcp_mod._stop_mcp_loop()
+            stop_saw_cleanup = []
+            call_soon_threadsafe = loop.call_soon_threadsafe
+
+            def record_stop_order(callback, *args, **kwargs):
+                if (
+                    getattr(callback, "__self__", None) is loop
+                    and getattr(callback, "__name__", None) == "stop"
+                ):
+                    stop_saw_cleanup.append(state["cleanup_ran"])
+                return call_soon_threadsafe(callback, *args, **kwargs)
+
+            with patch.object(
+                loop,
+                "call_soon_threadsafe",
+                side_effect=record_stop_order,
+            ):
+                mcp_mod._stop_mcp_loop()
 
             assert state["task"] is not None
             assert state["task"].done(), "task left pending when the loop closed"
@@ -803,8 +819,79 @@ class TestMCPLoopDrainOnStop:
                 f"cleanup ran against a closed loop: {state['cleanup_error']!r}"
             )
             assert state["cleanup_ran"], "task cleanup never ran"
+            assert stop_saw_cleanup == [True], "loop.stop ran before task cleanup"
         finally:
             with mcp_mod._lock:
                 mcp_mod._servers.clear()
                 mcp_mod._server_connecting.clear()
             mcp_mod._stop_mcp_loop()
+
+    def test_drain_is_bounded_when_task_ignores_cancellation(self, caplog):
+        """A cancellation-resistant task must not hang final MCP shutdown."""
+        import tools.mcp_tool as mcp_mod
+
+        async def _run():
+            release = asyncio.Event()
+
+            async def cancellation_resistant():
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    await release.wait()
+
+            task = asyncio.create_task(cancellation_resistant())
+            await asyncio.sleep(0)
+            try:
+                with caplog.at_level("WARNING", logger=mcp_mod.logger.name):
+                    await mcp_mod._drain_mcp_loop_tasks(timeout=0.01)
+                assert not task.done(), "drain waited indefinitely for resistant task"
+            finally:
+                release.set()
+                if not task.done() and task.cancelling() == 0:
+                    task.cancel()
+                await task
+
+        asyncio.run(_run())
+
+        assert any(
+            "still pending after" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_stop_warns_when_drain_wait_times_out(self, caplog):
+        """A failed final drain must be visible instead of silently no-oping."""
+        import tools.mcp_tool as mcp_mod
+
+        class TimedOutFuture:
+            def result(self, timeout):
+                assert timeout > 0
+                raise TimeoutError("simulated drain timeout")
+
+            def cancel(self):
+                return True
+
+        def report_timeout(coro, _loop, **_kwargs):
+            coro.close()
+            return TimedOutFuture()
+
+        with mcp_mod._lock:
+            mcp_mod._servers.clear()
+            mcp_mod._server_connecting.clear()
+        mcp_mod._ensure_mcp_loop()
+        try:
+            with caplog.at_level("WARNING", logger=mcp_mod.logger.name):
+                with patch(
+                    "agent.async_utils.safe_schedule_threadsafe",
+                    side_effect=report_timeout,
+                ):
+                    mcp_mod._stop_mcp_loop()
+        finally:
+            with mcp_mod._lock:
+                mcp_mod._servers.clear()
+                mcp_mod._server_connecting.clear()
+            mcp_mod._stop_mcp_loop()
+
+        assert any(
+            "Timed out waiting for MCP loop drain" in record.getMessage()
+            for record in caplog.records
+        )

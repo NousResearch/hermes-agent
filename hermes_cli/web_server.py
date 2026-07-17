@@ -2467,7 +2467,7 @@ async def git_branch_switch_route(body: GitBranchSwitchBody):
 
 # Host TCP ports each port-binding gateway platform listens on, as
 # ``platform-name -> (config port key, adapter default)``.  Mirrors
-# ``_PORT_BINDING_PLATFORM_VALUES`` in gateway/run.py and each adapter's
+# ``PORT_BINDING_PLATFORM_VALUES`` in gateway/config.py and each adapter's
 # DEFAULT_PORT / DEFAULT_WEBHOOK_PORT constant.  Used only for the dashboard's
 # gateway-topology readout — best-effort display data, not a bind source.
 _PORT_BINDING_PLATFORM_PORTS: Dict[str, Tuple[str, int]] = {
@@ -3282,12 +3282,20 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
 
     cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
 
+    # The dashboard runs *inside* the gateway process, so os.environ carries
+    # _HERMES_GATEWAY=1. Inheriting it makes a spawned `hermes gateway restart`
+    # trip the in-process restart-loop guard and exit 1 — silently failing the
+    # dashboard's auto-restart paths. The gateway's own restart watcher already
+    # drops it (gateway/run.py); mirror that here (#52470).
+    action_env = {**os.environ, "HERMES_NONINTERACTIVE": "1"}
+    action_env.pop("_HERMES_GATEWAY", None)
+
     popen_kwargs: Dict[str, Any] = {
         "cwd": str(PROJECT_ROOT),
         "stdin": subprocess.DEVNULL,
         "stdout": log_file,
         "stderr": subprocess.STDOUT,
-        "env": {**os.environ, "HERMES_NONINTERACTIVE": "1"},
+        "env": action_env,
     }
     if sys.platform == "win32":
         popen_kwargs["creationflags"] = windows_detach_flags()
@@ -8088,6 +8096,57 @@ async def get_messaging_platforms(profile: Optional[str] = None):
         }
 
 
+def _multiplex_port_binding_conflict(
+    platform_id: str, requested_profile: Optional[str]
+) -> Optional[str]:
+    """Reason enabling ``platform_id`` on the target profile would break a
+    multiplexed gateway, or ``None`` when the change is allowed.
+
+    Mirrors the gateway's startup rule (``_start_one_profile_adapters`` in
+    gateway/run.py): with ``gateway.multiplex_profiles`` on, the default
+    profile owns the single shared HTTP listener and serves every profile via
+    the ``/p/<profile>/`` prefix, so a SECONDARY profile must never enable a
+    port-binding platform. Without this pre-write check the dashboard happily
+    persisted the invalid config and the shared gateway died with
+    ``MultiplexConfigError`` on its next start — for ALL profiles. Only
+    *enabling* is blocked; disabling/clearing stays allowed so users can
+    repair an already-invalid profile.
+    """
+    from gateway.config import PORT_BINDING_PLATFORM_VALUES, load_gateway_config
+
+    if platform_id not in PORT_BINDING_PLATFORM_VALUES:
+        return None
+
+    requested = (requested_profile or "").strip()
+    if not requested or requested.lower() == "current":
+        from hermes_cli.profiles import get_active_profile_name
+
+        # The dashboard's own profile. "custom" (an unrecognized HERMES_HOME)
+        # is outside the profiles tree, so a multiplexed gateway never serves
+        # it — nothing to guard.
+        target = get_active_profile_name()
+    else:
+        _resolve_profile_dir(requested)  # same 400/404 as _profile_scope
+        target = requested
+    if target in ("default", "custom"):
+        return None
+
+    # The multiplex flag that matters is the one the shared gateway reads at
+    # startup: the DEFAULT profile's gateway config (plus the process-wide
+    # GATEWAY_MULTIPLEX_PROFILES override, which load_gateway_config applies).
+    with _config_profile_scope("default"):
+        if not load_gateway_config().multiplex_profiles:
+            return None
+
+    return (
+        f"Cannot enable '{platform_id}' on profile '{target}': it binds its "
+        "own listener port, and gateway.multiplex_profiles is on, so the "
+        "default profile owns the single shared HTTP listener for every "
+        "profile. Configure this channel on the default profile instead "
+        "(disabling or clearing it here is still allowed)."
+    )
+
+
 @app.put("/api/messaging/platforms/{platform_id}")
 async def update_messaging_platform(
     platform_id: str, body: MessagingPlatformUpdate, profile: Optional[str] = None
@@ -8097,6 +8156,20 @@ async def update_messaging_platform(
         raise HTTPException(
             status_code=404, detail=f"Unknown messaging platform: {platform_id}"
         )
+
+    target_profile = body.profile or profile
+    if body.enabled:
+        conflict = _multiplex_port_binding_conflict(platform_id, target_profile)
+        if conflict:
+            # Reject BEFORE any .env/config.yaml write so the profile stays
+            # loadable by the multiplexed gateway.
+            _log.info(
+                "Rejected messaging platform update: platform=%s profile=%s "
+                "(multiplex port-binding conflict)",
+                platform_id,
+                target_profile or "current",
+            )
+            raise HTTPException(status_code=409, detail=conflict)
 
     allowed_env = set(entry["env_vars"])
     try:
@@ -8123,6 +8196,16 @@ async def update_messaging_platform(
             if body.enabled is not None:
                 _write_platform_enabled(platform_id, body.enabled)
 
+        # Audit trail for channel config mutations: names only, never values.
+        _log.info(
+            "Messaging platform updated: platform=%s profile=%s enabled=%s "
+            "env_keys=%s cleared_keys=%s",
+            platform_id,
+            target_profile or "current",
+            body.enabled,
+            sorted(body.env),
+            sorted(body.clear_env),
+        )
         return {"ok": True, "platform": platform_id}
     except HTTPException:
         raise
@@ -9861,12 +9944,15 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
             status_code=400,
             detail="ids must contain at most 500 entries",
         )
-    db = _open_session_db_for_profile(body.profile)
-    try:
-        deleted = db.delete_sessions(body.ids)
-        return {"ok": True, "deleted": deleted}
-    finally:
-        db.close()
+    def _delete() -> int:
+        db = _open_session_db_for_profile(body.profile)
+        try:
+            return db.delete_sessions(body.ids)
+        finally:
+            db.close()
+
+    deleted = await asyncio.to_thread(_delete)
+    return {"ok": True, "deleted": deleted}
 
 
 @app.post("/api/sessions/import")
@@ -9903,11 +9989,14 @@ async def count_empty_sessions_endpoint(profile: Optional[str] = None):
     UI hides the affordance so users aren't presented with a button
     that does nothing. Cheap, single-COUNT query.
     """
-    db = _open_session_db_for_profile(profile)
-    try:
-        return {"count": db.count_empty_sessions()}
-    finally:
-        db.close()
+    def _count() -> int:
+        db = _open_session_db_for_profile(profile)
+        try:
+            return db.count_empty_sessions()
+        finally:
+            db.close()
+
+    return {"count": await asyncio.to_thread(_count)}
 
 
 @app.delete("/api/sessions/empty")
@@ -9930,12 +10019,15 @@ async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
     prune-on-startup pass. Matching that pre-existing trade-off keeps
     the two delete endpoints' DB-vs-disk behaviour consistent.
     """
-    db = _open_session_db_for_profile(profile)
-    try:
-        deleted = db.delete_empty_sessions()
-        return {"ok": True, "deleted": deleted}
-    finally:
-        db.close()
+    def _delete() -> int:
+        db = _open_session_db_for_profile(profile)
+        try:
+            return db.delete_empty_sessions()
+        finally:
+            db.close()
+
+    deleted = await asyncio.to_thread(_delete)
+    return {"ok": True, "deleted": deleted}
 
 
 @app.get("/api/sessions/stats")
@@ -10005,19 +10097,22 @@ async def get_session_latest_descendant(
     session_id: str,
     profile: Optional[str] = None,
 ):
-    db = _open_session_db_for_profile(profile)
-    try:
-        latest, path = _session_latest_descendant(session_id, db)
-        if not latest:
-            raise HTTPException(status_code=404, detail="Session not found")
-        return {
-            "requested_session_id": path[0] if path else session_id,
-            "session_id": latest,
-            "path": path,
-            "changed": bool(path and latest != path[0]),
-        }
-    finally:
-        db.close()
+    def _lookup():
+        db = _open_session_db_for_profile(profile)
+        try:
+            return _session_latest_descendant(session_id, db)
+        finally:
+            db.close()
+
+    latest, path = await asyncio.to_thread(_lookup)
+    if not latest:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {
+        "requested_session_id": path[0] if path else session_id,
+        "session_id": latest,
+        "path": path,
+        "changed": bool(path and latest != path[0]),
+    }
 
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(
@@ -10026,26 +10121,32 @@ async def get_session_messages(
     limit: Optional[int] = None,
     offset: int = 0,
 ):
-    db = _open_session_db_for_profile(profile)
-    try:
-        sid = db.resolve_session_id(session_id)
-        if not sid:
-            raise HTTPException(status_code=404, detail="Session not found")
-        sid = db.resolve_resume_session_id(sid)
-        # Clamp limit to prevent abuse (max 500 per page)
-        _limit = min(limit, 500) if limit is not None else None
-        messages = db.get_messages(sid, limit=_limit, offset=offset)
-        return {
-            "session_id": sid,
-            "messages": messages,
-            "pagination": {
-                "limit": _limit,
-                "offset": offset,
-                "returned": len(messages),
-            },
-        }
-    finally:
-        db.close()
+    def _read():
+        db = _open_session_db_for_profile(profile)
+        try:
+            sid = db.resolve_session_id(session_id)
+            if not sid:
+                return None
+            sid = db.resolve_resume_session_id(sid)
+            # Clamp limit to prevent abuse (max 500 per page)
+            _limit = min(limit, 500) if limit is not None else None
+            return sid, _limit, db.get_messages(sid, limit=_limit, offset=offset)
+        finally:
+            db.close()
+
+    result = await asyncio.to_thread(_read)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    sid, _limit, messages = result
+    return {
+        "session_id": sid,
+        "messages": messages,
+        "pagination": {
+            "limit": _limit,
+            "offset": offset,
+            "returned": len(messages),
+        },
+    }
 
 
 @app.delete("/api/sessions/{session_id}")
@@ -10053,24 +10154,27 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
     # ``profile`` deletes a session belonging to another (local) profile by
     # opening its state.db directly. Remote profiles never reach here — the
     # desktop routes their DELETE to the remote backend. Omit for current/default.
-    db = _open_session_db_for_profile(profile)
-    try:
-        # Resolve exact ids / unique prefixes like every other session endpoint
-        # (detail, messages, rename, export all do). A session that no longer
-        # exists is an idempotent success: DELETE's contract is "ensure it's
-        # gone", and the desktop optimistically removes the row then RESTORES it
-        # on any error — so a 404 on an already-absent row resurrected a ghost
-        # row and surfaced "session not found". /goal + auto-compression churn
-        # leaves transient empty rows (reaped by empty-session hygiene) that
-        # race the sidebar snapshot, which is exactly when this fired. Mirrors
-        # the bulk-delete endpoint, which already treats ghost ids as success.
-        sid = db.resolve_session_id(session_id)
-        if not sid:
-            return {"ok": True, "already_absent": True}
-        db.delete_session(sid)
-        return {"ok": True}
-    finally:
-        db.close()
+    def _delete():
+        db = _open_session_db_for_profile(profile)
+        try:
+            # Resolve exact ids / unique prefixes like every other session endpoint
+            # (detail, messages, rename, export all do). A session that no longer
+            # exists is an idempotent success: DELETE's contract is "ensure it's
+            # gone", and the desktop optimistically removes the row then RESTORES it
+            # on any error — so a 404 on an already-absent row resurrected a ghost
+            # row and surfaced "session not found". /goal + auto-compression churn
+            # leaves transient empty rows (reaped by empty-session hygiene) that
+            # race the sidebar snapshot, which is exactly when this fired. Mirrors
+            # the bulk-delete endpoint, which already treats ghost ids as success.
+            sid = db.resolve_session_id(session_id)
+            if not sid:
+                return {"ok": True, "already_absent": True}
+            db.delete_session(sid)
+            return {"ok": True}
+        finally:
+            db.close()
+
+    return await asyncio.to_thread(_delete)
 
 
 class SessionRename(BaseModel):
@@ -10118,17 +10222,18 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
 @app.get("/api/sessions/{session_id}/export")
 async def export_session_endpoint(session_id: str, profile: Optional[str] = None):
     """Export a single session (metadata + messages) as JSON."""
-    db = _open_session_db_for_profile(profile)
-    try:
-        sid = db.resolve_session_id(session_id)
-        if not sid:
-            raise HTTPException(status_code=404, detail="Session not found")
-        data = db.export_session(sid)
-        if data is None:
-            raise HTTPException(status_code=404, detail="Session not found")
-        return data
-    finally:
-        db.close()
+    def _export():
+        db = _open_session_db_for_profile(profile)
+        try:
+            sid = db.resolve_session_id(session_id)
+            return db.export_session(sid) if sid else None
+        finally:
+            db.close()
+
+    data = await asyncio.to_thread(_export)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return data
 
 
 class SessionPrune(BaseModel):
@@ -10159,8 +10264,7 @@ class SessionPrune(BaseModel):
     dry_run: bool = False
 
 
-@app.post("/api/sessions/prune")
-async def prune_sessions_endpoint(body: SessionPrune):
+def _prune_sessions(body: SessionPrune):
     """Delete ended sessions matching filters (mirrors `hermes sessions prune`)."""
     has_window = (
         body.started_before is not None or body.started_after is not None
@@ -10240,6 +10344,12 @@ async def prune_sessions_endpoint(body: SessionPrune):
         return {"ok": True, "removed": removed}
     finally:
         db.close()
+
+
+@app.post("/api/sessions/prune")
+async def prune_sessions_endpoint(body: SessionPrune):
+    """Delete ended sessions matching filters without blocking the event loop."""
+    return await asyncio.to_thread(_prune_sessions, body)
 
 
 # ---------------------------------------------------------------------------
@@ -14297,8 +14407,116 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/analytics/usage")
-async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
+def _aux_usage_rows(db, cutoff: float) -> List[Dict[str, Any]]:
+    """Per-(model, task) auxiliary usage within the window (issue #23270).
+
+    Reads the task-dimension rows (task != '') that record_auxiliary_usage
+    writes into session_model_usage. Returns [] when the table predates the
+    task column (older DB opened read-only by newer code).
+    """
+    try:
+        cur = db._conn.execute("""
+            SELECT u.model,
+                   u.task,
+                   u.billing_provider,
+                   SUM(u.input_tokens) as input_tokens,
+                   SUM(u.output_tokens) as output_tokens,
+                   SUM(u.cache_read_tokens) as cache_read_tokens,
+                   SUM(u.reasoning_tokens) as reasoning_tokens,
+                   COALESCE(SUM(u.estimated_cost_usd), 0) as estimated_cost,
+                   COUNT(DISTINCT u.session_id) as sessions,
+                   SUM(COALESCE(u.api_call_count, 0)) as api_calls,
+                   MAX(u.last_seen) as last_used_at
+            FROM session_model_usage u
+            JOIN sessions s ON s.id = u.session_id
+            WHERE s.started_at > ? AND u.task != ''
+            GROUP BY u.model, u.task, u.billing_provider
+            ORDER BY SUM(u.input_tokens) + SUM(u.output_tokens) DESC
+        """, (cutoff,))
+        return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        # Table predates the task column (older DB opened by newer code) —
+        # aux breakdown is simply unavailable.
+        return []
+
+
+def _merge_aux_into_by_model(
+    by_model: List[Dict[str, Any]], aux_rows: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Fold aux usage rows into the sessions-derived per-model list.
+
+    Aux usage lives only in session_model_usage (never in the sessions
+    counters), so adding it here cannot double-count. Models that ONLY
+    appear via aux calls (e.g. a dedicated vision model) get their own
+    entry — previously they were entirely invisible.
+    """
+    if not aux_rows:
+        return by_model
+    merged: Dict[str, Dict[str, Any]] = {}
+    for row in by_model:
+        merged[row.get("model") or "unknown"] = row
+    for aux in aux_rows:
+        model = aux.get("model") or "unknown"
+        target = merged.get(model)
+        if target is None:
+            target = {
+                "model": model,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "estimated_cost": 0,
+                "sessions": 0,
+                "api_calls": 0,
+            }
+            merged[model] = target
+        target["input_tokens"] = (target.get("input_tokens") or 0) + (aux.get("input_tokens") or 0)
+        target["output_tokens"] = (target.get("output_tokens") or 0) + (aux.get("output_tokens") or 0)
+        target["estimated_cost"] = (target.get("estimated_cost") or 0) + (aux.get("estimated_cost") or 0)
+        target["api_calls"] = (target.get("api_calls") or 0) + (aux.get("api_calls") or 0)
+        tasks = target.setdefault("aux_tasks", [])
+        tasks.append({
+            "task": aux.get("task") or "",
+            "input_tokens": aux.get("input_tokens") or 0,
+            "output_tokens": aux.get("output_tokens") or 0,
+            "estimated_cost": aux.get("estimated_cost") or 0,
+            "api_calls": aux.get("api_calls") or 0,
+        })
+    result = list(merged.values())
+    result.sort(
+        key=lambda r: (r.get("input_tokens") or 0) + (r.get("output_tokens") or 0),
+        reverse=True,
+    )
+    return result
+
+
+def _aux_task_summary(aux_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Aggregate aux usage rows across models into a per-task summary."""
+    by_task: Dict[str, Dict[str, Any]] = {}
+    for aux in aux_rows:
+        task = aux.get("task") or ""
+        d = by_task.setdefault(task, {
+            "task": task,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost": 0,
+            "api_calls": 0,
+            "models": [],
+        })
+        d["input_tokens"] += aux.get("input_tokens") or 0
+        d["output_tokens"] += aux.get("output_tokens") or 0
+        d["estimated_cost"] += aux.get("estimated_cost") or 0
+        d["api_calls"] += aux.get("api_calls") or 0
+        model = aux.get("model") or "unknown"
+        if model not in d["models"]:
+            d["models"].append(model)
+    result = list(by_task.values())
+    result.sort(
+        key=lambda r: (r.get("input_tokens") or 0) + (r.get("output_tokens") or 0),
+        reverse=True,
+    )
+    return result
+
+
+def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     from agent.insights import InsightsEngine
 
     db = _open_session_db_for_profile(profile)
@@ -14331,6 +14549,14 @@ async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         """, (cutoff,))
         by_model = [dict(r) for r in cur2.fetchall()]
 
+        # Fold in auxiliary usage (vision, compression, title_generation, ...)
+        # recorded per (model, task) in session_model_usage. Aux calls never
+        # touch the sessions counters, so this is add-only — no double count.
+        # Without it the models list shows only the main agent model even when
+        # aux models are actively burning tokens (issue #23270).
+        aux_rows = _aux_usage_rows(db, cutoff)
+        by_model = _merge_aux_into_by_model(by_model, aux_rows)
+
         cur3 = db._conn.execute("""
             SELECT SUM(input_tokens) as total_input,
                    SUM(output_tokens) as total_output,
@@ -14357,6 +14583,9 @@ async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         return {
             "daily": daily,
             "by_model": by_model,
+            # Aux-task summary across models (vision, compression, ...). Lets
+            # the dashboard answer "what is compression costing me" directly.
+            "by_task": _aux_task_summary(aux_rows),
             "totals": totals,
             "period_days": days,
             "skills": skills,
@@ -14368,8 +14597,12 @@ async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         db.close()
 
 
-@app.get("/api/analytics/models")
-async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
+@app.get("/api/analytics/usage")
+async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
+    return await asyncio.to_thread(_get_usage_analytics, days, profile)
+
+
+def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
     """Rich per-model analytics for the Models dashboard page.
 
     Returns token/cost/session breakdown per model plus capability metadata
@@ -14398,6 +14631,28 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
             ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
         """, (cutoff,))
         raw_rows = [dict(r) for r in cur.fetchall()]
+
+        # Add auxiliary usage as (model, provider) rows so aux-only models
+        # (dedicated vision/compression models) appear on the Models page
+        # instead of being invisible (issue #23270). Keyed by
+        # model+billing_provider to match the GROUP BY above.
+        for aux in _aux_usage_rows(db, cutoff):
+            raw_rows.append({
+                "model": aux.get("model") or "unknown",
+                "billing_provider": aux.get("billing_provider") or "",
+                "input_tokens": aux.get("input_tokens") or 0,
+                "output_tokens": aux.get("output_tokens") or 0,
+                "cache_read_tokens": aux.get("cache_read_tokens") or 0,
+                "reasoning_tokens": aux.get("reasoning_tokens") or 0,
+                "estimated_cost": aux.get("estimated_cost") or 0,
+                "actual_cost": 0,
+                "sessions": aux.get("sessions") or 0,
+                "api_calls": aux.get("api_calls") or 0,
+                "tool_calls": 0,
+                "last_used_at": aux.get("last_used_at"),
+                "avg_tokens_per_session": 0,
+                "aux_task": aux.get("task") or "",
+            })
 
         # Session rows can be created before the first billable provider call
         # finishes. If that early row records only the model name, and a later
@@ -14521,6 +14776,12 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
         }
     finally:
         db.close()
+
+
+@app.get("/api/analytics/models")
+async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
+    """Return model analytics without blocking the serving event loop."""
+    return await asyncio.to_thread(_get_models_analytics, days, profile)
 
 
 # ---------------------------------------------------------------------------
@@ -15845,7 +16106,8 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     # --- spawn PTY ------------------------------------------------------
-    resume = ws.query_params.get("resume") or None
+    raw_resume = ws.query_params.get("resume") or None
+    resume = raw_resume
     profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
@@ -15888,6 +16150,12 @@ async def pty_ws(ws: WebSocket) -> None:
 
 
     attach_token = ws.query_params.get("attach") or None
+    registry_resume = raw_resume
+    if raw_resume and env:
+        registry_resume = env.get("HERMES_TUI_RESUME") or raw_resume
+    if attach_token is not None and (registry_resume or profile):
+        # Key explicit resumes on their canonical target, never the active-session fallback.
+        attach_token = f"{attach_token}\0{profile or ''}\0{registry_resume or ''}"
 
     def _spawn():
         return PtyBridge.spawn(argv, cwd=cwd, env=env)
@@ -16087,6 +16355,77 @@ def _normalise_prefix(raw: Optional[str]) -> str:
     return normalise_prefix(raw)
 
 
+def _render_active_theme_bootstrap_css() -> str:
+    """Critical-CSS shim for the active user theme.
+
+    Returns a ``<style>`` block with the ``:root`` CSS variables that
+    ``ThemeProvider.applyTheme()`` installs once the
+    ``/api/dashboard/themes`` round-trip completes.  The goal is to
+    eliminate the green flash where the first paint shows the bundle's
+    default Hermes Teal canvas before the SPA flips the configured user
+    theme into place.
+
+    Built-in themes return an empty string — their full definitions live
+    in ``web/src/themes/presets.ts`` and are applied by the bundle
+    before paint, so no shim is needed for them.
+    """
+    try:
+        config = load_config()
+        active = cfg_get(config, "dashboard", "theme", default="default")
+        if not active or not isinstance(active, str):
+            return ""
+        # Built-in: the bundle already owns the definition, no flash.
+        if any(b["name"] == active for b in _BUILTIN_DASHBOARD_THEMES):
+            return ""
+        for theme in _discover_user_themes():
+            if theme.get("name") != active:
+                continue
+            palette = theme.get("palette") or {}
+            bg = palette.get("background") or {}
+            mg = palette.get("midground") or {}
+            bg_hex = bg.get("hex", "#0a0a0a") if isinstance(bg, dict) else "#0a0a0a"
+            mg_hex = mg.get("hex", "#e5e5e5") if isinstance(mg, dict) else "#e5e5e5"
+            typo = theme.get("typography") or {}
+            font_sans = typo.get("fontSans") or _THEME_DEFAULT_TYPOGRAPHY["fontSans"]
+            base_size = typo.get("baseSize") or _THEME_DEFAULT_TYPOGRAPHY["baseSize"]
+            # Defensive ``</style>`` escape — current values are well-known
+            # hex/font strings, but this keeps the helper safe if it is
+            # later extended to ship user-authored CSS literals.
+            def _esc(s: str) -> str:
+                return str(s).replace("</", "<\\/")
+            # Variable names MUST match what the bundle actually consumes:
+            #   - ``--background-base`` / ``--midground-base`` come from
+            #     ``layerVars()`` in ``web/src/themes/context.tsx``.
+            #   - ``--theme-font-sans`` / ``--theme-base-size`` come from
+            #     ``typographyVars()`` there, and ``index.css`` applies them
+            #     via ``html{font-family:var(--theme-font-sans);
+            #     font-size:var(--theme-base-size)}``.
+            # The ``html,body`` canvas rule references the SAME variables
+            # instead of literal values so runtime theme switches stay
+            # live: ``applyTheme()`` writes these vars as inline styles on
+            # ``documentElement``, which outrank this stylesheet block in
+            # the cascade — the rule below re-resolves automatically and
+            # never goes stale when the user picks a different theme.
+            return (
+                '<style id="hermes-theme-bootstrap">'
+                ":root{"
+                f"--background-base:{_esc(bg_hex)};"
+                f"--midground-base:{_esc(mg_hex)};"
+                f"--theme-font-sans:{_esc(font_sans)};"
+                f"--theme-base-size:{_esc(base_size)};"
+                "}"
+                "html,body{background-color:var(--background-base);"
+                "color:var(--midground-base);"
+                "font-family:var(--theme-font-sans);"
+                "font-size:var(--theme-base-size);}"
+                "</style>"
+            )
+        return ""
+    except Exception:
+        _log.debug("theme bootstrap render failed", exc_info=True)
+        return ""
+
+
 def mount_spa(application: FastAPI):
     """Mount the built SPA. Falls back to index.html for client-side routing.
 
@@ -16161,6 +16500,16 @@ def mount_spa(application: FastAPI):
             html = html.replace('href="/fonts/', f'href="{prefix}/fonts/')
             html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
             html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')
+        # Theme flash mitigation: when the active theme is a user theme
+        # (``HERMES_HOME/dashboard-themes/<name>.yaml``), inject a minimal
+        # critical-CSS block so the first paint uses the target palette.
+        # Without this the SPA paints the default Hermes Teal canvas, then
+        # ``ThemeProvider`` flips the CSS variables once
+        # ``/api/dashboard/themes`` resolves.  Built-in themes are already
+        # in the bundle's ``presets.ts`` so no shim is needed for them.
+        theme_bootstrap = _render_active_theme_bootstrap_css()
+        if theme_bootstrap:
+            html = html.replace("</head>", f"{theme_bootstrap}</head>", 1)
         html = html.replace("</head>", f"{bootstrap_script}</head>", 1)
         return HTMLResponse(
             html,
@@ -17427,6 +17776,32 @@ def start_server(
                 "There is no unauthenticated public-bind option — to keep it "
                 "local, bind 127.0.0.1 and tunnel in (SSH / Tailscale)."
             )
+            # Hint when credentials exist but the bundled provider is blocked
+            # (#54489).
+            try:
+                from hermes_cli.config import load_config as _load_cfg
+                from hermes_cli.plugins_cmd import _BASIC_AUTH_PLUGIN_KEYS
+
+                _cfg = _load_cfg()
+                _ba = (_cfg.get("dashboard") or {}).get("basic_auth") or {}
+                _disabled = (_cfg.get("plugins") or {}).get("disabled") or []
+                # Basic auth only activates with a username AND a credential
+                # (plaintext password or password_hash); don't fire the hint on
+                # a half-configured block.
+                _has_creds = bool(_ba.get("username")) and bool(
+                    _ba.get("password_hash") or _ba.get("password")
+                )
+                if _has_creds and (set(_disabled) & _BASIC_AUTH_PLUGIN_KEYS):
+                    _fix_hint = (
+                        "The 'basic' dashboard-auth plugin is in "
+                        "plugins.disabled but dashboard.basic_auth is "
+                        "configured.\n"
+                        "Remove 'basic' from plugins.disabled (or run "
+                        "`hermes plugins enable basic`), then restart the "
+                        "dashboard.\n\n"
+                    ) + _fix_hint
+            except Exception:
+                pass
             if skip_reasons:
                 raise SystemExit(
                     f"Refusing to bind dashboard to {host} — the auth gate "

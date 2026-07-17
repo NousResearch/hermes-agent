@@ -2,7 +2,7 @@ import inspect
 import asyncio
 import json
 import stat
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import httpx
@@ -151,3 +151,81 @@ async def test_client_keeps_large_ids_as_strings():
     result = await client.create_post("hello", reply_to="9007199254740993")
     assert result == "9007199254740994"
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mention_requires_structured_trigger_and_authorization(
+    monkeypatch, tmp_path
+):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(
+        PlatformConfig(extra={"client_id": "client", "allowed_users": ["42"]})
+    )
+    adapter._account_id = "7"
+    adapter.handle_message = AsyncMock()
+    post = {
+        "id": "101",
+        "author_id": "42",
+        "conversation_id": "100",
+        "text": "@bot hello",
+        "entities": {"mentions": [{"id": "7", "username": "bot"}]},
+        "referenced_tweets": [],
+    }
+    await adapter._process_mention(post, {"users": [{"id": "42", "username": "alice"}]})
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_id == "tweet:100:101"
+    assert event.source.user_id == "42"
+    assert event.message_id == "101"
+
+    adapter.handle_message.reset_mock()
+    await adapter._process_mention({**post, "id": "102", "author_id": "99"}, {})
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dm_routes_by_real_conversation_id(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(
+        PlatformConfig(extra={"client_id": "client", "allowed_users": ["42"]})
+    )
+    adapter._account_id = "7"
+    adapter.handle_message = AsyncMock()
+    await adapter._process_dm(
+        {
+            "id": "501",
+            "event_type": "MessageCreate",
+            "sender_id": "42",
+            "dm_conversation_id": "42-7",
+            "text": "hello",
+        },
+        {"users": [{"id": "42", "username": "alice"}]},
+    )
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_id == "dm:42-7"
+    assert event.message_id == "501"
+
+
+@pytest.mark.asyncio
+async def test_adapter_send_uses_typed_routes(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(PlatformConfig(extra={"client_id": "client"}))
+    adapter._client = Mock()
+    adapter._client.create_post = AsyncMock(return_value="700")
+    adapter._client.send_dm = AsyncMock(return_value="701")
+
+    public = await adapter.send(
+        "tweet:100:101", "public", reply_to="9007199254740993"
+    )
+    direct = await adapter.send("dm:42-7", "private", reply_to="ignored")
+    invalid = await adapter.send("123", "bad")
+
+    assert public.success and public.message_id == "700"
+    assert direct.success and direct.message_id == "701"
+    assert not invalid.success
+    adapter._client.send_dm.assert_awaited_once_with("42-7", "private")

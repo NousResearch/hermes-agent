@@ -3209,6 +3209,18 @@ DEFAULT_CONFIG = {
         # ``"off"`` — alias for ``manual``.
         "install_strategy": "auto",
 
+        # Optional bounded lifecycle for long-running local gateways that touch
+        # many workspaces. Disabled by default to preserve process-lifetime
+        # server retention and warm indexes. When enabled, idle servers are
+        # retired after the configured timeout and client capacity is enforced
+        # per Hermes process. A cap of 0 means unlimited.
+        "lifecycle": {
+            "enabled": False,
+            "idle_timeout_seconds": 7200,
+            "sweep_interval_seconds": 60,
+            "max_clients_per_process": 0,
+        },
+
         # Per-server overrides.  Each key is a server_id from the
         # registry (``pyright``, ``typescript``, ``gopls``,
         # ``rust-analyzer``, etc.) and accepts:

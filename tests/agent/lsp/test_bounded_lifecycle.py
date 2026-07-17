@@ -109,6 +109,35 @@ def test_lifecycle_config_is_opt_in_and_strict(caplog):
     assert "invalid lsp.lifecycle configuration" in caplog.text
 
 
+def test_default_config_declares_default_off_lifecycle_policy():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["lsp"]["lifecycle"] == {
+        "enabled": False,
+        "idle_timeout_seconds": 7200,
+        "sweep_interval_seconds": 60,
+        "max_clients_per_process": 0,
+    }
+
+
+def test_create_from_default_config_wires_process_lifetime_policy(monkeypatch):
+    from hermes_cli import config as config_module
+
+    monkeypatch.setattr(config_module, "load_config", lambda: config_module.DEFAULT_CONFIG)
+    service = LSPService.create_from_config()
+    assert service is not None
+    try:
+        lifecycle = service.get_status()["lifecycle"]
+        assert lifecycle["enabled"] is False
+        assert lifecycle["idle_timeout_seconds"] == 7200.0
+        assert lifecycle["sweep_interval_seconds"] == 60.0
+        assert lifecycle["max_clients_per_process"] == 0
+        assert lifecycle["config_error"] is None
+        assert lifecycle["reaper_running"] is False
+    finally:
+        service.shutdown()
+
+
 def test_create_from_config_wires_lifecycle_settings(monkeypatch):
     from hermes_cli import config as config_module
 

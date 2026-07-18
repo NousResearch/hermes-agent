@@ -1105,6 +1105,38 @@ class TestUrlSource:
         assert self._source().fetch("https://example.com/SKILL.md") is None
 
     @patch("tools.skills_hub.httpx.get")
+    def test_fetch_skips_missing_support_file_instead_of_aborting(self, mock_get):
+        # One referenced support file 404s; the other is reachable. The
+        # install should still succeed with the file that could be fetched,
+        # rather than aborting the whole fetch (regression for a bug where
+        # any single missing companion file failed the entire URL install).
+        skill_md = (
+            "---\n"
+            "name: my-skill\n"
+            "description: Has support files.\n"
+            "---\n\n"
+            "See `references/good.md` and `references/missing.md`.\n"
+        )
+
+        def _side_effect(url, **kwargs):
+            if url.endswith("SKILL.md"):
+                return MagicMock(status_code=200, text=skill_md)
+            if url.endswith("references/good.md"):
+                return MagicMock(status_code=200, content=b"good content")
+            if url.endswith("references/missing.md"):
+                return MagicMock(status_code=404)
+            raise AssertionError(f"unexpected URL: {url}")
+
+        mock_get.side_effect = _side_effect
+
+        bundle = self._source().fetch("https://example.com/my-skill/SKILL.md")
+        assert bundle is not None
+        assert bundle.name == "my-skill"
+        assert bundle.files["SKILL.md"] == skill_md
+        assert bundle.files["references/good.md"] == b"good content"
+        assert "references/missing.md" not in bundle.files
+
+    @patch("tools.skills_hub.httpx.get")
     @patch("tools.skills_hub.check_website_access", return_value=None)
     @patch("tools.skills_hub.is_safe_url", side_effect=[True, False])
     def test_fetch_blocks_redirect_to_private_url(self, _mock_safe, _mock_policy, mock_get):

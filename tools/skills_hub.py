@@ -1506,7 +1506,15 @@ class UrlSource(SkillSource):
                 return None
             content = self._fetch_bytes(support_url)
             if content is None:
-                return None
+                # A referenced support file that 404s (or is otherwise
+                # unreachable) shouldn't sink the whole install — skip it
+                # and let the bundle install without it.
+                logger.warning(
+                    "URL skill %s: referenced support file %r could not be "
+                    "fetched from %s; skipping it",
+                    url, rel_path, support_url,
+                )
+                continue
             files[rel_path] = content
 
         # When auto-resolution fails, return a bundle with an empty name and

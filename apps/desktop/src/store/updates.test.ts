@@ -47,6 +47,8 @@ const {
   $backendUpdateStatus,
   applyBackendUpdate,
   $backendUpdateApply,
+  $backendContract,
+  backendMeetsRequiredContract,
   reportBackendContract,
   applyUpdates,
   $updateApply,
@@ -116,13 +118,24 @@ describe('reportBackendContract', () => {
     storage.clear()
     notifySpy.mockClear()
     dismissSpy.mockClear()
+    $backendContract.set(null)
     vi.useRealTimers()
   })
 
   it('dismisses the toast when the backend meets the contract', () => {
-    reportBackendContract(3)
+    reportBackendContract(4)
     expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
     expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('keeps contract-gated features hidden until the backend reports v4', () => {
+    expect(backendMeetsRequiredContract($backendContract.get())).toBe(false)
+
+    reportBackendContract(3)
+    expect(backendMeetsRequiredContract($backendContract.get())).toBe(false)
+
+    reportBackendContract(4)
+    expect(backendMeetsRequiredContract($backendContract.get())).toBe(true)
   })
 
   it('warns when the backend is behind (or reports no contract)', () => {
@@ -160,8 +173,8 @@ describe('reportBackendContract', () => {
     lastToast().onDismiss()
     notifySpy.mockClear()
 
-    reportBackendContract(3) // backend updated → satisfied, snooze cleared
-    reportBackendContract(2) // a later regression must warn immediately
+    reportBackendContract(4) // backend updated → satisfied, snooze cleared
+    reportBackendContract(3) // a later regression must warn immediately
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 })

@@ -10183,32 +10183,43 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
     return await asyncio.to_thread(_delete)
 
 
-class SessionRename(BaseModel):
+class SessionUpdate(BaseModel):
     title: Optional[str] = None
     archived: Optional[bool] = None
+    cwd: Optional[str] = None
     # Mutate a session belonging to another profile (opens its state.db). Omit
     # for the current/default profile.
     profile: Optional[str] = None
 
 
 @app.patch("/api/sessions/{session_id}")
-async def rename_session_endpoint(session_id: str, body: SessionRename):
-    """Update a session: rename (or clear its title) and/or archive it.
+async def update_session_endpoint(session_id: str, body: SessionUpdate):
+    """Update a session: rename, archive, and/or move its workspace.
 
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
-    restores the session. Either field may be omitted. ``profile`` targets
-    another profile's session.
+    restores the session; ``cwd`` moves future work into an existing directory.
+    Fields may be combined. ``profile`` targets another profile's session.
     """
     db = _open_session_db_for_profile(body.profile)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
-        if body.title is None and body.archived is None:
+        if body.title is None and body.archived is None and body.cwd is None:
             raise HTTPException(
                 status_code=400,
-                detail="Nothing to update; provide 'title' and/or 'archived'.",
+                detail="Nothing to update; provide 'title', 'archived', and/or 'cwd'.",
             )
+        workspace_update = None
+        if body.cwd is not None:
+            raw_cwd = body.cwd.strip()
+            if not raw_cwd:
+                raise HTTPException(status_code=400, detail="Working directory is required")
+            target = Path(raw_cwd).expanduser().resolve(strict=False)
+            if not target.is_dir():
+                raise HTTPException(status_code=400, detail=f"Working directory does not exist: {raw_cwd}")
+            cwd = str(target)
+            workspace_update = (cwd, _fs_git_branch(cwd), _fs_find_git_root(target) or "")
         if body.title is not None:
             try:
                 db.set_session_title(sid, body.title or "")
@@ -10220,6 +10231,10 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         result = {"ok": True, "title": db.get_session_title(sid) or ""}
         if body.archived is not None:
             result["archived"] = bool(body.archived)
+        if workspace_update is not None:
+            cwd, branch, repo_root = workspace_update
+            db.replace_session_workspace(sid, cwd, branch, repo_root)
+            result.update({"cwd": cwd, "branch": branch, "git_repo_root": repo_root})
         return result
     finally:
         db.close()

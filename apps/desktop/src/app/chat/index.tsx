@@ -87,6 +87,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
 
 interface ChatHeaderProps {
   activeSessionId: null | string
+  busy: boolean
   isRoutedSessionView: boolean
   onDeleteSelectedSession: () => void
   onToggleSelectedPin: () => void
@@ -95,6 +96,7 @@ interface ChatHeaderProps {
 
 function ChatHeader({
   activeSessionId,
+  busy,
   isRoutedSessionView,
   onDeleteSelectedSession,
   onToggleSelectedPin,
@@ -142,6 +144,7 @@ function ChatHeader({
         {showProfileTag && <ProfileTag className="pointer-events-auto mr-1.5" profile={activeStoredSession?.profile} />}
         <SessionActionsMenu
           align="start"
+          isWorking={busy}
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
           onPin={selectedSessionId ? onToggleSelectedPin : undefined}
           pinned={selectedIsPinned}
@@ -423,6 +426,7 @@ export function ChatView({
       {isPrimary && (
         <ChatHeader
           activeSessionId={activeSessionId}
+          busy={busy}
           isRoutedSessionView={isRoutedSessionView}
           onDeleteSelectedSession={onDeleteSelectedSession}
           onToggleSelectedPin={onToggleSelectedPin}

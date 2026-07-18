@@ -40,11 +40,16 @@ import { triggerHaptic } from '@/lib/haptics'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $projectTree, $projectTreeLoading, moveSessionToProject, refreshProjectTree } from '@/store/projects'
 import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
 import { $sessionTiles, openSessionTile } from '@/store/session-states'
+import { $backendContract, backendMeetsRequiredContract } from '@/store/updates'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
+
+import type { SidebarProjectTree } from './projects/workspace-groups'
 
 // Rename a session, preferring the gateway's session.title RPC over REST.
 //
@@ -94,6 +99,7 @@ export async function renameSessionPreferringRpc(
 interface SessionActions {
   sessionId: string
   title: string
+  isWorking?: boolean
   pinned?: boolean
   profile?: string
   onPin?: () => void
@@ -137,6 +143,7 @@ interface ItemSpec {
 function useSessionActions({
   sessionId,
   title,
+  isWorking = false,
   pinned = false,
   profile,
   onPin,
@@ -151,8 +158,12 @@ function useSessionActions({
   const { t } = useI18n()
   const r = t.sidebar.row
   const [renameOpen, setRenameOpen] = useState(false)
+  const [moveOpen, setMoveOpen] = useState(false)
   const tiles = useStore($sessionTiles)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const activeProfile = useStore($activeGatewayProfile)
+  const backendContract = useStore($backendContract)
+  const profileIsActive = !profile || normalizeProfileKey(profile) === normalizeProfileKey(activeProfile)
 
   // Already showing as a tab somewhere (a tile, or loaded in main — main IS
   // a tab): offering "Open in new tab" again is noise.
@@ -226,6 +237,19 @@ function useSessionActions({
         onBranch?.()
       }
     }),
+    ...(backendMeetsRequiredContract(backendContract)
+      ? [
+          spec({
+            disabled: !sessionId || isWorking || !profileIsActive,
+            icon: 'folder-active',
+            label: r.moveToProject,
+            onSelect: () => {
+              triggerHaptic('selection')
+              setMoveOpen(true)
+            }
+          })
+        ]
+      : []),
     spec({
       disabled: !sessionId,
       icon: 'cloud-download',
@@ -373,7 +397,25 @@ function useSessionActions({
     />
   )
 
-  return { renameDialog, renderItems }
+  const moveDialog = moveOpen ? (
+    <MoveSessionToProjectDialog
+      onOpenChange={setMoveOpen}
+      open={moveOpen}
+      profile={profile}
+      sessionId={sessionId}
+      title={title}
+    />
+  ) : null
+
+  return {
+    dialogs: (
+      <>
+        {renameDialog}
+        {moveDialog}
+      </>
+    ),
+    renderItems
+  }
 }
 
 interface SessionActionsMenuProps
@@ -383,7 +425,7 @@ interface SessionActionsMenuProps
 
 export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
   const { t } = useI18n()
-  const { renameDialog, renderItems } = useSessionActions(actions)
+  const { dialogs, renderItems } = useSessionActions(actions)
   const [open, setOpen] = useState(false)
 
   return (
@@ -399,7 +441,7 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
           {renderItems(DROPDOWN_KIT)}
         </DropdownMenuContent>
       </DropdownMenu>
-      {renameDialog}
+      {dialogs}
     </>
   )
 }
@@ -410,7 +452,7 @@ interface SessionContextMenuProps extends SessionActions {
 
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
-  const { renameDialog, renderItems } = useSessionActions(actions)
+  const { dialogs, renderItems } = useSessionActions(actions)
 
   return (
     <>
@@ -420,8 +462,105 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
           {renderItems(CONTEXT_KIT)}
         </ContextMenuContent>
       </ContextMenu>
-      {renameDialog}
+      {dialogs}
     </>
+  )
+}
+
+interface MoveSessionToProjectDialogProps {
+  onOpenChange: (open: boolean) => void
+  open: boolean
+  profile?: string
+  sessionId: string
+  title: string
+}
+
+function MoveSessionToProjectDialog({
+  onOpenChange,
+  open,
+  profile,
+  sessionId,
+  title
+}: MoveSessionToProjectDialogProps) {
+  const { t } = useI18n()
+  const r = t.sidebar.row
+
+  const projects = useStore($projectTree).filter(project =>
+    Boolean(project.path || project.repos.find(repo => repo.path)?.path)
+  )
+
+  const loading = useStore($projectTreeLoading)
+  const [submittingProjectId, setSubmittingProjectId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (open) {
+      void refreshProjectTree()
+    }
+  }, [open])
+
+  const move = async (project: SidebarProjectTree) => {
+    if (!sessionId || submittingProjectId) {
+      return
+    }
+
+    setSubmittingProjectId(project.id)
+
+    try {
+      await moveSessionToProject({ id: sessionId, profile }, project)
+      notify({ durationMs: 2_000, kind: 'success', message: r.movedToProject(project.label) })
+      onOpenChange(false)
+    } catch (err) {
+      notifyError(err, r.moveProjectFailed)
+    } finally {
+      setSubmittingProjectId(null)
+    }
+  }
+
+  return (
+    <Dialog onOpenChange={onOpenChange} open={open}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{r.moveProjectTitle}</DialogTitle>
+          <DialogDescription>{r.moveProjectDesc(title)}</DialogDescription>
+        </DialogHeader>
+        <div className="max-h-72 space-y-1 overflow-y-auto">
+          {loading && <p className="px-3 py-4 text-sm text-muted-foreground">{r.moveProjectsLoading}</p>}
+          {!loading && projects.length === 0 && (
+            <p className="px-3 py-4 text-sm text-muted-foreground">{r.moveProjectsEmpty}</p>
+          )}
+          {projects.map(project => {
+            const path = project.path || project.repos.find(repo => repo.path)?.path || ''
+
+            return (
+              <Button
+                className="h-auto w-full justify-start gap-2 px-3 py-2 text-left"
+                disabled={Boolean(submittingProjectId)}
+                key={project.id}
+                onClick={() => void move(project)}
+                type="button"
+                variant="ghost"
+              >
+                <Codicon className="shrink-0" name="folder" size="1rem" />
+                <span className="min-w-0">
+                  <span className="block truncate font-medium">{project.label}</span>
+                  <span className="block truncate text-xs text-muted-foreground">{path}</span>
+                </span>
+              </Button>
+            )
+          })}
+        </div>
+        <DialogFooter>
+          <Button
+            disabled={Boolean(submittingProjectId)}
+            onClick={() => onOpenChange(false)}
+            type="button"
+            variant="ghost"
+          >
+            {t.common.cancel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

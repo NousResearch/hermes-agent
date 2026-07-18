@@ -1373,6 +1373,15 @@ export interface Translations {
       copyId: string
       export: string
       branchFrom: string
+      moveToProject: string
+      moveProjectTitle: string
+      moveProjectDesc: (title: string) => string
+      moveProjectFailed: string
+      moveProjectMissingWorkspace: string
+      moveProjectWrongProfile: string
+      moveProjectsLoading: string
+      moveProjectsEmpty: string
+      movedToProject: (name: string) => string
       rename: string
       archive: string
       newWindow: string

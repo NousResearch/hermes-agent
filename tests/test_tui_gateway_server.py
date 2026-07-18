@@ -1682,14 +1682,16 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
     captured = {}
 
     class ProfileDB:
-        def update_session_cwd(self, session_id, cwd, git_branch=None, git_repo_root=None):
+        def replace_session_workspace(
+            self, session_id, cwd, git_branch=None, git_repo_root=None
+        ):
             captured["profile_update"] = (session_id, cwd)
 
         def close(self):
             captured["profile_closed"] = True
 
     class LaunchDB:
-        def update_session_cwd(self, *_args):
+        def replace_session_workspace(self, *_args):
             captured["launch_update"] = True
 
     profile_db = ProfileDB()
@@ -3957,6 +3959,10 @@ def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status
 
 def test_desktop_contract_includes_approval_mode_rpc():
     assert server.DESKTOP_BACKEND_CONTRACT >= 3
+
+
+def test_desktop_contract_includes_session_workspace_rest_mutation():
+    assert server.DESKTOP_BACKEND_CONTRACT >= 4
 
 
 def test_config_set_approval_mode_rejects_unknown_value():

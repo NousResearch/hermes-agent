@@ -1304,6 +1304,78 @@ class TestWebServerEndpoints:
         resp = self.client.patch("/api/sessions/does-not-exist", json={"title": "x"})
         assert resp.status_code == 404
 
+    def test_move_session_workspace_updates_persisted_cwd(self, tmp_path):
+        """A historical chat can move projects without being resumed first."""
+        from hermes_state import SessionDB
+
+        workspace = tmp_path / "project"
+        workspace.mkdir()
+        db = SessionDB()
+        try:
+            db.create_session(session_id="move-me", source="desktop")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/move-me", json={"cwd": str(workspace)})
+
+        assert resp.status_code == 200
+        assert resp.json()["cwd"] == str(workspace.resolve())
+        db = SessionDB()
+        try:
+            session = db.get_session("move-me")
+            assert session["cwd"] == str(workspace.resolve())
+            assert session["git_branch"] is None
+            assert session["git_repo_root"] is None
+        finally:
+            db.close()
+
+    def test_move_session_workspace_targets_requested_profile(self, tmp_path):
+        from hermes_state import SessionDB
+        from hermes_cli import profiles as profiles_mod
+
+        workspace = tmp_path / "worker-project"
+        workspace.mkdir()
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        default_db = SessionDB()
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            default_db.create_session(session_id="shared-id", source="desktop", cwd="/default")
+            worker_db.create_session(session_id="shared-id", source="desktop", cwd="/worker")
+        finally:
+            default_db.close()
+            worker_db.close()
+
+        resp = self.client.patch(
+            "/api/sessions/shared-id",
+            json={"cwd": str(workspace), "profile": "worker"},
+        )
+
+        assert resp.status_code == 200
+        default_db = SessionDB()
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            assert default_db.get_session("shared-id")["cwd"] == "/default"
+            assert worker_db.get_session("shared-id")["cwd"] == str(workspace.resolve())
+        finally:
+            default_db.close()
+            worker_db.close()
+
+    def test_move_session_workspace_rejects_missing_directory(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="move-missing", source="desktop")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/move-missing", json={"cwd": str(tmp_path / "missing")})
+
+        assert resp.status_code == 400
+        assert "does not exist" in resp.json()["detail"]
+
     def test_import_sessions_endpoint_imports_exported_json(self):
         from hermes_state import SessionDB
 

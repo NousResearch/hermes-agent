@@ -14524,7 +14524,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not guild_id or not hasattr(adapter, "leave_voice_channel"):
             return "Not in a voice channel."
 
-        if not hasattr(adapter, "is_in_voice_channel") or not adapter.is_in_voice_channel(guild_id):
+        physically_in_vc = bool(
+            hasattr(adapter, "is_in_voice_channel")
+            and adapter.is_in_voice_channel(guild_id)
+        )
+
+        # A manual leave must ALSO stop an in-flight PRE-CONNECT auto-join even
+        # when no physical session exists yet. Otherwise a barrier-blocked
+        # callback that connects moments later would defeat the leave. Detect any
+        # in-flight / owned auto-join so we don't early-return past the cleanup.
+        pending = getattr(adapter, "_voice_auto_join_pending", None)
+        targets = getattr(adapter, "_voice_auto_join_targets", None)
+        retry_tasks = getattr(adapter, "_voice_auto_join_retry_tasks", None)
+        direct_tasks = getattr(adapter, "_voice_auto_join_direct_tasks", None)
+        inflight_auto_join = bool(
+            (isinstance(pending, dict) and guild_id in pending)
+            or (isinstance(targets, dict) and guild_id in targets)
+            or (isinstance(retry_tasks, dict) and guild_id in retry_tasks)
+            or (isinstance(direct_tasks, set) and direct_tasks)
+        )
+
+        if not physically_in_vc and not inflight_auto_join:
             return "Not in a voice channel."
 
         suppress_auto_join = (
@@ -14535,13 +14555,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if suppress_auto_join is not None:
             # Prefer the TRACKED target so a manual /voice leave stops the follow
             # of the configured user/channel regardless of which operator issued
-            # the command (they may differ from the followed user). Fall back to
-            # the issuer's live channel when no auto-join target is tracked.
-            targets = getattr(adapter, "_voice_auto_join_targets", None)
+            # the command (they may differ from the followed user). Before a join
+            # commits there is no target yet — fall back to the in-flight pending
+            # attempt's user/channel, then to the issuer's live channel.
             target = targets.get(guild_id) if isinstance(targets, dict) else None
             target_user = getattr(target, "user_id", None)
             target_channel = getattr(target, "voice_channel_id", None)
-            if target is not None and target_user:
+            if target is None and isinstance(pending, dict):
+                pending_entry = pending.get(guild_id)
+                if isinstance(pending_entry, dict):
+                    target_user = target_user or pending_entry.get("user_id")
+                    target_channel = target_channel or pending_entry.get("voice_channel_id")
+            if target_user:
                 suppress_auto_join(
                     guild_id,
                     user_id=str(target_user),
@@ -14569,10 +14594,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     channel_id=str(voice_channel_id) if voice_channel_id is not None else None,
                 )
 
-        # Atomic manual takeover: having recorded suppression above, drop all
-        # auto-follow ownership (target, pending, retry) so a later target
-        # leave/rejoin can never disconnect the session the user just left.
-        if hasattr(adapter, "clear_voice_auto_join_ownership"):
+        # Manual leave = "no session": FLAG any in-flight attempt cancelled (so a
+        # callback that connects moments later is torn back down by its own
+        # barrier) and drop follow ownership — WITHOUT superseding it (which a
+        # /voice JOIN takeover does). ``cancel_inflight_auto_join`` keeps the
+        # pending token intact so the late connection is recognized as cancelled
+        # rather than as a protected newer/manual owner.
+        cancel_inflight = getattr(adapter, "cancel_inflight_auto_join", None)
+        if callable(cancel_inflight):
+            cancel_inflight(guild_id)
+        elif hasattr(adapter, "clear_voice_auto_join_ownership"):
             adapter.clear_voice_auto_join_ownership(guild_id)
 
         try:

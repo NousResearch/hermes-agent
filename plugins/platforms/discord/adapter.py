@@ -4153,6 +4153,25 @@ class DiscordAdapter(BasePlatformAdapter):
                 text_channel_id=str(text_channel_id),
             ))
         except asyncio.CancelledError:
+            # The callback may have already applied the join side effects — a
+            # live physical voice session PLUS runner-side voice-mode/auto-TTS —
+            # before the cancellation landed. Roll them back transactionally and
+            # profile-bound, but ONLY if THIS attempt still owns the session (a
+            # newer auto-join or manual takeover that superseded our pending slot
+            # must be left intact). Shield the async rollback so the very
+            # cancellation we are propagating cannot abort it mid-teardown.
+            rollback = asyncio.ensure_future(
+                self._rollback_owned_auto_join_session(
+                    guild_id, str(voice_channel_id), str(text_channel_id), token
+                )
+            )
+            while not rollback.done():
+                try:
+                    await asyncio.shield(rollback)
+                except asyncio.CancelledError:
+                    # Another cancellation targeted the shield; keep waiting for
+                    # the shielded rollback to finish, then re-raise below.
+                    continue
             self._clear_pending_auto_join(guild_id, token)
             raise
         except Exception as exc:
@@ -4163,17 +4182,25 @@ class DiscordAdapter(BasePlatformAdapter):
             self._clear_pending_auto_join(guild_id, token)
             return False
 
-        # The exact pending entry for THIS attempt must still be current: a
-        # superseding later attempt (or a cancellation) invalidates this one.
+        # Ownership gate: only the attempt whose pending entry is STILL current
+        # owns the freshly (reportedly) established session. If the entry is gone
+        # the attempt was SUPERSEDED — a newer auto-join replaced the pending
+        # slot, or a manual /voice-join takeover cleared it — and that newer or
+        # hand-established session must NEVER be torn down here.
         entry = self._current_pending_auto_join(guild_id, token)
-        superseded = entry is None
-        cancelled = superseded or bool(entry.get("cancelled"))
+        if entry is None:
+            logger.info(
+                "Discord voice auto-join superseded post-join (guild %s); leaving "
+                "the current (newer/manual) owner's session intact", guild_id,
+            )
+            return False
+
+        cancelled = bool(entry.get("cancelled"))
         disconnecting = bool(getattr(self, "_disconnecting", False))
         actual_channel = self.connected_voice_channel_id(guild_id)
         target_present = await self._voice_target_in_channel(
             guild_id, user_id, voice_channel_id
         )
-        self._clear_pending_auto_join(guild_id, token)
 
         if (
             cancelled
@@ -4182,27 +4209,53 @@ class DiscordAdapter(BasePlatformAdapter):
             or not target_present
         ):
             logger.info(
-                "Discord voice auto-join aborted post-join (guild %s): superseded=%s "
-                "cancelled=%s disconnecting=%s actual=%s expected=%s target_present=%s",
-                guild_id, superseded, cancelled, disconnecting,
+                "Discord voice auto-join aborted post-join (guild %s): cancelled=%s "
+                "disconnecting=%s actual=%s expected=%s target_present=%s",
+                guild_id, cancelled, disconnecting,
                 actual_channel, voice_channel_id, target_present,
             )
-            self._voice_auto_join_targets.pop(int(guild_id), None)
+            # This exact attempt still owns the pending slot, so the session (if
+            # any) is OURS to tear down — including the profile-bound runner
+            # rollback. A superseded attempt already returned above.
+            await self._rollback_owned_auto_join_session(
+                guild_id, str(voice_channel_id), str(text_channel_id), token
+            )
+            self._clear_pending_auto_join(guild_id, token)
+            return False
+        self._clear_pending_auto_join(guild_id, token)
+        return True
+
+    async def _rollback_owned_auto_join_session(
+        self,
+        guild_id: int,
+        voice_channel_id: str,
+        text_channel_id: str,
+        token: int,
+    ) -> None:
+        """Transactionally tear down an aborted auto-join's side effects.
+
+        Runs ONLY when THIS attempt still owns the pending slot (its ``token`` is
+        still current). A superseded attempt — a newer auto-join or a manual
+        takeover replaced/cleared the slot — returns without touching anything,
+        so we never disconnect a newer or hand-established session or roll back
+        its voice mode. The runner-side rollback is profile-bound: it routes
+        through the bound ``_on_voice_disconnect`` for THIS session's linked text
+        channel, so no other profile's voice-mode / auto-TTS state is affected.
+        """
+        if self._current_pending_auto_join(int(guild_id), token) is None:
+            # Superseded (or already cleared) between the abort decision and here.
+            return
+        self._voice_auto_join_targets.pop(int(guild_id), None)
+        try:
+            await self.leave_voice_channel(int(guild_id))
+        except Exception:
+            pass
+        on_disconnect = getattr(self, "_on_voice_disconnect", None)
+        if on_disconnect and text_channel_id:
             try:
-                await self.leave_voice_channel(int(guild_id))
+                on_disconnect(str(text_channel_id))
             except Exception:
                 pass
-            # Roll back the runner-side join side effects (voice mode / auto-TTS)
-            # via the profile-bound cleanup so an aborted join leaves no stale
-            # "voice on" state behind.
-            on_disconnect = getattr(self, "_on_voice_disconnect", None)
-            if on_disconnect and text_channel_id:
-                try:
-                    on_disconnect(str(text_channel_id))
-                except Exception:
-                    pass
-            return False
-        return True
 
     async def _teardown_voice_auto_join_state(self) -> None:
         """Cancel + await every retry task and clear auto-join state.
@@ -4250,6 +4303,46 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_auto_join_targets.pop(int(guild_id), None)
         self._clear_pending_auto_join(int(guild_id))
         self._cancel_voice_auto_join_retry(int(guild_id))
+
+    def cancel_inflight_auto_join(self, guild_id: int) -> bool:
+        """Cancel an in-flight auto-join on a MANUAL ``/voice leave``.
+
+        A manual leave means "no session at all". Unlike a manual ``/voice join``
+        takeover — which SUPERSEDES the pending slot via
+        ``clear_voice_auto_join_ownership`` so the in-flight attempt yields to the
+        newly hand-established session — a leave must instead ensure any session
+        the in-flight callback is about to establish is torn back down. So:
+
+        - the pending entry is FLAGGED cancelled and LEFT in place (token intact)
+          so a callback that connects moments later is recognized by the post-join
+          barrier as ITS OWN cancelled attempt and rolled back, and
+        - follow ownership (tracked target + unattended retry) is dropped.
+
+        The pending entry is deliberately NOT popped: popping would make the
+        attempt look SUPERSEDED, and a superseded attempt is protected from
+        teardown (it might be a newer/manual owner) — which would let the late
+        connection survive the leave. Returns True if anything was in flight or
+        owned.
+        """
+        had = False
+        pending = getattr(self, "_voice_auto_join_pending", None)
+        if isinstance(pending, dict):
+            entry = pending.get(int(guild_id))
+            if isinstance(entry, dict):
+                entry["cancelled"] = True
+                had = True
+        targets = getattr(self, "_voice_auto_join_targets", None)
+        if isinstance(targets, dict) and int(guild_id) in targets:
+            had = True
+            targets.pop(int(guild_id), None)
+        retry = getattr(self, "_voice_auto_join_retry_tasks", None)
+        if isinstance(retry, dict) and int(guild_id) in retry:
+            had = True
+        self._cancel_voice_auto_join_retry(int(guild_id))
+        direct = getattr(self, "_voice_auto_join_direct_tasks", None)
+        if isinstance(direct, set) and direct:
+            had = True
+        return had
 
     async def _voice_auto_join_retry_still_valid(
         self,
@@ -4438,8 +4531,21 @@ class DiscordAdapter(BasePlatformAdapter):
         now = time.monotonic()
         next_allowed = self._voice_auto_join_next_attempt_at.get(attempt_key, 0.0)
         if now < next_allowed:
-            # A retry task (if any) remains the live path back into the channel;
-            # replacement is handled when an attempt actually reschedules it.
+            # Inside the reconnect cooldown. A SUCCESSFUL follow leaves no retry
+            # task (success cancels retries), so a target who leaves and then
+            # rejoins the same channel mid-cooldown would otherwise be stranded:
+            # this event is refused and no unattended path back exists. Schedule a
+            # retry for the REMAINING cooldown so the rejoin is followed without
+            # requiring a further, unrelated voice-state event. If a retry task is
+            # already the live path back, leave it be.
+            if int(guild_id) not in self._voice_auto_join_retry_tasks:
+                self._schedule_voice_auto_join_retry(
+                    guild_id,
+                    user_id,
+                    voice_channel_id,
+                    str(text_channel_id),
+                    max(0.0, next_allowed - now),
+                )
             return
 
         await self._attempt_voice_auto_join(

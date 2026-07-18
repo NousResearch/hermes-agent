@@ -32,6 +32,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 logger = logging.getLogger(__name__)
 
 
+class DisplayProjectionTooLargeError(RuntimeError):
+    """The durable transcript exceeds the bounded display projection budget."""
+
+
 def workspace_key(row: Dict[str, Any]) -> Optional[str]:
     """A session's workspace grouping key: its git repo root when known, else
     its cwd.
@@ -222,15 +226,6 @@ def get_last_init_error() -> Optional[str]:
     return _last_init_error
 
 
-# Distinctive opening shared by both background-review harness prompts
-# (_SKILL_REVIEW_PROMPT and _MEMORY_REVIEW_PROMPT in agent/background_review.py).
-# Matched case-sensitively against the leading content of a user/system message.
-_REVIEW_HARNESS_PREFIXES = (
-    "Review the conversation above and update the skill library",
-    "Review the conversation above and consider saving to memory",
-)
-
-
 def _is_background_review_harness_message(msg: Dict[str, Any]) -> bool:
     """True when ``msg`` is a persisted background-review harness prompt.
 
@@ -246,33 +241,42 @@ def _is_background_review_harness_message(msg: Dict[str, Any]) -> bool:
     content = msg.get("content")
     if not isinstance(content, str):
         return False
-    head = content.lstrip()
-    return any(head.startswith(p) for p in _REVIEW_HARNESS_PREFIXES)
+    head = content.strip()
+    try:
+        from agent.background_review import (
+            _MEMORY_REVIEW_PROMPT,
+            _SKILL_REVIEW_PROMPT,
+        )
+    except Exception:
+        return False
+    return head in {
+        _MEMORY_REVIEW_PROMPT.strip(),
+        _SKILL_REVIEW_PROMPT.strip(),
+    }
 
 
 def _strip_background_review_harness(
     messages: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Drop background-review harness messages and the curator-mode assistant
-    reply that immediately followed each one.
+    """Drop a polluted background-review turn through its terminal reply.
 
-    Walk the list once; when a harness user/system message is found, skip it and
-    also skip the next message if it is the assistant turn that answered it.
-    Everything else passes through untouched and in order.
+    Older curator forks could persist a complete assistant/tool chain under the
+    real session id. Once a harness is found, discard every assistant/tool row
+    until the next genuine user/system turn starts.
     """
     if not messages:
         return messages
     out: List[Dict[str, Any]] = []
-    skip_next_assistant = False
+    in_review_turn = False
     for msg in messages:
         if _is_background_review_harness_message(msg):
-            skip_next_assistant = True
+            in_review_turn = True
             continue
-        if skip_next_assistant:
-            skip_next_assistant = False
-            if isinstance(msg, dict) and msg.get("role") == "assistant":
-                # The curator-mode reply to the harness prompt — drop it.
+        if in_review_turn:
+            role = msg.get("role") if isinstance(msg, dict) else None
+            if role not in {"user", "system"}:
                 continue
+            in_review_turn = False
         out.append(msg)
     return out
 
@@ -818,7 +822,8 @@ CREATE TABLE IF NOT EXISTS messages (
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
-    compacted INTEGER NOT NULL DEFAULT 0
+    compacted INTEGER NOT NULL DEFAULT 0,
+    context_snapshot INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -3141,6 +3146,21 @@ class SessionDB:
             row = cursor.fetchone()
         return dict(row) if row else None
 
+    def get_sessions_by_ids(self, session_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Load an explicit bounded session set with one JSON-backed query."""
+        unique_ids = list(dict.fromkeys(
+            session_id for session_id in session_ids
+            if isinstance(session_id, str) and session_id
+        ))
+        if not unique_ids:
+            return {}
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM sessions WHERE id IN (SELECT value FROM json_each(?))",
+                (json.dumps(unique_ids),),
+            ).fetchall()
+        return {str(row["id"]): dict(row) for row in rows}
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
 
@@ -3633,7 +3653,7 @@ class SessionDB:
         current = session_id
         lineage = [current]
         seen = {current}
-        for _ in range(100):
+        while current:
             row = conn.execute(
                 """
                 SELECT child.id
@@ -3666,8 +3686,8 @@ class SessionDB:
             if not child_id or child_id in seen:
                 return lineage
             seen.add(child_id)
+            lineage.append(child_id)
             current = child_id
-            lineage.append(current)
         return lineage
 
     def get_forward_compression_lineage(self, session_id: str) -> List[str]:
@@ -4188,6 +4208,7 @@ class SessionDB:
         observed: bool = False,
         effect_disposition: Optional[str] = None,
         timestamp: Any = None,
+        context_snapshot: bool = False,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -4239,8 +4260,9 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active,
+                   context_snapshot)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -4260,6 +4282,7 @@ class SessionDB:
                     platform_message_id,
                     1 if observed else 0,
                     1,
+                    1 if context_snapshot else 0,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -4332,8 +4355,9 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active,
+                   context_snapshot)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -4353,6 +4377,7 @@ class SessionDB:
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
                     1,
+                    1 if (msg.get("_context_snapshot") or msg.get("context_snapshot")) else 0,
                 ),
             )
             inserted += 1
@@ -4464,8 +4489,12 @@ class SessionDB:
                 "WHERE session_id = ? AND active = 1",
                 (session_id,),
             )
+            snapshot_messages = [
+                {**message, "_context_snapshot": True}
+                for message in compacted_messages
+            ]
             inserted, tool_calls_total = self._insert_message_rows(
-                conn, session_id, compacted_messages
+                conn, session_id, snapshot_messages
             )
             # message_count / tool_call_count reflect the LIVE (active) set —
             # the archived rows are still on disk but not part of the live count.
@@ -4850,7 +4879,8 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
+                "codex_reasoning_items, codex_message_items, platform_message_id, observed, "
+                "timestamp, context_snapshot "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
                 # append_message stamps rows with time.time(), which is not
@@ -4893,6 +4923,8 @@ class SessionDB:
                 msg["message_id"] = row["platform_message_id"]
             if row["observed"]:
                 msg["observed"] = True
+            if row["context_snapshot"]:
+                msg["_context_snapshot"] = True
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.
@@ -4965,6 +4997,336 @@ class SessionDB:
         """
         chain = self._session_lineage_root_to_tip(session_id)
         return (chain[0] if chain and chain[0] else session_id)
+
+    def get_messages_for_display(
+        self,
+        session_id: str,
+        include_ancestors: bool = False,
+        max_rows: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return the durable user-visible transcript, not the model context.
+
+        New compaction snapshots carry ``context_snapshot=1`` and are excluded
+        structurally.  A conservative boundary-overlap fallback handles legacy
+        rotation/in-place rows created before that marker existed without
+        globally deduplicating legitimate repeated messages.
+        """
+        from agent.context_compressor import ContextCompressor
+
+        session_ids = (
+            self._compression_lineage_root_to_tip(session_id)
+            if include_ancestors
+            else [session_id]
+        )
+        display: List[Dict[str, Any]] = []
+        scanned_rows = 0
+
+        signature_cache: Dict[int, str] = {}
+
+        def _signature(msg: Dict[str, Any]) -> str:
+            message_id = msg.get("id")
+            if isinstance(message_id, int) and message_id in signature_cache:
+                return signature_cache[message_id]
+            content = msg.get("content")
+            if isinstance(content, str):
+                content = sanitize_context(content)
+            signature = json.dumps(
+                {
+                    "role": msg.get("role"),
+                    "content": content,
+                    "tool_call_id": msg.get("tool_call_id"),
+                    "tool_calls": msg.get("tool_calls"),
+                    "tool_name": msg.get("tool_name"),
+                },
+                sort_keys=True,
+                ensure_ascii=False,
+                default=str,
+            )
+            if isinstance(message_id, int):
+                signature_cache[message_id] = signature
+            return signature
+
+        def _append_sanitized(rows: List[Dict[str, Any]]) -> None:
+            for raw in rows:
+                row = dict(raw)
+                content = row.get("content")
+                if isinstance(content, str):
+                    row["content"] = sanitize_context(content).strip()
+                display.append(row)
+
+        def _prefix_overlap(left: List[Dict[str, Any]], right: List[Dict[str, Any]]) -> int:
+            size = min(len(left), len(right))
+            matched = 0
+            while matched < size and _signature(left[matched]) == _signature(right[matched]):
+                matched += 1
+            return matched
+
+        def _longest_prefix_suffix(
+            pattern_rows: List[Dict[str, Any]],
+            sequence_rows: List[Dict[str, Any]],
+            max_overlap: int,
+        ) -> int:
+            """Linear-time longest pattern prefix matching a sequence suffix."""
+            if max_overlap <= 0:
+                return 0
+            pattern = [_signature(row) for row in pattern_rows[:max_overlap]]
+            sequence = [_signature(row) for row in sequence_rows[-max_overlap:]]
+            prefix = [0] * len(pattern)
+            matched = 0
+            for index in range(1, len(pattern)):
+                while matched and pattern[index] != pattern[matched]:
+                    matched = prefix[matched - 1]
+                if pattern[index] == pattern[matched]:
+                    matched += 1
+                prefix[index] = matched
+            matched = 0
+            for value in sequence:
+                while matched and (
+                    matched == len(pattern) or value != pattern[matched]
+                ):
+                    matched = prefix[matched - 1]
+                if matched < len(pattern) and value == pattern[matched]:
+                    matched += 1
+            return matched
+
+        def _tail_overlap(rows: List[Dict[str, Any]]) -> int:
+            max_overlap = min(len(rows), len(display))
+            return _longest_prefix_suffix(rows, display, max_overlap)
+
+        for lineage_id in session_ids:
+            remaining = None if max_rows is None else max_rows - scanned_rows
+            if remaining is not None and remaining < 0:
+                raise DisplayProjectionTooLargeError(
+                    f"Display projection exceeds {max_rows} durable rows"
+                )
+            loaded = self.get_messages(
+                lineage_id,
+                include_inactive=True,
+                limit=None if remaining is None else remaining + 1,
+            )
+            scanned_rows += len(loaded)
+            if max_rows is not None and scanned_rows > max_rows:
+                raise DisplayProjectionTooLargeError(
+                    f"Display projection exceeds {max_rows} durable rows"
+                )
+            rows = [
+                row for row in loaded
+                if (row.get("active", 1) or row.get("compacted", 0))
+                and not row.get("context_snapshot")
+            ]
+
+            # Legacy snapshots predate context_snapshot. Split on each handoff
+            # summary, then remove only the copied head/tail overlaps at segment
+            # boundaries. Marked snapshots were already removed above, so mixed
+            # pre-marker/post-marker sessions still retain their real turns.
+            segments: List[List[Dict[str, Any]]] = [[]]
+            for row in rows:
+                if ContextCompressor._is_context_summary_content(row.get("content")):
+                    segments.append([])
+                else:
+                    segments[-1].append(row)
+
+            if len(segments) == 1:
+                _append_sanitized(segments[0])
+                continue
+
+            for index, segment in enumerate(segments):
+                candidate = list(segment)
+                if index == 0:
+                    candidate = candidate[_prefix_overlap(candidate, display):]
+                else:
+                    candidate = candidate[_tail_overlap(candidate):]
+
+                # A snapshot's protected head sits immediately before the next
+                # summary. Remove the longest proper suffix matching the visible
+                # transcript prefix, including the same-session first generation.
+                if index < len(segments) - 1 and candidate:
+                    reference = display + candidate
+                    max_suffix = min(len(candidate) - 1, len(reference))
+                    suffix_size = _longest_prefix_suffix(
+                        reference, candidate, max_suffix
+                    )
+                    if suffix_size:
+                        candidate = candidate[:-suffix_size]
+                _append_sanitized(candidate)
+
+        return _strip_background_review_harness(display)
+
+    def get_messages_for_display_page(
+        self,
+        session_id: str,
+        *,
+        limit: int,
+        before: Optional[int] = None,
+        before_kind: str = "v2",
+        include_ancestors: bool = False,
+    ) -> Dict[str, Any]:
+        """Return a keyset page without materializing the whole transcript.
+
+        Modern rows use the global AUTOINCREMENT message id as an opaque stable
+        cursor. Legacy pre-marker compaction snapshots require the bounded
+        overlap projector so old databases retain their exact visible history.
+        """
+        from agent.context_compressor import ContextCompressor
+
+        lineage = (
+            self._compression_lineage_root_to_tip(session_id)
+            if include_ancestors
+            else [session_id]
+        )
+        lineage_json = json.dumps(lineage)
+
+        # Pre-marker compaction snapshots copied head/tail messages without a
+        # context_snapshot bit. Keep the compatibility projector only for those
+        # rows; all newly written transcripts take the bounded keyset path.
+        with self._lock:
+            has_legacy_snapshot = self._conn.execute(
+                """
+                SELECT 1
+                FROM messages
+                WHERE session_id IN (SELECT value FROM json_each(?))
+                  AND COALESCE(context_snapshot, 0) = 0
+                  AND (
+                    instr(content, '[CONTEXT COMPACTION') > 0
+                    OR instr(content, '[CONTEXT SUMMARY]:') > 0
+                  )
+                LIMIT 1
+                """,
+                (lineage_json,),
+            ).fetchone() is not None
+        if has_legacy_snapshot or before_kind == "v1":
+            messages = self.get_messages_for_display(
+                session_id,
+                include_ancestors=include_ancestors,
+                max_rows=20_000,
+            )
+            end = len(messages) if before is None else min(before, len(messages))
+            start = max(0, end - limit)
+            page = messages[start:end]
+            has_more = start > 0
+            return {
+                "data": page,
+                "has_more": has_more,
+                "next_cursor": f"v1:{start}" if has_more else None,
+            }
+
+        scan_budget = min(4_000, max(512, (limit + 1) * 8))
+        batch_size = min(1_000, max(64, (limit + 1) * 2))
+        boundary = before
+        scanned = 0
+        exhausted = False
+        visible_desc: List[Dict[str, Any]] = []
+        last_scanned_id: Optional[int] = None
+
+        while scanned < scan_budget and len(visible_desc) < limit + 1:
+            query_limit = min(batch_size, scan_budget - scanned)
+            params: List[Any] = [lineage_json]
+            boundary_clause = ""
+            if boundary is not None:
+                boundary_clause = " AND id < ?"
+                params.append(boundary)
+            params.append(query_limit)
+            with self._lock:
+                rows = self._conn.execute(
+                    """
+                    SELECT *
+                    FROM messages
+                    WHERE session_id IN (SELECT value FROM json_each(?))
+                      AND (active = 1 OR compacted = 1)
+                      AND COALESCE(context_snapshot, 0) = 0
+                    """ + boundary_clause + " ORDER BY id DESC LIMIT ?",
+                    params,
+                ).fetchall()
+            if not rows:
+                exhausted = True
+                break
+            scanned += len(rows)
+            last_scanned_id = int(rows[-1]["id"])
+            boundary = last_scanned_id
+            for raw in rows:
+                message = dict(raw)
+                message["content"] = self._decode_content(message.get("content"))
+                if ContextCompressor._is_context_summary_content(
+                    message.get("content")
+                ):
+                    continue
+                if message.get("tool_calls"):
+                    try:
+                        message["tool_calls"] = json.loads(message["tool_calls"])
+                    except (json.JSONDecodeError, TypeError):
+                        message["tool_calls"] = []
+                visible_desc.append(message)
+                if len(visible_desc) >= limit + 1:
+                    break
+            if len(rows) < query_limit:
+                exhausted = True
+                break
+
+        page_desc = visible_desc[:limit]
+        has_more = len(visible_desc) > limit or not exhausted
+        if not has_more:
+            next_cursor = None
+        elif len(visible_desc) > limit and page_desc:
+            next_cursor = f"v2:{int(page_desc[-1]['id'])}"
+        elif last_scanned_id is not None:
+            next_cursor = f"v2:{last_scanned_id}"
+        else:
+            next_cursor = None
+        return {
+            "data": list(reversed(page_desc)),
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+        }
+
+    def get_compression_lineage_root(self, session_id: str) -> str:
+        """Return the stable lock/routing key for a compression lineage."""
+        chain = self._compression_lineage_root_to_tip(session_id)
+        return chain[0] if chain else session_id
+
+    def _compression_lineage_root_to_tip(self, session_id: str) -> List[str]:
+        """Return only parent edges created by compression rotation.
+
+        Explicit branches copy their inherited history into the child, so walking
+        every ``parent_session_id`` ancestor would render that copied history a
+        second time. A compression continuation is identified by the same edge
+        conditions used by :meth:`get_compression_tip`.
+        """
+        if not session_id:
+            return [session_id]
+
+        chain: List[str] = []
+        current = session_id
+        seen = set()
+        with self._lock:
+            while current:
+                if not current or current in seen:
+                    break
+                seen.add(current)
+                chain.append(current)
+                row = self._conn.execute(
+                    """
+                    SELECT child.parent_session_id
+                    FROM sessions AS child
+                    JOIN sessions AS parent
+                      ON parent.id = child.parent_session_id
+                    WHERE child.id = ?
+                      AND parent.end_reason = 'compression'
+                      AND COALESCE(json_extract(child.model_config, '$._branched_from'), '') = ''
+                      AND COALESCE(json_extract(child.model_config, '$._delegate_from'), '') = ''
+                      AND COALESCE(child.source, '') != 'tool'
+                    """,
+                    (current,),
+                ).fetchone()
+                if row is None:
+                    break
+                current = (
+                    row["parent_session_id"]
+                    if hasattr(row, "keys")
+                    else row[0]
+                )
+
+        chain.reverse()
+        return chain or [session_id]
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
         if not session_id:
@@ -5295,6 +5657,11 @@ class SessionDB:
         offset: int = 0,
         sort: str = None,
         include_inactive: bool = False,
+        session_id_filter: List[str] = None,
+        include_context: bool = True,
+        distinct_sessions: bool = False,
+        raise_fts_errors: bool = False,
+        max_vm_steps: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -5330,9 +5697,48 @@ class SessionDB:
         if not query or not query.strip():
             return []
 
+        session_filter_json = None
+        if session_id_filter is not None:
+            session_ids = list(dict.fromkeys(
+                session_id for session_id in session_id_filter
+                if isinstance(session_id, str) and session_id
+            ))
+            if not session_ids:
+                return []
+            session_filter_json = json.dumps(session_ids)
+
         query = self._sanitize_fts5_query(query)
         if not query:
             return []
+
+        def execute_search(sql: str, sql_params: list) -> List[sqlite3.Row]:
+            interval = 0
+            if max_vm_steps is not None:
+                budget = max(1, int(max_vm_steps))
+                interval = min(1_000, budget)
+                completed_steps = 0
+
+                def check_budget() -> int:
+                    nonlocal completed_steps
+                    completed_steps += interval
+                    return 1 if completed_steps > budget else 0
+
+                self._conn.set_progress_handler(check_budget, interval)
+            try:
+                return self._conn.execute(sql, sql_params).fetchall()
+            except sqlite3.OperationalError as exc:
+                if (
+                    max_vm_steps is not None
+                    and completed_steps > budget
+                ) or (
+                    "interrupted" in str(exc).casefold()
+                    and max_vm_steps is not None
+                ):
+                    raise TimeoutError("Session search budget exceeded") from exc
+                raise
+            finally:
+                if interval:
+                    self._conn.set_progress_handler(None, 0)
 
         # Normalise sort. Anything not in the allowed set falls back to None
         # (FTS5 rank-only) so callers can pass through user input without
@@ -5354,13 +5760,20 @@ class SessionDB:
             order_by_sql = "ORDER BY rank"
 
         # Build WHERE clauses dynamically
-        where_clauses = ["messages_fts MATCH ?"]
+        where_clauses = [
+            "messages_fts MATCH ?",
+            "COALESCE(m.context_snapshot, 0) = 0",
+        ]
         params: list = [query]
         if not include_inactive:
             # Live rows (active=1) AND compaction-archived rows (compacted=1)
             # are discoverable; only rewind/undo rows (active=0, compacted=0)
             # are hidden. See archive_and_compact() / #38763.
             where_clauses.append("(m.active = 1 OR m.compacted = 1)")
+
+        if session_filter_json is not None:
+            where_clauses.append("m.session_id IN (SELECT value FROM json_each(?))")
+            params.append(session_filter_json)
 
         if source_filter is not None:
             source_placeholders = ",".join("?" for _ in source_filter)
@@ -5380,25 +5793,60 @@ class SessionDB:
         where_sql = " AND ".join(where_clauses)
         params.extend([limit, offset])
 
-        sql = f"""
-            SELECT
-                m.id,
-                m.session_id,
-                m.role,
-                snippet(messages_fts, 0, '>>>', '<<<', '...', 40) AS snippet,
-                m.content,
-                m.timestamp,
-                m.tool_name,
-                s.source,
-                s.model,
-                s.started_at AS session_started
-            FROM messages_fts
-            JOIN messages m ON m.id = messages_fts.rowid
-            JOIN sessions s ON s.id = m.session_id
-            WHERE {where_sql}
-            {order_by_sql}
-            LIMIT ? OFFSET ?
-        """
+        if distinct_sessions:
+            if sort_norm == "newest":
+                representative_order = "timestamp DESC, search_rank, id DESC"
+                distinct_order = "timestamp DESC, search_rank"
+            elif sort_norm == "oldest":
+                representative_order = "timestamp ASC, search_rank, id ASC"
+                distinct_order = "timestamp ASC, search_rank"
+            else:
+                representative_order = "search_rank, timestamp DESC, id DESC"
+                distinct_order = "search_rank, timestamp DESC"
+            sql = f"""
+                WITH hits AS (
+                    SELECT
+                        m.id, m.session_id, m.role, NULL AS snippet, NULL AS content,
+                        m.timestamp, m.tool_name, s.source, s.model,
+                        s.title AS session_title, s.started_at AS session_started,
+                        bm25(messages_fts) AS search_rank
+                    FROM messages_fts
+                    JOIN messages m ON m.id = messages_fts.rowid
+                    JOIN sessions s ON s.id = m.session_id
+                    WHERE {where_sql}
+                ), ranked AS (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY session_id ORDER BY {representative_order}
+                    ) AS session_row
+                    FROM hits
+                )
+                SELECT id, session_id, role, snippet, content, timestamp,
+                       tool_name, source, model, session_title, session_started
+                FROM ranked
+                WHERE session_row = 1
+                ORDER BY {distinct_order}
+                LIMIT ? OFFSET ?
+            """
+        else:
+            sql = f"""
+                SELECT
+                    m.id,
+                    m.session_id,
+                    m.role,
+                    snippet(messages_fts, 0, '>>>', '<<<', '...', 40) AS snippet,
+                    m.content,
+                    m.timestamp,
+                    m.tool_name,
+                    s.source,
+                    s.model,
+                    s.started_at AS session_started
+                FROM messages_fts
+                JOIN messages m ON m.id = messages_fts.rowid
+                JOIN sessions s ON s.id = m.session_id
+                WHERE {where_sql}
+                {order_by_sql}
+                LIMIT ? OFFSET ?
+            """
 
         # CJK queries bypass the unicode61 FTS5 table.  The default tokenizer
         # splits CJK characters into individual tokens, so "大别山项目" becomes
@@ -5439,10 +5887,16 @@ class SessionDB:
                     else:
                         parts.append('"' + tok.replace('"', '""') + '"')
                 trigram_query = " ".join(parts)
-                tri_where = ["messages_fts_trigram MATCH ?"]
+                tri_where = [
+                    "messages_fts_trigram MATCH ?",
+                    "COALESCE(m.context_snapshot, 0) = 0",
+                ]
                 tri_params: list = [trigram_query]
                 if not include_inactive:
                     tri_where.append("(m.active = 1 OR m.compacted = 1)")
+                if session_filter_json is not None:
+                    tri_where.append("m.session_id IN (SELECT value FROM json_each(?))")
+                    tri_params.append(session_filter_json)
                 if source_filter is not None:
                     tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     tri_params.extend(source_filter)
@@ -5452,34 +5906,62 @@ class SessionDB:
                 if role_filter:
                     tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     tri_params.extend(role_filter)
-                tri_sql = f"""
-                    SELECT
-                        m.id,
-                        m.session_id,
-                        m.role,
-                        snippet(messages_fts_trigram, 0, '>>>', '<<<', '...', 40) AS snippet,
-                        m.content,
-                        m.timestamp,
-                        m.tool_name,
-                        s.source,
-                        s.model,
-                        s.started_at AS session_started
-                    FROM messages_fts_trigram
-                    JOIN messages m ON m.id = messages_fts_trigram.rowid
-                    JOIN sessions s ON s.id = m.session_id
-                    WHERE {' AND '.join(tri_where)}
-                    {order_by_sql}
-                    LIMIT ? OFFSET ?
-                """
+                if distinct_sessions:
+                    tri_sql = f"""
+                        WITH hits AS (
+                            SELECT
+                                m.id, m.session_id, m.role, NULL AS snippet, NULL AS content,
+                                m.timestamp, m.tool_name, s.source, s.model,
+                                s.title AS session_title, s.started_at AS session_started,
+                                bm25(messages_fts_trigram) AS search_rank
+                            FROM messages_fts_trigram
+                            JOIN messages m ON m.id = messages_fts_trigram.rowid
+                            JOIN sessions s ON s.id = m.session_id
+                            WHERE {' AND '.join(tri_where)}
+                        ), ranked AS (
+                            SELECT *, ROW_NUMBER() OVER (
+                                PARTITION BY session_id ORDER BY {representative_order}
+                            ) AS session_row
+                            FROM hits
+                        )
+                        SELECT id, session_id, role, snippet, content, timestamp,
+                               tool_name, source, model, session_title, session_started
+                        FROM ranked
+                        WHERE session_row = 1
+                        ORDER BY {distinct_order}
+                        LIMIT ? OFFSET ?
+                    """
+                else:
+                    tri_sql = f"""
+                        SELECT
+                            m.id,
+                            m.session_id,
+                            m.role,
+                            snippet(messages_fts_trigram, 0, '>>>', '<<<', '...', 40) AS snippet,
+                            m.content,
+                            m.timestamp,
+                            m.tool_name,
+                            s.source,
+                            s.model,
+                            s.started_at AS session_started
+                        FROM messages_fts_trigram
+                        JOIN messages m ON m.id = messages_fts_trigram.rowid
+                        JOIN sessions s ON s.id = m.session_id
+                        WHERE {' AND '.join(tri_where)}
+                        {order_by_sql}
+                        LIMIT ? OFFSET ?
+                    """
                 tri_params.extend([limit, offset])
                 with self._lock:
                     try:
-                        tri_cursor = self._conn.execute(tri_sql, tri_params)
+                        tri_rows = execute_search(tri_sql, tri_params)
                     except sqlite3.OperationalError:
+                        if raise_fts_errors:
+                            raise
                         # Trigram query failed at runtime — fall through to LIKE.
                         pass
                     else:
-                        matches = [dict(row) for row in tri_cursor.fetchall()]
+                        matches = [dict(row) for row in tri_rows]
                         _trigram_succeeded = True
             if not _trigram_succeeded:
                 # Short / mixed CJK query, trigram unavailable, or trigram
@@ -5499,7 +5981,15 @@ class SessionDB:
                         "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
                     )
                     like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
-                like_where = [f"({' OR '.join(token_clauses)})"]
+                like_where = [
+                    f"({' OR '.join(token_clauses)})",
+                    "COALESCE(m.context_snapshot, 0) = 0",
+                ]
+                if not include_inactive:
+                    like_where.append("(m.active = 1 OR m.compacted = 1)")
+                if session_filter_json is not None:
+                    like_where.append("m.session_id IN (SELECT value FROM json_each(?))")
+                    like_params.append(session_filter_json)
                 if source_filter is not None:
                     like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     like_params.extend(source_filter)
@@ -5509,34 +5999,66 @@ class SessionDB:
                 if role_filter:
                     like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     like_params.extend(role_filter)
-                like_sql = f"""
-                    SELECT m.id, m.session_id, m.role,
-                           substr(m.content,
-                                  max(1, instr(m.content, ?) - 40),
-                                  120) AS snippet,
-                           m.content, m.timestamp, m.tool_name,
-                           s.source, s.model, s.started_at AS session_started
-                    FROM messages m
-                    JOIN sessions s ON s.id = m.session_id
-                    WHERE {' AND '.join(like_where)}
-                    ORDER BY m.timestamp DESC
-                    LIMIT ? OFFSET ?
-                """
-                like_params.extend([limit, offset])
-                # instr() for snippet uses first search token
-                like_params = [non_op_tokens[0]] + like_params
+                if distinct_sessions:
+                    like_sql = f"""
+                        WITH hits AS (
+                            SELECT
+                                m.id, m.session_id, m.role, NULL AS snippet, NULL AS content,
+                                m.timestamp, m.tool_name, s.source, s.model,
+                                s.title AS session_title, s.started_at AS session_started, 0.0 AS search_rank
+                            FROM messages m
+                            JOIN sessions s ON s.id = m.session_id
+                            WHERE {' AND '.join(like_where)}
+                        ), ranked AS (
+                            SELECT *, ROW_NUMBER() OVER (
+                                PARTITION BY session_id ORDER BY {representative_order}
+                            ) AS session_row
+                            FROM hits
+                        )
+                        SELECT id, session_id, role, snippet, content, timestamp,
+                               tool_name, source, model, session_title, session_started
+                        FROM ranked
+                        WHERE session_row = 1
+                        ORDER BY {distinct_order}
+                        LIMIT ? OFFSET ?
+                    """
+                    like_params.extend([limit, offset])
+                else:
+                    like_sql = f"""
+                        SELECT m.id, m.session_id, m.role,
+                               substr(m.content,
+                                      max(1, instr(m.content, ?) - 40),
+                                      120) AS snippet,
+                               m.content, m.timestamp, m.tool_name,
+                               s.source, s.model, s.started_at AS session_started
+                        FROM messages m
+                        JOIN sessions s ON s.id = m.session_id
+                        WHERE {' AND '.join(like_where)}
+                        ORDER BY m.timestamp DESC
+                        LIMIT ? OFFSET ?
+                    """
+                    like_params.extend([limit, offset])
+                    # instr() for snippet uses first search token
+                    like_params = [non_op_tokens[0]] + like_params
                 with self._lock:
-                    like_cursor = self._conn.execute(like_sql, like_params)
-                    matches = [dict(row) for row in like_cursor.fetchall()]
+                    like_rows = execute_search(like_sql, like_params)
+                    matches = [dict(row) for row in like_rows]
         else:
             with self._lock:
                 try:
-                    cursor = self._conn.execute(sql, params)
+                    rows = execute_search(sql, params)
                 except sqlite3.OperationalError:
+                    if raise_fts_errors:
+                        raise
                     # FTS5 query syntax error despite sanitization — return empty
                     return []
                 else:
-                    matches = [dict(row) for row in cursor.fetchall()]
+                    matches = [dict(row) for row in rows]
+
+        if not include_context:
+            for match in matches:
+                match.pop("content", None)
+            return matches
 
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.
@@ -5554,8 +6076,9 @@ class SessionDB:
                                SELECT m.id, m.timestamp, m.role, m.content
                                FROM messages m
                                JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp < t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id < t.id)
+                               WHERE COALESCE(m.context_snapshot, 0) = 0
+                                 AND ((m.timestamp < t.timestamp)
+                                  OR (m.timestamp = t.timestamp AND m.id < t.id))
                                ORDER BY m.timestamp DESC, m.id DESC
                                LIMIT 1
                            )
@@ -5569,8 +6092,9 @@ class SessionDB:
                                SELECT m.id, m.timestamp, m.role, m.content
                                FROM messages m
                                JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp > t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id > t.id)
+                               WHERE COALESCE(m.context_snapshot, 0) = 0
+                                 AND ((m.timestamp > t.timestamp)
+                                  OR (m.timestamp = t.timestamp AND m.id > t.id))
                                ORDER BY m.timestamp ASC, m.id ASC
                                LIMIT 1
                            )""",

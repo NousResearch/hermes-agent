@@ -1,6 +1,11 @@
 """Focused tests for API server session-control endpoints."""
 
-from unittest.mock import AsyncMock, patch
+import asyncio
+import json
+import re
+import sqlite3
+import threading
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -41,6 +46,7 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/api/sessions", adapter._handle_list_sessions)
     app.router.add_post("/api/sessions", adapter._handle_create_session)
+    app.router.add_post("/api/sessions/search", adapter._handle_search_sessions)
     app.router.add_get("/api/sessions/{session_id}", adapter._handle_get_session)
     app.router.add_patch("/api/sessions/{session_id}", adapter._handle_patch_session)
     app.router.add_delete("/api/sessions/{session_id}", adapter._handle_delete_session)
@@ -64,11 +70,16 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
+    assert features["session_search"] is True
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
     assert features["skills_api"] is True
     assert features["realtime_voice"] is False
     assert data["endpoints"]["sessions"] == {"method": "GET", "path": "/api/sessions"}
+    assert data["endpoints"]["session_search"] == {
+        "method": "POST",
+        "path": "/api/sessions/search",
+    }
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
@@ -121,6 +132,443 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
         "context_session_key": "request-key",
         "child_session_id": "request-session",
     }
+
+
+@pytest.mark.asyncio
+async def test_session_search_is_scoped_and_returns_only_safe_summaries(adapter, session_db):
+    session_db.create_session("allowed", "api_server")
+    session_db.set_session_title("allowed", "Allowed conversation")
+    session_db.append_message("allowed", "user", "private transcript needle")
+    session_db.create_session("foreign", "api_server")
+    session_db.append_message("foreign", "assistant", "private transcript needle")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["allowed"], "limit": 10},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert [session["id"] for session in payload["data"]] == ["allowed"]
+    assert payload["data"][0]["title"] == "Allowed conversation"
+    assert set(payload["data"][0]) == {
+        "id",
+        "title",
+        "started_at",
+    }
+    assert "content" not in json.dumps(payload)
+    assert "snippet" not in json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_session_search_marks_result_limit_as_truncated(adapter, session_db):
+    for session_id in ("first", "second"):
+        session_db.create_session(session_id, "api_server")
+        session_db.append_message(session_id, "user", "bounded needle")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["first", "second"], "limit": 1},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert len(payload["data"]) == 1
+    assert payload["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_session_search_distinct_results_cannot_be_starved(adapter, session_db):
+    session_db.create_session("noisy", "api_server")
+    session_db.create_session("quiet", "api_server")
+    for index in range(5_001):
+        session_db.append_message("noisy", "user", f"needle repeated {index}")
+    session_db.append_message("quiet", "assistant", "one needle match")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["noisy", "quiet"], "limit": 2},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert {session["id"] for session in payload["data"]} == {"noisy", "quiet"}
+    assert payload["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_session_search_never_expands_beyond_explicit_compression_chain_ids(adapter, session_db):
+    session_db.create_session("root", "api_server")
+    session_db.end_session("root", "compression")
+    session_db.create_session("child", "api_server", parent_session_id="root")
+    session_db.append_message("child", "assistant", "forward lineage needle")
+    session_db.create_session(
+        "branch",
+        "api_server",
+        parent_session_id="root",
+        model_config={"_branched_from": "root"},
+    )
+    session_db.append_message("branch", "assistant", "branch-only secret")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        forward = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["root", "child"], "limit": 10},
+        )
+        forward_payload = await forward.json()
+        branch = await cli.post(
+            "/api/sessions/search",
+            json={"query": "secret", "session_ids": ["root"], "limit": 10},
+        )
+        branch_payload = await branch.json()
+
+    assert forward.status == 200
+    assert [item["id"] for item in forward_payload["data"]] == ["child"]
+    assert branch.status == 200
+    assert branch_payload["data"] == []
+
+
+@pytest.mark.asyncio
+async def test_session_search_owned_tip_does_not_authorize_ancestors(adapter, session_db):
+    session_db.create_session("root", "api_server")
+    session_db.append_message("root", "user", "ancestor-only needle")
+    session_db.end_session("root", "compression")
+    session_db.create_session("child", "api_server", parent_session_id="root")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["child"], "limit": 10},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert payload["data"] == []
+
+
+@pytest.mark.asyncio
+async def test_session_search_uses_one_bounded_database_query(adapter, session_db):
+    session_ids = [f"owned-{index}" for index in range(3)]
+    for session_id in session_ids:
+        session_db.create_session(session_id, "api_server")
+        session_db.append_message(session_id, "user", "needle")
+    statements = []
+    session_db._conn.set_trace_callback(statements.append)
+    adapter._session_db = session_db
+    app = _create_session_app(adapter)
+    try:
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/api/sessions/search",
+                json={"query": "needle", "session_ids": session_ids, "limit": 10},
+            )
+    finally:
+        session_db._conn.set_trace_callback(None)
+
+    search_statements = [
+        statement for statement in statements
+        if statement.lstrip().upper().startswith(("SELECT", "WITH"))
+    ]
+    assert response.status == 200
+    assert len(search_statements) == 1
+
+
+@pytest.mark.asyncio
+async def test_session_search_reports_runtime_fts_failure(adapter, session_db):
+    session_db.create_session("owned", "api_server")
+    session_db.append_message("owned", "user", "needle")
+    with session_db._lock:
+        session_db._conn.execute("DROP TABLE messages_fts")
+        session_db._conn.commit()
+    adapter._session_db = session_db
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["owned"], "limit": 10},
+        )
+        payload = await response.json()
+
+    assert response.status == 503
+    assert payload["error"]["code"] == "session_search_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_session_search_reports_trigram_fts_failure(adapter, session_db):
+    session_db.create_session("owned", "api_server")
+    session_db.append_message("owned", "user", "大别山项目")
+    with session_db._lock:
+        session_db._conn.execute("DROP TABLE messages_fts_trigram")
+        session_db._conn.commit()
+    adapter._session_db = session_db
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "大别山项目", "session_ids": ["owned"], "limit": 10},
+        )
+        payload = await response.json()
+
+    assert response.status == 503
+    assert payload["error"]["code"] == "session_search_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_session_search_reports_general_database_failure(adapter, session_db, monkeypatch):
+    session_db.create_session("owned", "api_server")
+    adapter._session_db = session_db
+
+    def broken_search(*args, **kwargs):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    monkeypatch.setattr(session_db, "search_messages", broken_search)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["owned"], "limit": 10},
+        )
+        payload = await response.json()
+
+    assert response.status == 503
+    assert payload["error"]["code"] == "session_search_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_session_search_reports_query_budget_exhaustion(adapter, session_db, monkeypatch):
+    session_db.create_session("owned", "api_server")
+    adapter._session_db = session_db
+
+    def exhausted_search(*args, **kwargs):
+        raise TimeoutError("Session search budget exceeded")
+
+    monkeypatch.setattr(session_db, "search_messages", exhausted_search)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["owned"], "limit": 10},
+        )
+        payload = await response.json()
+
+    assert response.status == 422
+    assert payload["error"]["code"] == "session_search_too_broad"
+
+
+@pytest.mark.asyncio
+async def test_session_search_rejects_non_json_media_type(adapter):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            data=json.dumps({"query": "needle", "session_ids": []}),
+            headers={"Content-Type": "text/plain"},
+        )
+        payload = await response.json()
+
+    assert response.status == 415
+    assert payload["error"]["code"] == "unsupported_media_type"
+
+
+@pytest.mark.asyncio
+async def test_session_search_groups_explicit_aliases_before_result_limit(adapter, session_db):
+    session_ids = []
+    session_aliases = {}
+    for index in range(251):
+        root = f"root-{index}"
+        tip = f"tip-{index}"
+        for session_id in (root, tip):
+            session_db.create_session(session_id, "api_server")
+            session_db.append_message(session_id, "user", "needle")
+            session_ids.append(session_id)
+        session_aliases[root] = tip
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={
+                "query": "needle",
+                "session_ids": session_ids,
+                "session_aliases": session_aliases,
+                "limit": 500,
+            },
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert len(payload["data"]) == 251
+    assert len({item["id"] for item in payload["data"]}) == 251
+    assert payload["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_session_search_uses_public_alias_metadata(adapter, session_db):
+    session_db.create_session("metadata-root", "api_server")
+    session_db.set_session_title("metadata-root", "Stale root title")
+    session_db.append_message("metadata-root", "user", "metadata needle")
+    session_db.end_session("metadata-root", "compression")
+    session_db.create_session(
+        "metadata-tip", "api_server", parent_session_id="metadata-root"
+    )
+    session_db.set_session_title("metadata-tip", "Current conversation title")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={
+                "query": "needle",
+                "session_ids": ["metadata-root", "metadata-tip"],
+                "session_aliases": {"metadata-root": "metadata-tip"},
+                "limit": 10,
+            },
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert payload["data"] == [
+        {
+            "id": "metadata-tip",
+            "title": "Current conversation title",
+            "started_at": session_db.get_session("metadata-tip")["started_at"],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_session_search_holds_permit_until_worker_stops(
+    adapter, session_db, monkeypatch
+):
+    session_db.create_session("cancel-search", "api_server")
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_search(*args, **kwargs):
+        started.set()
+        release.wait(timeout=5)
+        return []
+
+    monkeypatch.setattr(session_db, "search_messages", blocked_search)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        request_task = asyncio.create_task(
+            cli.post(
+                "/api/sessions/search",
+                json={
+                    "query": "needle",
+                    "session_ids": ["cancel-search"],
+                    "limit": 10,
+                },
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 2)
+        request_task.cancel()
+        await asyncio.sleep(0.05)
+        assert adapter._session_search_semaphore._value == 1
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+
+
+@pytest.mark.asyncio
+async def test_session_search_accepts_webui_maximum_scope(adapter, session_db):
+    session_ids = [f"owned-{index}" for index in range(20_000)]
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": session_ids, "limit": 1},
+        )
+
+    assert response.status == 200
+
+
+@pytest.mark.asyncio
+async def test_session_search_rejects_scope_above_webui_maximum(adapter, session_db):
+    session_ids = [f"owned-{index}" for index in range(20_001)]
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": session_ids, "limit": 1},
+        )
+        payload = await response.json()
+
+    assert response.status == 400
+    assert "at most 20000" in payload["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_session_search_requires_bearer_auth(auth_adapter, session_db):
+    session_db.create_session("owned", "api_server")
+    session_db.append_message("owned", "user", "needle")
+    app = _create_session_app(auth_adapter)
+    async with TestClient(TestServer(app)) as cli:
+        unauthorized = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["owned"]},
+        )
+        authorized = await cli.post(
+            "/api/sessions/search",
+            headers={"Authorization": "Bearer sk-test"},
+            json={"query": "needle", "session_ids": ["owned"]},
+        )
+
+    assert unauthorized.status == 401
+    assert authorized.status == 200
+
+
+@pytest.mark.asyncio
+async def test_session_search_accepts_bounded_500_result_limit(adapter):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": [], "limit": 500},
+        )
+
+    assert response.status == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        ({"query": "", "session_ids": []}, "invalid_search_query"),
+        ({"query": "x" * 201, "session_ids": []}, "invalid_search_query"),
+        ({"query": "x", "session_ids": ["../foreign"]}, "invalid_session_ids"),
+        ({"query": "x", "session_ids": [], "limit": True}, "invalid_search_limit"),
+        ({"query": "x", "session_ids": [], "limit": 501}, "invalid_search_limit"),
+        (
+            {
+                "query": "x",
+                "session_ids": ["owned"],
+                "session_aliases": {"owned": []},
+            },
+            "invalid_session_aliases",
+        ),
+        ({"query": "x", "session_ids": [], "extra": 1}, "unsupported_search_field"),
+    ],
+)
+async def test_session_search_rejects_invalid_request_shapes(adapter, body, code):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post("/api/sessions/search", json=body)
+        payload = await response.json()
+
+    assert response.status == 400
+    assert payload["error"]["code"] == code
 
 
 @pytest.mark.asyncio
@@ -294,7 +742,6 @@ async def test_session_messages_follow_compression_tip(adapter, session_db):
     session_db.append_message(source_id, "user", "before compression")
     session_db.end_session(source_id, "compression")
     session_db.create_session("tip-session", "api_server", parent_session_id=source_id)
-    session_db.replace_messages(source_id, [])
     session_db.append_message("tip-session", "user", "after compression")
 
     app = _create_session_app(adapter)
@@ -305,7 +752,450 @@ async def test_session_messages_follow_compression_tip(adapter, session_db):
 
     assert messages["object"] == "list"
     assert messages["session_id"] == "tip-session"
-    assert [m["content"] for m in messages["data"]] == ["after compression"]
+    assert [m["content"] for m in messages["data"]] == ["before compression", "after compression"]
+
+
+@pytest.mark.asyncio
+async def test_session_messages_paginate_newest_first_across_compression_lineage(
+    adapter, session_db
+):
+    from agent.context_compressor import SUMMARY_PREFIX
+
+    root_id = session_db.create_session("paged-root", "api_server")
+    session_db.append_message(root_id, "user", "oldest")
+    session_db.append_message(root_id, "assistant", "older reply")
+    session_db.end_session(root_id, "compression")
+    tip_id = session_db.create_session(
+        "paged-tip", "api_server", parent_session_id=root_id
+    )
+    session_db.append_message(tip_id, "user", f"{SUMMARY_PREFIX}\ninternal")
+    session_db.append_message(tip_id, "assistant", "older reply")
+    session_db.append_message(tip_id, "user", "newer question")
+    session_db.append_message(tip_id, "assistant", "newest reply")
+    session_db.append_message(
+        tip_id,
+        "tool",
+        "large tool output hidden by the chat renderer",
+        tool_call_id="call-hidden",
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        latest_response = await cli.get(
+            f"/api/sessions/{root_id}/messages?limit=3"
+        )
+        assert latest_response.status == 200
+        latest = await latest_response.json()
+        # Cursor boundaries are absolute in the append-only display projection,
+        # so a new turn arriving after page one must not shift page two.
+        session_db.append_message(tip_id, "user", "arrived after page one")
+        session_db.append_message(tip_id, "assistant", "new arrival reply")
+        older_response = await cli.get(
+            f"/api/sessions/{root_id}/messages"
+            f"?limit=3&before={latest['next_cursor']}"
+        )
+        assert older_response.status == 200
+        older = await older_response.json()
+
+    assert latest["session_id"] == tip_id
+    assert [m["content"] for m in latest["data"]] == [
+        "newer question",
+        "newest reply",
+        "large tool output hidden by the chat renderer",
+    ]
+    assert [m["role"] for m in latest["data"]] == ["user", "assistant", "tool"]
+    assert latest["has_more"] is True
+    assert isinstance(latest["next_cursor"], str)
+    assert [m["content"] for m in older["data"]] == [
+        "oldest",
+        "older reply",
+    ]
+    assert older["has_more"] is False
+    assert older["next_cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_paginated_session_messages_preserve_tool_rows(adapter, session_db):
+    session_id = session_db.create_session("paged-tools", "api_server")
+    session_db.append_message(session_id, "user", "run the check")
+    session_db.append_message(
+        session_id,
+        "assistant",
+        None,
+        tool_calls=[{"name": "terminal", "arguments": "{}"}],
+    )
+    session_db.append_message(
+        session_id,
+        "tool",
+        "check passed",
+        tool_name="terminal",
+        tool_call_id="call-1",
+    )
+    session_db.append_message(session_id, "assistant", "done")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(
+            f"/api/sessions/{session_id}/messages?limit=4"
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert [message["role"] for message in payload["data"]] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert payload["data"][2]["content"] == "check passed"
+
+
+@pytest.mark.asyncio
+async def test_session_messages_reject_invalid_pagination(adapter, session_db):
+    session_id = session_db.create_session("paged-invalid", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        too_large = await cli.get(
+            f"/api/sessions/{session_id}/messages?limit=501"
+        )
+        bad_cursor = await cli.get(
+            f"/api/sessions/{session_id}/messages?limit=50&before=not-a-cursor"
+        )
+        oversized_cursor = await cli.get(
+            f"/api/sessions/{session_id}/messages?limit=50&before=v1:"
+            + ("9" * 5000)
+        )
+        sqlite_overflow_cursor = await cli.get(
+            f"/api/sessions/{session_id}/messages?limit=50&before=v2:9223372036854775808"
+        )
+
+    assert too_large.status == 400
+    assert bad_cursor.status == 400
+    assert oversized_cursor.status == 400
+    assert sqlite_overflow_cursor.status == 400
+
+@pytest.mark.asyncio
+async def test_session_messages_do_not_prepend_explicit_branch_parent(
+    adapter, session_db
+):
+    """A branch already carries copied history, so display must not concatenate
+    the parent again merely because it has parent_session_id set."""
+    source_id = session_db.create_session("branch-source", "api_server")
+    session_db.append_message(source_id, "user", "one copy only")
+    branch_id = session_db.create_session(
+        "explicit-branch",
+        "api_server",
+        parent_session_id=source_id,
+        model_config={"_branched_from": source_id},
+    )
+    source_history = session_db.get_messages_as_conversation(source_id)
+    session_db.replace_messages(branch_id, source_history)
+    session_db.append_message(branch_id, "assistant", "branch-only reply")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{branch_id}/messages")
+        assert response.status == 200
+        payload = await response.json()
+
+    assert payload["session_id"] == branch_id
+    assert [m["content"] for m in payload["data"]] == [
+        "one copy only",
+        "branch-only reply",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_real_api_fork_renders_inherited_history_once(adapter, session_db):
+    source_id = session_db.create_session("api-fork-source", "api_server")
+    session_db.append_message(source_id, "user", "copied request")
+    session_db.append_message(source_id, "assistant", "copied answer")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        fork_response = await cli.post(
+            f"/api/sessions/{source_id}/fork",
+            json={"id": "api-fork-child", "title": "Fork"},
+        )
+        assert fork_response.status == 201
+        session_db.append_message("api-fork-child", "user", "fork-only request")
+        response = await cli.get("/api/sessions/api-fork-child/messages")
+        payload = await response.json()
+
+    assert response.status == 200
+    assert [m["content"] for m in payload["data"]] == [
+        "copied request",
+        "copied answer",
+        "fork-only request",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_delegate_display_does_not_prepend_parent_transcript(adapter, session_db):
+    parent_id = session_db.create_session("display-parent", "api_server")
+    session_db.append_message(parent_id, "user", "PARENT ONLY SECRET")
+    child_id = session_db.create_session(
+        "display-delegate",
+        "tool",
+        parent_session_id=parent_id,
+        model_config={"_delegate_from": parent_id},
+    )
+    session_db.append_message(child_id, "assistant", "delegate-only result")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{child_id}/messages")
+        payload = await response.json()
+
+    assert response.status == 200
+    assert [m["content"] for m in payload["data"]] == ["delegate-only result"]
+
+
+@pytest.mark.asyncio
+async def test_session_messages_do_not_silently_truncate_deep_compression_lineage(
+    adapter, session_db
+):
+    first_id = "deep-000"
+    session_db.create_session(first_id, "api_server")
+    session_db.append_message(first_id, "user", "message 000")
+    previous_id = first_id
+    for index in range(1, 102):
+        session_db.end_session(previous_id, "compression")
+        current_id = f"deep-{index:03d}"
+        session_db.create_session(
+            current_id, "api_server", parent_session_id=previous_id
+        )
+        session_db.append_message(current_id, "user", f"message {index:03d}")
+        previous_id = current_id
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{first_id}/messages?limit=200")
+        payload = await response.json()
+
+    assert response.status == 200
+    assert len(payload["data"]) == 102
+    assert payload["data"][0]["content"] == "message 000"
+
+
+def test_session_turn_lock_ignores_delegate_siblings(adapter, session_db):
+    root_id = session_db.create_session("lock-root", "api_server")
+    session_db.end_session(root_id, "compression")
+    session_db.create_session(
+        "lock-delegate",
+        "tool",
+        parent_session_id=root_id,
+        model_config={"_delegate_from": root_id},
+    )
+    tip_id = session_db.create_session(
+        "lock-tip",
+        "api_server",
+        parent_session_id=root_id,
+    )
+
+    assert adapter._session_turn_lock(root_id) is adapter._session_turn_lock(tip_id)
+
+
+@pytest.mark.asyncio
+async def test_paginated_history_projection_runs_off_event_loop(
+    adapter, session_db, monkeypatch
+):
+    session_id = session_db.create_session("off-loop-history", "api_server")
+    session_db.append_message(session_id, "user", "hello")
+    event_loop_thread = threading.get_ident()
+    observed = {}
+    original = session_db.get_messages_for_display_page
+
+    def checked_page(*args, **kwargs):
+        observed["thread"] = threading.get_ident()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(session_db, "get_messages_for_display_page", checked_page)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{session_id}/messages?limit=1")
+
+    assert response.status == 200
+    assert observed["thread"] != event_loop_thread
+
+
+@pytest.mark.asyncio
+async def test_paginated_history_pushes_limit_into_sql(adapter, session_db):
+    session_id = session_db.create_session("keyset-history", "api_server")
+    for index in range(250):
+        session_db.append_message(session_id, "user", f"message {index}")
+
+    statements = []
+    session_db._conn.set_trace_callback(statements.append)
+    try:
+        app = _create_session_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.get(
+                f"/api/sessions/{session_id}/messages?limit=1"
+            )
+            payload = await response.json()
+    finally:
+        session_db._conn.set_trace_callback(None)
+
+    limits = [
+        int(match.group(1))
+        for statement in statements
+        for match in re.finditer(r"\bLIMIT\s+(\d+)", statement, re.IGNORECASE)
+    ]
+    assert response.status == 200
+    assert payload["next_cursor"].startswith("v2:")
+    assert len(payload["data"]) == 1
+    assert limits and max(limits) <= 64
+
+
+@pytest.mark.asyncio
+async def test_session_history_reports_bounded_projection_overflow(
+    adapter, session_db, monkeypatch
+):
+    from hermes_state import DisplayProjectionTooLargeError
+
+    session_id = session_db.create_session("bounded-history", "api_server")
+
+    def too_large(*args, **kwargs):
+        raise DisplayProjectionTooLargeError("too many rows")
+
+    monkeypatch.setattr(session_db, "get_messages_for_display_page", too_large)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{session_id}/messages?limit=1")
+        payload = await response.json()
+
+    assert response.status == 422
+    assert payload["error"]["code"] == "session_history_too_large"
+
+
+@pytest.mark.asyncio
+async def test_session_messages_hide_compaction_handoff_and_deduplicate_snapshot(
+    adapter, session_db
+):
+    """The user-facing transcript stays continuous across rotating compaction."""
+    from agent.context_compressor import SUMMARY_PREFIX
+
+    root_id = session_db.create_session("display-root", "api_server")
+    session_db.append_message(root_id, "user", "Build the feature")
+    session_db.append_message(root_id, "assistant", "Working on it")
+    session_db.end_session(root_id, "compression")
+
+    tip_id = session_db.create_session(
+        "display-tip", "api_server", parent_session_id=root_id
+    )
+    session_db.append_message(tip_id, "user", f"{SUMMARY_PREFIX}\ninternal handoff")
+    # A preserved tail row copied into the compacted child must not appear twice.
+    session_db.append_message(tip_id, "assistant", "Working on it")
+    session_db.append_message(tip_id, "assistant", "Finished and verified")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{root_id}/messages")
+        assert response.status == 200
+        payload = await response.json()
+
+    assert [m["content"] for m in payload["data"]] == [
+        "Build the feature",
+        "Working on it",
+        "Finished and verified",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_messages_include_archived_turns_after_in_place_compaction(
+    adapter, session_db
+):
+    """Model-context compaction must not erase the visible chat transcript."""
+    from agent.context_compressor import SUMMARY_PREFIX
+
+    session_id = session_db.create_session("display-in-place", "api_server")
+    session_db.append_message(session_id, "user", "Original request")
+    session_db.append_message(session_id, "assistant", "Original visible answer")
+    session_db.archive_and_compact(
+        session_id,
+        [
+            {"role": "user", "content": f"{SUMMARY_PREFIX}\ninternal handoff"},
+            {"role": "assistant", "content": "Original visible answer"},
+        ],
+    )
+    session_db.append_message(session_id, "assistant", "Continuation after compaction")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert response.status == 200
+        payload = await response.json()
+
+    assert [m["content"] for m in payload["data"]] == [
+        "Original request",
+        "Original visible answer",
+        "Continuation after compaction",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_messages_preserve_legitimate_repeated_turns(adapter, session_db):
+    """Snapshot removal must not become global content deduplication."""
+    from agent.context_compressor import SUMMARY_PREFIX
+
+    session_id = session_db.create_session("display-repeats", "api_server")
+    for role, content in [
+        ("user", "repeat"),
+        ("assistant", "ack"),
+        ("user", "repeat"),
+        ("assistant", "ack"),
+    ]:
+        session_db.append_message(session_id, role, content)
+    session_db.archive_and_compact(
+        session_id,
+        [{"role": "user", "content": f"{SUMMARY_PREFIX}\ninternal handoff"}],
+    )
+    session_db.append_message(session_id, "user", "repeat")
+    session_db.append_message(session_id, "assistant", "ack")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert response.status == 200
+        payload = await response.json()
+
+    assert [(m["role"], m["content"]) for m in payload["data"]] == [
+        ("user", "repeat"),
+        ("assistant", "ack"),
+        ("user", "repeat"),
+        ("assistant", "ack"),
+        ("user", "repeat"),
+        ("assistant", "ack"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_messages_sanitize_internal_context_fences(adapter, session_db):
+    session_id = session_db.create_session("display-sanitized", "api_server")
+    session_db.append_message(
+        session_id,
+        "assistant",
+        "<memory-context>PRIVATE INTERNAL MEMORY</memory-context>Visible answer",
+    )
+    session_db.append_message(
+        session_id,
+        "tool",
+        "<memory-context>PRIVATE TOOL MEMORY</memory-context>Visible tool output",
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert response.status == 200
+        payload = await response.json()
+
+    rendered = "\n".join(str(message.get("content") or "") for message in payload["data"])
+    assert "PRIVATE INTERNAL MEMORY" not in rendered
+    assert "PRIVATE TOOL MEMORY" not in rendered
+    assert "Visible answer" in rendered
+    assert "Visible tool output" in rendered
 
 
 @pytest.mark.asyncio
@@ -987,11 +1877,65 @@ def test_session_turn_lock_fails_closed_when_lineage_lookup_fails(
 
     with patch.object(
         session_db,
-        "get_compression_lineage",
+        "get_compression_lineage_root",
         side_effect=RuntimeError("state DB unavailable"),
     ):
         with pytest.raises(RuntimeError, match="state DB unavailable"):
             adapter._session_turn_lock(tip_id)
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_resolves_stale_compression_root(adapter, session_db):
+    """If the client sends to a compression-ended root, the API must resolve
+    to the current tip before running, preventing sibling continuations."""
+    root_id = session_db.create_session("root-session", "api_server")
+    session_db.append_message(root_id, "user", "hello root")
+    session_db.end_session(root_id, "compression")
+    tip_id = session_db.create_session("tip-session", "api_server", parent_session_id=root_id)
+    session_db.append_message(tip_id, "user", "hello tip")
+
+    captured_kwargs = {}
+
+    async def fake_run(**kwargs):
+        captured_kwargs.update(kwargs)
+        kwargs["stream_delta_callback"]("response")
+        return {"final_response": "response", "session_id": tip_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{root_id}/chat/stream",
+                json={"message": "next message"},
+            )
+            assert resp.status == 200
+
+    assert captured_kwargs["session_id"] == tip_id, (
+        "Chat stream must resolve a stale compression root to the current tip"
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_chat_resolves_stale_compression_root(adapter, session_db):
+    """Non-streaming chat must also resolve a stale root to the tip."""
+    root_id = session_db.create_session("root-chat", "api_server")
+    session_db.append_message(root_id, "user", "hello root")
+    session_db.end_session(root_id, "compression")
+    tip_id = session_db.create_session("tip-chat", "api_server", parent_session_id=root_id)
+    session_db.append_message(tip_id, "user", "hello tip")
+
+    mock_run = AsyncMock(return_value=({"final_response": "ok", "session_id": tip_id}, {"total_tokens": 1}))
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{root_id}/chat",
+                json={"message": "next"},
+            )
+            assert resp.status == 200
+
+    _, kwargs = mock_run.call_args
+    assert kwargs["session_id"] == tip_id
 
 
 @pytest.mark.asyncio

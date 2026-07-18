@@ -9,6 +9,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
 - GET  /api/sessions               — list client-visible Hermes sessions
+- POST /api/sessions/search        — search an explicit allowlist of session transcripts
 - POST /api/sessions               — create an empty Hermes session
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
 - GET  /api/sessions/{session_id}/messages — read session message history
@@ -1080,6 +1081,11 @@ class APIServerAdapter(BasePlatformAdapter):
         self._session_turn_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
             weakref.WeakValueDictionary()
         )
+        # Transcript searches use SQLite synchronously. Keep them off the event
+        # loop and cap concurrent scans so a burst of browser searches cannot
+        # monopolize the gateway process.
+        self._session_search_semaphore = asyncio.Semaphore(2)
+        self._session_history_semaphore = asyncio.Semaphore(4)
         # Concurrency cap shared across all agent-serving endpoints
         # (/v1/chat/completions, /v1/responses, /v1/runs). Read from
         # config.yaml gateway.api_server.max_concurrent_runs; 0 disables
@@ -1577,6 +1583,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/toolsets", self._handle_toolsets),
             ("GET", "/api/sessions", self._handle_list_sessions),
             ("POST", "/api/sessions", self._handle_create_session),
+            ("POST", "/api/sessions/search", self._handle_search_sessions),
             ("GET", "/api/sessions/{session_id}", self._handle_get_session),
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
@@ -2129,6 +2136,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": True,
                 "session_chat_streaming": True,
                 "session_fork": True,
+                "session_search": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
                 "memory_write_api": False,
@@ -2153,6 +2161,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
                 "sessions": {"method": "GET", "path": "/api/sessions"},
+                "session_search": {"method": "POST", "path": "/api/sessions/search"},
                 "session_create": {"method": "POST", "path": "/api/sessions"},
                 "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
                 "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
@@ -2349,6 +2358,204 @@ class APIServerAdapter(BasePlatformAdapter):
             "has_more": len(sessions) == limit,
         })
 
+    @staticmethod
+    async def _run_blocking_operation_cancellation_safe(operation):
+        """Run blocking work off-loop without releasing admission on cancel.
+
+        Cancelling ``asyncio.to_thread`` only cancels the waiter, not the worker.
+        Drain the shielded task before propagating cancellation so semaphores held
+        by the caller continue to describe the real number of live workers.
+        """
+        worker = asyncio.create_task(asyncio.to_thread(operation))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    if worker.done():
+                        break
+                    continue
+                except Exception:
+                    break
+            if worker.done() and not worker.cancelled():
+                try:
+                    worker.exception()
+                except Exception:
+                    pass
+            raise
+
+    async def _handle_search_sessions(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/search, search only an explicit session allowlist."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        if request.content_type != "application/json":
+            return web.json_response(
+                _openai_error(
+                    "Content-Type must be application/json",
+                    code="unsupported_media_type",
+                ),
+                status=415,
+            )
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        unknown = sorted(set(body) - {"query", "session_ids", "session_aliases", "limit"})
+        if unknown:
+            return web.json_response(
+                _openai_error(
+                    f"Unsupported search fields: {', '.join(unknown)}",
+                    code="unsupported_search_field",
+                ),
+                status=400,
+            )
+        raw_query = body.get("query")
+        query = " ".join(raw_query.split()) if isinstance(raw_query, str) else ""
+        if not query or len(query) > 200:
+            return web.json_response(
+                _openai_error(
+                    "query must contain between 1 and 200 characters",
+                    code="invalid_search_query",
+                ),
+                status=400,
+            )
+        raw_session_ids = body.get("session_ids")
+        if not isinstance(raw_session_ids, list) or len(raw_session_ids) > 20_000:
+            return web.json_response(
+                _openai_error(
+                    "session_ids must be an array with at most 20000 entries",
+                    code="invalid_session_ids",
+                ),
+                status=400,
+            )
+        from gateway.session import _is_path_unsafe
+        session_ids: List[str] = []
+        session_id_set: set[str] = set()
+        for raw_session_id in raw_session_ids:
+            if (
+                not isinstance(raw_session_id, str)
+                or not raw_session_id
+                or len(raw_session_id) > self._MAX_SESSION_HEADER_LEN
+                or re.search(r'[\r\n\x00]', raw_session_id)
+                or _is_path_unsafe(raw_session_id)
+            ):
+                return web.json_response(
+                    _openai_error("Invalid session ID in session_ids", code="invalid_session_ids"),
+                    status=400,
+                )
+            if raw_session_id not in session_id_set:
+                session_ids.append(raw_session_id)
+                session_id_set.add(raw_session_id)
+        raw_session_aliases = body.get("session_aliases", {})
+        if not isinstance(raw_session_aliases, dict) or len(raw_session_aliases) > len(session_ids):
+            return web.json_response(
+                _openai_error(
+                    "session_aliases must be an object bounded by session_ids",
+                    code="invalid_session_aliases",
+                ),
+                status=400,
+            )
+        session_aliases: Dict[str, str] = {}
+        for physical_id, public_id in raw_session_aliases.items():
+            if not isinstance(physical_id, str) or not isinstance(public_id, str):
+                return web.json_response(
+                    _openai_error(
+                        "session_aliases keys and values must be strings",
+                        code="invalid_session_aliases",
+                    ),
+                    status=400,
+                )
+            if physical_id not in session_id_set or public_id not in session_id_set:
+                return web.json_response(
+                    _openai_error(
+                        "session_aliases keys and values must be present in session_ids",
+                        code="invalid_session_aliases",
+                    ),
+                    status=400,
+                )
+            session_aliases[physical_id] = public_id
+        raw_limit = body.get("limit", 100)
+        if isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or not 1 <= raw_limit <= 500:
+            return web.json_response(
+                _openai_error("limit must be an integer between 1 and 500", code="invalid_search_limit"),
+                status=400,
+            )
+        if not session_ids:
+            return web.json_response({"object": "list", "data": [], "truncated": False})
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(
+                _openai_error("Session database unavailable", code="session_db_unavailable"),
+                status=503,
+            )
+        if not getattr(db, "_fts_enabled", False):
+            return web.json_response(
+                _openai_error("Session search unavailable", code="session_search_unavailable"),
+                status=503,
+            )
+
+        def search() -> tuple[List[Dict[str, Any]], bool]:
+            allowed = set(session_ids)
+            public_metadata = db.get_sessions_by_ids(
+                list(dict.fromkeys(session_aliases.values()))
+            ) if session_aliases else {}
+            matches = db.search_messages(
+                query,
+                role_filter=["user", "assistant"],
+                limit=len(session_ids),
+                include_inactive=False,
+                session_id_filter=session_ids,
+                include_context=False,
+                distinct_sessions=True,
+                raise_fts_errors=True,
+                max_vm_steps=2_000_000,
+            )
+            found: List[Dict[str, Any]] = []
+            seen: set[str] = set()
+            truncated = False
+            for match in matches:
+                matched_id = str(match.get("session_id") or "")
+                if matched_id not in allowed:
+                    continue
+                public_id = session_aliases.get(matched_id, matched_id)
+                if public_id in seen:
+                    continue
+                if len(found) >= raw_limit:
+                    truncated = True
+                    break
+                seen.add(public_id)
+                canonical = public_metadata.get(public_id) or {}
+                found.append({
+                    "id": public_id,
+                    "title": canonical.get("title") or match.get("session_title") or "Untitled",
+                    "started_at": canonical.get("started_at", match.get("session_started")),
+                })
+            return found, truncated
+
+        try:
+            async with self._session_search_semaphore:
+                sessions, truncated = await self._run_blocking_operation_cancellation_safe(
+                    search
+                )
+        except TimeoutError:
+            return web.json_response(
+                _openai_error(
+                    "Session search is too broad; refine the query",
+                    code="session_search_too_broad",
+                ),
+                status=422,
+            )
+        except sqlite3.DatabaseError:
+            return web.json_response(
+                _openai_error("Session search unavailable", code="session_search_unavailable"),
+                status=503,
+            )
+        return web.json_response({"object": "list", "data": sessions, "truncated": truncated})
+
     async def _handle_create_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions — create an empty Hermes session row."""
         auth_err = self._check_auth(request)
@@ -2477,14 +2684,100 @@ class APIServerAdapter(BasePlatformAdapter):
         if err:
             return err
         db = self._ensure_session_db()
-        resolved_id = db.resolve_resume_session_id(session_id)
-        messages = db.get_messages(resolved_id)
+        from hermes_state import DisplayProjectionTooLargeError
+
+        resolved_id = session_id
+        limit_raw = request.query.get("limit")
+        before_raw = request.query.get("before")
+        if limit_raw is None and before_raw is None:
+            def load_messages():
+                physical_id = db.resolve_resume_session_id(session_id)
+                return physical_id, db.get_messages_for_display(
+                    physical_id, include_ancestors=True, max_rows=20_000
+                )
+
+            try:
+                async with self._session_history_semaphore:
+                    resolved_id, messages = (
+                        await self._run_blocking_operation_cancellation_safe(
+                            load_messages
+                        )
+                    )
+            except DisplayProjectionTooLargeError:
+                return web.json_response(
+                    _openai_error(
+                        "Session history exceeds the bounded display projection; refine or export it",
+                        code="session_history_too_large",
+                    ),
+                    status=422,
+                )
+            return web.json_response({
+                "object": "list",
+                "session_id": resolved_id,
+                "data": [self._message_response(m) for m in messages],
+            })
+
+        try:
+            limit = int(limit_raw or 50)
+        except (TypeError, ValueError):
+            limit = 0
+        if limit < 1 or limit > 500:
+            return web.json_response(
+                _openai_error(
+                    "limit must be an integer between 1 and 500",
+                    code="invalid_pagination",
+                ),
+                status=400,
+            )
+        before = None
+        before_kind = "v2"
+        if before_raw is not None:
+            match = re.fullmatch(r"(v1|v2):(\d{1,20})", before_raw)
+            before_kind = match.group(1) if match else ""
+            before = int(match.group(2)) if match else -1
+            if before_kind == "v2" and before > 9_223_372_036_854_775_807:
+                before = -1
+            if before < 0:
+                return web.json_response(
+                    _openai_error(
+                        "before must be a valid message cursor",
+                        code="invalid_pagination",
+                    ),
+                    status=400,
+                )
+
+        def load_page():
+            physical_id = db.resolve_resume_session_id(session_id)
+            return physical_id, db.get_messages_for_display_page(
+                physical_id,
+                limit=limit,
+                before=before,
+                before_kind=before_kind,
+                include_ancestors=True,
+            )
+
+        try:
+            async with self._session_history_semaphore:
+                resolved_id, page = (
+                    await self._run_blocking_operation_cancellation_safe(
+                        load_page
+                    )
+                )
+        except DisplayProjectionTooLargeError:
+            return web.json_response(
+                _openai_error(
+                    "Session history exceeds the bounded display projection; refine or export it",
+                    code="session_history_too_large",
+                ),
+                status=422,
+            )
         return web.json_response({
             "object": "list",
             "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
+            "data": [self._message_response(m) for m in page["data"]],
+            "has_more": page["has_more"],
+            "next_cursor": page["next_cursor"],
         })
-
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
         auth_err = self._check_auth(request)
@@ -2540,18 +2833,13 @@ class APIServerAdapter(BasePlatformAdapter):
             db = self._ensure_session_db()
             if db is None:
                 raise RuntimeError("state DB unavailable")
-            lineage = db.get_compression_lineage(session_id)
+            lock_key = db.get_compression_lineage_root(session_id)
         except Exception as exc:
             raise _SessionContinuityUnavailable(
                 f"Session continuity state is unavailable: {exc}"
             ) from exc
-        if (
-            isinstance(lineage, list)
-            and lineage
-            and isinstance(lineage[0], str)
-            and lineage[0]
-        ):
-            lock_key = lineage[0]
+        if not isinstance(lock_key, str) or not lock_key:
+            lock_key = session_id
         lock = self._session_turn_locks.get(lock_key)
         if lock is None:
             # Request handlers share one event loop, and there is no await
@@ -2633,8 +2921,10 @@ class APIServerAdapter(BasePlatformAdapter):
         _, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
+        db = self._ensure_session_db()
+        session_id = db.resolve_resume_session_id(session_id)
         body, err = await self._read_json_body(request)
-        if err:
+        if err is not None:
             return err
         user_message, err = _session_chat_user_message(body)
         if err is not None:
@@ -2693,6 +2983,8 @@ class APIServerAdapter(BasePlatformAdapter):
         _, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
+        db = self._ensure_session_db()
+        session_id = db.resolve_resume_session_id(session_id)
         body, err = await self._read_json_body(request)
         if err:
             return err

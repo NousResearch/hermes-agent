@@ -100,12 +100,12 @@ class TestInPlaceCompaction:
                 "recent reply",
             ]
             assert row["message_count"] == 2  # live (active) count
-            # NON-DESTRUCTIVE: the 8 seeded originals survive at active=0
-            # alongside the 2 compacted rows — nothing was DELETEd.
+            # NON-DESTRUCTIVE: the 8 seeded originals and 8 genuine current-turn
+            # rows survive at active=0 alongside the 2 compacted replay rows.
             all_rows = db.get_messages(sid, include_inactive=True)
-            assert len(all_rows) == 10
+            assert len(all_rows) == 18
             archived = [m for m in all_rows if not m.get("active", 1)]
-            assert len(archived) == 8
+            assert len(archived) == 16
             # The originals remain FTS-searchable (active=0 is a content-
             # preserving UPDATE; the fts triggers don't key on active).
             hit = db._conn.execute(
@@ -123,6 +123,7 @@ class TestInPlaceCompaction:
             assert agent._last_compaction_in_place is True
             # Live transcript actually shrank.
             assert len(compressed) == 2
+            db.close()
 
     def test_in_place_alternation_preserved(self):
         """The compacted list must not introduce consecutive same-role messages."""
@@ -140,12 +141,11 @@ class TestInPlaceCompaction:
             )
             roles = [m["role"] for m in compressed if m.get("role") != "system"]
             assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1))
+            db.close()
 
-    def test_in_place_skips_redundant_preflush(self):
-        """In-place must NOT pre-flush current-turn messages: replace_messages
-        rewrites the whole row, so a flush would INSERT rows it immediately
-        deletes (wasted writes). The current-turn tail survives via the
-        compressor's `compressed` output, not the flush."""
+    def test_in_place_flushes_real_turns_before_snapshot_archival(self):
+        """In-place compaction must durably acknowledge genuine rows before the
+        replay snapshot is archived, even when the compressor keeps a tail copy."""
         from hermes_state import SessionDB
         from agent.conversation_compression import compress_context
 
@@ -161,7 +161,116 @@ class TestInPlaceCompaction:
                 agent, [{"role": "user", "content": "x"}] * 8,
                 approx_tokens=100_000, system_message="sys",
             )
-            assert calls["n"] == 0
+            assert calls["n"] == 1
+            db.close()
+
+    def test_in_place_aborts_when_current_turn_cannot_be_persisted(self):
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            _seed(db, "ip_flush_failure", "f")
+            agent = _make_agent(db, "ip_flush_failure", in_place=True)
+            original = [{"role": "user", "content": f"current {i}"} for i in range(8)]
+            agent._flush_messages_to_session_db = lambda *a, **k: False
+
+            result, _ = compress_context(
+                agent, original, approx_tokens=100_000, system_message="sys"
+            )
+
+            assert result is original
+            assert agent.session_id == "ip_flush_failure"
+            assert len(db.get_messages_as_conversation("ip_flush_failure")) == 8
+            assert all(
+                not row.get("context_snapshot")
+                for row in db.get_messages("ip_flush_failure", include_inactive=True)
+            )
+            db.close()
+
+    def test_in_place_archive_failure_restores_uncompressed_live_state(self):
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            _seed(db, "ip_archive_failure", "ip-archive-failure")
+            agent = _make_agent(db, "ip_archive_failure", in_place=True)
+            original = [{"role": "user", "content": f"m{i}"} for i in range(8)]
+            existing_prompt = agent._build_system_prompt("sys")
+            agent._cached_system_prompt = existing_prompt
+            events = []
+            agent.event_callback = lambda *args: events.append(args)
+            agent._flush_messages_to_session_db = lambda *args, **kwargs: True
+
+            def fail_archive(*args, **kwargs):
+                raise RuntimeError("archive failed")
+
+            db.archive_and_compact = fail_archive
+            result, prompt = compress_context(
+                agent, original, approx_tokens=100_000, system_message="sys"
+            )
+
+            assert result is original
+            assert prompt == existing_prompt
+            assert agent._cached_system_prompt == existing_prompt
+            assert agent._last_compaction_in_place is False
+            assert events == []
+            assert all(
+                not row.get("context_snapshot")
+                for row in db.get_messages("ip_archive_failure", include_inactive=True)
+            )
+            db.close()
+
+    def test_successful_boundary_rebuilds_prompt_after_memory_commit(self):
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            _seed(db, "ip_memory_refresh", "ip-memory-refresh")
+            agent = _make_agent(db, "ip_memory_refresh", in_place=True)
+            state = {"memory": "before"}
+            agent._cached_system_prompt = "prompt:before"
+            agent._build_system_prompt = lambda *_args, **_kwargs: f"prompt:{state['memory']}"
+            agent.commit_memory_session = lambda *_args, **_kwargs: state.update(memory="after")
+            agent._flush_messages_to_session_db = lambda *args, **kwargs: True
+
+            _messages, prompt = compress_context(
+                agent,
+                [{"role": "user", "content": f"m{i}"} for i in range(8)],
+                approx_tokens=100_000,
+                system_message="sys",
+            )
+
+            assert prompt == "prompt:after"
+            assert agent._cached_system_prompt == "prompt:after"
+            assert db.get_session("ip_memory_refresh")["system_prompt"] == "prompt:after"
+            db.close()
+
+    def test_compaction_marks_snapshot_copies_without_mutating_real_messages(self):
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            _seed(db, "snapshot_copy", "f")
+            agent = _make_agent(db, "snapshot_copy", in_place=True)
+            original = [{"role": "user", "content": f"current {i}"} for i in range(8)]
+            agent.context_compressor.compress = lambda *a, **k: [original[-1]]
+            agent._flush_messages_to_session_db = lambda *a, **k: True
+
+            compressed, _ = compress_context(
+                agent, original, approx_tokens=100_000, system_message="sys"
+            )
+
+            assert "_context_snapshot" not in original[-1]
+            assert all("_context_snapshot" not in message for message in compressed)
+            assert all(
+                row.get("context_snapshot")
+                for row in db.get_messages("snapshot_copy")
+            )
+            db.close()
 
     def test_rotation_still_preflushes(self):
         """Rotation MUST pre-flush so current-turn messages survive in the
@@ -182,6 +291,31 @@ class TestInPlaceCompaction:
                 approx_tokens=100_000, system_message="sys",
             )
             assert calls["n"] == 1
+            db.close()
+
+    def test_rotation_aborts_when_current_turn_cannot_be_persisted(self):
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            _seed(db, "rot_flush_failure", "f")
+            agent = _make_agent(db, "rot_flush_failure", in_place=False)
+            original = [{"role": "user", "content": f"current {i}"} for i in range(8)]
+            agent._flush_messages_to_session_db = lambda *a, **k: False
+
+            result, _ = compress_context(
+                agent, original, approx_tokens=100_000, system_message="sys"
+            )
+
+            assert result is original
+            assert agent.session_id == "rot_flush_failure"
+            assert db.get_session("rot_flush_failure")["end_reason"] is None
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE parent_session_id = ?",
+                ("rot_flush_failure",),
+            ).fetchone()[0] == 0
+            db.close()
 
 
 class TestRotationFallbackWhenFlagOff:
@@ -272,6 +406,7 @@ class TestInPlaceSignalForGateway:
                 approx_tokens=100_000, system_message="sys",
             )
             assert a_rot._last_compaction_in_place is False
+            db.close()
 
 
 class TestInPlaceConfigDefault:
@@ -324,6 +459,35 @@ class TestCompactedTurnsStaySearchable:
             assert {m["id"] for m in after} == {1, 4}
             # Live context still excludes them.
             assert len(db.get_messages_as_conversation(sid)) == 2
+            db.close()
+
+    def test_context_snapshots_are_not_search_results(self):
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260619_snapshot_search"
+            db.create_session(sid, "cli", model="test/model")
+            original_id = db.append_message(
+                session_id=sid,
+                role="user",
+                content="SNAPSHOTNEEDLE durable request",
+            )
+            db.archive_and_compact(
+                sid,
+                [{
+                    "role": "user",
+                    "content": "SNAPSHOTNEEDLE durable request",
+                    "_context_snapshot": True,
+                }],
+            )
+
+            matches = db.search_messages(
+                "SNAPSHOTNEEDLE", role_filter=["user", "assistant"]
+            )
+
+            assert [match["id"] for match in matches] == [original_id]
+            db.close()
 
     def test_rewound_turns_stay_hidden(self):
         """Rewind/undo (active=0, compacted=0) must NOT leak into default
@@ -343,4 +507,5 @@ class TestCompactedTurnsStaySearchable:
                 "ZEBRAWORD", role_filter=["user", "assistant"], include_inactive=True
             )
             assert len(recovered) == 1
+            db.close()
 

@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
     AmbiguousJobReference,
-    claim_job_for_fire,
+    claim_job_for_fire_with_receipt,
     create_job,
     get_job,
     list_jobs,
@@ -30,6 +30,7 @@ from cron.jobs import (
     pause_job,
     remove_job,
     resolve_job_ref,
+    restore_job_dispatch_state,
     resume_job,
     update_job,
 )
@@ -602,43 +603,46 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute a cron job immediately, outside the scheduler tick.
+    """Claim and execute a cron job immediately outside the scheduler tick.
 
-    Atomically claims the job first via ``claim_job_for_fire`` — the same
-    at-most-once CAS the scheduler/external-provider fire path uses — so a
-    concurrently-running gateway ticker cannot also fire it (the claim both
-    blocks a duplicate fire and advances ``next_run_at`` for recurring jobs).
-    If the claim is lost (another fire is in flight), this is a no-op.
-
-    The actual firing is delegated to ``run_one_job`` — the single shared
-    execute→save→deliver→mark body the ticker and external providers use — so
-    failure delivery, ``[SILENT]`` handling, and live-adapter delivery stay
-    identical across paths and can't drift.
-
-    Returns {"claimed": bool, "success": bool, "error": str|None}.
+    The durable execution row is mandatory: if ledger creation fails, restore
+    the exact claim/schedule state with the claim receipt and do not dispatch.
     """
     job_id = job["id"]
+    from cron.scheduler import create_execution, run_one_job
+
+    receipt = claim_job_for_fire_with_receipt(job_id)
+    if receipt is None:
+        # The claim helper also returns None for paused/disabled/missing jobs;
+        # distinguish those from a genuine competing fire for honest UX.
+        refreshed = get_job(job_id)
+        if refreshed is None:
+            reason = "Job no longer exists; nothing to run."
+        elif not refreshed.get("enabled", True) or refreshed.get("state") == "paused":
+            reason = "Job is paused/disabled; resume it before running."
+        else:
+            reason = "Job is already being fired by the scheduler; not run again."
+        return {"claimed": False, "success": False, "error": reason}
+
     try:
-        from cron.scheduler import run_one_job
+        execution_id = create_execution(job_id, source="direct")["id"]
+    except Exception as ledger_err:
+        if not restore_job_dispatch_state(receipt):
+            raise RuntimeError(
+                f"ledger creation failed and direct dispatch state for job {job_id} "
+                "could not be authenticated and restored"
+            ) from ledger_err
+        logger.error(
+            "Job %s not dispatched immediately — execution ledger creation failed (%s)",
+            job_id,
+            type(ledger_err).__name__,
+        )
+        return {"claimed": True, "success": False, "error": str(ledger_err)}
 
-        # At-most-once claim: bail without running if a tick/other fire owns it.
-        if not claim_job_for_fire(job_id):
-            # claim_job_for_fire returns False for paused/disabled/missing
-            # jobs too — don't mislabel those as "already being fired"
-            # (#60703): that message sends the user chasing a phantom
-            # in-flight run when the job simply isn't runnable.
-            refreshed = get_job(job_id)
-            if refreshed is None:
-                reason = "Job no longer exists; nothing to run."
-            elif not refreshed.get("enabled", True) or refreshed.get("state") == "paused":
-                reason = "Job is paused/disabled; resume it before running."
-            else:
-                reason = "Job is already being fired by the scheduler; not run again."
-            return {"claimed": False, "success": False, "error": reason}
-
-        # run_one_job records last_run_at/last_status via mark_job_run (which
-        # also clears the fire claim) and returns True iff it processed the job.
-        processed = run_one_job(job)
+    try:
+        # run_one_job records last_run_at/last_status via mark_job_run and clears
+        # the fire claim. Supplying execution_id prevents a second ledger claim.
+        processed = run_one_job(dict(job, execution_id=execution_id))
         refreshed = get_job(job_id) or {}
         ok = refreshed.get("last_status") == "ok"
         return {
@@ -646,7 +650,6 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
             "success": bool(processed and ok),
             "error": refreshed.get("last_error"),
         }
-
     except Exception as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
         try:

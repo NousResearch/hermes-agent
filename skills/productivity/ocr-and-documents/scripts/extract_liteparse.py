@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Extract fast plain text from local text PDFs using liteparse.
+"""Extract fast text from local PDFs using liteparse.
 
-liteparse is an optional speed-first fallback for local PDFs when plain text and
-reading order matter more than markdown/table fidelity. Keep pymupdf4llm as the
-default for agent-ready markdown; use marker-pdf for scanned/OCR-heavy docs.
+liteparse is an optional speed-first fallback for local PDFs when text and
+reading order matter more than rich markdown/table fidelity. Keep pymupdf4llm
+as the default for agent-ready markdown; use marker-pdf for scanned/OCR-heavy
+docs.
 
 Install:
     uv pip install liteparse
@@ -15,6 +16,7 @@ Usage:
     python extract_liteparse.py document.pdf --max-pages 5
     python extract_liteparse.py document.pdf --ocr       # slower; for light OCR attempts only
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,9 +24,9 @@ import sys
 from pathlib import Path
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fast plain-text PDF extraction with optional liteparse."
+        description="Fast PDF text extraction with optional liteparse."
     )
     parser.add_argument("pdf", type=Path, help="Local PDF to extract")
     parser.add_argument(
@@ -49,11 +51,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Show liteparse timing output on stderr.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     if not args.pdf.exists():
         print(f"Missing PDF: {args.pdf}", file=sys.stderr)
         return 2
@@ -74,7 +76,16 @@ def main() -> int:
         output_format="markdown",
         quiet=not args.verbose,
     )
-    result = parser.parse(args.pdf)
+    try:
+        result = parser.parse(args.pdf)
+    except Exception as exc:
+        print(f"liteparse failed: {exc}", file=sys.stderr)
+        return 1
+
+    if not hasattr(result, "text"):
+        print("liteparse returned no text", file=sys.stderr)
+        return 1
+
     print(result.text)
     return 0
 

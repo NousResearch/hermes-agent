@@ -4,9 +4,9 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSession } from '@/hermes'
 import type { QueueEditState } from '@/app/chat/composer/composer-utils'
 import { useComposerQueue } from '@/app/chat/composer/hooks/use-composer-queue'
+import { getSession } from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
@@ -19,6 +19,7 @@ import {
   enqueueQueuedPrompt,
   getQueuedPrompts
 } from '@/store/composer-queue'
+import { $notifications, clearNotifications } from '@/store/notifications'
 import {
   $busy,
   $connection,

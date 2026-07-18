@@ -94,6 +94,23 @@ def test_handles_non_json_tool_content_gracefully():
     assert actions == ["Memory updated."]
 
 
+def test_handles_openai_multipart_content_list():
+    """#59508 / #59437: tool content as OpenAI list of {type, text} blocks
+    must be extracted and parsed, not skipped as malformed JSON.
+    """
+    # Simulated OpenAI tool message with multipart content
+    multipart = [
+        {"type": "text", "text": "{\"success\": true, \"message\": \"Entry added from multipart\", \"target\": \"user\"}"}
+    ]
+    review_messages = [
+        {"role": "tool", "tool_call_id": "call_multi", "content": multipart},
+    ]
+
+    actions = _summarize(review_messages, [])
+
+    assert "User profile updated" in actions
+
+
 def test_empty_inputs():
     assert _summarize([], []) == []
     assert _summarize(None, None) == []

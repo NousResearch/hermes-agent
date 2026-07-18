@@ -781,6 +781,192 @@ export const ptBr = defineLocale({
       modelSelectedTitle: 'Modelo selecionado',
       modelSelectedMessage: model => `${model} se aplica a novas sessões.`,
       failedSelectModel: model => `Falha ao selecionar ${model}`
+    },
+    fieldLabels: defineFieldCopy({
+      model: 'Modelo padrão',
+      modelContextLength: 'Janela de contexto',
+      fallbackProviders: 'Modelos de fallback',
+      toolsets: 'Conjuntos de ferramentas ativos',
+      timezone: 'Fuso horário',
+      display: {
+        personality: 'Personalidade',
+        showReasoning: 'Bloco de raciocínio'
+      },
+      agent: {
+        maxTurns: 'Máximo de passos do agente',
+        imageInputMode: 'Anexo de imagem',
+        apiMaxRetries: 'Tentativas de API',
+        serviceTier: 'Nível de serviço',
+        toolUseEnforcement: 'Forçar uso de ferramentas'
+      },
+      terminal: {
+        cwd: 'Diretório de trabalho',
+        backend: 'Backend de execução',
+        timeout: 'Tempo limite do comando',
+        persistentShell: 'Shell persistente',
+        envPassthrough: 'Variáveis de ambiente repassadas',
+        dockerImage: 'Imagem Docker',
+        singularityImage: 'Imagem Singularity',
+        modalImage: 'Imagem Modal',
+        daytonaImage: 'Imagem Daytona'
+      },
+      fileReadMaxChars: 'Limite de leitura de arquivo',
+      toolOutput: {
+        maxBytes: 'Limite de saída do terminal',
+        maxLines: 'Limite de páginas de arquivo',
+        maxLineLength: 'Limite de comprimento de linha'
+      },
+      codeExecution: {
+        mode: 'Modo de execução de código'
+      },
+      approvals: {
+        mode: 'Modo de aprovação',
+        timeout: 'Tempo limite de aprovação',
+        mcpReloadConfirm: 'Confirmar recarga MCP'
+      },
+      commandAllowlist: 'Lista de comandos permitidos',
+      security: {
+        redactSecrets: 'Ocultar segredos',
+        allowPrivateUrls: 'Permitir URLs privadas'
+      },
+      browser: {
+        allowPrivateUrls: 'URLs privadas do navegador',
+        autoLocalForPrivateUrls: 'Usar navegador local para URLs privadas'
+      },
+      checkpoints: {
+        enabled: 'Checkpoints de arquivo',
+        maxSnapshots: 'Limite de checkpoints'
+      },
+      voice: {
+        recordKey: 'Atalho de voz',
+        maxRecordingSeconds: 'Duração máxima da gravação',
+        autoTts: 'Ler respostas em voz alta'
+      },
+      stt: {
+        enabled: 'Reconhecimento de fala',
+        provider: 'Provedor de reconhecimento de fala',
+        local: {
+          model: 'Modelo de transcrição local',
+          language: 'Idioma de transcrição'
+        },
+        openai: { model: 'Modelo OpenAI STT' },
+        groq: { model: 'Modelo Groq STT' },
+        mistral: { model: 'Modelo Mistral STT' },
+        elevenlabs: {
+          modelId: 'Modelo ElevenLabs STT',
+          languageCode: 'Idioma ElevenLabs',
+          tagAudioEvents: 'Marcar eventos de áudio',
+          diarize: 'Separação de falantes'
+        }
+      },
+      tts: {
+        provider: 'Provedor de síntese de fala',
+        edge: { voice: 'Voz Edge' },
+        openai: { model: 'Modelo OpenAI TTS', voice: 'Voz OpenAI' },
+        elevenlabs: { voiceId: 'Voz ElevenLabs', modelId: 'Modelo ElevenLabs' },
+        xai: { voiceId: 'Voz xAI (Grok)', language: 'Idioma xAI' },
+        minimax: { model: 'Modelo MiniMax TTS', voiceId: 'Voz MiniMax' },
+        mistral: { model: 'Modelo Mistral TTS', voiceId: 'Voz Mistral' },
+        gemini: { model: 'Modelo Gemini TTS', voice: 'Voz Gemini' },
+        neutts: { model: 'Modelo NeuTTS', device: 'Dispositivo NeuTTS' },
+        kittentts: { model: 'Modelo KittenTTS', voice: 'Voz KittenTTS' },
+        piper: { voice: 'Voz Piper' }
+      },
+      memory: {
+        memoryEnabled: 'Memória persistente',
+        userProfileEnabled: 'Perfil do usuário',
+        memoryCharLimit: 'Orçamento de memória',
+        userCharLimit: 'Orçamento do perfil',
+        provider: 'Provedor de memória'
+      },
+      context: { engine: 'Mecanismo de contexto' },
+      compression: {
+        enabled: 'Compressão automática',
+        threshold: 'Limiar de compressão',
+        targetRatio: 'Taxa de compressão alvo',
+        protectLastN: 'Proteger últimas mensagens'
+      },
+      delegation: {
+        model: 'Modelo do subagente',
+        provider: 'Provedor do subagente',
+        maxIterations: 'Limite de turnos do subagente',
+        maxConcurrentChildren: 'Subagentes paralelos',
+        childTimeoutSeconds: 'Tempo limite do subagente',
+        reasoningEffort: 'Esforço de raciocínio do subagente'
+      },
+      updates: {
+        nonInteractiveLocalChanges: 'Alterações locais durante atualização no aplicativo'
+      }
+    }),
+    fieldDescriptions: defineFieldCopy({
+      model: 'Usado em novos chats, a menos que você escolha outro modelo no compositor.',
+      modelContextLength: 'Deixe como 0 para usar a janela de contexto detectada do modelo selecionado.',
+      fallbackProviders: 'Backups no formato provider:model para tentar quando o modelo padrão falhar.',
+      display: {
+        personality: 'Estilo de assistente padrão para novas sessões.',
+        showReasoning: 'Exibe quando o backend fornece conteúdo de raciocínio.'
+      },
+      timezone: 'Usado quando o Hermes precisa de contexto de horário local. Vazio usa o fuso do sistema.',
+      agent: {
+        imageInputMode: 'Controla como os anexos de imagem são enviados ao modelo.',
+        maxTurns: 'Máximo de chamadas de ferramenta antes do Hermes parar uma execução.'
+      },
+      terminal: {
+        cwd: 'Pasta de projeto padrão para ferramentas e trabalho no terminal.',
+        persistentShell: 'Mantém o estado do shell entre comandos, se o backend suportar.',
+        envPassthrough: 'Variáveis de ambiente a serem passadas para a execução de ferramentas.'
+      },
+      codeExecution: { mode: 'Define o quão restritivamente a execução de código é limitada ao projeto atual.' },
+      fileReadMaxChars: 'Máximo de caracteres que o Hermes pode ler em uma única leitura de arquivo.',
+      approvals: {
+        mode: 'Define como o Hermes lida com comandos que exigem aprovação explícita.',
+        timeout: 'Quanto tempo esperar antes que um prompt de aprovação expire.'
+      },
+      security: { redactSecrets: 'Oculta segredos detectados do conteúdo visível ao modelo, quando possível.' },
+      checkpoints: { enabled: 'Cria snapshots antes de edições de arquivo para permitir reversão.' },
+      memory: {
+        memoryEnabled: 'Salva memórias persistentes que ajudam em sessões futuras.',
+        userProfileEnabled: 'Mantém um perfil conciso de preferências do usuário.'
+      },
+      context: { engine: 'Estratégia de gerenciamento quando conversas longas se aproximam do limite de contexto.' }
+    }),
+    notifications: {
+      title: 'Notificações',
+      intro:
+        'Notificações nativas do desktop, separadas dos toasts no aplicativo. São locais ao dispositivo — cada computador mantém suas próprias configurações.',
+      enableAll: 'Ativar notificações',
+      enableAllDesc: 'Chave geral. Desligue para silenciar todas as notificações abaixo.',
+      focusedHint: 'Alertas de conclusão só são disparados enquanto o Hermes está em segundo plano.',
+      kinds: {
+        approval: {
+          label: 'Aprovação necessária',
+          description: 'Um comando está aguardando sua aprovação ou rejeição.'
+        },
+        input: {
+          label: 'Entrada necessária',
+          description: 'Hermes fez uma pergunta ou precisa de uma senha ou segredo.'
+        },
+        turnDone: {
+          label: 'Resposta pronta',
+          description: 'Um turno foi concluído enquanto o Hermes estava em segundo plano.'
+        },
+        turnError: {
+          label: 'Turno falhou',
+          description: 'Um turno terminou com erro.'
+        },
+        backgroundDone: {
+          label: 'Tarefa em segundo plano concluída',
+          description: 'Um comando de terminal em segundo plano foi concluído.'
+        }
+      },
+      test: 'Enviar notificação de teste',
+      testTitle: 'Hermes',
+      testBody: 'As notificações estão funcionando.',
+      testSent: 'Teste enviado. Se nada aparecer, verifique as permissões de notificação do SO e o modo Foco/Não Perturbe.',
+      testUnsupported: 'Este sistema não suporta notificações nativas.',
+      completionSoundTitle: 'Som de Conclusão',
+      completionSoundDesc: 'Toca quando um turno do agente termina. Escolha um preset e pré-visualize aqui.',
+      completionSoundPreview: 'Pré-visualizar'
     }
   },
 

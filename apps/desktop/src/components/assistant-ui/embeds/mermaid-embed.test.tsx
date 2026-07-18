@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { zhHant } from '@/i18n/zh-hant'
 
 import MermaidRenderer from './mermaid-embed'
 
@@ -30,12 +31,12 @@ describe('MermaidRenderer', () => {
     })
 
     render(
-      <I18nProvider configClient={null}>
+      <I18nProvider configClient={null} initialLocale="zh-hant">
         <MermaidRenderer code={code} />
       </I18nProvider>
     )
 
-    const copyButton = await screen.findByRole('button', { name: 'Copy Mermaid source' })
+    const copyButton = await screen.findByRole('button', { name: zhHant.assistant.tool.copyCode })
 
     fireEvent.click(copyButton)
 

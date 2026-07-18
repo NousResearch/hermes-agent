@@ -266,6 +266,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
     _TEXT_INJECT_EXTENSIONS,
+    _refresh_merged_event_trigger_metadata,
     utf16_len,
 )
 from plugins.platforms.telegram.telegram_ids import (
@@ -8191,6 +8192,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+            _refresh_merged_event_trigger_metadata(existing, event)
 
         # Cancel any pending flush and restart the timer
         prior_task = self._pending_text_batch_tasks.get(key)
@@ -8295,6 +8297,7 @@ class TelegramAdapter(BasePlatformAdapter):
             existing.media_types.extend(event.media_types)
             if event.text:
                 existing.text = self._merge_caption(existing.text, event.text)
+            _refresh_merged_event_trigger_metadata(existing, event)
 
         prior_task = self._pending_photo_batch_tasks.get(batch_key)
         if prior_task and not prior_task.done():
@@ -8603,6 +8606,7 @@ class TelegramAdapter(BasePlatformAdapter):
             existing.media_types.extend(event.media_types)
             if event.text:
                 existing.text = self._merge_caption(existing.text, event.text)
+            _refresh_merged_event_trigger_metadata(existing, event)
 
         prior_task = self._media_group_tasks.get(media_group_id)
         if prior_task:

@@ -14,7 +14,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, merge_pending_message_event
+from gateway.platforms.base import (
+    MessageEvent,
+    MessageType,
+    _reply_anchor_for_event,
+    merge_pending_message_event,
+)
 from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from gateway.session import SessionSource, build_session_key
 
@@ -197,6 +202,134 @@ async def test_second_message_during_sentinel_queued_not_duplicate():
         await task1
 
 
+def test_merge_pending_text_followups_reply_to_latest_message():
+    """A merged busy-turn reply must quote the newest user message."""
+    pending = {}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="u1",
+        thread_id="34457",
+    )
+    session_key = build_session_key(source)
+    first = MessageEvent(
+        text="first follow-up",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="100",
+        reply_to_message_id="50",
+        reply_to_text="older quoted message",
+        reply_to_author_id="old-author",
+        reply_to_author_name="Old Author",
+        reply_to_is_own_message=True,
+    )
+    latest = MessageEvent(
+        text="latest follow-up",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="101",
+        reply_to_message_id="60",
+        reply_to_text="latest quoted message",
+        reply_to_author_id="new-author",
+        reply_to_author_name="New Author",
+        reply_to_is_own_message=False,
+    )
+
+    merge_pending_message_event(pending, session_key, first, merge_text=True)
+    merge_pending_message_event(pending, session_key, latest, merge_text=True)
+
+    merged = pending[session_key]
+    assert merged.text == "first follow-up\nlatest follow-up"
+    assert merged.message_id == "101"
+    assert _reply_anchor_for_event(merged) == "101"
+    assert merged.reply_to_message_id == "60"
+    assert merged.reply_to_text == "latest quoted message"
+    assert merged.reply_to_author_id == "new-author"
+    assert merged.reply_to_author_name == "New Author"
+    assert merged.reply_to_is_own_message is False
+
+
+def test_merge_pending_text_followup_clears_stale_reply_context():
+    pending = {}
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+    first = MessageEvent(
+        text="first",
+        source=source,
+        message_id="100",
+        reply_to_message_id="50",
+        reply_to_text="stale quote",
+        reply_to_author_id="old-author",
+        reply_to_author_name="Old Author",
+        reply_to_is_own_message=True,
+    )
+    latest = MessageEvent(text="latest", source=source, message_id="101")
+
+    merge_pending_message_event(pending, "session", first, merge_text=True)
+    merge_pending_message_event(pending, "session", latest, merge_text=True)
+
+    merged = pending["session"]
+    assert merged.message_id == "101"
+    assert merged.reply_to_message_id is None
+    assert merged.reply_to_text is None
+    assert merged.reply_to_author_id is None
+    assert merged.reply_to_author_name is None
+    assert merged.reply_to_is_own_message is False
+
+
+def test_merge_pending_text_followup_without_id_preserves_existing_anchor():
+    pending = {}
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+    first = MessageEvent(text="first", source=source, message_id="100")
+    synthetic = MessageEvent(text="synthetic", source=source, message_id=None)
+
+    merge_pending_message_event(pending, "session", first, merge_text=True)
+    merge_pending_message_event(pending, "session", synthetic, merge_text=True)
+
+    assert pending["session"].message_id == "100"
+
+
+def test_merge_pending_refreshes_latest_event_provenance_without_privilege_escalation():
+    pending = {}
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+    first_raw = object()
+    latest_raw = object()
+    first = MessageEvent(
+        text="internal completion",
+        source=source,
+        raw_message=first_raw,
+        message_id="100",
+        platform_update_id=10,
+        channel_prompt="old prompt",
+        channel_context="old context",
+        internal=True,
+        metadata={"old": True, "shared": "old"},
+    )
+    latest = MessageEvent(
+        text="user follow-up",
+        source=source,
+        raw_message=latest_raw,
+        message_id="101",
+        platform_update_id=11,
+        channel_prompt="new prompt",
+        channel_context="new context",
+        internal=False,
+        metadata={"new": True, "shared": "new"},
+    )
+
+    merge_pending_message_event(pending, "session", first, merge_text=True)
+    merge_pending_message_event(pending, "session", latest, merge_text=True)
+
+    merged = pending["session"]
+    assert merged.raw_message is latest_raw
+    assert merged.platform_update_id == 11
+    assert merged.timestamp == latest.timestamp
+    assert merged.channel_prompt == "new prompt"
+    assert merged.channel_context == "new context"
+    assert merged.metadata == {"old": True, "new": True, "shared": "new"}
+    assert merged.internal is False
+
+
 def test_merge_pending_message_event_merges_text_and_photo_followups():
     pending = {}
     source = SessionSource(
@@ -211,11 +344,17 @@ def test_merge_pending_message_event_merges_text_and_photo_followups():
         text="first follow-up",
         message_type=MessageType.TEXT,
         source=source,
+        message_id="100",
+        reply_to_message_id="90",
+        reply_to_text="old quote",
     )
     photo_event = MessageEvent(
         text="see screenshot",
         message_type=MessageType.PHOTO,
         source=source,
+        message_id="101",
+        reply_to_message_id="99",
+        reply_to_text="latest quote",
         media_urls=["/tmp/test.png"],
         media_types=["image/png"],
     )
@@ -228,6 +367,9 @@ def test_merge_pending_message_event_merges_text_and_photo_followups():
     assert merged.text == "first follow-up\n\nsee screenshot"
     assert merged.media_urls == ["/tmp/test.png"]
     assert merged.media_types == ["image/png"]
+    assert merged.message_id == "101"
+    assert merged.reply_to_message_id == "99"
+    assert merged.reply_to_text == "latest quote"
 
 
 def test_merge_pending_message_event_promotes_document_followups_over_text():

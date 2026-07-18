@@ -47,6 +47,12 @@ def _make_event(
     user_id: str = "u1",
     user_name: str | None = None,
     thread_id: str | None = None,
+    message_id: str | None = None,
+    reply_to_message_id: str | None = None,
+    reply_to_text: str | None = None,
+    reply_to_author_id: str | None = None,
+    reply_to_author_name: str | None = None,
+    reply_to_is_own_message: bool = False,
 ) -> MessageEvent:
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -60,7 +66,12 @@ def _make_event(
         text=text,
         message_type=MessageType.TEXT,
         source=source,
-        message_id=f"msg-{text[:8]}",
+        message_id=message_id or f"msg-{text[:8]}",
+        reply_to_message_id=reply_to_message_id,
+        reply_to_text=reply_to_text,
+        reply_to_author_id=reply_to_author_id,
+        reply_to_author_name=reply_to_author_name,
+        reply_to_is_own_message=reply_to_is_own_message,
     )
 
 
@@ -153,6 +164,46 @@ async def test_debounce_buffers_rapid_text_then_flushes_to_pending():
 
     assert session_key not in adapter._text_debounce
     assert adapter._pending_messages[session_key].text == "part two\npart three"
+
+
+@pytest.mark.asyncio
+async def test_debounce_flush_keeps_latest_trigger_and_reply_context_aligned():
+    adapter = _make_adapter()
+    adapter._busy_text_debounce_seconds = 1.0
+
+    first = _make_event(
+        "first follow-up",
+        message_id="100",
+        reply_to_message_id="90",
+        reply_to_text="old quote",
+        reply_to_author_id="old-author",
+        reply_to_author_name="Old",
+        reply_to_is_own_message=True,
+    )
+    latest = _make_event(
+        "latest follow-up",
+        message_id="101",
+        reply_to_message_id="99",
+        reply_to_text="latest quote",
+        reply_to_author_id="new-author",
+        reply_to_author_name="New",
+        reply_to_is_own_message=False,
+    )
+    session_key = build_session_key(first.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter.handle_message(first)
+    await adapter.handle_message(latest)
+    assert await adapter._flush_text_debounce_now(session_key) is True
+
+    pending = adapter._pending_messages[session_key]
+    assert pending.text == "first follow-up\nlatest follow-up"
+    assert pending.message_id == "101"
+    assert pending.reply_to_message_id == "99"
+    assert pending.reply_to_text == "latest quote"
+    assert pending.reply_to_author_id == "new-author"
+    assert pending.reply_to_author_name == "New"
+    assert pending.reply_to_is_own_message is False
 
 
 @pytest.mark.asyncio

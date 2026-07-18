@@ -97,6 +97,52 @@ class TestTextBatching:
         assert "split by Telegram" in dispatched.text
 
     @pytest.mark.asyncio
+    async def test_split_messages_use_latest_reply_and_trigger_metadata(self):
+        """Ingress batching must not preserve reply context from the first chunk."""
+        adapter = _make_adapter()
+        first = _make_event("first chunk")
+        first.message_id = "100"
+        first.reply_to_message_id = "50"
+        first.reply_to_text = "old quote"
+        first.reply_to_author_name = "Old Author"
+        first.reply_to_is_own_message = True
+        first.raw_message = object()
+        first.platform_update_id = 10
+        first.internal = True
+        first.metadata = {"shared": "old", "old": True}
+
+        latest = _make_event("latest chunk")
+        latest.message_id = "101"
+        latest.reply_to_message_id = "60"
+        latest.reply_to_text = "latest quote"
+        latest.reply_to_author_name = "New Author"
+        latest.reply_to_is_own_message = False
+        latest_raw = object()
+        latest.raw_message = latest_raw
+        latest.platform_update_id = 11
+        latest.internal = False
+        latest.metadata = {"shared": "new", "new": True}
+
+        adapter._enqueue_text_event(first)
+        adapter._enqueue_text_event(latest)
+
+        batched = next(iter(adapter._pending_text_batches.values()))
+        assert batched.text == "first chunk\nlatest chunk"
+        assert batched.message_id == "101"
+        assert batched.reply_to_message_id == "60"
+        assert batched.reply_to_text == "latest quote"
+        assert batched.reply_to_author_name == "New Author"
+        assert batched.reply_to_is_own_message is False
+        assert batched.raw_message is latest_raw
+        assert batched.platform_update_id == 11
+        assert batched.metadata == {"old": True, "new": True, "shared": "new"}
+        assert batched.internal is False
+
+        for task in adapter._pending_text_batch_tasks.values():
+            task.cancel()
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values(), return_exceptions=True)
+
+    @pytest.mark.asyncio
     async def test_three_way_split_aggregated(self):
         """Three rapid messages should all merge."""
         adapter = _make_adapter()
@@ -219,6 +265,68 @@ class TestTextBatching:
         adapter.handle_message.assert_not_called()
         assert adapter._pending_text_batches == {}
         assert adapter._pending_text_batch_tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_ingress_media_batches_use_latest_reply_target(self):
+        """Photo bursts and Telegram albums must anchor to their newest item."""
+        adapter = _make_adapter()
+        adapter._media_batch_delay_seconds = 60
+
+        first_photo = _make_event("first caption")
+        first_photo.message_type = MessageType.PHOTO
+        first_photo.message_id = "200"
+        first_photo.reply_to_message_id = "70"
+        first_photo.reply_to_text = "old photo quote"
+        first_photo.media_urls = ["/tmp/first.jpg"]
+        first_photo.media_types = ["image/jpeg"]
+        latest_photo = _make_event("latest caption")
+        latest_photo.message_type = MessageType.PHOTO
+        latest_photo.message_id = "201"
+        latest_photo.reply_to_message_id = "80"
+        latest_photo.reply_to_text = "latest photo quote"
+        latest_photo.media_urls = ["/tmp/latest.jpg"]
+        latest_photo.media_types = ["image/jpeg"]
+
+        adapter._enqueue_photo_event("photo-batch", first_photo)
+        adapter._enqueue_photo_event("photo-batch", latest_photo)
+        photo_batch = adapter._pending_photo_batches["photo-batch"]
+        assert photo_batch.message_id == "201"
+        assert photo_batch.reply_to_message_id == "80"
+        assert photo_batch.reply_to_text == "latest photo quote"
+
+        first_album = _make_event("first album caption")
+        first_album.message_type = MessageType.PHOTO
+        first_album.message_id = "300"
+        first_album.reply_to_message_id = "90"
+        first_album.reply_to_text = "old album quote"
+        first_album.media_urls = ["/tmp/album-first.jpg"]
+        first_album.media_types = ["image/jpeg"]
+        latest_album = _make_event("latest album caption")
+        latest_album.message_type = MessageType.PHOTO
+        latest_album.message_id = "301"
+        latest_album.reply_to_message_id = "91"
+        latest_album.reply_to_text = "latest album quote"
+        latest_album.media_urls = ["/tmp/album-latest.jpg"]
+        latest_album.media_types = ["image/jpeg"]
+
+        with patch(
+            "plugins.platforms.telegram.adapter.TelegramAdapter.MEDIA_GROUP_WAIT_SECONDS",
+            60,
+        ):
+            await adapter._queue_media_group_event("album", first_album)
+            await adapter._queue_media_group_event("album", latest_album)
+        album_batch = adapter._media_group_events["album"]
+        assert album_batch.message_id == "301"
+        assert album_batch.reply_to_message_id == "91"
+        assert album_batch.reply_to_text == "latest album quote"
+
+        tasks = [
+            *adapter._pending_photo_batch_tasks.values(),
+            *adapter._media_group_tasks.values(),
+        ]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     @pytest.mark.asyncio
     async def test_disconnected_adapter_drops_pending_photo_flush_before_dispatch(self):

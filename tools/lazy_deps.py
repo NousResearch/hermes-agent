@@ -240,7 +240,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     ),
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
     # Keep the lazy trace tool compatible with the shared transformers core.
-    "tool.trace_upload": ("huggingface-hub==1.23.0",),
+    "tool.trace_upload": ("huggingface-hub>=1.5.0,<2",),
 }
 
 

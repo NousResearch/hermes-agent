@@ -94,9 +94,17 @@ class TestAllowlist:
                 assert ld._spec_is_safe(spec), \
                     f"{feature}: spec {spec!r} fails safety check"
 
-    def test_trace_upload_hub_pin_is_compatible_with_transformers(self):
-        # Do not reintroduce the old 1.2.3 pin: transformers requires >=1.5.
-        assert ld.LAZY_DEPS["tool.trace_upload"] == ("huggingface-hub==1.23.0",)
+    @pytest.mark.parametrize(
+        ("installed", "is_missing"),
+        [("1.4.1", True), ("1.5.0", False), ("1.23.0", False), ("2.0.0", True)],
+    )
+    def test_trace_upload_hub_range_matches_transformers(self, monkeypatch, installed, is_missing):
+        def fake_version(package):
+            assert package == "huggingface-hub"
+            return installed
+
+        monkeypatch.setattr("importlib.metadata.version", fake_version)
+        assert bool(ld.feature_missing("tool.trace_upload")) is is_missing
 
     def test_feature_install_command_returns_pip_invocation(self):
         cmd = ld.feature_install_command("memory.honcho")

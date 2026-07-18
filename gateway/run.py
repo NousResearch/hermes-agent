@@ -14484,7 +14484,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
         try:
-            success = await adapter.join_voice_channel(voice_channel)
+            # A MANUAL /voice join stamps manual session ownership (atomic under
+            # the adapter's guild voice lock) so a stale auto-join barrier that
+            # completes later recognizes the hand-established session is not its
+            # own and never disconnects it. The auto-follow path passes manual=False.
+            try:
+                success = await adapter.join_voice_channel(
+                    voice_channel, manual_owner=bool(manual)
+                )
+            except TypeError:
+                # Older adapter without the manual_owner kwarg.
+                success = await adapter.join_voice_channel(voice_channel)
         except Exception as e:
             logger.warning("Failed to join voice channel: %s", e)
             adapter._voice_input_callback = None
@@ -14531,18 +14541,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # A manual leave must ALSO stop an in-flight PRE-CONNECT auto-join even
         # when no physical session exists yet. Otherwise a barrier-blocked
-        # callback that connects moments later would defeat the leave. Detect any
-        # in-flight / owned auto-join so we don't early-return past the cleanup.
-        pending = getattr(adapter, "_voice_auto_join_pending", None)
-        targets = getattr(adapter, "_voice_auto_join_targets", None)
-        retry_tasks = getattr(adapter, "_voice_auto_join_retry_tasks", None)
-        direct_tasks = getattr(adapter, "_voice_auto_join_direct_tasks", None)
-        inflight_auto_join = bool(
-            (isinstance(pending, dict) and guild_id in pending)
-            or (isinstance(targets, dict) and guild_id in targets)
-            or (isinstance(retry_tasks, dict) and guild_id in retry_tasks)
-            or (isinstance(direct_tasks, set) and direct_tasks)
-        )
+        # callback that connects moments later would defeat the leave. Ask the
+        # adapter for a GUILD-SCOPED snapshot rather than reaching into its
+        # private collections — the snapshot is keyed to THIS guild, so another
+        # guild's in-flight attempt can never make this idle guild report success.
+        aj_state = None
+        snapshot_fn = getattr(adapter, "voice_auto_join_state", None)
+        if callable(snapshot_fn):
+            try:
+                aj_state = snapshot_fn(guild_id)
+            except Exception:
+                aj_state = None
+        inflight_auto_join = bool(getattr(aj_state, "inflight", False))
 
         if not physically_in_vc and not inflight_auto_join:
             return "Not in a voice channel."
@@ -14553,19 +14563,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else None
         )
         if suppress_auto_join is not None:
-            # Prefer the TRACKED target so a manual /voice leave stops the follow
-            # of the configured user/channel regardless of which operator issued
-            # the command (they may differ from the followed user). Before a join
-            # commits there is no target yet — fall back to the in-flight pending
-            # attempt's user/channel, then to the issuer's live channel.
-            target = targets.get(guild_id) if isinstance(targets, dict) else None
-            target_user = getattr(target, "user_id", None)
-            target_channel = getattr(target, "voice_channel_id", None)
-            if target is None and isinstance(pending, dict):
-                pending_entry = pending.get(guild_id)
-                if isinstance(pending_entry, dict):
-                    target_user = target_user or pending_entry.get("user_id")
-                    target_channel = target_channel or pending_entry.get("voice_channel_id")
+            # Key the manual-leave suppression off the guild snapshot: it prefers
+            # the TRACKED target (so a leave stops the follow of the configured
+            # user/channel regardless of which operator issued it), and before a
+            # join commits — when there is no target yet — falls back to the
+            # in-flight pending attempt's user/channel. The gateway never reaches
+            # into the adapter's private collections for this.
+            target_user = getattr(aj_state, "suppression_user_id", None) if aj_state else None
+            target_channel = getattr(aj_state, "suppression_channel_id", None) if aj_state else None
             if target_user:
                 suppress_auto_join(
                     guild_id,

@@ -11,7 +11,7 @@ description: >
   pairing. Auth uses a hex token with timing-safe comparison, per-IP rate
   limiting on failed attempts, and a server->device keepalive that
   prevents the R1's ~30-minute inactivity timeout.
-author: Hermes Agent contributors
+author: Michael Potter (@mpotter2002) with Claude Code
 # ``requires_env`` and ``optional_env`` entries are surfaced in the
 # ``hermes config`` / ``hermes setup`` UI via the platform-plugin env var
 # injector in ``hermes_cli/config.py``.

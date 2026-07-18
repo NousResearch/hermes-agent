@@ -126,9 +126,10 @@ export function setTreePaneHidden(paneId: string, hidden: boolean) {
 
   $hiddenTreePanes.set(next)
 
-  // Unhiding is an intent to SEE the pane — front it in its group.
+  // Unhiding makes the pane VISIBLE but does NOT steal the active tab
+  // (relevant when workspace and files share a group in Focus layout).
   if (!hidden) {
-    revealTreePane(paneId)
+    revealTreePane(paneId, false)
   }
 }
 
@@ -580,7 +581,7 @@ export function treeSideOfPane(paneId: string): TreeSide | null {
  * App intent "show pane X" (a preview target landed, ⌘G opened review, …):
  * open its side, unhide it, and bring it to the front of its group.
  */
-export function revealTreePane(paneId: string) {
+export function revealTreePane(paneId: string, activate: boolean = true) {
   // Reveal beats a Close: un-dismiss and let adoption put the pane back.
   if ($dismissedPanes.get().has(paneId)) {
     setDismissed(paneId, false)
@@ -605,7 +606,10 @@ export function revealTreePane(paneId: string) {
   if (hiddenNow.has(paneId)) {
     setTreePaneHidden(paneId, false)
 
-    return
+    // Don't return — fall through so the outer `activate` flag still takes
+    // effect for explicit callers (preview reveal, review toggle, etc.).
+    // The inner setTreePaneHidden → revealTreePane(…, false) already handled
+    // un-minimizing and side restore; we only need activation from here.
   }
 
   const tree = $layoutTree.get()
@@ -624,7 +628,7 @@ export function revealTreePane(paneId: string) {
       next = setGroupMinimized(next, group.id, false)
     }
 
-    if (group.active !== paneId) {
+    if (activate && group.active !== paneId) {
       next = setActivePaneOp(next, group.id, paneId)
     }
 

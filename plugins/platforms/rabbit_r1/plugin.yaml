@@ -1,0 +1,51 @@
+name: rabbit_r1-platform
+label: Rabbit R1
+kind: platform
+version: 1.0.0
+description: >
+  Rabbit R1 gateway adapter for Hermes Agent. Runs a WebSocket server that
+  speaks the OpenClaw/clawdbot-gateway protocol so a Rabbit R1 hardware
+  device can talk to Hermes from anywhere - not just the home LAN. An
+  optional tunnel (Tailscale Funnel or Cloudflare) makes the server
+  reachable over the internet, and a QR code is printed on startup for
+  pairing. Auth uses a hex token with timing-safe comparison, per-IP rate
+  limiting on failed attempts, and a server->device keepalive that
+  prevents the R1's ~30-minute inactivity timeout.
+author: Hermes Agent contributors
+# ``requires_env`` and ``optional_env`` entries are surfaced in the
+# ``hermes config`` / ``hermes setup`` UI via the platform-plugin env var
+# injector in ``hermes_cli/config.py``.
+requires_env: []
+optional_env:
+  - name: RABBIT_R1_TOKEN
+    description: "64-char hex auth token the R1 presents when pairing. Auto-generated on startup if unset (printed in the QR payload)."
+    prompt: "Rabbit R1 auth token (leave empty to auto-generate)"
+    password: true
+  - name: RABBIT_R1_PORT
+    description: "WebSocket server listen port (default: 18789)"
+    prompt: "WebSocket port"
+    password: false
+  - name: RABBIT_R1_TUNNEL
+    description: "Public tunnel mode: tailscale | cloudflare | none (default: tailscale)"
+    prompt: "Tunnel mode (tailscale/cloudflare/none)"
+    password: false
+  - name: RABBIT_R1_PUBLIC_URL
+    description: "Explicit public wss:// URL to advertise in the QR code (overrides tunnel auto-detection; useful under systemd/reverse proxy)"
+    prompt: "Public wss:// URL (optional)"
+    password: false
+  - name: RABBIT_R1_KEEPALIVE_INTERVAL
+    description: "Seconds between server->R1 keepalive heartbeats (default: 300; keeps well under the R1's ~30-min inactivity threshold)"
+    prompt: "Keepalive interval (seconds)"
+    password: false
+  - name: RABBIT_R1_ALLOWED_USERS
+    description: "Comma-separated R1 device IDs allowed to talk to the bot (empty = any device with the correct token)"
+    prompt: "Allowed device IDs (comma-separated)"
+    password: false
+  - name: RABBIT_R1_ALLOW_ALL_USERS
+    description: "Allow any device to talk to the bot without device-ID allowlisting (token still required; dev only)"
+    prompt: "Allow all devices? (true/false)"
+    password: false
+  - name: RABBIT_R1_HOME_CHANNEL
+    description: "Default device ID for cron / notification delivery"
+    prompt: "Home device ID (or empty)"
+    password: false

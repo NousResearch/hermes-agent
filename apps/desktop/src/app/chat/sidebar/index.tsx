@@ -1196,6 +1196,8 @@ export function ChatSidebar({
           <div className="shrink-0 px-2 pb-1 pt-1">
             <SearchField
               aria-label={s.searchAria}
+              containerClassName="gap-2 pl-px"
+              icon={<Codicon className="pointer-events-none size-4 shrink-0 text-muted-foreground/70" name="search" />}
               inputRef={searchInputRef}
               onChange={setSearchQuery}
               placeholder={s.searchPlaceholder}

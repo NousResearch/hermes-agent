@@ -383,6 +383,41 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     return counts
 
 
+def stale_skill_count(now: Optional[datetime] = None) -> int:
+    """Cheap count of tracked skills with no activity for ``stale_after_days``.
+
+    Read-only surfacing companion to ``apply_automatic_transitions``: same
+    activity anchor (``skill_usage.latest_activity_at``, falling back to
+    ``created_at``) and the same ``stale_after_days`` cutoff, but computed
+    from a single ``.usage.json`` read — no skill-dir walk, no state writes.
+    Pinned and archived records are skipped. Scope matches ``hermes curator
+    usage`` (every tracked skill in the active profile's
+    ``~/.hermes/skills/``, so the count is per-profile like all curator
+    state), not the narrower archive-candidate walk. Returns 0 when the
+    curator is disabled — no staleness surfacing for a feature the user
+    turned off.
+    """
+    if not is_enabled():
+        return 0
+    from tools import skill_usage as _u
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=get_stale_after_days())
+    count = 0
+    for record in _u.load_usage().values():
+        if record.get("pinned") or record.get("state") == _u.STATE_ARCHIVED:
+            continue
+        anchor = _parse_iso(_u.latest_activity_at(record)) or _parse_iso(record.get("created_at"))
+        if anchor is None:
+            continue
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=timezone.utc)
+        if anchor <= cutoff:
+            count += 1
+    return count
+
+
 # ---------------------------------------------------------------------------
 # Review prompt for the forked agent
 # ---------------------------------------------------------------------------

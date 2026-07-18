@@ -195,6 +195,7 @@ _PREFIX_PATTERNS = [
     r"AIza[A-Za-z0-9_-]{30,}",          # Google API keys
     r"GOCSPX-[A-Za-z0-9_-]{8,}",        # Google OAuth client secret (pasted client_secret.json, #64351)
     r"ya29\.(?:[a-z]\.)?[A-Za-z0-9_-]{20,}",  # Google OAuth access token: user a0…, service-account c., STS d. (#64351)
+    r"AQ\.[A-Za-z0-9_-]{40,}",           # Google Gemini authorization keys (newer "AQ." prefix; AIza pattern doesn't catch them) — #66920
     r"pplx-[A-Za-z0-9]{10,}",           # Perplexity
     r"fal_[A-Za-z0-9_-]{10,}",          # Fal.ai
     r"fc-[A-Za-z0-9]{10,}",             # Firecrawl

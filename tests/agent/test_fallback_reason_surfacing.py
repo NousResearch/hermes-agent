@@ -147,3 +147,42 @@ class TestStreamErrorReasonThreading:
         eff = _resolve_failover_reason(a, None)
         out = _announce(reason=eff)
         assert "Model fallback (connection dropped):" in out[0]
+
+
+class TestReasonRecordedOnEvent:
+    """The recorded ``_last_fallback_event`` must carry the reason so out-of-band
+    consumers (the cron fallback notice) can report WHY the primary failed
+    instead of guessing."""
+
+    def _agent(self):
+        a = _StubAgent()
+        a._current_turn_id = "t1"
+        return a
+
+    def test_event_carries_reason_label_and_raw(self):
+        a = self._agent()
+        _emit_fallback_announce(
+            a, "gpt-5.5", "claude-opus-4-8", "claude-app",
+            old_provider="openai-codex",
+            announce_enabled=False,   # gate the chat emit; event still records
+            record_event=True,
+            reason=FailoverReason.rate_limit,
+        )
+        ev = a._last_fallback_event
+        assert ev is not None
+        assert ev["reason_label"] == "rate limit"
+        assert ev["reason"] == "rate_limit"
+
+    def test_event_reason_is_none_when_no_reason(self):
+        a = self._agent()
+        _emit_fallback_announce(
+            a, "gpt-5.5", "claude-opus-4-8", "claude-app",
+            old_provider="openai-codex",
+            announce_enabled=False,
+            record_event=True,
+            reason=None,
+        )
+        ev = a._last_fallback_event
+        assert ev is not None
+        assert ev["reason_label"] is None
+        assert ev["reason"] is None

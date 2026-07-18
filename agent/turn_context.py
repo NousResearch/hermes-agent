@@ -259,6 +259,18 @@ def build_turn_context(
     turn_id = f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
     agent._current_turn_id = turn_id
     agent._current_api_request_id = ""
+    # Publish this agent's (provider, model) so cronjob(action="create") can
+    # resolve model="auto" to the creating agent's own model instead of leaving
+    # a new LLM cron unpinned (which inherits the runtime primary — often Opus —
+    # at fire time). Module-global backed (NOT a ContextVar — a ContextVar set
+    # here is invisible across the tool-executor's asyncio task boundary).
+    try:
+        from tools.cronjob_tools import set_current_agent_model
+        set_current_agent_model(
+            getattr(agent, "provider", None), getattr(agent, "model", None)
+        )
+    except Exception:
+        logger.debug("cron auto-model publish skipped", exc_info=True)
 
     # Reset retry counters and iteration budget at the start of each turn.
     agent._invalid_tool_retries = 0

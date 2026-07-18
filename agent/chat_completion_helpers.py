@@ -1756,6 +1756,14 @@ def _emit_fallback_announce(
                 "new_provider": new_provider,
                 "old_window": old_window,
                 "new_window": new_window,
+                # WHY the primary failed — the same reason surfaced in the chat
+                # announce, stored so out-of-band consumers (the cron fallback
+                # notice) can report the cause ("rate limit", "provider
+                # overloaded", "auth failed", …) instead of guessing. Both the
+                # short label and the raw reason value are kept.
+                "reason_label": _fallback_reason_label(reason),
+                "reason": (str(getattr(reason, "value", reason))
+                           if reason is not None else None),
                 "turn_id": getattr(agent, "_current_turn_id", None),
                 "monotonic_time": time.monotonic(),
             }

@@ -2753,10 +2753,42 @@ def _scan_assembled_cron_prompt(
     return assembled
 
 
-# Default alert channel for a cron fallback firing when the job does not pin its
-# own ``fallback_alert_deliver``. This is Ace's #alerts channel — a fallback
-# firing is an actionable "this shouldn't have happened" event, never #logs noise.
-_DEFAULT_FALLBACK_ALERT_DELIVER = "discord:1480528231286181948"
+# Default routing for a cron fallback firing when the job does not pin its own
+# ``fallback_alert_deliver``. Two cases with DIFFERENT loudness:
+#   * DECLARED fallback (the job carries a ``fallback:`` chain and opted into
+#     ``allow_cross_provider_fallback``) — the safety net working exactly as
+#     designed (e.g. the Claude sub pool hit a daily cap, so the run rode its
+#     configured codex fallback and SUCCEEDED). That is telemetry, not an
+#     incident → route to #logs, calmly. Paging #alerts for a sanctioned,
+#     successful fallback is cry-wolf.
+#   * UNDECLARED switch (the agent walked to a provider/model the job never
+#     declared) — genuinely "shouldn't happen" → #alerts, loud.
+_DEFAULT_FALLBACK_ALERT_DELIVER = "discord:1480528231286181948"  # #alerts (undeclared/unexpected only)
+_DEFAULT_FALLBACK_LOG_DELIVER = "discord:1480525090331561984"    # #logs (declared fallback = working as designed)
+
+
+def _fallback_was_declared(job: dict, new_provider, new_model) -> bool:
+    """True if the model the run fell back to was DECLARED in the job's own
+    ``fallback`` chain (operator-configured safety net) — as opposed to an
+    undeclared provider/model the agent walked to on its own.
+
+    A declared fallback firing means the primary was capped/unhealthy and the
+    configured net caught it and the run SUCCEEDED — expected, calm telemetry.
+    An undeclared switch is the genuine "shouldn't happen" case.
+    """
+    chain = job.get("fallback")
+    if not isinstance(chain, list):
+        return False
+    for entry in chain:
+        if not isinstance(entry, dict):
+            continue
+        ep = entry.get("provider")
+        em = entry.get("model")
+        # Match on model (with optional provider) — provider labels can vary
+        # (pool face vs sub) but the model slug is the stable identity.
+        if em and em == new_model and (not ep or not new_provider or ep == new_provider):
+            return True
+    return False
 
 
 def _emit_cron_fallback_alert(job: dict, agent, *, adapters=None, loop=None) -> None:
@@ -2789,22 +2821,43 @@ def _emit_cron_fallback_alert(job: dict, agent, *, adapters=None, loop=None) -> 
         new_label = f"{new_provider}/{new_model}" if new_provider else new_model
 
         job_name = job.get("name", job.get("id", "?"))
-        msg = (
-            f"🚨 Cron fallback FIRED — `{job_name}` ran on its FALLBACK model.\n"
-            f"`{old_label}` → `{new_label}`\n"
-            f"The pinned primary failed after retries, so the run completed on the "
-            f"cross-provider fallback. This is the 'shouldn't happen' path — check "
-            f"the primary provider's health."
-        )
+        declared = _fallback_was_declared(job, new_provider, new_model)
+        # WHY the primary failed — surfaced from the recorded fallback event so
+        # the notice reports the actual cause (rate limit / provider overloaded /
+        # auth failed / …) instead of guessing. Falls back to a neutral phrase
+        # only when the runtime recorded no reason.
+        reason_label = (ev.get("reason_label") or "").strip()
+        why = f"reason: **{reason_label}**" if reason_label else "reason: unrecorded"
+        if declared:
+            # The configured safety net caught a capped/unhealthy primary and the
+            # run SUCCEEDED — working exactly as designed. Calm telemetry, #logs.
+            msg = (
+                f"↩️ Cron fallback used — `{job_name}` ran on its configured "
+                f"fallback model.\n"
+                f"`{old_label}` → `{new_label}` ({why})\n"
+                f"The pinned primary failed for the reason above, so the run "
+                f"completed on its declared fallback. This is the safety net "
+                f"working as designed — no action needed."
+            )
+        else:
+            # The agent walked to a provider/model the job never declared —
+            # genuinely unexpected. Loud, #alerts.
+            msg = (
+                f"🚨 Cron fallback FIRED — `{job_name}` ran on an UNDECLARED "
+                f"fallback model.\n"
+                f"`{old_label}` → `{new_label}` ({why})\n"
+                f"The pinned primary failed after retries and the run completed "
+                f"on a model the job never declared. This is the 'shouldn't "
+                f"happen' path — check the primary provider's health."
+            )
 
-        # Resolve the alert target. Reuse _deliver_result by handing it a
-        # synthetic job whose `deliver` points at the alert channel — this gives
-        # us the same target parsing (discord:<id>), platform config resolution,
-        # adapter-vs-standalone send, and ⚠️ failure framing for free, without
-        # duplicating the send loop.
+        # Resolve the delivery target. An explicit ``fallback_alert_deliver``
+        # always wins. Otherwise route by loudness: a DECLARED fallback (safety
+        # net working) → #logs; an UNDECLARED switch (unexpected) → #alerts.
         alert_deliver = (
             str(job.get("fallback_alert_deliver") or "").strip()
-            or _DEFAULT_FALLBACK_ALERT_DELIVER
+            or (_DEFAULT_FALLBACK_LOG_DELIVER if declared
+                else _DEFAULT_FALLBACK_ALERT_DELIVER)
         )
         alert_job = {
             "id": f"{job.get('id', 'cron')}-fallback-alert",

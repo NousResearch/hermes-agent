@@ -40,11 +40,77 @@ FALLBACK_EVENT = {
     "new_model": "claude-opus-4-8",
     "old_provider": "openai-codex",
     "new_provider": "claude-app",
+    "reason_label": "rate limit",
 }
+
+# A job whose ``fallback`` chain DECLARES the model the run fell back to — the
+# operator-configured safety net. Firing this is expected/calm (→ #logs).
+DECLARED_JOB = {
+    "id": "md", "name": "morning-digest", "deliver": "discord:LOGS",
+    "fallback": [{"provider": "claude-app", "model": "claude-opus-4-8"}],
+}
+# A job with NO declared fallback — the agent walked to an undeclared model.
+# That is the genuine "shouldn't happen" case (→ #alerts, loud).
+UNDECLARED_JOB = {"id": "md", "name": "morning-digest", "deliver": "discord:LOGS"}
+
+
+def test_declared_fallback_is_calm_and_routes_to_logs(monkeypatch):
+    """A DECLARED fallback firing is the safety net working as designed:
+    calm wording, routed to #logs — NOT a loud #alerts page."""
+    calls = _capture_deliver(monkeypatch)
+    agent = _FakeAgent(FALLBACK_EVENT)
+
+    sched._emit_cron_fallback_alert(DECLARED_JOB, agent)
+
+    assert len(calls) == 1
+    content = calls[0]["content"]
+    # calm, not the 🚨 shouldn't-happen framing
+    assert "🚨" not in content
+    assert "shouldn't happen" not in content.lower()
+    assert "as designed" in content.lower()
+    # both models still reported
+    assert "claude-opus-4-8" in content and "gpt-5.5" in content
+    # WHY the primary failed is surfaced (not guessed)
+    assert "rate limit" in content
+    # routed to #logs, not #alerts
+    assert calls[0]["job"]["deliver"] == sched._DEFAULT_FALLBACK_LOG_DELIVER
+    assert calls[0]["job"]["deliver"] != sched._DEFAULT_FALLBACK_ALERT_DELIVER
+
+
+def test_undeclared_fallback_is_loud_and_routes_to_alerts(monkeypatch):
+    """An UNDECLARED provider/model switch is genuinely unexpected: loud 🚨
+    framing, routed to #alerts."""
+    calls = _capture_deliver(monkeypatch)
+    agent = _FakeAgent(FALLBACK_EVENT)
+
+    sched._emit_cron_fallback_alert(UNDECLARED_JOB, agent)
+
+    assert len(calls) == 1
+    content = calls[0]["content"]
+    assert "🚨" in content
+    assert "UNDECLARED" in content.upper()
+    # WHY the primary failed is surfaced (not guessed)
+    assert "rate limit" in content
+    assert calls[0]["job"]["deliver"] == sched._DEFAULT_FALLBACK_ALERT_DELIVER
+
+
+def test_reason_degrades_gracefully_when_unrecorded(monkeypatch):
+    """If the runtime recorded no reason, the notice says so honestly rather
+    than guessing a cause."""
+    calls = _capture_deliver(monkeypatch)
+    event = {k: v for k, v in FALLBACK_EVENT.items() if k != "reason_label"}
+    agent = _FakeAgent(event)
+
+    sched._emit_cron_fallback_alert(DECLARED_JOB, agent)
+
+    content = calls[0]["content"]
+    assert "unrecorded" in content.lower()
+    # must NOT fabricate a specific cause
+    assert "rate limit" not in content
 
 
 def test_alert_fires_when_fallback_event_present(monkeypatch):
-    """INV-3: a fired fallback produces exactly one loud alert."""
+    """INV-3: a fired fallback produces exactly one alert (undeclared here)."""
     calls = _capture_deliver(monkeypatch)
     job = {"id": "md", "name": "morning-digest", "deliver": "discord:LOGS"}
     agent = _FakeAgent(FALLBACK_EVENT)
@@ -63,8 +129,8 @@ def test_alert_fires_when_fallback_event_present(monkeypatch):
 
 
 def test_alert_routes_to_default_alerts_channel_not_digest(monkeypatch):
-    """INV-5: with no fallback_alert_deliver, route to #alerts — NOT the job's
-    own deliver (#logs/digest channel)."""
+    """INV-5: an UNDECLARED fallback with no fallback_alert_deliver routes to
+    #alerts — NOT the job's own deliver (#logs/digest channel)."""
     calls = _capture_deliver(monkeypatch)
     job = {"id": "md", "name": "morning-digest", "deliver": "discord:LOGS_CHANNEL"}
     agent = _FakeAgent(FALLBACK_EVENT)

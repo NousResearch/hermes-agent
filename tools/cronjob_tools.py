@@ -5,16 +5,118 @@ Expose a single compressed action-oriented tool to avoid schema/context bloat.
 Compatibility wrappers remain for direct Python callers and legacy tests.
 """
 
+import contextvars
 import json
 import logging
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from hermes_constants import VALID_REASONING_EFFORTS, display_hermes_home
 
 logger = logging.getLogger(__name__)
+
+# Per-turn identity of the CREATING agent's model, so ``cronjob(action="create")``
+# can resolve model="auto" (or an unpinned LLM cron) to the model of whoever is
+# making the job — instead of leaving it None to inherit the runtime primary
+# (often Opus) at fire time.
+#
+# 🔴 This is a MODULE-GLOBAL, deliberately NOT a ContextVar. A ContextVar set
+# inside ``build_turn_context`` (which runs in the conversation-loop asyncio
+# TASK) is invisible to ``handle_function_call`` when the tool executor runs the
+# call in a SEPARATE asyncio task — asyncio snapshots the context at task
+# creation, so a sibling/child task never sees a later ``.set()``. That async
+# task boundary made the ContextVar always read (None, None) at cron-create time
+# (live-repro 2026-07-18). ``handle_function_call`` is a module-level dispatcher
+# with no agent handle, so the value must live somewhere task-independent — the
+# same process-global pattern ``_last_resolved_tool_names`` uses in model_tools.
+# Set once per turn in ``agent/turn_context.py``; the gateway serializes tool
+# dispatch per turn, and a stale value only ever means model="auto" pins to the
+# most-recent turn's model (still a real agent model, never a wrong guess).
+_current_agent_model: Tuple[Optional[str], Optional[str]] = (None, None)
+
+
+def set_current_agent_model(provider: Optional[str], model: Optional[str]) -> None:
+    """Publish the running agent's (provider, model) for model="auto" resolution.
+
+    Called per turn from ``agent/turn_context.py``. Best-effort and cheap; a bad
+    value only means model="auto" falls back to leaving the cron unpinned.
+    """
+    global _current_agent_model
+    try:
+        _current_agent_model = (provider or None, model or None)
+    except Exception:  # never let context bookkeeping break a turn
+        pass
+
+
+def get_current_agent_model() -> Tuple[Optional[str], Optional[str]]:
+    """Return the creating agent's (provider, model), or (None, None) if unset."""
+    try:
+        return _current_agent_model
+    except Exception:
+        return (None, None)
+
+
+# Sentinel a caller (or config) uses to mean "pin this cron to the creating
+# agent's own model" rather than a literal model id.
+_AUTO_MODEL = "auto"
+
+
+def _resolve_cron_llm_model(
+    model: Optional[str], provider: Optional[str]
+) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve the effective (model, provider) for a newly-created LLM cron.
+
+    Precedence:
+      1. ``model == "auto"`` → the CREATING agent's published (provider, model).
+         (An explicit provider passed alongside "auto" is ignored — "auto" means
+         "match me", provider and all.)
+      2. No explicit model + config ``cron.default_model``:
+           - ``"auto"`` → same as (1).
+           - a literal model id → that model (+ ``cron.default_provider`` if set).
+      3. Otherwise unchanged (explicit model kept; unpinned stays unpinned).
+
+    An "auto" that cannot resolve (the agent model was never published — e.g. a
+    bare Python caller) degrades to leaving the job as-is: it NEVER fabricates a
+    model. Returns ``(model, provider)`` in the tool's own argument order.
+    """
+    explicit_auto = isinstance(model, str) and model.strip().lower() == _AUTO_MODEL
+
+    default_model = None
+    default_provider = None
+    if not explicit_auto and not model:
+        # Only consult config when the caller gave no model at all.
+        try:
+            from hermes_cli.config import load_config
+            cron_cfg = (load_config() or {}).get("cron", {}) or {}
+            if isinstance(cron_cfg, dict):
+                default_model = (cron_cfg.get("default_model") or "").strip() or None
+                default_provider = (cron_cfg.get("default_provider") or "").strip() or None
+        except Exception:
+            logger.debug("cron.default_model lookup failed", exc_info=True)
+
+    want_auto = explicit_auto or (
+        isinstance(default_model, str) and default_model.strip().lower() == _AUTO_MODEL
+    )
+
+    if want_auto:
+        a_provider, a_model = get_current_agent_model()
+        if a_model:
+            return (a_model, a_provider or provider)
+        # Could not resolve "auto" → leave the job UNPINNED rather than guess.
+        # Drop both the "auto" sentinel and any provider that rode along with it
+        # (a config-pinned provider glued to an unresolved model is worse than
+        # None — it half-pins the job). A non-explicit "auto" (came from config
+        # default) keeps the caller's original inputs untouched.
+        if explicit_auto:
+            return (None, None)
+        return (model, provider)
+
+    if not model and default_model:
+        return (default_model, default_provider or provider)
+
+    return (model, provider)
 
 # Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -435,6 +537,12 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
                 provider_name = None
         except Exception:
             provider_name = None
+    # "auto" is a sentinel meaning "pin to the creating agent's model" — do NOT
+    # pin the config main provider to it here; _resolve_cron_llm_model (called
+    # in the create path) resolves it against the live agent. Pinning a provider
+    # now would leave a stale provider glued to an unresolved "auto".
+    if model_name and model_name.strip().lower() == "auto":
+        return (provider_name, model_name)
     if model_name and not provider_name:
         # Pin to the current main provider so the job is stable
         try:
@@ -770,6 +878,18 @@ def cronjob(
                 return tool_error("schedule is required for create", success=False)
             canonical_skills = _canonical_skills(skill, skills)
             _no_agent = bool(no_agent)
+            # Resolve model/provider for an LLM cron (no_agent=False). An
+            # unpinned LLM cron inherits the runtime PRIMARY (often Opus) at fire
+            # time — a silent cost footgun. Resolution order:
+            #   1. explicit model="auto" (or config cron.default_model="auto")
+            #      → pin to the CREATING agent's own (provider, model).
+            #   2. config cron.default_model / default_provider → pin to those.
+            #   3. otherwise leave as given (unpinned stays unpinned = old
+            #      behavior; a fleet that wants a floor sets the config knob).
+            # "auto" that can't resolve (no agent model published) degrades to
+            # leaving the job unpinned — it never guesses a model.
+            if not _no_agent:
+                model, provider = _resolve_cron_llm_model(model, provider)
             # Job-shape validation differs by mode:
             #   - no_agent=True → script is the job; prompt/skills are optional
             #     (and irrelevant to execution).
@@ -1127,7 +1247,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "model": {
                 "type": "object",
-                "description": "Optional per-job model override. If provider is omitted, the current main provider is pinned at creation time so the job stays stable.",
+                "description": "Optional per-job model override. Use model='auto' to pin the job to the CREATING agent's own model (recommended for LLM crons — otherwise an unpinned job inherits the runtime primary, often Opus, at fire time). If provider is omitted (and model is not 'auto'), the current main provider is pinned at creation time so the job stays stable.",
                 "properties": {
                     "provider": {
                         "type": "string",

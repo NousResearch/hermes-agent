@@ -489,8 +489,9 @@ def _is_method_not_found_error(exc: BaseException) -> bool:
     The substring fallback matters when a server reports method-not-found
     without a structural ``-32601`` code (e.g. surfaced as a plain exception
     string). Besides the canonical "method not found", many JSON-RPC
-    implementations phrase it as "Unknown method: <name>" — agentmemory's MCP
-    server is one such case (#50028). Without matching that phrasing the
+    implementations phrase it differently — "Unknown method: <name>"
+    (agentmemory's MCP server, #50028) or "Method not supported: <name>"
+    (the google-workspace MCP server). Without matching each phrasing the
     ping→list_tools fallback never latches and the keepalive reconnect-loops.
     """
     # Structural: mcp.shared.exceptions.McpError carries ErrorData.code.
@@ -504,6 +505,7 @@ def _is_method_not_found_error(exc: BaseException) -> bool:
     return (
         str(_JSONRPC_METHOD_NOT_FOUND) in msg
         or "method not found" in msg
+        or ("method not supported" in msg and "ping" in msg)
         or "unknown method" in msg
         or "not found: ping" in msg
     )

@@ -175,31 +175,83 @@ _DISCORD_OPERATOR_CARD_SEVERITY_LABELS = {
     "critical": "Critical",
 }
 
+# Discord embed budgets, measured in UTF-16 code units (Discord's own unit for
+# these limits).  A contract-valid operator card can still exceed them — e.g.
+# up to 12 fields at the 1024-char field ceiling, or a link block wider than a
+# single field — and Discord rejects an oversized embed wholesale (HTTP 400,
+# error code 50035), which would drop the entire message.  We bound each part
+# and stop once the running aggregate would overflow.
+_DISCORD_EMBED_TITLE_LIMIT = 256
+_DISCORD_EMBED_DESCRIPTION_LIMIT = 4096
+_DISCORD_EMBED_FOOTER_LIMIT = 2048
+_DISCORD_EMBED_FIELD_NAME_LIMIT = 256
+_DISCORD_EMBED_FIELD_VALUE_LIMIT = 1024
+_DISCORD_EMBED_TOTAL_LIMIT = 6000
+_DISCORD_EMBED_MAX_FIELDS = 25
+
 
 def _build_operator_card_embed(card: OperatorCard) -> Any:
-    """Render a validated operator card as a bounded Discord embed."""
-    embed = discord.Embed(
-        title=card.title,
-        description=card.summary,
-        color=_DISCORD_OPERATOR_CARD_COLORS[card.severity],
+    """Render a validated operator card as an embed bounded to Discord's limits.
+
+    Every part is truncated to its per-element ceiling and fields are dropped
+    once the running aggregate would exceed Discord's 6000-code-unit budget, so
+    the embed is always API-valid.  Nothing the operator needs is lost: the
+    plaintext fallback (``render_operator_card_text``) still carries the full
+    card as the message content alongside this embed.
+    """
+    title = _truncate_discord_component_text(card.title, _DISCORD_EMBED_TITLE_LIMIT)
+    description = _truncate_discord_component_text(
+        card.summary, _DISCORD_EMBED_DESCRIPTION_LIMIT
     )
-    for field in card.fields:
-        embed.add_field(name=field.label, value=field.value, inline=False)
-    if card.actions:
-        embed.add_field(
-            name="Actions",
-            value=" · ".join(action.label for action in card.actions),
-            inline=False,
-        )
-    if card.links:
-        embed.add_field(
-            name="Links",
-            value="\n".join(f"[{link.label}]({link.url})" for link in card.links),
-            inline=False,
-        )
     card_type_label = card.card_type.replace("_", " ").title()
     severity_label = _DISCORD_OPERATOR_CARD_SEVERITY_LABELS[card.severity]
-    embed.set_footer(text=f"{card_type_label} · {severity_label}")
+    footer = _truncate_discord_component_text(
+        f"{card_type_label} · {severity_label}", _DISCORD_EMBED_FOOTER_LIMIT
+    )
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=_DISCORD_OPERATOR_CARD_COLORS[card.severity],
+    )
+
+    # Title, description, and footer always count against the 6000 aggregate.
+    remaining = _DISCORD_EMBED_TOTAL_LIMIT - (
+        utf16_len(title) + utf16_len(description) + utf16_len(footer)
+    )
+
+    def _add_bounded_field(name: str, value: str) -> None:
+        nonlocal remaining
+        if len(embed.fields) >= _DISCORD_EMBED_MAX_FIELDS or remaining <= 0:
+            return
+        name = _truncate_discord_component_text(
+            name, min(_DISCORD_EMBED_FIELD_NAME_LIMIT, remaining)
+        )
+        if not name:
+            return
+        remaining -= utf16_len(name)
+        if remaining <= 0:
+            return
+        value = _truncate_discord_component_text(
+            value, min(_DISCORD_EMBED_FIELD_VALUE_LIMIT, remaining)
+        )
+        if not value:
+            return
+        remaining -= utf16_len(value)
+        embed.add_field(name=name, value=value, inline=False)
+
+    for field in card.fields:
+        _add_bounded_field(field.label, field.value)
+    if card.actions:
+        _add_bounded_field(
+            "Actions", " · ".join(action.label for action in card.actions)
+        )
+    if card.links:
+        _add_bounded_field(
+            "Links", "\n".join(f"[{link.label}]({link.url})" for link in card.links)
+        )
+
+    embed.set_footer(text=footer)
     return embed
 
 
@@ -2889,9 +2941,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 severity_label = _DISCORD_OPERATOR_CARD_SEVERITY_LABELS[
                     operator_card.severity
                 ]
-                operator_card_thread_name = (
-                    f"{severity_label} — {operator_card.title}"
-                )[:100]
+                # Discord's 100-char thread-name cap is measured in UTF-16 code
+                # units; a naive ``[:100]`` slice counts code points and can
+                # emit a name Discord rejects.  Use the shared UTF-16-aware
+                # component truncator like every other Discord label.
+                operator_card_thread_name = _truncate_discord_component_text(
+                    f"{severity_label} — {operator_card.title}", 100
+                )
 
             # Determine target channel: thread_id in metadata takes precedence.
             thread_id = None

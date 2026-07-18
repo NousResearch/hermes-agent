@@ -3,11 +3,19 @@
 Provides ``resolve_display_setting()`` — the single entry-point for reading
 display settings with platform-specific overrides and sensible defaults.
 
-Resolution order (first non-None wins):
+Resolution order for most settings (first non-None wins):
     1. ``display.platforms.<platform>.<key>``  — explicit per-platform user override
     2. ``display.<key>``                       — global user setting
     3. ``_PLATFORM_DEFAULTS[<platform>][<key>]``  — built-in sensible default
     4. ``_GLOBAL_DEFAULTS[<key>]``              — built-in global default
+
+For ``busy_input_mode`` the resolution order (via ``scope`` and ``chat_id``
+parameters) is:
+    1. ``display.platforms.<platform>.group_overrides.<chat_id>.busy_input_mode``
+    2. ``display.platforms.<platform>.<scope>.busy_input_mode``  (``scope`` = dm | group)
+    3. ``display.platforms.<platform>.busy_input_mode``           — per-platform
+    4. ``display.busy_input_mode``                                — global
+    5. Built-in platform default / global default                 — ``interrupt``
 
 Exception: ``display.streaming`` is CLI-only.  Gateway streaming follows the
 top-level ``streaming`` config unless ``display.platforms.<platform>.streaming``
@@ -58,6 +66,10 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # busy_input_mode: global default (interrupt | queue | steer)
+    # Per-scope (dm/group) and per-chat overrides are resolved via
+    # resolve_display_setting() with scope and chat_id parameters.
+    "busy_input_mode": "interrupt",
 }
 
 # ---------------------------------------------------------------------------
@@ -167,8 +179,10 @@ def resolve_display_setting(
     platform_key: str,
     setting: str,
     fallback: Any = None,
+    scope: str | None = None,
+    chat_id: str | None = None,
 ) -> Any:
-    """Resolve a display setting with per-platform override support.
+    """Resolve a display setting with per-platform and per-scope override support.
 
     Parameters
     ----------
@@ -181,16 +195,48 @@ def resolve_display_setting(
         Display setting name (e.g. ``"tool_progress"``, ``"show_reasoning"``).
     fallback : Any
         Fallback value when the setting isn't found anywhere.
+    scope : str | None, optional
+        Chat scope: ``"dm"`` or ``"group"``.  When set, enables per-scope
+        and per-chat overrides (used by ``busy_input_mode`` resolution).
+        Resolution when scope is set (first non-None wins):
+          1. ``display.platforms.<platform>.group_overrides.<chat_id>.<setting>``
+          2. ``display.platforms.<platform>.<scope>.<setting>``
+          3. ``display.platforms.<platform>.<setting>``
+          4. ``display.<setting>``
+          5. Built-in platform default / global default
+    chat_id : str | None, optional
+        Chat identifier for per-chat overrides.  Only used when ``scope``
+        is also provided (specifically for ``group_overrides`` lookups).
 
     Returns
     -------
     The resolved value, or *fallback* if nothing is configured.
     """
     display_cfg = user_config.get("display") or {}
-
-    # 1. Explicit per-platform override (display.platforms.<platform>.<key>)
     platforms = display_cfg.get("platforms") or {}
     plat_overrides = platforms.get(platform_key)
+
+    # --- Tier 0: Per-chat override (group_overrides.<chat_id>.<key>) ---
+    # Only relevant for busy_input_mode (scope must be provided).
+    if scope and chat_id and isinstance(plat_overrides, dict):
+        group_overrides = plat_overrides.get("group_overrides")
+        if isinstance(group_overrides, dict):
+            chat_override = group_overrides.get(chat_id)
+            if isinstance(chat_override, dict):
+                val = chat_override.get(setting)
+                if val is not None:
+                    return _normalise(setting, val)
+
+    # --- Tier 1: Per-scope override (display.platforms.<platform>.<scope>.<key>) ---
+    # e.g. display.platforms.feishu.dm.busy_input_mode
+    if scope and isinstance(plat_overrides, dict):
+        scope_override = plat_overrides.get(scope)
+        if isinstance(scope_override, dict):
+            val = scope_override.get(setting)
+            if val is not None:
+                return _normalise(setting, val)
+
+    # 1. Explicit per-platform override (display.platforms.<platform>.<key>)
     if isinstance(plat_overrides, dict):
         val = plat_overrides.get(setting)
         if val is not None:
@@ -274,4 +320,7 @@ def _normalise(setting: str, value: Any) -> Any:
             return int(value)
         except (TypeError, ValueError):
             return 0
+    if setting == "busy_input_mode":
+        val = str(value).strip().lower()
+        return val if val in {"interrupt", "queue", "steer"} else "interrupt"
     return value

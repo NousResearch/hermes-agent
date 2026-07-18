@@ -48,5 +48,11 @@ describe('shouldPassThroughToGlobalHandler', () => {
     expect(shouldPassThroughToGlobalHandler('', key({ tab: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageUp: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageDown: true }))).toBe(true)
+    expect(shouldPassThroughToGlobalHandler('', key({ shift: true, upArrow: true }))).toBe(true)
+    expect(
+      shouldPassThroughToGlobalHandler('', key({ upArrow: true }), undefined, {
+        keypress: { raw: '\x1b[1;2A' }
+      })
+    ).toBe(true)
   })
 })

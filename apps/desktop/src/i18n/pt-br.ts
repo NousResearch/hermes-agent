@@ -2060,7 +2060,89 @@ export const ptBr = defineLocale({
     failedUpdate: name => `Falha ao atualizar ${name}`,
     failedSave: name => `Falha ao salvar ${name}`,
     failedClear: key => `Falha ao limpar ${key}`,
-    platformIntro: {}
+    platformIntro: {},
+    fieldCopy: {
+      TELEGRAM_BOT_TOKEN: {
+        label: 'Token do bot',
+        help: 'Crie um bot com @BotFather, depois cole o token que ele fornecer.',
+        placeholder: 'Colar token do bot Telegram'
+      },
+      TELEGRAM_ALLOWED_USERS: {
+        label: 'IDs de usuário Telegram permitidos',
+        help: 'Recomendado. IDs numéricos separados por vírgula do @userinfobot. Sem isso, qualquer um pode DM seu bot.'
+      },
+      TELEGRAM_PROXY: { label: 'URL do proxy', help: 'Necessário apenas em redes onde o Telegram está bloqueado.' },
+      DISCORD_BOT_TOKEN: {
+        label: 'Token do bot',
+        help: 'Crie um aplicativo no Discord Developer Portal, adicione um bot, depois cole o token.'
+      },
+      DISCORD_ALLOWED_USERS: {
+        label: 'IDs de usuário Discord permitidos',
+        help: 'Recomendado. IDs de usuário Discord separados por vírgula.'
+      },
+      DISCORD_REPLY_TO_MODE: { label: 'Estilo de resposta', help: 'first, all ou off.' },
+      DISCORD_ALLOW_ALL_USERS: {
+        label: 'Permitir todos os usuários do Discord',
+        help: 'Apenas desenvolvimento. Quando true, qualquer um pode DM o bot sem lista de permissão.'
+      },
+      DISCORD_HOME_CHANNEL: {
+        label: 'ID do canal principal',
+        help: 'Canal onde o bot envia mensagens proativas (saída de cron, lembretes).'
+      },
+      DISCORD_HOME_CHANNEL_NAME: {
+        label: 'Nome do canal principal',
+        help: 'Nome de exibição para o canal principal em logs e saída de status.'
+      },
+      BLUEBUBBLES_ALLOW_ALL_USERS: {
+        label: 'Permitir todos os usuários do iMessage',
+        help: 'Quando true, pula a lista de permissão do BlueBubbles.'
+      },
+      MATTERMOST_ALLOW_ALL_USERS: { label: 'Permitir todos os usuários do Mattermost' },
+      MATTERMOST_HOME_CHANNEL: { label: 'Canal principal' },
+      QQ_ALLOW_ALL_USERS: { label: 'Permitir todos os usuários QQ' },
+      QQBOT_HOME_CHANNEL: { label: 'Canal principal QQ', help: 'Canal ou grupo padrão para entrega de cron.' },
+      QQBOT_HOME_CHANNEL_NAME: { label: 'Nome do canal principal QQ' },
+      SLACK_BOT_TOKEN: {
+        label: 'Token do bot Slack',
+        help: 'Use o token do bot em OAuth & Permissions após instalar seu aplicativo Slack.',
+        placeholder: 'Colar token do bot Slack'
+      },
+      SLACK_APP_TOKEN: {
+        label: 'Token do aplicativo Slack',
+        help: 'Use o token de nível de aplicativo necessário para Socket Mode.',
+        placeholder: 'Colar token do aplicativo Slack'
+      },
+      SLACK_ALLOWED_USERS: { label: 'IDs de usuário Slack permitidos', help: 'Recomendado. IDs de usuário Slack separados por vírgula.' },
+      MATTERMOST_URL: { label: 'URL do servidor', placeholder: 'https://mattermost.exemplo.com' },
+      MATTERMOST_TOKEN: { label: 'Token do bot' },
+      MATTERMOST_ALLOWED_USERS: {
+        label: 'IDs de usuário permitidos',
+        help: 'Recomendado. IDs de usuário Mattermost separados por vírgula.'
+      },
+      MATRIX_HOMESERVER: { label: 'URL do servidor', placeholder: 'https://matrix.org' },
+      MATRIX_ACCESS_TOKEN: { label: 'Token de acesso' },
+      MATRIX_USER_ID: { label: 'ID do usuário do bot', placeholder: '@hermes:exemplo.org' },
+      MATRIX_ALLOWED_USERS: {
+        label: 'IDs de usuário Matrix permitidos',
+        help: 'Recomendado. IDs de usuário no formato @usuario:servidor separados por vírgula.'
+      },
+      SIGNAL_HTTP_URL: {
+        label: 'URL da ponte Signal',
+        placeholder: 'http://127.0.0.1:8080',
+        help: 'URL de uma ponte REST signal-cli em execução.'
+      },
+      SIGNAL_ACCOUNT: { label: 'Número de telefone', help: 'O número registrado com sua ponte signal-cli.' },
+      SIGNAL_ALLOWED_USERS: { label: 'Usuários Signal permitidos', help: 'Recomendado. Identificadores Signal separados por vírgula.' },
+      WHATSAPP_ENABLED: {
+        label: 'Ativar ponte WhatsApp',
+        help: 'Definido automaticamente pelo botão abaixo. Deixe em paz a menos que saiba que precisa.'
+      },
+      WHATSAPP_MODE: { label: 'Modo da ponte' },
+      WHATSAPP_ALLOWED_USERS: {
+        label: 'Usuários WhatsApp permitidos',
+        help: 'Recomendado. Números de telefone ou IDs WhatsApp separados por vírgula.'
+      }
+    }
   },
 
   // ─── statusStack ──────────────────────────────────────────────────────────

@@ -1194,6 +1194,8 @@ export const zh: Translations = {
     goToSession: '前往会话',
     branches: '分支',
     commands: '命令',
+    chatActions: '对话操作',
+    chatActionsHint: '先打开一个对话',
     startInBranch: branch => `在 ${branch} 中开始新对话`,
     commandCenter: '命令中心',
     appearance: '外观',

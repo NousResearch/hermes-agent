@@ -4,6 +4,7 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { requestComposerStageSlash } from '@/app/chat/composer/focus'
 import { HUD_HEADING, HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from '@/app/floating-hud'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
@@ -57,6 +58,7 @@ import {
 import { $bindings } from '@/store/keybinds'
 import { openPetGenerate } from '@/store/pet-generate'
 import { requestStartWorkSession } from '@/store/projects'
+import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
 import { applyBackendUpdate } from '@/store/updates'
 import { luminance } from '@/themes/color'
@@ -80,13 +82,19 @@ import { FIELD_LABELS, SECTIONS } from '../settings/constants'
 import { fieldCopyForSchemaKey } from '../settings/field-copy'
 import { prettyName } from '../settings/helpers'
 
+import { buildChatActionsGroup } from './chat-actions'
 import { usePaletteContributions } from './contrib'
 import { MarketplaceThemePage } from './marketplace-theme-page'
 import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
 
-interface PaletteItem {
+export interface PaletteItem {
   /** Keybind action id — its live combo renders as a hotkey hint. */
   action?: string
+  /** Non-selectable + dimmed, with `hint` shown as the reason (e.g. a chat
+   *  action while no session is open). */
+  disabled?: boolean
+  /** Trailing muted note — surfaces the disabled reason for a dimmed row. */
+  hint?: string
   icon: IconComponent
   id: string
   /** Keep the palette open after running (live-preview pickers like theme/mode). */
@@ -99,7 +107,7 @@ interface PaletteItem {
   to?: string
 }
 
-interface PaletteGroup {
+export interface PaletteGroup {
   /** Optional: a headingless group renders as a bare action row (e.g. the
    *  "Install theme…" entry pinned atop the theme picker). */
   heading?: string
@@ -297,6 +305,11 @@ export function CommandPalette() {
   const pendingPage = useStore($commandPalettePage)
   const bindings = useStore($bindings)
   const worktrees = useStore($repoWorktrees)
+  // Chat actions need a session to act on; the same signal the composer/preview
+  // use for "the current session" (selected stored id, else the live runtime id).
+  const activeSessionId = useStore($activeSessionId)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const hasActiveSession = Boolean(selectedStoredSessionId || activeSessionId)
   const navigate = useNavigate()
   const { availableThemes, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
@@ -613,6 +626,24 @@ export function CommandPalette() {
       })
     }
 
+    // Chat slash actions (/compress, /title, /handoff, …), searchable by both
+    // their plain-English label and the /command string. Selecting one STAGES
+    // the command into the composer (a directive chip to review + send) — it
+    // never executes. Disabled with a hint while no session is open.
+    const chatActions = buildChatActionsGroup({
+      hasActiveSession,
+      heading: t.commandCenter.chatActions,
+      hint: t.commandCenter.chatActionsHint,
+      onStage: command => {
+        requestComposerStageSlash(command)
+        closeCommandPalette()
+      }
+    })
+
+    if (chatActions) {
+      result.push(chatActions)
+    }
+
     // Deep-link straight to a Capabilities sub-tab. The root "Go to" entry only
     // lands on the top-level Skills view; typing "mcp"/"tools"/"skills" should
     // jump to the exact tab (matches the "not just the top lvl" ask).
@@ -748,6 +779,7 @@ export function CommandPalette() {
     availableThemes,
     configFieldLabel,
     go,
+    hasActiveSession,
     mcpServers,
     resolvedMode,
     search,
@@ -842,6 +874,10 @@ export function CommandPalette() {
   const placeholder = activePage ? activePage.placeholder : t.commandCenter.searchPlaceholder
 
   const handleSelect = (item: PaletteItem) => {
+    if (item.disabled) {
+      return
+    }
+
     if (item.to) {
       setPage(item.to)
       setSearch('')
@@ -937,6 +973,7 @@ export function CommandPalette() {
                         return (
                           <CommandItem
                             className={cn(HUD_ITEM, HUD_TEXT)}
+                            disabled={item.disabled}
                             key={item.id}
                             keywords={item.keywords}
                             onSelect={() => handleSelect(item)}
@@ -944,10 +981,20 @@ export function CommandPalette() {
                           >
                             <Icon className="size-3.5 shrink-0 text-muted-foreground" />
                             <span className="truncate">{item.label}</span>
-                            {combo && <KbdCombo className="ml-auto opacity-55" combo={combo} size="sm" />}
+                            {item.hint && (
+                              <span className="ml-auto shrink-0 truncate text-xs text-muted-foreground/70">
+                                {item.hint}
+                              </span>
+                            )}
+                            {combo && (
+                              <KbdCombo className={cn('opacity-55', !item.hint && 'ml-auto')} combo={combo} size="sm" />
+                            )}
                             {item.to && (
                               <ChevronRight
-                                className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')}
+                                className={cn(
+                                  'size-3.5 shrink-0 text-muted-foreground/70',
+                                  !combo && !item.hint && 'ml-auto'
+                                )}
                               />
                             )}
                           </CommandItem>

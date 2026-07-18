@@ -33,9 +33,15 @@ interface InsertRefsDetail {
   target: ComposerTarget
 }
 
+interface StageSlashDetail {
+  command: string
+  target: ComposerTarget
+}
+
 const FOCUS_EVENT = 'hermes:composer-focus'
 const INSERT_EVENT = 'hermes:composer-insert'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
+const STAGE_SLASH_EVENT = 'hermes:composer-stage-slash'
 const SUBMIT_EVENT = 'hermes:composer-submit'
 const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
 
@@ -117,6 +123,27 @@ export const requestComposerInsertRefs = (
 
 export const onComposerInsertRefsRequest = (handler: (detail: InsertRefsDetail) => void) =>
   subscribe<InsertRefsDetail>(INSERT_REFS_EVENT, handler)
+
+/**
+ * Stage a slash command into a composer as a directive — the ⌘K command
+ * palette's "Chat actions" path. Unlike {@link requestComposerSubmit} this
+ * NEVER sends: it drops the command into the input (a committed chip for a
+ * no-arg command, or `/<cmd> ` text parked at its arg step) so the user
+ * reviews and presses Enter. The command string is a canonical `/<name>`.
+ */
+export const requestComposerStageSlash = (
+  command: string,
+  { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
+) => {
+  const trimmed = command.trim()
+
+  if (trimmed) {
+    dispatch<StageSlashDetail>(STAGE_SLASH_EVENT, { command: trimmed, target: resolve(target) })
+  }
+}
+
+export const onComposerStageSlashRequest = (handler: (detail: StageSlashDetail) => void) =>
+  subscribe<StageSlashDetail>(STAGE_SLASH_EVENT, handler)
 
 /** Submit a prompt through a composer as if the user typed + sent it. Lets
  * external panels (e.g. the review pane's "let the agent ship it" button) hand

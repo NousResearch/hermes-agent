@@ -890,6 +890,8 @@ export interface Translations {
     goToSession: string
     branches: string
     commands: string
+    chatActions: string
+    chatActionsHint: string
     startInBranch: (branch: string) => string
     commandCenter: string
     appearance: string

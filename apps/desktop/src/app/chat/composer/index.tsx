@@ -8,6 +8,7 @@ import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
+import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
@@ -26,7 +27,7 @@ import { ContextMenu } from './context-menu'
 import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
-import { markActiveComposer } from './focus'
+import { markActiveComposer, onComposerStageSlashRequest } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useComposerBranch } from './hooks/use-composer-branch'
@@ -50,7 +51,8 @@ import {
   deleteSelectionInEditor,
   insertPlainTextAtCaret,
   normalizeComposerEditorDom,
-  RICH_INPUT_SLOT
+  RICH_INPUT_SLOT,
+  stageSlashCommandIntoEditor
 } from './rich-editor'
 import { useComposerScope } from './scope'
 import { ComposerStatusStack } from './status-stack'
@@ -266,6 +268,31 @@ export function ChatBar({
     triggerKeyConsumedRef,
     triggerLoading
   } = useComposerTrigger({ at, draftRef, editorRef, requestMainFocus, setComposerText, slash })
+
+  // ⌘K "Chat actions": an external surface stages a slash command into THIS
+  // composer as a directive to review, never a send. It reuses the same chip
+  // primitive the trigger path does; an arg-taking command reopens the trigger
+  // so its argument step surfaces, mirroring an inline pick.
+  useEffect(() => {
+    return onComposerStageSlashRequest(({ command, target }) => {
+      const editor = editorRef.current
+
+      if (!editor || target !== scope.target) {
+        return
+      }
+
+      const takesArgs = desktopSlashCommandTakesArgs(command)
+      const staged = stageSlashCommandIntoEditor(editor, command, { takesArgs })
+
+      draftRef.current = staged
+      setComposerText(staged)
+      requestMainFocus()
+
+      if (takesArgs) {
+        window.setTimeout(refreshTrigger, 0)
+      }
+    })
+  }, [draftRef, editorRef, refreshTrigger, requestMainFocus, scope.target, setComposerText])
 
   // Pull the live contentEditable text into draftRef + the AUI composer state
   // (which drives `hasComposerPayload` → the send button). Shared by the input

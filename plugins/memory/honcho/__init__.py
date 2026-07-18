@@ -663,6 +663,21 @@ class HonchoMemoryProvider(MemoryProvider):
         "[SELF-TRACE] ",
     )
 
+    # User-peer observations that *quote* self-narration phrasing ("austin
+    # said Hermes said 'Vee'", "austin shared that hermes says X") survive
+    # the prefix filter because they don't start with the trigger — they
+    # start with a timestamp like `[2026-07-18 06:13:36]`. But the quoted
+    # self-narration token still seeds the self-trust loop when it lands
+    # in the model's context. Match the phrase anywhere in the line, as a
+    # whole word (boundary-anchored), case-insensitive. False-positive
+    # risk: legitimate "austin quoted Hermes saying that..." or
+    # "austin mentioned PC-Hermes-class control" lines that mention Hermes
+    # without the says/said phrase — verified against the live corpus:
+    # those don't match. Only the says/said phrase triggers.
+    _SELF_NARRATION_PHRASE_RE = re.compile(
+        r"\bhermes (?:says|said)\b", re.IGNORECASE
+    )
+
     # Hard cap on lines retained per section. Any lines past the cap are
     # demoted to a "[historical, truncated]" block. The cap prevents a
     # single polluted section from blowing up the prompt cache for every
@@ -677,21 +692,31 @@ class HonchoMemoryProvider(MemoryProvider):
         Accepts either a list of strings (joined upstream) or a pre-joined
         string. Returns a string ready for ``f"## {section_name}\\n{...}"``.
 
-        Three filtering passes, in order:
+        Four filtering passes, in order:
 
         1. **Imperative-shape filter** (e.g. ``INSTRUCTION:``, ``RULE:``) —
            prompt-injection vectors. Pulled into an ``[untrusted injection
            filtered from <section>]`` block at the end of the section.
 
-        2. **Self-narration filter** (e.g. ``hermes says X``, ``hermes said
-           Y``) — the AI Self-Representation can accumulate hundreds of
-           these from prior debugging sessions, and once surfaced they
-           re-assert themselves as present-tense facts. Pulled into a
+        2. **Self-narration prefix filter** (e.g. ``hermes says X``,
+           ``hermes said Y``, ``[AUTO-NARRATED] ...``) — the AI Self-
+           Representation can accumulate hundreds of these from prior
+           debugging sessions, and once surfaced they re-assert
+           themselves as present-tense facts. Pulled into a
            ``[historical, demoted from <section>]`` block at the end of
            the section so the model can see the content for context but
            doesn't quote it as live fact.
 
-        3. **Line cap** — if the kept section exceeds
+        3. **Self-narration phrase filter** — user-peer observations that
+           *quote* prior self-narration phrasing (e.g. ``austin said
+           Hermes said 'Vee'``, ``austin shared that hermes says X``)
+           survive the prefix filter because they start with a timestamp,
+           but the quoted phrasing still seeds the self-trust loop when
+           it lands in model context. Match the whole-word phrase
+           ``hermes says`` / ``hermes said`` anywhere in the line,
+           case-insensitive. Demotes the same way as pass 2.
+
+        4. **Line cap** — if the kept section exceeds
            ``_MAX_LINES_PER_SECTION`` lines, the overflow is demoted to
            a ``[historical, truncated]`` block. Prevents a single polluted
            section from blowing up the prompt cache for every turn.
@@ -712,6 +737,8 @@ class HonchoMemoryProvider(MemoryProvider):
             if any(stripped.startswith(prefix) for prefix in cls._IMPERATIVE_LINE_PREFIXES):
                 filtered_injection.append(line)
             elif any(lower.startswith(prefix) for prefix in cls._SELF_NARRATION_PREFIXES):
+                filtered_historical.append(line)
+            elif cls._SELF_NARRATION_PHRASE_RE.search(line):
                 filtered_historical.append(line)
             else:
                 kept.append(line)

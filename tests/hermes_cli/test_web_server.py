@@ -491,6 +491,28 @@ class TestWebServerEndpoints:
         assert fields["api_key"]["url"] == "https://app.honcho.dev"
         assert fields["baseUrl"]["kind"] == "text"
 
+    def test_instance_schema_serves_providers_without_declared_schema(self, monkeypatch):
+        # The default surface serves the plugin instance's get_config_schema().
+        from hermes_cli import web_server
+
+        class _Stub:
+            def get_config_schema(self):
+                return [
+                    {"key": "api_key", "description": "Stub API key", "secret": True, "url": "https://stub.example"},
+                    {"key": "baseUrl", "description": "Stub base URL"},
+                ]
+
+        monkeypatch.setattr(web_server, "_load_memory_provider", lambda name: _Stub())
+
+        resp = self.client.get("/api/memory/providers/mem0/config")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        fields = self._provider_field_map(data)
+        assert fields["api_key"]["kind"] == "secret"
+        assert fields["api_key"]["url"] == "https://stub.example"
+        assert fields["baseUrl"]["kind"] == "text"
+
     def test_declared_surface_serves_curated_hindsight_schema(self):
         resp = self.client.get("/api/memory/providers/hindsight/config?surface=declared")
 
@@ -502,7 +524,7 @@ class TestWebServerEndpoints:
         assert fields["api_key"]["kind"] == "secret"
 
     def test_declared_surface_hides_undeclared_providers(self):
-        resp = self.client.get("/api/memory/providers/honcho/config?surface=declared")
+        resp = self.client.get("/api/memory/providers/builtin/config?surface=declared")
 
         assert resp.status_code == 200
         assert resp.json()["fields"] == []
@@ -534,7 +556,7 @@ class TestWebServerEndpoints:
 
     def test_declared_surface_put_rejects_undeclared_provider(self):
         resp = self.client.put(
-            "/api/memory/providers/honcho/config?surface=declared",
+            "/api/memory/providers/builtin/config?surface=declared",
             json={"values": {"api_key": "x"}},
         )
 
@@ -581,7 +603,9 @@ class TestWebServerEndpoints:
         assert config_resp.status_code == 200
         assert config_resp.json()["setup"]["external_dependencies"] == byterover_setup["external_dependencies"]
 
-    def test_memory_status_reports_honcho_needs_config_after_dependency_setup(self, monkeypatch):
+    def test_memory_status_reports_honcho_needs_config_after_dependency_setup(self, monkeypatch, tmp_path):
+        # Pin HOME so a developer's real ~/.honcho config can't flip the status.
+        monkeypatch.setenv("HOME", str(tmp_path))
         import hermes_cli.web_server as web_server
 
         original_dependency_importable = web_server._dependency_importable
@@ -926,6 +950,330 @@ class TestWebServerEndpoints:
         fetched = self.client.get("/api/model/moa").json()
         assert fetched["presets"]["default"]["fanout"] == "user_turn"
         assert fetched["presets"]["default"]["reference_max_tokens"] == 600
+    # ── Memory provider config (Honcho host-block backend) ──────────────
+
+    @pytest.fixture(autouse=True)
+    def _isolate_honcho_config(self):
+        # Honcho tests write the suite-wide HERMES_HOME honcho.json; snapshot and
+        # restore it so provider status/config state never leaks across tests.
+        from hermes_constants import get_hermes_home
+
+        path = get_hermes_home() / "honcho.json"
+        before = path.read_bytes() if path.exists() else None
+        yield
+        if before is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(before)
+
+    @staticmethod
+    def _seed_local_honcho(cfg=None):
+        from hermes_constants import get_hermes_home
+
+        path = get_hermes_home() / "honcho.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cfg if cfg is not None else {}), encoding="utf-8")
+        return path
+
+    def test_get_honcho_config_returns_safe_defaults(self, monkeypatch, tmp_path):
+        # HOME isn't isolated by the suite; pin it so ~/.honcho can't leak in.
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        resp = self.client.get("/api/memory/providers/honcho/config?surface=declared")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "honcho"
+        assert data["label"] == "Honcho"
+        assert data["docs_url"] == "https://docs.honcho.dev/v3/guides/integrations/hermes"
+
+        fields = self._provider_field_map(data)
+        assert fields["environment"]["kind"] == "select"
+        assert fields["environment"]["value"] == "production"
+        assert {opt["value"] for opt in fields["environment"]["options"]} == {
+            "production",
+            "local",
+        }
+        assert fields["sessionStrategy"]["value"] == "per-directory"
+        # Blank workspace/aiPeer surface the resolved host as the placeholder.
+        assert fields["workspace"]["value"] == ""
+        assert fields["workspace"]["placeholder"] == "hermes"
+        assert fields["aiPeer"]["placeholder"] == "hermes"
+        assert fields["apiKey"]["kind"] == "secret"
+        assert fields["apiKey"]["is_set"] is False
+
+    def test_put_honcho_writes_host_block_root_and_secret(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HONCHO_API_KEY", "guard")
+        monkeypatch.delenv("HONCHO_API_KEY")
+        self._seed_local_honcho()
+        from hermes_constants import get_hermes_home
+        from hermes_cli.config import load_config, load_env
+
+        resp = self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={
+                "values": {
+                    "apiKey": "hch-test-key",
+                    "baseUrl": "https://honcho.example.dev",
+                    "environment": "local",
+                    "workspace": "myws",
+                    "peerName": "eri",
+                    "aiPeer": "hermes",
+                    "sessionStrategy": "per-repo",
+                }
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        assert load_config()["memory"]["provider"] == "honcho"
+        assert load_env()["HONCHO_API_KEY"] == "hch-test-key"
+
+        cfg = json.loads((get_hermes_home() / "honcho.json").read_text(encoding="utf-8"))
+        # baseUrl is root-scoped; the rest live in the active host block.
+        assert cfg["baseUrl"] == "https://honcho.example.dev"
+        assert cfg["hosts"]["hermes"]["workspace"] == "myws"
+        assert cfg["hosts"]["hermes"]["peerName"] == "eri"
+        assert cfg["hosts"]["hermes"]["environment"] == "local"
+        assert cfg["hosts"]["hermes"]["sessionStrategy"] == "per-repo"
+        # The key lands where the client reads first; GET keeps it write-only.
+        assert cfg["hosts"]["hermes"]["apiKey"] == "hch-test-key"
+
+    def test_put_honcho_blank_text_clears_key(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._seed_local_honcho()
+        from hermes_constants import get_hermes_home
+
+        self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"workspace": "myws"}},
+        )
+        self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"workspace": ""}},
+        )
+
+        cfg = json.loads((get_hermes_home() / "honcho.json").read_text(encoding="utf-8"))
+        assert "workspace" not in cfg.get("hosts", {}).get("hermes", {})
+
+    def test_put_honcho_partial_save_preserves_other_keys(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._seed_local_honcho()
+        from hermes_constants import get_hermes_home
+
+        self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"workspace": "myws"}},
+        )
+        self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"peerName": "eri"}},
+        )
+
+        host = json.loads((get_hermes_home() / "honcho.json").read_text(encoding="utf-8"))["hosts"]["hermes"]
+        assert host["workspace"] == "myws"
+        assert host["peerName"] == "eri"
+
+    def test_put_honcho_rejects_unsupported_select_value(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        resp = self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"environment": "bogus"}},
+        )
+
+        assert resp.status_code == 400
+
+    def test_get_honcho_config_does_not_return_secret(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HONCHO_API_KEY", "guard")
+        monkeypatch.delenv("HONCHO_API_KEY")
+        self._seed_local_honcho()
+
+        self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"apiKey": "secret-value"}},
+        )
+
+        resp = self.client.get("/api/memory/providers/honcho/config?surface=declared")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        fields = self._provider_field_map(data)
+        assert fields["apiKey"]["is_set"] is True
+        assert fields["apiKey"]["value"] == ""
+        assert "secret-value" not in json.dumps(data)
+
+    def test_put_honcho_bool_stored_natively_and_false_survives(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._seed_local_honcho()
+        from hermes_constants import get_hermes_home
+
+        self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"saveMessages": "false", "dialecticDynamic": "true"}},
+        )
+
+        host = json.loads((get_hermes_home() / "honcho.json").read_text(encoding="utf-8"))["hosts"]["hermes"]
+        # Native JSON bools, not the strings "false"/"true" (which read truthy).
+        assert host["saveMessages"] is False
+        assert host["dialecticDynamic"] is True
+
+        fields = self._provider_field_map(self.client.get("/api/memory/providers/honcho/config?surface=declared").json())
+        assert fields["saveMessages"]["value"] == "false"
+        assert fields["dialecticDynamic"]["value"] == "true"
+
+    def test_put_honcho_number_stored_as_native_number(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._seed_local_honcho()
+        from hermes_constants import get_hermes_home
+
+        self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"dialecticMaxChars": "1200", "timeout": "2.5"}},
+        )
+
+        cfg = json.loads((get_hermes_home() / "honcho.json").read_text(encoding="utf-8"))
+        assert cfg["hosts"]["hermes"]["dialecticMaxChars"] == 1200
+        assert isinstance(cfg["hosts"]["hermes"]["dialecticMaxChars"], int)
+        # timeout is root-scoped and keeps its fractional part.
+        assert cfg["timeout"] == 2.5
+
+        fields = self._provider_field_map(self.client.get("/api/memory/providers/honcho/config?surface=declared").json())
+        assert fields["dialecticMaxChars"]["value"] == "1200"
+
+    def test_put_honcho_json_round_trips_object(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._seed_local_honcho()
+        from hermes_constants import get_hermes_home
+
+        self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"userPeerAliases": '{"telegram_1": "eri"}'}},
+        )
+
+        host = json.loads((get_hermes_home() / "honcho.json").read_text(encoding="utf-8"))["hosts"]["hermes"]
+        assert host["userPeerAliases"] == {"telegram_1": "eri"}
+
+        fields = self._provider_field_map(self.client.get("/api/memory/providers/honcho/config?surface=declared").json())
+        assert json.loads(fields["userPeerAliases"]["value"]) == {"telegram_1": "eri"}
+
+    def test_put_honcho_first_save_merges_into_resolved_config(self, monkeypatch, tmp_path):
+        # With no profile-local file, a save merges into the resolved global config.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        from hermes_constants import get_hermes_home
+
+        global_path = tmp_path / ".honcho" / "config.json"
+        global_path.parent.mkdir(parents=True)
+        global_path.write_text(
+            json.dumps({"baseUrl": "https://kept.example", "hosts": {"hermes": {"workspace": "kept"}}}),
+            encoding="utf-8",
+        )
+
+        resp = self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"peerName": "eri"}},
+        )
+
+        assert resp.status_code == 200
+        assert not (get_hermes_home() / "honcho.json").exists()
+        cfg = json.loads(global_path.read_text(encoding="utf-8"))
+        assert cfg["baseUrl"] == "https://kept.example"
+        assert cfg["hosts"]["hermes"] == {"workspace": "kept", "peerName": "eri"}
+
+    def test_put_honcho_updates_legacy_dot_form_host_block(self, monkeypatch, tmp_path):
+        # The legacy dot-form block reads resolve is updated in place, not shadowed.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HONCHO_HOST", "hermes_work")
+
+        path = self._seed_local_honcho({"hosts": {"hermes.work": {"workspace": "w", "peerName": "eri"}}})
+
+        resp = self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"sessionStrategy": "per-repo"}},
+        )
+
+        assert resp.status_code == 200
+        hosts = json.loads(path.read_text(encoding="utf-8"))["hosts"]
+        assert set(hosts) == {"hermes.work"}
+        assert hosts["hermes.work"] == {"workspace": "w", "peerName": "eri", "sessionStrategy": "per-repo"}
+
+    def test_put_honcho_api_key_never_overwrites_oauth_token(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HONCHO_API_KEY", "guard")
+        monkeypatch.delenv("HONCHO_API_KEY")
+        from hermes_cli.config import load_env
+
+        path = self._seed_local_honcho({"hosts": {"hermes": {"apiKey": "hch-at-oauth-token"}}})
+
+        resp = self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"apiKey": "manual-key"}},
+        )
+
+        assert resp.status_code == 200
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        # The OAuth grant owns the JSON slot; the manual key lands in the env store.
+        assert cfg["hosts"]["hermes"]["apiKey"] == "hch-at-oauth-token"
+        assert load_env()["HONCHO_API_KEY"] == "manual-key"
+
+    def test_put_honcho_tolerates_null_hosts(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        path = self._seed_local_honcho({"hosts": None})
+
+        resp = self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"workspace": "myws"}},
+        )
+
+        assert resp.status_code == 200
+        assert json.loads(path.read_text(encoding="utf-8"))["hosts"]["hermes"]["workspace"] == "myws"
+
+    def test_memory_provider_config_honors_profile_param(self, monkeypatch, tmp_path):
+        # A ?profile= save must land in that profile's config, not the serving
+        # process's — same contract as the skills/toolsets endpoints.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        from hermes_constants import get_hermes_home
+        from hermes_cli.profiles import get_profile_dir
+
+        self._seed_local_honcho()
+
+        worker_home = get_profile_dir("worker")
+        worker_home.mkdir(parents=True, exist_ok=True)
+        worker_cfg = worker_home / "honcho.json"
+        worker_cfg.write_text(json.dumps({"hosts": {"hermes_worker": {"workspace": "kept"}}}), encoding="utf-8")
+
+        resp = self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared&profile=worker",
+            json={"values": {"peerName": "eri"}},
+        )
+
+        assert resp.status_code == 200
+        worker_hosts = json.loads(worker_cfg.read_text(encoding="utf-8"))["hosts"]
+        host_block = next(iter(worker_hosts.values()))
+        assert host_block["peerName"] == "eri"
+        # The serving process's own config is untouched.
+        own = json.loads((get_hermes_home() / "honcho.json").read_text(encoding="utf-8"))
+        assert "peerName" not in json.dumps(own)
+
+        fields = self._provider_field_map(
+            self.client.get("/api/memory/providers/honcho/config?surface=declared&profile=worker").json()
+        )
+        assert fields["peerName"]["value"] == "eri"
+
+    def test_put_honcho_rejects_malformed_number_and_json(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        assert self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"dialecticMaxChars": "lots"}},
+        ).status_code == 400
+        assert self.client.put(
+            "/api/memory/providers/honcho/config?surface=declared",
+            json={"values": {"userPeerAliases": "{not json"}},
+        ).status_code == 400
 
     # ── GET /api/media (remote image display) ───────────────────────────
 

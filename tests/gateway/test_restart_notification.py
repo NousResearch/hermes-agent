@@ -741,6 +741,46 @@ class TestShutdownReasonHint:
         runner._shutdown_ctx = {"signal": "SIGTERM", "under_systemd": False}
         assert runner._shutdown_reason_hint() == "external stop"
 
+    def test_sigterm_with_planned_stop_marker_suppresses_reason(self):
+        """A marker-confirmed `hermes gateway stop` is operator-initiated;
+        classifying it as `external stop from systemd` would misrepresent
+        the intent on the user-facing notification. Marker presence is the
+        authoritative signal — no reason clause should render."""
+        runner = self._fresh_runner()
+        runner._shutdown_ctx = {
+            "signal": "SIGTERM",
+            "under_systemd": True,
+            "planned_stop_marker": '{"written_at":"2026-07-19T12:00:00Z"}',
+        }
+        assert runner._shutdown_reason_hint() is None
+
+    def test_sigterm_with_takeover_marker_for_self_suppresses_reason(self):
+        """`hermes gateway restart --replace` writes a takeover marker
+        that names the target PID. When the marker names us, the SIGTERM
+        is a planned handoff — no external-stop reason."""
+        runner = self._fresh_runner()
+        runner._shutdown_ctx = {
+            "signal": "SIGTERM",
+            "under_systemd": True,
+            "takeover_marker": '{"target_pid":123}',
+            "takeover_marker_for_self": True,
+        }
+        assert runner._shutdown_reason_hint() is None
+
+    def test_sigterm_with_takeover_marker_for_other_still_reports_external(self):
+        """A takeover marker that DOESN'T name us is a smoking gun for
+        another --replace instance killing us — that IS an external
+        stop from the perspective of this runner, and the reason clause
+        should surface so the operator sees it."""
+        runner = self._fresh_runner()
+        runner._shutdown_ctx = {
+            "signal": "SIGTERM",
+            "under_systemd": True,
+            "takeover_marker": '{"target_pid":999}',
+            "takeover_marker_for_self": False,
+        }
+        assert runner._shutdown_reason_hint() == "external stop from systemd"
+
 
 @pytest.mark.asyncio
 async def test_shutdown_notification_includes_reason_hint(tmp_path, monkeypatch):
@@ -798,6 +838,69 @@ async def test_shutdown_notification_omits_reason_for_chat_restart(tmp_path, mon
     assert "terminal interrupt" not in sent_text
     assert "⚠️ Gateway restarting" in sent_text
     assert "Send any message after restart" in sent_text
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_omits_reason_for_planned_stop_marker(tmp_path, monkeypatch):
+    """A `hermes gateway stop` writes a planned-stop marker. The runner
+    receives SIGTERM under systemd, but the marker classifies the stop
+    as operator-initiated. The user-facing notification must NOT include
+    the `external stop from systemd` reason clause."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops",
+    )
+    runner._restart_requested = False
+    runner._shutdown_ctx = {
+        "signal": "SIGTERM",
+        "under_systemd": True,
+        "planned_stop_marker": '{"written_at":"2026-07-19T12:00:00Z"}',
+    }
+    runner._snapshot_running_agents = lambda: ["agent:main:telegram:dm:home-42"]  # type: ignore[assignment]
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.send.called
+    sent_text = adapter.send.call_args[0][1] if len(adapter.send.call_args[0]) > 1 else adapter.send.call_args[1]["text"]
+    assert "external stop" not in sent_text, (
+        "planned-stop marker must suppress the external-stop reason clause"
+    )
+    assert "⚠️ Gateway shutting down" in sent_text
+    assert "Your current task will be interrupted." in sent_text
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_omits_reason_for_self_takeover_marker(tmp_path, monkeypatch):
+    """A `hermes gateway restart --replace` writes a takeover marker
+    naming the target PID. When the marker names us, the SIGTERM is a
+    planned handoff. The user-facing notification must NOT include the
+    external-stop reason clause."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops",
+    )
+    runner._restart_requested = False
+    runner._shutdown_ctx = {
+        "signal": "SIGTERM",
+        "under_systemd": True,
+        "takeover_marker": '{"target_pid":123}',
+        "takeover_marker_for_self": True,
+    }
+    runner._snapshot_running_agents = lambda: ["agent:main:telegram:dm:home-42"]  # type: ignore[assignment]
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.send.called
+    sent_text = adapter.send.call_args[0][1] if len(adapter.send.call_args[0]) > 1 else adapter.send.call_args[1]["text"]
+    assert "external stop" not in sent_text, (
+        "self-takeover marker must suppress the external-stop reason clause"
+    )
 
 
 @pytest.mark.asyncio

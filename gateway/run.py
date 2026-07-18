@@ -5026,6 +5026,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ctx = getattr(self, "_shutdown_ctx", None)
         if not isinstance(ctx, dict):
             return None
+        # Suppress the reason clause for marker-confirmed planned SIGTERM
+        # paths — these are operator-initiated and already surface via
+        # the "restarting"/"planned stop" narrative on the notification.
+        # Emitting "external stop from systemd" for a `hermes gateway stop`
+        # or a `--replace` takeover would be misleading. The signal
+        # handler stamps these markers into `_shutdown_ctx`; see
+        # `gateway/shutdown_forensics.py` for the marker read logic and
+        # `gateway/status.py` (`_PLANNED_STOP_MARKER_FILENAME` /
+        # `_get_takeover_marker_path()`) for the write side.
+        if ctx.get("planned_stop_marker") is not None:
+            return None
+        if ctx.get("takeover_marker") is not None and ctx.get("takeover_marker_for_self"):
+            return None
         sig = ctx.get("signal")
         if sig == "SIGINT":
             return "terminal interrupt (Ctrl+C)"

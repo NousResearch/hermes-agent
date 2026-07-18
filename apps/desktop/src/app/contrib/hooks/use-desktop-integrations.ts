@@ -6,7 +6,7 @@ import { respondToApprovalAction } from '@/store/native-notifications'
 import { getRememberedRoute, getRememberedSessionId, setRememberedRoute, setRememberedSessionId } from '@/store/session'
 import { onSessionsChanged } from '@/store/session-sync'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
-import { isSecondaryWindow } from '@/store/windows'
+import { isNewSessionWindow, isSecondaryWindow } from '@/store/windows'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
 import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
@@ -62,6 +62,10 @@ export function useDesktopIntegrations({
   // lands where you were. Overlays (settings/command-center/…) aren't stored —
   // you don't want to boot into a modal.
   useEffect(() => {
+    if (isNewSessionWindow()) {
+      return
+    }
+
     if (routedSessionId) {
       setRememberedSessionId(routedSessionId)
     }
@@ -77,7 +81,7 @@ export function useDesktopIntegrations({
   // route (a hidden-then-shown window keeps its own route). Prefer the full
   // remembered route (covers pages); fall back to the last session id.
   useEffect(() => {
-    if (restoredRef.current || locationPathname !== NEW_CHAT_ROUTE) {
+    if (restoredRef.current || locationPathname !== NEW_CHAT_ROUTE || isNewSessionWindow()) {
       restoredRef.current = true
 
       return

@@ -1,15 +1,26 @@
-"""Tests for the gateway /steer command handler.
+"""Tests for the gateway /steer and /interrupt command handlers.
 
 /steer injects a user message into the agent's next tool result without
-interrupting. The gateway runner must:
+interrupting. /interrupt stops the active agent run and replaces it with
+a new prompt in one atomic operation.
 
-  1. When an agent IS running → call ``agent.steer(text)``, do NOT set
-     ``_interrupt_requested``, do NOT touch ``_pending_messages``.
+/steer semantics:
+  1. When an agent IS running → call agent.steer(text), do NOT set
+     _interrupt_requested, do NOT touch _pending_messages.
   2. When the agent is the PENDING sentinel → fall back to /queue
-     semantics (store in ``adapter._pending_messages``).
+     semantics (store in adapter._pending_messages).
   3. When no agent is active → strip the slash prefix and let the normal
      prompt pipeline handle it as a regular user message.
+
+/interrupt semantics:
+  1. When an agent IS running → interrupt, clear session, stage the new
+     prompt as a pending message, and drain queued event overflow.
+  2. When the agent is the PENDING sentinel → refuse and return a status
+     message instead of queueing.
+  3. When no agent is active → return None so the prompt falls through
+     to normal handling rather than being silently dropped.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -21,6 +32,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from gateway.run import _AGENT_PENDING_SENTINEL
 
 
 def _make_source() -> SessionSource:
@@ -89,6 +101,9 @@ def _session_entry() -> SessionEntry:
     )
 
 
+# /steer tests ------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 async def test_steer_calls_agent_steer_and_does_not_interrupt():
     """When an agent is running, /steer must call agent.steer(text) and
@@ -109,9 +124,7 @@ async def test_steer_calls_agent_steer_and_does_not_interrupt():
     running_agent.steer.assert_called_once_with("also check auth.log")
     # Critically: interrupt was NOT called
     running_agent.interrupt.assert_not_called()
-    # And no user-text queueing happened — the steer doesn't go into
-    # _pending_messages (that would be turn-boundary /queue semantics).
-    assert runner._pending_messages == {}
+    # And no user-text queueing happened
     assert adapter._pending_messages == {}
 
 
@@ -134,8 +147,6 @@ async def test_steer_without_payload_returns_usage():
 async def test_steer_with_pending_sentinel_falls_back_to_queue():
     """When the agent hasn't finished booting (sentinel), /steer should
     queue as a turn-boundary follow-up instead of crashing."""
-    from gateway.run import _AGENT_PENDING_SENTINEL
-
     runner, adapter = _make_runner(_session_entry())
     sk = build_session_key(_make_source())
     runner._running_agents[sk] = _AGENT_PENDING_SENTINEL
@@ -144,7 +155,6 @@ async def test_steer_with_pending_sentinel_falls_back_to_queue():
 
     assert result is not None
     assert "queued" in result.lower() or "starting" in result.lower()
-    # The fallback put the text into the adapter's pending queue.
     assert sk in adapter._pending_messages
     assert adapter._pending_messages[sk].text == "wait up"
 
@@ -156,15 +166,12 @@ async def test_steer_agent_without_steer_method_falls_back():
     runner, adapter = _make_runner(_session_entry())
     sk = build_session_key(_make_source())
 
-    # A bare object that does NOT have steer() — use a spec'd Mock so
-    # hasattr(agent, "steer") returns False.
     running_agent = MagicMock(spec=[])
     runner._running_agents[sk] = running_agent
 
     result = await runner._handle_message(_make_event("/steer fallback"))
 
     assert result is not None
-    # Must mention queueing since steer wasn't available
     assert "queued" in result.lower()
     assert sk in adapter._pending_messages
     assert adapter._pending_messages[sk].text == "fallback"
@@ -172,8 +179,7 @@ async def test_steer_agent_without_steer_method_falls_back():
 
 @pytest.mark.asyncio
 async def test_steer_rejected_payload_returns_rejection_message():
-    """If agent.steer() returns False (e.g. empty after strip — though
-    the gateway already guards this), surface a rejection message."""
+    """If agent.steer() returns False, surface a rejection message."""
     runner, _adapter = _make_runner(_session_entry())
     sk = build_session_key(_make_source())
 
@@ -187,5 +193,110 @@ async def test_steer_rejected_payload_returns_rejection_message():
     assert "rejected" in result.lower() or "empty" in result.lower()
 
 
-if __name__ == "__main__":  # pragma: no cover
-    pytest.main([__file__, "-v"])
+# /interrupt tests -------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_interrupt_calls_interrupt_and_queues_prompt():
+    runner, adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+
+    captured = {}
+
+    async def fake_interrupt(
+        session_key,
+        source,
+        *,
+        interrupt_reason=None,
+        invalidation_reason=None,
+        release_running_state=True,
+    ):
+        captured.update(
+            session_key=session_key,
+            source=source,
+            interrupt_reason=interrupt_reason,
+            invalidation_reason=invalidation_reason,
+            release_running_state=release_running_state,
+        )
+
+    runner._interrupt_and_clear_session = fake_interrupt
+    running_agent = MagicMock()
+    runner._running_agents[sk] = running_agent
+
+    result = await runner._handle_message(_make_event("/interrupt stop editing files"))
+
+    assert result is not None
+    assert "Interrupted" in result
+    assert sk in adapter._pending_messages
+    assert adapter._pending_messages[sk].text == "stop editing files"
+    assert runner._pending_messages.get(sk) is None
+    assert captured.get("session_key") == sk
+
+
+@pytest.mark.asyncio
+async def test_interrupt_without_prompt_returns_usage():
+    runner, adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+
+    running_agent = MagicMock()
+    runner._running_agents[sk] = running_agent
+
+    result = await runner._handle_message(_make_event("/interrupt"))
+
+    assert result is not None
+    assert "Usage" in result or "usage" in result
+    running_agent.interrupt.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_interrupt_now_alias_queues_prompt():
+    runner, adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+
+    async def fake_interrupt(
+        session_key,
+        source,
+        *,
+        interrupt_reason=None,
+        invalidation_reason=None,
+        release_running_state=True,
+    ):
+        pass
+
+    runner._interrupt_and_clear_session = fake_interrupt
+    runner._running_agents[sk] = MagicMock()
+
+    result = await runner._handle_message(_make_event("/now switch to python"))
+
+    assert result is not None
+    assert "Interrupted" in result
+    assert adapter._pending_messages[sk].text == "switch to python"
+
+
+@pytest.mark.asyncio
+async def test_interrupt_with_no_active_session_falls_through():
+    runner, adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+    assert sk not in runner._running_agents
+
+    result = await runner._handle_message(_make_event("/interrupt do something"))
+
+    assert "Interrupted" not in (result or "")
+    assert sk not in adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_interrupt_pending_sentinel_refuses_and_does_not_queue():
+    runner, adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+    runner._running_agents[sk] = _AGENT_PENDING_SENTINEL
+
+    result = await runner._handle_message(_make_event("/interrupt go fast"))
+
+    assert result is not None
+    assert "starting" in result.lower() or "running" in result.lower()
+    assert sk not in adapter._pending_messages
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v"]))

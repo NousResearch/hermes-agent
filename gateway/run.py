@@ -9765,6 +9765,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
 
+            # /interrupt <prompt> (alias: /now) — interrupt and replace.
+            # This is the one-shot control path that bypasses busy_text_mode=queue
+            # and sends the replacement prompt as the next user turn. See #36032.
+            if _cmd_def_inner and _cmd_def_inner.name == "interrupt":
+                prompt_text = event.get_command_args().strip()
+                if not prompt_text:
+                    return "Usage: /interrupt <prompt>"
+                running_agent = self._running_agents.get(_quick_key)
+                if running_agent is _AGENT_PENDING_SENTINEL:
+                    return "Agent is still starting — /interrupt can be used once it's running."
+                if running_agent is None:
+                    return None
+                pending = MessageEvent(
+                    text=prompt_text,
+                    message_type=MessageType.TEXT,
+                    source=event.source,
+                    message_id=event.message_id,
+                    channel_prompt=event.channel_prompt,
+                )
+                await self._interrupt_and_clear_session(
+                    _quick_key,
+                    source,
+                    interrupt_reason="Operator interrupt with replacement prompt",
+                    invalidation_reason="interrupt_command",
+                )
+                adapter = self.adapters.get(source.platform)
+                if adapter is not None and hasattr(adapter, "_pending_messages"):
+                    adapter._pending_messages[_quick_key] = pending
+                    self._promote_queued_event(_quick_key, adapter, pending)
+                self._pending_messages.pop(_quick_key, None)
+                return "Interrupted — replacement prompt loaded for the next turn."
+
             # /model must not be used while the agent is running.
             if _cmd_def_inner and _cmd_def_inner.name == "model":
                 return "Agent is running — wait or /stop first, then switch models."

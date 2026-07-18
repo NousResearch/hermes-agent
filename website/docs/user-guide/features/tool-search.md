@@ -78,6 +78,8 @@ tools:
     threshold_pct: 10   # percentage of context — only used in auto mode
     search_default_limit: 5
     max_search_limit: 20
+    listing: auto       # embed a grouped name+description catalog manifest
+    listing_max_tokens: 4000
 ```
 
 | Key | Default | Meaning |
@@ -86,6 +88,19 @@ tools:
 | `threshold_pct` | `10` | Percentage of context length at which `auto` mode kicks in. Range 0–100. |
 | `search_default_limit` | `5` | Hits returned when the model calls `tool_search` without a `limit`. |
 | `max_search_limit` | `20` | Hard upper bound the model can request via `limit`. Range 1–50. |
+| `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to a bare count); `on`/`off` force either way. |
+| `listing_max_tokens` | `4000` | Token budget for the embedded listing. Range 200–20000. |
+
+### Why the listing exists
+
+Without it, deferred capabilities are *invisible* — live benchmarking showed
+models substituting visible core tools (running `gh` in the terminal instead
+of searching for the deferred GitHub tool) or declaring a capability
+nonexistent instead of calling `tool_search`. The listing applies the skills
+pattern to tools: every capability stays discoverable by name at all times,
+while full parameter schemas remain deferred. If the model sees the exact
+tool name in the listing, it can skip `tool_search` and go straight to
+`tool_describe`, saving a round trip.
 
 You can also flip the legacy boolean shape:
 

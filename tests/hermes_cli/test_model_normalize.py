@@ -263,3 +263,61 @@ class TestDeepseekCanonicalAndReasonerMapping:
     ])
     def test_unknown_names_fall_back_to_chat(self, model):
         assert _normalize_for_deepseek(model) == "deepseek-chat"
+
+
+# ── Regression: fallback chain sends unstripped Hermes provider id to
+#    an aggregator (OpenRouter/Nous/Kilo Code), which then rejects the
+#    literal ``openai-codex/gpt-5.6-sol`` with HTTP 400 "not a valid
+#    model ID" and cascades further down the fallback chain instead of
+#    landing cleanly on the intended fallback model. ─────────────────────
+
+class TestHermesProviderPrefixNotMistakenForAggregatorVendor:
+    """A ``fb_model`` string carrying a Hermes provider id prefix (not a
+    real aggregator vendor slug like ``anthropic/`` or ``openai/``) must
+    be stripped and re-normalized, not passed straight through because it
+    happens to contain a ``/``.
+    """
+
+    @pytest.mark.parametrize("model,target_provider,expected", [
+        # The exact reported failure: openai-codex primary falls back to
+        # OpenRouter while fb_model still carries the codex provider
+        # prefix instead of the bare model name.
+        ("openai-codex/gpt-5.6-sol", "openrouter", "openai/gpt-5.6-sol"),
+        ("openai-codex/gpt-5.5", "openrouter", "openai/gpt-5.5"),
+        # Same failure mode via other direct providers that aren't
+        # themselves valid aggregator vendor slugs.
+        ("xai/grok-4.3", "openrouter", "x-ai/grok-4.3"),
+        ("copilot/claude-sonnet-4.6", "openrouter", "anthropic/claude-sonnet-4.6"),
+        ("gemini/gemini-3-pro", "openrouter", "google/gemini-3-pro"),
+        # Works identically for the other aggregator providers.
+        ("openai-codex/gpt-5.6-sol", "nous", "openai/gpt-5.6-sol"),
+        ("openai-codex/gpt-5.6-sol", "kilocode", "openai/gpt-5.6-sol"),
+    ])
+    def test_provider_prefixed_fallback_model_is_stripped_and_renormalized(
+        self, model, target_provider, expected,
+    ):
+        result = normalize_model_for_provider(model, target_provider)
+        assert result == expected, f"Expected {expected!r}, got {result!r}"
+
+    @pytest.mark.parametrize("model,target_provider,expected", [
+        # A genuine aggregator vendor slug must still pass through
+        # unchanged -- this guards against over-correcting the fix.
+        ("anthropic/claude-sonnet-5", "openrouter", "anthropic/claude-sonnet-5"),
+        ("minimax/minimax-m3", "openrouter", "minimax/minimax-m3"),
+        ("meta-llama/llama-4-scout", "openrouter", "meta-llama/llama-4-scout"),
+        ("google/gemini-3-pro", "openrouter", "google/gemini-3-pro"),
+        # An unrecognized prefix (neither a known vendor slug nor a known
+        # Hermes provider id) is left untouched -- the aggregator may
+        # still accept it or return its own error.
+        ("some-unknown-vendor/some-model", "openrouter", "some-unknown-vendor/some-model"),
+    ])
+    def test_real_vendor_slugs_still_pass_through_unchanged(
+        self, model, target_provider, expected,
+    ):
+        result = normalize_model_for_provider(model, target_provider)
+        assert result == expected, f"Expected {expected!r}, got {result!r}"
+
+    def test_bare_model_still_gets_vendor_prepended(self):
+        """Sanity check the existing bare-name path wasn't broken."""
+        assert normalize_model_for_provider("gpt-5.6-sol", "openrouter") == "openai/gpt-5.6-sol"
+        assert normalize_model_for_provider("claude-sonnet-4.6", "openrouter") == "anthropic/claude-sonnet-4.6"

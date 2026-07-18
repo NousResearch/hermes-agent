@@ -63,11 +63,57 @@ _VENDOR_PREFIXES: dict[str, str] = {
     "trinity": "arcee-ai",
 }
 
+# The set of vendor slugs aggregator APIs (OpenRouter, Nous, Kilo Code)
+# actually accept as the left-hand side of a ``vendor/model`` slug. Derived
+# from the values of ``_VENDOR_PREFIXES`` so the two stay in sync.
+#
+# This is distinct from Hermes' own *provider ids* (``openai-codex``,
+# ``xai``, ``copilot``, ``zai``, ``kimi-coding``, ``gemini``, ...) — several
+# of those look like plausible vendor/model prefixes but are NOT the slug an
+# aggregator expects. When one of those leaks into ``fb_model`` (e.g. a
+# fallback-chain entry keeps the provider-scoped literal
+# ``openai-codex/gpt-5.6-sol`` instead of the bare model), the old
+# ``"/" in model_name -> return as-is`` short-circuit sent that raw string
+# straight to OpenRouter, which rejects it with HTTP 400 "not a valid model
+# ID". See the openai-codex -> fallback -> openrouter failure chain.
+_AGGREGATOR_VENDOR_SLUGS: frozenset[str] = frozenset(_VENDOR_PREFIXES.values())
+
 # Providers whose APIs consume vendor/model slugs.
 _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
     "openrouter",
     "nous",
     "kilocode",
+})
+
+# Hermes provider ids that are NOT valid aggregator vendor slugs but are
+# easy to mistake for one because they sit in the same ``prefix/model``
+# shape.  When a fallback/config entry's model string carries one of these
+# as its prefix, it must be stripped (and the vendor re-detected from the
+# bare model name) rather than passed through untouched.  Kept explicit
+# (rather than "any non-_AGGREGATOR_VENDOR_SLUGS prefix") so a genuinely
+# unknown vendor slug from a new aggregator model still passes through
+# untouched instead of being silently mangled.
+_HERMES_PROVIDER_PREFIXES_NOT_VENDOR_SLUGS: frozenset[str] = frozenset({
+    "openai-codex",
+    "openai-api",
+    "copilot",
+    "copilot-acp",
+    "xai",
+    "xai-oauth",
+    "zai",
+    "gemini",
+    "kimi-coding",
+    "kimi-coding-cn",
+    "minimax-oauth",
+    "minimax-cn",
+    "qwen-oauth",
+    "alibaba",
+    "vertex",
+    "azure-foundry",
+    "bedrock",
+    "ollama-cloud",
+    "opencode-zen",
+    "opencode-go",
 })
 
 # Providers that want bare names with dots replaced by hyphens.
@@ -298,9 +344,19 @@ def _prepend_vendor(model_name: str) -> str:
     """Prepend the detected ``vendor/`` prefix if missing.
 
     Used for aggregator providers that require ``vendor/model`` format.
-    If the name already contains a ``/``, it is returned as-is.
-    If no vendor can be detected, the name is returned unchanged
-    (aggregators may still accept it or return an error).
+    If the name already contains a ``/`` AND the prefix is a real
+    aggregator vendor slug (``anthropic``, ``openai``, ``google``, ...),
+    it is returned as-is. If no vendor can be detected, the name is
+    returned unchanged (aggregators may still accept it or return an
+    error).
+
+    If the prefix is instead a Hermes *provider id* that leaked in from a
+    fallback-chain/config entry (e.g. ``openai-codex/gpt-5.6-sol``,
+    ``xai/grok-4.3``) rather than a genuine aggregator vendor slug, it is
+    stripped and the vendor is re-detected from the bare model name. This
+    is the fix for the fallback path sending ``openai-codex/gpt-5.6-sol``
+    verbatim to OpenRouter, which rejects it with HTTP 400 "not a valid
+    model ID" instead of receiving ``openai/gpt-5.6-sol``.
 
     Examples::
 
@@ -310,8 +366,25 @@ def _prepend_vendor(model_name: str) -> str:
         'anthropic/claude-sonnet-4.6'
         >>> _prepend_vendor("my-custom-thing")
         'my-custom-thing'
+        >>> _prepend_vendor("openai-codex/gpt-5.6-sol")
+        'openai/gpt-5.6-sol'
+        >>> _prepend_vendor("xai/grok-4.3")
+        'x-ai/grok-4.3'
     """
     if "/" in model_name:
+        prefix, remainder = model_name.split("/", 1)
+        if prefix in _AGGREGATOR_VENDOR_SLUGS:
+            return model_name
+        normalized_prefix = _normalize_provider_alias(prefix)
+        if (
+            normalized_prefix in _HERMES_PROVIDER_PREFIXES_NOT_VENDOR_SLUGS
+            and remainder.strip()
+        ):
+            # Prefix is a Hermes provider id, not an aggregator vendor
+            # slug — strip it and re-run vendor detection on the bare
+            # model name instead of passing the provider-scoped literal
+            # straight through to the aggregator's API.
+            return _prepend_vendor(remainder.strip())
         return model_name
 
     vendor = detect_vendor(model_name)

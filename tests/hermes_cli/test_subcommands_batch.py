@@ -114,6 +114,8 @@ def test_dashboard_builder_two_handlers():
     assert parser.parse_args(["dashboard"]).func is dash
     # dashboard register -> register handler
     assert parser.parse_args(["dashboard", "register"]).func is reg
+    assert parser.parse_args(["dashboard", "--light"]).light_dashboard is True
+    assert parser.parse_args(["dashboard", "--legacy"]).light_dashboard is True
 
 
 # ── deprecated `hermes login` fails gracefully, not with argparse error ────

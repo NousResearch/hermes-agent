@@ -27,7 +27,8 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | `--port` | `9119` | Port to run the web server on |
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
-| `--insecure` | off | Allow binding to non-localhost hosts (**DANGEROUS** — exposes API keys on the network; pair with a firewall and strong auth) |
+| `--light` | off | Start the memory-bounded read-only dashboard |
+| `--insecure` | off | In light mode, permit unauthenticated access on a non-loopback address; it does not disable full-dashboard authentication |
 | `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard |
 
 ```bash
@@ -39,7 +40,46 @@ hermes dashboard --host 0.0.0.0
 
 # Start without opening browser
 hermes dashboard --no-open
+
+# Memory-bounded mode for small self-hosted servers
+hermes dashboard --light --port 9119
+
+# Trusted private IP only; light mode has no authentication
+hermes dashboard --light --host 100.64.0.10 --insecure
 ```
+
+### Lightweight mode
+
+Lightweight mode branches to a standard-library HTTP server before importing
+FastAPI, Pydantic, the full route table, dashboard plugins, or MCP discovery.
+It retains bounded read-only views for gateway status, sessions and paginated
+transcripts, workspace files, profile logs, and an allow-listed configuration
+summary. File previews are capped at 512 KiB, directory results and transcript
+pages are bounded, and credential files are excluded.
+
+The full dashboard remains the default. Chat, credentials, file/config writes,
+session mutation, plugins, channels, MCP, cron, and other administration stay in
+the full dashboard. The `hermes serve` backend used by Desktop is unchanged.
+
+You can enable it for one launch:
+
+```bash
+hermes dashboard --light
+```
+
+Or persist it in `~/.hermes/config.yaml`:
+
+```yaml
+dashboard:
+  mode: lightweight
+```
+
+Set `dashboard.mode: full` or omit the field for the complete admin dashboard.
+
+Lightweight mode binds to loopback by default because it has no authentication.
+Use a tunnel for remote access. `--insecure` permits a non-loopback bind for a
+trusted private network and prints a warning; every client that can reach that
+address can read the exposed sessions, files, logs, and safe config fields.
 
 ## Managing multiple profiles
 

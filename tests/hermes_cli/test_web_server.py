@@ -3782,6 +3782,8 @@ class TestBuildSchemaFromConfig:
             assert entry["type"] == "select"
             assert "options" in entry
             assert "local" in entry["options"]
+        assert CONFIG_SCHEMA["dashboard.mode"]["type"] == "select"
+        assert CONFIG_SCHEMA["dashboard.mode"]["options"] == ["full", "lightweight"]
 
     def test_memory_provider_field_present_as_select(self):
         """memory.provider must stay in the config schema.
@@ -3889,6 +3891,10 @@ class TestConfigRoundTrip:
         config = self.client.get("/api/config").json()
         internal = [k for k in config if k.startswith("_")]
         assert not internal, f"Internal keys leaked to frontend: {internal}"
+
+    def test_get_config_includes_dashboard_mode_default(self):
+        config = self.client.get("/api/config").json()
+        assert config.get("dashboard", {}).get("mode") == "full"
 
     def test_get_config_model_is_string(self):
         """GET /api/config should normalize model dict to a string."""

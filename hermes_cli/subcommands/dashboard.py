@@ -33,10 +33,9 @@ def _add_server_runtime_args(parser) -> None:
         "--insecure",
         action="store_true",
         help=(
-            "DEPRECATED / NO-OP. Formerly bypassed auth on a non-loopback "
-            "bind. As of the June 2026 hardening it no longer disables "
-            "authentication — a public bind always requires an auth provider "
-            "(password or OAuth). Bind 127.0.0.1 + tunnel to keep it local."
+            "For --light only, permit an unauthenticated non-loopback bind. "
+            "It remains a no-op for the full dashboard/serve backend, where "
+            "public binds always require an auth provider."
         ),
     )
     parser.add_argument(
@@ -106,6 +105,18 @@ def build_dashboard_parser(
     _add_server_runtime_args(dashboard_parser)
     dashboard_parser.add_argument(
         "--no-open", action="store_true", help="Don't open browser automatically"
+    )
+    dashboard_parser.add_argument(
+        "--light",
+        dest="light_dashboard",
+        action="store_true",
+        help="Use the memory-bounded read-only dashboard",
+    )
+    dashboard_parser.add_argument(
+        "--legacy",
+        dest="light_dashboard",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     # Backward-compat shim: older Hermes desktop app shells (<= 0.15.x) spawn the
     # backend as `hermes dashboard --no-open --tui --host ... --port ...`. The

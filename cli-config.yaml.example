@@ -1406,6 +1406,11 @@ updates:
 # (the ~/.hermes/.env file is reserved for API keys and secrets).
 #
 # dashboard:
+#   # full: complete admin dashboard (default)
+#   # lightweight: bounded read-only dashboard; loopback-only unless the
+#   #              launch explicitly passes --insecure
+#   mode: full
+#
 #   oauth:
 #     client_id: ""    # agent:{instance_id}; Portal provisions this at deploy
 #     portal_url: ""   # blank → default https://portal.nousresearch.com

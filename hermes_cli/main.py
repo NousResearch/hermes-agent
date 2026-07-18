@@ -12348,6 +12348,22 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
     print()
 
 
+def _use_lightweight_dashboard(args, *, headless_backend: bool) -> bool:
+    """Resolve the dashboard-only backend choice without touching the web stack."""
+    if headless_backend:
+        return False
+    if bool(getattr(args, "light_dashboard", False)):
+        return True
+    try:
+        from hermes_cli.config import read_raw_config
+
+        dashboard = read_raw_config().get("dashboard") or {}
+        mode = str(dashboard.get("mode") or "full").strip().lower()
+    except Exception:
+        return False
+    return mode in {"light", "legacy", "lightweight"}
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     # --status: report running dashboards and exit, no deps needed.
@@ -12372,6 +12388,9 @@ def cmd_dashboard(args):
     # ready sentinel. Resolved once and threaded through the re-exec, the
     # build gate, and start_server.
     _headless_backend = getattr(args, "headless_backend", False)
+    _lightweight_backend = _use_lightweight_dashboard(
+        args, headless_backend=_headless_backend
+    )
 
     # ── Unified profile launch routing ────────────────────────────────
     # The dashboard is a MACHINE management surface: it can read/write any
@@ -12431,6 +12450,8 @@ def cmd_dashboard(args):
             reexec_argv.append("--insecure")
         if getattr(args, "skip_build", False):
             reexec_argv.append("--skip-build")
+        if _lightweight_backend:
+            reexec_argv.append("--light")
         env = os.environ.copy()
         # Pin the child to the machine ROOT, not the launching profile's
         # HERMES_HOME.  We must resolve the root explicitly instead of just
@@ -12468,6 +12489,18 @@ def cmd_dashboard(args):
         _setup_logging_gui(mode="gui")
     except Exception:
         pass
+
+    if _lightweight_backend:
+        from hermes_cli.lightweight_dashboard import run_lightweight_dashboard
+
+        run_lightweight_dashboard(
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_open,
+            initial_profile=getattr(args, "open_profile", "") or "",
+            allow_remote=bool(getattr(args, "insecure", False)),
+        )
+        return
 
     try:
         import fastapi  # noqa: F401

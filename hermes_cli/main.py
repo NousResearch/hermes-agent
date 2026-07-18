@@ -10144,6 +10144,34 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     )
                     sys.exit(1)
 
+                # After a hard reset, the commit ancestry chain between HEAD
+                # and origin/{branch} may diverge over subsequent fetches,
+                # causing ``git rev-list --count HEAD..origin/{branch}`` to
+                # produce artificially inflated counts (observed: 15000+,
+                # issue #66957).  Re-fetch and pull to restore the chain.
+                subprocess.run(
+                    git_cmd + ["fetch", "origin", branch, "--no-tags"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                subprocess.run(
+                    git_cmd + ["pull", "--ff-only", "origin", branch],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+
+                # Compact the object store to prevent .git bloat from loose
+                # objects left behind by the diverged history (observed:
+                # 4.6 GB after several update cycles, issue #66957).
+                subprocess.run(
+                    git_cmd + ["gc", "--auto"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit
             # made it through CI (e.g. admin-merge bypass of a failing

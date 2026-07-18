@@ -4044,6 +4044,7 @@ def get_sessions(
     archived: str = "exclude",
     order: str = "created",
     source: str = None,
+    chat_id: str = None,
     exclude_sources: str = None,
     cwd_prefix: str = None,
     full: bool = False,
@@ -4074,6 +4075,8 @@ def get_sessions(
             status_code=400,
             detail="order must be one of: created, recent",
         )
+    if chat_id is not None and (not chat_id or len(chat_id) > 256):
+        raise HTTPException(status_code=400, detail="chat_id must contain 1-256 characters")
     profile_name: Optional[str] = None
     if profile:
         profile_name, _ = _cron_profile_home(profile)
@@ -4090,6 +4093,7 @@ def get_sessions(
             exclude_list = [s for s in (exclude_sources or "").split(",") if s.strip()]
             sessions = db.list_sessions_rich(
                 source=source or None,
+                chat_id=chat_id,
                 exclude_sources=exclude_list or None,
                 cwd_prefix=(cwd_prefix or None),
                 limit=limit,
@@ -4105,6 +4109,7 @@ def get_sessions(
             )
             total = db.session_count(
                 source=source or None,
+                chat_id=chat_id,
                 cwd_prefix=(cwd_prefix or None),
                 exclude_sources=exclude_list or None,
                 min_message_count=min_message_count,

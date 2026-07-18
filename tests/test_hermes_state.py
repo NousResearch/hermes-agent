@@ -3976,6 +3976,22 @@ class TestTitleSqlWildcards:
 class TestListSessionsRich:
     """Tests for enhanced session listing with preview and last_active."""
 
+    def test_chat_id_filter_applies_before_pagination_and_count(self, db):
+        db.create_session("home-session", "signal", chat_id="home-chat")
+        db.create_session("foreign-session", "signal", chat_id="foreign-chat")
+        db.append_message("home-session", "user", "authorized")
+        db.append_message("foreign-session", "user", "foreign and newer")
+
+        rows = db.list_sessions_rich(
+            source="signal",
+            chat_id="home-chat",
+            limit=1,
+            order_by_last_active=True,
+        )
+
+        assert [row["id"] for row in rows] == ["home-session"]
+        assert db.session_count(source="signal", chat_id="home-chat", exclude_children=True) == 1
+
     def test_preview_from_first_user_message(self, db):
         db.create_session("s1", "cli")
         db.append_message("s1", "system", "You are a helpful assistant.")

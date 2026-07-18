@@ -1195,6 +1195,27 @@ class TestWebServerEndpoints:
         assert captured["list"] == 3
         assert captured["count"] == 3
 
+    def test_get_sessions_forwards_chat_id_before_pagination(self, monkeypatch):
+        captured = {}
+
+        class _FakeDB:
+            def list_sessions_rich(self, chat_id=None, **kwargs):
+                captured["list"] = chat_id
+                return []
+
+            def session_count(self, chat_id=None, **kwargs):
+                captured["count"] = chat_id
+                return 0
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+
+        resp = self.client.get("/api/sessions?source=signal&chat_id=home-chat&limit=1")
+        assert resp.status_code == 200
+        assert captured == {"list": "home-chat", "count": "home-chat"}
+
     def _create_session_with_heavy_fields(self, session_id: str) -> None:
         from hermes_state import SessionDB
 

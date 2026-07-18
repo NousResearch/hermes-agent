@@ -4,6 +4,7 @@ import type { HermesConfigRecord } from '@/types/hermes'
 
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import { enumOptionsFor, getNested, providerGroup, setNested, stripToolsetLabel, toolsetDisplayLabel } from './helpers'
+import { BUILTIN_PERSONALITIES } from './constants'
 
 describe('settings helpers', () => {
   it('lists Hindsight as a built-in desktop memory provider option', () => {
@@ -174,6 +175,66 @@ describe('settings helpers', () => {
       const opts = enumOptionsFor('tts.provider', 'my-custom-command-tts', config)
       expect(opts).toContain('my-custom-command-tts')
       expect(opts).toContain('xai')
+    })
+  })
+
+  describe('enumOptionsFor — display.personality merges agent.personalities (#61312)', () => {
+    it('returns all built-in personalities when config has none', () => {
+      const opts = enumOptionsFor('display.personality', '', {} as HermesConfigRecord)
+      // The empty-string default plus every BUILTIN_PERSONALITIES entry.
+      // Derive from the mutable source so a catalog addition doesn't
+      // break this test as a change-detector (#61312 review).
+      expect(opts).toEqual(['', ...BUILTIN_PERSONALITIES])
+    })
+
+    it('appends a single custom personality from agent.personalities', () => {
+      const opts = enumOptionsFor('display.personality', '', {
+        agent: {
+          personalities: {
+            bug_hunter: 'You are a bug bounty hunter. …'
+          }
+        }
+      } as unknown as HermesConfigRecord)
+      expect(opts).toContain('bug_hunter')
+      expect(opts).toContain('helpful') // the built-ins remain
+    })
+
+    it('appends multiple custom personalities and de-duplicates built-in collisions', () => {
+      const opts = enumOptionsFor('display.personality', '', {
+        agent: {
+          personalities: {
+            bug_hunter: 'You are a bug bounty hunter. …',
+            chef: 'You are a chef. …',
+            helpful: 'You are helpful. But a custom spin.', // built-in collision → Set dedup
+            pentester: 'pentest the world' // also appears hardcoded in JS bundles
+          }
+        }
+      } as unknown as HermesConfigRecord)
+      // Built-in helpful deduplicates — custom name appears exactly once.
+      expect(opts?.filter((name) => name === 'helpful')).toHaveLength(1)
+      // Other customs appear once each (no false duplicates).
+      expect(opts?.filter((name) => name === 'bug_hunter')).toHaveLength(1)
+      expect(opts?.filter((name) => name === 'chef')).toHaveLength(1)
+      expect(opts?.filter((name) => name === 'pentester')).toHaveLength(1)
+      // Built-in 'helpful' is still present.
+      expect(opts).toContain('helpful')
+    })
+
+    it('preserves the current personality even if neither built-in nor custom', () => {
+      // The user hand-typed 'inherited-from-old-config' in a previous session;
+      // the runtime must keep it visible so the dropdown doesn't go blank.
+      const opts = enumOptionsFor('display.personality', 'inherited-from-old-config', {} as HermesConfigRecord)
+      expect(opts).toContain('inherited-from-old-config')
+      expect(opts).toContain('helpful')
+    })
+
+    it('treats agent.personalities as a non-object as if it were empty', () => {
+      // A misconfigured config.yaml could surface a list/string instead of a
+      // dict. The dropdown must not crash or surface [object Object].
+      const opts = enumOptionsFor('display.personality', '', {
+        agent: { personalities: ['not-a-dict'] as unknown }
+      } as unknown as HermesConfigRecord)
+      expect(opts).toContain('helpful')
     })
   })
 })

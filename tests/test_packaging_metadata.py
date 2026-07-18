@@ -79,6 +79,107 @@ def test_every_on_disk_subpackage_is_covered_by_packages_find():
     )
 
 
+def _py_modules_declared():
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return set(data["tool"]["setuptools"]["py-modules"])
+
+
+def _top_level_single_file_modules_on_disk():
+    """Root-level ``<name>.py`` files that are importable single-file modules.
+
+    Excludes ``__init__.py`` (would make the dir a package, covered by
+    packages.find), ``setup.py`` (the build entry, never imported as a module),
+    and ``conftest.py`` (pytest-only).
+    """
+    skip = {"setup.py", "conftest.py"}
+    return {
+        p.stem
+        for p in REPO_ROOT.glob("*.py")
+        if p.name not in skip and p.name != "__init__.py"
+    }
+
+
+def _shipped_importers_of(module: str) -> list[str]:
+    """Non-test, non-vendored source files that ``import <module>`` (top-level name).
+
+    AST-parses every shipped ``.py`` under the packages.find include roots plus
+    the root-level py-modules, and returns the files whose import statements name
+    ``module`` as a top-level import (``import module`` / ``from module import``).
+    """
+    include = _packages_find_include()
+    roots = sorted({name for name in include if "." not in name})
+    hits: list[str] = []
+    scan_dirs = [REPO_ROOT / r for r in roots]
+    scan_files = [
+        REPO_ROOT / f"{m}.py"
+        for m in _py_modules_declared()
+        if (REPO_ROOT / f"{m}.py").exists()
+    ]
+    py_files = list(scan_files)
+    for d in scan_dirs:
+        if d.is_dir():
+            py_files += [
+                p
+                for p in d.rglob("*.py")
+                if "tests" not in p.parts and ".worktrees" not in p.parts
+            ]
+    for p in py_files:
+        try:
+            tree = ast.parse(p.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                if any(a.name.split(".", 1)[0] == module for a in node.names):
+                    hits.append(str(p.relative_to(REPO_ROOT)))
+                    break
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module and node.module.split(".", 1)[0] == module:
+                    hits.append(str(p.relative_to(REPO_ROOT)))
+                    break
+    return sorted(set(hits))
+
+
+def test_every_root_module_imported_by_shipped_code_is_in_py_modules():
+    """Regression test for the AC-12 / editable-install MAPPING drift bug class.
+
+    Root-level single-file modules ship ONLY if listed in
+    ``[tool.setuptools] py-modules`` (they are not packages, so packages.find
+    never picks them up). ``py-modules`` is hand-maintained, so a new root-level
+    module imported by shipped code but forgotten here is dropped from the wheel
+    AND omitted from the editable-install finder's MAPPING.
+
+    Concrete failure this guards (2026-07-18): ``hermes_state.py`` (shipped)
+    imported ``hermes_state_ext`` and ``cli.py`` imported ``hermes_undo``, but
+    neither was in ``py-modules``. The running gateway survived only because it
+    runs with cwd on ``sys.path``; any neutral-cwd import
+    (``find_spec('gateway.run')`` in the AC-12 reboot-resume guard) hit
+    ``ModuleNotFoundError: No module named 'hermes_state_ext'``, and a sealed
+    wheel install would have failed outright.
+
+    Contract: every root-level ``<name>.py`` that shipped code imports as a
+    top-level module must appear in ``py-modules``. A future root module added
+    and imported without the declaration fails here, not in a user's install.
+    """
+    declared = _py_modules_declared()
+    on_disk = _top_level_single_file_modules_on_disk()
+    candidates = on_disk - declared
+
+    offenders = {}
+    for mod in sorted(candidates):
+        importers = _shipped_importers_of(mod)
+        if importers:
+            offenders[mod] = importers[:5]
+
+    assert not offenders, (
+        "These root-level modules are imported by SHIPPED (non-test) code but are "
+        "missing from [tool.setuptools] py-modules in pyproject.toml, so they are "
+        "dropped from the wheel and from the editable-install finder MAPPING "
+        "(neutral-cwd find_spec / sealed installs break). Add each to py-modules: "
+        f"{offenders}"
+    )
+
+
 def test_packaging_declared_as_core_dependency():
     """Regression for #40503.
 

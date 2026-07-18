@@ -2077,6 +2077,33 @@ function persistWindowState() {
 // resized/moved fire many times mid-drag on Linux; debounce to one write.
 const schedulePersistWindowState = debounce(persistWindowState, 250)
 
+// Zoom's primary store is a main-process JSON file. The renderer localStorage
+// mirror lives under Electron's cache/storage folders, which crash recovery
+// can move or recreate — wiping the zoom setting exactly when the user just
+// recovered from a crash (#56726). JSON survives; localStorage is kept as a
+// secondary mirror so pre-JSON installs migrate transparently on first read.
+const DESKTOP_ZOOM_STATE_PATH = path.join(app.getPath('userData'), 'zoom-state.json')
+
+function readZoomState() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(DESKTOP_ZOOM_STATE_PATH, 'utf8'))
+    const level = Number(raw?.zoomLevel)
+
+    return Number.isFinite(level) ? level : null
+  } catch {
+    return null
+  }
+}
+
+function writeZoomState(zoomLevel) {
+  try {
+    fs.mkdirSync(path.dirname(DESKTOP_ZOOM_STATE_PATH), { recursive: true })
+    writeFileAtomic(DESKTOP_ZOOM_STATE_PATH, JSON.stringify({ zoomLevel }, null, 2))
+  } catch (error) {
+    rememberLog(`[zoom] json persist failed: ${error?.message || error}`)
+  }
+}
+
 // Match the backend's source resolution but bias toward a real git checkout.
 // Dev → SOURCE_REPO_ROOT. Packaged/CLI install → ACTIVE_HERMES_ROOT.
 // HERMES_DESKTOP_HERMES_ROOT always wins so devs can pin a worktree.
@@ -4884,6 +4911,11 @@ function setAndPersistZoomLevel(window, zoomLevel) {
   // Apply + notify in one funnel so the settings UI stays in sync, including
   // changes made via the keyboard shortcuts or the View menu.
   const next = applyZoomLevel(window.webContents, zoomLevel)
+
+  // Primary store: main-process JSON (survives crash recovery — #56726).
+  writeZoomState(next)
+  // Secondary mirror: renderer localStorage (legacy store; kept in sync so a
+  // downgrade or JSON read failure still finds a sane value).
   window.webContents
     .executeJavaScript(
       `try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {}`
@@ -4896,6 +4928,19 @@ function restorePersistedZoomLevel(window) {
     return
   }
 
+  // Prefer the JSON file — it survives crash recovery wiping Electron's
+  // cache/storage folders (#56726). applyZoomLevel notifies the renderer so
+  // the Appearance UI Scale control stays in sync.
+  const saved = readZoomState()
+
+  if (saved != null) {
+    applyZoomLevel(window.webContents, saved)
+
+    return
+  }
+
+  // Fall back to localStorage for installs that predate zoom-state.json,
+  // migrating the value into the JSON store on first read.
   window.webContents
     .executeJavaScript(
       `(() => { try { return localStorage.getItem(${JSON.stringify(ZOOM_STORAGE_KEY)}) } catch { return null } })()`
@@ -4907,7 +4952,8 @@ function restorePersistedZoomLevel(window) {
 
       // Notify the renderer too — otherwise the Appearance UI Scale control
       // can stay stuck at 100% even though the window zoom was restored.
-      applyZoomLevel(window.webContents, Number(stored))
+      const applied = applyZoomLevel(window.webContents, Number(stored))
+      writeZoomState(applied)
     })
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
 }
@@ -7440,6 +7486,10 @@ function createWindow() {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show()
     }
+
+    // Persist geometry as soon as the window is visible so a crash before the
+    // first clean resize/move/close still captures the restored bounds (#56726).
+    schedulePersistWindowState()
 
     // #38216: clear the mid-boot marker only after a window is actually usable.
     // Keep sticky `fallback` when we launched with --no-sandbox so the next

@@ -190,7 +190,7 @@ def _instance_command(host: FixedHost, account: str) -> tuple[str, ...]:
         f"--project={foundation.PROJECT}",
         f"--zone={foundation.ZONE}",
         f"--account={account}",
-        "--format=json(id,name,zone,status,disks.boot,disks.deviceName,disks.source)",
+        "--format=json(id,name,zone,status,disks[].boot,disks[].deviceName,disks[].source)",
         "--quiet",
     )
 

@@ -81,6 +81,9 @@ class _FakeGateway:
     async def _notify_active_sessions_of_shutdown(self):
         pass
 
+    async def _cancel_secondary_profile_reconnect_tasks(self):
+        pass
+
     async def _drain_active_agents(self, timeout):
         return {}, False
 

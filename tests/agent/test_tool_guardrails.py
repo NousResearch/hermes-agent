@@ -279,3 +279,46 @@ def test_file_mutation_resets_guardrail_failure_counts():
     # Terminal command should now be allowed again
     assert controller.before_call("terminal", cmd_args).action == "allow"
 
+
+def test_file_mutation_resets_guardrail_no_progress_counts():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+        )
+    )
+    args = {"path": "/tmp/same.txt"}
+    result = "same file contents"
+
+    controller.after_call("read_file", args, result, failed=False)
+    controller.after_call("read_file", args, result, failed=False)
+    assert controller.before_call("read_file", args).action == "block"
+
+    # Successful file mutation
+    patch_args = {"path": "/tmp/same.txt", "content": "fix", "mode": "replace"}
+    controller.after_call("patch", patch_args, '{"success":true}', failed=False)
+
+    # read_file should now be allowed again
+    assert controller.before_call("read_file", args).action == "allow"
+
+
+def test_after_call_survives_lone_surrogates_in_result_and_args():
+    # Scraped web/social text can contain unpaired UTF-16 surrogates (e.g. the
+    # first half of a mathematical-bold pair, '\ud835'). str.encode('utf-8')
+    # rejects them, and the result hasher crashed the whole conversation loop
+    # (live outage: "Outer loop error in API call #34 ... surrogates not
+    # allowed"). Weird text must never take down the loop.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, exact_failure_block_after=2, no_progress_block_after=2)
+    )
+    dirty = "price \ud835 update"
+
+    decision = controller.after_call("web_search", {"query": dirty}, dirty, failed=False)
+    assert decision.action in {"allow", "warn"}
+
+    # hashing stays deterministic: the same dirty failure twice still trips
+    # the exact-failure guard, proving the hash is stable across calls
+    controller.after_call("web_search", {"query": dirty}, '{"error":"\ud835 boom"}', failed=True)
+    controller.after_call("web_search", {"query": dirty}, '{"error":"\ud835 boom"}', failed=True)
+    assert controller.before_call("web_search", {"query": dirty}).action == "block"

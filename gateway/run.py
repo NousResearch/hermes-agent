@@ -17399,14 +17399,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         platform_key = _platform_config_key(source.platform)
         user_config = _load_gateway_config()
-        from gateway.display_config import resolve_display_setting
-        _plat_streaming = resolve_display_setting(
-            user_config, platform_key, "streaming"
-        )
-        _streaming_enabled = (
-            _scfg.enabled and _scfg.transport != "off"
-            if _plat_streaming is None
-            else bool(_plat_streaming)
+        from gateway.display_config import resolve_streaming_enabled
+        _streaming_enabled = resolve_streaming_enabled(
+            user_config, platform_key, _scfg
         )
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
@@ -18809,17 +18804,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from gateway.config import StreamingConfig
                 _scfg = StreamingConfig()
 
-            # Per-platform streaming gate: display.platforms.<plat>.streaming
-            # can disable streaming for specific platforms even when the global
-            # streaming config is enabled.
-            _plat_streaming = resolve_display_setting(
-                user_config, platform_key, "streaming"
-            )
-            # None = no per-platform override → follow global config
-            _streaming_enabled = (
-                _scfg.enabled and _scfg.transport != "off"
-                if _plat_streaming is None
-                else bool(_plat_streaming)
+            # Per-platform streaming may narrow the global setting, but cannot
+            # enable streaming when the global switch or transport is off.
+            from gateway.display_config import resolve_streaming_enabled
+            _streaming_enabled = resolve_streaming_enabled(
+                user_config, platform_key, _scfg
             )
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled

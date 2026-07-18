@@ -21,7 +21,10 @@ config migration (version bump) automatically moves the old format into the new
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gateway.config import StreamingConfig
 
 # ---------------------------------------------------------------------------
 # Overrideable display settings and their global defaults
@@ -225,6 +228,19 @@ def resolve_display_setting(
         return val
 
     return fallback
+
+
+def resolve_streaming_enabled(
+    user_config: dict,
+    platform_key: str,
+    streaming: "StreamingConfig",
+) -> bool:
+    """Resolve platform streaming without allowing overrides past global gates."""
+    global_enabled = bool(streaming.enabled) and streaming.transport != "off"
+    platform_enabled = resolve_display_setting(user_config, platform_key, "streaming")
+    if platform_enabled is None:
+        return global_enabled
+    return global_enabled and bool(platform_enabled)
 
 
 # ---------------------------------------------------------------------------

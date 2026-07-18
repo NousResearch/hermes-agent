@@ -10,6 +10,32 @@ in the web UI.
 
 from __future__ import annotations
 
+import pytest
+
+
+@pytest.mark.parametrize(
+    ("enabled", "transport", "platform", "expected"),
+    [
+        (False, "auto", "telegram", False),
+        (False, "auto", "slack", False),
+        (True, "auto", "telegram", True),
+        (True, "auto", "discord", False),
+        (True, "auto", "slack", True),
+        (True, "off", "telegram", False),
+        (True, "off", "slack", False),
+    ],
+)
+def test_global_streaming_is_master_gate(enabled, transport, platform, expected):
+    from gateway.config import StreamingConfig
+    from gateway.display_config import resolve_streaming_enabled
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    config = dict(DEFAULT_CONFIG)
+    config["streaming"] = {"enabled": enabled, "transport": transport}
+    streaming = StreamingConfig.from_dict(config["streaming"])
+
+    assert resolve_streaming_enabled(config, platform, streaming) is expected
+
 
 def test_default_per_platform_streaming_flags():
     from hermes_cli.config import DEFAULT_CONFIG

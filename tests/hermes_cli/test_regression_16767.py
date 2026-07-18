@@ -13,7 +13,9 @@ def test_ensure_direct_aliases_mutates_in_place(monkeypatch):
     mock_data = {
         "my-custom-alias": DirectAlias("custom-model:v1", "custom", "https://example.com/v1")
     }
-    monkeypatch.setattr(ms, "_load_direct_aliases", lambda: mock_data)
+    # _load_direct_aliases now returns (merged, ok); the in-place-mutation
+    # contract under test is unchanged.
+    monkeypatch.setattr(ms, "_load_direct_aliases", lambda: (mock_data, True))
     
     ms._ensure_direct_aliases()
     

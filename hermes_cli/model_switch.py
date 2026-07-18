@@ -274,8 +274,12 @@ _BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {
 # Merged dict (builtins + user config); populated by _load_direct_aliases()
 DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
+# Latch so the degraded-config warning fires once per degraded->healthy
+# transition (not on every /model switch while a broken config persists).
+_DIRECT_ALIASES_DEGRADED: bool = False
 
-def _load_direct_aliases() -> dict[str, DirectAlias]:
+
+def _load_direct_aliases() -> tuple[dict[str, DirectAlias], bool]:
     """Load direct aliases from config.yaml ``model_aliases:`` section.
 
     Config format::
@@ -294,6 +298,11 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
     and converts simple string entries (``ds-flash: deepseek/deepseek-v4-flash``)
     into DirectAlias objects.  The provider is parsed from the ``provider/``
     prefix in the value; if no slash, the current provider is used.
+
+    Returns ``(merged, ok)`` where *merged* always contains at least the
+    built-in direct aliases.  ``ok`` is ``False`` when reading the user config
+    raised — in that case *merged* holds builtins only, and the caller must
+    retain its last-known-good user aliases rather than pruning to builtins.
     """
     merged = dict(_BUILTIN_DIRECT_ALIASES)
     try:
@@ -338,20 +347,48 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                         base_url="",
                     )
     except Exception:
-        pass
-    return merged
+        # Config read failed — signal degraded so the caller keeps
+        # last-known-good user aliases instead of pruning to builtins.
+        return merged, False
+    return merged, True
 
 
 def _ensure_direct_aliases() -> None:
-    """Lazy-load direct aliases on first use.
+    """Refresh DIRECT_ALIASES from config on every call (hot reload).
 
-    Mutates the existing DIRECT_ALIASES dict in place rather than rebinding
-    the module attribute. This keeps `from hermes_cli.model_switch import
-    DIRECT_ALIASES` references valid in callers — rebinding would leave them
-    pointing at a stale empty dict.
+    ``load_config()`` is mtime-cached (``_LOAD_CONFIG_CACHE``, keyed on
+    ``(mtime_ns, size)``), so on an unchanged config this is a ``stat()`` plus a
+    small merge over ~10 entries — no YAML re-parse.  Dropping the old
+    load-once guard lets a ``model.aliases`` / ``model_aliases`` edit take
+    effect on the next ``/model`` switch with no gateway restart.
+
+    Mutates the existing DIRECT_ALIASES dict IN PLACE (never rebinds — keeps
+    ``from hermes_cli.model_switch import DIRECT_ALIASES`` references valid) and
+    never ``.clear()``s it, so a concurrent reader never observes an empty dict.
+    On a degraded config read it retains the current (last-known-good) dict
+    rather than pruning user aliases back to builtins, warning once per
+    degraded->healthy transition (not on every call).
     """
-    if not DIRECT_ALIASES:
-        DIRECT_ALIASES.update(_load_direct_aliases())
+    global _DIRECT_ALIASES_DEGRADED
+    fresh, ok = _load_direct_aliases()
+    if not ok and DIRECT_ALIASES:
+        if not _DIRECT_ALIASES_DEGRADED:
+            # Fire once on the healthy->degraded transition; stay quiet while the
+            # broken config persists so a mid-write YAML can't flood the log.
+            logger.warning(
+                "model alias refresh: config read failed; retaining %d "
+                "last-known-good alias(es) (aliases stay stale until config "
+                "loads cleanly)", len(DIRECT_ALIASES),
+            )
+            _DIRECT_ALIASES_DEGRADED = True
+        return
+    _DIRECT_ALIASES_DEGRADED = False  # healthy read: re-arm the warning
+    # Snapshot keys first (materialized list) so pruning can't raise
+    # "dict changed size during iteration"; prune removed entries, then overlay
+    # the fresh set — never emptying the dict at any point.
+    for key in [k for k in DIRECT_ALIASES if k not in fresh]:
+        DIRECT_ALIASES.pop(key, None)
+    DIRECT_ALIASES.update(fresh)
 
 
 # ---------------------------------------------------------------------------

@@ -22,15 +22,23 @@ Agent workflow:
 """
 
 import argparse
-import json
-import os
-import subprocess
-import sys
-import secrets
 import base64
 import hashlib
+import importlib.metadata
+import json
+import secrets
+import subprocess
+import sys
+import urllib.request
 from pathlib import Path
 from urllib.parse import urlencode
+
+from square_auth import (
+    REQUEST_TIMEOUT_SECONDS,
+    SquareAuthError,
+    get_valid_access_token,
+    request_token,
+)
 
 try:
     from hermes_constants import display_hermes_home, get_hermes_home
@@ -47,7 +55,6 @@ PENDING_AUTH_PATH = HERMES_HOME / "square_oauth_pending.json"
 
 # Square OAuth2 endpoints
 AUTHORIZE_URL = "https://connect.squareup.com/oauth2/authorize"
-TOKEN_URL = "https://connect.squareup.com/oauth2/token"
 REVOKE_URL = "https://connect.squareup.com/oauth2/revoke"
 
 # Scopes needed for inventory, catalog, customers, and orders
@@ -64,7 +71,7 @@ SCOPES = [
     "LOCATION_READ",
 ]
 
-REQUIRED_PACKAGES = ["squareup"]
+SQUAREUP_REQUIREMENT = "squareup>=41.0.0.20250319,<42"
 
 REDIRECT_URI = "http://localhost:1"
 
@@ -79,123 +86,38 @@ def _load_json(path: Path) -> dict:
 def install_deps():
     """Install Square SDK if missing. Returns True on success."""
     try:
-        import squareup  # noqa: F401
-        print("Dependencies already installed.")
-        return True
-    except ImportError:
+        import square  # noqa: F401
+        installed_version = importlib.metadata.version("squareup")
+        version_parts = tuple(int(part) for part in installed_version.split(".")[:3])
+        if (41, 0, 0) <= version_parts < (42, 0, 0):
+            print("Dependencies already installed.")
+            return True
+    except (ImportError, importlib.metadata.PackageNotFoundError, ValueError):
         pass
 
     print("Installing Square SDK...")
     try:
         subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet", "--", "squareup"],
+            [sys.executable, "-m", "pip", "install", "--quiet", "--", SQUAREUP_REQUIREMENT],
             stdout=subprocess.DEVNULL,
         )
         print("Dependencies installed.")
         return True
     except subprocess.CalledProcessError as e:
         print(f"ERROR: Failed to install dependencies: {e}")
-        print(f"Try manually: {sys.executable} -m pip install squareup")
+        print(f"Try manually: {sys.executable} -m pip install '{SQUAREUP_REQUIREMENT}'")
         return False
-
-
-def _ensure_deps():
-    """Check deps are available, install if not, exit on failure."""
-    try:
-        import squareup  # noqa: F401
-    except ImportError:
-        if not install_deps():
-            sys.exit(1)
 
 
 def check_auth():
     """Check if stored credentials are valid. Prints status, exits 0 or 1."""
-    if not TOKEN_PATH.exists():
-        print(f"NOT_AUTHENTICATED: No token at {TOKEN_PATH}")
-        return False
-
-    _ensure_deps()
-    from squareup import Client
-    from squareup.oauth2 import OAuth2
-
     try:
-        data = _load_json(TOKEN_PATH)
-        access_token = data.get("access_token")
-        if not access_token:
-            print("TOKEN_INVALID: Missing access_token")
-            return False
-
-        # Try to refresh to verify token is still valid
-        client_secret = _load_json(CLIENT_SECRET_PATH).get("clientSecret", "")
-        client_id = _load_json(CLIENT_SECRET_PATH).get("clientId", "")
-
-        if not client_id or not client_secret:
-            print("TOKEN_INVALID: Missing client credentials")
-            return False
-
-        # Token status check
-        from squareup.http.client import HttpClient
-        from squareup.http.api_response import ApiResponse
-
-        http_client = HttpClient()
-        response = http_client.request(
-            "POST",
-            TOKEN_URL,
-            headers={"Content-Type": "application/json"},
-            body=json.dumps({
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "grant_type": "access_token",
-                "access_token": access_token,
-            }),
-        )
-        # Square returns 200 if token is valid
+        get_valid_access_token(force_refresh=True)
         print(f"AUTHENTICATED: Token valid at {TOKEN_PATH}")
         return True
-
-    except Exception as e:
-        # Try refresh token flow
-        try:
-            data = _load_json(TOKEN_PATH)
-            refresh_token = data.get("refresh_token")
-            if not refresh_token:
-                print(f"TOKEN_INVALID: {e}")
-                return False
-
-            client_secret = _load_json(CLIENT_SECRET_PATH).get("clientSecret", "")
-            client_id = _load_json(CLIENT_SECRET_PATH).get("clientId", "")
-
-            if not client_id or not client_secret:
-                print(f"TOKEN_INVALID: Missing client credentials: {e}")
-                return False
-
-            from squareup.http.client import HttpClient
-            http_client = HttpClient()
-            response = http_client.request(
-                "POST",
-                TOKEN_URL,
-                headers={"Content-Type": "application/json"},
-                body=json.dumps({
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "grant_type": "refresh_token",
-                    "refresh_token": refresh_token,
-                }),
-            )
-
-            body = json.loads(response.body)
-            if response.status_code == 200:
-                # Update token file
-                TOKEN_PATH.write_text(json.dumps(body, indent=2))
-                print(f"AUTHENTICATED: Token refreshed at {TOKEN_PATH}")
-                return True
-            else:
-                print(f"TOKEN_INVALID: Refresh failed: {body}")
-                return False
-
-        except Exception as refresh_error:
-            print(f"TOKEN_INVALID: {refresh_error}")
-            return False
+    except SquareAuthError as exc:
+        print(f"TOKEN_INVALID: {exc}")
+        return False
 
 
 def store_client_secret(path: str):
@@ -331,37 +253,21 @@ def exchange_auth_code(code: str):
         print("ERROR: OAuth state mismatch. Run --auth-url again to start a fresh session.")
         sys.exit(1)
 
-    _ensure_deps()
-    from squareup.http.client import HttpClient
-
     client_data = _load_json(CLIENT_SECRET_PATH)
     client_id = client_data.get("clientId")
     client_secret = client_data.get("clientSecret")
 
-    http_client = HttpClient()
-
     try:
-        response = http_client.request(
-            "POST",
-            TOKEN_URL,
-            headers={"Content-Type": "application/json"},
-            body=json.dumps({
+        body = request_token(
+            {
                 "client_id": client_id,
                 "client_secret": client_secret,
                 "code": code,
                 "grant_type": "authorization_code",
                 "redirect_uri": REDIRECT_URI,
                 "code_verifier": pending_auth["code_verifier"],
-            }),
+            }
         )
-
-        body = json.loads(response.body)
-
-        if response.status_code != 200:
-            error_msg = body.get("error_description", body.get("error", "Unknown error"))
-            print(f"ERROR: Token exchange failed: {error_msg}")
-            print("The code may have expired. Run --auth-url to get a fresh URL.")
-            sys.exit(1)
 
         TOKEN_PATH.write_text(json.dumps(body, indent=2))
         PENDING_AUTH_PATH.unlink(missing_ok=True)
@@ -392,21 +298,20 @@ def revoke():
     try:
         client_data = _load_json(CLIENT_SECRET_PATH)
         client_id = client_data.get("clientId")
-        client_secret = client_data.get("clientSecret")
 
-        _ensure_deps()
-        from squareup.http.client import HttpClient
-        http_client = HttpClient()
-
-        http_client.request(
-            "POST",
+        request = urllib.request.Request(
             REVOKE_URL,
+            data=json.dumps(
+                {
+                    "client_id": client_id,
+                    "access_token": access_token,
+                }
+            ).encode("utf-8"),
             headers={"Content-Type": "application/json"},
-            body=json.dumps({
-                "client_id": client_id,
-                "access_token": access_token,
-            }),
+            method="POST",
         )
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS):
+            pass
         print("Token revoked with Square.")
     except Exception as e:
         print(f"Remote revocation failed (token may already be invalid): {e}")

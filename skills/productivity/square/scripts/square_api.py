@@ -22,76 +22,119 @@ Usage:
 
 import argparse
 import json
-import os
 import sys
-from pathlib import Path
+import urllib.error
+import urllib.request
+import uuid
 
-try:
-    from hermes_constants import get_hermes_home
-except ModuleNotFoundError:
-    HERMES_AGENT_ROOT = Path(__file__).resolve().parents[4]
-    if HERMES_AGENT_ROOT.exists():
-        sys.path.insert(0, str(HERMES_AGENT_ROOT))
-    from hermes_constants import get_hermes_home
-
-HERMES_HOME = get_hermes_home()
-TOKEN_PATH = HERMES_HOME / "square_token.json"
-CLIENT_SECRET_PATH = HERMES_HOME / "square_client_secret.json"
+from square_auth import SquareAuthError, get_valid_access_token
 
 API_BASE = "https://connect.squareup.com/v2"
+API_VERSION = "2026-01-22"
+REQUEST_TIMEOUT_SECONDS = 30
+
+
+class SquareAPIError(RuntimeError):
+    """Raised when Square returns an unsuccessful API response."""
 
 
 def _get_client():
-    """Build an authenticated Square API client."""
-    if not TOKEN_PATH.exists():
-        print("ERROR: Not authenticated. Run setup.py --check first.")
-        sys.exit(1)
-
-    from squareup import Client
-    from squareup.oauth2 import OAuth2
-
-    token_data = json.loads(TOKEN_PATH.read_text())
-    access_token = token_data.get("access_token")
-    if not access_token:
-        print("ERROR: No access token. Re-run OAuth setup.")
-        sys.exit(1)
-
-    client_id = ""
-    if CLIENT_SECRET_PATH.exists():
-        secret_data = json.loads(CLIENT_SECRET_PATH.read_text())
-        client_id = secret_data.get("clientId", "")
+    """Build a Square SDK client after refreshing credentials if needed."""
+    from square.client import Client
+    from square.http.auth.o_auth_2 import BearerAuthCredentials
 
     return Client(
-        access_token=access_token,
-        square_version="2026-01-22",
+        bearer_auth_credentials=BearerAuthCredentials(get_valid_access_token()),
+        square_version=API_VERSION,
     )
 
 
-def _api_request(method: str, path: str, body: dict | None = None, version: str = "v2") -> dict:
-    """Make a direct REST API call. Used when SDK coverage is insufficient."""
-    import urllib.request
-    import urllib.error
-
-    token_data = json.loads(TOKEN_PATH.read_text())
-    access_token = token_data.get("access_token")
-
-    url = f"{API_BASE}/{path}"
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-        "Square-Version": "2026-01-22",
-    }
-
-    data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-
+def _decode_http_error(error: urllib.error.HTTPError) -> object:
+    raw_body = error.read()
     try:
-        with urllib.request.urlopen(req) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        error_body = json.loads(e.read())
-        print(f"ERROR {e.code}: {error_body}")
-        sys.exit(1)
+        return json.loads(raw_body)
+    except json.JSONDecodeError:
+        return raw_body.decode("utf-8", errors="replace")
+
+
+def _api_request(method: str, path: str, body: dict | None = None) -> dict:
+    """Make a direct REST API call. Used when SDK coverage is insufficient."""
+    url = f"{API_BASE}/{path}"
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+
+    for attempt in range(2):
+        access_token = get_valid_access_token(force_refresh=attempt == 1)
+        request = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+                "Square-Version": API_VERSION,
+            },
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401 and attempt == 0:
+                continue
+            raise SquareAPIError(f"HTTP {exc.code}: {_decode_http_error(exc)}") from exc
+        except urllib.error.URLError as exc:
+            raise SquareAPIError(f"Request failed: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise SquareAPIError("Square API returned invalid JSON") from exc
+
+    raise SquareAPIError("Authentication failed after refreshing the Square token")
+
+
+def _result_body(result) -> dict:
+    """Validate one Square SDK response and return its JSON body."""
+    if callable(getattr(result, "is_error", None)) and result.is_error():
+        detail = getattr(result, "errors", None) or getattr(result, "body", None)
+        status = getattr(result, "status_code", "unknown")
+        raise SquareAPIError(f"SDK request failed with status {status}: {detail}")
+    body = getattr(result, "body", None)
+    if not isinstance(body, dict):
+        raise SquareAPIError("Square SDK returned an invalid response body")
+    return body
+
+
+def _paginate_sdk(call, item_key: str, *, max_items: int | None = None, **params) -> dict:
+    """Consume cursor-based Square SDK responses into one result object."""
+    items = []
+    output = {}
+    cursor = None
+
+    while True:
+        page_params = dict(params)
+        if cursor:
+            page_params["cursor"] = cursor
+        body = _result_body(call(**page_params))
+        if not output:
+            output = {key: value for key, value in body.items() if key != "cursor"}
+        items.extend(body.get(item_key) or [])
+        if max_items is not None and len(items) >= max_items:
+            items = items[:max_items]
+            break
+        cursor = body.get("cursor")
+        if not cursor:
+            break
+
+    output[item_key] = items
+    return output
+
+
+def _body_cursor_call(method, body: dict):
+    """Adapt SDK methods that accept a JSON body to cursor pagination."""
+    def call(*, cursor=None):
+        page_body = dict(body)
+        if cursor:
+            page_body["cursor"] = cursor
+        return method(page_body)
+
+    return call
 
 
 # -- Inventory --
@@ -104,17 +147,18 @@ def cmd_inventory_counts(args):
     if args.location:
         params["location_ids"] = [args.location]
     if args.start_time:
-        params["start_time"] = args.start_time
-    if args.end_time:
-        params["end_time"] = args.end_time
+        params["updated_after"] = args.start_time
 
-    result = client.inventory.batch_retrieve_inventory_counts(**params)
-    print(json.dumps(result.body, indent=2))
+    result = _paginate_sdk(
+        _body_cursor_call(client.inventory.batch_retrieve_inventory_counts, params),
+        "counts",
+    )
+    print(json.dumps(result, indent=2))
 
 
 def cmd_inventory_adjust(args):
     body = {
-        "idempotency_key": f"adjust-{args.catalog_object_id}-{args.location}",
+        "idempotency_key": args.idempotency_key or str(uuid.uuid4()),
         "changes": [
             {
                 "type": "ADJUSTMENT",
@@ -137,45 +181,57 @@ def cmd_inventory_changes(args):
     if args.location:
         params["location_ids"] = [args.location]
     if args.start_time:
-        params["start_time"] = args.start_time
+        params["updated_after"] = args.start_time
     if args.end_time:
-        params["end_time"] = args.end_time
+        params["updated_before"] = args.end_time
 
     client = _get_client()
-    result = client.inventory.batch_retrieve_inventory_changes(**params)
-    print(json.dumps(result.body, indent=2))
+    result = _paginate_sdk(
+        _body_cursor_call(client.inventory.batch_retrieve_inventory_changes, params),
+        "changes",
+    )
+    print(json.dumps(result, indent=2))
 
 
 # -- Catalog --
 
 def cmd_catalog_list(args):
     client = _get_client()
-    types = args.types.split(",") if args.types else None
-    result = client.catalog.list_catalog(types=types)
-    print(json.dumps(result.body, indent=2))
+    types = args.types.upper() if args.types else None
+    result = _paginate_sdk(client.catalog.list_catalog, "objects", types=types)
+    print(json.dumps(result, indent=2))
 
 
 def cmd_catalog_search(args):
     client = _get_client()
-    body = {"text_query": {"attribute_name": "name", "text": args.query}}
+    body = {"query": {"text_query": {"keywords": [args.query]}}}
     if args.types:
-        body["object_types"] = args.types.split(",")
-    result = client.catalog.search_catalog_objects(**body)
-    print(json.dumps(result.body, indent=2))
+        body["object_types"] = [value.upper() for value in args.types.split(",")]
+    result = _paginate_sdk(
+        _body_cursor_call(client.catalog.search_catalog_objects, body),
+        "objects",
+    )
+    print(json.dumps(result, indent=2))
 
 
 def cmd_catalog_get(args):
     client = _get_client()
     result = client.catalog.retrieve_catalog_object(args.object_id, include_related_objects=True)
-    print(json.dumps(result.body, indent=2))
+    print(json.dumps(_result_body(result), indent=2))
 
 
 # -- Customers --
 
 def cmd_customers_list(args):
     client = _get_client()
-    result = client.customers.list_customers(limit=args.max or 50)
-    print(json.dumps(result.body, indent=2))
+    maximum = args.max or 50
+    result = _paginate_sdk(
+        client.customers.list_customers,
+        "customers",
+        max_items=maximum,
+        limit=min(maximum, 100),
+    )
+    print(json.dumps(result, indent=2))
 
 
 def cmd_customers_search(args):
@@ -189,8 +245,12 @@ def cmd_customers_search(args):
         },
         "limit": args.max or 50,
     }
-    result = client.customers.search_customers(**body)
-    print(json.dumps(result.body, indent=2))
+    result = _paginate_sdk(
+        _body_cursor_call(client.customers.search_customers, body),
+        "customers",
+        max_items=args.max or 50,
+    )
+    print(json.dumps(result, indent=2))
 
 
 def cmd_customers_create(args):
@@ -207,13 +267,13 @@ def cmd_customers_create(args):
     if args.phone:
         body["phone_number"] = args.phone
 
-    result = client.customers.create_customer(**body)
-    print(json.dumps(result.body, indent=2))
+    result = client.customers.create_customer(body)
+    print(json.dumps(_result_body(result), indent=2))
 
 
 def cmd_customers_update(args):
     client = _get_client()
-    body = {"customer_id": args.customer_id}
+    body = {}
     if args.email:
         body["email_address"] = args.email
     if args.phone:
@@ -223,14 +283,14 @@ def cmd_customers_update(args):
     if args.family_name:
         body["family_name"] = args.family_name
 
-    result = client.customers.update_customer(args.customer_id, **body)
-    print(json.dumps(result.body, indent=2))
+    result = client.customers.update_customer(args.customer_id, body)
+    print(json.dumps(_result_body(result), indent=2))
 
 
 def cmd_customers_get(args):
     client = _get_client()
     result = client.customers.retrieve_customer(args.customer_id)
-    print(json.dumps(result.body, indent=2))
+    print(json.dumps(_result_body(result), indent=2))
 
 
 # -- Orders --
@@ -242,9 +302,9 @@ def cmd_orders_list(args):
     start_time = args.start_time or (now - timedelta(days=7)).isoformat()
     end_time = args.end_time or now.isoformat()
 
-    result = client.orders.search_orders(
-        location_ids=[args.location],
-        query={
+    body = {
+        "location_ids": [args.location],
+        "query": {
             "filter": {
                 "date_time_filter": {
                     "created_at": {
@@ -254,14 +314,18 @@ def cmd_orders_list(args):
                 }
             }
         },
+    }
+    result = _paginate_sdk(
+        _body_cursor_call(client.orders.search_orders, body),
+        "orders",
     )
-    print(json.dumps(result.body, indent=2))
+    print(json.dumps(result, indent=2))
 
 
 def cmd_orders_get(args):
     client = _get_client()
     result = client.orders.retrieve_order(args.order_id)
-    print(json.dumps(result.body, indent=2))
+    print(json.dumps(_result_body(result), indent=2))
 
 
 # -- Locations --
@@ -269,7 +333,7 @@ def cmd_orders_get(args):
 def cmd_locations_list(args):
     client = _get_client()
     result = client.locations.list_locations()
-    print(json.dumps(result.body, indent=2))
+    print(json.dumps(_result_body(result), indent=2))
 
 
 # -- CLI parser --
@@ -285,8 +349,7 @@ def main():
     p = inv_sub.add_parser("counts")
     p.add_argument("--location", default="", help="Location ID")
     p.add_argument("--catalog-object-id", default="", help="Catalog object ID")
-    p.add_argument("--start-time", default="", help="ISO 8601 start time")
-    p.add_argument("--end-time", default="", help="ISO 8601 end time")
+    p.add_argument("--start-time", default="", help="Only counts updated after this ISO 8601 time")
     p.set_defaults(func=cmd_inventory_counts)
 
     p = inv_sub.add_parser("adjust")
@@ -294,6 +357,13 @@ def main():
     p.add_argument("--location", required=True, help="Location ID")
     p.add_argument("--quantity", type=int, required=True, help="Quantity to adjust (positive or negative)")
     p.add_argument("--reason", default="", help="Reason for adjustment")
+    p.add_argument(
+        "--idempotency-key",
+        "--retry-key",
+        dest="idempotency_key",
+        default="",
+        help="Reuse only when retrying the exact same adjustment",
+    )
     p.set_defaults(func=cmd_inventory_adjust)
 
     p = inv_sub.add_parser("changes")
@@ -373,8 +443,13 @@ def main():
     p.set_defaults(func=cmd_locations_list)
 
     args = parser.parse_args()
-    args.func(args)
+    try:
+        args.func(args)
+    except (SquareAuthError, SquareAPIError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

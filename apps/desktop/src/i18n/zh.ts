@@ -1990,6 +1990,17 @@ export const zh: Translations = {
     background: count => `${count} 个后台任务`,
     subagents: count => `${count} 个子代理`,
     todos: (done, total) => `任务 ${done}/${total}`,
+    taskHistory: {
+      close: '关闭任务历史',
+      completed: '已完成',
+      current: '当前任务',
+      latest: '最新列表',
+      loadOlder: '加载更早的列表',
+      previous: '之前的列表',
+      running: '运行中',
+      title: '任务历史',
+      unfinished: '上一轮未完成'
+    },
     running: '运行中',
     stop: '停止',
     dismiss: '关闭',

@@ -1680,6 +1680,17 @@ export const zhHant = defineLocale({
     background: count => `${count} 個背景任務`,
     subagents: count => `${count} 個子代理`,
     todos: (done, total) => `任務 ${done}/${total}`,
+    taskHistory: {
+      close: '關閉任務歷史',
+      completed: '已完成',
+      current: '目前任務',
+      latest: '最新清單',
+      loadOlder: '載入較早的清單',
+      previous: '先前清單',
+      running: '執行中',
+      title: '任務歷史',
+      unfinished: '上一輪尚未完成'
+    },
     running: '執行中',
     stop: '停止',
     dismiss: '關閉',

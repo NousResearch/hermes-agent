@@ -1489,6 +1489,17 @@ export interface Translations {
     background: (count: number) => string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
+    taskHistory: {
+      close: string
+      completed: string
+      current: string
+      latest: string
+      loadOlder: string
+      previous: string
+      running: string
+      title: string
+      unfinished: string
+    }
     running: string
     stop: string
     dismiss: string

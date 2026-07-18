@@ -1731,6 +1731,17 @@ export const ja = defineLocale({
     background: count => `バックグラウンド ${count} 件`,
     subagents: count => `サブエージェント ${count} 件`,
     todos: (done, total) => `タスク ${done}/${total}`,
+    taskHistory: {
+      close: 'タスク履歴を閉じる',
+      completed: '完了',
+      current: '現在のタスク',
+      latest: '最新のリスト',
+      loadOlder: '古いリストを読み込む',
+      previous: '以前のリスト',
+      running: '実行中',
+      title: 'タスク履歴',
+      unfinished: '前のターンから未完了'
+    },
     running: '実行中',
     stop: '停止',
     dismiss: '閉じる',

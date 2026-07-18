@@ -55,6 +55,7 @@ import {
 import { useComposerScope } from './scope'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
+import { SessionTaskHistoryPopover } from './task-history-popover'
 import { extractClipboardImageBlobs } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
@@ -997,6 +998,7 @@ export function ChatBar({
                 >
                   <div className="flex translate-y-[3px] items-start gap-(--composer-control-gap) self-start [grid-area:menu]">
                     {contextMenu}
+                    <SessionTaskHistoryPopover busy={busy} sessionId={statusSessionId} />
                     <ContribSlot area={COMPOSER_AREAS.leading} />
                   </div>
                   <div className="min-w-0 [grid-area:input]">{input}</div>

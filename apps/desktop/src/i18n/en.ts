@@ -1814,6 +1814,17 @@ export const en: Translations = {
     background: count => `${count} Background`,
     subagents: count => `${count} Subagent${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tasks ${done}/${total}`,
+    taskHistory: {
+      close: 'Close task history',
+      completed: 'Completed',
+      current: 'Current tasks',
+      latest: 'Latest list',
+      loadOlder: 'Load older lists',
+      previous: 'Previous list',
+      running: 'Running',
+      title: 'Task history',
+      unfinished: 'Unfinished from previous turn'
+    },
     running: 'Running',
     stop: 'Stop',
     dismiss: 'Dismiss',

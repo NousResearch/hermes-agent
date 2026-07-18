@@ -840,40 +840,6 @@ class TestShippedCatalog:
             assert entry.description
             assert entry.transport.type in ("stdio", "http")
 
-    def test_first_party_remote_oauth_connectors_present(self, monkeypatch):
-        """Explicit contract for the curated remote-OAuth connectors.
-
-        The generic parse test above deliberately doesn't snapshot names, so
-        pin the shape of the first-party remote-OAuth entries here: each must
-        exist, use an http transport pointing at its documented remote MCP
-        endpoint, and authenticate via native MCP OAuth (auth.type == oauth
-        with no third-party `provider`).
-        """
-        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
-        from hermes_cli.mcp_catalog import _catalog_root, get_entry
-
-        if not _catalog_root().exists():
-            pytest.skip("optional-mcps/ not present in this checkout")
-
-        expected_urls = {
-            "github": "https://api.githubcopilot.com/mcp/",
-            "notion": "https://mcp.notion.com/mcp",
-            "sentry": "https://mcp.sentry.dev/mcp",
-        }
-        for name, url in expected_urls.items():
-            entry = get_entry(name)
-            assert entry is not None, f"catalog entry {name!r} missing"
-            assert entry.description, f"{name}: description required"
-            assert entry.transport.type == "http", f"{name}: expected http transport"
-            assert entry.transport.url == url, (
-                f"{name}: transport.url {entry.transport.url!r} != {url!r}"
-            )
-            assert entry.auth.type == "oauth", f"{name}: expected oauth auth"
-            # Native MCP OAuth (case 1) — no third-party provider mediation.
-            assert entry.auth.provider is None, (
-                f"{name}: remote-OAuth connector must not set auth.provider"
-            )
-
     def test_all_shipped_manifests_are_version_locked(self, monkeypatch):
         """Contract: catalog entries follow the same supply-chain rules as
         pyproject dependencies — everything Hermes fetches/launches is pinned

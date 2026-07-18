@@ -46,6 +46,8 @@ def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch,
         calls.append((cmd, kwargs))
         if cmd[-2:] == ["status", "--porcelain"]:
             return SimpleNamespace(stdout="", returncode=0)
+        if cmd[-2:] == ["rev-parse", "--is-shallow-repository"]:
+            return SimpleNamespace(stdout="false", returncode=0)
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
@@ -53,7 +55,7 @@ def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch,
     stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
 
     assert stash_ref is None
-    assert [cmd[-2:] for cmd, _ in calls] == [["status", "--porcelain"]]
+    assert [cmd[-2:] for cmd, _ in calls] == [["rev-parse", "--is-shallow-repository"], ["status", "--porcelain"]]
 
 
 def test_stash_local_changes_if_needed_returns_specific_stash_commit(monkeypatch, tmp_path):
@@ -63,6 +65,8 @@ def test_stash_local_changes_if_needed_returns_specific_stash_commit(monkeypatch
         calls.append((cmd, kwargs))
         if cmd[-2:] == ["status", "--porcelain"]:
             return SimpleNamespace(stdout=" M hermes_cli/main.py\n?? notes.txt\n", returncode=0)
+        if cmd[-2:] == ["rev-parse", "--is-shallow-repository"]:
+            return SimpleNamespace(stdout="false", returncode=0)
         if cmd[-2:] == ["ls-files", "--unmerged"]:
             return SimpleNamespace(stdout="", returncode=0)
         if cmd[1:4] == ["stash", "push", "--include-untracked"]:
@@ -256,6 +260,8 @@ def test_restore_stashed_changes_always_resets_on_conflict(monkeypatch, tmp_path
         calls.append((cmd, kwargs))
         if cmd[1:3] == ["stash", "apply"]:
             return SimpleNamespace(stdout="conflict output\n", stderr="conflict stderr\n", returncode=1)
+        if cmd[-2:] == ["rev-parse", "--is-shallow-repository"]:
+            return SimpleNamespace(stdout="false", returncode=0)
         if cmd[1:3] == ["diff", "--name-only"]:
             return SimpleNamespace(stdout="hermes_cli/main.py\n", stderr="", returncode=0)
         if cmd[1:3] == ["reset", "--hard"]:
@@ -308,6 +314,8 @@ def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch
     def fake_run(cmd, **kwargs):
         if cmd[-2:] == ["status", "--porcelain"]:
             return SimpleNamespace(stdout=" M hermes_cli/main.py\n", returncode=0)
+        if cmd[-2:] == ["rev-parse", "--is-shallow-repository"]:
+            return SimpleNamespace(stdout="false", returncode=0)
         if cmd[-2:] == ["ls-files", "--unmerged"]:
             return SimpleNamespace(stdout="", returncode=0)
         if cmd[1:4] == ["stash", "push", "--include-untracked"]:

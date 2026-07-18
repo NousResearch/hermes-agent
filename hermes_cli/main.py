@@ -6539,6 +6539,17 @@ def _update_via_zip(args):
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    # On a shallow clone (the installer's --depth 1 path), git stash can fail
+    # with "You do not have the initial commit yet" because the shallow boundary
+    # cuts off the root commit needed for stash.  Detect and repair shallow
+    # history before attempting any stash.
+    if _git_is_shallow(git_cmd, cwd):
+        print("→ Detected shallow clone — repairing history before stashing...")
+        if not _repair_shallow_history(git_cmd, cwd):
+            print("⚠ Could not unshallow the repository. Stashing may fail.")
+            # Continue anyway — the stash call itself will fail and the
+            # caller handles the error.
+
     status = subprocess.run(
         git_cmd + ["status", "--porcelain"],
         cwd=cwd,
@@ -6648,6 +6659,22 @@ def _restore_stashed_changes(
         capture_output=True,
         text=True,
     )
+
+    # On a shallow clone, git stash apply can fail with "You do not have the
+    # initial commit yet" because the stash needs the root commit to replay
+    # the working-tree differences.  Detect this specific failure, deepen the
+    # history, and retry once.
+    if restore.returncode != 0 and _git_is_shallow(git_cmd, cwd):
+        stderr_lower = (restore.stderr or "").lower()
+        if "initial commit" in stderr_lower or "do not have" in stderr_lower:
+            print("→ Shallow clone detected — deepening history to restore changes...")
+            if _repair_shallow_history(git_cmd, cwd):
+                restore = subprocess.run(
+                    git_cmd + ["stash", "apply", stash_ref],
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                )
 
     # Check for unmerged (conflicted) files — can happen even when returncode is 0
     unmerged = subprocess.run(
@@ -6770,6 +6797,367 @@ def _discard_stashed_changes(
 
     print("→ Discarded local source changes (updates.non_interactive_local_changes=discard).")
     return True
+
+
+# =========================================================================
+# Shallow history detection and repair for `hermes update`
+# =========================================================================
+
+
+def _git_is_shallow(git_cmd: list[str], cwd: Path) -> bool:
+    """Return True when the repository is a shallow clone.
+
+    A shallow clone has a .git/shallow file or ``git rev-parse --is-shallow-repository``
+    returns true.
+    """
+    shallow_path = cwd / ".git" / "shallow"
+    if shallow_path.is_file():
+        return True
+    result = subprocess.run(
+        git_cmd + ["rev-parse", "--is-shallow-repository"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def _repair_shallow_history(git_cmd: list[str], cwd: Path) -> bool:
+    """Repair a shallow clone by deepening history until it's unshallow.
+
+    Tries progressively larger deepen steps (32, 128, then unshallow) so the
+    cost stays proportional to how much history is actually missing. Returns
+    True once the repository is no longer shallow.
+
+    Non-fatal on fetch errors — the caller must still verify the repo can
+    operate (merge-base checks, etc.) and abort if not.
+    """
+    if not _git_is_shallow(git_cmd, cwd):
+        return True
+
+    deepen_steps = ["--deepen=32", "--deepen=128"]
+    for step in deepen_steps:
+        subprocess.run(
+            git_cmd + ["fetch", "origin", step],
+            cwd=cwd,
+            capture_output=True,
+        )
+        if not _git_is_shallow(git_cmd, cwd):
+            return True
+
+    # Last resort: unshallow fully (fetches ALL history — slow but correct).
+    subprocess.run(
+        git_cmd + ["fetch", "--unshallow", "origin"],
+        cwd=cwd,
+        capture_output=True,
+    )
+    return not _git_is_shallow(git_cmd, cwd)
+
+
+def _git_update_commit_sha(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    """Return the current HEAD commit SHA, or None if unavailable."""
+    result = subprocess.run(
+        git_cmd + ["rev-parse", "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    return None
+
+
+def _ensure_update_merge_base(
+    git_cmd: list[str],
+    cwd: Path,
+    branch: str,
+    original_head: str,
+    target_head: str,
+) -> dict:
+    """Ensure a merge-base exists between the original HEAD and the update target.
+
+    On a shallow clone the two histories can be disconnected islands — ``git merge-base``
+    returns nothing, and any rebase/merge/revert attempt will fail with "no common ancestor".
+    This function progressively deepens the fetch until a merge-base is found.
+
+    Returns ``{"merge_base": "<sha>", "error": None, "fetch_steps": [...]}`` on success,
+    or ``{"merge_base": None, "error": "<message>", "fetch_steps": [...]}`` on failure.
+    """
+    fetch_steps = []
+    for attempt in range(4):
+        result = subprocess.run(
+            git_cmd + ["merge-base", original_head, target_head],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return {
+                "merge_base": result.stdout.strip(),
+                "error": None,
+                "fetch_steps": fetch_steps,
+            }
+
+        if attempt == 0:
+            step = "--deepen=32"
+        elif attempt == 1:
+            step = "--deepen=128"
+        else:
+            step = "--unshallow"
+
+        fetch_steps.append(step)
+        subprocess.run(
+            git_cmd + ["fetch", "origin", step],
+            cwd=cwd,
+            capture_output=True,
+        )
+
+    return {
+        "merge_base": None,
+        "error": "Could not find a merge base between the local checkout and the update target "
+                 "(no common ancestor — the histories are unrelated)",
+        "fetch_steps": fetch_steps,
+    }
+
+
+def _preserve_local_update_commits(
+    git_cmd: list[str],
+    cwd: Path,
+    original_head: str,
+    target_head: str,
+) -> bool:
+    """Return True when local commits should be preserved through the update.
+
+    A user who has made local commits (patches, customizations) upstream of the
+    official tree should have those reapplied after the update so their
+    customizations survive.
+    """
+    result = subprocess.run(
+        git_cmd + ["rev-list", f"{target_head}..{original_head}", "--count"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    try:
+        local_commits = int(result.stdout.strip())
+    except (ValueError, AttributeError):
+        return False
+    return local_commits > 1
+
+
+def _apply_pinned_git_update(
+    git_cmd: list[str],
+    cwd: Path,
+    *,
+    branch: str,
+    pre_update_sha: str,
+    target_sha: str,
+    merge_base: str,
+    preserve_local_commits: bool,
+    original_branch: str,
+    original_head: str,
+) -> dict:
+    """Apply the git update: rebase local commits or fast-forward.
+
+    When local commits exist and preservation is enabled, rebases the local
+    patch stack onto the updated target. Otherwise resets to the target (the
+    historical "reset --hard" behaviour).
+
+    Creates a recovery ref at ``refs/hermes/update-recovery/<sha>`` before any
+    mutation so a failed update can be rolled back.
+
+    Returns a dict with keys: ``success``, ``safe_to_restore_stash``,
+    ``recovery_ref``, ``used_rebase``, ``error``.
+    """
+    import hashlib
+
+    # Create a recovery ref tagged with the pre-update SHA
+    recovery_ref = f"refs/hermes/update-recovery/{hashlib.sha1(pre_update_sha.encode()).hexdigest()}"
+    subprocess.run(
+        git_cmd + ["update-ref", recovery_ref, pre_update_sha],
+        cwd=cwd,
+        capture_output=True,
+    )
+
+    if preserve_local_commits and original_head != target_sha:
+        print("  → Preserving the pinned local patch stack on top of the update...")
+        # Rebase local commits onto the target
+        rebase_result = subprocess.run(
+            git_cmd + [
+                "rebase", "--onto", target_sha, merge_base, original_head
+            ],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if rebase_result.returncode != 0:
+            # Rebase failed (likely conflict) — abort, roll back to pre-update SHA,
+            # and surface the error. The recovery ref is kept.
+            subprocess.run(
+                git_cmd + ["rebase", "--abort"],
+                cwd=cwd,
+                capture_output=True,
+            )
+            subprocess.run(
+                git_cmd + ["reset", "--hard", pre_update_sha],
+                cwd=cwd,
+                capture_output=True,
+            )
+            return {
+                "success": False,
+                "safe_to_restore_stash": True,
+                "recovery_ref": recovery_ref,
+                "used_rebase": True,
+                "error": f"Rebase conflict: {rebase_result.stderr.strip().splitlines()[0] if rebase_result.stderr else 'unknown error'}",
+            }
+
+        # Verify HEAD is now a descendant of target_sha
+        verify = subprocess.run(
+            git_cmd + ["merge-base", "--is-ancestor", target_sha, "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+        )
+        if verify.returncode != 0:
+            subprocess.run(
+                git_cmd + ["reset", "--hard", pre_update_sha],
+                cwd=cwd,
+                capture_output=True,
+            )
+            return {
+                "success": False,
+                "safe_to_restore_stash": True,
+                "recovery_ref": recovery_ref,
+                "used_rebase": True,
+                "error": "Rebased HEAD is not a descendant of the update target",
+            }
+        return {
+            "success": True,
+            "safe_to_restore_stash": True,
+            "recovery_ref": recovery_ref,
+            "used_rebase": True,
+            "error": None,
+        }
+
+    # Standard fast-forward / reset path
+    pull_result = subprocess.run(
+        git_cmd + ["pull", "--ff-only", "origin", branch],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if pull_result.returncode != 0:
+        # ff-only failed — reset to match remote
+        print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
+        reset_result = subprocess.run(
+            git_cmd + ["reset", "--hard", target_sha],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if reset_result.returncode != 0:
+            subprocess.run(
+                git_cmd + ["reset", "--hard", pre_update_sha],
+                cwd=cwd,
+                capture_output=True,
+            )
+            return {
+                "success": False,
+                "safe_to_restore_stash": True,
+                "recovery_ref": recovery_ref,
+                "used_rebase": False,
+                "error": f"Reset failed: {reset_result.stderr.strip().splitlines()[0] if reset_result.stderr else 'unknown error'}",
+            }
+
+    return {
+        "success": True,
+        "safe_to_restore_stash": True,
+        "recovery_ref": recovery_ref,
+        "used_rebase": False,
+        "error": None,
+    }
+
+
+def _prepare_update_checkout_for_stash(
+    git_cmd: list[str],
+    cwd: Path,
+    *,
+    original_branch: str,
+    original_head: str,
+    updated_branch: str,
+    update_succeeded: bool = True,
+) -> bool:
+    """Restore the original checkout so stashed changes can be reapplied.
+
+    After an update that switched branches (e.g. from a feature branch to
+    ``main``), this switches back to the original branch so that ``git stash
+    apply`` runs in the correct context. Returns True when the original
+    checkout is ready.
+    """
+    current = subprocess.run(
+        git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    if current == original_branch:
+        return True
+
+    # If the update didn't succeed, we need to restore the original branch.
+    if not update_succeeded:
+        subprocess.run(
+            git_cmd + ["checkout", original_branch],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        return True
+
+    # Update succeeded — checkout the original branch. If it needs to
+    # be reset to the original HEAD (e.g. after a rebase), do so.
+    checkout = subprocess.run(
+        git_cmd + ["checkout", original_branch],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if checkout.returncode != 0:
+        # Branch might need to be re-created from the original head
+        subprocess.run(
+            git_cmd + ["checkout", "-B", original_branch, original_head],
+            cwd=cwd,
+            capture_output=True,
+        )
+    return True
+
+
+def _delete_update_recovery_ref(
+    git_cmd: list[str], cwd: Path, recovery_ref: str
+) -> bool:
+    """Delete a recovery ref created by _apply_pinned_git_update."""
+    result = subprocess.run(
+        git_cmd + ["update-ref", "-d", recovery_ref],
+        cwd=cwd,
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
+def _git_update_operation_paths(git_cmd: list[str], cwd: Path) -> bool:
+    """Return True when a git operation (rebase/merge/am/cherry-pick/revert)
+    is currently in progress in the given repository."""
+    for name in (
+        "rebase-apply",
+        "rebase-merge",
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "BISECT_LOG",
+        "AUTO_MERGE",
+    ):
+        if (cwd / ".git" / name).exists():
+            return True
+    return False
 
 
 # =========================================================================
@@ -9960,6 +10348,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if stderr:
                     print(f"  {stderr.splitlines()[0]}")
             sys.exit(1)
+
+        # If this is a shallow clone (the installer's --depth 1 path), repair
+        # the history BEFORE any stash/checkout/reset — shallow git operations
+        # can abort with "You do not have the initial commit yet" and strand
+        # the checkout half-updated.
+        if _git_is_shallow(git_cmd, PROJECT_ROOT):
+            print("→ Detected shallow clone — repairing history before update...")
+            if not _repair_shallow_history(git_cmd, PROJECT_ROOT):
+                print("⚠ Could not unshallow the repository.")
+                print("  Continuing anyway — some git operations may fail.")
+            else:
+                print("  ✓ Repository history repaired (unshallowed)")
 
         # Get current branch (returns literal "HEAD" when detached)
         result = subprocess.run(

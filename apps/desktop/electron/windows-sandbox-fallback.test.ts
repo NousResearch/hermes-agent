@@ -7,20 +7,23 @@ import { test } from 'vitest'
 
 import {
   ALL_APPLICATION_PACKAGES_SID,
-  WINDOWS_SANDBOX_BREAKPOINT_EXIT,
-  WINDOWS_SANDBOX_MARKER_FILENAME,
   alreadyHasNoSandbox,
+  BOOT_ABORTS_BEFORE_FALLBACK,
   buildIcaclsGrantArgs,
   buildNoSandboxRelaunchArgs,
+  decideWindowsSandboxLaunch,
+  fallbackMarker,
   grantAllApplicationPackagesAcl,
   isWindowsSandboxBreakpointExit,
   markerAfterSuccessfulBoot,
-  nextSandboxMarkerAfterLaunchDecision,
   parseSandboxMarker,
   readSandboxMarker,
   sandboxMarkerPath,
-  shouldEnableWindowsNoSandbox,
+  shouldAttemptAclRepair,
   shouldRelaunchForGpuSandboxCrash,
+  shouldRelaunchForRendererSandboxCrashLoop,
+  WINDOWS_SANDBOX_BREAKPOINT_EXIT,
+  WINDOWS_SANDBOX_MARKER_FILENAME,
   writeSandboxMarker
 } from './windows-sandbox-fallback'
 
@@ -39,60 +42,148 @@ test('alreadyHasNoSandbox honors argv and ELECTRON_DISABLE_SANDBOX', () => {
   assert.equal(alreadyHasNoSandbox(['--disable-gpu'], {}), false)
 })
 
-test('shouldEnableWindowsNoSandbox stays off outside Windows and on clean markers', () => {
-  assert.deepEqual(
-    shouldEnableWindowsNoSandbox({ platform: 'linux', marker: { state: 'booting' } }),
-    { enable: false, reason: null }
-  )
-  assert.deepEqual(
-    shouldEnableWindowsNoSandbox({ platform: 'win32', marker: { state: 'ok' }, argv: [], env: {} }),
-    { enable: false, reason: null }
-  )
-  assert.deepEqual(
-    shouldEnableWindowsNoSandbox({ platform: 'win32', marker: null, argv: [], env: {} }),
-    { enable: false, reason: null }
-  )
+test('decideWindowsSandboxLaunch stays off outside Windows and on clean markers', () => {
+  assert.equal(decideWindowsSandboxLaunch({ platform: 'linux', marker: { state: 'booting' } }).enable, false)
+
+  const cleanOk = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'ok' },
+    argv: [],
+    env: {}
+  })
+
+  assert.equal(cleanOk.enable, false)
+  assert.deepEqual(cleanOk.nextMarker, { state: 'booting' })
+
+  const noMarker = decideWindowsSandboxLaunch({ platform: 'win32', marker: null, argv: [], env: {} })
+  assert.equal(noMarker.enable, false)
+  assert.deepEqual(noMarker.nextMarker, { state: 'booting' })
 })
 
-test('shouldEnableWindowsNoSandbox recovers from uncleared boot and sticky fallback', () => {
-  assert.deepEqual(
-    shouldEnableWindowsNoSandbox({
-      platform: 'win32',
-      marker: { state: 'booting' },
-      argv: [],
-      env: {}
-    }),
-    { enable: true, reason: 'uncleared-boot-marker' }
-  )
-  assert.deepEqual(
-    shouldEnableWindowsNoSandbox({
-      platform: 'win32',
-      marker: { state: 'fallback' },
-      argv: [],
-      env: {}
-    }),
-    { enable: true, reason: 'sticky-fallback' }
-  )
-  assert.deepEqual(
-    shouldEnableWindowsNoSandbox({
-      platform: 'win32',
-      marker: { state: 'ok' },
-      argv: ['--no-sandbox'],
-      env: {}
-    }),
-    { enable: true, reason: 'already-enabled' }
-  )
+test('a single mid-boot abort does NOT drop the sandbox (two-strike rule)', () => {
+  // First abort: prior launch left `booting` with no abort count. Could be a
+  // task-manager kill or power loss — sandbox stays ON, strike recorded.
+  const first = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'booting' },
+    argv: [],
+    env: {}
+  })
+
+  assert.equal(first.enable, false)
+  assert.deepEqual(first.nextMarker, { state: 'booting', bootAborts: 1 })
+
+  // Second consecutive abort: deterministic crash loop → fallback engages.
+  const second = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: first.nextMarker,
+    argv: [],
+    env: {},
+    appVersion: '1.2.3'
+  })
+
+  assert.equal(second.enable, true)
+  assert.equal(second.reason, 'boot-loop')
+  assert.deepEqual(second.nextMarker, { state: 'fallback', reason: 'boot-loop', version: '1.2.3' })
+
+  assert.equal(BOOT_ABORTS_BEFORE_FALLBACK, 2)
 })
 
-test('marker transitions preserve sticky fallback after a successful recovered boot', () => {
-  assert.deepEqual(nextSandboxMarkerAfterLaunchDecision({ enabledNoSandbox: false }), {
-    state: 'booting'
+test('sticky fallback persists within one app version', () => {
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'fallback', reason: 'gpu-breakpoint', version: '1.2.3' },
+    argv: [],
+    env: {},
+    appVersion: '1.2.3'
   })
-  assert.deepEqual(nextSandboxMarkerAfterLaunchDecision({ enabledNoSandbox: true }), {
-    state: 'fallback'
+
+  assert.equal(decision.enable, true)
+  assert.equal(decision.reason, 'sticky-fallback')
+  assert.equal(decision.nextMarker.state, 'fallback')
+  assert.equal(decision.nextMarker.reason, 'gpu-breakpoint')
+})
+
+test('an app update re-probes the sandbox once instead of degrading forever', () => {
+  // Version changed since the fallback engaged → probe with sandbox ON.
+  const reprobe = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'fallback', reason: 'boot-loop', version: '1.2.3' },
+    argv: [],
+    env: {},
+    appVersion: '1.3.0'
   })
+
+  assert.equal(reprobe.enable, false)
+  assert.equal(reprobe.nextMarker.state, 'booting')
+  assert.equal(reprobe.nextMarker.reprobe, true)
+
+  // The re-probe boot aborted → straight back to fallback, no second strike.
+  const failedReprobe = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: reprobe.nextMarker,
+    argv: [],
+    env: {},
+    appVersion: '1.3.0'
+  })
+
+  assert.equal(failedReprobe.enable, true)
+  assert.equal(failedReprobe.reason, 'reprobe-failed')
+  assert.equal(failedReprobe.nextMarker.state, 'fallback')
+  assert.equal(failedReprobe.nextMarker.version, '1.3.0')
+
+  // A legacy fallback marker without a version stays sticky (no re-probe).
+  const legacy = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'fallback' },
+    argv: [],
+    env: {},
+    appVersion: '1.3.0'
+  })
+
+  assert.equal(legacy.enable, true)
+  assert.equal(legacy.reason, 'sticky-fallback')
+})
+
+test('manual --no-sandbox is honored but never made sticky', () => {
+  const manual = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'ok' },
+    argv: ['--no-sandbox'],
+    env: {}
+  })
+
+  assert.equal(manual.enable, true)
+  assert.equal(manual.reason, 'already-enabled')
+  assert.equal(manual.nextMarker.state, 'booting')
+
+  // But a relaunch-written fallback marker is preserved through the flagged boot.
+  const relaunched = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'fallback', reason: 'gpu-breakpoint', version: '1.2.3' },
+    argv: ['--no-sandbox'],
+    env: {},
+    appVersion: '1.2.3'
+  })
+
+  assert.equal(relaunched.enable, true)
+  assert.equal(relaunched.nextMarker.state, 'fallback')
+})
+
+test('marker transitions after a successful boot', () => {
   assert.deepEqual(markerAfterSuccessfulBoot({ fallbackActive: false }), { state: 'ok' })
-  assert.deepEqual(markerAfterSuccessfulBoot({ fallbackActive: true }), { state: 'fallback' })
+  assert.deepEqual(markerAfterSuccessfulBoot({ fallbackActive: true, reason: 'gpu-breakpoint', appVersion: '1.2.3' }), {
+    state: 'fallback',
+    reason: 'gpu-breakpoint',
+    version: '1.2.3'
+  })
+})
+
+test('shouldAttemptAclRepair only fires on evidence of trouble', () => {
+  assert.equal(shouldAttemptAclRepair(null), false)
+  assert.equal(shouldAttemptAclRepair({ state: 'ok' }), false)
+  assert.equal(shouldAttemptAclRepair({ state: 'booting' }), true)
+  assert.equal(shouldAttemptAclRepair({ state: 'fallback' }), true)
 })
 
 test('sandbox marker round-trips through the userData file', () => {
@@ -102,10 +193,22 @@ test('sandbox marker round-trips through the userData file', () => {
     assert.equal(sandboxMarkerPath(dir), path.join(dir, WINDOWS_SANDBOX_MARKER_FILENAME))
     assert.equal(readSandboxMarker(dir), null)
 
-    writeSandboxMarker(dir, { state: 'booting' })
-    assert.deepEqual(readSandboxMarker(dir), { state: 'booting' })
+    writeSandboxMarker(dir, { state: 'booting', bootAborts: 1 })
+    assert.deepEqual(readSandboxMarker(dir), { state: 'booting', bootAborts: 1 })
+
+    writeSandboxMarker(dir, fallbackMarker('renderer-crash-loop', '1.2.3'))
+    assert.deepEqual(readSandboxMarker(dir), {
+      state: 'fallback',
+      reason: 'renderer-crash-loop',
+      version: '1.2.3'
+    })
+
     assert.equal(parseSandboxMarker({ state: 'fallback' })?.state, 'fallback')
     assert.equal(parseSandboxMarker({ state: 'nope' }), null)
+    // Unknown reason strings and junk fields are dropped, not fatal.
+    assert.deepEqual(parseSandboxMarker({ state: 'fallback', reason: 'weird', bootAborts: -3 }), {
+      state: 'fallback'
+    })
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -126,6 +229,7 @@ test('grantAllApplicationPackagesAcl is a no-op off Windows and reports exec fai
   assert.deepEqual(grantAllApplicationPackagesAcl('C:\\x', { platform: 'darwin' }), { ok: false })
 
   const calls: Array<{ file: string; args: readonly string[] }> = []
+
   const ok = grantAllApplicationPackagesAcl('C:\\Hermes', {
     platform: 'win32',
     execFileSync(file, args) {
@@ -192,6 +296,60 @@ test('shouldRelaunchForGpuSandboxCrash only fires once for GPU breakpoint deaths
     shouldRelaunchForGpuSandboxCrash({
       platform: 'linux',
       details: { type: 'GPU', exitCode: WINDOWS_SANDBOX_BREAKPOINT_EXIT },
+      alreadyNoSandbox: false,
+      relaunchAttempted: false
+    }),
+    false
+  )
+})
+
+test('renderer crash-loop relaunch requires the sandbox breakpoint signature', () => {
+  assert.equal(
+    shouldRelaunchForRendererSandboxCrashLoop({
+      platform: 'win32',
+      reason: 'crashed',
+      exitCode: WINDOWS_SANDBOX_BREAKPOINT_EXIT,
+      alreadyNoSandbox: false,
+      relaunchAttempted: false
+    }),
+    true
+  )
+  // Unrelated renderer crash loops (plain crash, OOM churn) keep the sandbox.
+  assert.equal(
+    shouldRelaunchForRendererSandboxCrashLoop({
+      platform: 'win32',
+      reason: 'crashed',
+      exitCode: 1,
+      alreadyNoSandbox: false,
+      relaunchAttempted: false
+    }),
+    false
+  )
+  assert.equal(
+    shouldRelaunchForRendererSandboxCrashLoop({
+      platform: 'win32',
+      reason: 'oom',
+      exitCode: WINDOWS_SANDBOX_BREAKPOINT_EXIT,
+      alreadyNoSandbox: false,
+      relaunchAttempted: false
+    }),
+    false
+  )
+  assert.equal(
+    shouldRelaunchForRendererSandboxCrashLoop({
+      platform: 'win32',
+      reason: 'crashed',
+      exitCode: WINDOWS_SANDBOX_BREAKPOINT_EXIT,
+      alreadyNoSandbox: true,
+      relaunchAttempted: false
+    }),
+    false
+  )
+  assert.equal(
+    shouldRelaunchForRendererSandboxCrashLoop({
+      platform: 'linux',
+      reason: 'crashed',
+      exitCode: WINDOWS_SANDBOX_BREAKPOINT_EXIT,
       alreadyNoSandbox: false,
       relaunchAttempted: false
     }),

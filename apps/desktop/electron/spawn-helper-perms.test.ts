@@ -69,10 +69,7 @@ test('needsExecBit / withExecBits treat any missing exec bit as non-executable',
 test('candidates cover every prebuild dir plus build/Release', () => {
   const root = '/pkg/node-pty'
 
-  const fs = fakeFs(
-    {},
-    { [join(root, 'prebuilds')]: ['darwin-arm64', 'darwin-x64', 'linux-x64'] }
-  )
+  const fs = fakeFs({}, { [join(root, 'prebuilds')]: ['darwin-arm64', 'darwin-x64', 'linux-x64'] })
 
   assert.deepEqual(spawnHelperCandidates(root, fs), [
     join(root, 'prebuilds', 'darwin-arm64', 'spawn-helper'),
@@ -117,10 +114,7 @@ test('chmod failures are collected, not thrown', () => {
   const root = '/pkg/node-pty'
   const arm = join(root, 'prebuilds', 'darwin-arm64', 'spawn-helper')
 
-  const fs = fakeFs(
-    { [arm]: { mode: 0o644, chmodThrows: true } },
-    { [join(root, 'prebuilds')]: ['darwin-arm64'] }
-  )
+  const fs = fakeFs({ [arm]: { mode: 0o644, chmodThrows: true } }, { [join(root, 'prebuilds')]: ['darwin-arm64'] })
 
   const result = ensureSpawnHelperExecutable(root, fs)
 

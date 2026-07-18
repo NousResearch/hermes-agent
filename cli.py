@@ -8911,6 +8911,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
+        elif canonical == "plan":
+            self._handle_plan_command(cmd_original)
         elif canonical == "moa":
             # /moa is one-shot sugar only: run a single prompt through the
             # default MoA preset, then restore the prior model. To *switch* to a
@@ -9182,7 +9184,133 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._goal_manager = mgr
         return mgr
 
+    def _get_plan_manager(self):
+        """Return the PlanManager bound to the current session_id, or None.
 
+        Rebound lazily when ``session_id`` changes. Not cached across a
+        transition because callers re-read fresh state each time.
+        """
+        try:
+            from hermes_cli.plan_mode import PlanManager
+        except Exception as exc:
+            logging.debug("plan manager unavailable: %s", exc)
+            return None
+        sid = getattr(self, "session_id", None) or ""
+        if not sid:
+            return None
+        return PlanManager(session_id=sid)
+
+    def _handle_plan_command(self, cmd: str) -> None:
+        """Dispatch /plan subcommands: (enter) / status / show / approve /
+        reject <feedback> / exit.
+
+        Any transition that changes the mutating-toolset restriction drops the
+        cached agent (``self.agent = None``) so it rebuilds with the new
+        toolset policy on the next turn. ``/plan exit`` DISCARDS a pending plan
+        — it never approves it.
+        """
+        from cli import _DIM, _RST, _cprint
+        parts = (cmd or "").strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        lower = arg.lower()
+
+        mgr = self._get_plan_manager()
+        if mgr is None:
+            _cprint(f"  {_DIM}Plan mode unavailable (no active session).{_RST}")
+            return
+
+        if lower == "status":
+            _cprint(f"  {mgr.status_line()}")
+            return
+
+        if lower == "show":
+            s = mgr.state
+            if s is None or s.plan_path is None:
+                _cprint("  No plan file has been written yet.")
+            else:
+                _cprint(f"  📝 Plan file: {s.plan_path}")
+            return
+
+        if lower == "approve":
+            if mgr.approve() is None:
+                _cprint("  Plan mode is not active — nothing to approve.")
+                return
+            self.agent = None  # rebuild unrestricted next turn
+            _cprint("  ✅ Plan approved — execution unlocks on the next turn.")
+            return
+
+        if lower == "reject" or lower.startswith("reject "):
+            if not mgr.is_active():
+                _cprint("  Plan mode is not active — nothing to reject.")
+                return
+            feedback = arg[len("reject"):].strip()
+            mgr.keep_planning()
+            if feedback:
+                _cprint(f"  ↩ Staying in plan mode. Feedback: {feedback}")
+            else:
+                _cprint("  ↩ Staying in plan mode. Keep refining the plan.")
+            return
+
+        if lower == "exit":
+            had = mgr.exit()
+            self.agent = None  # rebuild unrestricted next turn
+            if had:
+                _cprint("  Plan mode off — the pending plan was discarded (not approved). Mutating tools are unlocked.")
+            else:
+                _cprint("  Plan mode is off.")
+            return
+
+        # Bare /plan → enter enforcement mode (no request text).
+        if not arg:
+            mgr.enter(entered_by="user")
+            self.agent = None  # rebuild restricted next turn
+            _cprint("  📝 Plan mode on. I'll plan only — mutating tools are blocked until you approve.")
+            _cprint(f"  {_DIM}Controls: /plan status · /plan show · /plan approve · /plan reject <feedback> · /plan exit{_RST}")
+            return
+
+        # `/plan <request>` → preserve the documented skill dispatch
+        # (website/docs/.../skills.md: "/plan [request]" loads the bundled plan
+        # skill's instructions with the request text) AND enter enforcement
+        # mode, so the plan is authored under a hard mutation block rather than
+        # only a prompt-level instruction. The request is forwarded to the plan
+        # skill; args are never discarded. Registering the `plan` CommandDef
+        # otherwise shadowed this documented workflow.
+        mgr.enter(entered_by="user")
+        self.agent = None  # rebuild restricted next turn
+        _cprint("  📝 Plan mode on. I'll plan only — mutating tools are blocked until you approve.")
+        if not self._seed_plan_skill_request(arg):
+            # Plan skill unavailable — honor the request text as the kickoff
+            # prompt rather than dropping it.
+            if hasattr(self, "_pending_input"):
+                self._pending_input.put(arg)
+        _cprint(f"  {_DIM}Controls: /plan status · /plan show · /plan approve · /plan reject <feedback> · /plan exit{_RST}")
+
+    def _seed_plan_skill_request(self, request: str) -> bool:
+        """Queue the documented ``/plan [request]`` skill invocation as the next
+        turn, seeded with ``request``. Returns True when queued.
+
+        Preserves the pre-existing ``/plan <request>`` behavior — loading the
+        bundled ``plan`` skill's instructions alongside the request text — that
+        the enforcement-mode ``plan`` CommandDef otherwise shadowed. Resolved by
+        skill NAME (not the ``/plan`` slash key, which is skipped from the
+        registry precisely because it collides with our core command).
+        """
+        try:
+            from agent.skill_commands import (
+                build_skill_invocation_message_by_identifier,
+            )
+
+            msg = build_skill_invocation_message_by_identifier(
+                "plan", request, task_id=self.session_id
+            )
+        except Exception:
+            msg = None
+        if not msg:
+            return False
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(msg)
+            print("\n⚡ Loading skill: plan")
+        return True
 
     def _owns_process_notification(self, event: dict) -> bool:
         """Return whether this CLI session provably owns a delegation event.

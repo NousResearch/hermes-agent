@@ -57,7 +57,7 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "session_search", "memory", "clarify", "read_terminal", "delegate_task"}
+    {"todo", "session_search", "memory", "clarify", "plan_ready", "read_terminal", "delegate_task"}
 )
 
 
@@ -2422,6 +2422,20 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 _clarify_tool(
                     question=next_args.get("question", ""),
                     choices=next_args.get("choices"),
+                    callback=agent.clarify_callback,
+                ),
+                next_args,
+            )
+    elif function_name == "plan_ready":
+        # Plan-mode approval rides the clarify callback, exactly like the
+        # clarify tool. Needs the session id to read/transition plan state.
+        def _execute(next_args: dict) -> Any:
+            from tools.plan_ready_tool import plan_ready_tool as _plan_ready_tool
+            return _finish_agent_tool(
+                _plan_ready_tool(
+                    session_id=agent.session_id or "",
+                    plan_path=next_args.get("plan_path"),
+                    summary=next_args.get("summary"),
                     callback=agent.clarify_callback,
                 ),
                 next_args,

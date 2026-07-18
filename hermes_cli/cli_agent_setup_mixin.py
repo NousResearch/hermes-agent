@@ -350,6 +350,21 @@ class CLIAgentSetupMixin:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+
+            # Plan mode: fold any active per-session restriction into the toolset
+            # selection (materialising the `plan_mode: always` default first).
+            # The CLI busts its cached agent via `self.agent = None` on
+            # enter/exit, so the fresh values take effect on the next rebuild.
+            _plan_enabled, _plan_disabled = self.enabled_toolsets, self.disabled_toolsets
+            try:
+                from hermes_cli import plan_mode as _plan_mode
+                _plan_mode.ensure_default_for_session(self.session_id or "")
+                _plan_enabled, _plan_disabled = _plan_mode.apply_session_toolset_policy(
+                    self.session_id or "", self.enabled_toolsets, self.disabled_toolsets,
+                )
+            except Exception:
+                pass
+
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
@@ -361,8 +376,8 @@ class CLIAgentSetupMixin:
                 credential_pool=runtime.get("credential_pool"),
                 max_tokens=self.max_tokens,
                 max_iterations=self.max_turns,
-                enabled_toolsets=self.enabled_toolsets,
-                disabled_toolsets=self.disabled_toolsets,
+                enabled_toolsets=_plan_enabled,
+                disabled_toolsets=_plan_disabled,
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),

@@ -53,6 +53,65 @@ from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context
 logger = logging.getLogger(__name__)
 
 
+# Structured reason returned by the plan-mode dispatch guard when the
+# enforcement state itself could not be evaluated. The guard fails CLOSED: a
+# mutating tool must not run while plan state is unreadable. Read-only tools
+# are never affected — they are safe regardless of plan state.
+_PLAN_STATE_UNREADABLE_REASON = (
+    "Blocked: plan-mode enforcement state is unreadable — failing closed. "
+    "This mutating tool cannot run until plan state can be read again."
+)
+
+
+def _is_mutating_tool(function_name: str) -> bool:
+    """Best-effort static membership check for the fail-closed guard path.
+
+    Returns True (fail closed) when the mutating-tool set cannot even be
+    loaded: under total uncertainty a tool is treated as mutating so it is
+    blocked rather than silently allowed.
+    """
+    try:
+        from agent.tool_guardrails import MUTATING_TOOL_NAMES
+
+        return function_name in MUTATING_TOOL_NAMES
+    except Exception:
+        return True
+
+
+def _plan_mode_block_reason(
+    agent, function_name: str, function_args, task_id: str = "default"
+) -> Optional[str]:
+    """Fail-closed wrapper around ``plan_mode.tool_block_reason``.
+
+    Returns the block reason (a string) when the tool must be blocked, or
+    ``None`` when it may run. ``plan_mode.tool_block_reason`` already owns the
+    ONE justified carve-out internally — a DB that is simply unavailable (no
+    plan row readable) is treated as "not in plan mode" so a transient outage
+    cannot wedge every session — and it distinguishes that DB-down sentinel
+    from a plan row that exists but cannot be parsed (which it blocks).
+
+    ``task_id`` is the executor's ``effective_task_id`` — threaded through so
+    the plan-file carve-out resolves the write target against the SAME task
+    base ``file_tools`` will (a ``-w`` worktree / registered workspace cwd),
+    closing the guard/write base-divergence gap.
+
+    This wrapper adds the outer guarantee the two executor call sites
+    previously lacked: if the guard call ITSELF raises (import error,
+    unexpected bug), we must not silently ALLOW the tool. We fail closed for
+    mutating tools — and only mutating tools; read-only tools always pass.
+    """
+    session_id = getattr(agent, "session_id", "") or ""
+    try:
+        from hermes_cli.plan_mode import tool_block_reason as _plan_block_reason
+
+        return _plan_block_reason(session_id, function_name, function_args, task_id)
+    except Exception as exc:
+        logger.warning(
+            "plan-mode guard raised for %s; failing closed: %s", function_name, exc
+        )
+        return _PLAN_STATE_UNREADABLE_REASON if _is_mutating_tool(function_name) else None
+
+
 def _budget_for_agent(agent) -> BudgetConfig:
     """Resolve a tool-result BudgetConfig scaled to the agent's context window.
 
@@ -465,6 +524,16 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception:
                 block_message = None
 
+            # Plan-mode dispatch guard (fail-closed): block mutating tools while
+            # the session is planning / awaiting approval. A guard that raises
+            # must NOT allow the tool — _plan_mode_block_reason fails closed for
+            # mutating tools. See hermes_cli/plan_mode.
+            _plan_block = None
+            if block_message is None:
+                _plan_block = _plan_mode_block_reason(
+                    agent, function_name, function_args, effective_task_id
+                )
+
             if block_message is not None:
                 block_result = json.dumps({"error": block_message}, ensure_ascii=False)
                 _emit_terminal_post_tool_call(
@@ -477,6 +546,20 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     status="blocked",
                     error_type="plugin_block",
                     error_message=block_message,
+                    middleware_trace=list(middleware_trace),
+                )
+            elif _plan_block is not None:
+                block_result = json.dumps({"error": _plan_block}, ensure_ascii=False)
+                _emit_terminal_post_tool_call(
+                    agent,
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=block_result,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    status="blocked",
+                    error_type="plan_mode_block",
+                    error_message=_plan_block,
                     middleware_trace=list(middleware_trace),
                 )
             else:
@@ -1128,6 +1211,18 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception:
                 pass
 
+            # Plan-mode dispatch guard (fail-closed): block mutating tools while
+            # the session is planning / awaiting approval. A guard that raises
+            # must NOT allow the tool — _plan_mode_block_reason fails closed for
+            # mutating tools. See hermes_cli/plan_mode.
+            if _block_msg is None:
+                _plan_reason = _plan_mode_block_reason(
+                    agent, function_name, function_args, effective_task_id
+                )
+                if _plan_reason is not None:
+                    _block_msg = _plan_reason
+                    _block_error_type = "plan_mode_block"
+
         _guardrail_block_decision: ToolGuardrailDecision | None = None
         if _block_msg is None:
             guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
@@ -1348,6 +1443,31 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+        elif function_name == "plan_ready":
+            # Plan-mode approval rides the clarify callback, exactly like the
+            # clarify tool above. The sequential executor dispatches inline (it
+            # does NOT go through agent_runtime_helpers.invoke_tool), so the
+            # plan_ready branch must be wired here too or the registry handler
+            # runs with callback=None (interactive CLI regression).
+            def _execute(next_args: dict) -> Any:
+                from tools.plan_ready_tool import plan_ready_tool as _plan_ready_tool
+                return _plan_ready_tool(
+                    session_id=agent.session_id or "",
+                    plan_path=next_args.get("plan_path"),
+                    summary=next_args.get("summary"),
+                    callback=agent.clarify_callback,
+                )
+            function_result, function_args = _run_agent_tool_execution_middleware(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                execute=_execute,
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('plan_ready', function_args, tool_duration, result=function_result)}")
         elif function_name == "read_terminal":
             def _execute(next_args: dict) -> Any:
                 from tools.read_terminal_tool import read_terminal_tool as _read_terminal_tool

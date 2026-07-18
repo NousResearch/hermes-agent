@@ -771,6 +771,276 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.format_error
         assert result.should_compress is False
 
+    # ── Local-inference memory/resource-ceiling 400s (issue #52261) ──
+    # A provider memory-guard / OOM rejection often suggests "reduce context
+    # length", colliding with the context-overflow patterns.  Compressing
+    # history cannot relieve a prefill memory peak, so these must classify as
+    # transient ``overloaded`` (retry, no compression) — NOT context_overflow.
+
+    def test_400_omlx_prefill_memory_guard_is_overloaded_not_context_overflow(self):
+        # Verbatim oMLX memory-guard rejection on a TINY (~5.7k-token) prompt.
+        e = MockAPIError(
+            "oMLX prefill memory guard rejected this prompt: Prefill would "
+            "require ~13.87 GB peak (current 13.46 GB + KV+SDPA 419.28 MB) but "
+            "dynamic ceiling is 13.50 GB. ... or reduce context length.",
+            status_code=400,
+        )
+        result = classify_api_error(
+            e, provider="custom", model="omlx-chat",
+            approx_tokens=5700, context_length=64000,
+        )
+        assert result.reason == FailoverReason.overloaded
+        # Must NOT enter the compress-and-shrink loop.
+        assert result.should_compress is False
+
+    def test_400_process_memory_limit_exceeded_is_overloaded(self):
+        e = MockAPIError(
+            "Request aborted: process memory limit exceeded (usage 13.7 GB, "
+            "ceiling 13.5 GB). Reduce context size or lower memory_guard_tier.",
+            status_code=400,
+        )
+        result = classify_api_error(
+            e, provider="custom", model="omlx-chat",
+            approx_tokens=5745, context_length=64000,
+        )
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_compress is False
+
+    def test_no_status_prefill_too_large_for_available_memory_is_overloaded(self):
+        # Streaming / no-status path: APIError text, no HTTP code.
+        e = Exception("Prefill context too large for available memory")
+        result = classify_api_error(
+            e, provider="custom", model="omlx-chat",
+            approx_tokens=15000, context_length=64000,
+        )
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_compress is False
+
+    def test_400_genuine_context_window_overflow_still_compresses(self):
+        # NEGATIVE/invariant guard: a real window overflow must STILL route to
+        # context_overflow + compression (proves the memory guard is precise
+        # and does not swallow genuine "reduce the length" overflows).
+        e = MockAPIError(
+            "This model's maximum context length is 8192 tokens; "
+            "reduce the length of the messages.",
+            status_code=400,
+        )
+        result = classify_api_error(
+            e, provider="custom", model="x",
+            approx_tokens=9000, context_length=8192,
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
+    def test_streaming_process_memory_limit_exceeded_is_overloaded_not_billing(self):
+        # Status-LESS streaming abort (oMLX emits this on the streaming path
+        # under memory pressure).  "process memory limit exceeded" contains the
+        # substring "limit exceeded", a _USAGE_LIMIT_PATTERN — so before the
+        # memory guard was moved ahead of the billing/usage checks in
+        # _classify_by_message, this misclassified as BILLING (retryable=False,
+        # rotate-credential), a different wrong bucket than context_overflow.
+        e = Exception(
+            "Request aborted: process memory limit exceeded (usage 13.7 GB, "
+            "ceiling 13.5 GB). Reduce context size or lower memory_guard_tier."
+        )
+        result = classify_api_error(
+            e, provider="custom", model="omlx-chat",
+            approx_tokens=5745, context_length=64000,
+        )
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_compress is False
+        # Must NOT be routed into credential rotation like a billing error.
+        assert result.should_rotate_credential is False
+        # Failover-eligible: a wedged local memory wall recovers via a roomier
+        # provider once retries are exhausted, not by hammering the same server.
+        assert result.should_fallback is True
+
+    def test_400_prefill_memory_code_reworded_message_is_overloaded(self):
+        # Direct (non-proxied) connection: the message is reworded with NO
+        # memory substring, but the structured body carries the unambiguous
+        # ``code: "prefill_memory_exceeded"`` (+ limit_bytes in *bytes*).
+        # Without the error-code guard this fell through to a non-retryable
+        # ``format_error`` (no overflow wording to catch it either).
+        body = {"error": {
+            "message": "Prompt rejected by the prefill guard. Try a smaller request.",
+            "type": "invalid_request_error",
+            "code": "prefill_memory_exceeded",
+            "omlx_code": "prefill_memory_exceeded",
+            "limit_bytes": 14495514624,
+        }, "type": "error"}
+        e = MockAPIError(
+            "Prompt rejected by the prefill guard. Try a smaller request.",
+            status_code=400, body=body,
+        )
+        result = classify_api_error(
+            e, provider="custom", model="omlx-chat",
+            approx_tokens=5700, context_length=64000,
+        )
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_compress is False
+        assert result.should_fallback is True
+
+    def test_no_status_prefill_memory_code_is_overloaded(self):
+        # Streaming / no-status path carrying only the structured code (message
+        # fully reworded).  Previously fell to the retryable ``unknown`` bucket;
+        # the _classify_by_error_code memory-code guard now catches it.
+        body = {"error": {
+            "message": "Prompt rejected by the prefill guard. Try a smaller request.",
+            "code": "prefill_memory_exceeded",
+            "limit_bytes": 14495514624,
+        }, "type": "error"}
+        e = MockAPIError(
+            "Prompt rejected by the prefill guard. Try a smaller request.",
+            status_code=None, body=body,
+        )
+        result = classify_api_error(
+            e, provider="custom", model="omlx-chat",
+            approx_tokens=5700, context_length=64000,
+        )
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_compress is False
+        # Same rejection, detected via the structured code instead of the
+        # message: the recovery annotation must be identical to the 400 and
+        # message-pattern paths, not silently weaker.  Guards the shared
+        # _memory_ceiling_result contract against per-route drift.
+        assert result.should_fallback is True
+
+    def test_400_litellm_proxy_flattened_memory_guard_is_overloaded(self):
+        # Proxy-flattened transport shape (real oMLX-behind-LiteLLM capture from
+        # issue #52261): LiteLLM collapses the structured body into a single
+        # "OpenAIException - <message>" string and DROPS the ``code``, so the
+        # error-code guard cannot fire — only the message substring survives.
+        # On clean main this 400 matched the bare "reduce context length"
+        # overflow pattern and misclassified as context_overflow (→ compress →
+        # wedge-loop reset).  The message-pattern memory guard ("memory guard",
+        # "dynamic ceiling", "prefill would require") must catch it even with no
+        # status code or structured code to lean on.
+        e = MockAPIError(
+            "litellm.BadRequestError: OpenAIException - oMLX prefill memory "
+            "guard rejected this prompt: Prefill would require ~13.87 GB peak "
+            "(current 13.46 GB + KV+SDPA 419.28 MB) but dynamic ceiling is "
+            "13.50 GB. Raise custom_ceiling_bytes in admin Memory settings, or "
+            "reduce context length.",
+            status_code=400,
+        )
+        result = classify_api_error(
+            e, provider="custom", model="omlx-chat",
+            approx_tokens=5700, context_length=64000,
+        )
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        # Must NOT enter the compress-and-shrink loop a context_overflow would.
+        assert result.should_compress is False
+        assert result.should_fallback is True
+
+    # ── Memory-ceiling rejections surfaced as 5xx (issue #52261) ──
+    # main routes explicit context-overflow wording in a 500/502/503/529 body
+    # into compression (llama.cpp/vLLM report overflow-as-5xx).  A memory abort
+    # from those same servers carries the same "reduce context length" hint, so
+    # without a guard it reaches the identical wedge-loop these tests exist to
+    # prevent — the 400 fix alone does not cover it.
+
+    @pytest.mark.parametrize("status_code", [500, 502, 503, 529])
+    def test_5xx_memory_guard_is_overloaded_not_context_overflow(self, status_code):
+        # Body carries BOTH memory wording and the colliding "reduce context
+        # length" hint.  Fails before the 5xx guard: matches
+        # _CONTEXT_OVERFLOW_PATTERNS → context_overflow + should_compress=True.
+        e = MockAPIError(
+            "oMLX prefill memory guard rejected this prompt: Prefill would "
+            "require ~13.87 GB peak but dynamic ceiling is 13.50 GB. Raise "
+            "custom_ceiling_bytes in admin Memory settings, or reduce "
+            "context length.",
+            status_code=status_code,
+        )
+        result = classify_api_error(
+            e, provider="custom", model="omlx-chat",
+            approx_tokens=5700, context_length=64000,
+        )
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        # The whole point: compressing history cannot lower a prefill peak.
+        assert result.should_compress is False
+        # Same contract as the 400 / code / message routes.
+        assert result.should_fallback is True
+
+    @pytest.mark.parametrize("status_code", [500, 502, 503, 529])
+    def test_5xx_memory_code_reworded_message_is_overloaded(self, status_code):
+        # Direct (non-proxied) 5xx whose message was reworded to carry no memory
+        # substring — only the structured code identifies it.
+        body = {"error": {
+            "message": "Prompt rejected by the prefill guard.",
+            "code": "prefill_memory_exceeded",
+            "limit_bytes": 14495514624,
+        }, "type": "error"}
+        e = MockAPIError(
+            "Prompt rejected by the prefill guard.",
+            status_code=status_code, body=body,
+        )
+        result = classify_api_error(
+            e, provider="custom", model="omlx-chat",
+            approx_tokens=5700, context_length=64000,
+        )
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_compress is False
+        assert result.should_fallback is True
+
+    @pytest.mark.parametrize("status_code", [500, 502, 503, 529])
+    def test_5xx_genuine_context_overflow_still_compresses(self, status_code):
+        # CONTROL for the guard above: a real overflow body (no memory wording)
+        # must STILL take the compression path main added.  Proves the memory
+        # guard is narrow and did not disable overflow-as-5xx handling.
+        e = MockAPIError(
+            "the request exceeds the available context size. try increasing "
+            "the context size or enable context shift",
+            status_code=status_code,
+        )
+        result = classify_api_error(
+            e, provider="custom", model="local-llama",
+            approx_tokens=150000, context_length=64000,
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.retryable is True
+        assert result.should_compress is True
+
+    def test_503_generic_overload_unaffected_by_memory_guard(self):
+        # CONTROL: a plain transient 503 with neither memory nor overflow
+        # wording keeps its existing bare-``overloaded`` classification.
+        e = MockAPIError("Service temporarily unavailable, please retry.",
+                         status_code=503)
+        result = classify_api_error(
+            e, provider="custom", model="x",
+            approx_tokens=5000, context_length=64000,
+        )
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_500_generic_server_error_unaffected_by_memory_guard(self):
+        # CONTROL: a plain 500 with no memory/overflow wording must still be a
+        # generic server_error, not swept into the memory bucket.
+        e = MockAPIError("Internal server error", status_code=500)
+        result = classify_api_error(
+            e, provider="custom", model="x",
+            approx_tokens=5000, context_length=64000,
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_genuine_billing_credit_limit_still_billing(self):
+        # NEGATIVE/invariant guard: a real billing exhaustion message must STILL
+        # classify as billing — proves the memory-guard reorder in
+        # _classify_by_message did not swallow legitimate billing errors.
+        e = Exception("Your account has insufficient credits to complete this request.")
+        result = classify_api_error(
+            e, provider="openrouter", model="x",
+            approx_tokens=5000, context_length=64000,
+        )
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
     # ── Server disconnect + large session ──
 
     def test_disconnect_large_session_context_overflow(self):

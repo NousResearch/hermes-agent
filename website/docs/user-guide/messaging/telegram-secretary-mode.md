@@ -59,6 +59,41 @@ Messages sent via business connection carry a `via_business_connection` flag
 in Telegram's metadata. In your chat, a banner shows the bot manages this
 conversation. From the client's side, the reply appears to come from you.
 
+### Message classification
+
+Not every `business_message` update is a client request. Hermes classifies
+each update by author before it reaches the agent:
+
+- **Client messages** run through the normal agent loop and get a reply.
+  Slash commands from clients are treated as plain text — a client can never
+  drive operator commands through your personal account.
+- **Your own manual replies** (typed from any of your devices) are stored in
+  the chat's session as context but never processed as a prompt: the agent
+  sees you already answered and won't reply over you.
+- **Bot echoes** (Telegram relays the bot's business sends back with
+  `sender_business_bot` set) are dropped entirely.
+
+Owner detection uses the tracked BusinessConnection state when available and
+falls back to comparing the sender against the chat peer, so classification
+keeps working after a gateway restart (Telegram does not replay connection
+updates).
+
+### Replies with media
+
+Text and media replies both carry the `business_connection_id`, so photos,
+documents, voice notes, and albums are delivered as you — not as the bot.
+Streaming draft previews are disabled in business chats (the draft API has no
+business connection support); replies arrive as regular complete messages.
+
+### Standalone sends
+
+The `send_message` tool and `hermes send` accept a connection ID for one-shot
+Secretary Mode replies without a running gateway:
+
+```bash
+hermes send --to telegram:CHAT_ID --business-connection-id CONN_ID "on my way"
+```
+
 ## Constraints
 
 - **Private chats only** — Secretary Mode cannot access groups or channels

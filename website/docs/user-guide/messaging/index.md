@@ -579,6 +579,29 @@ gateway:
 
 Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
 
+### Home-channel startup notifications
+
+A separate per-platform key controls the "gateway is back online" broadcast to the configured home channel on startup. Distinct from `gateway_restart_notification` (which governs the shutdown/restart-in-flight message and the direct reply to the chat that originated `/restart`), this one controls the extra broadcast to the home channel:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      home_chat_id: "123456789"
+      home_channel_startup_notification: always      # every startup, incl. crash recovery
+    discord:
+      home_chat_id: "987654321"
+      # home_channel_startup_notification omitted → defaults to restart_only
+```
+
+Values:
+
+- **`restart_only`** (default) — fires only for planned restarts (chat `/restart`, terminal restart, SIGUSR1, service-managed restart). Matches prior behavior; no broadcast on cold starts or crash recoveries.
+- **`always`** — fires on EVERY startup, including unplanned ones (crash recovery, OOM kill, systemd `Restart=on-failure` auto-restart). Useful when you want to know Hermes came back after an incident. Resolves issue #27870.
+- **`off`** — never fires the home-channel broadcast. The direct `/restart` reply on the originating chat still lands (that is governed by `gateway_restart_notification`).
+
+The setting is per-platform, so mixed configs work (Telegram `always`, Discord `restart_only`). When a chat-originated `/restart` happens on a chat that IS the configured home channel, only one message lands — the direct restart reply. The home-channel path suppresses its own send for that target.
+
 ### Session resume across gateway restarts
 
 When the gateway shuts down with an in-flight tool call or generation, the affected sessions are flagged as `restart_interrupted`. On the next startup, the gateway schedules an auto-resume for each one — the user gets a short heads-up in the chat ("Send any message after restart and I'll try to resume where you left off.") and the session picks up from the last committed turn when they reply.

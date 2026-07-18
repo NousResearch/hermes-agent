@@ -6414,35 +6414,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if connected_count > 0:
             await asyncio.sleep(1.0)
 
-        # Notify the chat that initiated /restart that the gateway is back.
-        planned_restart_notification_pending = _planned_restart_notification_pending()
-        await self._send_restart_notification()
-
-        # Broadcast a lightweight "gateway is back" message to configured home
-        # channels. Default behavior (preserves prior): only fire for non-chat
-        # planned restarts (terminal / SIGUSR1 / service-managed restart paths
-        # that wrote the planned-restart marker). Chat-originated /restart has
-        # its own precise reply target in .restart_notify.json so we don't
-        # double-notify the originating chat via the configured home channel.
-        #
-        # Per-platform opt-in `home_channel_startup_notification: always`
-        # extends this to fire on EVERY startup — including unplanned ones
-        # (crash recovery, OOM, systemd `Restart=on-failure`). Resolves
-        # issue #27870. The decision is per-platform inside the function so
-        # mixed configs (one platform always, another restart_only) work.
-        any_platform_always = any(
-            getattr(p_cfg, "home_channel_startup_notification", "restart_only") == "always"
-            for p_cfg in self.config.platforms.values()
-        )
-        if planned_restart_notification_pending or any_platform_always:
-            try:
-                await self._send_home_channel_startup_notifications(
-                    skip_targets=None,
-                    is_planned_restart=planned_restart_notification_pending,
-                )
-            finally:
-                if planned_restart_notification_pending:
-                    _clear_planned_restart_notification()
+        # Notify the chat that initiated /restart that the gateway is back,
+        # then broadcast to configured home channels. Extracted into a
+        # helper so the double-send guard (skip_targets carries the direct
+        # restart notify target) can be exercised in tests without driving
+        # the full start() path.
+        await self._run_post_startup_notifications()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -13665,6 +13642,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as exc:
             logger.debug("image_routing: decision failed, falling back to text — %s", exc)
             return "text"
+
+    async def _run_post_startup_notifications(self) -> None:
+        """Send the direct /restart-notify message + home-channel startup ping.
+
+        Called once from `start()` after all adapters have connected. Runs
+        two notifications in sequence:
+
+          1. `_send_restart_notification()` — the precise reply to the chat
+             that originated `/restart`, or a no-op when no restart-notify
+             marker is on disk. Returns the target tuple it sent to (or
+             None if it didn't send).
+          2. `_send_home_channel_startup_notifications()` — the broadcast
+             "gateway online" ping to configured home channels, subject to
+             per-platform `home_channel_startup_notification` config
+             (`restart_only` default vs `always` for crash-recovery / OOM
+             coverage — resolves issue #27870).
+
+        Double-send guard: when the /restart originated from a chat that
+        IS the configured home channel, the direct restart notify targets
+        the same (platform, chat_id, thread_id) tuple the home-channel
+        path would target. The direct target is forwarded into
+        `skip_targets` so the home-channel path suppresses its own send
+        for that platform. Without this, `always` mode produces TWO
+        messages on the home channel for every chat-originated /restart.
+
+        Isolated as a method (rather than inline in `start()`) so the
+        wiring can be unit-tested; see
+        `test_run_post_startup_notifications_forwards_restart_target_to_skip`
+        in tests/gateway/test_restart_notification.py.
+        """
+        planned_restart_notification_pending = _planned_restart_notification_pending()
+        restart_notify_target = await self._send_restart_notification()
+
+        any_platform_always = any(
+            getattr(p_cfg, "home_channel_startup_notification", "restart_only") == "always"
+            for p_cfg in self.config.platforms.values()
+        )
+        if planned_restart_notification_pending or any_platform_always:
+            try:
+                skip_targets = {restart_notify_target} if restart_notify_target else None
+                await self._send_home_channel_startup_notifications(
+                    skip_targets=skip_targets,
+                    is_planned_restart=planned_restart_notification_pending,
+                )
+            finally:
+                if planned_restart_notification_pending:
+                    _clear_planned_restart_notification()
 
     async def _enrich_message_with_vision(
         self,

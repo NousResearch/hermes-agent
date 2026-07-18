@@ -840,3 +840,98 @@ async def test_startup_notification_default_param_is_planned_for_backward_compat
 
     assert delivered == {("telegram", "home-42", None)}
     adapter.send.assert_called_once()
+
+
+# ── _run_post_startup_notifications: double-send guard ────────────────────
+# Reviewer feedback on #55008: the previous PR passed skip_targets=None
+# unconditionally, so a chat-originated /restart from a chat that IS the
+# home channel would produce TWO messages under `always` mode. These
+# tests pin the wiring and the end-to-end behaviour.
+
+
+@pytest.mark.asyncio
+async def test_run_post_startup_notifications_forwards_restart_target_to_skip(
+    tmp_path, monkeypatch,
+):
+    """Wiring test: when `_send_restart_notification` returns a target
+    tuple, `_send_home_channel_startup_notifications` must be invoked
+    with `skip_targets` containing that tuple. This is the guard that
+    prevents the double-send bug the reviewer flagged."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, _adapter = make_restart_runner()
+    # Enable the `always` broadcast so the second call would fire even
+    # without a planned-restart marker.
+    runner.config.platforms[Platform.TELEGRAM].home_channel_startup_notification = "always"
+
+    restart_target = ("telegram", "home-42", None)
+    runner._send_restart_notification = AsyncMock(return_value=restart_target)
+    runner._send_home_channel_startup_notifications = AsyncMock(return_value=set())
+
+    await runner._run_post_startup_notifications()
+
+    runner._send_home_channel_startup_notifications.assert_awaited_once()
+    _, kwargs = runner._send_home_channel_startup_notifications.await_args
+    assert kwargs["skip_targets"] == {restart_target}, (
+        "restart-notify target must be forwarded into skip_targets to "
+        "prevent double-send on the home channel"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_post_startup_notifications_no_skip_when_restart_notify_absent(
+    tmp_path, monkeypatch,
+):
+    """When no /restart notify marker exists (e.g. crash-recovery, cold
+    start), `_send_restart_notification` returns None. The home-channel
+    call should then receive `skip_targets=None` — nothing to skip."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, _adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel_startup_notification = "always"
+
+    runner._send_restart_notification = AsyncMock(return_value=None)  # no marker on disk
+    runner._send_home_channel_startup_notifications = AsyncMock(return_value=set())
+
+    await runner._run_post_startup_notifications()
+
+    runner._send_home_channel_startup_notifications.assert_awaited_once()
+    _, kwargs = runner._send_home_channel_startup_notifications.await_args
+    assert kwargs["skip_targets"] is None
+
+
+@pytest.mark.asyncio
+async def test_restart_chat_that_is_home_channel_delivers_only_once(tmp_path, monkeypatch):
+    """End-to-end regression for the scenario the reviewer named:
+    `/restart` fires from the SAME chat that's configured as the home
+    channel, and `home_channel_startup_notification: always` is set. The
+    user must receive ONE message on that chat, not two."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    # Set up the .restart_notify.json marker so _send_restart_notification
+    # has a real target to send to.
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "home-42",
+        "chat_type": "dm",
+        "message_id": "m1",
+    }))
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops Home",
+    )
+    runner.config.platforms[Platform.TELEGRAM].home_channel_startup_notification = "always"
+
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="reply"))
+
+    await runner._run_post_startup_notifications()
+
+    # ONE send total — the direct /restart notify. The home-channel path
+    # ran but suppressed its own send because skip_targets contained the
+    # direct target.
+    assert adapter.send.await_count == 1, (
+        f"expected exactly one send to home-42, got {adapter.send.await_count} — "
+        "the double-send guard is broken"
+    )

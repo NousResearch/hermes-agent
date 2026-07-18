@@ -20,6 +20,7 @@ import {
   setResumeFailedSessionId,
   setSessions
 } from '@/store/session'
+import { $todosBySession, clearSessionTodos } from '@/store/todos'
 
 import type { ClientSessionState } from '../../types'
 
@@ -256,6 +257,7 @@ describe('resumeSession failure recovery', () => {
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
+    clearSessionTodos('runtime-1')
     vi.restoreAllMocks()
   })
 
@@ -353,6 +355,47 @@ describe('resumeSession failure recovery', () => {
     await runResume(requestGateway)
 
     expect($resumeFailedSessionId.get()).toBeNull()
+  })
+
+  it('restores the latest active task list under the cold-resume runtime id', async () => {
+    const storedMessages = [
+      { content: 'make a plan', role: 'user', timestamp: 1 },
+      {
+        content: '',
+        role: 'assistant',
+        timestamp: 2,
+        tool_calls: [
+          {
+            id: 'todo-1',
+            function: {
+              name: 'todo',
+              arguments: JSON.stringify({
+                todos: [
+                  { content: 'Done', id: 'a', status: 'completed' },
+                  { content: 'Continue', id: 'b', status: 'in_progress' }
+                ]
+              })
+            }
+          }
+        ]
+      }
+    ]
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-1', messages: storedMessages, info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: storedMessages, session_id: 'stored-1' } as never)
+
+    await runResume(requestGateway)
+
+    expect($todosBySession.get()['runtime-1']).toEqual([
+      { content: 'Done', id: 'a', status: 'completed' },
+      { content: 'Continue', id: 'b', status: 'in_progress' }
+    ])
   })
 
   it('resumes via the gateway default (deferred build) — not lazy, no eager opt-out', async () => {

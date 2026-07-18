@@ -63,13 +63,13 @@ describe('useMessageStream turn-end todo cleanup', () => {
     vi.restoreAllMocks()
   })
 
-  it('drops a still-active task list when the turn completes', async () => {
+  it('keeps a still-active task list when the turn completes', async () => {
     await mountStream()
     setSessionTodos(SID, [todo('a', 'completed'), todo('b', 'in_progress')])
 
     complete()
 
-    expect($todosBySession.get()[SID]).toBeUndefined()
+    expect($todosBySession.get()[SID]).toEqual([todo('a', 'completed'), todo('b', 'in_progress')])
   })
 
   it('keeps a finished list on completion so its linger shows the final checkmarks', async () => {
@@ -82,12 +82,12 @@ describe('useMessageStream turn-end todo cleanup', () => {
     expect($todosBySession.get()[SID]).toHaveLength(1)
   })
 
-  it('drops a still-active task list when the turn errors out', async () => {
+  it('keeps a still-active task list when the turn errors out', async () => {
     await mountStream()
     setSessionTodos(SID, [todo('a', 'in_progress')])
 
     act(() => handleEvent!({ payload: { message: 'boom' }, session_id: SID, type: 'error' }))
 
-    expect($todosBySession.get()[SID]).toBeUndefined()
+    expect($todosBySession.get()[SID]).toEqual([todo('a', 'in_progress')])
   })
 })

@@ -6,6 +6,7 @@ import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { latestSessionTodos } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
@@ -55,6 +56,7 @@ import {
   type TileDock
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
+import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
@@ -115,6 +117,16 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
   const output = stored.output_tokens || 0
 
   setCurrentUsage(current => ({ ...current, input, output, total: input + output }))
+}
+
+function restoreSessionTodos(runtimeSessionId: string, messages: ClientSessionState['messages']) {
+  const restored = todosForHydration(latestSessionTodos(messages))
+
+  if (restored) {
+    setSessionTodos(runtimeSessionId, restored)
+  } else {
+    clearSessionTodos(runtimeSessionId)
+  }
 }
 
 // `session.create` params from the current profile + sticky-UI model/effort/fast,
@@ -542,6 +554,7 @@ export function useSessionActions({
           setActiveSessionId(cachedRuntimeId)
           activeSessionIdRef.current = cachedRuntimeId
           syncSessionStateToView(cachedRuntimeId, cachedViewState)
+          restoreSessionTodos(cachedRuntimeId, cachedViewState.messages)
           setCurrentCwd(cachedViewState.cwd)
           setCurrentBranch(cachedViewState.branch)
           setSessionStartedAt(Date.now())
@@ -713,6 +726,7 @@ export function useSessionActions({
           }),
           storedSessionId
         )
+        restoreSessionTodos(resumed.session_id, messagesForView)
       } catch (err) {
         if (!isCurrentResume()) {
           return

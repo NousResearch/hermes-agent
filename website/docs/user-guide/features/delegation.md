@@ -191,6 +191,19 @@ delegation:
 
 A positive value enforces a hard wall-clock limit on each child; `0` or a negative value disables it.
 
+You can also set the cap on an individual `delegate_task` call with `timeout_seconds`, or on an individual task inside a batch. Precedence is **per-task `timeout_seconds` > top-level `timeout_seconds` > `delegation.child_timeout_seconds`**. Omit the field to inherit the next level. Set `timeout_seconds: 0` to disable the hard cap for that call or task, even when config has a positive cap. Positive values below 30 seconds are floored to 30 seconds.
+
+```python
+delegate_task(goal="Deep review", timeout_seconds=1800)
+delegate_task(
+    tasks=[
+        {"goal": "Quick lint", "timeout_seconds": 120},
+        {"goal": "Long research", "timeout_seconds": 0},
+    ],
+    timeout_seconds=600,
+)
+```
+
 :::tip Diagnostic dump on zero-call timeout
 With a hard cap configured, if a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, and any early error messages. Much easier to root-cause than the previous silent-timeout behavior.
 :::

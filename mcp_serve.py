@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 logger = logging.getLogger("hermes.mcp_serve")
 
@@ -1131,12 +1131,19 @@ class McpHttpAuthConfig:
     path: str = "/mcp"
     token_ttl_seconds: int = 2_592_000
     code_ttl_seconds: int = 300
+    allowed_redirect_uris: Sequence[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.path = _normalize_path(self.path)
         self.public_base_url = self.public_base_url.rstrip("/")
+        self.allowed_redirect_uris = tuple(_comma_values(self.allowed_redirect_uris))
         if self.oauth_compatible and not self.oauth_client_id:
-            self.oauth_client_id = self.psk
+            # Keep the PSK out of authorization URLs, browser history, proxy
+            # logs, and redirect traces.  The default OAuth client id is public;
+            # the existing PSK becomes its confidential token-endpoint secret.
+            self.oauth_client_id = "hermes-mcp"
+        if self.oauth_compatible and not self.oauth_client_secret:
+            self.oauth_client_secret = self.psk
 
 
 @dataclass
@@ -1213,11 +1220,10 @@ class _OAuthTokenStore:
         code_verifier: Optional[str] = None,
     ) -> bool:
         with self._lock:
-            issued = self._codes.get(code)
+            issued = self._codes.pop(code, None)
             if not issued:
                 return False
             if issued.expires_at < time.time():
-                self._codes.pop(code, None)
                 return False
             if not secrets.compare_digest(issued.client_id, client_id):
                 return False
@@ -1227,7 +1233,6 @@ class _OAuthTokenStore:
                 derived = _pkce_challenge(code_verifier, issued.code_challenge_method)
                 if not derived or not secrets.compare_digest(issued.code_challenge, derived):
                     return False
-            self._codes.pop(code, None)
             return True
 
 
@@ -1301,8 +1306,6 @@ def _is_loopback_host(host: str) -> bool:
 
 
 def _client_secret_valid(config: McpHttpAuthConfig, supplied: Optional[str]) -> bool:
-    if not config.oauth_client_secret:
-        return True
     return _constant_time_equals(config.oauth_client_secret, supplied)
 
 
@@ -1318,6 +1321,36 @@ def _auth_challenge(config: McpHttpAuthConfig) -> str:
     if config.oauth_compatible:
         return f'Bearer resource_metadata="{_metadata_url(config)}"'
     return "Bearer"
+
+
+def _oauth_redirect_uri_allowed(config: McpHttpAuthConfig, redirect_uri: Optional[str]) -> bool:
+    if not redirect_uri:
+        return False
+    parsed = urlparse(redirect_uri)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    if parsed.fragment or parsed.username is not None or parsed.password is not None:
+        return False
+    if parsed.hostname and _is_loopback_host(parsed.hostname):
+        return True
+    if parsed.scheme != "https":
+        return False
+    return redirect_uri in set(config.allowed_redirect_uris)
+
+
+def _is_protected_mcp_http_path(config: McpHttpAuthConfig, request_path: str) -> bool:
+    path = request_path.rstrip("/") or "/"
+    mcp_path = config.path.rstrip("/") or "/"
+    if path == mcp_path:
+        return True
+    if mcp_path == "/" or not path.startswith(f"{mcp_path}/"):
+        return False
+    if config.oauth_compatible and path in {
+        f"{mcp_path}/authorize",
+        f"{mcp_path}/token",
+    }:
+        return False
+    return True
 
 
 def _is_authenticated(request, config: McpHttpAuthConfig, store: _OAuthTokenStore) -> bool:
@@ -1378,7 +1411,7 @@ def create_streamable_http_app(
             "Unauthenticated MCP HTTP serving is restricted to loopback hosts"
         )
 
-    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.requests import Request
     from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
     store = _OAuthTokenStore()
@@ -1399,7 +1432,7 @@ def create_streamable_http_app(
                 "token_endpoint": f"{config.public_base_url}{config.path}/token",
                 "response_types_supported": ["code"],
                 "grant_types_supported": ["authorization_code", "client_credentials"],
-                "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
+                "token_endpoint_auth_methods_supported": ["client_secret_post"],
                 "code_challenge_methods_supported": ["plain", "S256"],
                 "scopes_supported": ["mcp"],
             })
@@ -1427,6 +1460,14 @@ def create_streamable_http_app(
                 return JSONResponse({"error": "invalid_client"}, status_code=401)
             if not redirect_uri:
                 return JSONResponse({"error": "invalid_request", "error_description": "redirect_uri is required"}, status_code=400)
+            if not _oauth_redirect_uri_allowed(config, redirect_uri):
+                return JSONResponse(
+                    {
+                        "error": "invalid_request",
+                        "error_description": "redirect_uri is not allowed",
+                    },
+                    status_code=400,
+                )
             if code_challenge:
                 code_challenge_method = code_challenge_method or "plain"
                 if code_challenge_method not in {"plain", "S256"}:
@@ -1500,12 +1541,21 @@ def create_streamable_http_app(
         app.add_route(f"{config.path}/token", token, methods=["POST"])
 
     if config:
-        class McpAuthMiddleware(BaseHTTPMiddleware):
-            async def dispatch(self, request, call_next):
-                path = request.url.path.rstrip("/") or "/"
-                mcp_path = config.path.rstrip("/") or "/"
-                if path == mcp_path and not _is_authenticated(request, config, store):
-                    return JSONResponse(
+        class McpAuthMiddleware:
+            def __init__(self, asgi_app):
+                self.app = asgi_app
+
+            async def __call__(self, scope, receive, send):
+                if scope.get("type") != "http":
+                    await self.app(scope, receive, send)
+                    return
+
+                request = Request(scope, receive=receive)
+                if (
+                    _is_protected_mcp_http_path(config, request.url.path)
+                    and not _is_authenticated(request, config, store)
+                ):
+                    response = JSONResponse(
                         {
                             "error": "unauthorized",
                             "hint": "Authenticate with OAuth bearer token, bearer/header PSK, or an enabled query token.",
@@ -1513,7 +1563,9 @@ def create_streamable_http_app(
                         status_code=401,
                         headers={"WWW-Authenticate": _auth_challenge(config)},
                     )
-                return await call_next(request)
+                    await response(scope, receive, send)
+                    return
+                await self.app(scope, receive, send)
 
         app.add_middleware(McpAuthMiddleware)
 
@@ -1535,6 +1587,7 @@ def run_mcp_http_server(
     oauth_client_secret_env: Optional[str] = None,
     token_ttl_seconds: int = 2_592_000,
     code_ttl_seconds: int = 300,
+    oauth_redirect_uris: Optional[Sequence[str]] = None,
     allowed_hosts: Optional[Sequence[str]] = None,
     allowed_origins: Optional[Sequence[str]] = None,
     expose_toolsets: Optional[Sequence[str]] = None,
@@ -1562,6 +1615,12 @@ def run_mcp_http_server(
     if (auth_token_env or oauth_compatible) and not psk and not oauth_client_id:
         print(
             "Error: HTTP auth requested but no auth token/client id was found in the configured environment variables.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if oauth_compatible and oauth_client_id and not oauth_client_secret:
+        print(
+            "Error: --oauth-client-id-env requires --oauth-client-secret-env.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1607,6 +1666,7 @@ def run_mcp_http_server(
             path=path,
             token_ttl_seconds=token_ttl_seconds,
             code_ttl_seconds=code_ttl_seconds,
+            allowed_redirect_uris=_comma_values(oauth_redirect_uris),
         )
 
     app = create_streamable_http_app(server, auth_config=auth_config, health_path=health_path)

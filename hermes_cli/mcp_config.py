@@ -1064,6 +1064,7 @@ def mcp_command(args):
                 oauth_client_secret_env=getattr(args, "oauth_client_secret_env", None),
                 token_ttl_seconds=getattr(args, "oauth_token_ttl_seconds", 2592000),
                 code_ttl_seconds=getattr(args, "oauth_code_ttl_seconds", 300),
+                oauth_redirect_uris=getattr(args, "oauth_redirect_uri", []) or [],
                 allowed_hosts=getattr(args, "allowed_host", []) or [],
                 allowed_origins=getattr(args, "allowed_origin", []) or [],
                 expose_toolsets=getattr(args, "expose_toolset", []) or [],

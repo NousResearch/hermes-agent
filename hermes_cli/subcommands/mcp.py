@@ -83,6 +83,12 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         help="Authorization code lifetime in seconds",
     )
     mcp_serve_p.add_argument(
+        "--oauth-redirect-uri",
+        action="append",
+        default=[],
+        help="Allowed non-loopback HTTPS OAuth redirect URI; repeat or comma-separate",
+    )
+    mcp_serve_p.add_argument(
         "--allowed-host",
         action="append",
         default=[],

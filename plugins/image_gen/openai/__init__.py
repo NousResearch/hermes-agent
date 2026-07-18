@@ -118,6 +118,19 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
 
 
+def _resolve_base_url() -> Optional[str]:
+    """Return configured OpenAI image base_url, or None when unset."""
+    cfg = _load_openai_config()
+    openai_cfg = cfg.get("openai") if isinstance(cfg.get("openai"), dict) else {}
+    if not isinstance(openai_cfg, dict):
+        return None
+    value = openai_cfg.get("base_url")
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().rstrip("/")
+    return cleaned or None
+
+
 # ---------------------------------------------------------------------------
 # Source-image loading (for image-to-image / edit)
 # ---------------------------------------------------------------------------
@@ -270,7 +283,8 @@ class OpenAIImageGenProvider(ImageGenProvider):
         is_edit = bool(sources)
         modality = "image" if is_edit else "text"
 
-        client = openai.OpenAI()
+        base_url = _resolve_base_url()
+        client = openai.OpenAI(base_url=base_url) if base_url else openai.OpenAI()
 
         if is_edit:
             # images.edit() expects file-like objects. Download/read each

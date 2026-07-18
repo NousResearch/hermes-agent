@@ -23,7 +23,11 @@ def _tool(name: str, parameters: dict) -> dict:
 def test_object_without_properties_gets_empty_properties():
     tools = [_tool("t", {"type": "object"})]
     out = sanitize_tool_schemas(tools)
-    assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}}
+    assert out[0]["function"]["parameters"] == {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    }
 
 
 def test_nested_object_without_properties_gets_empty_properties():
@@ -160,13 +164,21 @@ def test_anyof_nested_objects_sanitized():
 def test_missing_parameters_gets_default_object_schema():
     tools = [{"type": "function", "function": {"name": "t"}}]
     out = sanitize_tool_schemas(tools)
-    assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}}
+    assert out[0]["function"]["parameters"] == {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    }
 
 
 def test_non_dict_parameters_gets_default_object_schema():
     tools = [_tool("t", "object")]  # pathological
     out = sanitize_tool_schemas(tools)
-    assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}}
+    assert out[0]["function"]["parameters"] == {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    }
 
 
 def test_required_pruned_to_existing_properties():
@@ -179,14 +191,53 @@ def test_required_pruned_to_existing_properties():
     assert out[0]["function"]["parameters"]["required"] == ["name"]
 
 
-def test_required_all_missing_is_dropped():
+def test_required_all_missing_becomes_empty_array():
     tools = [_tool("t", {
         "type": "object",
         "properties": {},
         "required": ["x", "y"],
     })]
     out = sanitize_tool_schemas(tools)
-    assert "required" not in out[0]["function"]["parameters"]
+    assert out[0]["function"]["parameters"]["required"] == []
+
+
+def test_required_null_becomes_empty_array():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": None,
+    })]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"]["required"] == []
+
+
+def test_required_missing_key_becomes_empty_array():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+    })]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"]["required"] == []
+
+
+def test_required_valid_list_preserved():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
+        "required": ["name", "age"],
+    })]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"]["required"] == ["name", "age"]
+
+
+def test_required_junk_entries_stripped():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name", None, "", "   "],
+    })]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"]["required"] == ["name"]
 
 
 def test_well_formed_schema_unchanged():

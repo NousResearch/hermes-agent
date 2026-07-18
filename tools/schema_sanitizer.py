@@ -70,20 +70,31 @@ def _sanitize_single_tool(tool: dict) -> dict:
 
     params = fn.get("parameters")
     # Missing / non-dict parameters → substitute the minimal valid shape.
+    # Some strict JSON Schema validators reject `required: null` and some
+    # reject a missing `required` after normalizing it to null. Always emit
+    # a real array.
     if not isinstance(params, dict):
-        fn["parameters"] = {"type": "object", "properties": {}}
+        fn["parameters"] = {"type": "object", "properties": {}, "required": []}
         return out
 
     fn["parameters"] = _sanitize_node(params, path=fn.get("name", "<tool>"))
     # After recursion, guarantee the top-level is an object with properties.
     top = fn["parameters"]
     if not isinstance(top, dict):
-        fn["parameters"] = {"type": "object", "properties": {}}
+        fn["parameters"] = {"type": "object", "properties": {}, "required": []}
     else:
         if top.get("type") != "object":
             top["type"] = "object"
         if "properties" not in top or not isinstance(top.get("properties"), dict):
             top["properties"] = {}
+        # Some strict JSON Schema validators reject `required: null` and some
+        # reject a missing `required` after normalizing it to null. Always
+        # emit a real array.
+        req = top.get("required")
+        if req is None or not isinstance(req, list):
+            top["required"] = []
+        else:
+            top["required"] = [str(r) for r in req if r is not None and str(r).strip()]
     # Final pass: collapse nullable anyOf/oneOf unions that the recursive
     # sanitizer above leaves intact (it only handles the array-form
     # ``type: [X, "null"]``). Keep the ``nullable: true`` hint so runtime
@@ -97,6 +108,14 @@ def _sanitize_single_tool(tool: dict) -> dict:
         fn["parameters"], path=fn.get("name", "<tool>")
     )
     fn["parameters"] = _strip_ref_siblings(fn["parameters"])
+    # Re-assert after the passes above: none of them should introduce a
+    # null/missing `required`, but guard anyway since strict validators
+    # reject `required: null`.
+    final = fn["parameters"]
+    if isinstance(final, dict) and final.get("type") == "object":
+        req = final.get("required")
+        if req is None or not isinstance(req, list):
+            final["required"] = []
     return out
 
 
@@ -347,7 +366,9 @@ def _sanitize_node(node: Any, path: str) -> Any:
         props = out.get("properties") or {}
         valid = [r for r in out["required"] if isinstance(r, str) and r in props]
         if not valid:
-            out.pop("required", None)
+            # Keep an empty array rather than dropping the key: strict
+            # backends that normalize a missing `required` to null reject it.
+            out["required"] = []
         elif len(valid) != len(out["required"]):
             out["required"] = valid
 

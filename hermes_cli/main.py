@@ -6451,7 +6451,11 @@ def _update_via_zip(args):
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
-        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+        _install_python_dependencies_with_optional_fallback(
+            [uv_bin, "pip"],
+            env=uv_env,
+            group="termux-all" if _is_termux_env(uv_env) else "all",
+        )
     else:
         # Use sys.executable to explicitly call the venv's pip module,
         # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -6470,7 +6474,9 @@ def _update_via_zip(args):
                 cwd=PROJECT_ROOT,
                 check=True,
             )
-        _install_python_dependencies_with_optional_fallback(pip_cmd)
+        _install_python_dependencies_with_optional_fallback(
+            pip_cmd, group="termux-all" if _is_termux_env() else "all"
+        )
 
     node_failures = _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
@@ -7239,6 +7245,8 @@ def _recover_from_interrupted_install() -> None:
                 logger.debug("ensurepip during install recovery failed: %s", exc)
 
             uv_bin = ensure_uv()
+            if not uv_bin:
+                uv_bin = _ensure_uv_for_termux([sys.executable, "-m", "pip"])
             if uv_bin:
                 uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
                 if _is_termux_env(uv_env):
@@ -7781,6 +7789,18 @@ def _install_python_dependencies_with_optional_fallback(
     copies (Windows blocks REPLACE on a running .exe but allows RENAME). See
     ``_quarantine_running_hermes_exe`` for the rationale.
     """
+    if group == "termux-all" and _is_termux_env(env) and _is_android_python():
+        if _install_termux_dependencies_from_wheelhouse(
+            install_cmd_prefix,
+            env=env,
+        ):
+            return
+        print(
+            "  WARNING: Immutable wheels do not support this Python/architecture; "
+            "using the native-build compatibility fallback..."
+        )
+        _install_psutil_android_compat(install_cmd_prefix, env=env)
+
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
 
     def _install(args: list[str]) -> None:
@@ -8138,6 +8158,393 @@ def _is_termux_env(env: dict[str, str] | None = None) -> bool:
 
 def _is_android_python() -> bool:
     return sys.platform == "android"
+
+
+def _termux_wheelhouse_cache_root(env: dict[str, str] | None = None) -> Path:
+    values = env or os.environ
+    home = values.get("HERMES_HOME")
+    root = Path(home).expanduser() if home else Path.home() / ".hermes"
+    return root / "cache" / "termux-wheelhouse"
+
+
+def _install_termux_dependencies_from_wheelhouse(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
+    """Resolve and install the Termux graph from the pinned binary wheelhouse.
+
+    Returns ``False`` only when the interpreter/architecture is outside the
+    published CPython 3.13 arm64 target. Integrity, download, or dependency-pin
+    failures raise and therefore never silently fall back to local compilation.
+    """
+    if len(install_cmd_prefix) < 2 or install_cmd_prefix[1] != "pip":
+        return False
+
+    from hermes_cli.termux_wheelhouse import (
+        TermuxWheelhouseUnsupported,
+        binary_install_options,
+        ensure_wheelhouse,
+        validate_runtime,
+    )
+
+    uv_bin = install_cmd_prefix[0]
+    target_python = _resolve_install_target_python(install_cmd_prefix, env)
+    if target_python is None:
+        return False
+
+    probe = (
+        "import json, platform, sys; "
+        "g=getattr(sys, 'getandroidapilevel', None); "
+        "print(json.dumps({'platform':sys.platform,'version':list(sys.version_info[:2]),"
+        "'machine':platform.machine(),'api':g() if callable(g) else None,'full_version':platform.python_version()}))"
+    )
+    result = subprocess.run(
+        [str(target_python), "-c", probe],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    details = json.loads(result.stdout)
+    try:
+        validate_runtime(
+            python_version=tuple(details["version"]),
+            machine=str(details["machine"]),
+            android_api=details["api"],
+            sys_platform=str(details["platform"]),
+        )
+    except TermuxWheelhouseUnsupported:
+        return False
+
+    work = _termux_wheelhouse_cache_root(env).parent / "termux-update"
+    work.mkdir(parents=True, exist_ok=True)
+    direct = work / "direct.in"
+    lock_constraints = work / "lock-constraints.txt"
+    resolved = work / "resolved.txt"
+    run_env = {**os.environ, **(env or {})}
+    run_env.pop("PYTHONPATH", None)
+    run_env.pop("PYTHONHOME", None)
+    run_env["UV_NO_CONFIG"] = "1"
+    run_env["UV_LINK_MODE"] = "copy"
+    run_env["UV_PYTHON"] = str(target_python)
+    run_env["UV_DEFAULT_INDEX"] = "https://pypi.org/simple"
+    run_env["UV_INDEX_STRATEGY"] = "first-index"
+    for key in (
+        "UV_INDEX",
+        "UV_EXTRA_INDEX_URL",
+        "PIP_INDEX_URL",
+        "PIP_EXTRA_INDEX_URL",
+    ):
+        run_env.pop(key, None)
+
+    _run_install_with_heartbeat(
+        [uv_bin, "pip", "install", "--python", str(target_python), "packaging==26.0"],
+        env=run_env,
+    )
+    subprocess.run(
+        [
+            str(target_python),
+            str(PROJECT_ROOT / "scripts" / "termux_requirements.py"),
+            "--pyproject",
+            str(PROJECT_ROOT / "pyproject.toml"),
+            "--lock",
+            str(PROJECT_ROOT / "uv.lock"),
+            "--requirements",
+            str(direct),
+            "--constraints",
+            str(lock_constraints),
+            "--python-version",
+            str(details["full_version"]),
+        ],
+        cwd=PROJECT_ROOT,
+        check=True,
+        env=run_env,
+    )
+    subprocess.run(
+        [
+            uv_bin,
+            "pip",
+            "compile",
+            str(direct),
+            "--python",
+            str(target_python),
+            "--constraint",
+            str(lock_constraints),
+            "--output-file",
+            str(resolved),
+            "--no-annotate",
+        ],
+        cwd=PROJECT_ROOT,
+        check=True,
+        env=run_env,
+    )
+    wheelhouse = ensure_wheelhouse(
+        _termux_wheelhouse_cache_root(run_env),
+        requirements=resolved,
+        uv_lock=PROJECT_ROOT / "uv.lock",
+        check_runtime=False,
+    )
+    print(f"  Using immutable Termux wheelhouse: {wheelhouse.name}")
+    _run_install_with_heartbeat(
+        [
+            uv_bin,
+            "pip",
+            "install",
+            "--python",
+            str(target_python),
+            "--requirements",
+            str(resolved),
+            "--constraint",
+            str(PROJECT_ROOT / "constraints-termux.txt"),
+            *binary_install_options(wheelhouse),
+        ],
+        env=run_env,
+    )
+    _run_install_with_heartbeat(
+        [
+            uv_bin,
+            "pip",
+            "install",
+            "--python",
+            str(target_python),
+            "--no-deps",
+            "--editable",
+            ".",
+        ],
+        env=run_env,
+    )
+    subprocess.run(
+        [uv_bin, "pip", "check", "--python", str(target_python)],
+        cwd=PROJECT_ROOT,
+        check=True,
+        env=run_env,
+    )
+    smoke = (
+        "import importlib; "
+        "[importlib.import_module(m) for m in "
+        "('cffi','cryptography','jiter','markupsafe','PIL.Image','psutil',"
+        "'pydantic_core','yaml','rpds','_ruamel_yaml')]; "
+        "print('immutable Termux native imports ok')"
+    )
+    subprocess.run(
+        [str(target_python), "-c", smoke],
+        cwd=PROJECT_ROOT,
+        check=True,
+        env=run_env,
+    )
+    return True
+
+
+def _termux_post_pull_wheelhouse_gate(
+    git_cmd: list[str],
+    pre_pull_sha: str | None,
+) -> None:
+    """Reject a pulled Termux update unless its complete graph is binary-only.
+
+    The verifier runs in a child process so it loads the newly pulled release
+    constants instead of this process's pre-pull module cache. After the
+    immutable wheel release is verified, uv performs a dry-run of the freshly
+    resolved Termux graph with source distributions disabled. Any pin,
+    checksum, download, or binary-coverage failure rolls the checkout back.
+    """
+    if not (_is_termux_env() and _is_android_python()):
+        return
+
+    def reject(detail: str) -> None:
+        print("Updated checkout failed the immutable Termux wheel gate:")
+        print(
+            f"  {detail.splitlines()[-1] if detail else 'unknown wheelhouse failure'}"
+        )
+        if pre_pull_sha:
+            rollback = subprocess.run(
+                git_cmd + ["reset", "--hard", pre_pull_sha],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if rollback.returncode == 0:
+                print(
+                    f"  Rolled back to {pre_pull_sha[:10]}; "
+                    "the existing install is unchanged"
+                )
+            else:
+                print(f"  Recover manually: git reset --hard {pre_pull_sha}")
+        raise SystemExit(1)
+
+    uv_bin = shutil.which("uv")
+    if not uv_bin:
+        reject("Termux uv is unavailable; reinstall the Termux uv package")
+
+    target_python = _resolve_install_target_python(
+        [uv_bin, "pip"],
+        {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")},
+    ) or Path(sys.executable)
+    verifier = [
+        str(target_python),
+        str(PROJECT_ROOT / "scripts" / "prepare_termux_wheelhouse.py"),
+        "--cache-root",
+        str(_termux_wheelhouse_cache_root()),
+        "--uv-lock",
+        str(PROJECT_ROOT / "uv.lock"),
+    ]
+    result = subprocess.run(
+        verifier,
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 2:
+        print(
+            "  WARNING: Updated checkout is outside the immutable "
+            "arm64/Python 3.13 target"
+        )
+        return
+    if result.returncode != 0:
+        reject(
+            (result.stderr or result.stdout or "wheelhouse verification failed").strip()
+        )
+
+    work = _termux_wheelhouse_cache_root().parent / "termux-update-gate"
+    work.mkdir(parents=True, exist_ok=True)
+    direct = work / "direct.in"
+    lock_constraints = work / "lock-constraints.txt"
+    resolved = work / "resolved.txt"
+    run_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+    run_env.pop("PYTHONPATH", None)
+    run_env.pop("PYTHONHOME", None)
+    run_env["UV_NO_CONFIG"] = "1"
+    run_env["UV_LINK_MODE"] = "copy"
+    run_env["UV_PYTHON"] = str(target_python)
+    run_env["UV_DEFAULT_INDEX"] = "https://pypi.org/simple"
+    run_env["UV_INDEX_STRATEGY"] = "first-index"
+    for key in (
+        "UV_INDEX",
+        "UV_EXTRA_INDEX_URL",
+        "PIP_INDEX_URL",
+        "PIP_EXTRA_INDEX_URL",
+    ):
+        run_env.pop(key, None)
+
+    version_probe = subprocess.run(
+        [
+            str(target_python),
+            "-c",
+            "import platform; print(platform.python_version())",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=run_env,
+    )
+    if version_probe.returncode != 0:
+        reject((version_probe.stderr or "target Python version probe failed").strip())
+    full_version = version_probe.stdout.strip()
+
+    try:
+        subprocess.run(
+            [
+                str(target_python),
+                str(PROJECT_ROOT / "scripts" / "termux_requirements.py"),
+                "--pyproject",
+                str(PROJECT_ROOT / "pyproject.toml"),
+                "--lock",
+                str(PROJECT_ROOT / "uv.lock"),
+                "--requirements",
+                str(direct),
+                "--constraints",
+                str(lock_constraints),
+                "--python-version",
+                full_version,
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+            env=run_env,
+        )
+        subprocess.run(
+            [
+                uv_bin,
+                "pip",
+                "compile",
+                str(direct),
+                "--python",
+                str(target_python),
+                "--constraint",
+                str(lock_constraints),
+                "--output-file",
+                str(resolved),
+                "--no-annotate",
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+            env=run_env,
+        )
+    except subprocess.CalledProcessError as exc:
+        reject((exc.stderr or exc.stdout or str(exc)).strip())
+
+    graph_verifier = [*verifier, "--requirements", str(resolved)]
+    graph_result = subprocess.run(
+        graph_verifier,
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=run_env,
+    )
+    if graph_result.returncode != 0:
+        reject(
+            (
+                graph_result.stderr or graph_result.stdout or "dependency pin mismatch"
+            ).strip()
+        )
+    output_lines = [
+        line.strip() for line in graph_result.stdout.splitlines() if line.strip()
+    ]
+    if not output_lines:
+        reject("wheelhouse verifier returned no cache path")
+    wheelhouse = Path(output_lines[-1])
+
+    binary_probe = subprocess.run(
+        [
+            uv_bin,
+            "pip",
+            "install",
+            "--dry-run",
+            "--reinstall",
+            "--python",
+            str(target_python),
+            "--requirements",
+            str(resolved),
+            "--constraint",
+            str(PROJECT_ROOT / "constraints-termux.txt"),
+            "--find-links",
+            str(wheelhouse),
+            "--only-binary",
+            ":all:",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=run_env,
+    )
+    if binary_probe.returncode != 0:
+        reject(
+            (
+                binary_probe.stderr
+                or binary_probe.stdout
+                or "resolved graph requires an unavailable source build"
+            ).strip()
+        )
+    print("  Immutable Termux wheel update gate passed (binary-only graph)")
 
 
 def _install_psutil_android_compat(
@@ -10077,6 +10484,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 from hermes_cli.managed_uv import ensure_uv
 
                 repair_uv = ensure_uv()
+                if not repair_uv:
+                    repair_uv = _ensure_uv_for_termux(
+                        [sys.executable, "-m", "pip"]
+                    )
                 # A managed install whose venv is gone entirely (interrupted
                 # repair after the old venv was moved aside) needs the venv
                 # recreated before dependencies can be installed into it.
@@ -10096,11 +10507,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if repair_uv:
                     repair_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
                     _install_python_dependencies_with_optional_fallback(
-                        [repair_uv, "pip"], env=repair_env, group="all"
+                        [repair_uv, "pip"],
+                        env=repair_env,
+                        group="termux-all" if _is_termux_env(repair_env) else "all",
                     )
                 else:
                     _install_python_dependencies_with_optional_fallback(
-                        [sys.executable, "-m", "pip"], group="all"
+                        [sys.executable, "-m", "pip"],
+                        group="termux-all" if _is_termux_env() else "all",
                     )
                 _clear_update_incomplete_marker()
                 healthy_after, detail_after = _venv_core_imports_healthy()
@@ -10194,6 +10608,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"    cd {PROJECT_ROOT} && git reflog && git reset --hard <prev-sha>")
                 sys.exit(1)
 
+            _termux_post_pull_wheelhouse_gate(git_cmd, pre_pull_sha)
             update_succeeded = True
         finally:
             if auto_stash_ref is not None:
@@ -10267,9 +10682,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 uv_env.pop("PYTHONHOME", None)
                 install_group = "termux-all"
                 print("  → Termux detected: using uv + curated termux-all optional profile...")
-            if _is_termux_env(uv_env) and _is_android_python():
-                print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
             _install_python_dependencies_with_optional_fallback(
                 [uv_bin, "pip"], env=uv_env, group=install_group
             )
@@ -10295,9 +10707,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _is_termux_env():
                 install_group = "termux-all"
                 print("  → Termux detected: using curated termux-all optional profile...")
-            if _is_termux_env() and _is_android_python():
-                print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                _install_psutil_android_compat(pip_cmd)
             _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
 
         # Core Python deps installed AND verified (the fallback helper runs

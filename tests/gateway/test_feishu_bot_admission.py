@@ -778,6 +778,31 @@ def test_handle_message_event_data_drops_bot_sender_by_default():
     assert processed == []
 
 
+def test_handle_message_event_data_logs_admission_rejection_at_info(caplog):
+    import asyncio
+    import logging
+
+    adapter = make_adapter_skeleton()
+    install_dedup_state(adapter)
+
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            sender=make_sender(sender_type="bot", open_id="ou_peer"),
+            message=make_message(message_id="om_bot_rejected", chat_type="p2p"),
+        )
+    )
+
+    with caplog.at_level(logging.INFO, logger="plugins.platforms.feishu.adapter"):
+        asyncio.run(adapter._handle_message_event_data(data))
+
+    dropped = [r for r in caplog.records if "Dropped inbound event" in r.getMessage()]
+    assert dropped, "admission rejection must be visible at INFO level"
+    message = dropped[0].getMessage()
+    assert dropped[0].levelno == logging.INFO
+    assert "bots_disabled" in message
+    assert "om_bot_rejected" in message
+
+
 def test_handle_message_event_data_forwards_sender_when_admitted():
     import asyncio
 

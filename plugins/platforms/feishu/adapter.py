@@ -2539,7 +2539,10 @@ class FeishuAdapter(BasePlatformAdapter):
 
         reason = self._admit(sender, message)
         if reason is not None:
-            logger.debug("[Feishu] dropping inbound event: %s", reason)
+            # INFO, not DEBUG: _is_duplicate() above already persisted this id to the
+            # seen-store, so a silent drop here is indistinguishable from a dead
+            # dispatch loop when observed from outside the process (#66997).
+            logger.info("[Feishu] Dropped inbound event (%s): id=%s", reason, message_id)
             return
 
         chat_type = getattr(message, "chat_type", "p2p")

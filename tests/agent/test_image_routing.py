@@ -228,6 +228,32 @@ class TestSupportsVisionOverride:
         cfg = {"model": {"default": "my-llava"}}
         assert _supports_vision_override(cfg, "custom", "my-llava") is None
 
+    def test_top_level_override_scoped_to_active_model(self):
+        # ``model.supports_vision`` declares the ACTIVE model's capability (the
+        # model it sits beside as ``model.default``). It must apply to that
+        # model but must NOT leak onto a *different* one — a per-session
+        # ``/model`` switch, or a multi-session gateway routing several models,
+        # can query a model other than ``model.default``. Leaking the default's
+        # ``true`` declaration there would route an image natively into a
+        # text-only model.
+        cfg = {"model": {"default": "my-vision-vllm", "supports_vision": True}}
+        # Active model → the declaration applies.
+        assert _supports_vision_override(cfg, "custom", "my-vision-vllm") is True
+        # A different model → no leak; fall through to the normal lookup.
+        assert _supports_vision_override(cfg, "openai", "gpt-3.5-text-only") is None
+
+    def test_top_level_override_scoping_is_case_insensitive(self):
+        cfg = {"model": {"default": "My-Vision-VLLM", "supports_vision": True}}
+        assert _supports_vision_override(cfg, "custom", "my-vision-vllm") is True
+
+    def test_top_level_false_override_does_not_leak_to_other_model(self):
+        # The ``false`` direction leaks too: a text-only main's ``false``
+        # declaration would otherwise suppress native vision on a genuinely
+        # capable other model.
+        cfg = {"model": {"default": "text-only-main", "supports_vision": False}}
+        assert _supports_vision_override(cfg, "custom", "text-only-main") is False
+        assert _supports_vision_override(cfg, "anthropic", "claude-sonnet-4") is None
+
     def test_malformed_sections_are_ignored(self):
         # User accidentally wrote a string where a section was expected —
         # don't blow up, just fall through.

@@ -137,11 +137,16 @@ that standard the counter is verified: dispatched clicks stepped it
   logs `inotify_add_watch ... No space left on device`, `script-status` shows
   `state: "not-watching"` / `hasEntry: false`, and the script never executes.
   This is a host limit, not a script bug — a normal desktop is unaffected.
-- **Real background GUI clicks (computer-use style) do NOT reach the canvas.**
-  Chromium/Electron reject synthetic pointer input to an unfocused/occluded
-  renderer, so `computer_use` no-focus automation can't click buttons. This is
-  irrelevant to the actual product path (agents use `/exec`, not clicks) — but
-  don't try to "verify" a script by having a background agent click the GUI.
+- **Driving the canvas with computer-use needs FOREGROUND delivery, not
+  background.** cua-driver's default `background` delivery returns
+  `background_unavailable` against Electron's occluded renderer — but that is the
+  first rung, not a wall. cua-driver returns an `escalation: "foreground"` hint;
+  set `delivery_mode: "foreground"` (pair with `bring_to_front`) and its X11 XTest
+  path (`x11_xtest_fg`) clicks land — this dismisses the "Run Script" consent
+  dialog and clicks the canvas. Verified by the Cua team on this exact v1.11.0
+  AppImage (Linux/X11). Do NOT conclude "Electron rejects synthetic clicks" and
+  give up in background mode — climb to foreground. (The real product path is
+  still `/exec`, not clicks; this note is for computer-use-driven testing.)
 
 The pattern:
 

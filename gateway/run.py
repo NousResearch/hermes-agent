@@ -3333,6 +3333,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._recovery_boot_id = uuid.uuid4().hex
         self._recovery_semaphore = asyncio.Semaphore(4)
         self._recovery_pause_notified: set[tuple[str, str, str]] = set()
+        # Boot-local fast path for inbound recovery guards.  Durable truth
+        # remains in SessionStore + ActiveRunStore; this avoids an executor
+        # hop before the per-session pending sentinel is claimed.
+        self._active_recovery_reasons: dict[str, str] = {}
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -7323,11 +7327,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         store = getattr(self, "_active_run_store", None)
         if not session_key or store is None:
             return False
-        return await asyncio.to_thread(
+        discarded = await asyncio.to_thread(
             store.discard,
             session_key,
             run_id=run_id,
         )
+        if discarded:
+            getattr(self, "_active_recovery_reasons", {}).pop(session_key, None)
+        return discarded
 
     async def _clear_resume_pending_after_explicit_discard(
         self,
@@ -7342,7 +7349,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not session_key or not callable(clear_resume_pending):
             return False
         try:
-            return bool(await asyncio.to_thread(clear_resume_pending, session_key))
+            cleared = bool(await asyncio.to_thread(clear_resume_pending, session_key))
+            if cleared:
+                getattr(self, "_active_recovery_reasons", {}).pop(
+                    session_key, None
+                )
+            return cleared
         except Exception:
             logger.debug(
                 "Failed to clear recovery marker after explicit discard for %s",
@@ -7442,6 +7454,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
             if not finished:
                 return
+            getattr(self, "_active_recovery_reasons", {}).pop(session_key, None)
             self._clear_restart_failure_count(session_key)
             try:
                 await self.async_session_store.clear_resume_pending(session_key)
@@ -7475,6 +7488,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         records = store.snapshot()
         exact_keys = {record.session_key for record in records}
         self._exact_active_run_keys = exact_keys
+        # Only exact journal records populate this index.  Legacy recovery
+        # continues to use the existing freshness heuristic and never needs
+        # the side-effect/delivery redelivery guards below.
+        recovery_reasons: dict[str, str] = {}
+        self._active_recovery_reasons = recovery_reasons
 
         # ``finish()`` and ``clear_resume_pending()`` live in separate durable
         # stores.  If SIGKILL lands after the journal CAS-delete but before the
@@ -7581,6 +7599,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 has_active_process=has_active_process,
             )
             reason = reason_for_disposition[decision.disposition]
+            recovery_reasons[record.session_key] = reason
             marked = await self.async_session_store.mark_resume_pending(
                 record.session_key,
                 reason,
@@ -11088,17 +11107,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
-        try:
-            _recovery_entry = await self.async_session_store.lookup_by_session_key(
-                _quick_key
-            )
-            _recovery_reason = (
-                _recovery_entry.resume_reason
-                if _recovery_entry is not None and _recovery_entry.resume_pending
-                else None
-            )
-        except Exception:
-            _recovery_reason = None
+        _recovery_reason = getattr(self, "_active_recovery_reasons", {}).get(
+            _quick_key
+        )
         if is_internal and _recovery_reason in self._RECOVERY_PAUSE_REASONS:
             logger.info(
                 "Ignoring internal event for recovery-paused session %s (%s); "
@@ -12462,6 +12473,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
+            # A genuinely new user turn is the human recovery boundary.  Keep
+            # the durable resume marker until the turn/delivery path clears it,
+            # but stop treating later internal events as belonging to the old
+            # uncertain run inside this boot.
+            if not is_internal and _recovery_reason in DURABLE_RESUME_REASONS:
+                getattr(self, "_active_recovery_reasons", {}).pop(
+                    _quick_key, None
+                )
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will

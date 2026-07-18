@@ -109,6 +109,9 @@ async def test_old_exact_run_recovers_even_with_clean_marker_and_idle_policy(
     recovered = store._entries[entry.session_key]
     assert recovered.resume_pending is True
     assert recovered.resume_reason == "restart_interrupted_exact"
+    assert runner._active_recovery_reasons[entry.session_key] == (
+        "restart_interrupted_exact"
+    )
     assert runner._active_run_store.get(entry.session_key).run_id == record.run_id
     assert runner._active_run_store.get(entry.session_key).recovery_attempts == 1
     # Durable exact recovery also bypasses the ordinary idle reset policy.
@@ -333,6 +336,7 @@ async def test_internal_event_cannot_resume_safety_paused_session(tmp_path):
     runner = object.__new__(GatewayRunner)
     runner.config = store.config
     runner.session_store = store
+    runner._active_recovery_reasons = {entry.session_key: "side_effect_unknown"}
 
     event = MessageEvent(
         text="background completion",
@@ -362,9 +366,7 @@ async def test_trigger_message_redelivery_cannot_resume_safety_pause(tmp_path):
         resume_reason="side_effect_unknown",
     )
     runner.session_store._entries = {session_key: entry}
-    runner._async_session_store = MagicMock()
-    runner._async_session_store._store = runner.session_store
-    runner._async_session_store.lookup_by_session_key = AsyncMock(return_value=entry)
+    runner._active_recovery_reasons = {session_key: "side_effect_unknown"}
     runner._active_run_store = ActiveRunStore(tmp_path)
     runner._active_run_store.begin(
         session_key,

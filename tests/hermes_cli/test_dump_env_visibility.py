@@ -75,3 +75,13 @@ def test_dump_leaves_unset_key_untouched(monkeypatch, capsys, tmp_path):
     line = _api_key_line(capsys.readouterr().out, "tavily")
     assert "not set" in line
     assert "shell only" not in line
+
+
+def test_cron_summary_reads_utf8_bom_jobs_file(tmp_path):
+    from hermes_cli.dump import _cron_summary
+
+    jobs_file = tmp_path / "cron" / "jobs.json"
+    jobs_file.parent.mkdir(parents=True)
+    jobs_file.write_bytes(b'\xef\xbb\xbf{"jobs": [{"id": "bom-job", "enabled": true}]}')
+
+    assert _cron_summary(tmp_path) == "1 active / 1 total"

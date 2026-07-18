@@ -138,6 +138,25 @@ def test_show_status_reports_nous_inference_key_without_portal_login(monkeypatch
 # Helpers shared by xAI OAuth status tests
 # ---------------------------------------------------------------------------
 
+def test_show_status_reads_utf8_bom_jobs_file(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+
+    jobs_file = tmp_path / "cron" / "jobs.json"
+    jobs_file.parent.mkdir(parents=True)
+    jobs_file.write_bytes(b'\xef\xbb\xbf{"jobs": [{"id": "bom-job", "enabled": true}]}')
+
+    monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+    monkeypatch.setattr(status_mod, "get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": "gpt-5.4"}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    assert "Jobs:         1 active, 1 total" in capsys.readouterr().out
+
+
 def _base_xai_mocks(monkeypatch, tmp_path):
     """Set up the minimal environment for show_status, returning status_mod."""
     from hermes_cli import status as status_mod

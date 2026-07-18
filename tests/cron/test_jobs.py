@@ -257,6 +257,13 @@ class TestJobCRUD:
         jobs = list_jobs()
         assert len(jobs) == 2
 
+    def test_load_jobs_reads_utf8_bom_store(self, tmp_cron_dir):
+        jobs_file = tmp_cron_dir / "cron" / "jobs.json"
+        jobs_file.parent.mkdir(parents=True)
+        jobs_file.write_bytes(b'\xef\xbb\xbf{"jobs": [{"id": "bom-job", "enabled": true}]}')
+
+        assert load_jobs() == [{"id": "bom-job", "enabled": True}]
+
     def test_list_jobs_normalizes_partial_legacy_records(self, tmp_cron_dir):
         save_jobs([
             {

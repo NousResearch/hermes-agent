@@ -21,7 +21,7 @@ interface HarnessProps {
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: null | string
   selectedStoredSessionIdRef: MutableRefObject<null | string>
-  startFreshSessionDraft: (focus: boolean) => unknown
+  startFreshSessionDraft: (options: boolean | { replaceRoute?: boolean; rotateFreshDraftKey?: boolean }) => unknown
 }
 
 function RouteResumeHarness({ resumeFailedSessionId = null, resumeExhaustedSessionId = null, ...props }: HarnessProps) {
@@ -73,11 +73,11 @@ describe('useRouteResume', () => {
         activeSessionIdRef={activeSessionIdRef}
         creatingSessionRef={creatingSessionRef}
         currentView="chat"
-        freshDraftReady
+        freshDraftReady={false}
         gatewayState="open"
-        locationPathname="/session-1"
+        locationPathname="/new"
         resumeSession={resumeSession}
-        routedSessionId="session-1"
+        routedSessionId={null}
         runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
         selectedStoredSessionId={null}
         selectedStoredSessionIdRef={selectedStoredSessionIdRef}

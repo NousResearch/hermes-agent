@@ -694,6 +694,8 @@ export const en: Translations = {
       catalogInstalling: 'Installing...',
       catalogInstallStarted: name => `Installing ${name}... applies to new sessions when done.`,
       catalogInstallFailed: name => `Failed to install ${name}`,
+      catalogConnectPending: name => `Installed ${name} — open it in Servers to finish connecting.`,
+      catalogSetupNotes: 'Setup notes',
       catalogEnvPrompt: name => `${name} requires credentials`,
       catalogEnvRequired: 'Fill in the required values before installing.',
       capabilitySummary: (tools, prompts, resources) =>

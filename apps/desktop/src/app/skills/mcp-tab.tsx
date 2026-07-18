@@ -1335,7 +1335,7 @@ function CatalogTag({ children }: { children: string }) {
 // The Nous-approved MCP catalog: one-click installs of curated servers, with an
 // inline prompt for any required credentials (never shows stored values). On
 // install the parent refetches config + catalog and reloads live sessions.
-function McpCatalog({
+export function McpCatalog({
   entries,
   loading,
   onInstalled
@@ -1394,6 +1394,36 @@ function McpCatalog({
 
       notify({ kind: 'success', title: m.catalogInstallStarted(entry.name), message: '' })
       setEnvOpenFor(null)
+
+      // An OAuth-over-HTTP connector isn't usable straight after install — the
+      // catalog install only writes config/env, it never mints a token. Chain
+      // straight into the SAME desktop OAuth flow the Servers tab uses for
+      // re-auth (see `authenticate`), so "Install" actually connects. Best-effort:
+      // a cancelled/failed auth leaves the install intact — surface a connect-later
+      // state and let the user finish from the Servers tab's Authenticate action.
+      // The strict `=== 'http'` / `=== 'oauth'` checks are inherently version-skew
+      // safe: a missing/renamed field on an older runtime's catalog just fails the
+      // predicate, so the chain no-ops rather than crashing.
+      if (entry.auth_type === 'oauth' && entry.transport === 'http') {
+        try {
+          const flow = await completeMcpDesktopOAuth({
+            serverName: entry.name,
+            start: authMcpServer,
+            status: getMcpOAuthFlow,
+            openExternal: url => window.hermesDesktop.openExternal(url)
+          })
+
+          notify({
+            kind: 'success',
+            title: m.authenticatedTitle,
+            message: m.authenticatedMessage(entry.name, flow.tools?.length ?? 0)
+          })
+        } catch {
+          // Never fail the install over an auth hiccup — it already succeeded.
+          notify({ kind: 'info', title: m.catalogConnectPending(entry.name), message: '' })
+        }
+      }
+
       onInstalled()
     } catch (err) {
       notifyError(err, m.catalogInstallFailed(entry.name))
@@ -1463,6 +1493,15 @@ function McpCatalog({
                       </label>
                     ))}
                   </div>
+                )}
+                {/* Post-install setup notes (e.g. "grant scopes in the provider
+                    console"). Mirrors the web dashboard's McpPage render. Guarded
+                    for the version-skew case: older runtimes omit `post_install`. */}
+                {entry.post_install && (
+                  <details className="mt-1.5 text-[0.66rem] text-muted-foreground/70">
+                    <summary className="cursor-pointer select-none">{m.catalogSetupNotes}</summary>
+                    <p className="mt-1 whitespace-pre-wrap">{entry.post_install.trim()}</p>
+                  </details>
                 )}
               </div>
               <Button

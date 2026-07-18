@@ -310,6 +310,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
     p_create.add_argument("--parent", action="append", default=[],
                           help="Parent task id (repeatable)")
+    p_create.add_argument(
+        "--approval-parent", action="append", default=[],
+        help="Review parent whose edge requires structured approved=true "
+             "before this task can run (repeatable)",
+    )
     p_create.add_argument("--workspace", default="scratch",
                           help="scratch | worktree | worktree:<path> | dir:<path> "
                                "(default: scratch)")
@@ -500,6 +505,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
     p_link.add_argument("child_id")
+    p_link.add_argument(
+        "--gate", choices=sorted(kb.VALID_GATE_TYPES), default=None,
+        help="Typed dependency gate. 'approval' fails closed until the parent "
+             "has an unambiguous approved review run.",
+    )
     p_unlink = sub.add_parser("unlink", help="Remove a parent->child dependency")
     p_unlink.add_argument("parent_id")
     p_unlink.add_argument("child_id")
@@ -1363,6 +1373,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             tenant=args.tenant,
             priority=args.priority,
             parents=tuple(args.parent or ()),
+            approval_parents=tuple(getattr(args, "approval_parent", None) or ()),
             triage=bool(getattr(args, "triage", False)),
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime,
@@ -1822,8 +1833,12 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 def _cmd_link(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
-        kb.link_tasks(conn, args.parent_id, args.child_id)
-    print(f"Linked {args.parent_id} -> {args.child_id}")
+        kb.link_tasks(
+            conn, args.parent_id, args.child_id,
+            gate_type=getattr(args, "gate", None),
+        )
+    suffix = f" [gate={args.gate}]" if getattr(args, "gate", None) else ""
+    print(f"Linked {args.parent_id} -> {args.child_id}{suffix}")
     return 0
 
 

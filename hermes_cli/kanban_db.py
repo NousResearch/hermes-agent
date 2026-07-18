@@ -102,6 +102,13 @@ _log = logging.getLogger(__name__)
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
+# Declarative dependency-edge contracts. NULL remains the ordinary v1
+# dependency semantics; ``approval`` is fail-closed and requires a terminal
+# parent review run with unambiguous structured approval metadata.
+APPROVAL_GATE = "approval"
+VALID_GATE_TYPES = {APPROVAL_GATE}
+APPROVED_VERDICTS = {"APPROVED", "FINAL APPROVED", "PASS", "FINAL PASS"}
+
 # Typed block reasons. Distinguishes the two fundamentally different things a
 # worker (or human) means by "blocked", so each can be routed differently
 # instead of all landing in one undifferentiated ``blocked`` bucket that a cron
@@ -1182,6 +1189,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS task_links (
     parent_id  TEXT NOT NULL,
     child_id   TEXT NOT NULL,
+    gate_type  TEXT,
     PRIMARY KEY (parent_id, child_id)
 );
 
@@ -1855,6 +1863,18 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 
     Called by ``init_db`` so opening an old DB is always safe.
     """
+    link_table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_links'"
+    ).fetchone() is not None
+    if link_table_exists:
+        link_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_links)")
+        }
+        if "gate_type" not in link_cols:
+            _add_column_if_missing(
+                conn, "task_links", "gate_type", "gate_type TEXT"
+            )
+
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
     if "tenant" not in cols:
         _add_column_if_missing(conn, "tasks", "tenant", "tenant TEXT")
@@ -2397,6 +2417,7 @@ def create_task(
     tenant: Optional[str] = None,
     priority: int = 0,
     parents: Iterable[str] = (),
+    approval_parents: Iterable[str] = (),
     triage: bool = False,
     idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
@@ -2421,6 +2442,11 @@ def create_task(
     same key already exists, returns the existing task's id instead of
     creating a duplicate. Useful for retried webhooks / automation that
     should not double-write.
+
+    ``approval_parents`` creates typed, fail-closed dependency edges. Those
+    parents must finish with unambiguous structured ``approved: true`` review
+    metadata before this task can become runnable. Parents listed in both
+    arguments are treated as approval parents.
 
     ``max_runtime_seconds`` caps how long a worker may run before the
     dispatcher SIGTERMs (then SIGKILLs after a grace window) and
@@ -2490,7 +2516,12 @@ def create_task(
                 # ``<repo>/.worktrees/<task-id>`` dir keyed on the new task id.
                 project_repo = str(project_obj.primary_path)
 
-    parents = tuple(p for p in parents if p)
+    ordinary_parents = tuple(dict.fromkeys(p for p in parents if p))
+    approval_parent_ids = tuple(dict.fromkeys(p for p in approval_parents if p))
+    approval_parent_set = set(approval_parent_ids)
+    parents = tuple(
+        dict.fromkeys((*ordinary_parents, *approval_parent_ids))
+    )
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -2598,11 +2629,18 @@ def create_task(
                             raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
                         # If any parent is not yet done, we're todo.
                         rows = conn.execute(
-                            "SELECT status FROM tasks WHERE id IN "
+                            "SELECT id, status FROM tasks WHERE id IN "
                             "(" + ",".join("?" * len(parents)) + ")",
                             parents,
                         ).fetchall()
-                        if any(r["status"] != "done" for r in rows):
+                        if any(
+                            (
+                                _approval_gate_state(conn, row["id"]) != "approved"
+                                if row["id"] in approval_parent_set
+                                else row["status"] != "done"
+                            )
+                            for row in rows
+                        ):
                             task_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
@@ -2664,8 +2702,13 @@ def create_task(
                 )
                 for pid in parents:
                     conn.execute(
-                        "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
-                        (pid, task_id),
+                        "INSERT OR IGNORE INTO task_links "
+                        "(parent_id, child_id, gate_type) VALUES (?, ?, ?)",
+                        (
+                            pid,
+                            task_id,
+                            APPROVAL_GATE if pid in approval_parent_set else None,
+                        ),
                     )
                 _append_event(
                     conn,
@@ -2675,6 +2718,7 @@ def create_task(
                         "assignee": assignee,
                         "status": task_status,
                         "parents": list(parents),
+                        "approval_parents": list(approval_parent_ids) or None,
                         "tenant": tenant,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
@@ -2811,7 +2855,17 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
 # Links
 # ---------------------------------------------------------------------------
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+def link_tasks(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    *,
+    gate_type: Optional[str] = None,
+) -> None:
+    if gate_type is not None:
+        gate_type = str(gate_type).strip().lower() or None
+    if gate_type not in {None, *VALID_GATE_TYPES}:
+        raise ValueError(f"gate_type must be one of {sorted(VALID_GATE_TYPES)}")
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
     with write_txn(conn):
@@ -2822,22 +2876,30 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             raise ValueError(
                 f"linking {parent_id} -> {child_id} would create a cycle"
             )
-        conn.execute(
-            "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
-            (parent_id, child_id),
+        inserted = conn.execute(
+            "INSERT OR IGNORE INTO task_links "
+            "(parent_id, child_id, gate_type) VALUES (?, ?, ?)",
+            (parent_id, child_id, gate_type),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
+        if inserted.rowcount == 0 and gate_type is not None:
             conn.execute(
-                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+                "UPDATE task_links SET gate_type = ? "
+                "WHERE parent_id = ? AND child_id = ?",
+                (gate_type, parent_id, child_id),
+            )
+        # A newly linked or newly typed edge must immediately invalidate a
+        # stale-ready child when its dependency contract is not satisfied.
+        blockers = dependency_blockers(conn, child_id)
+        if blockers:
+            conn.execute(
+                "UPDATE tasks SET status = 'todo' "
+                "WHERE id = ? AND status = 'ready'",
                 (child_id,),
             )
+            _append_approval_gate_held_events(conn, child_id, blockers)
         _append_event(
             conn, child_id, "linked",
-            {"parent": parent_id, "child": child_id},
+            {"parent": parent_id, "child": child_id, "gate_type": gate_type},
         )
 
 
@@ -3352,6 +3414,152 @@ def _synthesize_ended_run(
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
 
+
+def _approval_gate_state(
+    conn: sqlite3.Connection,
+    parent_id: str,
+) -> str:
+    """Return the fail-closed state of one approval-gated parent.
+
+    Approval is declarative and structured: prose, comments, titles, and result
+    text are never parsed. The latest terminal run must belong unambiguously to
+    the parent's assigned reviewer and carry ``approved`` as a real JSON bool.
+    An optional verdict may only use the explicit successful verdict vocabulary;
+    contradictory or novel values remain held for an operator to resolve.
+    """
+    parent = conn.execute(
+        "SELECT status, assignee FROM tasks WHERE id = ?", (parent_id,)
+    ).fetchone()
+    if parent is None or parent["status"] not in ("done", "archived"):
+        return "parent_pending"
+
+    run = conn.execute(
+        "SELECT profile, outcome, metadata, ended_at FROM task_runs "
+        "WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+        (parent_id,),
+    ).fetchone()
+    if run is None or run["ended_at"] is None or run["outcome"] != "completed":
+        return "terminal_run_missing"
+
+    reviewer = parent["assignee"]
+    run_profile = run["profile"]
+    if not reviewer or not run_profile or reviewer != run_profile:
+        return "identity_ambiguous"
+
+    raw_metadata = run["metadata"]
+    if raw_metadata is None:
+        return "approval_missing"
+    try:
+        metadata = json.loads(raw_metadata)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "metadata_malformed"
+    if not isinstance(metadata, dict):
+        return "metadata_malformed"
+
+    for key in ("reviewer", "reviewer_id", "reviewer_profile"):
+        declared = metadata.get(key)
+        if declared is not None and declared != run_profile:
+            return "identity_ambiguous"
+
+    if "approved" not in metadata:
+        return "approval_missing"
+    approved = metadata["approved"]
+    if not isinstance(approved, bool):
+        return "approval_invalid"
+    if not approved:
+        return "rejected"
+
+    if "verdict" in metadata:
+        verdict = metadata["verdict"]
+        if not isinstance(verdict, str):
+            return "verdict_invalid"
+        if verdict.strip().upper() not in APPROVED_VERDICTS:
+            return "verdict_conflict"
+    return "approved"
+
+
+def dependency_blockers(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> list[dict[str, Optional[str]]]:
+    """Return sanitized parent/gate states that currently hold ``task_id``.
+
+    Untyped v1 links preserve their existing terminal semantics. Typed approval
+    links require an explicit successful review; only parent id, gate type, and
+    state escape this helper so result/summary metadata cannot leak into events
+    or dashboard diagnostics.
+    """
+    blockers: list[dict[str, Optional[str]]] = []
+    rows = conn.execute(
+        "SELECT p.id AS parent_id, p.status, l.gate_type "
+        "FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? ORDER BY p.id",
+        (task_id,),
+    ).fetchall()
+    for row in rows:
+        gate_type = row["gate_type"]
+        if gate_type is None:
+            if row["status"] not in ("done", "archived"):
+                blockers.append(
+                    {
+                        "parent_id": row["parent_id"],
+                        "gate_type": None,
+                        "gate_state": "parent_pending",
+                    }
+                )
+            continue
+        if gate_type != APPROVAL_GATE:
+            state = "gate_type_invalid"
+        else:
+            state = _approval_gate_state(conn, row["parent_id"])
+        if state != "approved":
+            blockers.append(
+                {
+                    "parent_id": row["parent_id"],
+                    "gate_type": gate_type,
+                    "gate_state": state,
+                }
+            )
+    return blockers
+
+
+def _append_approval_gate_held_events(
+    conn: sqlite3.Connection,
+    task_id: str,
+    blockers: Iterable[dict[str, Optional[str]]],
+) -> None:
+    """Emit one sanitized event per distinct held gate state, without tick spam."""
+    latest_by_gate: dict[tuple[Optional[str], Optional[str]], Optional[str]] = {}
+    previous_rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? "
+        "AND kind = 'approval_gate_held' ORDER BY id DESC",
+        (task_id,),
+    ).fetchall()
+    for row in previous_rows:
+        try:
+            previous = json.loads(row["payload"] or "null")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(previous, dict):
+            continue
+        key = (previous.get("parent_id"), previous.get("gate_type"))
+        latest_by_gate.setdefault(key, previous.get("gate_state"))
+
+    for blocker in blockers:
+        if blocker.get("gate_type") is None:
+            continue
+        payload = {
+            "parent_id": blocker["parent_id"],
+            "gate_type": blocker["gate_type"],
+            "gate_state": blocker["gate_state"],
+        }
+        key = (payload["parent_id"], payload["gate_type"])
+        if latest_by_gate.get(key) == payload["gate_state"]:
+            continue
+        _append_event(conn, task_id, "approval_gate_held", payload)
+        latest_by_gate[key] = payload["gate_state"]
+
+
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return True when ``task_id`` is sticky-blocked by an explicit
     worker/operator ``kanban_block`` call (#28712).
@@ -3438,40 +3646,35 @@ def recompute_ready(
                 # legitimate exit (it emits ``"unblocked"`` which flips
                 # this predicate back).
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
-                if cur_status == "blocked":
-                    # Don't auto-recover tasks that have hit the
-                    # circuit-breaker failure limit.  Without this
-                    # guard, a task that repeatedly exhausts its
-                    # iteration budget would cycle forever:
-                    # block → auto-recover → respawn → budget
-                    # exhausted → block → …  The counter must also
-                    # be preserved so the breaker can accumulate
-                    # across recovery cycles.
-                    failures = int(row["consecutive_failures"] or 0)
-                    task_limit = row["max_retries"]
-                    effective_limit = (
-                        int(task_limit) if task_limit is not None
-                        else int(failure_limit)
-                    )
-                    if failures >= effective_limit:
-                        continue
-                    conn.execute(
-                        "UPDATE tasks SET status = 'ready' "
-                        "WHERE id = ? AND status = 'blocked'",
-                        (task_id,),
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
-                        (task_id,),
-                    )
+            blockers = dependency_blockers(conn, task_id)
+            if blockers:
+                _append_approval_gate_held_events(conn, task_id, blockers)
+                continue
+            if cur_status == "blocked":
+                # Don't auto-recover tasks that have hit the
+                # circuit-breaker failure limit. Without this guard, a task
+                # that repeatedly exhausts its iteration budget would cycle
+                # forever. Preserve the counter across recovery cycles.
+                failures = int(row["consecutive_failures"] or 0)
+                task_limit = row["max_retries"]
+                effective_limit = (
+                    int(task_limit) if task_limit is not None
+                    else int(failure_limit)
+                )
+                if failures >= effective_limit:
+                    continue
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'ready' "
+                    "WHERE id = ? AND status = 'blocked'",
+                    (task_id,),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'ready' "
+                    "WHERE id = ? AND status = 'todo'",
+                    (task_id,),
+                )
+            if cur.rowcount == 1:
                 _append_event(conn, task_id, "promoted", None)
                 promoted += 1
     return promoted
@@ -3505,22 +3708,22 @@ def claim_task(
         # 'todo' here — recompute_ready will re-promote when the parents
         # actually finish. See RCA at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        if undone:
+        blockers = dependency_blockers(conn, task_id)
+        if blockers:
             conn.execute(
                 "UPDATE tasks SET status = 'todo' "
                 "WHERE id = ? AND status = 'ready'",
                 (task_id,),
             )
-            _append_event(
-                conn, task_id, "claim_rejected",
-                {"reason": "parents_not_done"},
-            )
+            _append_approval_gate_held_events(conn, task_id, blockers)
+            payload: dict[str, Any] = {"reason": "parents_not_satisfied"}
+            approval_gates = [
+                blocker for blocker in blockers
+                if blocker.get("gate_type") is not None
+            ]
+            if approval_gates:
+                payload["approval_gates"] = approval_gates
+            _append_event(conn, task_id, "claim_rejected", payload)
             return None
         # Defensive: if a prior run somehow leaked (invariant violation from
         # an unknown code path), close it as 'reclaimed' so we don't strand
@@ -3824,6 +4027,13 @@ def release_stale_claims(
             )
             if cur.rowcount != 1:
                 continue
+            blockers = dependency_blockers(conn, row["id"])
+            if blockers:
+                conn.execute(
+                    "UPDATE tasks SET status = 'todo' WHERE id = ?",
+                    (row["id"],),
+                )
+                _append_approval_gate_held_events(conn, row["id"], blockers)
             run_id = _end_run(
                 conn, row["id"],
                 outcome="reclaimed", status="reclaimed",
@@ -3896,6 +4106,13 @@ def reclaim_task(
         )
         if cur.rowcount != 1:
             return False
+        blockers = dependency_blockers(conn, task_id)
+        if blockers:
+            conn.execute(
+                "UPDATE tasks SET status = 'todo' WHERE id = ?",
+                (task_id,),
+            )
+            _append_approval_gate_held_events(conn, task_id, blockers)
         run_id = _end_run(
             conn, task_id,
             outcome="reclaimed", status="reclaimed",
@@ -5121,22 +5338,18 @@ def promote_task(
             f"'todo' or 'blocked'"
         )
 
-    if not force:
-        parents = conn.execute(
-            "SELECT t.id, t.status FROM tasks t "
-            "JOIN task_links l ON l.parent_id = t.id "
-            "WHERE l.child_id = ?",
-            (task_id,),
-        ).fetchall()
-        unsatisfied = [
-            p["id"] for p in parents
-            if p["status"] not in ("done", "archived")
-        ]
-        if unsatisfied:
-            return False, (
-                f"unsatisfied parent dependencies: "
-                f"{', '.join(unsatisfied)} (use --force to override)"
-            )
+    blockers = dependency_blockers(conn, task_id)
+    approval_blockers = [
+        blocker for blocker in blockers if blocker.get("gate_type") is not None
+    ]
+    if approval_blockers or (blockers and not force):
+        active = approval_blockers if approval_blockers else blockers
+        rendered = ", ".join(
+            f"{blocker['parent_id']} ({blocker['gate_state']})"
+            for blocker in active
+        )
+        suffix = "" if approval_blockers else " (use --force to override)"
+        return False, f"unsatisfied parent dependencies: {rendered}{suffix}"
 
     if dry_run:
         return True, None
@@ -5193,13 +5406,9 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # if parents are still in progress the task must wait in 'todo'
         # until recompute_ready picks it up. RCA: Bug 2 at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone_parents = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        new_status = "todo" if undone_parents else "ready"
+        blockers = dependency_blockers(conn, task_id)
+        new_status = "todo" if blockers else "ready"
+        _append_approval_gate_held_events(conn, task_id, blockers)
         # NOTE: deliberately does NOT touch ``block_recurrences`` or
         # ``block_kind``. Resetting the recurrence counter on unblock is exactly
         # the amnesia that let a cron unblock → worker re-block loop run

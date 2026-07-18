@@ -1285,6 +1285,51 @@ def test_link_rejects_self_reference(worker_env):
     assert json.loads(out).get("error")
 
 
+def test_create_and_link_support_explicit_approval_gates(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    created = json.loads(kt._handle_create({
+        "title": "release",
+        "assignee": "release",
+        "approval_parents": [worker_env],
+    }))
+    assert created["ok"] is True
+    with kb.connect() as conn:
+        row = conn.execute(
+            "SELECT gate_type FROM task_links WHERE parent_id = ? AND child_id = ?",
+            (worker_env, created["task_id"]),
+        ).fetchone()
+        assert row["gate_type"] == kb.APPROVAL_GATE
+
+        second = kb.create_task(conn, title="second release", assignee="release")
+    linked = json.loads(kt._handle_link({
+        "parent_id": worker_env,
+        "child_id": second,
+        "gate_type": "approval",
+    }))
+    assert linked == {
+        "ok": True,
+        "parent_id": worker_env,
+        "child_id": second,
+        "gate_type": "approval",
+    }
+
+
+def test_link_rejects_unknown_gate_type(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        child = kb.create_task(conn, title="child", assignee="x")
+    out = kt._handle_link({
+        "parent_id": worker_env,
+        "child_id": child,
+        "gate_type": "prose-review",
+    })
+    assert "gate_type" in json.loads(out)["error"]
+
+
 def test_link_rejects_missing_args(worker_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_link({"parent_id": "x"})).get("error")

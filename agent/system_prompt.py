@@ -194,6 +194,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
+    try:
+        stable_parts.append(agent._memory_manager.get_soul_extension_prompt())
+    except Exception:
+        pass
+
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
@@ -489,6 +494,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             user_block = agent._memory_store.format_for_system_prompt("user")
             if user_block:
                 volatile_parts.append(user_block)
+
+        try:
+            volatile_parts.append(agent._memory_manager.get_user_profile_extension_prompt())
+        except Exception:
+            pass
 
     # External memory provider system prompt block (additive to built-in)
     if agent._memory_manager:

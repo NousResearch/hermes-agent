@@ -871,6 +871,12 @@ def run_conversation(
                         _injections.append(_fenced)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
+                if agent._memory_manager:
+                    try:
+                        if ctx := agent._memory_manager.get_per_turn_context():
+                            _injections.append(ctx)
+                    except Exception:
+                        pass
                 if _injections:
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):

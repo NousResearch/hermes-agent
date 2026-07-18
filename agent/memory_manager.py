@@ -492,6 +492,51 @@ class MemoryManager:
                 )
         return "\n\n".join(blocks)
 
+    def get_soul_extension_prompt(self) -> str:
+        """Collect and combine soul extension prompts from all providers."""
+        parts = []
+        for provider in self._providers:
+            try:
+                res = provider.get_soul_extension_prompt()
+                if res and res.strip():
+                    parts.append(res.strip())
+            except Exception as e:
+                logger.warning(
+                    "Memory provider '%s' get_soul_extension_prompt() failed: %s",
+                    provider.name, e,
+                )
+        return "\n\n".join(parts) if parts else ""
+
+    def get_user_profile_extension_prompt(self) -> str:
+        """Collect and combine user profile extension prompts from all providers."""
+        parts = []
+        for provider in self._providers:
+            try:
+                res = provider.get_user_profile_extension_prompt()
+                if res and res.strip():
+                    parts.append(res.strip())
+            except Exception as e:
+                logger.warning(
+                    "Memory provider '%s' get_user_profile_extension_prompt() failed: %s",
+                    provider.name, e,
+                )
+        return "\n\n".join(parts) if parts else ""
+
+    def get_per_turn_context(self) -> str:
+        """Collect and combine per-turn context prompts from all providers."""
+        parts = []
+        for provider in self._providers:
+            try:
+                res = provider.get_per_turn_context()
+                if res and res.strip():
+                    parts.append(res.strip())
+            except Exception as e:
+                logger.warning(
+                    "Memory provider '%s' get_per_turn_context() failed: %s",
+                    provider.name, e,
+                )
+        return "\n\n".join(parts) if parts else ""
+
     # -- Prefetch / recall ---------------------------------------------------
 
     @staticmethod

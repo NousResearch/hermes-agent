@@ -154,6 +154,27 @@ class MemoryProvider(ABC):
 
     # -- Optional hooks (override to opt in) ---------------------------------
 
+    def get_soul_extension_prompt(self) -> str:
+        """Return content to inject right after soul.md persona in system prompt.
+
+        Returns empty string if nothing to inject.
+        """
+        return ""
+
+    def get_user_profile_extension_prompt(self) -> str:
+        """Return content to inject right after the user profile block in system prompt.
+
+        Returns empty string if nothing to inject.
+        """
+        return ""
+
+    def get_per_turn_context(self) -> str:
+        """Return content to inject in user per-turn prompt context.
+
+        Returns empty string if nothing to inject.
+        """
+        return ""
+
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Called at the start of each turn with the user message.
 

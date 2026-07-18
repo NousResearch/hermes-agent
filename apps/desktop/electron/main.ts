@@ -8692,6 +8692,26 @@ ipcMain.handle('hermes:fs:openDir', async (_event, dirPath) => {
   }
 })
 
+// The LOCAL Desktop runtime-plugin root: `<HERMES_HOME>/desktop-plugins`,
+// resolved from the main-process HERMES_HOME (see resolveHermesHome) — NOT from
+// the connected backend. A remote backend reports its own `hermes_home` over
+// the gateway, which is a path on the REMOTE box; deriving the plugin dir from
+// it yields `undefined/desktop-plugins` (or a non-existent remote path) and the
+// on-disk plugin door silently breaks (#66899). Electron owns this resolution
+// so it stays valid in every connection mode. Created on demand, like openDir.
+ipcMain.handle('hermes:fs:desktopPluginsRoot', async () => {
+  const dir = path.join(HERMES_HOME, 'desktop-plugins')
+
+  try {
+    await fs.promises.mkdir(dir, { recursive: true })
+  } catch {
+    // Best-effort create; return the path regardless so the reveal action can
+    // still surface a real openPath error and the scanner can retry later.
+  }
+
+  return dir
+})
+
 // Rename a file/folder in place. The renderer passes the existing path + a new
 // base name; the destination is resolved in the SAME parent dir so a rename can
 // never move the item elsewhere or traverse out. Rejects on a name collision.

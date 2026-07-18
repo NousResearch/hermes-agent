@@ -83,5 +83,7 @@ setup(
     data_files=[
         *_data_file_tree("skills"),
         *_data_file_tree("optional-skills"),
+        *_data_file_tree("locales"),
+        *_data_file_tree("optional-mcps"),
     ]
 )

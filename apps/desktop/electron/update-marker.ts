@@ -157,12 +157,24 @@ export function readLiveUpdateMarker(
  * pid owns it. When the updater finishes it deletes the marker as before.
  * If the updater never starts (spawn failure) the marker still contains a
  * real PID, so `readLiveUpdateMarker` will self-heal once that PID exits.
+ *
+ * Also clears any leftover `.hermes-update-failed` sidecar (mirrors
+ * `run_update` on the installer side). A same-second leftover failed
+ * timestamp would otherwise satisfy `failedAt >= startedAt` and prune the
+ * brand-new in-progress marker (#66356 repair).
  */
 export function writeUpdateMarker(hermesHome, pid, { now = Date.now } = {}) {
   const file = markerPath(hermesHome)
   const startedAt = Math.floor(now() / 1000)
 
   try {
+    // Drop a prior-run failed sidecar before publishing the live marker so
+    // `failedAt >= startedAt` cannot poison a fresh handoff.
+    try {
+      fs.unlinkSync(failedMarkerPath(hermesHome))
+    } catch {
+      void 0
+    }
     fs.writeFileSync(file, `${pid}\n${startedAt}\n`, 'utf8')
   } catch {
     // Best-effort: if we can't write the marker, proceed anyway. The

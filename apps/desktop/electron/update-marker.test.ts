@@ -156,6 +156,20 @@ test('failed sidecar older than in-progress => still a live update', () => {
   assert.ok(fs.existsSync(markerPath(home)), 'live marker is kept')
 })
 
+test('writeUpdateMarker clears leftover failed sidecar so same-second cannot poison (#66356)', () => {
+  const home = tmpHome('write-clears-failed')
+  const now = 1_000_000_000_000
+  const sameSecond = Math.floor(now / 1000)
+  // Prior run left a failed sidecar at the exact second a fresh handoff
+  // would stamp — without clearing, failedAt >= startedAt would prune it.
+  fs.writeFileSync(failedMarkerPath(home), `${sameSecond}\n`)
+  writeUpdateMarker(home, 4242, { now: () => now })
+  assert.ok(!fs.existsSync(failedMarkerPath(home)), 'failed sidecar removed on write')
+  const res = readLiveUpdateMarker(home, { kill: ALIVE, now: () => now })
+  assert.ok(res, 'fresh in-progress marker must stay live after writeUpdateMarker')
+  assert.equal(res.pid, 4242)
+})
+
 test('failed sidecar without parseable in-progress start => does not false-positive', () => {
   const home = tmpHome('failed-malformed-start')
   fs.writeFileSync(markerPath(home), '4242\n') // missing started_at

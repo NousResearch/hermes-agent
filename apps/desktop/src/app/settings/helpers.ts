@@ -182,3 +182,16 @@ export function enumOptionsFor(
 
   return current && !opts.includes(current) ? [...opts, current] : opts
 }
+
+// Built-in memory (MEMORY.md/USER.md) is controlled by memory_enabled, not
+// memory.provider — only a real external plugin name gets provider-shaped
+// affordances (config panel, OAuth connect). See #49513.
+export function isExternalMemoryProvider(value: unknown): value is string {
+  if (typeof value !== 'string') {
+    return false
+  }
+
+  const normalized = value.trim().toLowerCase()
+
+  return normalized !== '' && normalized !== 'builtin' && normalized !== 'built-in' && normalized !== 'none'
+}

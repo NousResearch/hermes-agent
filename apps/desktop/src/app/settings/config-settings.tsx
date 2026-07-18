@@ -21,7 +21,14 @@ import { PanelEmpty } from '../overlays/panel'
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS } from './constants'
 import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
-import { enumOptionsFor, getNested, prettyName, sectionFieldEntries, setNested } from './helpers'
+import {
+  enumOptionsFor,
+  getNested,
+  isExternalMemoryProvider,
+  prettyName,
+  sectionFieldEntries,
+  setNested
+} from './helpers'
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
@@ -134,7 +141,9 @@ function ConfigField({
                 ? (optionLabels?.[option] ?? prettyName(option))
                 : schemaKey === 'display.personality'
                   ? c.none
-                  : c.noneParen}
+                  : schemaKey === 'memory.provider'
+                    ? c.builtinOnly
+                    : c.noneParen}
             </SelectItem>
           ))}
         </SelectContent>
@@ -457,7 +466,7 @@ export function ConfigSettings({
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               <ConfigField
                 descriptionExtra={
-                  key === 'memory.provider' && Boolean(getNested(config, key)) ? (
+                  key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
                     <MemoryConnect provider={String(getNested(config, key))} />
                   ) : undefined
                 }
@@ -472,7 +481,7 @@ export function ConfigSettings({
                 schemaKey={key}
                 value={getNested(config, key)}
               />
-              {key === 'memory.provider' && typeof getNested(config, key) === 'string' && getNested(config, key) ? (
+              {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
                 <ProviderConfigPanel key={String(getNested(config, key))} provider={String(getNested(config, key))} />
               ) : null}
             </div>

@@ -6,6 +6,7 @@ import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from 
 import {
   enumOptionsFor,
   getNested,
+  isExternalMemoryProvider,
   providerGroup,
   sectionFieldEntries,
   setNested,
@@ -17,7 +18,28 @@ describe('settings helpers', () => {
   it('lists the desktop memory provider options in their declared order', () => {
     const options = enumOptionsFor('memory.provider', '', {})
 
-    expect(options).toEqual(['', 'builtin', 'honcho', 'hindsight'])
+    // Built-in memory is not a provider plugin; the empty sentinel is the
+    // only built-in-shaped entry (#49513).
+    expect(options).toEqual(['', 'honcho', 'hindsight'])
+  })
+
+  it('keeps a legacy literal builtin value visible as the current selection', () => {
+    const options = enumOptionsFor('memory.provider', 'builtin', {})
+
+    expect(options).toEqual(['', 'honcho', 'hindsight', 'builtin'])
+  })
+
+  describe('isExternalMemoryProvider', () => {
+    it('treats only real plugin names as external providers', () => {
+      expect(isExternalMemoryProvider('honcho')).toBe(true)
+      expect(isExternalMemoryProvider('hindsight')).toBe(true)
+    })
+
+    it('treats built-in aliases and empty values as not external', () => {
+      for (const value of ['', 'builtin', 'built-in', 'Builtin', 'none', '  ', undefined, null, 7]) {
+        expect(isExternalMemoryProvider(value)).toBe(false)
+      }
+    })
   })
 
   describe('defineFieldCopy', () => {

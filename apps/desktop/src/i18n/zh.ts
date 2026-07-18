@@ -705,6 +705,7 @@ export const zh: Translations = {
     config: {
       none: '无',
       noneParen: '(无)',
+      builtinOnly: '仅内置',
       notSet: '未设置',
       commaSeparated: '逗号分隔的值',
       loading: '正在加载 Hermes 配置...',

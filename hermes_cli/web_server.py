@@ -622,10 +622,13 @@ def _memory_provider_options() -> List[str]:
     """Discovered memory providers for the ``memory.provider`` select.
 
     Directory-scan only (no provider imports), so it's safe at module import
-    time. ``""`` (built-in) is always first; discovery failures degrade to the
-    bundled defaults rather than dropping the field.
+    time. ``""`` (built-in only) is always first; discovery failures degrade to
+    the bundled defaults rather than dropping the field. The literal
+    ``builtin`` alias is deliberately NOT offered — built-in memory is not a
+    provider plugin, and ``_normalize_memory_provider_name`` already maps any
+    legacy ``builtin``/``built-in``/``none`` value back to ``""`` (#49513).
     """
-    options = ["", "builtin"]
+    options = [""]
     try:
         from plugins.memory import list_memory_provider_names
 

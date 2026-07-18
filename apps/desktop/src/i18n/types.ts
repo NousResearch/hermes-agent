@@ -424,6 +424,7 @@ export interface Translations {
     config: {
       none: string
       noneParen: string
+      builtinOnly: string
       notSet: string
       commaSeparated: string
       loading: string

@@ -4148,10 +4148,12 @@ class TestBuildSchemaFromConfig:
         assert entry["type"] == "select"
         assert entry["category"] == "memory"
         options = entry["options"]
-        # Built-in sentinel first, plus at least one discovered provider.
+        # Built-in-only sentinel first, plus at least one discovered provider.
+        # The literal "builtin" alias must NOT be offered — built-in memory is
+        # not a provider plugin (#49513).
         assert options[0] == ""
-        assert "builtin" in options
-        assert len(options) >= 3
+        assert "builtin" not in options
+        assert len(options) >= 2
 
     def test_memory_provider_options_cover_discovered_providers(self):
         """Every provider the /api/memory endpoint can activate is selectable."""

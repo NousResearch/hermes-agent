@@ -202,11 +202,20 @@ _AUTH_HEADER_RE = re.compile(
 # Anthropic and many providers authenticate with ``x-api-key``; values without
 # a known vendor prefix (custom/local backends) would otherwise leak when a
 # request or curl command is logged or echoed into tool output / transcripts.
+#
+# The credential class excludes quote characters (``"`` / ``'``) for the same
+# reason as _AUTH_HEADER_RE (#43083): a token sitting flush against a closing
+# quote (``curl -H "x-api-key: sk-..."``) must not pull that quote into the
+# match, or masking turns value corruption into *syntax* corruption (the
+# closing quote vanishes → unterminated quote → shell EOF / Python
+# SyntaxError). Real credentials never contain ``"`` or ``'``, so excluding
+# them is safe. The sibling _AUTH_HEADER_RE was fixed in #43083 but this rule
+# still used greedy ``\S+`` and exhibited the same corruption.
 _SECRET_HEADER_NAMES = (
     r"(?:x-api-key|x-goog-api-key|api-key|apikey|x-api-token|x-auth-token|x-access-token)"
 )
 _SECRET_HEADER_RE = re.compile(
-    rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)",
+    rf"({_SECRET_HEADER_NAMES}\s*:\s*)([^\s\"']+)",
     re.IGNORECASE,
 )
 

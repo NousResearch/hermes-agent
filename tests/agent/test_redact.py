@@ -304,6 +304,26 @@ class TestApiKeyHeaders:
         result = redact_sensitive_text(text)
         assert "anotherOpaqueSecret" not in result
 
+    def test_x_api_key_flush_against_double_quote_preserves_quote(self):
+        # Regression for #43083 extended to _SECRET_HEADER_RE: the sibling
+        # _AUTH_HEADER_RE was fixed to exclude quotes from the credential
+        # class, but this rule still used greedy \S+ and ate the closing
+        # double quote, turning value corruption into syntax corruption
+        # (unterminated quote → shell EOF).
+        text = 'curl -H "x-api-key: sk-local-VERYsecret-999888"'
+        result = redact_sensitive_text(text)
+        assert "VERYsecret" not in result
+        assert result.count('"') == 2, result  # both quotes survive
+        assert result.endswith('"'), result
+
+    def test_x_api_key_flush_against_single_quote_preserves_quote(self):
+        # Same as above with single quotes (Python f-string context).
+        text = "hdr = 'x-api-key: sk-local-VERYsecret-999888'"
+        result = redact_sensitive_text(text)
+        assert "VERYsecret" not in result
+        assert result.count("'") == 2, result
+        assert result.endswith("'"), result
+
 
 class TestTelegramTokens:
     def test_bot_token(self):

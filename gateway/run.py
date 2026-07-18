@@ -14525,21 +14525,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # own and never disconnects it. The auto-follow path passes manual=False
             # plus the barrier's attempt_token, so join_voice_channel refuses to
             # move/overwrite a manual/newer-owned session for a stale attempt.
+            #
+            # Decide how to invoke join_voice_channel by INSPECTING ITS SIGNATURE
+            # BEFORE the call — never by parsing a TypeError message and never by
+            # retrying a modern call tokenless (dropping attempt_token/manual_owner
+            # would bypass the ownership gate and let a stale attempt mutate a live
+            # session). An internal TypeError from a modern adapter therefore
+            # surfaces as a single failed call (handled by the outer except).
+            _supports_gate_kwargs = True
             try:
+                _params = inspect.signature(adapter.join_voice_channel).parameters
+                _has_var_kw = any(
+                    p.kind is inspect.Parameter.VAR_KEYWORD for p in _params.values()
+                )
+                _supports_gate_kwargs = _has_var_kw or (
+                    "attempt_token" in _params and "manual_owner" in _params
+                )
+            except (TypeError, ValueError):
+                # Not introspectable (e.g. a builtin) — assume the modern contract.
+                _supports_gate_kwargs = True
+            if _supports_gate_kwargs:
                 success = await adapter.join_voice_channel(
                     voice_channel, manual_owner=bool(manual), attempt_token=attempt_token
                 )
-            except TypeError as te:
-                # Fall back to the tokenless call ONLY for a genuinely older adapter
-                # that does not accept these kwargs — never for a broad/internal
-                # TypeError, which must propagate (dropping the attempt token or
-                # manual-owner flag would let a stale attempt mutate a live session).
-                msg = str(te)
-                legacy_signature = "unexpected keyword argument" in msg and (
-                    "attempt_token" in msg or "manual_owner" in msg
-                )
-                if not legacy_signature:
-                    raise
+            else:
+                # Genuinely legacy adapter without the gate kwargs — single call.
                 success = await adapter.join_voice_channel(voice_channel)
         except Exception as e:
             logger.warning("Failed to join voice channel: %s", e)

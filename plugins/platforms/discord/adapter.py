@@ -4950,32 +4950,32 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         target_channel_id = str(target.voice_channel_id)
-        # Capture the session owner tied to THIS follow BEFORE any await, so we can
-        # tell — under the lock — whether a NEWER auto attempt has since re-committed
-        # (and re-marked the target) on the same channel. A newer owner must be left
-        # strictly intact, along with its target.
-        owner_at_start = self._voice_session_owner.get(int(guild_id))
+        # Capture BOTH the exact target OBJECT and the session owner tied to THIS
+        # follow before any await. Under the lock we require the current target to
+        # be the SAME OBJECT and the current owner to match this follow's owner
+        # token — so ANY replacement target/session (a newer attempt re-committed
+        # and re-marked the follow, even on the SAME channel with a fresh object)
+        # is preserved rather than disconnected.
+        captured_target = target
+        captured_owner = self._voice_session_owner.get(int(guild_id))
         cfg = getattr(self, "_voice_auto_join_cfg", {}) or {}
-        # The target-identity/owner recheck, the target/retry drop, AND the physical
+        # The target-object recheck, the target/retry drop, AND the physical
         # disconnect all happen in ONE guild-lock critical section, so a manual join
         # OR a newer auto commit that races this cleanup (acquiring the lock first,
         # stamping ownership + re-marking the target) is observed and preserved.
         lock = self._voice_locks.setdefault(int(guild_id), asyncio.Lock())
         async with lock:
-            current_owner = self._voice_session_owner.get(int(guild_id))
-            # A newer/different owner (a newer committed AUTO token, or a MANUAL
-            # takeover) took over while we waited for the lock — never touch its
-            # session or its (re-marked) target.
-            if current_owner is not None and current_owner != owner_at_start:
-                return
             current_target = self._voice_auto_join_targets.get(int(guild_id))
-            # Only drop the target if it is STILL the exact follow that left; a
-            # newer attempt may have re-marked it (same channel) and it must survive.
-            if (
-                current_target is not None
-                and str(current_target.user_id) == str(user_id)
-                and str(current_target.voice_channel_id) == before_channel_id
-            ):
+            current_owner = self._voice_session_owner.get(int(guild_id))
+            # A REPLACEMENT target object (a newer follow re-marked it) — even with
+            # the same user/channel — or a newer/different session owner means this
+            # follow is no longer current: leave its target AND session intact.
+            if current_target is not None and current_target is not captured_target:
+                return
+            if current_owner is not None and current_owner != captured_owner:
+                return
+            # Still exactly this follow: drop the (unchanged) target + retry.
+            if current_target is captured_target:
                 self._voice_auto_join_targets.pop(int(guild_id), None)
             self._cancel_voice_auto_join_retry(int(guild_id))
             if not cfg.get("target_leave_cleanup", True):
@@ -5026,35 +5026,27 @@ class DiscordAdapter(BasePlatformAdapter):
                     self._reset_voice_timeout(guild_id)
                     self._stamp_voice_owner_locked(guild_id, manual_owner, attempt_token)
                     return True
-                # Capture the pre-move channel so a mid-move supersession can be
-                # UNDONE — the physical move is an awaited mutation, and supersession
-                # (via a non-lock-holding leave/register) can land while we await it.
-                pre_move_channel = getattr(existing, "channel", None)
-                await existing.move_to(channel)
-                # Recheck currency after the awaited move before keeping/stamping.
-                if attempt_token is not None and not self._auto_attempt_current_locked(
-                    guild_id, attempt_token
-                ):
-                    # Superseded/cancelled mid-move: restore the session to its
-                    # pre-move channel so a stale attempt leaves NO physical move
-                    # mutation behind, then bail without stamping.
-                    if pre_move_channel is not None:
-                        try:
-                            await existing.move_to(pre_move_channel)
-                        except Exception:
-                            pass
-                    return False
-                self._reset_voice_timeout(guild_id)
-                self._stamp_voice_owner_locked(guild_id, manual_owner, attempt_token)
-                return True
+                # Move an existing (auto/orphan-owned) session as a RUN-TO-COMPLETION
+                # unit: the awaited move + the mid-move-supersession recheck + the
+                # deterministic rollback all finish before any cancellation
+                # propagates, so a stale attempt can never leave a half-applied move.
+                return await self._shield_to_completion(
+                    lambda: self._move_existing_session_locked(
+                        existing, channel, guild_id, manual_owner, attempt_token
+                    )
+                )
 
             vc = await channel.connect()
             # Recheck AFTER the awaited connect, BEFORE publishing the client: a
-            # stale attempt must not publish an orphan; disconnect it instead.
+            # stale attempt must not publish an orphan. The vc was NOT published to
+            # ``_voice_clients``, so barrier cleanup cannot find it — disconnect it
+            # to COMPLETION (run-to-completion) before propagating any cancellation.
             if attempt_token is not None and not self._auto_attempt_current_locked(
                 guild_id, attempt_token
             ):
-                await self._disconnect_voice_client(vc)
+                await self._shield_to_completion(
+                    lambda: self._disconnect_voice_client(vc)
+                )
                 return False
             self._voice_clients[guild_id] = vc
             self._stamp_voice_owner_locked(guild_id, manual_owner, attempt_token)
@@ -5082,6 +5074,43 @@ class DiscordAdapter(BasePlatformAdapter):
 
             return True
 
+    async def _move_existing_session_locked(
+        self, existing, channel, guild_id, manual_owner, attempt_token
+    ) -> bool:
+        """Move an existing session to ``channel`` and finalize ownership, with a
+        DETERMINISTIC rollback if this attempt is superseded/cancelled mid-move.
+
+        Run to completion by ``join_voice_channel`` via ``_shield_to_completion`` so
+        neither the move nor the rollback can be interrupted by a cancellation. On
+        supersession the session is restored to its pre-move channel; if that
+        restore itself fails, the session is torn down entirely rather than left
+        stranded on the wrong channel — so no stale physical mutation can remain.
+        """
+        pre_move_channel = getattr(existing, "channel", None)
+        await existing.move_to(channel)
+        if attempt_token is not None and not self._auto_attempt_current_locked(
+            int(guild_id), attempt_token
+        ):
+            same_channel = (
+                pre_move_channel is not None
+                and getattr(pre_move_channel, "id", None) == getattr(channel, "id", None)
+            )
+            restored = same_channel
+            if pre_move_channel is not None and not same_channel:
+                try:
+                    await existing.move_to(pre_move_channel)
+                    restored = True
+                except Exception:
+                    restored = False
+            if not restored:
+                # Rollback failed / unknown pre-move channel — deterministically
+                # tear the session down so it is never left on the wrong channel.
+                await self._leave_voice_channel_body(int(guild_id))
+            return False
+        self._reset_voice_timeout(int(guild_id))
+        self._stamp_voice_owner_locked(int(guild_id), manual_owner, attempt_token)
+        return True
+
     def _auto_attempt_current_locked(self, guild_id: int, token: int) -> bool:
         """Whether the auto attempt ``token`` is still the current pending attempt
         (not cancelled) and the adapter is not disconnecting. Caller holds the lock.
@@ -5098,16 +5127,24 @@ class DiscordAdapter(BasePlatformAdapter):
         session. Caller holds the guild voice lock.
 
         Requires the attempt to be current AND that any existing live session is
-        NOT owned by a MANUAL takeover — a manual (hand-established) session is
-        never moved/overwritten by an auto attempt.
+        owned by neither a MANUAL takeover NOR a NEWER auto attempt (a strictly
+        larger token) — a manual or newer-owned session is never moved/overwritten
+        by this (older) attempt.
         """
         if not self._auto_attempt_current_locked(guild_id, token):
             return False
         existing = self._voice_clients.get(int(guild_id))
         if existing is not None and getattr(existing, "is_connected", lambda: False)():
             owner = self._voice_session_owner.get(int(guild_id))
-            if owner is not None and owner.is_manual:
-                return False
+            if owner is not None:
+                if owner.is_manual:
+                    return False
+                if (
+                    owner.kind is VoiceOwnerKind.AUTO
+                    and owner.token is not None
+                    and int(owner.token) > int(token)
+                ):
+                    return False
         return True
 
     def _stamp_voice_owner_locked(
@@ -5115,18 +5152,51 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> None:
         """Stamp typed session ownership under the guild lock: MANUAL for a manual
         join, AUTO(token) for a token-carrying auto attempt. A tokenless auto call
-        (legacy) leaves ownership for the barrier commit to stamp."""
+        (legacy) leaves ownership for the barrier commit to stamp.
+
+        A MANUAL stamp ALSO drops ALL auto-follow ownership — pending attempt slot,
+        tracked target, and the unattended retry task — ATOMICALLY under this same
+        guild lock. So the auto barrier's finalize (which acquires this lock) and
+        the retry loop both observe themselves superseded and can never commit AUTO
+        ownership, re-mark a target, or reconnect over the hand-established manual
+        session in the window before the gateway drops auto-follow ownership. (The
+        manual /voice LEAVE path keeps its distinct semantics: it FLAGS the pending
+        attempt cancelled instead, via ``cancel_inflight_auto_join``.)
+        """
         if manual_owner:
             self._voice_session_owner[int(guild_id)] = VoiceSessionOwner.manual()
+            self._clear_pending_auto_join(int(guild_id))
+            targets = getattr(self, "_voice_auto_join_targets", None)
+            if isinstance(targets, dict):
+                targets.pop(int(guild_id), None)
+            self._cancel_voice_auto_join_retry(int(guild_id))
         elif attempt_token is not None:
             self._voice_session_owner[int(guild_id)] = VoiceSessionOwner.auto(attempt_token)
 
     async def leave_voice_channel(self, guild_id: int) -> None:
-        """Disconnect from the voice channel in a guild (cancellation-safe)."""
-        async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
-            await self._leave_voice_channel_locked(guild_id)
-        # Disconnecting cancels any pending auto-rejoin retry for this guild.
-        self._cancel_voice_auto_join_retry(guild_id)
+        """Disconnect from the voice channel in a guild (cancellation-safe).
+
+        The WHOLE public leave — acquiring the guild lock, the FULL profile-bound
+        transactional teardown (physical disconnect + all maps + the runner
+        ``_on_voice_disconnect`` cleanup), AND the pending-retry cancellation —
+        runs to completion before any cancellation propagates, so a cancellation
+        during the physical disconnect can never release the lock early (letting a
+        concurrent join race the still-in-flight disconnect) or skip the retry
+        cancellation (cleared in a ``finally``).
+        """
+        await self._shield_to_completion(lambda: self._public_leave_body(int(guild_id)))
+
+    async def _public_leave_body(self, guild_id: int) -> None:
+        gid = int(guild_id)
+        try:
+            async with self._voice_locks.setdefault(gid, asyncio.Lock()):
+                text_ch_id = self._voice_text_channels.get(gid)
+                # Full profile-bound teardown: physical disconnect + maps + the
+                # bound runner cleanup, all under the held lock.
+                await self._teardown_voice_session_body(gid, text_ch_id)
+        finally:
+            # Retry state is cleaned even if teardown raised or is cancelling.
+            self._cancel_voice_auto_join_retry(gid)
 
     async def _disconnect_voice_client(self, vc) -> None:
         """Disconnect a single voice client defensively (tolerant of the fake

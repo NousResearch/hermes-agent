@@ -1577,7 +1577,7 @@ function Install-Repository {
                                 }
                             }
                             Write-Host ""
-                            Write-Info "Your stashed changes are preserved — nothing is lost."
+                            Write-Info "Your stashed changes are preserved -- nothing is lost."
                             Write-Info "  Stash ref: $autostashRef"
                             git -c windows.appendAtomically=false reset --hard HEAD 2>$null | Out-Null
                             Write-Info "Working tree reset to clean state."

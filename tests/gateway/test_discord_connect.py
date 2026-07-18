@@ -140,6 +140,120 @@ class SlowSyncBot(FakeBot):
         self.tree = SlowSyncTree()
 
 
+async def _connect_category_policy_adapter(monkeypatch):
+    """Connect through the real event registration path with a fake client."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._handle_message = AsyncMock()
+    adapter._is_pairing_approved_user = MagicMock(return_value=False)
+
+    for name in (
+        "DISCORD_ALLOWED_USERS",
+        "DISCORD_ALLOWED_ROLES",
+        "DISCORD_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "5555")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "5555")
+    monkeypatch.setenv("DISCORD_IGNORE_NO_MENTION", "true")
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock", lambda scope, identity: None,
+    )
+    intents = SimpleNamespace(
+        message_content=False,
+        dm_messages=False,
+        guild_messages=False,
+        members=False,
+        voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda **kwargs: FakeBot(
+            intents=kwargs["intents"],
+            proxy=kwargs.get("proxy"),
+            allowed_mentions=kwargs.get("allowed_mentions"),
+        ),
+    )
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    assert await adapter.connect() is True
+    return adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("in_thread", [False, True], ids=["channel", "thread-under-category"])
+async def test_on_message_category_scope_passes_early_auth_and_no_mention_gate(
+    monkeypatch, in_thread,
+):
+    """Category policy must survive both admission gates before _handle_message."""
+    adapter = await _connect_category_policy_adapter(monkeypatch)
+    guild = SimpleNamespace(
+        id=42,
+        name="Hermes Server",
+        get_member=lambda _uid: None,
+    )
+    category = SimpleNamespace(id=5555, name="operations")
+    parent = SimpleNamespace(
+        id=7777,
+        name="general",
+        category_id=category.id,
+        parent=category,
+        guild=guild,
+    )
+
+    if in_thread:
+        class PolicyThread:
+            pass
+
+        monkeypatch.setattr(discord_platform.discord, "Thread", PolicyThread)
+        channel = PolicyThread()
+        channel.id = 9999
+        channel.name = "incident"
+        channel.parent_id = parent.id
+        channel.parent = parent
+        channel.guild = guild
+    else:
+        channel = SimpleNamespace(
+            id=8888,
+            name="alerts",
+            category_id=category.id,
+            parent=category,
+            guild=guild,
+        )
+
+    author = SimpleNamespace(
+        id=42,
+        name="Jezza",
+        display_name="Jezza",
+        bot=False,
+        guild=guild,
+    )
+    mentioned_human = SimpleNamespace(id=43, bot=False)
+    message = SimpleNamespace(
+        id=123 if not in_thread else 124,
+        author=author,
+        channel=channel,
+        guild=guild,
+        type=discord_platform.discord.MessageType.default,
+        mentions=[mentioned_human],
+        content="please review this",
+    )
+
+    await adapter._client._events["on_message"](message)
+
+    adapter._handle_message.assert_awaited_once_with(
+        message, role_authorized=False,
+    )
+    await adapter.disconnect()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("allowed_users", "expected_members_intent"),

@@ -280,14 +280,14 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_COMMAND_SYNC_POLICY` | No | `"safe"` | Controls native slash-command startup sync. `"safe"` diffs existing global commands and only updates what changed, recreating commands when Discord metadata changes cannot be applied via patch. `"bulk"` preserves the old `tree.sync()` behavior. `"off"` skips startup sync entirely. |
 | `DISCORD_REQUIRE_MENTION` | No | `true` | When `true`, the bot only responds in server channels when `@mentioned`. Set to `false` to respond to all messages in every channel. |
 | `DISCORD_THREAD_REQUIRE_MENTION` | No | `false` | When `true`, the in-thread mention shortcut is disabled — threads are gated the same as channels, requiring `@mention` even after the bot has already participated. Use this when multiple bots share a thread and you want each to fire only on explicit `@mention`. |
-| `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
+| `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel or thread-parent IDs/names (`name` or `#name`), plus category IDs, where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. A category ID applies to channels and threads nested beneath it. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
-| `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
-| `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
-| `DISCORD_NO_THREAD_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds directly in the channel instead of creating a thread. Only relevant when `DISCORD_AUTO_THREAD` is `true`. |
+| `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel or thread-parent IDs/names (`name` or `#name`), plus category IDs, where the bot **never** responds, even when `@mentioned`. A category ID applies to channels and threads nested beneath it. Takes priority over all other channel settings. |
+| `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel or thread-parent IDs/names (`name` or `#name`), plus category IDs. When set, the bot **only** responds in these scopes (plus DMs if allowed). A category ID applies to channels and threads nested beneath it. Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
+| `DISCORD_NO_THREAD_CHANNELS` | No | — | Comma-separated channel or thread-parent IDs/names (`name` or `#name`), plus category IDs, where the bot responds directly in the channel instead of creating a thread. A category ID applies to channels nested beneath it. Only relevant when `DISCORD_AUTO_THREAD` is `true`. |
 | `DISCORD_HISTORY_BACKFILL` | No | `true` | When `true`, prepend recent channel scrollback (since the bot's last response) to the user message when the bot is mentioned. Recovers context the bot would otherwise miss with `require_mention`. Skipped in DMs and free-response channels. Set to `false` to disable. |
 | `DISCORD_HISTORY_BACKFILL_LIMIT` | No | `50` | Maximum number of messages to scan backwards when assembling the backfill block. In practice the scan usually stops earlier — at the bot's own last message in the channel. |
 | `DISCORD_REPLY_TO_MODE` | No | `"first"` | Controls reply-reference behavior: `"off"` — never reply to the original message, `"first"` — reply-reference on the first message chunk only (default), `"all"` — reply-reference on every chunk. |
@@ -316,11 +316,11 @@ The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Con
 discord:
   require_mention: true           # Require @mention in server channels
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
-  free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
+  free_response_channels: ""      # Channel/parent keys or category IDs (string or list)
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
-  ignored_channels: []            # Channel IDs where bot never responds
-  no_thread_channels: []          # Channel IDs where bot responds without threading
+  ignored_channels: []            # Channel/parent keys or category IDs to ignore
+  no_thread_channels: []          # Channel/parent keys or category IDs for inline replies
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
   channel_prompts: {}             # Per-channel ephemeral system prompts
@@ -358,7 +358,7 @@ discord:
 
 **Type:** string or list — **Default:** `""`
 
-Channel IDs where the bot responds to all messages without needing an `@mention`. Accepts either a comma-separated string or a YAML list:
+Channel or thread-parent IDs/names (`name` or `#name`), plus category IDs, where the bot responds to all messages without needing an `@mention`. Accepts either a comma-separated string or a YAML list:
 
 ```yaml
 # String format
@@ -372,7 +372,7 @@ discord:
     - 9876543210
 ```
 
-If a thread's parent channel is in this list, the thread also becomes mention-free.
+If a thread's parent channel is in this list, the thread also becomes mention-free. If a category ID is in the list, every channel and thread nested beneath that category becomes mention-free.
 
 Free-response channels also **skip auto-threading** — the bot replies inline rather than spinning off a new thread per message. This keeps the channel usable as a lightweight chat surface. If you want threading behavior, don't list the channel as free-response (use normal `@mention` flow instead).
 
@@ -399,7 +399,7 @@ Disable this if you find the reactions distracting or if the bot's role doesn't 
 
 **Type:** string or list — **Default:** `[]`
 
-Channel IDs where the bot **never** responds, even when directly `@mentioned`. This takes the highest priority — if a channel is in this list, the bot silently ignores all messages there, regardless of `require_mention`, `free_response_channels`, or any other setting.
+Channel or thread-parent IDs/names (`name` or `#name`), plus category IDs, where the bot **never** responds, even when directly `@mentioned`. This takes the highest priority — if a matching scope is in this list, the bot silently ignores all messages there, regardless of `require_mention`, `free_response_channels`, or any other setting.
 
 ```yaml
 # String format
@@ -413,13 +413,13 @@ discord:
     - 9876543210
 ```
 
-If a thread's parent channel is in this list, messages in that thread are also ignored.
+If a thread's parent channel is in this list, messages in that thread are also ignored. If a category ID is in the list, every channel and thread nested beneath that category is ignored.
 
 #### `discord.no_thread_channels`
 
 **Type:** string or list — **Default:** `[]`
 
-Channel IDs where the bot responds directly in the channel instead of auto-creating a thread. This only has an effect when `auto_thread` is `true` (the default). In these channels, the bot responds inline like a normal message rather than spawning a new thread.
+Channel or thread-parent IDs/names (`name` or `#name`), plus category IDs, where the bot responds directly in the channel instead of auto-creating a thread. This only has an effect when `auto_thread` is `true` (the default). In these channels, the bot responds inline like a normal message rather than spawning a new thread. A category ID applies to every channel nested beneath it.
 
 ```yaml
 discord:

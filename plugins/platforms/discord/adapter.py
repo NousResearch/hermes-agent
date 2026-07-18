@@ -1148,18 +1148,18 @@ class DiscordAdapter(BasePlatformAdapter):
                     # _is_allowed_user docstring).
                     _msg_guild = getattr(message, "guild", None)
                     _is_dm = isinstance(message.channel, discord.DMChannel) or _msg_guild is None
-                    _msg_channel_ids = None
+                    _msg_channel_keys = None
                     if not _is_dm:
-                        _msg_channel_ids = {str(message.channel.id)}
-                        _parent_id = adapter_self._get_parent_channel_id(message.channel)
-                        if _parent_id:
-                            _msg_channel_ids.add(_parent_id)
+                        # Use the same resolver as _handle_message and slash
+                        # authorization so ID/name/#name/parent/category policy
+                        # forms all reach this earlier fail-closed admission gate.
+                        _msg_channel_keys = adapter_self._discord_channel_keys(message)
                     if not self._is_allowed_user(
                         str(message.author.id),
                         message.author,
                         guild=_msg_guild,
                         is_dm=_is_dm,
-                        channel_ids=_msg_channel_ids,
+                        channel_ids=_msg_channel_keys,
                     ):
                         self._warn_if_fail_closed_default()
                         return
@@ -1194,12 +1194,8 @@ class DiscordAdapter(BasePlatformAdapter):
                         "DISCORD_IGNORE_NO_MENTION", "true"
                     ).lower() in {"true", "1", "yes"}
                     if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
-                        _channel_id = str(message.channel.id)
-                        _parent_id = None
-                        if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                            _parent_id = str(message.channel.parent_id)
                         _free_channels = adapter_self._discord_free_response_channels()
-                        _channel_keys = adapter_self._discord_channel_keys(message, _parent_id)
+                        _channel_keys = adapter_self._discord_channel_keys(message)
                         if "*" not in _free_channels and not (_channel_keys & _free_channels):
                             return
 
@@ -4923,9 +4919,9 @@ class DiscordAdapter(BasePlatformAdapter):
         """Return channel identifiers accepted by Discord channel config gates.
 
         Users commonly configure channels by Discord snowflake ID, bare name, or
-        ``#name``. Include the current channel and, for threads, the parent
-        channel so free-response/no-thread/allow/ignore rules work with either
-        form.
+        ``#name``. Include the current channel, a thread's parent channel, and
+        the containing category ID so free-response/no-thread/allow/ignore rules
+        retain their existing forms while also supporting category scope.
         """
         channel = getattr(message, "channel", None)
         return self._discord_channel_keys_from_channel(channel, parent_channel_id)
@@ -4936,9 +4932,9 @@ class DiscordAdapter(BasePlatformAdapter):
         """Build channel-config gate keys directly from a channel object.
 
         Same key set as :meth:`_discord_channel_keys` (ID, bare name, ``#name``,
-        and the parent channel for threads) but takes the channel directly so
-        callers holding an ``interaction.channel`` (slash-command authorization)
-        get name-form matching too — not just the ``on_message`` path.
+        thread parent, and category ID) but takes the channel directly so callers
+        holding an ``interaction.channel`` (slash-command authorization) use the
+        exact same policy contract as normal messages.
         """
         keys: set[str] = set()
 
@@ -4960,6 +4956,22 @@ class DiscordAdapter(BasePlatformAdapter):
         if parent_name:
             keys.add(parent_name)
             keys.add(f"#{parent_name}")
+
+        # Text channels expose their category as ``category_id``. Threads expose
+        # their immediate parent channel instead, so resolve the category through
+        # that parent as well. Keep this in the shared key resolver so every
+        # message/slash/mention policy path gets identical category behavior.
+        # ``discord.Thread.category_id`` is a computed property and raises
+        # ``ClientException`` when its parent is absent from the guild cache.
+        # Policy resolution must retain the thread/parent keys rather than
+        # crashing the message or slash authorization path in that state.
+        for scope_channel in (channel, parent_channel):
+            try:
+                category_id = getattr(scope_channel, "category_id", None)
+            except discord.ClientException:
+                category_id = None
+            if category_id is not None:
+                keys.add(str(category_id))
 
         return keys
 
@@ -6237,9 +6249,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
-            channel_ids = {str(message.channel.id)}
-            if parent_channel_id:
-                channel_ids.add(parent_channel_id)
             channel_keys = self._discord_channel_keys(message, parent_channel_id)
 
             # Check allowed channels - if set, only respond in these channels

@@ -26,6 +26,10 @@ from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
+from agent.async_utils import (
+    consume_detached_task_result as _consume_background_task_result,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -151,12 +155,6 @@ def _abort_discord_websocket_transport(websocket: Any) -> bool:
         return False
     abort()
     return True
-
-
-def _consume_background_task_result(task: asyncio.Task) -> None:
-    """Retrieve a detached cleanup task result without surfacing cancellation."""
-    with suppress(asyncio.CancelledError, Exception):
-        task.exception()
 
 
 async def _wait_for_ready_or_bot_exit(

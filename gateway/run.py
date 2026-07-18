@@ -8384,10 +8384,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _e:
                     logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
 
+            # --- Thread-based shutdown watchdog (issue #66892) ---------------
+            # If the asyncio event loop freezes during drain (GIL hostage,
+            # blocked C call, pathological ready-callback), the asyncio-based
+            # timeout cannot fire because it runs on the same frozen loop.
+            # A plain OS thread waits drain_timeout + headroom and, if the
+            # drain hasn't completed, dumps all-thread tracebacks and calls
+            # os._exit(1) so the service manager revives the process.
+            try:
+                from gateway.shutdown_watchdog import arming_shutdown_watchdog
+                _shutdown_wd = arming_shutdown_watchdog(
+                    drain_timeout=timeout,
+                    hermes_home=_hermes_home,
+                    logger=logger,
+                )
+            except Exception:
+                _shutdown_wd = None  # best-effort; non-critical feature
+
             _cron_at_start = self._active_cron_job_count()
             _api_at_start = self._active_api_run_count()
             _drain_started_at = time.monotonic()
             active_agents, timed_out = await self._drain_active_agents(timeout)
+
+            # Cancel the watchdog — drain completed (even if timed out).
+            # The watchdog thread will self-terminate on next poll.
+            if _shutdown_wd is not None:
+                try:
+                    _shutdown_wd.cancel()
+                except Exception:
+                    pass
             logger.info(
                 "Shutdown phase: drain done at +%.2fs (drain took %.2fs, "
                 "timed_out=%s, active_at_start=%d, active_now=%d, "
@@ -21567,7 +21592,24 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         name="gateway-housekeeping",
     )
     housekeeping_thread.start()
-    
+
+    # --- Event-loop liveness heartbeat (issue #66892) -------------------
+    # A small JSON file rewritten every 30 s so external supervision can
+    # distinguish "alive" from "loop frozen".  Supplements gateway_state.json
+    # which only changes on transitions/turns.
+    _heartbeat_task: Optional[asyncio.Task] = None
+    try:
+        from gateway.shutdown_watchdog import LoopHeartbeat
+        _hb = LoopHeartbeat(
+            hermes_home=_hermes_home,
+            interval=30.0,
+            logger=logger,
+        )
+        await _hb.start()
+        _heartbeat_task = _hb._task  # type: ignore[attr-defined]
+    except Exception as _e:
+        logger.debug("LoopHeartbeat failed to start: %s", _e)
+
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
@@ -21609,6 +21651,20 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
     _planned_stop_watcher_stop.set()
     _planned_stop_watcher_thread.join(timeout=2)
+
+    # Stop the event-loop heartbeat task.
+    if _heartbeat_task is not None:
+        try:
+            from gateway.shutdown_watchdog import LoopHeartbeat
+            # The LoopHeartbeat instance has a .stop() method; we stored
+            # the task but not the instance.  Just cancel the task directly.
+            _heartbeat_task.cancel()
+            try:
+                await _heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        except Exception:
+            pass
 
     # Close MCP server connections
     try:

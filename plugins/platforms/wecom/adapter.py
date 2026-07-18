@@ -847,8 +847,40 @@ class WeComAdapter(BasePlatformAdapter):
                 payload = self._parse_json(msg.data)
                 if payload:
                     await self._dispatch_payload(payload)
+                else:
+                    # Parse returned None (JSON decode failed or non-dict
+                    # payload). _parse_json already logs the failure detail;
+                    # this makes the DROP itself visible at INFO so we can
+                    # correlate a missing inbound message with a bad frame.
+                    logger.info(
+                        "[%s] Inbound TEXT frame dropped (unparseable/non-dict) len=%d",
+                        self.name,
+                        len(msg.data) if isinstance(msg.data, (str, bytes)) else -1,
+                    )
+            elif msg.type == aiohttp.WSMsgType.BINARY:
+                # WeCom is expected to send TEXT frames; a BINARY frame is
+                # unexpected. Log at INFO with a decoded preview so we can
+                # tell whether group messages are arriving in an unhandled
+                # transport instead of being silently discarded.
+                try:
+                    decoded = msg.data.decode("utf-8", errors="replace")
+                except Exception:
+                    decoded = "<undecodable>"
+                logger.info(
+                    "[%s] Inbound BINARY frame received (len=%d) head=%r — attempting JSON parse",
+                    self.name,
+                    len(msg.data) if isinstance(msg.data, (bytes, bytearray)) else -1,
+                    decoded[:200],
+                )
+                payload = self._parse_json(msg.data)
+                if payload:
+                    await self._dispatch_payload(payload)
+                else:
+                    logger.info("[%s] BINARY frame not parseable as JSON — dropped", self.name)
             elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING}:
                 raise RuntimeError("WeCom websocket closed")
+            else:
+                logger.info("[%s] Inbound frame ignored: WSMsgType=%s", self.name, msg.type)
 
     async def _heartbeat_loop(self) -> None:
         """Send lightweight application-level pings."""
@@ -935,7 +967,15 @@ class WeComAdapter(BasePlatformAdapter):
                 self._running = False  # stop _listen_loop from reconnecting
             return
 
-        logger.debug("[%s] Ignoring websocket payload: %s", self.name, cmd or payload)
+        # Unrouted payload — did not match reply-queue, pending-response,
+        # callback, ping, or event. If WeCom delivers group messages under a
+        # cmd not in CALLBACK_COMMANDS, they land here and are dropped. Log at
+        # INFO with cmd + body keys so we can spot an unhandled callback cmd.
+        body_keys = list(payload.get("body", {}).keys()) if isinstance(payload.get("body"), dict) else None
+        logger.info(
+            "[%s] Unrouted websocket payload dropped: cmd=%r req_id=%s body_keys=%s",
+            self.name, cmd or "(empty)", req_id or "(none)", body_keys,
+        )
 
     def _fail_pending_responses(self, exc: Exception) -> None:
         """Fail all outstanding request futures."""
@@ -1248,18 +1288,37 @@ class WeComAdapter(BasePlatformAdapter):
         sender = body.get("from") if isinstance(body.get("from"), dict) else {}
         sender_id = str(sender.get("userid") or "").strip()
         chat_id = str(body.get("chatid") or sender_id).strip()
+
+        # Diagnostic: log the shape of every inbound callback at INFO so we can
+        # see what WeCom actually sends for group messages (chattype value,
+        # presence of chatid, msgtype). Group frames may arrive with a
+        # chattype other than the literal "group" we test for below.
+        logger.info(
+            "[%s] Inbound callback: chattype=%r chatid=%r sender=%r msgtype=%r has_chatid=%s",
+            self.name,
+            body.get("chattype"),
+            body.get("chatid"),
+            sender_id,
+            body.get("msgtype"),
+            bool(body.get("chatid")),
+        )
+
         if not chat_id:
-            logger.debug("[%s] Missing chat id, skipping message", self.name)
+            logger.info("[%s] Missing chat id, skipping message; body_keys=%s", self.name, list(body.keys()))
             return
 
         is_group = str(body.get("chattype") or "").lower() == "group"
         if is_group:
             self._group_chat_ids.add(chat_id)
             if not self._is_group_allowed(chat_id, sender_id):
-                logger.debug("[%s] Group %s / sender %s blocked by policy", self.name, chat_id, sender_id)
+                logger.info(
+                    "[%s] Group message DROPPED by policy: chat=%s sender=%s group_policy=%r "
+                    "(set group_policy to 'open' or add to group_allow_from to receive)",
+                    self.name, chat_id, sender_id, self._group_policy,
+                )
                 return
         elif not self._is_dm_intake_allowed(sender_id):
-            logger.debug("[%s] DM sender %s blocked by policy", self.name, sender_id)
+            logger.info("[%s] DM sender %s blocked by policy", self.name, sender_id)
             return
 
         # Cache the inbound req_id after policy checks so proactive sends to
@@ -1281,7 +1340,10 @@ class WeComAdapter(BasePlatformAdapter):
             text = reply_text
 
         if not text and not media_urls:
-            logger.debug("[%s] Empty WeCom message skipped", self.name)
+            logger.info(
+                "[%s] Empty WeCom message skipped: is_group=%s chat=%s msgtype=%r",
+                self.name, is_group, chat_id, body.get("msgtype"),
+            )
             return
 
         source = self.build_source(

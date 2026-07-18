@@ -325,7 +325,6 @@ class TestSupervisedChildIgnoresStickyProfile:
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setenv("HERMES_S6_SUPERVISED_CHILD", "1")
         monkeypatch.setattr(sys, "argv", ["hermes", "-p", "coder", "gateway", "run"])
-
         from hermes_cli.main import _apply_profile_override
         os.environ.pop("_HERMES_PROFILE_OVERRIDE_APPLIED", None)
         _apply_profile_override()
@@ -333,4 +332,122 @@ class TestSupervisedChildIgnoresStickyProfile:
         result = os.environ.get("HERMES_HOME")
         assert result is not None
         assert result.endswith("coder")
+
+
+class TestSentinelBlocksSecondPassDefaultProfileHijack:
+    """Regression guard for issue #66907: PID-scoped run-once sentinel.
+
+    Under ``python -m hermes_cli.main --profile default gateway run`` the
+    module executes twice (once as ``__main__``, once as import). The first
+    pass consumes ``--profile`` from ``sys.argv``; without the sentinel the
+    second pass would silently re-read ``active_profile`` and rebind
+    ``HERMES_HOME`` to a different profile.
+
+    These tests exercise the sentinel's *behavior* directly, complementing
+    the existing tests (which only ``pop`` the sentinel's env so the function
+    keeps running).  They fail without the sentinel added in PR #67048 and
+    pass with it.
+    """
+
+    def _setup_root_with_active_profile(self, tmp_path, monkeypatch, active: str):
+        """Bootstrap a ``tmp_path/.hermes`` with a sticky ``active_profile`` file."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "active_profile").write_text(active)
+        # Create a profile subdirectory so the active profile is resolvable.
+        if active != "default":
+            (hermes_root / "profiles" / active).mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        return hermes_root
+
+    def test_second_pass_does_not_rebind_when_sentinel_present(self, tmp_path, monkeypatch):
+        """First pass with ``--profile default``; second pass must NOT re-read
+        ``active_profile`` and rebind ``HERMES_HOME`` — the sentinel should
+        make the second call a no-op.
+
+        Without the sentinel: first pass sets HERMES_HOME to root (.hermes)
+        and strips ``--profile``; second pass sees no flag, reads
+        active_profile=ozzy, and rebinds HERMES_HOME to profiles/ozzy —
+        the #66907 regression. With the sentinel: second pass is a no-op.
+        """
+        hermes_root = self._setup_root_with_active_profile(
+            tmp_path, monkeypatch, active="ozzy"
+        )
+
+        # Clear sentinel + HERMES_HOME so the first-pass invocation behaves as
+        # the genuine "first pass" seen under `python -m hermes_cli.main`.
+        monkeypatch.delenv("_HERMES_PROFILE_OVERRIDE_APPLIED", raising=False)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            sys, "argv", ["hermes", "--profile", "default", "gateway", "run"]
+        )
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        # After first pass: sentinel must be set to this PID, and HERMES_HOME
+        # must point at the root home (.hermes), exactly the documented
+        # behavior of `--profile default`.  This is the precondition that
+        # makes the bug demonstrable: HERMES_HOME is set but NOT to a
+        # profiles/<name> path, so the #22502 early-return does not apply.
+        assert os.environ.get("_HERMES_PROFILE_OVERRIDE_APPLIED") == str(os.getpid())
+        first_pass_home = os.environ.get("HERMES_HOME")
+        assert first_pass_home == str(hermes_root), (
+            f"precondition: --profile default should set HERMES_HOME to root, "
+            f"got {first_pass_home!r}, expected {str(hermes_root)!r}"
+        )
+
+        # Second pass: simulate the import-time re-entry. Sentinel is set,
+        # so the function must return early WITHOUT touching HERMES_HOME,
+        # even though active_profile=ozzy would otherwise have rebinded it
+        # to profiles/ozzy.
+        monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "run"])  # flag stripped
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") == str(hermes_root), (
+            "second pass leaked — sentinel failed to make the call idempotent; "
+            "active_profile was re-read and HERMES_HOME was rebound to a "
+            "different profile. regression for issue #66907"
+        )
+
+    def test_sentinel_scoped_to_pid_not_inherited_by_child(self, tmp_path, monkeypatch):
+        """A spawned child (different PID) must resolve its own profile fresh —
+        the sentinel must NOT survive across fork/exec in a way that prevents
+        the child from running the override at all.
+
+        Regression value: this catches a subtle mistype where the guard is
+        changed to ``if os.environ.get(...) is not None: return`` (any value
+        short-circuits). That would let the parent's sentinel leak into the
+        child and silently prevent profile resolution in spawned subprocesses.
+        """
+        self._setup_root_with_active_profile(tmp_path, monkeypatch, active="ozzy")
+
+        # Simulate parent having already set the sentinel for its own PID.
+        # The child inherits this env var but has a different pid — we model
+        # that by setting the env var to a PID value != current getpid().
+        parent_pid = os.getpid() + 1  # any value != current pid
+        monkeypatch.setenv("_HERMES_PROFILE_OVERRIDE_APPLIED", str(parent_pid))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            sys, "argv", ["hermes", "--profile", "ozzy", "gateway", "run"]
+        )
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        # Now that we've simulated "child inherited a stale sentinel from a
+        # different PID", the override must have re-applied --profile ozzy and
+        # set HERMES_HOME.  A guard of the form ``is not None`` would have
+        # short-circuited here and left HERMES_HOME unset.
+        result = os.environ.get("HERMES_HOME")
+        assert result is not None, (
+            "child-process resolution was prevented by inherited sentinel — "
+            "sentinel must be PID-scoped (compare against os.getpid()), not "
+            "process-tree-scoped (any truthy value). regression for #66907"
+        )
+        assert result.endswith("ozzy")
+
+    def teardown_method(self, method):
+        """Make sure we never leak the sentinel into other test classes."""
+        os.environ.pop("_HERMES_PROFILE_OVERRIDE_APPLIED", None)
 

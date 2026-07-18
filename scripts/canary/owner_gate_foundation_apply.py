@@ -2266,30 +2266,48 @@ def _failure(
     return FoundationApplyFailed(receipt)
 
 
-def _preflight_failure_is_proven_nonmutating(
+def _failure_is_proven_nonmutating(
     *,
     journal: foundation_journal.FoundationApplyJournal,
     transaction_id: str,
     failed_step_name: str,
     step_receipts: Sequence[Mapping[str, Any]],
     created_steps: Sequence[foundation.PlanStep],
+    plan: foundation.OwnerGateFoundationPlan,
 ) -> bool:
-    """Admit a clean failure only before any step artifact can exist."""
+    """Admit a clean failure only when the journal proves no mutation path."""
 
-    if (
-        failed_step_name not in {
-            "preflight_live_network_evidence",
-            "preflight_live_ancestry",
-        }
-        or step_receipts
-        or created_steps
-    ):
+    if created_steps:
         return False
     try:
-        artifacts = journal.list(transaction_id)
+        artifacts = frozenset(journal.list(transaction_id))
     except (OSError, RuntimeError, PermissionError):
         return False
-    return frozenset(artifacts) == {"manifest"}
+    if failed_step_name in {
+        "preflight_live_network_evidence",
+        "preflight_live_ancestry",
+    }:
+        return not step_receipts and artifacts == {"manifest"}
+    if failed_step_name not in {
+        "terminal_live_network_evidence",
+        "terminal_live_ancestry",
+        "sign_success_receipt",
+    } or len(step_receipts) != len(plan.foundation_steps):
+        return False
+    if any(
+        receipt.get("step_name") != step.name
+        or receipt.get("disposition") != "preexisting_exact"
+        for receipt, step in zip(
+            step_receipts,
+            plan.foundation_steps,
+            strict=True,
+        )
+    ):
+        return False
+    expected_artifacts = {"manifest"} | {
+        f"s{index}-preexisting" for index in range(len(plan.foundation_steps))
+    }
+    return artifacts == expected_artifacts
 
 
 def _apply_with_provider(
@@ -3046,19 +3064,25 @@ def _apply_with_leased_provider(
             started_at_unix=started,
             completed_at_unix=completed,
         )
-        receipt = pre_foundation._sign_foundation_apply_execution(
-            execution,
-            private_key=private_key,
-            authority=chain.authority,
-            owner_reauthentication_receipt=(
-                chain.owner_reauthentication_receipt
-            ),
-            project_ancestry_evidence_raw=chain.ancestry_evidence_raw,
-            project_ancestry_collector_public_key=(
-                chain.ancestry_collector_public_key
-            ),
-            plan=chain.plan,
-        )
+        current_step = "sign_success_receipt"
+        if completed > chain.authority["expires_at_unix"]:
+            _error("owner_gate_foundation_authority_expired")
+        try:
+            receipt = pre_foundation._sign_foundation_apply_execution(
+                execution,
+                private_key=private_key,
+                authority=chain.authority,
+                owner_reauthentication_receipt=(
+                    chain.owner_reauthentication_receipt
+                ),
+                project_ancestry_evidence_raw=chain.ancestry_evidence_raw,
+                project_ancestry_collector_public_key=(
+                    chain.ancestry_collector_public_key
+                ),
+                plan=chain.plan,
+            )
+        except pre_foundation.OwnerGatePreFoundationError as exc:
+            _error("owner_gate_foundation_success_receipt_invalid", exc)
         _publish_transition(
             journal=journal,
             transaction_id=transaction_id,
@@ -3087,12 +3111,13 @@ def _apply_with_leased_provider(
             failure_code=str(exc),
             step_receipts=step_receipts,
             created_steps=created_steps,
-            inherently_unknown=not _preflight_failure_is_proven_nonmutating(
+            inherently_unknown=not _failure_is_proven_nonmutating(
                 journal=journal,
                 transaction_id=transaction_id,
                 failed_step_name=current_step,
                 step_receipts=step_receipts,
                 created_steps=created_steps,
+                plan=chain.plan,
             ),
             now_unix=now_unix,
             postcondition_wait=postcondition_wait,
@@ -3110,12 +3135,13 @@ def _apply_with_leased_provider(
             failure_code="owner_gate_foundation_provider_unknown",
             step_receipts=step_receipts,
             created_steps=created_steps,
-            inherently_unknown=not _preflight_failure_is_proven_nonmutating(
+            inherently_unknown=not _failure_is_proven_nonmutating(
                 journal=journal,
                 transaction_id=transaction_id,
                 failed_step_name=current_step,
                 step_receipts=step_receipts,
                 created_steps=created_steps,
+                plan=chain.plan,
             ),
             now_unix=now_unix,
             postcondition_wait=postcondition_wait,

@@ -77,6 +77,73 @@ class TestObservePassive:
         adapter.handle_message.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_media_only_event_preserves_capture_context(self):
+        """A photo/voice note without text must not persist as an empty row.
+
+        Regression for media-only events: ``_build_message_event()`` puts
+        cached media paths in ``media_urls``/``media_types`` and inbound
+        details in ``metadata`` — the observed entry must retain all of them.
+        """
+        adapter = _make_adapter(passive_mode=True)
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-1"
+        store = MagicMock()
+        store.get_or_create_session.return_value = session_entry
+        adapter._session_store = store
+
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.PHOTO,
+            source=MagicMock(),
+            message_id="wa-img-1",
+            media_urls=["/tmp/wa-cache/photo.jpg"],
+            media_types=["image/jpeg"],
+            metadata={"sender_name": "Samuel"},
+        )
+        await adapter._observe_passive(event)
+
+        (_, entry), _ = store.append_to_transcript.call_args
+        assert entry["content"] == "[image/jpeg: /tmp/wa-cache/photo.jpg]"
+        assert entry["media_urls"] == ["/tmp/wa-cache/photo.jpg"]
+        assert entry["media_types"] == ["image/jpeg"]
+        assert entry["metadata"] == {"sender_name": "Samuel"}
+        assert entry["observed"] is True
+
+    @pytest.mark.asyncio
+    async def test_media_with_caption_keeps_both(self):
+        adapter = _make_adapter(passive_mode=True)
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-1"
+        store = MagicMock()
+        store.get_or_create_session.return_value = session_entry
+        adapter._session_store = store
+
+        event = MessageEvent(
+            text="the whiteboard from today",
+            message_type=MessageType.PHOTO,
+            source=MagicMock(),
+            media_urls=["/tmp/wa-cache/board.jpg"],
+            media_types=["image/jpeg"],
+        )
+        await adapter._observe_passive(event)
+
+        (_, entry), _ = store.append_to_transcript.call_args
+        assert entry["content"] == (
+            "[image/jpeg: /tmp/wa-cache/board.jpg] the whiteboard from today"
+        )
+
+    @pytest.mark.asyncio
+    async def test_truly_empty_event_is_not_persisted(self):
+        adapter = _make_adapter(passive_mode=True)
+        store = MagicMock()
+        adapter._session_store = store
+
+        event = MessageEvent(text="", source=MagicMock())
+        await adapter._observe_passive(event)
+
+        store.append_to_transcript.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_missing_session_store_is_a_noop(self):
         adapter = _make_adapter(passive_mode=True)
         # No _session_store attribute at all — must not raise.
@@ -162,3 +229,34 @@ class TestYamlConfigBridge:
         monkeypatch.setenv("WHATSAPP_PASSIVE_MODE", "false")
         _apply_yaml_config({}, {"passive_mode": True})
         assert os.environ["WHATSAPP_PASSIVE_MODE"] == "false"
+
+
+class TestLoaderEndToEnd:
+    """Verify the configured value through the production dispatch path.
+
+    ``load_gateway_config()`` (gateway/config.py) discovers platform plugins
+    and runs their ``apply_yaml_config_fn`` hooks — this is the path a real
+    gateway start takes, unlike calling ``_apply_yaml_config`` directly.
+    """
+
+    def test_passive_mode_bridged_by_load_gateway_config(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.config import load_gateway_config
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "whatsapp:\n"
+            "  enabled: false\n"
+            "  passive_mode: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WHATSAPP_PASSIVE_MODE", raising=False)
+
+        try:
+            load_gateway_config()
+            assert os.environ.get("WHATSAPP_PASSIVE_MODE") == "true"
+        finally:
+            os.environ.pop("WHATSAPP_PASSIVE_MODE", None)

@@ -1286,6 +1286,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         session transcript (and SQLite history) with ``observed: True`` so it
         stays searchable and available as context, but the agent is never
         invoked and no reply is sent.
+
+        Non-text events keep their capture context: cached media paths from
+        ``event.media_urls`` / ``event.media_types`` are stored both as
+        structured fields and as inline ``[<mime>: <path>]`` references in the
+        content (so a media-only voice note or photo is never persisted as an
+        empty row), and ``event.metadata`` is carried through verbatim.
         """
         store = getattr(self, "_session_store", None)
         if not store:
@@ -1293,15 +1299,33 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             from datetime import datetime, timezone
 
+            content = (event.text or "").strip()
+            media_urls = list(event.media_urls or [])
+            media_types = list(event.media_types or [])
+            if media_urls:
+                refs = " ".join(
+                    f"[{media_types[i] if i < len(media_types) and media_types[i] else 'media'}: {url}]"
+                    for i, url in enumerate(media_urls)
+                )
+                content = f"{refs} {content}".strip()
+            if not content and not event.metadata:
+                # Nothing observable to retain (no text, media, or metadata).
+                return
+
             session_entry = store.get_or_create_session(event.source)
             entry: Dict[str, Any] = {
                 "role": "user",
-                "content": event.text or "",
+                "content": content,
                 "timestamp": datetime.now(tz=timezone.utc).isoformat(),
                 "observed": True,
             }
             if event.message_id:
                 entry["message_id"] = event.message_id
+            if media_urls:
+                entry["media_urls"] = media_urls
+                entry["media_types"] = media_types
+            if event.metadata:
+                entry["metadata"] = dict(event.metadata)
             store.append_to_transcript(session_entry.session_id, entry)
             logger.debug(
                 "[%s] passive mode: message observed, not dispatched", self.name

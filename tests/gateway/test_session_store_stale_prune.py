@@ -378,24 +378,30 @@ class TestRecoveredEntryPreservesOriginalTimestamp:
         store._loaded = True
 
         key = store._generate_session_key(source)
-        past = _dt.now().timestamp() - 86400  # last active yesterday
+        now = _dt.now()
+        started = now.timestamp() - 86400          # created yesterday 08:22
+        # ended_at == today's reset boundary. The old fix used `ended_at` for
+        # updated_at, so `_should_reset()` compared `reset < reset` = False and
+        # skipped the reset (the bug lucianosillem hit again on Jul 17). The
+        # correct source is `started_at`.
+        ended = now.replace(hour=4, minute=0, second=0, microsecond=0).timestamp()
         row = {
             "id": "sid_old",
             "session_key": key,
-            "started_at": past,
-            "ended_at": past,       # logically ended yesterday, but a live
-            "end_reason": None,     # (recoverable) row — the recovery scenario
+            "started_at": started,
+            "ended_at": ended,
+            "end_reason": None,     # recoverable live row — recovery scenario
             "source": source.platform.value,
             "user_id": source.user_id,
             "chat_id": source.chat_id,
             "chat_type": source.chat_type,
         }
         recovered = store._create_entry_from_recovered_row(
-            row=row, session_key=key, source=source, now=_dt.now(),
+            row=row, session_key=key, source=source, now=now,
         )
-        # updated_at reflects the ORIGINAL timestamp (yesterday), NOT now —
-        # so _should_reset() correctly detects the daily-reset boundary.
+        # updated_at must reflect started_at (yesterday), NOT ended_at (reset
+        # boundary) nor now — so _should_reset() crosses the daily boundary.
         assert recovered.updated_at is not None
-        assert abs(recovered.updated_at.timestamp() - past) < 2
-        assert recovered.updated_at.timestamp() < _dt.now().timestamp() - 3600
+        assert abs(recovered.updated_at.timestamp() - started) < 2
+        assert recovered.updated_at.timestamp() < ended  # not the reset boundary
 

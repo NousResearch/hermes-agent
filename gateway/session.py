@@ -1444,15 +1444,14 @@ class SessionStore:
             session_key=session_key,
             session_id=str(row["id"]),
             created_at=created_at,
-            # ponytail (#62012 follow-up, lucianosillem): preserve the original
-            # session timestamp so `_should_reset()` doesn't see a freshly
-            # recovered session as "active today" and silently skip the daily/
-            # idle reset policy. Fall back to `now` only if both are missing.
-            updated_at=(
-                datetime.fromtimestamp(float(recovered_ts))
-                if (recovered_ts := row.get("ended_at") or row.get("started_at")) is not None
-                else now
-            ),
+            # ponytail (#62012 follow-up, lucianosillem): use the original
+            # session creation time (`started_at`), not `ended_at`. The expiry
+            # finalizer sets `ended_at` to the reset boundary (e.g. 04:00), and
+            # `_should_reset()` compares `updated_at < today_reset`; with
+            # `ended_at` that is `04:00 < 04:00` = False, so the daily reset is
+            # silently skipped. `created_at` already carries `started_at` (with
+            # a `now` fallback), so reuse it.
+            updated_at=created_at,
             origin=source,
             display_name=source.chat_name,
             platform=source.platform,

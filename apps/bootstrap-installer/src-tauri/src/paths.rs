@@ -90,6 +90,14 @@ pub fn update_in_progress_marker() -> PathBuf {
     hermes_home().join(".hermes-update-in-progress")
 }
 
+/// Sidecar written when an `--update` run reaches a terminal failure (#66356).
+/// The desktop boot gate treats an in-progress marker as stale when this file
+/// exists with a timestamp at or after the in-progress marker's start time —
+/// so a wedged updater that failed to exit cannot block launches forever.
+pub fn update_failed_marker() -> PathBuf {
+    hermes_home().join(".hermes-update-failed")
+}
+
 /// Copy the currently-running installer binary to `installer_dest()` so it's
 /// available for future `--update` runs and shortcut launches.
 ///

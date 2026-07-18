@@ -20,6 +20,7 @@ import path from 'path'
 import { test } from 'vitest'
 
 import {
+  failedMarkerPath,
   isPidAlive,
   markerPath,
   readLiveUpdateMarker,
@@ -127,4 +128,39 @@ test('writeUpdateMarker + dead pid => self-heals on read', () => {
   const res = readLiveUpdateMarker(home, { kill: DEAD })
   assert.equal(res, null, 'a dead-pid marker from writeUpdateMarker self-heals')
   assert.ok(!fs.existsSync(markerPath(home)), 'marker file is pruned')
+})
+
+test('failed sidecar newer than in-progress => no live update even if pid alive (#66356)', () => {
+  const home = tmpHome('failed-newer')
+  const now = 1_000_000_000_000
+  const startedAt = Math.floor(now / 1000) - 30
+  writeMarker(home, 4242, startedAt)
+  // Updater reached terminal Failed after the in-progress marker was written,
+  // but the process is still alive — pid liveness alone must not block boot.
+  fs.writeFileSync(failedMarkerPath(home), `${startedAt + 10}\n`)
+  assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now }), null)
+  assert.ok(!fs.existsSync(markerPath(home)), 'in-progress marker pruned')
+  assert.ok(!fs.existsSync(failedMarkerPath(home)), 'failed sidecar pruned')
+})
+
+test('failed sidecar older than in-progress => still a live update', () => {
+  const home = tmpHome('failed-older')
+  const now = 1_000_000_000_000
+  const startedAt = Math.floor(now / 1000) - 5
+  writeMarker(home, 4242, startedAt)
+  // Stale failed marker from a *previous* run must not poison a new update.
+  fs.writeFileSync(failedMarkerPath(home), `${startedAt - 60}\n`)
+  const res = readLiveUpdateMarker(home, { kill: ALIVE, now: () => now })
+  assert.ok(res, 'a new in-progress marker outranks an older failed sidecar')
+  assert.equal(res.pid, 4242)
+  assert.ok(fs.existsSync(markerPath(home)), 'live marker is kept')
+})
+
+test('failed sidecar without parseable in-progress start => does not false-positive', () => {
+  const home = tmpHome('failed-malformed-start')
+  fs.writeFileSync(markerPath(home), '4242\n') // missing started_at
+  fs.writeFileSync(failedMarkerPath(home), `${Math.floor(Date.now() / 1000)}\n`)
+  // Malformed start => ageMs is Infinity => already pruned via age ceiling,
+  // not via the failed-sidecar branch alone. Either way: no live update.
+  assert.equal(readLiveUpdateMarker(home, { kill: ALIVE }), null)
 })

@@ -41,6 +41,16 @@ use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
 /// hermes_cli/main.py (sys.exit(2)). We surface a targeted message for this.
 const UPDATE_EXIT_CONCURRENT: i32 = 2;
 
+/// Process exit code when an `--update` handoff ends in terminal failure.
+/// Non-zero so wrappers can distinguish "failed and exited" from the #66356
+/// wedge where the updater logged Failed but stayed alive forever.
+const UPDATE_EXIT_FAILED: i32 = 1;
+
+/// How long to leave the Failed event on the wire before tearing down the
+/// updater process. Long enough for the progress UI to paint; short enough
+/// that a wedged updater cannot block desktop relaunches (#66356).
+const UPDATE_FAILURE_EXIT_DWELL: Duration = Duration::from_millis(750);
+
 /// How long to wait for the old desktop process to release files under the
 /// install tree before giving up and letting `hermes update`'s own guard decide.
 const DESKTOP_EXIT_WAIT: Duration = Duration::from_secs(20);
@@ -82,20 +92,63 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
     tokio::spawn(async move {
-        if let Err(err) = run_update(app.clone()).await {
-            // run_update already emits a Failed event on the paths that matter;
-            // this catches anything that escaped. Emit defensively.
-            emit(
-                &app,
-                BootstrapEvent::Failed {
-                    stage: None,
-                    error: format!("{err:#}"),
-                },
-            );
-        }
+        let result = run_update(app.clone()).await;
         UPDATE_RUNNING.store(false, Ordering::SeqCst);
+        if let Err(err) = result {
+            // run_update already emits a Failed event on the paths that matter;
+            // this catches anything that escaped. Emit defensively, then end
+            // the handoff: a Failed-but-alive hermes-setup leaves its
+            // update-in-progress marker "live" (pid still running) and the
+            // desktop boot gate parks forever (#66356).
+            finish_failed_update(&app, &err).await;
+        }
     });
     Ok(())
+}
+
+/// Terminal-failure teardown for `--update` mode (#66356).
+///
+/// Order matters: record the failed sidecar first (so a racing desktop can
+/// see "this update already failed"), clear the in-progress marker (Drop on
+/// `UpdateMarkerGuard` already did this on the `run_update` Err path — clear
+/// again idempotently), brief dwell for the Failed event to reach the UI,
+/// then `app.exit(nonzero)` so the process cannot strand a live pid.
+async fn finish_failed_update(app: &AppHandle, err: &anyhow::Error) {
+    emit(
+        app,
+        BootstrapEvent::Failed {
+            stage: None,
+            error: format!("{err:#}"),
+        },
+    );
+    write_update_failed_marker(&crate::paths::update_failed_marker());
+    clear_marker_file(&crate::paths::update_in_progress_marker());
+    tokio::time::sleep(UPDATE_FAILURE_EXIT_DWELL).await;
+    app.exit(UPDATE_EXIT_FAILED);
+}
+
+/// Best-effort remove of a marker file. `NotFound` is success (already gone).
+fn clear_marker_file(path: &Path) {
+    if let Err(err) = std::fs::remove_file(path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(?path, %err, "could not clear update marker");
+        }
+    }
+}
+
+/// Write `{failed_at_unix}\n` so the desktop can treat a still-present
+/// in-progress marker as stale when the updater has already failed.
+fn write_update_failed_marker(path: &Path) {
+    let failed_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(err) = std::fs::write(path, format!("{failed_at}\n")) {
+        tracing::warn!(?path, %err, "could not write update-failed marker");
+    }
 }
 
 /// RAII guard that owns the "update in progress" marker (see
@@ -151,6 +204,9 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // it, that backend re-locks the venv shim, our `force_kill_other_hermes`
     // straggler-cleanup kills it, and the relaunch/kill cycle loops. The guard
     // removes the marker on every exit path (incl. early returns / panics).
+    // Clear any prior `.hermes-update-failed` first so a healthy new update is
+    // not treated as already-failed by the desktop boot gate (#66356).
+    clear_marker_file(&crate::paths::update_failed_marker());
     let _update_marker = UpdateMarkerGuard::acquire(crate::paths::update_in_progress_marker());
 
     let update_branch = update_branch_from_args(std::env::args().skip(1))
@@ -1131,6 +1187,50 @@ mod tests {
 
         assert!(!marker.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_marker_file_removes_or_ignores_missing() {
+        let dir = unique_tmp_dir("clear-marker");
+        let marker = dir.join(".hermes-update-in-progress");
+        std::fs::write(&marker, "1\n2\n").unwrap();
+
+        clear_marker_file(&marker);
+        assert!(!marker.exists(), "clear must remove an existing marker");
+
+        // Second clear (already gone) must not panic — finish_failed_update
+        // may race Drop of UpdateMarkerGuard.
+        clear_marker_file(&marker);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_update_failed_marker_records_unix_timestamp() {
+        let dir = unique_tmp_dir("failed-marker");
+        let marker = dir.join(".hermes-update-failed");
+
+        write_update_failed_marker(&marker);
+
+        let body = std::fs::read_to_string(&marker).unwrap();
+        let failed_at: u64 = body.lines().next().unwrap().parse().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(
+            failed_at <= now && now - failed_at < 5,
+            "failed marker must be a recent unix timestamp, got {failed_at} vs now {now}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failure_exit_constants_are_nonzero_and_bounded() {
+        // Regression anchors for #66356: terminal failure must exit nonzero,
+        // and the dwell before exit must stay short (seconds, not minutes).
+        assert_eq!(UPDATE_EXIT_FAILED, 1);
+        assert!(UPDATE_FAILURE_EXIT_DWELL <= Duration::from_secs(2));
+        assert!(UPDATE_FAILURE_EXIT_DWELL >= Duration::from_millis(100));
     }
 
     #[test]

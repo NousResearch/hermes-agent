@@ -14,6 +14,12 @@
  * into the same trap — an infinite respawn/kill loop. The desktop gates local
  * backend startup on this marker and parks until the update finishes.
  *
+ * On terminal update failure the updater also writes
+ * HERMES_HOME/.hermes-update-failed (`{failed_at_unix}`) and exits (#66356).
+ * If a wedged updater somehow leaves the in-progress marker with a still-live
+ * pid after failing, this module treats a failed sidecar at or after the
+ * in-progress start time as "no live update" and prunes the stranded marker.
+ *
  * This module holds the PURE, side-effect-light logic (path, pid liveness,
  * parse + staleness) so it is unit-testable without booting Electron. The
  * polling/boot-progress wrapper lives in main.ts where the boot-progress and
@@ -31,6 +37,10 @@ export const UPDATE_MARKER_MAX_AGE_MS = 20 * 60 * 1000
 
 export function markerPath(hermesHome) {
   return path.join(hermesHome, '.hermes-update-in-progress')
+}
+
+export function failedMarkerPath(hermesHome) {
+  return path.join(hermesHome, '.hermes-update-failed')
 }
 
 // True only if a host process with this pid is currently alive. Signal 0 does
@@ -51,13 +61,35 @@ export function isPidAlive(pid, kill: typeof process.kill = process.kill.bind(pr
   }
 }
 
+function readFailedAtUnix(hermesHome) {
+  try {
+    const raw = fs.readFileSync(failedMarkerPath(hermesHome), 'utf8')
+    const failedAt = Number.parseInt(String(raw).split('\n')[0].trim(), 10)
+
+    return Number.isFinite(failedAt) ? failedAt : null
+  } catch {
+    return null
+  }
+}
+
+function pruneMarkerFiles(hermesHome) {
+  for (const file of [markerPath(hermesHome), failedMarkerPath(hermesHome)]) {
+    try {
+      fs.unlinkSync(file)
+    } catch {
+      void 0
+    }
+  }
+}
+
 /**
  * Read + interpret the marker.
  *
  * Returns `{ pid, ageMs }` only when an update is GENUINELY still running
- * (parseable pid that is alive, within the age ceiling). Returns `null` for
- * every "no live update" case — absent, unreadable, malformed, dead pid, or
- * past the ceiling — and, when a stale marker file exists, deletes it so it
+ * (parseable pid that is alive, within the age ceiling, and not superseded by
+ * a `.hermes-update-failed` sidecar). Returns `null` for every "no live
+ * update" case — absent, unreadable, malformed, dead pid, past the ceiling,
+ * or already-failed — and, when a stale marker file exists, deletes it so it
  * cannot strand future launches.
  *
  * Pure-ish: file I/O against the given path, plus an injectable pid probe and
@@ -89,13 +121,14 @@ export function readLiveUpdateMarker(
   const startedAt = Number.parseInt((startedLine || '').trim(), 10)
   const ageMs = Number.isFinite(startedAt) ? now() - startedAt * 1000 : Infinity
   const alive = Number.isInteger(pid) && isPidAlive(pid, kill)
+  const failedAt = readFailedAtUnix(hermesHome)
+  // #66356: updater logged terminal failure but may still be alive with the
+  // in-progress marker intact. A failed sidecar at/after startedAt wins.
+  const alreadyFailed =
+    failedAt != null && Number.isFinite(startedAt) && failedAt >= startedAt
 
-  if (!alive || ageMs > maxAgeMs) {
-    try {
-      fs.unlinkSync(file)
-    } catch {
-      void 0
-    }
+  if (!alive || ageMs > maxAgeMs || alreadyFailed) {
+    pruneMarkerFiles(hermesHome)
 
     return null
   }

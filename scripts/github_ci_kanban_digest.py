@@ -416,9 +416,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("github-ci-digest: --repo is required outside a GitHub checkout", file=sys.stderr)
         return 2
     path = args.state_file or state_path(args.board)
-    state = load_state(path)
-    posted: list[str] = []
     dry_run_probe = args.dry_run and args.pr is not None
+    state = {} if dry_run_probe else load_state(path)
+    posted: list[str] = []
     connection = nullcontext(None) if dry_run_probe else kb.connect_closing(board=args.board)
     with connection as conn:
         cards = [] if conn is None else active_pr_gate_cards(conn)

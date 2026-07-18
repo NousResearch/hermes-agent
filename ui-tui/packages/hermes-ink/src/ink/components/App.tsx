@@ -9,7 +9,9 @@ import type { DOMElement } from '../dom.js'
 import { EventEmitter } from '../events/emitter.js'
 import { InputEvent } from '../events/input-event.js'
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js'
+import instances from '../instances.js'
 import {
+  DECRPM_STATUS,
   INITIAL_STATE,
   type ParsedInput,
   type ParsedKey,
@@ -17,9 +19,9 @@ import {
   parseMultipleKeypresses
 } from '../parse-keypress.js'
 import reconciler from '../reconciler.js'
-import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js'
+import { clearSelection, finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js'
 import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js'
-import { TerminalQuerier, xtversion } from '../terminal-querier.js'
+import { decrqm, TerminalQuerier, xtversion } from '../terminal-querier.js'
 import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js'
 import {
   DISABLE_KITTY_KEYBOARD,
@@ -29,10 +31,11 @@ import {
   FOCUS_IN,
   FOCUS_OUT
 } from '../termio/csi.js'
-import { DBP, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, SHOW_CURSOR } from '../termio/dec.js'
+import { DBP, DEC, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, SHOW_CURSOR } from '../termio/dec.js'
 
 import AppContext from './AppContext.js'
 import { ClockProvider } from './ClockContext.js'
+import CursorAdvanceContext, { type CursorAdvanceNotifier } from './CursorAdvanceContext.js'
 import CursorDeclarationContext, { type CursorDeclarationSetter } from './CursorDeclarationContext.js'
 import ErrorOverview from './ErrorOverview.js'
 import StdinContext from './StdinContext.js'
@@ -48,6 +51,20 @@ const SUPPORTS_SUSPEND = false
 // but no signal reaches us. 5s is well above normal inter-keystroke gaps
 // but short enough that the first scroll after reattach works.
 const STDIN_RESUME_GAP_MS = 5000
+
+// Mouse-mode watchdog cadence. The stdin-gap re-assert above needs a
+// KEYSTROKE to fire — a mouse-only user whose terminal dropped the DEC
+// mouse modes (e.g. the terminal's own "disable mouse reporting" toggle,
+// which some emulators implement by clearing the modes) produces no stdin
+// at all: mouse reporting is exactly what's off. Recovery would need
+// input, input needs recovery — historically only a window resize broke
+// the deadlock. The watchdog closes it out-of-band: every tick it asks
+// the terminal whether mode 1000 is still set (DECRQM — answered on
+// stdin, no user action needed) and re-asserts tracking when the terminal
+// reports it lost. Terminals that gate delivery without clearing the mode
+// report SET, so an *active* user toggle is never fought; terminals that
+// don't answer DECRQM at all disable the watchdog permanently.
+const MOUSE_WATCHDOG_INTERVAL_MS = 2000
 type Props = {
   readonly children: ReactNode
   readonly stdin: NodeJS.ReadStream
@@ -75,6 +92,10 @@ type Props = {
   // DOM elements. Called for mode-1003 motion events with no button held.
   // No-op outside fullscreen (Ink.dispatchHover gates on altScreenActive).
   readonly onHoverAt: (col: number, row: number) => void
+  // Copy the active fullscreen text selection without clearing the highlight.
+  // Used for terminal-native right-click-copy behaviour.
+  readonly onCopySelectionNoClear: () => Promise<string>
+  readonly getSelectedText: () => string
   // Look up the OSC 8 hyperlink at (col, row) synchronously at click
   // time. Returns the URL or undefined. The browser-open is deferred by
   // MULTI_CLICK_TIMEOUT_MS so double-click can cancel it.
@@ -100,6 +121,18 @@ type Props = {
   // Enables IME composition at the input caret and lets screen readers /
   // magnifiers track the input. Optional so testing.tsx doesn't stub it.
   readonly onCursorDeclaration?: CursorDeclarationSetter
+  // Receives notifications that the physical cursor was advanced out-of-band
+  // (e.g. TextInput's fast-echo bypass writing directly to stdout). The
+  // handler in ink.tsx updates two pieces of state from a single call:
+  //   - `displayCursor` (the relative-move basis log-update uses on the
+  //     next frame; skipped on alt-screen where CSI H resets it every
+  //     frame anyway), and
+  //   - the active `cursorDeclaration.relativeX/Y` (the target the cursor
+  //     parks at after every frame; bumped on BOTH screens because
+  //     onRender's alt-screen branch emits an absolute CUP from it and
+  //     a stale declaration there is still visibly wrong).
+  // Optional so testing.tsx doesn't need to stub it.
+  readonly onCursorAdvance?: CursorAdvanceNotifier
   // Dispatch a keyboard event through the DOM tree. Called for each
   // parsed key alongside the legacy EventEmitter path.
   readonly dispatchKeyboardEvent: (parsedKey: ParsedKey) => void
@@ -166,6 +199,21 @@ export default class App extends PureComponent<Props, State> {
   // Initialized to now so startup doesn't false-trigger.
   lastStdinTime = Date.now()
 
+  // Mouse-mode watchdog (see MOUSE_WATCHDOG_INTERVAL_MS). Runs while raw
+  // mode is on; each tick DECRQM-probes mode 1000 unless a mouse event
+  // arrived within the last interval (tracking provably alive → zero
+  // probe chatter during normal mouse use).
+  mouseWatchdogTimer: NodeJS.Timeout | null = null
+  // A probe round-trip is outstanding. Also latches permanently when the
+  // terminal never answers the DA1 sentinel (non-conforming) so a dead
+  // querier can't accumulate pending promises.
+  mouseWatchdogProbeInFlight = false
+  // Terminal ignored DECRQM (or reported the mode permanently reset) —
+  // probing is useless; the watchdog disables itself for the session.
+  mouseWatchdogUnsupported = false
+  // Timestamp of the last parsed mouse event (any kind).
+  lastMouseEventTime = 0
+
   // Determines if TTY is supported on the provided stdin
   isRawModeSupported(): boolean {
     return this.props.stdin.isTTY
@@ -196,7 +244,9 @@ export default class App extends PureComponent<Props, State> {
             <TerminalFocusProvider>
               <ClockProvider>
                 <CursorDeclarationContext.Provider value={this.props.onCursorDeclaration ?? (() => {})}>
-                  {this.state.error ? <ErrorOverview error={this.state.error as Error} /> : this.props.children}
+                  <CursorAdvanceContext.Provider value={this.props.onCursorAdvance ?? (() => {})}>
+                    {this.state.error ? <ErrorOverview error={this.state.error as Error} /> : this.props.children}
+                  </CursorAdvanceContext.Provider>
                 </CursorDeclarationContext.Provider>
               </ClockProvider>
             </TerminalFocusProvider>
@@ -214,6 +264,11 @@ export default class App extends PureComponent<Props, State> {
     if (this.incompleteEscapeTimer) {
       clearTimeout(this.incompleteEscapeTimer)
       this.incompleteEscapeTimer = null
+    }
+
+    if (this.mouseWatchdogTimer) {
+      clearInterval(this.mouseWatchdogTimer)
+      this.mouseWatchdogTimer = null
     }
 
     if (this.pendingHyperlinkTimer) {
@@ -290,6 +345,28 @@ export default class App extends PureComponent<Props, State> {
             }
           })
         })
+
+        // Re-assert mouse tracking on raw-mode re-entry. <AlternateScreen>
+        // owns the initial enable, but its effect only re-runs on a
+        // mode/writeRaw change — NOT on a raw-mode bounce (count 1→0→1, e.g.
+        // an overlay that briefly drops the last useInput consumer). The
+        // teardown above now DISABLE_MOUSE_TRACKING's to stop the cooked-echo
+        // leak, so without this the terminal would be left with tracking off
+        // and the mouse silently dead until the next stdin-gap/resize
+        // re-assert. reassertTerminalModes() is gated on altScreenActive and
+        // idempotent, so it's a no-op when there's nothing to restore.
+        // Deferred (same setImmediate discipline as the XTVERSION probe) so it
+        // lands after any alt-screen enable writes in this render cycle.
+        setImmediate(() => {
+          instances.get(this.props.stdout)?.reassertTerminalModes()
+        })
+
+        // Mouse-mode watchdog: recovers tracking when the terminal drops
+        // the DEC mouse modes with no stdin and no resize to tell us (see
+        // MOUSE_WATCHDOG_INTERVAL_MS). Interval, not per-event: the whole
+        // point is firing when NO events arrive.
+        this.mouseWatchdogTimer = setInterval(this.probeMouseTracking, MOUSE_WATCHDOG_INTERVAL_MS)
+        this.mouseWatchdogTimer.unref?.()
       }
 
       this.rawModeEnabledCount++
@@ -299,16 +376,84 @@ export default class App extends PureComponent<Props, State> {
 
     // Disable raw mode only when no components left that are using it
     if (--this.rawModeEnabledCount === 0) {
+      if (this.mouseWatchdogTimer) {
+        clearInterval(this.mouseWatchdogTimer)
+        this.mouseWatchdogTimer = null
+      }
+
       this.props.stdout.write(DISABLE_MODIFY_OTHER_KEYS)
       this.props.stdout.write(DISABLE_KITTY_KEYBOARD)
       // Disable terminal focus reporting (DECSET 1004)
       this.props.stdout.write(DFE)
       // Disable bracketed paste mode
       this.props.stdout.write(DBP)
+      // Disable mouse tracking. Tracking is asserted by <AlternateScreen> /
+      // the Ink instance, NOT here — but dropping raw mode + detaching the
+      // readable listener while DEC 1003 hover stays on means the terminal
+      // falls back to cooked-mode echo and every mouse move leaks as text
+      // (`35;col;row M` shards over the prompt). Same hazard handleSuspend()
+      // already guards against; this teardown path missed it. Idempotent
+      // (no-op if tracking was never on), and re-enabling raw mode below
+      // re-asserts tracking so a transient drop→re-add round-trips cleanly.
+      this.props.stdout.write(DISABLE_MOUSE_TRACKING)
       stdin.setRawMode(false)
       stdin.removeListener('readable', this.handleReadable)
       stdin.unref()
     }
+  }
+
+  // Mouse-mode watchdog tick. Asks the terminal whether DEC mode 1000 is
+  // still set (DECRQM); if the terminal reports RESET while we expect
+  // tracking on, someone cleared our modes out from under us (terminal
+  // "disable mouse reporting" toggle, an external app, tmux) — re-assert.
+  // See MOUSE_WATCHDOG_INTERVAL_MS for the full rationale. Timeout-free:
+  // the querier's DA1 sentinel resolves the probe with `undefined` when
+  // the terminal ignores DECRQM, which permanently disables the watchdog.
+  probeMouseTracking = (): void => {
+    if (this.mouseWatchdogUnsupported || this.mouseWatchdogProbeInFlight) {
+      return
+    }
+
+    const ink = instances.get(this.props.stdout)
+
+    // Only probe when tracking is supposed to be armed (alt screen active,
+    // not paused, preset ≠ 'off'). Covers /mouse off, editor handoffs, and
+    // inline mode without extra wiring.
+    if (!ink?.expectsMouseTracking || !this.props.stdout.isTTY) {
+      return
+    }
+
+    // A recent mouse event proves tracking is alive — skip the probe so
+    // normal mouse use generates zero query chatter.
+    if (Date.now() - this.lastMouseEventTime < MOUSE_WATCHDOG_INTERVAL_MS) {
+      return
+    }
+
+    this.mouseWatchdogProbeInFlight = true
+
+    void Promise.all([this.querier.send(decrqm(DEC.MOUSE_NORMAL)), this.querier.flush()])
+      .then(([r]) => {
+        this.mouseWatchdogProbeInFlight = false
+
+        if (!r || r.status === DECRPM_STATUS.NOT_RECOGNIZED || r.status === DECRPM_STATUS.PERMANENTLY_RESET) {
+          // Terminal ignored DECRQM or can't set the mode at all — probing
+          // is useless for the rest of the session.
+          this.mouseWatchdogUnsupported = true
+          logForDebugging('mouse watchdog: DECRQM unsupported, disabling')
+
+          return
+        }
+
+        // Re-check expectation: state may have legitimately changed (e.g.
+        // /mouse off, pause) while the probe was in flight.
+        if (r.status === DECRPM_STATUS.RESET && instances.get(this.props.stdout)?.expectsMouseTracking) {
+          logForDebugging('mouse watchdog: terminal lost mouse tracking, re-asserting')
+          instances.get(this.props.stdout)?.reassertTerminalModes()
+        }
+      })
+      .catch(() => {
+        this.mouseWatchdogProbeInFlight = false
+      })
   }
 
   // Helper to flush incomplete escape sequences
@@ -413,6 +558,19 @@ export default class App extends PureComponent<Props, State> {
         })
         stdin.addListener('readable', this.handleReadable)
       }
+
+      // Issue #31486: even after re-attaching, any bytes already buffered
+      // when the loop threw are stranded because Node only fires 'readable'
+      // on buffer transitions, not for data the consumer already saw. Schedule
+      // one drain on the next macrotask so the handler runs against a fresh
+      // try/catch and clears whatever is left.
+      if (this.rawModeEnabledCount > 0 && stdin.readableLength > 0) {
+        setImmediate(() => {
+          if (this.rawModeEnabledCount > 0 && this.props.stdin.readableLength > 0) {
+            this.handleReadable()
+          }
+        })
+      }
     }
   }
   handleInput = (input: string | undefined): void => {
@@ -511,9 +669,19 @@ function processKeysInBatch(app: App, items: ParsedInput[], _unused1: undefined,
     // Terminal sends 1-indexed col/row; convert to 0-indexed for the
     // screen buffer. Button bit 0x20 = drag (motion while button held).
     if (item.kind === 'mouse') {
+      // Proof-of-life for the mouse-mode watchdog: any parsed mouse event
+      // means tracking is armed, so the next probe tick can skip.
+      app.lastMouseEventTime = Date.now()
       handleMouseEvent(app, item)
 
       continue
+    }
+
+    // Wheel events stay ParsedKey (routed through the keybinding system),
+    // but they're mouse-tracking traffic all the same — stamp proof-of-life
+    // so a wheel-only user doesn't trigger redundant watchdog probes.
+    if (item.kind === 'key' && (item.name === 'wheelup' || item.name === 'wheeldown')) {
+      app.lastMouseEventTime = Date.now()
     }
 
     const sequence = item.sequence
@@ -616,6 +784,36 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
     if (baseButton !== 0) {
       // Non-left press breaks the multi-click chain.
       app.clickCount = 0
+
+      if (baseButton === 2 && hasSelection(sel)) {
+        if ((m.button & 0x20) !== 0) {
+          return
+        }
+
+        if (!app.props.getSelectedText()) {
+          return
+        }
+
+        void app.props
+          .onCopySelectionNoClear()
+          .then(text => {
+            if (text) {
+              // Right-click copy is a deliberate action (unlike copy-on-select
+              // during a drag, which keeps the highlight so the drag can
+              // continue). Clear the highlight so the user gets visual
+              // confirmation the copy landed and a follow-up right-click on
+              // empty space pastes instead of re-copying the stale range.
+              clearSelection(sel)
+              app.props.onSelectionChange()
+            } else {
+              app.props.onMouseDownAt(col, row, baseButton)
+            }
+          })
+          .catch(() => app.props.onMouseDownAt(col, row, baseButton))
+
+        return
+      }
+
       app.props.onMouseDownAt(col, row, baseButton)
 
       return

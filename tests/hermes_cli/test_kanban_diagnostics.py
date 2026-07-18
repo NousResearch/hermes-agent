@@ -177,8 +177,66 @@ def test_repeated_failures_escalates_to_critical():
 
 
 def test_repeated_failures_below_threshold_silent():
-    task = _task(consecutive_failures=2)
+    task = _task(consecutive_failures=1)
     assert kd.compute_task_diagnostics(task, [], []) == []
+
+
+def test_repeated_failures_default_matches_dispatcher_failure_limit():
+    """Default dispatcher auto-blocks at 2 failures, so diagnostics must
+    also surface at 2 instead of waiting for the stale threshold of 3.
+    """
+    task = _task(status="blocked", consecutive_failures=2,
+                 last_failure_error="elapsed 600s > limit 300s")
+    runs = [_run(outcome="timed_out", run_id=1)]
+    diags = kd.compute_task_diagnostics(task, [], runs)
+    repeated = [d for d in diags if d.kind == "repeated_failures"]
+    assert len(repeated) == 1
+    d = repeated[0]
+    assert d.data["failure_threshold"] == 2
+    assert d.data["failure_limit"] == 2
+    assert "default 5" not in d.detail
+    assert "configured for 2" in d.detail
+
+
+def test_repeated_failures_derives_threshold_from_kanban_failure_limit():
+    task = _task(status="ready", consecutive_failures=2,
+                 last_failure_error="Profile 'debugger' does not exist")
+    runs = [_run(outcome="spawn_failed", run_id=1)]
+    assert kd.compute_task_diagnostics(
+        task, [], runs, config={"failure_limit": 4}
+    ) == []
+
+    task = _task(status="blocked", consecutive_failures=4,
+                 last_failure_error="Profile 'debugger' does not exist")
+    diags = kd.compute_task_diagnostics(
+        task, [], runs, config={"failure_limit": 4}
+    )
+    repeated = [d for d in diags if d.kind == "repeated_failures"]
+    assert len(repeated) == 1
+    assert repeated[0].data["failure_threshold"] == 4
+    assert repeated[0].data["failure_limit"] == 4
+
+
+def test_repeated_failures_explicit_threshold_overrides_failure_limit():
+    task = _task(status="ready", consecutive_failures=3,
+                 last_failure_error="Profile 'debugger' does not exist")
+    runs = [_run(outcome="spawn_failed", run_id=1)]
+    diags = kd.compute_task_diagnostics(
+        task, [], runs, config={"failure_limit": 5, "failure_threshold": 3}
+    )
+    repeated = [d for d in diags if d.kind == "repeated_failures"]
+    assert len(repeated) == 1
+    assert repeated[0].data["failure_threshold"] == 3
+    assert repeated[0].data["failure_limit"] == 5
+
+
+def test_config_from_kanban_config_preserves_explicit_diagnostics_threshold():
+    cfg = kd.config_from_kanban_config({
+        "failure_limit": 5,
+        "diagnostics": {"failure_threshold": 3},
+    })
+    assert cfg["failure_threshold"] == 3
+    assert cfg["failure_limit"] == 5
 
 
 def test_repeated_crashes_counts_trailing_streak_only():
@@ -212,6 +270,27 @@ def test_repeated_crashes_escalates_on_many_crashes():
     runs = [_run(outcome="crashed", run_id=i) for i in range(1, 6)]  # 5 in a row
     diags = kd.compute_task_diagnostics(task, [], runs)
     assert diags[0].severity == "critical"
+
+
+def test_failure_rules_exempt_terminal_statuses():
+    # A manual done (dashboard drag) ends no run, so the trailing crash
+    # streak survives in run history — but done means done: neither
+    # failure rule may keep flagging a terminal card.
+    runs = [_run(outcome="crashed", run_id=1), _run(outcome="crashed", run_id=2)]
+    for status in ("done", "archived"):
+        task = _task(status=status, assignee="crashy", consecutive_failures=3)
+        assert kd.compute_task_diagnostics(task, [], runs) == []
+
+
+def test_failure_rules_exempt_running_retry():
+    # Retrying a task (→ running) puts a fresh attempt in flight; its
+    # in-flight run (no outcome) doesn't break the trailing crash scan,
+    # so the past streak used to keep flagging over an active retry.
+    # A running card must clear the failure/crash banner until this
+    # attempt itself resolves.
+    runs = [_run(outcome="crashed", run_id=1), _run(outcome="crashed", run_id=2)]
+    task = _task(status="running", assignee="crashy", consecutive_failures=3)
+    assert kd.compute_task_diagnostics(task, [], runs) == []
 
 
 def test_stuck_in_blocked_fires_past_threshold():
@@ -310,15 +389,19 @@ def test_repeated_crashes_truncates_huge_tracebacks():
 
 def test_diagnostics_sorted_critical_first():
     """A task with both a critical (many spawn failures) and a warning
-    (prose phantoms) diagnostic should list the critical one first."""
-    task = _task(status="done", consecutive_failures=10,
+    (prose phantoms) diagnostic should list the critical one first.
+
+    Status must be non-terminal: done/archived are exempt from the
+    failure rules (done means done). ``now=300`` keeps the synthetic
+    timestamps from tripping stranded_in_ready — same dodge as above."""
+    task = _task(status="ready", consecutive_failures=10,
                  last_failure_error="nope")
     events = [
         _event("completed", ts=100, summary="referenced t_missing"),
         _event("suspected_hallucinated_references", ts=101,
                phantom_refs=["t_missing11"]),
     ]
-    diags = kd.compute_task_diagnostics(task, events, [])
+    diags = kd.compute_task_diagnostics(task, events, [], now=300)
     kinds = [d.kind for d in diags]
     assert kinds[0] == "repeated_failures"  # critical
     assert "prose_phantom_refs" in kinds
@@ -555,3 +638,138 @@ def test_stranded_in_ready_works_on_real_db_row(kanban_home):
         assert stranded[0].data["assignee"] == "ghost"
     finally:
         conn.close()
+
+
+
+# ---------------------------------------------------------------------------
+# triage_aux_unavailable rule — auto-decompose aware
+# ---------------------------------------------------------------------------
+
+
+def _triage_task():
+    return _task(id="t_triage1", status="triage")
+
+
+def test_triage_aux_unavailable_silent_without_config_context():
+    """Low-level callers passing no config dict should not see this rule."""
+    diags = kd.compute_task_diagnostics(_triage_task(), [], [])
+    assert [d for d in diags if d.kind == "triage_aux_unavailable"] == []
+
+
+def test_triage_aux_unavailable_silent_when_main_model_visible():
+    """Default `provider: auto` falls back to the main model — no warning."""
+    config = {
+        "auxiliary": {},
+        "model": {"provider": "openrouter", "default": "qwen/qwen3"},
+        "kanban": {"auto_decompose": True},
+    }
+    diags = kd.compute_task_diagnostics(_triage_task(), [], [], config=config)
+    assert [d for d in diags if d.kind == "triage_aux_unavailable"] == []
+
+
+def test_triage_aux_unavailable_silent_when_decomposer_explicit():
+    """User explicitly configured decomposer → no warning, even without main."""
+    config = {
+        "auxiliary": {
+            "kanban_decomposer": {"provider": "openrouter", "model": "qwen/qwen3"},
+        },
+        "kanban": {"auto_decompose": True},
+    }
+    diags = kd.compute_task_diagnostics(_triage_task(), [], [], config=config)
+    assert [d for d in diags if d.kind == "triage_aux_unavailable"] == []
+
+
+def test_triage_aux_unavailable_fires_auto_decompose_on_no_fallback():
+    """auto_decompose=True, no decomposer, no main model → warn about decomposer."""
+    config = {
+        "auxiliary": {},
+        "kanban": {"auto_decompose": True},
+    }
+    diags = kd.compute_task_diagnostics(_triage_task(), [], [], config=config)
+    triage = [d for d in diags if d.kind == "triage_aux_unavailable"]
+    assert len(triage) == 1
+    d = triage[0]
+    assert d.severity == "warning"
+    assert "decomposer" in d.title.lower()
+    assert d.data["auto_decompose"] is True
+    assert d.data["primary_slot"] == "auxiliary.kanban_decomposer"
+    suggested = [a for a in d.actions if a.suggested]
+    assert suggested
+    assert "auxiliary.kanban_decomposer" in suggested[0].payload["command"]
+
+
+def test_triage_aux_unavailable_fires_auto_decompose_off_points_at_specifier():
+    """auto_decompose=False → primary is specifier, not decomposer."""
+    config = {
+        "auxiliary": {},
+        "kanban": {"auto_decompose": False},
+    }
+    diags = kd.compute_task_diagnostics(_triage_task(), [], [], config=config)
+    triage = [d for d in diags if d.kind == "triage_aux_unavailable"]
+    assert len(triage) == 1
+    d = triage[0]
+    assert "specifier" in d.title.lower()
+    assert d.data["auto_decompose"] is False
+    assert d.data["primary_slot"] == "auxiliary.triage_specifier"
+    # And it should offer the manual specify command as an action
+    labels = [a.label for a in d.actions]
+    assert any("hermes kanban specify" in l for l in labels)
+
+
+def test_triage_aux_unavailable_skips_non_triage_tasks():
+    config = {"auxiliary": {}, "kanban": {"auto_decompose": True}}
+    task = _task(status="todo")
+    diags = kd.compute_task_diagnostics(task, [], [], config=config)
+    assert [d for d in diags if d.kind == "triage_aux_unavailable"] == []
+
+
+def test_triage_aux_status_recognises_auto_default_as_not_explicit():
+    """Default `provider: auto` with empty fields → not 'explicit'."""
+    status = kd.triage_aux_status({
+        "auxiliary": {
+            "kanban_decomposer": {"provider": "auto", "model": ""},
+        },
+        "kanban": {},
+    })
+    assert status is not None
+    assert status["decomposer_explicit"] is False
+
+
+def test_triage_aux_status_recognises_explicit_model_only():
+    """Even with provider=auto, a non-empty model counts as explicit."""
+    status = kd.triage_aux_status({
+        "auxiliary": {
+            "kanban_decomposer": {"provider": "auto", "model": "qwen/qwen3"},
+        },
+        "kanban": {},
+    })
+    assert status is not None
+    assert status["decomposer_explicit"] is True
+
+
+def test_config_from_runtime_config_carries_aux_and_model():
+    cfg = kd.config_from_runtime_config({
+        "kanban": {"failure_limit": 5, "auto_decompose": False},
+        "auxiliary": {"kanban_decomposer": {"provider": "openrouter"}},
+        "model": {"provider": "openrouter", "default": "qwen/qwen3"},
+    })
+    assert cfg["failure_threshold"] == 5
+    assert cfg["kanban"]["auto_decompose"] is False
+    assert cfg["auxiliary"]["kanban_decomposer"]["provider"] == "openrouter"
+    assert cfg["model"]["default"] == "qwen/qwen3"
+
+
+def test_config_from_runtime_config_handles_empty_input():
+    assert kd.config_from_runtime_config(None) == {}
+    assert kd.config_from_runtime_config({}) == {}
+
+
+def test_severity_at_or_above_uses_threshold_semantics():
+    assert kd.severity_at_or_above("warning", "warning") is True
+    assert kd.severity_at_or_above("error", "warning") is True
+    assert kd.severity_at_or_above("critical", "warning") is True
+    assert kd.severity_at_or_above("critical", "error") is True
+    assert kd.severity_at_or_above("warning", "error") is False
+    assert kd.severity_at_or_above("error", "critical") is False
+    assert kd.severity_at_or_above("mystery", "warning") is False
+    assert kd.severity_at_or_above("warning", None) is True

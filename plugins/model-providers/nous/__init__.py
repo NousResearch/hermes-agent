@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from agent.portal_tags import nous_portal_tags
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -12,7 +13,11 @@ class NousProfile(ProviderProfile):
     def build_extra_body(
         self, *, session_id: str | None = None, **context
     ) -> dict[str, Any]:
-        return {"tags": ["product=hermes-agent"]}
+        body: dict[str, Any] = {"tags": nous_portal_tags(session_id=session_id)}
+        provider_preferences = context.get("provider_preferences")
+        if provider_preferences:
+            body["provider"] = provider_preferences
+        return body
 
     def build_api_kwargs_extras(
         self,
@@ -46,7 +51,7 @@ nous = NousProfile(
         "hermes-3-405b",
         "hermes-3-70b",
     ),
-    base_url="https://inference.nousresearch.com/v1",
+    base_url="https://inference-api.nousresearch.com/v1",
     auth_type="oauth_device_code",
 )
 

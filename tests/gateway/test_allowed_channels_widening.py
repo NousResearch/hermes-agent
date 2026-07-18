@@ -24,7 +24,7 @@ from gateway.config import Platform, PlatformConfig
 # ---------------------------------------------------------------------------
 
 def _make_telegram_adapter(*, allowed_chats=None, require_mention=None, guest_mode=False):
-    from gateway.platforms.telegram import TelegramAdapter
+    from plugins.platforms.telegram.adapter import TelegramAdapter
 
     extra = {"guest_mode": guest_mode}
     if allowed_chats is not None:
@@ -38,6 +38,10 @@ def _make_telegram_adapter(*, allowed_chats=None, require_mention=None, guest_mo
     adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
     adapter._message_handler = AsyncMock()
     adapter._mention_patterns = adapter._compile_mention_patterns()
+    # PR db50af910 added a TELEGRAM_ALLOWED_USERS allowlist gate to
+    # _should_process_message; stub it for tests that exercise the
+    # allowed-channels widening logic that runs after.
+    adapter._is_callback_user_authorized = lambda *_a, **_kw: True
     return adapter
 
 
@@ -158,8 +162,8 @@ class TestTelegramAllowedChats:
 
 def _make_dingtalk_adapter(*, allowed_chats=None, require_mention=None):
     # Import lazily — DingTalk SDK may not be installed.
-    pytest.importorskip("gateway.platforms.dingtalk", reason="DingTalk adapter not importable")
-    from gateway.platforms.dingtalk import DingTalkAdapter
+    pytest.importorskip("plugins.platforms.dingtalk.adapter", reason="DingTalk adapter not importable")
+    from plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
     extra = {}
     if allowed_chats is not None:
@@ -239,7 +243,6 @@ class TestMattermostAllowedChannels:
     @staticmethod
     def _would_process(channel_id, channel_type="O", allowed_cfg=None, allowed_env=""):
         """Replicate the whitelist gate from gateway/platforms/mattermost.py."""
-        import os as _os
         if channel_type == "D":
             return True
         # config-first, env-var fallback (matching the adapter)

@@ -29,31 +29,97 @@ function InlineLoader({ label, t }: { label: string; t: Theme }) {
 
 export function ArtLines({ lines }: { lines: [string, string][] }) {
   return (
-    <>
+    <Box flexDirection="column" height={lines.length} opaque width={artWidth(lines)}>
       {lines.map(([c, text], i) => (
-        <Text color={c} key={i}>
+        <Text color={c} key={i} wrap="truncate-end">
           {text}
         </Text>
       ))}
-    </>
+    </Box>
   )
 }
 
-export function Banner({ t }: { t: Theme }) {
-  const cols = useStdout().stdout?.columns ?? 80
+// Responsive Banner: full art → compact rule → text → hidden.
+//
+// Terminals can't scale glyphs, so "responsive" means picking a layout that
+// fits the available columns. Thresholds are picked so each tier reads
+// comfortably without forcing wrap or truncation drift on box-drawing edges.
+const TAG_FULL = 'Nous Research · Messenger of the Digital Gods'
+const TAG_MID = 'Messenger of the Digital Gods'
+const TAG_TINY = 'Nous Research'
+const HIDE_BELOW = 34
+const COMPACT_FROM = 58
+
+const clip = (s: string, w: number) => (w <= 0 ? '' : s.length > w ? `${s.slice(0, Math.max(0, w - 1))}…` : s)
+
+const centerIn = (s: string, w: number) => {
+  const f = clip(s, w)
+  const slack = Math.max(0, w - f.length)
+  const left = slack >> 1
+
+  return `${' '.repeat(left)}${f}${' '.repeat(slack - left)}`
+}
+
+const ruleIn = (label: string, w: number) => {
+  const f = clip(label, Math.max(1, w - 4))
+  const slack = Math.max(0, w - f.length - 2)
+  const left = slack >> 1
+
+  return `${'─'.repeat(left)} ${f} ${'─'.repeat(slack - left)}`
+}
+
+function CompactBanner({ cols, t }: { cols: number; t: Theme }) {
+  // -4 keeps a margin so exact-edge rows don't trip terminal pending-wrap.
+  const w = Math.max(28, cols - 4)
+
+  return (
+    <Box flexDirection="column" height={3} marginBottom={1} opaque width={w}>
+      <Text bold color={t.color.primary}>
+        {ruleIn(t.brand.name, w)}
+      </Text>
+      <Text color={t.color.muted}>{centerIn(TAG_FULL, w)}</Text>
+      <Text color={t.color.primary}>{'─'.repeat(w)}</Text>
+    </Box>
+  )
+}
+
+export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
+  const term = useStdout().stdout?.columns ?? 80
+  const cols = Math.max(1, Math.min(term, maxWidth ?? term))
+
+  if (cols < HIDE_BELOW) {
+    return null
+  }
+
   const logoLines = logo(t.color, t.bannerLogo || undefined)
+  const logoW = t.bannerLogo ? artWidth(logoLines) : LOGO_WIDTH
+
+  if (cols >= logoW + 2) {
+    return (
+      <Box flexDirection="column" marginBottom={1}>
+        <ArtLines lines={logoLines} />
+        <Text color={t.color.muted} wrap="truncate-end">
+          {t.brand.icon} {TAG_FULL}
+        </Text>
+      </Box>
+    )
+  }
+
+  if (cols >= COMPACT_FROM) {
+    return <CompactBanner cols={cols} t={t} />
+  }
+
+  const name = cols >= 52 ? t.brand.name : (t.brand.name.split(' ')[0] ?? t.brand.name)
+  const tag = cols >= 64 ? TAG_FULL : cols >= 46 ? TAG_MID : TAG_TINY
 
   return (
     <Box flexDirection="column" marginBottom={1}>
-      {cols >= (t.bannerLogo ? artWidth(logoLines) : LOGO_WIDTH) ? (
-        <ArtLines lines={logoLines} />
-      ) : (
-        <Text bold color={t.color.primary}>
-          {t.brand.icon} NOUS HERMES
-        </Text>
-      )}
-
-      <Text color={t.color.muted}>{t.brand.icon} Nous Research · Messenger of the Digital Gods</Text>
+      <Text bold color={t.color.primary} wrap="truncate-end">
+        {t.brand.icon} {name}
+      </Text>
+      <Text color={t.color.muted} wrap="truncate-end">
+        {t.brand.icon} {tag}
+      </Text>
     </Box>
   )
 }
@@ -81,12 +147,8 @@ function CollapseToggle({
       <Text bold color={t.color.accent}>
         {title}
       </Text>
-      {typeof count === 'number' ? (
-        <Text color={t.color.muted}> ({count})</Text>
-      ) : null}
-      {suffix ? (
-        <Text color={t.color.muted}> {suffix}</Text>
-      ) : null}
+      {typeof count === 'number' ? <Text color={t.color.muted}> ({count})</Text> : null}
+      {suffix ? <Text color={t.color.muted}> {suffix}</Text> : null}
     </Box>
   )
 }
@@ -96,8 +158,9 @@ function CollapseToggle({
 const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
-export function SessionPanel({ info, sid, t }: SessionPanelProps) {
-  const cols = useStdout().stdout?.columns ?? 100
+export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
+  const term = useStdout().stdout?.columns ?? 100
+  const cols = Math.max(20, Math.min(term, maxWidth ?? term))
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
   const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))
   const wide = cols >= 90 && leftW + 40 < cols
@@ -150,9 +213,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
             <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
           </Text>
         ))}
-        {overflow > 0 && (
-          <Text color={t.color.muted}>(and {overflow} more categories…)</Text>
-        )}
+        {overflow > 0 && <Text color={t.color.muted}>(and {overflow} more categories…)</Text>}
       </>
     )
   }
@@ -160,6 +221,12 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
   // ── Collapsible tools section ──
   const toolEntries = Object.entries(info.tools).sort()
   const toolsTotal = flat(info.tools).length
+
+  // MCP headline counts *connected* servers, not configured-but-disabled ones,
+  // so it matches the classic CLI banner (`sum(s.connected)` in
+  // hermes_cli/banner.py) and the "connected" label on the collapse toggle.
+  const mcpServers = info.mcp_servers ?? []
+  const mcpConnected = mcpServers.filter(s => s.connected).length
 
   const toolsBody = () => {
     const shown = toolEntries.slice(0, TOOLSETS_MAX)
@@ -173,9 +240,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
             <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
           </Text>
         ))}
-        {overflow > 0 && (
-          <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>
-        )}
+        {overflow > 0 && <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>}
       </>
     )
   }
@@ -192,6 +257,12 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
             <Text color={t.color.text}>
               {s.tools} tool{s.tools === 1 ? '' : 's'}
             </Text>
+          ) : s.disabled || s.status === 'disabled' ? (
+            <Text color={t.color.muted}>disabled</Text>
+          ) : s.status === 'connecting' ? (
+            <Text color={t.color.warn}>connecting</Text>
+          ) : s.status === 'configured' ? (
+            <Text color={t.color.muted}>configured</Text>
           ) : (
             <Text color={t.color.error}>failed</Text>
           )}
@@ -208,11 +279,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
       return <Text color={t.color.muted}>No system prompt loaded.</Text>
     }
 
-    return (
-      <Text color={t.color.muted}>
-        {info.system_prompt}
-      </Text>
-    )
+    return <Text color={t.color.muted}>{info.system_prompt}</Text>
   }
 
   return (
@@ -241,22 +308,37 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
       )}
 
       <Box flexDirection="column" width={w}>
-        <Box justifyContent="center" marginBottom={1}>
-          <Text bold color={t.color.primary}>
-            {t.brand.name}
-            {info.version ? ` v${info.version}` : ''}
-            {info.release_date ? ` (${info.release_date})` : ''}
-          </Text>
-        </Box>
+        {wide ? (
+          <Box justifyContent="center" marginBottom={1}>
+            <Text bold color={t.color.primary}>
+              {t.brand.name}
+              {info.version ? ` v${info.version}` : ''}
+              {info.release_date ? ` (${info.release_date})` : ''}
+            </Text>
+          </Box>
+        ) : (
+          // Narrow layout hides the hero column; surface model/cwd/session
+          // here so they aren't lost.
+          <Box flexDirection="column" marginBottom={1}>
+            <Text color={t.color.accent} wrap="truncate-end">
+              {info.model.split('/').pop()}
+              <Text color={t.color.muted}> · Nous Research</Text>
+            </Text>
+            <Text color={t.color.muted} wrap="truncate-end">
+              {info.cwd || process.cwd()}
+            </Text>
+            {sid && (
+              <Text wrap="truncate-end">
+                <Text color={t.color.sessionLabel}>Session: </Text>
+                <Text color={t.color.sessionBorder}>{sid}</Text>
+              </Text>
+            )}
+          </Box>
+        )}
 
         {/* ── Tools (expanded by default) ── */}
         <Box flexDirection="column" marginTop={1}>
-          <CollapseToggle
-            onToggle={() => setToolsOpen(v => !v)}
-            open={toolsOpen}
-            t={t}
-            title="Available Tools"
-          />
+          <CollapseToggle onToggle={() => setToolsOpen(v => !v)} open={toolsOpen} t={t} title="Available Tools" />
           {toolsOpen && toolsBody()}
         </Box>
 
@@ -266,7 +348,9 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
             count={skillsTotal}
             onToggle={() => setSkillsOpen(v => !v)}
             open={skillsOpen}
-            suffix={skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined}
+            suffix={
+              skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined
+            }
             t={t}
             title="Available Skills"
           />
@@ -288,10 +372,10 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
         )}
 
         {/* ── MCP Servers (collapsed by default) ── */}
-        {info.mcp_servers && info.mcp_servers.length > 0 && (
+        {mcpServers.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
             <CollapseToggle
-              count={info.mcp_servers.length}
+              count={mcpConnected}
               onToggle={() => setMcpOpen(v => !v)}
               open={mcpOpen}
               suffix="connected"
@@ -307,7 +391,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
         <Text color={t.color.text}>
           {toolsTotal} tools{' · '}
           {skillsTotal} skills
-          {info.mcp_servers?.length ? ` · ${info.mcp_servers.length} MCP` : ''}
+          {mcpConnected ? ` · ${mcpConnected} MCP` : ''}
           {' · '}
           <Text color={t.color.muted}>/help for commands</Text>
         </Text>
@@ -326,6 +410,12 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
               {' '}
               to update
             </Text>
+          </Text>
+        )}
+
+        {info.install_warning && (
+          <Text bold color={t.color.warn} wrap="wrap">
+            ! {info.install_warning}
           </Text>
         )}
       </Box>
@@ -378,6 +468,7 @@ interface PanelProps {
 
 interface SessionPanelProps {
   info: SessionInfo
+  maxWidth?: number
   sid?: string | null
   t: Theme
 }

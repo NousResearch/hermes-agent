@@ -770,3 +770,56 @@ def test_sanitize_preserves_populated_tool_calls():
     out = sanitize_api_messages(list(messages))
     assistant = [m for m in out if m.get("role") == "assistant"][0]
     assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_Z"]
+
+
+def test_repair_drops_duplicate_tool_result_keyed_on_sibling_id():
+    """A duplicate result must be dropped even when it uses the OTHER id variant.
+
+    A Codex/Responses ``tool_call`` carries both ``id`` (``fc_...``) and
+    ``call_id`` (``call_...``); both are registered so a result keyed on either
+    is recognised (#58168). The duplicate guard (#58327) consumed only the id
+    the first result referenced, leaving its sibling live — so a second result
+    keyed on that sibling sailed through and two tool messages were replayed
+    for a single call, re-creating the HTTP 400 the guard exists to prevent.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "fc_1", "call_id": "call_1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "first"},
+        {"role": "tool", "tool_call_id": "fc_1", "content": "duplicate"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert [m["content"] for m in tool_msgs] == ["first"]
+
+
+def test_repair_keeps_both_results_for_two_codex_calls_mixed_keys():
+    """Consuming a call's sibling ids must not orphan a *different* call.
+
+    Two parallel Codex tool_calls answered via different id variants
+    (one by ``call_id``, one by ``id``) are both legitimate and must survive.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [
+             {"id": "fc_1", "call_id": "call_1", "type": "function",
+              "function": {"name": "f", "arguments": "{}"}},
+             {"id": "fc_2", "call_id": "call_2", "type": "function",
+              "function": {"name": "g", "arguments": "{}"}},
+         ]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "r1"},
+        {"role": "tool", "tool_call_id": "fc_2", "content": "r2"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert [m["content"] for m in messages if m.get("role") == "tool"] == ["r1", "r2"]

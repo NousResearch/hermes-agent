@@ -528,6 +528,9 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     # ``_get_tool_call_id_static``'s ``call_id || id`` — a match set must
     # accept every legitimate reference, not just the canonical one (#58168).
     known_tool_ids: set = set()
+    # Maps every registered id variant back to the full variant set of the
+    # tool_call it came from, so consuming one variant consumes its siblings.
+    tool_id_siblings: Dict[str, set] = {}
     filtered: List[Dict] = []
     for msg in collapsed:
         if not isinstance(msg, dict):
@@ -536,13 +539,14 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
         role = msg.get("role")
         if role == "assistant":
             known_tool_ids = set()
+            tool_id_siblings = {}
             for tc in (msg.get("tool_calls") or []):
                 if not isinstance(tc, dict):
                     continue
-                for key in ("id", "call_id"):
-                    tc_id = tc.get(key)
-                    if tc_id:
-                        known_tool_ids.add(tc_id)
+                variants = {tc.get(key) for key in ("id", "call_id") if tc.get(key)}
+                for tc_id in variants:
+                    known_tool_ids.add(tc_id)
+                    tool_id_siblings[tc_id] = variants
             filtered.append(msg)
         elif role == "tool":
             tc_id = msg.get("tool_call_id")
@@ -553,7 +557,16 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 # glitch) falls into the drop branch below instead of being
                 # replayed — strict providers (DeepSeek) reject a duplicate
                 # tool_call_id with HTTP 400 (#58327). Credit: #55436.
-                known_tool_ids.discard(tc_id)
+                #
+                # Consume EVERY variant of the matched call, not just the one
+                # this result referenced. A Codex/Responses tool_call registers
+                # both ``id`` (``fc_...``) and ``call_id`` (``call_...``) above
+                # (#58168), so discarding only the matched key leaves its
+                # sibling live — and a duplicate result keyed on that sibling
+                # sails straight through this guard, re-creating the very 400
+                # the consume step exists to prevent.
+                for sibling in tool_id_siblings.get(tc_id, {tc_id}):
+                    known_tool_ids.discard(sibling)
             else:
                 repairs += 1
         else:

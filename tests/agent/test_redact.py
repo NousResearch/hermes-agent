@@ -185,6 +185,34 @@ class TestEnvLookupPreserved:
         result = redact_sensitive_text(text, force=True)
         assert "os.getenv('HOMEASSISTANT_TOKEN')" in result
 
+    def test_json_field_os_getenv_preserved(self):
+        # _redact_env has the env-lookup exception; _redact_json (a separate
+        # closure, JSON key: "value" syntax) did not, and mangled this into
+        # '"apiKey": "os.get...EY')"'.
+        text = '{"apiKey": "os.getenv(\'OPENAI_API_KEY\')"}'
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_json_field_os_environ_get_preserved(self):
+        text = '{"token": "os.environ.get(\'MY_TOKEN\')"}'
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_json_field_real_value_still_redacted(self):
+        text = '{"apiKey": "sk-realSecretValue1234567890"}'
+        result = redact_sensitive_text(text, force=True)
+        assert "sk-realSecretValue1234567890" not in result
+
+    def test_yaml_field_os_getenv_preserved(self):
+        # Same exception missing from _redact_yaml (unquoted key: value
+        # syntax) — mangled 'api_key: os.getenv("OPENAI_API_KEY")' into
+        # 'api_key: os.get...EY")'.
+        text = 'api_key: os.getenv("OPENAI_API_KEY")'
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_yaml_field_real_value_still_redacted(self):
+        text = "api_key: sk-realSecretValue1234567890"
+        result = redact_sensitive_text(text, force=True)
+        assert "sk-realSecretValue1234567890" not in result
+
 
 class TestJsonFields:
     def test_json_api_key(self):

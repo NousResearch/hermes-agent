@@ -3,7 +3,16 @@ import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'rea
 
 import type { PasteEvent } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { BillingStateResponse, ImageAttachResponse, SessionCloseResponse } from '../gatewayTypes.js'
+import type {
+  BillingCardInfo,
+  BillingMutationResponse,
+  BillingStateResponse,
+  ImageAttachResponse,
+  SessionCloseResponse,
+  SubscriptionPreviewResponse,
+  SubscriptionStateResponse,
+  SubscriptionUpgradeResponse
+} from '../gatewayTypes.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
@@ -92,7 +101,13 @@ export interface GatewayProviderProps {
 // the SAME RPCs as the old slash flows (billing.charge / charge_status /
 // auto_reload / step_up).  Backend is unchanged & shared with the CLI.
 
-export type BillingScreen = 'autoreload' | 'buy' | 'confirm' | 'limit' | 'overview'
+export type BillingScreen = 'autoreload' | 'buy' | 'confirm' | 'limit' | 'overview' | 'stepup'
+
+/** Outcome of a charge attempt — lets the overlay route without tearing down. */
+export type BillingChargeOutcome =
+  | 'submitted' // 202 accepted; settlement is reported via transcript lines
+  | 'needs_remote_spending' // insufficient_scope → route to the stepup screen
+  | 'error' // any other failure (already surfaced via sys)
 
 /**
  * The functions the overlay needs to talk to the gateway and emit
@@ -104,10 +119,27 @@ export type BillingScreen = 'autoreload' | 'buy' | 'confirm' | 'limit' | 'overvi
 export interface BillingOverlayCtx {
   /** Run `billing.auto_reload` (enabled/threshold/top_up) → resolve ok/false. */
   applyAutoReload: (enabled: boolean, threshold?: number, topUp?: number) => Promise<boolean>
-  /** Submit `billing.charge` for `amount` and poll to settlement (non-blocking). */
-  charge: (amount: string) => void
+  /**
+   * Submit `billing.charge` for `amount` and poll to settlement. Resolves a
+   * discriminated outcome so the overlay can route to the resumable step-up on
+   * `needs_remote_spending` instead of tearing down. Settlement/most errors are
+   * still reported via transcript lines (the poll is non-blocking).
+   */
+  charge: (amount: string, idempotencyKey?: string) => Promise<BillingChargeOutcome>
+  /**
+   * Run the `billing.step_up` device flow (grant Remote Spending). Resolves
+   * `true` when the grant lands. The browser opens via the gateway's
+   * out-of-band `billing.step_up.verification` event — the overlay just awaits.
+   */
+  requestRemoteSpending: () => Promise<boolean>
   /** Open the portal in the browser + echo a transcript line. */
   openPortal: (url: string) => void
+  /**
+   * Re-fetch billing state (`billing.state`) — used by the add-card path's
+   * "I've added it — check again" so a card saved on the portal appears without
+   * re-running /topup. Resolves null on failure (caller keeps the old state).
+   */
+  refreshState: () => Promise<BillingStateResponse | null>
   /** Emit a transcript system line. */
   sys: (text: string) => void
   /** Validate a custom amount against state bounds + 2dp (mirrors the server). */
@@ -117,6 +149,12 @@ export interface BillingOverlayCtx {
 /** Pending confirm built when leaving the buy/autoreload screen. */
 export interface BillingPendingCharge {
   amount: string
+  /**
+   * Stable idempotency key for THIS purchase, minted when the amount is chosen.
+   * Reused across the step-up replay so a re-charge after the grant dedups
+   * server-side (and a double-submit collapses to one charge).
+   */
+  idempotencyKey?: string
 }
 
 export interface BillingOverlayState {
@@ -127,6 +165,103 @@ export interface BillingOverlayState {
   state: BillingStateResponse
 }
 
+// ── Subscription overlay (in-terminal plan change, V3) ──
+
+// A small state machine: overview → picker → confirm → result, with a stepup
+// screen spliced in on demand.
+//   overview — plan + status, entry to the picker / resume / manage-on-portal.
+//   picker   — the tier catalog (up/down direction hints; current tier shown,
+//              not selectable).
+//   confirm  — the previewed effect of the chosen change (charge $X now /
+//              scheduled at date / no-op / blocked) + the apply action.
+//   result   — the outcome, including an SCA/decline upgrade handed off to the
+//              portal.
+//   stepup   — reached when a mutation returns insufficient_scope: grants the
+//              terminal-billing scope in place, then auto-replays the held action.
+export type SubscriptionScreen = 'confirm' | 'overview' | 'picker' | 'result' | 'stepup'
+
+// The action held while the stepup screen grants terminal billing, replayed on
+// grant: re-preview a tier, re-apply the confirmed pending change, or re-resume.
+export type SubscriptionStepUpRetry = { kind: 'apply' } | { kind: 'preview'; tierId: string } | { kind: 'resume' }
+
+/** Outcome of a terminal-billing step-up: granted, plus the typed denial (for copy). */
+export interface StepUpResult {
+  granted: boolean
+  error?: string
+  message?: string
+}
+
+export interface SubscriptionOverlayCtx {
+  /**
+   * Best-effort card lookup (`billing.state`) for the upgrade confirm — shows
+   * WHICH card the upgrade will charge. Resolves null on any failure or when
+   * the server doesn't say (older NAS): the confirm keeps its generic line.
+   */
+  fetchCard: () => Promise<BillingCardInfo | null>
+  /** Build {portal}/manage-subscription?org_id=… locally and open it. Resolves ok/false. */
+  openManageLink: () => Promise<boolean>
+  /** Open an arbitrary portal recovery URL (e.g. an upgrade's SCA handoff). */
+  openPortal: (url: string) => void
+  /** Re-fetch subscription.state. */
+  refreshState: () => Promise<SubscriptionStateResponse | null>
+  /** POST /preview a change to `tierId` → the chargeless effect quote (or typed error). */
+  preview: (tierId: string) => Promise<SubscriptionPreviewResponse | null>
+  /** PUT pending-change: schedule a downgrade / same-price change to `tierId`. */
+  scheduleChange: (tierId: string) => Promise<BillingMutationResponse | null>
+  /** PUT pending-change: schedule a cancellation at period end. */
+  scheduleCancellation: () => Promise<BillingMutationResponse | null>
+  /** DELETE pending-change: clear a scheduled downgrade / cancellation (resume). */
+  resume: () => Promise<BillingMutationResponse | null>
+  /** POST /upgrade: charge the card on the subscription + flip the plan now. */
+  upgrade: (tierId: string, idempotencyKey?: string) => Promise<SubscriptionUpgradeResponse | null>
+  /**
+   * Run the `billing.step_up` device flow (grant terminal billing / "Remote
+   * Spending"). Resolves `{granted}` plus the typed denial (`error`/`message`) so
+   * the stepup screen shows the right recovery. The browser opens via the
+   * gateway's out-of-band verification event — the stepup screen just awaits.
+   */
+  requestRemoteSpending: () => Promise<StepUpResult>
+  /** Emit a transcript system line. */
+  sys: (text: string) => void
+}
+
+/** What the confirm screen is about to apply, plus its preview quote. */
+export interface SubscriptionPendingChange {
+  /** The target tier (null for a cancellation). */
+  targetTierId: string | null
+  /** How it will be applied — drives which ctx call confirm makes. */
+  kind: 'cancellation' | 'tier_change' | 'upgrade'
+  /** The preview quote shown on confirm (null = the quote call failed). */
+  preview?: null | SubscriptionPreviewResponse
+  /**
+   * Stable idempotency key for an upgrade charge, minted when confirm opens.
+   * Reused on retry so a re-submit dedups server-side.
+   */
+  idempotencyKey?: string
+}
+
+/** The outcome rendered on the result screen. */
+export interface SubscriptionResult {
+  message: string
+  ok: boolean
+  /** Set on a successful upgrade; drives the ResultScreen apply-poll. */
+  pendingTierId?: null | string
+  /** A portal URL to finish an SCA/declined upgrade, when present. */
+  recoveryUrl?: null | string
+}
+
+export interface SubscriptionOverlayState {
+  ctx: SubscriptionOverlayCtx
+  /** Set on the 'confirm' screen: the change being confirmed + its preview. */
+  pending?: null | SubscriptionPendingChange
+  /** Set on the 'result' screen: the outcome to render. */
+  result?: null | SubscriptionResult
+  screen: SubscriptionScreen
+  state: SubscriptionStateResponse
+  /** Held while on the 'stepup' screen: the action to replay once the grant lands. */
+  stepUpRetry?: null | SubscriptionStepUpRetry
+}
+
 export interface OverlayState {
   agents: boolean
   agentsInitialHistoryIndex: number
@@ -135,13 +270,14 @@ export interface OverlayState {
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
   journey: boolean
-  modelPicker: boolean
+  modelPicker: boolean | { refresh?: boolean }
   pager: null | PagerState
   petPicker: boolean
   pluginsHub: boolean
   secret: null | SecretReq
   sessions: boolean
   skillsHub: boolean
+  subscription: SubscriptionOverlayState | null
   sudo: null | SudoReq
 }
 

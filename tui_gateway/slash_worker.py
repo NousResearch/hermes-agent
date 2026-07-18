@@ -25,8 +25,6 @@ import sys
 import threading
 import time
 
-import psutil
-
 import cli as cli_mod
 from cli import HermesCLI
 from rich.console import Console
@@ -51,23 +49,35 @@ _ORPHAN_GRACE_S = max(0.0, _env_float("HERMES_SLASH_WATCHDOG_GRACE_S", 5.0))
 _in_flight = threading.Event()  # set while a command is executing
 
 
-def _is_orphaned(original_ppid, parent_create_time, getppid=os.getppid) -> bool:
-    """True once our spawning gateway is gone. Compare to the ORIGINAL ppid
-    (never ==1: Linux reparents to a subreaper) and guard PID reuse via
-    create_time."""
-    if getppid() != original_ppid:
-        return True
-    try:
-        if not psutil.pid_exists(original_ppid):
-            return True
-        return psutil.Process(original_ppid).create_time() != parent_create_time
-    except psutil.Error:
-        return True
+def _is_orphaned(original_ppid, getppid=os.getppid) -> bool:
+    """Return whether this worker no longer has its original POSIX parent."""
+    return getppid() != original_ppid
 
 
-def _start_parent_death_watchdog(original_ppid, parent_create_time) -> None:
+def _prepare_slash_worker_runtime() -> None:
+    """Start bounded MCP discovery before HermesCLI snapshots tools.
+
+    Each slash_worker child is its own process — the parent ``hermes serve``
+    discovery thread does not populate this registry (issue #61891).
+    """
+    import logging
+
+    from hermes_cli.mcp_startup import (
+        start_background_mcp_discovery,
+        wait_for_mcp_discovery,
+    )
+
+    logger = logging.getLogger(__name__)
+    start_background_mcp_discovery(
+        logger=logger,
+        thread_name="slash-worker-mcp-discovery",
+    )
+    wait_for_mcp_discovery()
+
+
+def _start_parent_death_watchdog(original_ppid) -> None:
     def _loop():
-        while not _is_orphaned(original_ppid, parent_create_time):
+        while not _is_orphaned(original_ppid):
             time.sleep(_WATCHDOG_POLL_S)
         deadline = time.monotonic() + _ORPHAN_GRACE_S
         while _in_flight.is_set() and time.monotonic() < deadline:
@@ -124,11 +134,8 @@ def main():
     # Start before the (hundreds-of-ms) HermesCLI build — that window is itself
     # an orphan risk if the gateway dies mid-spawn.
     orig_ppid = os.getppid()
-    try:
-        parent_create_time = psutil.Process(orig_ppid).create_time()
-    except psutil.Error:
-        parent_create_time = 0.0
-    _start_parent_death_watchdog(orig_ppid, parent_create_time)
+    _start_parent_death_watchdog(orig_ppid)
+    _prepare_slash_worker_runtime()
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         cli = HermesCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)

@@ -143,37 +143,9 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
 
     try:
         from tools.skills_tool import SKILLS_DIR, skill_view
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import normalize_skill_lookup_name
 
-        identifier_path = Path(raw_identifier).expanduser()
-        if identifier_path.is_absolute():
-            normalized = None
-            trusted_roots = [SKILLS_DIR]
-            try:
-                trusted_roots.extend(get_external_skills_dirs())
-            except Exception:
-                pass
-
-            # Prefer the lexical path under a trusted skill root before
-            # resolving symlinks.  Slash-command discovery can legitimately
-            # find a skill via ~/.hermes/skills/<name> where <name> is a
-            # symlink to a checked-out skill elsewhere.  Resolving first turns
-            # that trusted visible path into an arbitrary absolute path that
-            # skill_view() refuses to load.
-            for root in trusted_roots:
-                try:
-                    normalized = str(identifier_path.relative_to(root))
-                    break
-                except ValueError:
-                    continue
-
-            if normalized is None:
-                try:
-                    normalized = str(identifier_path.resolve().relative_to(SKILLS_DIR.resolve()))
-                except Exception:
-                    normalized = raw_identifier
-        else:
-            normalized = raw_identifier.lstrip("/")
+        normalized = normalize_skill_lookup_name(raw_identifier)
 
         loaded_skill = json.loads(
             skill_view(normalized, task_id=task_id, preprocess=False)
@@ -357,6 +329,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+        from hermes_cli.commands import resolve_command
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
@@ -402,7 +375,32 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
                         continue
-                    _skill_commands[f"/{cmd_name}"] = {
+                    # Skip if this skill's auto-generated /command collides
+                    # with a core Hermes slash command (name or alias). The
+                    # skill remains fully loadable via /skill <name>.
+                    # Uses resolve_command() so aliases and case variants are
+                    # covered without maintaining a separate cache.
+                    if resolve_command(cmd_name) is not None:
+                        logger.warning(
+                            "Skill %r generates slash command '/%s' which "
+                            "collides with a core Hermes command; skipping "
+                            "auto-registration. Use '/skill %s' instead.",
+                            name, cmd_name, name,
+                        )
+                        continue
+                    # Dedup on the resolved slug, not just the raw name: two
+                    # distinct frontmatter names can normalize to the same
+                    # slug (e.g. "git_helper" vs "git-helper"). First-wins
+                    # preserves local-before-external precedence.
+                    cmd_key = f"/{cmd_name}"
+                    if cmd_key in _skill_commands:
+                        logger.warning(
+                            "Skill %r maps to slash command %s already claimed "
+                            "by %r; keeping the first and skipping this one.",
+                            name, cmd_key, _skill_commands[cmd_key]["name"],
+                        )
+                        continue
+                    _skill_commands[cmd_key] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
@@ -696,13 +694,26 @@ def build_preloaded_skills_prompt(
     skill_identifiers: list[str],
     task_id: str | None = None,
 ) -> tuple[str, list[str], list[str]]:
-    """Load one or more skills for session-wide CLI preloading.
+    """Load one or more skills for session-wide CLI/TUI preloading.
 
     Returns (prompt_text, loaded_skill_names, missing_identifiers).
+
+    Disabled skills are treated the same as missing ones: this loads via a
+    raw identifier straight into ``_load_skill_payload``, bypassing
+    ``get_skill_commands()``'s scan-time disabled filter — mirrors the
+    bundle-invocation gate (#59156). Without this, ``hermes -s <skill>`` or
+    a deployment's ``HERMES_TUI_SKILLS`` env var could force-load a skill an
+    operator disabled via ``skills.disabled``/``skills.platform_disabled``.
     """
     prompt_parts: list[str] = []
     loaded_names: list[str] = []
     missing: list[str] = []
+
+    try:
+        from agent.skill_utils import get_disabled_skill_names
+        disabled_names = get_disabled_skill_names()
+    except Exception:
+        disabled_names = set()
 
     seen: set[str] = set()
     for raw_identifier in skill_identifiers:
@@ -717,6 +728,10 @@ def build_preloaded_skills_prompt(
             continue
 
         loaded_skill, skill_dir, skill_name = loaded
+
+        if skill_name in disabled_names or identifier in disabled_names:
+            missing.append(identifier)
+            continue
 
         # Track active usage for Curator lifecycle management (#17782)
         try:

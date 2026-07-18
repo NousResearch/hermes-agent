@@ -179,6 +179,16 @@ OBSERVED_MEDIA_BACKFILL_LOOKBACK = 50
 # Max number of resource references to resolve per inbound turn
 OBSERVED_MEDIA_BACKFILL_MAX_RESOLVE_PER_TURN = 12
 
+# Bounded concurrency for inbound media resolve/download.
+#   - 1   = sequential (legacy behavior, safe rollback knob)
+#   - 6   = default; aligns with the per-origin HTTP/1.1 ceiling browsers use,
+#           balances first-token latency vs. backend pressure
+#   - 12  = upper clamp; matches OBSERVED_MEDIA_BACKFILL_MAX_RESOLVE_PER_TURN
+# Configured via config.yaml: platforms.yuanbao.extra.media_resolve_concurrency.
+_DEFAULT_RESOLVE_CONCURRENCY = 6
+_MIN_RESOLVE_CONCURRENCY = 1
+_MAX_RESOLVE_CONCURRENCY = 12
+
 class MarkdownProcessor:
     """Encapsulates all Markdown-related utilities for the Yuanbao platform.
 
@@ -1650,7 +1660,7 @@ class AutoSetHomeMiddleware(InboundMiddleware):
             if _should_set:
                 try:
                     from hermes_constants import get_hermes_home
-                    from utils import atomic_yaml_write
+                    from hermes_cli.config import atomic_config_write
                     import yaml
 
                     _home = get_hermes_home()
@@ -1660,7 +1670,7 @@ class AutoSetHomeMiddleware(InboundMiddleware):
                         with open(config_path, encoding="utf-8") as f:
                             user_config = yaml.safe_load(f) or {}
                     user_config["YUANBAO_HOME_CHANNEL"] = ctx.chat_id
-                    atomic_yaml_write(config_path, user_config)
+                    atomic_config_write(config_path, user_config)
                     os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
                     logger.info(
                         "[%s] Auto-sethome: designated %s (%s) as Yuanbao home channel",
@@ -2618,6 +2628,27 @@ class MediaResolveMiddleware(InboundMiddleware):
                 cls._resource_cache.pop(k, None)
         cls._resource_cache[resource_id] = (local_path, mime, time.time())
 
+    @classmethod
+    def _append_cached_resource(
+        cls,
+        adapter,
+        resource_id: str,
+        media_paths: List[str],
+        mimes: List[str],
+    ) -> bool:
+        """Append a cached resource to output lists when available."""
+        hit = cls._get_cached_resource(resource_id)
+        if hit is None:
+            return False
+        local_path, mime = hit
+        logger.debug(
+            "[%s] resource cache hit: rid=%s path=%s",
+            adapter.name, resource_id, local_path,
+        )
+        media_paths.append(local_path)
+        mimes.append(mime)
+        return True
+
     @staticmethod
     def _guess_image_ext_from_url(url: str) -> str:
         """Guess image extension from URL path."""
@@ -2792,43 +2823,87 @@ class MediaResolveMiddleware(InboundMiddleware):
 
         Yuanbao COS hostnames resolve to private IPs, tripping the SSRF guard
         in vision_tools. We download ourselves and return local cache paths.
+
+        Resolution runs with bounded concurrency
+        (``adapter.media_resolve_concurrency``); see :meth:`_resolve_ybres_refs`
+        for the same order-preserving / exception-isolated contract.
         """
+        # Pre-filter resolvable refs, preserving input order.
         media_urls: List[str] = []
         media_types: List[str] = []
-
+        active: List[Tuple[str, str, str, str]] = []
         for ref in media_refs:
             kind = str(ref.get("kind") or "").strip().lower()
             url = str(ref.get("url") or "").strip()
             filename = str(ref.get("name") or "").strip()
             if kind not in _RESOLVABLE_MEDIA_KINDS or not url:
                 continue
-
-            # Extract resourceId from the placeholder URL for cache dedup.
             rid = ExtractContentMiddleware._parse_resource_id(url)
+            if rid and cls._append_cached_resource(adapter, rid, media_urls, media_types):
+                continue
+            active.append((kind, url, filename, rid or ""))
 
-            try:
-                fetch_url = await cls._resolve_download_url(adapter, url)
-            except Exception as exc:
-                logger.warning(
-                    "[%s] inbound media resolve failed: kind=%s url=%s err=%s",
-                    adapter.name, kind, url, exc,
+        if not active:
+            return media_urls, media_types
+
+        semaphore = asyncio.Semaphore(adapter.media_resolve_concurrency)
+
+        async def _resolve_one(
+            kind: str, url: str, filename: str, rid: str,
+        ) -> Optional[Tuple[str, str]]:
+            async with semaphore:
+                try:
+                    fetch_url = await cls._resolve_download_url(adapter, url)
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] inbound media resolve failed: kind=%s url=%s err=%s",
+                        adapter.name, kind, url, exc,
+                    )
+                    return None
+                return await cls._download_and_cache(
+                    adapter,
+                    fetch_url=fetch_url,
+                    kind=kind,
+                    file_name=filename or None,
+                    log_tag=f"placeholder_url={url[:80]}",
+                    resource_id=rid,
                 )
-                continue
 
-            cached = await cls._download_and_cache(
-                adapter,
-                fetch_url=fetch_url,
-                kind=kind,
-                file_name=filename or None,
-                log_tag=f"placeholder_url={url[:80]}",
-                resource_id=rid,
-            )
-            if cached is None:
+        _t0 = time.monotonic()
+        results = await asyncio.gather(
+            *(_resolve_one(kind, url, filename, rid)
+              for kind, url, filename, rid in active),
+            return_exceptions=True,
+        )
+        _elapsed_ms = int((time.monotonic() - _t0) * 1000)
+
+        _failed = 0
+        for (kind, url, _filename, _rid), result in zip(active, results):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "[%s] inbound media resolve crashed: kind=%s url=%s err=%s",
+                    adapter.name, kind, url[:80], result,
+                )
+                _failed += 1
                 continue
-            local_path, mime = cached
+            if result is None:
+                _failed += 1
+                continue
+            local_path, mime = result
             media_urls.append(local_path)
             media_types.append(mime)
 
+        # Batch summary: keep fields stable for offline aggregation
+        # (concurrency vs elapsed_ms is the core knob-tuning view).
+        logger.info(
+            "[%s] media resolve batch: scope=media concurrency=%d total=%d ok=%d failed=%d elapsed_ms=%d",
+            adapter.name,
+            adapter.media_resolve_concurrency,
+            len(active),
+            len(media_urls),
+            _failed,
+            _elapsed_ms,
+        )
         return media_urls, media_types
 
     @classmethod
@@ -2839,34 +2914,81 @@ class MediaResolveMiddleware(InboundMiddleware):
         *,
         log_prefix: str,
     ) -> Tuple[List[str], List[str]]:
-        """Resolve a list of ``(rid, kind, filename)`` ybres tuples to local paths.
+        """Resolve ``(rid, kind, filename)`` ybres tuples to local paths.
+
+        Runs with bounded concurrency (``adapter.media_resolve_concurrency``)
+        so cold-start turns with many anchors don't pay ``N × (RPC + download)``
+        sequentially. Output order matches input; per-rid failures are isolated.
         """
+        # Pre-filter resolvable kinds, preserving input order.
+        # Cache-hit refs are served immediately and excluded from the gather.
         media_paths: List[str] = []
         mimes: List[str] = []
+        active: List[Tuple[str, str, str]] = []
         for rid, kind, filename in refs:
             if kind not in _RESOLVABLE_MEDIA_KINDS:
                 continue
-            try:
-                fresh_url = await cls._fetch_resource_url(adapter, rid)
-            except Exception as exc:
-                logger.warning(
-                    "[%s] %s resolve failed: rid=%s kind=%s err=%s",
-                    adapter.name, log_prefix, rid, kind, exc,
+            if cls._append_cached_resource(adapter, rid, media_paths, mimes):
+                continue
+            active.append((rid, kind, filename))
+        if not active:
+            return media_paths, mimes
+
+        semaphore = asyncio.Semaphore(adapter.media_resolve_concurrency)
+
+        async def _resolve_one(rid: str, kind: str, filename: str) -> Optional[Tuple[str, str]]:
+            async with semaphore:
+                try:
+                    fresh_url = await cls._fetch_resource_url(adapter, rid)
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] %s resolve failed: rid=%s kind=%s err=%s",
+                        adapter.name, log_prefix, rid, kind, exc,
+                    )
+                    return None
+                return await cls._download_and_cache(
+                    adapter,
+                    fetch_url=fresh_url,
+                    kind=kind,
+                    file_name=filename or None,
+                    log_tag=f"{log_prefix} rid={rid}",
+                    resource_id=rid,
                 )
+
+        # return_exceptions=True isolates per-coroutine failures.
+        _t0 = time.monotonic()
+        results = await asyncio.gather(
+            *(_resolve_one(rid, kind, filename) for rid, kind, filename in active),
+            return_exceptions=True,
+        )
+        _elapsed_ms = int((time.monotonic() - _t0) * 1000)
+
+        _failed = 0
+        for (rid, kind, filename), result in zip(active, results):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "[%s] %s resolve crashed: rid=%s kind=%s err=%s",
+                    adapter.name, log_prefix, rid, kind, result,
+                )
+                _failed += 1
                 continue
-            cached = await cls._download_and_cache(
-                adapter,
-                fetch_url=fresh_url,
-                kind=kind,
-                file_name=filename or None,
-                log_tag=f"{log_prefix} rid={rid}",
-                resource_id=rid,
-            )
-            if cached is None:
+            if result is None:
+                _failed += 1
                 continue
-            path, mime = cached
+            path, mime = result
             media_paths.append(path)
             mimes.append(mime)
+
+        # Batch summary: stable fields for offline aggregation.
+        logger.info(
+            "[%s] media resolve batch: scope=ybres concurrency=%d total=%d ok=%d failed=%d elapsed_ms=%d",
+            adapter.name,
+            adapter.media_resolve_concurrency,
+            len(active),
+            len(media_paths),
+            _failed,
+            _elapsed_ms,
+        )
         return media_paths, mimes
 
     @classmethod
@@ -5045,6 +5167,19 @@ class YuanbaoAdapter(BasePlatformAdapter):
         self._ws_url: str = (_extra.get("ws_url") or DEFAULT_WS_GATEWAY_URL).strip()
         self._api_domain: str = (_extra.get("api_domain") or DEFAULT_API_DOMAIN).rstrip("/")
         self._route_env: str = (_extra.get("route_env") or "").strip()
+
+        # Bounded concurrency for inbound media resolve/download.
+        # See _DEFAULT_RESOLVE_CONCURRENCY for rationale; clamped to [min, max]
+        # so a misconfigured value cannot hammer the resource backend nor
+        # accidentally drop below sequential behavior.
+        try:
+            _raw_concurrency = int(_extra.get("media_resolve_concurrency", _DEFAULT_RESOLVE_CONCURRENCY))
+        except (TypeError, ValueError):
+            _raw_concurrency = _DEFAULT_RESOLVE_CONCURRENCY
+        self.media_resolve_concurrency: int = max(
+            _MIN_RESOLVE_CONCURRENCY,
+            min(_MAX_RESOLVE_CONCURRENCY, _raw_concurrency),
+        )
 
         # Core managers (UML composition)
         self._connection: ConnectionManager = ConnectionManager(self)

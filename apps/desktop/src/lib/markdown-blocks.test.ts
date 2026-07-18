@@ -108,4 +108,53 @@ describe('parseMarkdownIntoBlocksCached', () => {
 
     expect(parseMarkdownIntoBlocksCached(rewritten)).toEqual(parseMarkdownIntoBlocks(rewritten))
   })
+
+  it('matches a full lex when a trailing setext underline merges the previous block (regression)', () => {
+    // A trailing `-`/`=` line is a setext underline of the block ABOVE it, so
+    // appending to it can retroactively merge the previous parse's LAST TWO
+    // blocks into one. Cached `"…#e\n5\n-"` lexes to [ …, "#e\n", "5\n-" ], but
+    // grown to `"…#e\n5\n-p2=kj:c"` collapses `#e`/`5\n-` into one block. The
+    // old boundary dropped only the single last content block, so it reused a
+    // `"#e\n"` block that no longer exists. `blocks.join('') === text` still
+    // holds for the wrong split, so the reconstruction guard cannot catch it.
+    // The settled prefix pushes the text past the append-cache threshold so
+    // the incremental path actually engages.
+    const settled = 'settled line paragraph text.\n\n'.repeat(80)
+    const prev = `${settled}#e\n5\n-`
+    const grown = `${prev}p2=kj:c`
+
+    // Seed the append cache with `prev`, then grow it — the exact two-call
+    // sequence a streaming flush produces.
+    parseMarkdownIntoBlocksCached(prev)
+
+    expect(parseMarkdownIntoBlocksCached(grown)).toEqual(parseMarkdownIntoBlocks(grown))
+  })
+
+  it('matches a full lex at every char-level streaming cut over noisy markdown (property fuzz)', () => {
+    // Character-level append fuzz over the markdown control alphabet — the
+    // harness that surfaced the setext-underline merge above. Growing a single
+    // lineage one small chunk at a time keeps `startsWith` lineage intact so
+    // the incremental path runs on nearly every step; each prefix must
+    // deep-equal a fresh full lex.
+    const alphabet = '\n `#*-_>[]()|~:=abcdefghijklmnopqrstuvwxyz0123456789'
+
+    for (let seed = 1; seed <= 12; seed++) {
+      const rand = mulberry32(seed)
+      // Seed past the append-cache threshold so the incremental path engages.
+      let text = `seed ${seed}\n\n`.repeat(180)
+
+      for (let step = 0; step < 500; step++) {
+        const n = 1 + Math.floor(rand() * 24)
+        let chunk = ''
+
+        for (let j = 0; j < n; j++) {
+          chunk += alphabet[Math.floor(rand() * alphabet.length)]
+        }
+
+        text += chunk
+
+        expect(parseMarkdownIntoBlocksCached(text)).toEqual(parseMarkdownIntoBlocks(text))
+      }
+    }
+  })
 })

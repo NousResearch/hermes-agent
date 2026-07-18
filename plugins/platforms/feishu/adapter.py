@@ -2691,15 +2691,86 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
         return True
 
-    def _is_interactive_operator_authorized(self, open_id: str) -> bool:
+    @staticmethod
+    def _approval_state_chat_type(state: Dict[str, str]) -> str:
+        """Extract a trusted chat type from a gateway-generated session key."""
+        parts = str(state.get("session_key", "") or "").split(":", 4)
+        if len(parts) >= 4 and parts[0] == "agent" and parts[2] == "feishu":
+            return parts[3]
+        return ""
+
+    def _is_interactive_operator_authorized(
+        self,
+        open_id: str,
+        *,
+        user_id: str = "",
+        chat_id: str = "",
+        chat_type: str = "group",
+    ) -> bool:
         """Return whether this card-action operator may answer gated prompts."""
-        normalized = str(open_id or "").strip()
-        if not normalized:
+        identities = []
+        for raw_id in (user_id, open_id):
+            normalized = str(raw_id or "").strip()
+            if normalized and normalized not in identities:
+                identities.append(normalized)
+        if not identities:
             return False
+
+        # Reuse the gateway's full authorization union (allowlists, pairing,
+        # allow-all flags) instead of reimplementing it in the adapter. The
+        # injected callback is profile-bound in multiplex gateways, so paired
+        # users resolve against that profile's PairingStore. Feishu message
+        # identity prefers tenant-scoped user_id but older pairings may contain
+        # app-scoped open_id, so accept either alias only when independently
+        # authorized by the same gateway callback.
+        if self._authorization_check is not None:
+            for identity in identities:
+                gateway_authorized = self._is_sender_authorized(
+                    identity,
+                    chat_type=chat_type,
+                    chat_id=chat_id or None,
+                )
+                if gateway_authorized is True:
+                    return True
+            # False and callback failures (reported as None) are both denied.
+            return False
+
+        # Unit tests and standalone adapter use may not install the gateway
+        # callback. Preserve the legacy static-list/open-policy fallback there.
         allowed_ids = set(self._admins) | set(self._allowed_group_users)
         if not allowed_ids:
             return True
-        return "*" in allowed_ids or normalized in allowed_ids
+        return "*" in allowed_ids or any(identity in allowed_ids for identity in identities)
+
+    def _is_approval_operator_authorized(
+        self,
+        open_id: str,
+        *,
+        user_id: str = "",
+        state: Dict[str, str],
+    ) -> bool:
+        """Apply the correct DM or group authorization gate for a card."""
+        chat_id = str(state.get("chat_id", "") or "")
+        chat_type = self._approval_state_chat_type(state)
+        if chat_type in {"group", "forum", "channel"}:
+            sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
+            return self._allow_group_message(sender_id, chat_id, is_bot=False)
+        if chat_type == "dm":
+            return self._is_interactive_operator_authorized(
+                open_id,
+                user_id=user_id,
+                chat_id=chat_id,
+                chat_type=chat_type,
+            )
+        if not chat_type and self._authorization_check is None:
+            # Preserve legacy standalone-adapter behavior only when no gateway
+            # callback or gateway-generated session key is available.
+            return self._is_interactive_operator_authorized(
+                open_id,
+                user_id=user_id,
+                chat_id=chat_id,
+            )
+        return False
 
     def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule approval resolution and build the synchronous callback response."""
@@ -2715,8 +2786,12 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+        user_id = str(getattr(operator, "user_id", "") or "")
+        if not self._is_approval_operator_authorized(
+            open_id,
+            user_id=user_id,
+            state=state,
+        ):
             logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2742,6 +2817,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 choice=choice,
                 user_name=user_name,
                 open_id=open_id,
+                user_id=user_id,
                 chat_id=chat_id,
             ),
         ):
@@ -2821,6 +2897,7 @@ class FeishuAdapter(BasePlatformAdapter):
         user_name: str,
         *,
         open_id: str = "",
+        user_id: str = "",
         chat_id: str = "",
     ) -> None:
         """Pop approval state and unblock the waiting agent thread."""
@@ -2828,7 +2905,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if not state:
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
             return
-        if not self._is_interactive_operator_authorized(open_id):
+        if not self._is_approval_operator_authorized(
+            open_id,
+            user_id=user_id,
+            state=state,
+        ):
             logger.warning("[Feishu] Unauthorized approval click by %s for approval %s", open_id or "<unknown>", approval_id)
             return
         expected_chat_id = str(state.get("chat_id", "") or "")

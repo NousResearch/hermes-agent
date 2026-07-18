@@ -76,6 +76,7 @@ _OPENVIKING_ENV_KEYS = (
 _TIMEOUT = 30.0
 _SESSION_DRAIN_TIMEOUT = 10.0
 _DEFERRED_COMMIT_TIMEOUT = (_TIMEOUT * 2) + 5.0
+_SESSION_MESSAGE_BATCH_LIMIT = 100
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
 _SYNC_TRACE_ENV = "HERMES_OPENVIKING_SYNC_TRACE"
 _DEFAULT_RECALL_LIMIT = 6
@@ -3430,23 +3431,54 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._mark_session_pending(sid)
 
         def _sync():
-            def _post_turn(client: _VikingClient) -> None:
-                if batch_messages:
-                    payload = {"messages": batch_messages}
+            next_batch_index = 0
+
+            def _post_unsent_messages_individually(client: _VikingClient) -> None:
+                nonlocal next_batch_index
+                path = f"/api/v1/sessions/{sid}/messages"
+                while next_batch_index < len(batch_messages):
                     if _sync_trace_enabled():
                         logger.info(
-                            "OpenViking sync_turn trace: POST /api/v1/sessions/%s/messages/batch payload=%s",
-                            sid,
-                            json.dumps(payload, ensure_ascii=False),
+                            "OpenViking sync_turn trace: POST %s message_index=%d payload=%s",
+                            path,
+                            next_batch_index,
+                            json.dumps(batch_messages[next_batch_index], ensure_ascii=False),
                         )
-                    try:
-                        client.post(f"/api/v1/sessions/{sid}/messages/batch", payload)
+                    client.post(path, batch_messages[next_batch_index])
+                    next_batch_index += 1
+
+            def _post_turn(client: _VikingClient) -> None:
+                nonlocal next_batch_index
+                if batch_messages:
+                    while next_batch_index < len(batch_messages):
+                        batch_end = min(
+                            next_batch_index + _SESSION_MESSAGE_BATCH_LIMIT,
+                            len(batch_messages),
+                        )
+                        payload = {"messages": batch_messages[next_batch_index:batch_end]}
+                        if _sync_trace_enabled():
+                            logger.info(
+                                "OpenViking sync_turn trace: POST "
+                                "/api/v1/sessions/%s/messages/batch range=%d:%d payload=%s",
+                                sid,
+                                next_batch_index,
+                                batch_end,
+                                json.dumps(payload, ensure_ascii=False),
+                            )
+                        try:
+                            client.post(f"/api/v1/sessions/{sid}/messages/batch", payload)
+                        except Exception as batch_error:
+                            if next_batch_index:
+                                raise
+                            logger.warning(
+                                "OpenViking structured sync failed; falling back to text sync: %s",
+                                batch_error,
+                            )
+                            break
+                        next_batch_index = batch_end
+
+                    if next_batch_index == len(batch_messages):
                         return
-                    except Exception as batch_error:
-                        logger.warning(
-                            "OpenViking structured sync failed; falling back to text sync: %s",
-                            batch_error,
-                        )
 
                 self._post_session_turn(
                     client,
@@ -3460,10 +3492,32 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 _post_turn(client)
             except Exception as e:
                 logger.debug("OpenViking sync_turn failed, reconnecting: %s", e)
+                retry_client = None
                 try:
-                    client = self._new_client()
-                    _post_turn(client)
+                    retry_client = self._new_client()
+                    _post_turn(retry_client)
                 except Exception as retry_error:
+                    if (
+                        retry_client is not None
+                        and batch_messages
+                        and next_batch_index < len(batch_messages)
+                    ):
+                        logger.warning(
+                            "OpenViking structured sync retry failed; writing %d remaining "
+                            "messages individually: %s",
+                            len(batch_messages) - next_batch_index,
+                            retry_error,
+                        )
+                        try:
+                            _post_unsent_messages_individually(retry_client)
+                            return
+                        except Exception as fallback_error:
+                            logger.warning(
+                                "OpenViking sync_turn failed during individual-message "
+                                "fallback: %s",
+                                fallback_error,
+                            )
+                            return
                     logger.warning("OpenViking sync_turn failed: %s", retry_error)
 
         self._spawn_writer(sid, _sync, name="openviking-sync")

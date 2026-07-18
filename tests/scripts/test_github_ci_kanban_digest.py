@@ -186,3 +186,100 @@ def test_discovers_active_pr_gate_cards_only(tmp_path, monkeypatch):
         cards = digest.active_pr_gate_cards(conn)
 
     assert [(c.task_id, c.pr_number) for c in cards] == [(wanted, 169)]
+
+
+def test_main_pr_dry_run_does_not_open_kanban(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        digest.kb,
+        "connect_closing",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("dry-run opened Kanban")),
+    )
+    selected = []
+    monkeypatch.setattr(
+        digest,
+        "maybe_post_digest",
+        lambda _conn, card, *_args, **_kwargs: selected.append(card),
+    )
+
+    before = set(tmp_path.rglob("*"))
+    assert digest.main(["--repo", "NousResearch/hermes-agent", "--pr", "169", "--dry-run"]) == 0
+    assert [(card.task_id, card.pr_number) for card in selected] == [("dry-run", 169)]
+    assert set(tmp_path.rglob("*")) == before
+
+
+def test_main_explicit_pr_overrides_selected_task_pr(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="PR-gate: PR #167",
+            body="Keep this mergeable.",
+            assignee="dev",
+            initial_status="blocked",
+        )
+
+    monkeypatch.setattr(
+        digest.kb,
+        "connect_closing",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("dry-run opened Kanban")),
+    )
+    selected = []
+    monkeypatch.setattr(
+        digest,
+        "maybe_post_digest",
+        lambda _conn, card, *_args, **_kwargs: selected.append(card),
+    )
+
+    before = set(tmp_path.rglob("*"))
+    assert (
+        digest.main(
+            [
+                "--repo",
+                "NousResearch/hermes-agent",
+                "--task-id",
+                task_id,
+                "--pr",
+                "169",
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+    assert [(card.task_id, card.pr_number) for card in selected] == [(task_id, 169)]
+    assert set(tmp_path.rglob("*")) == before
+
+
+def test_main_explicit_pr_dry_run_keeps_all_requested_task_ids(monkeypatch):
+    monkeypatch.setattr(
+        digest.kb,
+        "connect_closing",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("dry-run opened Kanban")),
+    )
+    selected = []
+    monkeypatch.setattr(
+        digest,
+        "maybe_post_digest",
+        lambda _conn, card, *_args, **_kwargs: selected.append(card),
+    )
+
+    assert (
+        digest.main(
+            [
+                "--repo",
+                "NousResearch/hermes-agent",
+                "--task-id",
+                "t_first",
+                "--task-id",
+                "t_second",
+                "--pr",
+                "169",
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+    assert [(card.task_id, card.pr_number) for card in selected] == [
+        ("t_first", 169),
+        ("t_second", 169),
+    ]

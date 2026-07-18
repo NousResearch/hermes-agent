@@ -14,6 +14,7 @@ it repeatedly without comment spam.
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -417,8 +418,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     path = args.state_file or state_path(args.board)
     state = load_state(path)
     posted: list[str] = []
-    with kb.connect_closing(board=args.board) as conn:
-        cards = active_pr_gate_cards(conn)
+    dry_run_probe = args.dry_run and args.pr is not None
+    connection = nullcontext(None) if dry_run_probe else kb.connect_closing(board=args.board)
+    with connection as conn:
+        cards = [] if conn is None else active_pr_gate_cards(conn)
         if args.task_id:
             wanted = set(args.task_id)
             cards = [c for c in cards if c.task_id in wanted]
@@ -426,7 +429,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             if not args.task_id:
                 cards = [GateCard("dry-run", f"PR-gate PR #{args.pr}", "", args.pr)]
             elif not cards:
-                cards = [GateCard(args.task_id[0], f"PR-gate PR #{args.pr}", "", args.pr)]
+                cards = [GateCard(task_id, f"PR-gate PR #{args.pr}", "", args.pr) for task_id in args.task_id]
+            else:
+                cards = [GateCard(card.task_id, card.title, card.body, args.pr) for card in cards]
         for card in cards:
             try:
                 body = maybe_post_digest(conn, card, repo, state, dry_run=args.dry_run)

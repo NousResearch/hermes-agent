@@ -1,5 +1,6 @@
-import inspect
+import sys
 
+import fire
 import run_agent
 
 
@@ -27,8 +28,17 @@ def _patch_agent(monkeypatch):
     return _RecordingAgent.instances
 
 
-def test_main_accepts_browser_test_flag():
-    assert "browser_test" in inspect.signature(run_agent.main).parameters
+def test_fire_accepts_dashed_browser_test_flag(monkeypatch):
+    agents = _patch_agent(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["run_agent.py", "--browser-test"])
+
+    fire.Fire(run_agent.main)
+
+    agent = agents[0]
+    assert agent.kwargs["enabled_toolsets"] == ["browser"]
+    assert agent.prompts == [
+        "Use the browser tools to open https://example.com and report the page title."
+    ]
 
 
 def test_browser_test_defaults_to_browser_toolset_and_prompt(monkeypatch):

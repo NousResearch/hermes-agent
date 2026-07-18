@@ -381,6 +381,54 @@ describe('resumeSession failure recovery', () => {
     expect($messages.get().map(message => message.id)).toContain('user-optimistic')
   })
 
+  it('restores the in-flight turn and queued user prompt after a full renderer restart', async () => {
+    const storedMessages = [
+      { content: 'earlier question', role: 'user', timestamp: 1 },
+      { content: 'earlier answer', role: 'assistant', timestamp: 2 }
+    ]
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: storedMessages, session_id: 'stored-1' } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'runtime-1',
+          session_key: 'stored-1',
+          resumed: 'stored-1',
+          message_count: storedMessages.length,
+          messages: storedMessages,
+          running: true,
+          inflight: {
+            user: 'current prompt',
+            assistant: 'partial answer',
+            streaming: true
+          },
+          queued: { user: 'newest prompt' },
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, state) => (resumedState = state)}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-1', true)
+
+    const renderedMessages = JSON.stringify(resumedState?.messages)
+    expect(renderedMessages).toContain('current prompt')
+    expect(renderedMessages).toContain('partial answer')
+    expect(renderedMessages).toContain('newest prompt')
+  })
+
   it('uses the continuation projection when resume rotates an equal-length stored transcript', async () => {
     const parentMessages = [
       { content: 'question before compression', role: 'user', timestamp: 1 },

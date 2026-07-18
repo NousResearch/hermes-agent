@@ -6,6 +6,7 @@ import { $activeGatewayProfile } from '@/store/profile'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
+  appendLiveSessionProjection,
   applyRuntimeInfo,
   chatMessageArraysEquivalent,
   chatMessagesEquivalent,
@@ -325,5 +326,37 @@ describe('preserveLocalPendingTurnMessages', () => {
     ]
 
     expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+})
+
+describe('appendLiveSessionProjection', () => {
+  it('restores the running turn and accepted queued prompt after a renderer restart', () => {
+    const stored = [msg('stored-user', 'user', 'earlier'), msg('stored-assistant', 'assistant', 'earlier answer')]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'current prompt',
+        assistant: 'partial answer',
+        streaming: true
+      },
+      queued: { user: 'newest prompt' }
+    })
+
+    expect(restored.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user'])
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'earlier',
+      'earlier answer',
+      'current prompt',
+      'partial answer',
+      'newest prompt'
+    ])
+    expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+  })
+
+  it('preserves the original array when no live projection exists', () => {
+    const stored = [msg('stored-user', 'user', 'earlier')]
+
+    expect(appendLiveSessionProjection(stored, { session_id: 'runtime-1' })).toBe(stored)
   })
 })

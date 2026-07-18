@@ -63,6 +63,7 @@ import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
 
 import {
+  appendLiveSessionProjection,
   applyRuntimeInfo,
   applyStoredSessionPreviewRuntimeInfo,
   type BranchMessage,
@@ -121,9 +122,12 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
 
 function reconcileAuthoritativeMessages(
   authoritativeMessages: SessionResumeResponse['messages'],
-  previousMessages: ChatMessage[]
+  previousMessages: ChatMessage[],
+  liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
 ): ChatMessage[] {
-  const reconciled = reconcileResumeMessages(toChatMessages(authoritativeMessages), previousMessages)
+  const authoritative = toChatMessages(authoritativeMessages)
+  const withLiveProjection = liveProjection ? appendLiveSessionProjection(authoritative, liveProjection) : authoritative
+  const reconciled = reconcileResumeMessages(withLiveProjection, previousMessages)
   const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previousMessages)
 
   return preserveLocalAssistantErrors(withPendingTurn, previousMessages)
@@ -622,9 +626,10 @@ export function useSessionActions({
             } else {
               const runtimeInfo = applyRuntimeInfo(activated.info)
 
-              let activatedMessages = activated.messages.length
-                ? reconcileAuthoritativeMessages(activated.messages, cachedViewState.messages)
-                : cachedViewState.messages
+              let activatedMessages =
+                activated.messages.length || activated.inflight || activated.queued
+                  ? reconcileAuthoritativeMessages(activated.messages, cachedViewState.messages, activated)
+                  : cachedViewState.messages
 
               const running = Boolean(activated.running ?? cachedViewState.busy)
 
@@ -803,15 +808,20 @@ export function useSessionActions({
         const prefetchMatchesResumedSession =
           !prefetchedStoredSessionId || !resumedStoredSessionId || prefetchedStoredSessionId === resumedStoredSessionId
 
+        const hasLiveProjection = Boolean(resumed.inflight || resumed.queued)
+
         const preferredMessages =
-          prefetchApplied && prefetchMatchesResumedSession && resumed.messages.length <= prefetchedMessageCount
+          prefetchApplied &&
+          prefetchMatchesResumedSession &&
+          !hasLiveProjection &&
+          resumed.messages.length <= prefetchedMessageCount
             ? localSnapshot
             : (() => {
                 const previousMessages = resumedSameSelectedSession
                   ? preserveLocalPendingTurnMessages(currentMessages, resumeStartMessages)
                   : currentMessages
 
-                const resumedMessages = reconcileAuthoritativeMessages(resumed.messages, previousMessages)
+                const resumedMessages = reconcileAuthoritativeMessages(resumed.messages, previousMessages, resumed)
 
                 return chatMessageArraysEquivalent(currentMessages, resumedMessages) ? currentMessages : resumedMessages
               })()

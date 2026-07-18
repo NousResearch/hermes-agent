@@ -391,6 +391,9 @@ export interface SessionResumeResponse {
     streaming?: boolean
     user?: string
   }
+  queued?: null | {
+    user?: string
+  }
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]

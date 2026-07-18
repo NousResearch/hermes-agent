@@ -7976,6 +7976,46 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         server._sessions.pop("sid-live", None)
 
 
+def test_session_activate_returns_prompt_queued_during_busy_turn(monkeypatch):
+    """A full client restart must recover an accepted next-turn prompt.
+
+    Busy prompts are intentionally not durable until they drain. Their only
+    authoritative copy is ``queued_prompt``, so the live projection must expose
+    that copy without leaking the transport object.
+    """
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
+    agent = types.SimpleNamespace(model="model-live")
+    session = _session(
+        agent=agent,
+        running=True,
+        inflight_turn={
+            "assistant": "partial answer",
+            "streaming": True,
+            "user": "current prompt",
+        },
+    )
+    server._sessions["sid-live"] = session
+    try:
+        queued = server._handle_busy_submit(
+            "submit", "sid-live", session, "newest prompt", object()
+        )
+        assert queued["result"]["status"] == "queued"
+
+        activated = server.handle_request(
+            {
+                "id": "activate",
+                "method": "session.activate",
+                "params": {"session_id": "sid-live"},
+            }
+        )
+
+        assert activated["result"]["queued"] == {"user": "newest prompt"}
+        assert "transport" not in activated["result"]["queued"]
+    finally:
+        server._sessions.pop("sid-live", None)
+
+
 def test_session_activate_switches_live_session_without_closing_siblings(monkeypatch):
     monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
     server._sessions["sid-a"] = _session(

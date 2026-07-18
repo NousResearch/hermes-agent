@@ -51,11 +51,20 @@ export interface SlashExecResponse {
 
 // Wire shapes now live in @hermes/shared for reuse by TypeScript clients.
 export type {
-  BillingAutoReload, BillingCardInfo, BillingChargeResponse,
-  BillingChargeStatusResponse, BillingErrorPayload, BillingMonthlyCap,
-  BillingMutationResponse, BillingStateResponse, SubscriptionPreviewResponse,
-  SubscriptionStateResponse, SubscriptionTierOption, SubscriptionUpgradeResponse,
-  UsageBarData, UsageModelData,
+  BillingAutoReload,
+  BillingCardInfo,
+  BillingChargeResponse,
+  BillingChargeStatusResponse,
+  BillingErrorPayload,
+  BillingMonthlyCap,
+  BillingMutationResponse,
+  BillingStateResponse,
+  SubscriptionPreviewResponse,
+  SubscriptionStateResponse,
+  SubscriptionTierOption,
+  SubscriptionUpgradeResponse,
+  UsageBarData,
+  UsageModelData
 } from '@hermes/shared/billing'
 
 export type CommandDispatchResponse =

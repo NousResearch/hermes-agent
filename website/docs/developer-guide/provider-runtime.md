@@ -130,6 +130,30 @@ Credential resolution for native Anthropic now prefers refreshable Claude Code c
 - Hermes preflights Anthropic credential refresh before native Messages API calls
 - Hermes still retries once on a 401 after rebuilding the Anthropic client, as a fallback path
 
+### Escape hatch: `anthropic.force_env_token`
+
+Preferring the Claude Code credential is the safe default, but it strands you when
+that credential is orphaned or expired: Hermes keeps substituting it for the token
+you set explicitly, and every native Messages API call fails with HTTP 400
+(`add funds at claude.ai/settings/usage`) no matter what you put in `.env`.
+
+Set the escape hatch in `config.yaml` to make Hermes respect your explicit
+`ANTHROPIC_TOKEN` instead:
+
+```yaml
+anthropic:
+  force_env_token: true
+```
+
+With this enabled, a `ANTHROPIC_TOKEN` from your environment or `.env` is used
+verbatim and the Claude Code credential file is never substituted for it. Reach
+for it when you have a working token but Anthropic calls fail with HTTP 400 while
+a stale `~/.claude/.credentials.json` is present.
+
+It defaults to `false`, preserving the refresh-prefer behavior described above —
+that path is what lets Hermes transparently refresh an expired Claude Code token,
+so only opt out when the substitution is actively breaking you.
+
 ## OpenAI Codex path
 
 Codex uses a separate Responses API path:

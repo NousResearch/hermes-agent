@@ -143,10 +143,13 @@ def test_acp_restore_heals_alternation_for_live_replay(db):
 
     assert state is not None
     roles = [m["role"] for m in state.history]
-    # No consecutive user turns — the durable user;user wedge was healed.
-    assert roles == ["user", "assistant", "user", "assistant"], roles
+    # repair_message_sequence preserves adjacent user messages as distinct
+    # source turns — provider role alternation is repaired later on the
+    # per-request api_messages copy by drop_thinking_only_and_merge_users.
+    assert roles == ["user", "assistant", "user", "user", "assistant"], roles
+    # No consecutive assistant turns — that IS repaired.
     for a, b in zip(roles, roles[1:]):
-        assert not (a == "user" and b == "user"), "unhealed user;user in ACP live replay"
-    # No user input lost — both user texts survive, merged in order.
-    merged = state.history[2]["content"]
-    assert "unanswered turn" in merged and "next turn" in merged
+        assert not (a == "assistant" and b == "assistant"), "unhealed assistant;assistant in ACP live replay"
+    # No user input lost — both user texts survive as separate turns.
+    assert state.history[2]["content"] == "unanswered turn"
+    assert state.history[3]["content"] == "next turn"

@@ -2853,6 +2853,10 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Optional per-card reasoning marker × retry matrix. When unset,
+        # workers keep their profile model/reasoning defaults (and any explicit
+        # task model_override). See the Kanban guide for the schema.
+        "worker_dispatch_matrix": None,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

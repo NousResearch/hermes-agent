@@ -725,6 +725,7 @@ All commands are also available as a slash command in the interactive CLI and in
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
+| `kanban.worker_dispatch_matrix` | unset | Optional model + reasoning matrix keyed by a card reasoning marker and consecutive genuine failures. Unset preserves profile defaults and explicit `model_override`. |
 
 ```yaml
 kanban:
@@ -732,6 +733,36 @@ kanban:
   auto_promote_children: false
   default_workdir: ~/work/active-project
 ```
+
+### Worker model and reasoning retry matrix
+
+Cards may declare `reasoning_effort`, `thinking_budget`, or `reasoning_budget`
+as `none`, `low`, `medium`, or `high`. Unmarked cards use `default_marker`
+(`medium` when omitted). Configure each row with first, second, and third-or-
+later attempt cells:
+
+```yaml
+kanban:
+  worker_dispatch_matrix:
+    default_marker: medium
+    low:
+      first_attempt:  {model: gpt-5.6-luna,  reasoning_effort: medium}
+      second_attempt: {model: gpt-5.6-terra, reasoning_effort: low}
+      third_plus:     {model: gpt-5.6-terra, reasoning_effort: medium}
+    medium:
+      first_attempt:  {model: gpt-5.6-terra, reasoning_effort: medium}
+      second_attempt: {model: gpt-5.6-sol,   reasoning_effort: low}
+      third_plus:     {model: gpt-5.6-sol,   reasoning_effort: medium}
+    high:
+      first_attempt:  {model: gpt-5.6-sol, reasoning_effort: medium}
+      second_attempt: {model: gpt-5.6-sol, reasoning_effort: medium}
+      third_plus:     {model: gpt-5.6-sol, reasoning_effort: high}
+```
+
+The dispatcher resolves model and reasoning from the same cell. An explicit
+per-card `model_override` remains strongest. A missing/malformed matrix or cell
+fails closed to the existing profile/model behavior rather than guessing a
+provider-specific model.
 
 ### Scheduled task starts (`scheduled_at`)
 

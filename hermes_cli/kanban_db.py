@@ -8166,6 +8166,56 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+_KANBAN_REASONING_MARKER_RE = re.compile(
+    r"(?im)^\s*(?:kanban_)?(?:reasoning_effort|thinking_budget|reasoning_budget)\s*[:=]\s*"
+    r"(none|low|medium|high)\b"
+)
+_KANBAN_REASONING_EFFORTS = {"none", "low", "medium", "high"}
+
+
+def _resolve_kanban_worker_dispatch(
+    task: Task,
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve model and reasoning atomically from an optional retry matrix."""
+    try:
+        from hermes_cli.config import load_config
+
+        matrix = (load_config().get("kanban") or {}).get("worker_dispatch_matrix")
+    except Exception:
+        matrix = None
+
+    explicit_model = str(task.model_override or "").strip() or None
+    if not isinstance(matrix, dict):
+        return explicit_model, None
+
+    match = _KANBAN_REASONING_MARKER_RE.search(task.body or "")
+    marker = match.group(1).lower() if match else str(
+        matrix.get("default_marker") or "medium"
+    ).strip().lower()
+    if marker not in _KANBAN_REASONING_EFFORTS:
+        marker = "medium"
+
+    try:
+        failures = max(0, int(task.consecutive_failures or 0))
+    except (TypeError, ValueError):
+        failures = 0
+    attempt = (
+        "first_attempt" if failures == 0
+        else "second_attempt" if failures == 1
+        else "third_plus"
+    )
+    row = matrix.get(marker)
+    cell = row.get(attempt) if isinstance(row, dict) else None
+    if not isinstance(cell, dict):
+        return explicit_model, None
+
+    configured_model = str(cell.get("model") or "").strip() or None
+    effort = str(cell.get("reasoning_effort") or "").strip().lower() or None
+    if effort not in _KANBAN_REASONING_EFFORTS:
+        effort = None
+    return explicit_model or configured_model, effort
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -8302,8 +8352,12 @@ def _default_spawn(
         for sk in task.skills:
             if sk:
                 cmd.extend(["--skills", sk])
-    if task.model_override:
-        cmd.extend(["-m", task.model_override])
+    effective_model, effective_reasoning = _resolve_kanban_worker_dispatch(task)
+    if effective_model:
+        cmd.extend(["-m", effective_model])
+        env["HERMES_KANBAN_WORKER_MODEL"] = effective_model
+    if effective_reasoning:
+        env["HERMES_KANBAN_REASONING_EFFORT"] = effective_reasoning
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])

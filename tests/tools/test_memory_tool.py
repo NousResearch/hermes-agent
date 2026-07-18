@@ -342,6 +342,50 @@ class TestMemoryStoreReplace:
         assert result["success"] is False
         assert "Multiple" in result["error"]
 
+    def test_replace_ambiguous_match_when_new_content_already_exists_surfaces_duplicate(self, store):
+        """When an ambiguous replace's new_content is already a separate entry,
+        the response must say so and surface the existing duplicate — instead
+        of the generic 'Multiple entries matched' message that invites the
+        model to fall back to add() and create a duplicate (#60089).
+        """
+        store.add("memory", "User prefers dark mode (theme)")
+        store.add("memory", "User prefers dark mode (terminal)")
+        # The duplicate entry does NOT match old_text — it's a pre-existing
+        # unrelated entry whose content happens to equal new_content.
+        store.add("memory", "User likes cats")
+        result = store.replace(
+            "memory",
+            old_text="prefers dark mode",
+            new_content="User likes cats",
+        )
+        assert result["success"] is False
+        # Code-level contract: dedicated signal fields, not just the generic
+        # 'Multiple entries matched' message.
+        assert "already present" in result["error"]
+        assert "operations" in result["error"]  # pointer at batch API
+        assert result.get("existing_duplicate") == "User likes cats"
+        assert "matches" in result and len(result["matches"]) == 2
+
+    def test_replace_ambiguous_match_when_new_content_matches_one_of_the_matched_entries_still_generic(self, store):
+        """If new_content equals one of the *matched* (matched-by-old_text)
+        entries, the replace is a legitimate no-op against that single entry
+        — we should NOT misclassify this as the cross-entry duplicate case
+        and should still emit the generic ambiguity message (#60089 regression
+        guard for the `new_content not in unique_texts` clause).
+        """
+        store.add("memory", "server A runs nginx")
+        store.add("memory", "server B runs nginx")
+        # new_content equals one of the matched entries (server A runs nginx)
+        result = store.replace(
+            "memory",
+            old_text="nginx",
+            new_content="server A runs nginx",
+        )
+        assert result["success"] is False
+        assert "Multiple" in result["error"]
+        assert "already present" not in result["error"]
+        assert "existing_duplicate" not in result
+
     def test_replace_empty_old_text_rejected(self, store):
         result = store.replace("memory", "", "new")
         assert result["success"] is False

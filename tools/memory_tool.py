@@ -419,6 +419,29 @@ class MemoryStore:
                 unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
                     previews = self._previews([e for _, e in matches])
+                    # If the intended new_content already exists verbatim as a
+                    # separate entry, the generic "Multiple entries matched"
+                    # error is a trap: the model's natural fallback is `add()`,
+                    # which then creates a duplicate of the entry that already
+                    # says what it wanted to write. Surface the situation
+                    # explicitly and point at the batch `operations` API to
+                    # disambiguate, so the model doesn't fall into the
+                    # replace -> ambiguous -> add -> duplicate loop (#60089).
+                    if new_content in entries and new_content not in unique_texts:
+                        return {
+                            "success": False,
+                            "error": (
+                                f"Multiple entries matched '{old_text}', and the "
+                                f"new_content is already present as a separate entry. "
+                                f"The replacement is a no-op as written — use the "
+                                f"batch `operations` API to remove the matched entries "
+                                f"explicitly, or retry with a more specific old_text "
+                                f"that matches only one entry. Matches and the "
+                                f"existing duplicate are listed below."
+                            ),
+                            "matches": previews,
+                            "existing_duplicate": new_content,
+                        }
                     return {
                         "success": False,
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",

@@ -1816,6 +1816,17 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
         expanded = os.path.expanduser(resolved)
         if os.path.isdir(expanded):
             return expanded
+    # Fall through to the session-cwd record / task-override ladder when
+    # the ContextVar is not set (non-cron / non-scheduler paths).
+    import tools.terminal_tool as terminal_tool
+    recorded = terminal_tool.get_session_cwd(task_id)
+    if recorded and os.path.isdir(recorded):
+        return recorded
+    overrides = terminal_tool._task_env_overrides.get(task_id)
+    if overrides and isinstance(overrides.get("cwd"), str):
+        override_cwd = os.path.expanduser(overrides["cwd"])
+        if os.path.isdir(override_cwd):
+            return override_cwd
     here = os.getcwd()
     if os.path.isdir(here):
         return here

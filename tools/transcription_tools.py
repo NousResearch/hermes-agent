@@ -105,6 +105,21 @@ from hermes_cli.audio_key_guard import (
     resolve_provider_key as _resolve_provider_key,
     PLACEHOLDER_KEY as _PLACEHOLDER_OPENAI_KEY,
 )
+
+
+def _clamp_stt_timeout(timeout, default: float = 30.0) -> float:
+    """Coerce + clamp an STT client timeout to a sane band (1..600s). Mirrors
+    the TTS-side clamp so a broken ``stt.openai.timeout`` (0, negative, string,
+    NaN) can't disable the timeout or pin a worker forever."""
+    try:
+        val = float(timeout) if timeout is not None else default
+    except (TypeError, ValueError):
+        return default
+    if val != val:  # NaN
+        return default
+    return min(max(val, 1.0), 600.0)
+
+
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
 # DeepInfra STT base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
@@ -1410,10 +1425,7 @@ def _transcribe_openai(
 
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
-        try:
-            client_timeout = float(timeout) if timeout is not None else 30.0
-        except (TypeError, ValueError):
-            client_timeout = 30.0
+        client_timeout = _clamp_stt_timeout(timeout)
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=client_timeout, max_retries=0)
         resolved_format = response_format or ("text" if model_name == "whisper-1" else "json")
         create_kwargs: Dict[str, Any] = {
@@ -1477,14 +1489,14 @@ def _transcribe_openai_json_b64(
     except ImportError:
         return {"success": False, "transcript": "", "error": "requests package not installed"}
 
-    try:
-        client_timeout = float(timeout) if timeout is not None else 30.0
-    except (TypeError, ValueError):
-        client_timeout = 30.0
+    client_timeout = _clamp_stt_timeout(timeout)
     base = (base_url or OPENAI_BASE_URL).rstrip("/")
     ext = (Path(file_path).suffix or "").lstrip(".").lower() or "wav"
     if ext == "oga":
         ext = "ogg"
+    # Same response_format default as the multipart path so identical config
+    # behaves the same regardless of request_format.
+    resolved_format = response_format or ("text" if model_name == "whisper-1" else "json")
 
     try:
         with open(file_path, "rb") as fh:
@@ -1493,8 +1505,8 @@ def _transcribe_openai_json_b64(
             "model": model_name,
             "input_audio": {"data": audio_b64, "format": ext},
         }
-        if response_format:
-            payload["response_format"] = response_format
+        if resolved_format:
+            payload["response_format"] = resolved_format
         if language:
             payload["language"] = language
         resp = requests.post(

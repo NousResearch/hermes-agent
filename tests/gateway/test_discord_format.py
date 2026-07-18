@@ -1,4 +1,4 @@
-"""Discord format_message: tables converted to bullet groups."""
+"""Discord format_message: tables rendered for Discord."""
 
 import types
 import sys
@@ -24,7 +24,7 @@ def _make_discord_adapter():
 
 class TestDiscordFormatMessage:
 
-    def test_table_converted_to_bullets(self):
+    def test_table_converted_to_code_block(self):
         adapter = _make_discord_adapter()
         text = (
             "Results:\n\n"
@@ -35,13 +35,23 @@ class TestDiscordFormatMessage:
             "\nDone."
         )
         out = adapter.format_message(text)
-        assert "**Alice**" in out
-        assert "• Score: 95" in out
-        assert "**Bob**" in out
-        assert "• Score: 80" in out
+        assert "```" in out
+        assert "Alice" in out
+        assert "95" in out
+        assert "Bob" in out
+        assert "80" in out
         assert out.startswith("Results:")
         assert out.rstrip().endswith("Done.")
-        assert "|---" not in out
+
+    def test_table_uses_compact_fallback_within_budget(self):
+        adapter = _make_discord_adapter()
+        text = "| Name | Score |\n|------|-------|\n| Alice | 95 |"
+
+        out = adapter.format_message(text, budget=50)
+
+        assert "```" not in out
+        assert "Name: Alice" in out
+        assert "Score: 95" in out
 
     def test_plain_text_unchanged(self):
         adapter = _make_discord_adapter()

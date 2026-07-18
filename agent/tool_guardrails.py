@@ -17,47 +17,43 @@ from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
 
 
-IDEMPOTENT_TOOL_NAMES = frozenset(
-    {
-        "read_file",
-        "search_files",
-        "web_search",
-        "web_extract",
-        "session_search",
-        "browser_snapshot",
-        "browser_console",
-        "browser_get_images",
-        "mcp_filesystem_read_file",
-        "mcp_filesystem_read_text_file",
-        "mcp_filesystem_read_multiple_files",
-        "mcp_filesystem_list_directory",
-        "mcp_filesystem_list_directory_with_sizes",
-        "mcp_filesystem_directory_tree",
-        "mcp_filesystem_get_file_info",
-        "mcp_filesystem_search_files",
-    }
-)
+IDEMPOTENT_TOOL_NAMES = frozenset({
+    "read_file",
+    "search_files",
+    "web_search",
+    "web_extract",
+    "session_search",
+    "browser_snapshot",
+    "browser_console",
+    "browser_get_images",
+    "mcp_filesystem_read_file",
+    "mcp_filesystem_read_text_file",
+    "mcp_filesystem_read_multiple_files",
+    "mcp_filesystem_list_directory",
+    "mcp_filesystem_list_directory_with_sizes",
+    "mcp_filesystem_directory_tree",
+    "mcp_filesystem_get_file_info",
+    "mcp_filesystem_search_files",
+})
 
-MUTATING_TOOL_NAMES = frozenset(
-    {
-        "terminal",
-        "execute_code",
-        "write_file",
-        "patch",
-        "todo",
-        "memory",
-        "skill_manage",
-        "browser_click",
-        "browser_type",
-        "browser_press",
-        "browser_scroll",
-        "browser_navigate",
-        "send_message",
-        "cronjob",
-        "delegate_task",
-        "process",
-    }
-)
+MUTATING_TOOL_NAMES = frozenset({
+    "terminal",
+    "execute_code",
+    "write_file",
+    "patch",
+    "todo",
+    "memory",
+    "skill_manage",
+    "browser_click",
+    "browser_type",
+    "browser_press",
+    "browser_scroll",
+    "browser_navigate",
+    "send_message",
+    "cronjob",
+    "delegate_task",
+    "process",
+})
 
 
 @dataclass(frozen=True)
@@ -77,7 +73,9 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
-    idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
+    idempotent_tools: frozenset[str] = field(
+        default_factory=lambda: IDEMPOTENT_TOOL_NAMES
+    )
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
     @classmethod
@@ -95,30 +93,44 @@ class ToolCallGuardrailConfig:
 
         defaults = cls()
         return cls(
-            warnings_enabled=_as_bool(data.get("warnings_enabled"), defaults.warnings_enabled),
-            hard_stop_enabled=_as_bool(data.get("hard_stop_enabled"), defaults.hard_stop_enabled),
+            warnings_enabled=_as_bool(
+                data.get("warnings_enabled"), defaults.warnings_enabled
+            ),
+            hard_stop_enabled=_as_bool(
+                data.get("hard_stop_enabled"), defaults.hard_stop_enabled
+            ),
             exact_failure_warn_after=_positive_int(
                 warn_after.get("exact_failure", data.get("exact_failure_warn_after")),
                 defaults.exact_failure_warn_after,
             ),
             same_tool_failure_warn_after=_positive_int(
-                warn_after.get("same_tool_failure", data.get("same_tool_failure_warn_after")),
+                warn_after.get(
+                    "same_tool_failure", data.get("same_tool_failure_warn_after")
+                ),
                 defaults.same_tool_failure_warn_after,
             ),
             no_progress_warn_after=_positive_int(
-                warn_after.get("idempotent_no_progress", data.get("no_progress_warn_after")),
+                warn_after.get(
+                    "idempotent_no_progress", data.get("no_progress_warn_after")
+                ),
                 defaults.no_progress_warn_after,
             ),
             exact_failure_block_after=_positive_int(
-                hard_stop_after.get("exact_failure", data.get("exact_failure_block_after")),
+                hard_stop_after.get(
+                    "exact_failure", data.get("exact_failure_block_after")
+                ),
                 defaults.exact_failure_block_after,
             ),
             same_tool_failure_halt_after=_positive_int(
-                hard_stop_after.get("same_tool_failure", data.get("same_tool_failure_halt_after")),
+                hard_stop_after.get(
+                    "same_tool_failure", data.get("same_tool_failure_halt_after")
+                ),
                 defaults.same_tool_failure_halt_after,
             ),
             no_progress_block_after=_positive_int(
-                hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
+                hard_stop_after.get(
+                    "idempotent_no_progress", data.get("no_progress_block_after")
+                ),
                 defaults.no_progress_block_after,
             ),
         )
@@ -132,7 +144,9 @@ class ToolCallSignature:
     args_hash: str
 
     @classmethod
-    def from_call(cls, tool_name: str, args: Mapping[str, Any] | None) -> "ToolCallSignature":
+    def from_call(
+        cls, tool_name: str, args: Mapping[str, Any] | None
+    ) -> "ToolCallSignature":
         canonical = canonical_tool_args(args or {})
         return cls(tool_name=tool_name, args_hash=_sha256(canonical))
 
@@ -186,7 +200,7 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
     )
 
 
-def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
+def classify_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     """Safety-fallback classifier used only when callers don't pass ``failed``.
 
     Mirrors ``agent.display._detect_tool_failure`` exactly so the guardrail
@@ -211,9 +225,15 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     if tool_name == "memory":
         data = safe_json_loads(result)
         if isinstance(data, dict):
-            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
+            if data.get("success") is False and "exceed the limit" in data.get(
+                "error", ""
+            ):
                 return True, " [full]"
 
+    # Multimodal tool results (dicts with _multimodal=True) are not strings —
+    # treat them as successes since failures would be JSON-encoded strings.
+    if not isinstance(result, str):
+        return False, ""
     lower = result[:500].lower()
     if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
         return True, " [error]"
@@ -238,7 +258,9 @@ class ToolCallGuardrailController:
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
 
-    def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
+    def before_call(
+        self, tool_name: str, args: Mapping[str, Any] | None
+    ) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
@@ -303,7 +325,10 @@ class ToolCallGuardrailController:
             same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._same_tool_failure_counts[tool_name] = same_count
 
-            if self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_halt_after:
+            if (
+                self.config.hard_stop_enabled
+                and same_count >= self.config.same_tool_failure_halt_after
+            ):
                 decision = ToolGuardrailDecision(
                     action="halt",
                     code="same_tool_failure_halt",
@@ -318,7 +343,10 @@ class ToolCallGuardrailController:
                 self._halt_decision = decision
                 return decision
 
-            if self.config.warnings_enabled and exact_count >= self.config.exact_failure_warn_after:
+            if (
+                self.config.warnings_enabled
+                and exact_count >= self.config.exact_failure_warn_after
+            ):
                 return ToolGuardrailDecision(
                     action="warn",
                     code="repeated_exact_failure_warning",
@@ -332,7 +360,10 @@ class ToolCallGuardrailController:
                     signature=signature,
                 )
 
-            if self.config.warnings_enabled and same_count >= self.config.same_tool_failure_warn_after:
+            if (
+                self.config.warnings_enabled
+                and same_count >= self.config.same_tool_failure_warn_after
+            ):
                 return ToolGuardrailDecision(
                     action="warn",
                     code="same_tool_failure_warning",
@@ -342,7 +373,9 @@ class ToolCallGuardrailController:
                     signature=signature,
                 )
 
-            return ToolGuardrailDecision(tool_name=tool_name, count=exact_count, signature=signature)
+            return ToolGuardrailDecision(
+                tool_name=tool_name, count=exact_count, signature=signature
+            )
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
@@ -358,7 +391,10 @@ class ToolCallGuardrailController:
             repeat_count = previous[1] + 1
         self._no_progress[signature] = (result_hash, repeat_count)
 
-        if self.config.warnings_enabled and repeat_count >= self.config.no_progress_warn_after:
+        if (
+            self.config.warnings_enabled
+            and repeat_count >= self.config.no_progress_warn_after
+        ):
             return ToolGuardrailDecision(
                 action="warn",
                 code="idempotent_no_progress_warning",
@@ -372,7 +408,9 @@ class ToolCallGuardrailController:
                 signature=signature,
             )
 
-        return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
+        return ToolGuardrailDecision(
+            tool_name=tool_name, count=repeat_count, signature=signature
+        )
 
     def _is_idempotent(self, tool_name: str) -> bool:
         if tool_name in self.config.mutating_tools:
@@ -397,8 +435,7 @@ def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> s
         return result
     label = "Tool loop hard stop" if decision.action == "halt" else "Tool loop warning"
     suffix = (
-        f"\n\n[{label}: "
-        f"{decision.code}; count={decision.count}; {decision.message}]"
+        f"\n\n[{label}: {decision.code}; count={decision.count}; {decision.message}]"
     )
     return (result or "") + suffix
 

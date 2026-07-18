@@ -561,7 +561,9 @@ def _dir_file_count(path: str) -> int:
             pattern for pattern in DEFAULT_EXCLUDES if not pattern.endswith("/")
         )
 
-        for current_dir, directory_names, file_names in os.walk(root):
+        for current_dir, directory_names, file_names in os.walk(
+            root, followlinks=False
+        ):
             retained_directories = []
             for name in directory_names:
                 candidate = Path(current_dir) / name

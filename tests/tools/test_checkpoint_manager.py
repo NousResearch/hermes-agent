@@ -542,6 +542,27 @@ class TestDirFileCount:
 
         assert _dir_file_count(work_dir) == 2
 
+    def test_skips_nested_default_excluded_directories(self, work_dir):
+        build_dir = Path(work_dir) / "src" / "build"
+        build_dir.mkdir(parents=True)
+        for idx in range(10):
+            (build_dir / f"generated-{idx}.txt").write_text("generated")
+
+        assert _dir_file_count(work_dir) == 2
+
+    def test_counts_directory_symlink_without_following_target(
+        self, work_dir, tmp_path
+    ):
+        target = tmp_path / "external-output"
+        target.mkdir()
+        for idx in range(10):
+            (target / f"generated-{idx}.txt").write_text("generated")
+        (Path(work_dir) / "linked-output").symlink_to(
+            target, target_is_directory=True
+        )
+
+        assert _dir_file_count(work_dir) == 3
+
     def test_nonexistent_dir(self, tmp_path):
         assert _dir_file_count(str(tmp_path / "nonexistent")) == 0
 

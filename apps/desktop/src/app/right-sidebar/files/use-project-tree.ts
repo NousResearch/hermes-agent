@@ -224,6 +224,7 @@ export function resetProjectTreeState() {
   lastConnectionKey = ''
   clearProjectTree()
   clearProjectDirCache()
+  $showIgnored.set(false)
 }
 
 // Non-destructive refresh: re-read every currently-loaded directory and merge
@@ -242,7 +243,7 @@ async function revalidateTree(cwd: string): Promise<void> {
   clearProjectDirCache()
 
   const reconcile = async (dirPath: string, existing: TreeNode[]): Promise<TreeNode[]> => {
-    const { entries, error } = await readProjectDir(dirPath, rootPath)
+    const { entries, error } = await readProjectDir(dirPath, rootPath, { showIgnored: $showIgnored.get() })
 
     if (error) {
       return existing // keep the last-known children on a transient read error

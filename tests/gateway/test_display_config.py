@@ -335,6 +335,145 @@ class TestPlatformDefaults:
 
 
 # ---------------------------------------------------------------------------
+# show_credits: per-platform credit-notice toggle
+# ---------------------------------------------------------------------------
+
+class TestShowCredits:
+    """show_credits gates per-turn credit notices, on by default for
+    edit-capable tiers and off for no-edit / batch tiers."""
+
+    def test_overrideable_and_global_default_on(self):
+        from gateway.display_config import OVERRIDEABLE_KEYS, _GLOBAL_DEFAULTS
+
+        assert "show_credits" in OVERRIDEABLE_KEYS
+        assert _GLOBAL_DEFAULTS["show_credits"] is True
+
+    def test_high_and_medium_tiers_default_on(self):
+        """Edit-capable, desktop/personal platforms keep the credit footer."""
+        from gateway.display_config import resolve_display_setting
+
+        for plat in ("telegram", "discord", "slack", "mattermost", "matrix", "whatsapp"):
+            assert resolve_display_setting({}, plat, "show_credits") is True, plat
+
+    def test_low_and_minimal_tiers_default_off(self):
+        """No-edit / per-message-cost / batch platforms suppress it by default."""
+        from gateway.display_config import resolve_display_setting
+
+        for plat in ("signal", "bluebubbles", "weixin", "dingtalk", "email", "sms", "webhook"):
+            assert resolve_display_setting({}, plat, "show_credits") is False, plat
+
+    def test_unknown_platform_falls_back_to_global_default(self):
+        """A platform with no _PLATFORM_DEFAULTS entry resolves to the global
+        default (True) until it is given a tier."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "sendblue", "show_credits", True) is True
+
+    def test_per_platform_override_beats_tier(self):
+        """display.platforms.<platform>.show_credits overrides the tier default."""
+        from gateway.display_config import resolve_display_setting
+
+        off_on_telegram = {"display": {"platforms": {"telegram": {"show_credits": False}}}}
+        assert resolve_display_setting(off_on_telegram, "telegram", "show_credits") is False
+
+        on_on_signal = {"display": {"platforms": {"signal": {"show_credits": True}}}}
+        assert resolve_display_setting(on_on_signal, "signal", "show_credits") is True
+
+    def test_global_config_beats_tier(self):
+        """display.show_credits applies to platforms without a per-platform override."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"show_credits": False}}
+        # telegram has no per-platform override here → global False wins over tier True.
+        assert resolve_display_setting(config, "telegram", "show_credits") is False
+
+    def test_yaml_bare_off_normalised_to_false(self):
+        """YAML 1.1 bare 'off'/'no' and string truthy values normalise correctly."""
+        from gateway.display_config import resolve_display_setting
+
+        off = {"display": {"platforms": {"telegram": {"show_credits": "off"}}}}
+        assert resolve_display_setting(off, "telegram", "show_credits") is False
+
+        on = {"display": {"platforms": {"signal": {"show_credits": "yes"}}}}
+        assert resolve_display_setting(on, "signal", "show_credits") is True
+
+
+class TestShouldShowCreditNotice:
+    """should_show_credit_notice() is the single gating decision shared by the
+    gateway and CLI render paths: routine credit notices honor show_credits,
+    depletion/restored always pass, non-credit notices are never gated."""
+
+    def test_non_credit_notice_always_shown(self):
+        """A notice whose key is not a credits.* key is never gated, even on a
+        platform with show_credits off."""
+        from gateway.display_config import should_show_credit_notice
+
+        # signal is a low tier (show_credits False) but this isn't a credit notice.
+        assert should_show_credit_notice({}, "signal", "some.other.notice") is True
+        assert should_show_credit_notice({}, "signal", "") is True
+
+    def test_depleted_and_restored_always_shown(self):
+        """Depletion / restored bypass the toggle so a muted platform still learns
+        the agent stopped (or resumed) for credit reasons."""
+        from gateway.display_config import should_show_credit_notice
+
+        for plat in ("signal", "sms", "telegram"):
+            assert should_show_credit_notice({}, plat, "credits.depleted") is True, plat
+            assert should_show_credit_notice({}, plat, "credits.restored") is True, plat
+
+    def test_routine_credit_notices_follow_tier_default(self):
+        """grant_spent / usage band follow show_credits: on for high/medium,
+        off for low/minimal."""
+        from gateway.display_config import should_show_credit_notice
+
+        for key in ("credits.grant_spent", "credits.usage"):
+            assert should_show_credit_notice({}, "telegram", key) is True, key
+            assert should_show_credit_notice({}, "discord", key) is True, key
+            assert should_show_credit_notice({}, "signal", key) is False, key
+            assert should_show_credit_notice({}, "sms", key) is False, key
+
+    def test_per_platform_override_controls_routine_notices(self):
+        """Explicit per-platform show_credits flips routine notices either way."""
+        from gateway.display_config import should_show_credit_notice
+
+        off = {"display": {"platforms": {"telegram": {"show_credits": False}}}}
+        assert should_show_credit_notice(off, "telegram", "credits.grant_spent") is False
+
+        on = {"display": {"platforms": {"signal": {"show_credits": True}}}}
+        assert should_show_credit_notice(on, "signal", "credits.grant_spent") is True
+
+    def test_override_does_not_suppress_depletion(self):
+        """Even with show_credits off, depletion still shows."""
+        from gateway.display_config import should_show_credit_notice
+
+        off = {"display": {"platforms": {"sms": {"show_credits": False}}}}
+        assert should_show_credit_notice(off, "sms", "credits.depleted") is True
+
+    def test_render_filter_is_orthogonal_to_global_credits_notices_gate(self):
+        """Precedence contract: this render filter does NOT re-read the global
+        display.credits_notices switch. That switch gates emission upstream in
+        AIAgent._emit_credits_notices (covered by
+        tests/run_agent/test_credits_notices_toggle.py: credits_notices=false
+        emits nothing, including depleted). Here, a config with credits_notices
+        false must not change this filter's decisions: it only ever sees notices
+        that were already emitted, so it keeps honoring show_credits and always
+        passes depleted/restored. The two gates are separate layers."""
+        from gateway.display_config import should_show_credit_notice
+
+        cfg = {
+            "display": {
+                "credits_notices": False,  # upstream emit gate; not this filter's concern
+                "platforms": {"signal": {"show_credits": True}},
+            }
+        }
+        # Depleted passes regardless of the (upstream) global gate value here.
+        assert should_show_credit_notice(cfg, "signal", "credits.depleted") is True
+        # Routine still follows the per-platform show_credits (True), unaffected
+        # by credits_notices being false in the same config blob.
+        assert should_show_credit_notice(cfg, "signal", "credits.grant_spent") is True
+
+
+# ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms
 # ---------------------------------------------------------------------------
 

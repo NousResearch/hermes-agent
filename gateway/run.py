@@ -19395,6 +19395,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             def _notice_callback_sync(notice) -> None:
                 if not _status_adapter or not _run_still_current():
                     return
+                # Per-platform credit-notice suppression. Routine credit notices
+                # honor show_credits; depletion / restored always pass; non-credit
+                # notices are never gated. See should_show_credit_notice.
+                from gateway.display_config import should_show_credit_notice
+                if not should_show_credit_notice(
+                    _load_gateway_config(),
+                    _platform_config_key(source.platform),
+                    getattr(notice, "key", "") or "",
+                ):
+                    return
                 try:
                     line = render_notice_line(notice)
                 except Exception:

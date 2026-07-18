@@ -2958,6 +2958,18 @@ DEFAULT_CONFIG = {
             "search_default_limit": 5,
             # Hard upper bound the model can request via ``limit``. Range 1..50.
             "max_search_limit": 20,
+            # Skills-style catalog listing embedded in the tool_search bridge
+            # description: every deferred tool's name + first sentence of its
+            # description (≤60 chars), grouped by MCP server / toolset. Keeps
+            # capabilities discoverable while schemas stay deferred.
+            # "auto" (default) — include when the listing fits listing_max_tokens
+            #   (falls back to names-only, then to the bare count).
+            # "on"  — same rendering, but explicit intent to always list.
+            # "off" — legacy bare-count bridge description.
+            "listing": "auto",
+            # Token budget for the embedded listing (chars/4 estimate).
+            # Range 200..20000.
+            "listing_max_tokens": 4000,
         },
     },
 

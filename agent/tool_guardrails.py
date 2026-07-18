@@ -79,6 +79,7 @@ class ToolCallGuardrailConfig:
     no_progress_block_after: int = 5
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
+    session_caps: "SessionCapConfig" = field(default_factory=lambda: SessionCapConfig())
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "ToolCallGuardrailConfig":
@@ -120,6 +121,51 @@ class ToolCallGuardrailConfig:
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
+            ),
+            session_caps=SessionCapConfig.from_mapping(data.get("session_caps")),
+        )
+
+
+# Default session-wide caps, matching Claude Code's v2.1.212 runaway-loop
+# limits (CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION /
+# CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION, both default 200, reset on /clear).
+_DEFAULT_MAX_WEB_SEARCHES_PER_SESSION = 200
+_DEFAULT_MAX_SUBAGENTS_PER_SESSION = 200
+
+
+@dataclass(frozen=True)
+class SessionCapConfig:
+    """Session-wide lifetime caps on runaway-prone tool calls.
+
+    Inspired by Claude Code v2.1.212 (Week 29, July 2026), which added a
+    per-session cap on WebSearch calls and subagent spawns to stop runaway
+    search / delegation loops. These caps count over the whole session (not
+    per turn like the loop-detection guardrails above) and reset only when a
+    fresh agent is created — i.e. on ``/new`` or ``/clear`` — because the
+    counters live on the ``AIAgent`` instance, not in ``reset_for_turn``.
+
+    Semantics differ from the per-turn loop guardrails: session caps are a
+    hard safety ceiling and fire regardless of ``hard_stop_enabled``. A value
+    of ``0`` disables the cap (unlimited). Defaults match Claude Code (200);
+    a legitimate session almost never issues 200 web searches or spawns 200
+    subagents, so hitting the cap is a strong runaway-loop signal.
+    """
+
+    max_web_searches: int = _DEFAULT_MAX_WEB_SEARCHES_PER_SESSION
+    max_subagents: int = _DEFAULT_MAX_SUBAGENTS_PER_SESSION
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any] | None) -> "SessionCapConfig":
+        """Build config from the ``tool_loop_guardrails.session_caps`` section."""
+        if not isinstance(data, Mapping):
+            return cls()
+        defaults = cls()
+        return cls(
+            max_web_searches=_non_negative_int(
+                data.get("max_web_searches"), defaults.max_web_searches
+            ),
+            max_subagents=_non_negative_int(
+                data.get("max_subagents"), defaults.max_subagents
             ),
         )
 
@@ -226,6 +272,12 @@ class ToolCallGuardrailController:
 
     def __init__(self, config: ToolCallGuardrailConfig | None = None):
         self.config = config or ToolCallGuardrailConfig()
+        # Session-wide counters persist for the life of this controller (i.e.
+        # the life of the AIAgent instance). They are deliberately NOT cleared
+        # in reset_for_turn — a runaway loop that spans many turns must still be
+        # caught. They reset only when a fresh agent is built (/new, /clear).
+        self._session_web_search_count = 0
+        self._session_subagent_count = 0
         self.reset_for_turn()
 
     def reset_for_turn(self) -> None:
@@ -240,6 +292,16 @@ class ToolCallGuardrailController:
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+
+        # ── Session-wide runaway-loop caps ──────────────────────────────
+        # These are hard safety ceilings that apply regardless of
+        # hard_stop_enabled (which only governs the per-turn loop detector).
+        # We block BEFORE the call runs once the count is already at the cap,
+        # then increment for an allowed call so the (cap+1)-th is refused.
+        cap_block = self._check_session_cap(tool_name, _coerce_args(args), signature)
+        if cap_block is not None:
+            return cap_block
+
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -379,6 +441,68 @@ class ToolCallGuardrailController:
             return False
         return tool_name in self.config.idempotent_tools
 
+    def _check_session_cap(
+        self,
+        tool_name: str,
+        args: Mapping[str, Any],
+        signature: ToolCallSignature,
+    ) -> ToolGuardrailDecision | None:
+        """Enforce and advance the session-wide runaway-loop counters.
+
+        Returns a ``block`` decision when the cap is already reached, otherwise
+        increments the relevant counter for the allowed call and returns
+        ``None``. A cap of 0 disables that limit entirely.
+        """
+        caps = self.config.session_caps
+
+        if tool_name == "web_search":
+            cap = caps.max_web_searches
+            if cap and self._session_web_search_count >= cap:
+                decision = ToolGuardrailDecision(
+                    action="block",
+                    code="session_web_search_cap",
+                    message=(
+                        f"Blocked web_search: this session has already made {cap} "
+                        "web searches, the per-session limit. This looks like a "
+                        "runaway search loop. Work with the results you already "
+                        "have, or start a fresh session (/new) to reset the budget."
+                    ),
+                    tool_name=tool_name,
+                    count=self._session_web_search_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
+            self._session_web_search_count += 1
+            return None
+
+        if tool_name == "delegate_task":
+            cap = caps.max_subagents
+            if not cap:
+                return None
+            spawn_count = _subagent_spawn_count(args)
+            if self._session_subagent_count >= cap:
+                decision = ToolGuardrailDecision(
+                    action="block",
+                    code="session_subagent_cap",
+                    message=(
+                        f"Blocked delegate_task: this session has already spawned "
+                        f"{self._session_subagent_count} subagents (limit {cap}). "
+                        "This looks like a runaway delegation loop. Finish the work "
+                        "with the results you have, or start a fresh session (/new) "
+                        "to reset the budget."
+                    ),
+                    tool_name=tool_name,
+                    count=self._session_subagent_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
+            self._session_subagent_count += spawn_count
+            return None
+
+        return None
+
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
     """Build a synthetic role=tool content string for a blocked tool call."""
@@ -469,6 +593,32 @@ def _positive_int(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return parsed if parsed >= 1 else default
+
+
+def _non_negative_int(value: Any, default: int) -> int:
+    """Parse a session-cap value. 0 is a valid (disable) value; negatives and
+    junk fall back to the default."""
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
+def _subagent_spawn_count(args: Mapping[str, Any]) -> int:
+    """How many subagents a single delegate_task call spawns.
+
+    delegate_task runs in one of two modes: a batch (``tasks`` is a non-empty
+    list, one child per item) or a single task (``goal``). Count the batch size
+    when present, otherwise 1, so the session subagent cap reflects real spawns
+    rather than delegate_task invocations.
+    """
+    tasks = args.get("tasks") if isinstance(args, Mapping) else None
+    if isinstance(tasks, list) and tasks:
+        return len(tasks)
+    return 1
 
 
 def _sha256(value: str) -> str:

@@ -4,7 +4,10 @@ Covers:
   - Two plugins communicate via emit/subscribe; emit returns listener count
   - Namespace is FORCED to the emitting plugin's own key
   - Namespace spoofing (hermes:, foreign, already-colon'd) is rejected
-  - Per-callback isolation: one raising subscriber does not break the rest
+  - Non-blocking bounded delivery for synchronous subscribers
+  - Per-callback isolation and deep-copied payload ownership
+  - Async subscribers resolved through the loop-safe host path
+  - Owner unload / generation reset cancel zombie callbacks
   - Recursion cap: mutually-emitting plugins terminate + warn
   - Manifest emits/listens parsed as optional advisory fields
   - `hermes plugins show` output includes emits/listens
@@ -12,7 +15,9 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 
 import pytest
 
@@ -40,6 +45,10 @@ def _fresh_manager() -> PluginManager:
     return manager
 
 
+def _drain(manager: PluginManager) -> None:
+    assert manager._wait_for_event_dispatch(timeout=2.0)
+
+
 # ── 1. Two plugins communicate ───────────────────────────────────────────────
 
 
@@ -56,6 +65,7 @@ def test_two_plugins_communicate():
     # A subscribes to b:ping; B emits the bare name "ping".
     ctx_a.subscribe("b:ping", on_ping)
     count = ctx_b.emit("ping", {"n": 42})
+    _drain(manager)
 
     assert count == 1  # one listener invoked
     assert received == [{"n": 42}]
@@ -75,6 +85,7 @@ def test_emit_none_payload_delivers_empty_kwargs():
     seen = []
     ctx_a.subscribe("b:ping", lambda **p: seen.append(p))
     count = ctx_b.emit("ping")  # payload omitted
+    _drain(manager)
 
     assert count == 1
     assert seen == [{}]
@@ -96,6 +107,7 @@ def test_namespace_forced_to_emitter_key():
     ctx_a.subscribe("a:ping", lambda **p: delivered_events.append("a:ping"))
 
     ctx_b.emit("ping")
+    _drain(manager)
 
     # Delivered under the emitter's own key ("b"), never "a".
     assert delivered_events == ["b:ping"]
@@ -110,6 +122,7 @@ def test_namespace_falls_back_to_name_when_key_empty():
     got = []
     ctx.subscribe("plugin_named:evt", lambda **p: got.append(p))
     count = ctx.emit("evt", {"v": 1})
+    _drain(manager)
     assert count == 1
     assert got == [{"v": 1}]
 
@@ -184,12 +197,175 @@ def test_per_callback_isolation(caplog):
 
     with caplog.at_level(logging.WARNING):
         count = ctx_b.emit("ping", {"ok": True})
+        _drain(manager)
 
     # Both listeners were invoked despite the first raising.
     assert count == 2
     assert received == [{"ok": True}]
     assert any("subscriber exploded" in r.message or "raised" in r.message
                for r in caplog.records)
+
+
+def test_emit_returns_before_blocking_subscriber_finishes():
+    manager = _fresh_manager()
+    ctx_a = _make_ctx(manager, "plugin_a", key="a")
+    ctx_b = _make_ctx(manager, "plugin_b", key="b")
+    entered = threading.Event()
+    release = threading.Event()
+    emit_returned = threading.Event()
+    result = {}
+
+    def blocking(**payload):
+        entered.set()
+        release.wait(timeout=2.0)
+
+    def call_emit():
+        result["count"] = ctx_b.emit("ping")
+        emit_returned.set()
+
+    ctx_a.subscribe("b:ping", blocking)
+    emitter = threading.Thread(target=call_emit)
+    emitter.start()
+    try:
+        assert emit_returned.wait(timeout=1.0)
+        assert entered.wait(timeout=1.0)
+    finally:
+        release.set()
+        emitter.join(timeout=2.0)
+    _drain(manager)
+    assert result["count"] == 1
+
+
+def test_pending_budget_drops_new_event_without_blocking(monkeypatch, caplog):
+    from hermes_cli import plugins as plugins_mod
+
+    monkeypatch.setattr(plugins_mod, "_EVENT_PENDING_CAP", 1)
+    manager = _fresh_manager()
+    ctx_a = _make_ctx(manager, "plugin_a", key="a")
+    ctx_b = _make_ctx(manager, "plugin_b", key="b")
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking(**payload):
+        entered.set()
+        release.wait(timeout=2.0)
+
+    ctx_a.subscribe("b:ping", blocking)
+    assert ctx_b.emit("ping") == 1
+    assert entered.wait(timeout=1.0)
+    try:
+        with caplog.at_level(logging.WARNING):
+            assert ctx_b.emit("ping") == 0
+    finally:
+        release.set()
+    _drain(manager)
+    assert "pending budget" in caplog.text
+
+
+def test_each_subscriber_receives_deep_copied_payload():
+    manager = _fresh_manager()
+    ctx_a = _make_ctx(manager, "plugin_a", key="a")
+    ctx_b = _make_ctx(manager, "plugin_b", key="b")
+    original = {"nested": {"value": 1}}
+    observed = []
+
+    def mutate(**payload):
+        payload["nested"]["value"] = 99
+
+    def observe(**payload):
+        observed.append(payload["nested"]["value"])
+
+    ctx_a.subscribe("b:ping", mutate)
+    ctx_a.subscribe("b:ping", observe)
+    assert ctx_b.emit("ping", original) == 2
+    _drain(manager)
+
+    assert original == {"nested": {"value": 1}}
+    assert observed == [1]
+
+
+def test_async_subscriber_is_awaited():
+    manager = _fresh_manager()
+    ctx_a = _make_ctx(manager, "plugin_a", key="a")
+    ctx_b = _make_ctx(manager, "plugin_b", key="b")
+    observed = []
+
+    async def on_ping(**payload):
+        await asyncio.sleep(0)
+        observed.append(payload["value"])
+
+    ctx_a.subscribe("b:ping", on_ping)
+    assert ctx_b.emit("ping", {"value": 7}) == 1
+    _drain(manager)
+    assert observed == [7]
+
+
+def test_remove_plugin_subscriptions_cancels_owner_entries():
+    manager = _fresh_manager()
+    ctx_a = _make_ctx(manager, "plugin_a", key="a")
+    ctx_b = _make_ctx(manager, "plugin_b", key="b")
+    observed = []
+
+    ctx_a.subscribe("b:ping", lambda **payload: observed.append(payload))
+    manager._remove_plugin_subscriptions("a")
+
+    assert ctx_b.emit("ping", {"value": 1}) == 0
+    _drain(manager)
+    assert observed == []
+    assert "b:ping" not in manager._subscriptions
+
+
+def test_owner_removal_cancels_callback_already_snapshotted_in_queue():
+    manager = _fresh_manager()
+    ctx_gate = _make_ctx(manager, "gate", key="gate")
+    ctx_a = _make_ctx(manager, "plugin_a", key="a")
+    ctx_b = _make_ctx(manager, "plugin_b", key="b")
+    entered = threading.Event()
+    release = threading.Event()
+    observed = []
+
+    def blocking(**payload):
+        entered.set()
+        release.wait(timeout=2.0)
+
+    ctx_gate.subscribe("b:ping", blocking)
+    ctx_a.subscribe("b:ping", lambda **payload: observed.append(payload))
+    assert ctx_b.emit("ping", {"value": 1}) == 2
+    assert entered.wait(timeout=1.0)
+    manager._remove_plugin_subscriptions("a")
+    release.set()
+    _drain(manager)
+
+    assert observed == []
+
+
+def test_event_bus_reset_cancels_queued_generation():
+    manager = _fresh_manager()
+    ctx_gate = _make_ctx(manager, "gate", key="gate")
+    ctx_a = _make_ctx(manager, "plugin_a", key="a")
+    ctx_b = _make_ctx(manager, "plugin_b", key="b")
+    entered = threading.Event()
+    release = threading.Event()
+    observed = []
+
+    def blocking(**payload):
+        entered.set()
+        release.wait(timeout=2.0)
+
+    ctx_gate.subscribe("b:ping", blocking)
+    ctx_a.subscribe("b:ping", lambda **payload: observed.append(payload))
+    assert ctx_b.emit("ping", {"value": 1}) == 2
+    assert entered.wait(timeout=1.0)
+    old_worker = manager._event_worker
+
+    manager._reset_event_bus()
+    release.set()
+    assert old_worker is not None
+    old_worker.join(timeout=2.0)
+
+    assert not old_worker.is_alive()
+    assert observed == []
+    assert manager._subscriptions == {}
 
 
 # ── 5. Recursion cap ─────────────────────────────────────────────────────────
@@ -217,6 +393,7 @@ def test_recursion_cap_terminates(caplog):
     with caplog.at_level(logging.WARNING):
         # Kick off the loop — must terminate, not hang or RecursionError.
         result = ctx_b.emit("ping")
+        _drain(manager)
 
     # Returned cleanly.
     assert result == 1

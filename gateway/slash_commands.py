@@ -1985,15 +1985,24 @@ class GatewaySlashCommandsMixin:
             # the session store so the override survives a gateway restart.
             # api_key/api_mode are never persisted — they are re-resolved via
             # runtime provider resolution on rehydration.
-            try:
-                await self.async_session_store.set_model_override(
-                    session_key,
-                    self._session_model_overrides[session_key],
-                )
-            except Exception:
-                logger.debug(
-                    "Failed to persist session model override", exc_info=True
-                )
+            #
+            # /model --once is intentionally EXCLUDED from the write-through:
+            # a one-turn override must never survive a restart. The persisted
+            # value stays at the pre-once state (the prior session override,
+            # or nothing), which is exactly what the finally-restore reverts
+            # the in-memory dict to. (#29923 review defect: the original
+            # implementation wrote through, so a crash before the restore
+            # rehydrated the once-model permanently.)
+            if not one_turn:
+                try:
+                    await self.async_session_store.set_model_override(
+                        session_key,
+                        self._session_model_overrides[session_key],
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to persist session model override", exc_info=True
+                    )
 
             # Evict cached agent so the next turn creates a fresh agent from the
             # override rather than relying on cache signature mismatch detection.

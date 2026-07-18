@@ -9857,7 +9857,15 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # the sudo.request overlay. (secret capture is a module global, so
             # re-running is a harmless no-op.)
             _wire_callbacks(sid)
-            _sync_agent_model_with_config(sid, session)
+            # Skip the config-model sync while a /model --once override is
+            # active: the once-model is intentionally not pinned as a session
+            # model_override (it must not persist), so without this guard the
+            # sync would see "agent model != config model" and clobber the
+            # once-override back to the config model before the turn runs
+            # (#29923 review defect). Any config.yaml change is adopted on
+            # the NEXT turn, after the finally-restore below.
+            if not one_turn_restore:
+                _sync_agent_model_with_config(sid, session)
             cwd = _session_cwd(session)
             _register_session_cwd(session)
             cols = session.get("cols", 80)

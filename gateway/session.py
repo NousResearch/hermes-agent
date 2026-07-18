@@ -273,6 +273,10 @@ class SessionSource:
             d["auto_thread_created"] = True
         if self.auto_thread_initial_name:
             d["auto_thread_initial_name"] = self.auto_thread_initial_name
+        # Secretary Mode: without this, a source restored from persistence
+        # loses send-as-owner routing and replies go out as the bot.
+        if self.business_connection_id:
+            d["business_connection_id"] = self.business_connection_id
         return d
 
     @classmethod
@@ -296,6 +300,7 @@ class SessionSource:
             profile=data.get("profile"),
             auto_thread_created=bool(data.get("auto_thread_created", False)),
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
+            business_connection_id=data.get("business_connection_id"),
         )
     
 

@@ -1956,6 +1956,52 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(submitAttempts).toBe(2)
   })
 
+  it('does not resume the old session when a profile switch finishes during prompt.submit', async () => {
+    const calls: string[] = []
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+    let routeToken = 'profile-a/session-a'
+    let rejectSubmit: (error: Error) => void = () => undefined
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      if (method === 'prompt.submit') {
+        return await new Promise<never>((_resolve, reject) => {
+          rejectSubmit = reject
+        })
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    const submitting = handle!.submitText('message already leaving profile A')
+    await waitFor(() => expect(calls).toEqual(['prompt.submit']))
+
+    // Mirrors startFreshSessionDraft's synchronous identity teardown.
+    selectedStoredSessionIdRef.current = null
+    routeToken = 'profile-b/new'
+    rejectSubmit(new Error('4007 session not found'))
+
+    expect(await submitting).toBe(false)
+    expect(calls).toEqual(['prompt.submit'])
+  })
+
   // #67603 (second symptom): a recovery resume must re-register on the session's
   // OWNING profile. Resuming on whichever profile is live forks the conversation
   // into the wrong profile's DB — the session then appears under both profiles.

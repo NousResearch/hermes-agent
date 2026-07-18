@@ -532,6 +532,17 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             requestGateway('prompt.submit', submitParams(sessionId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
         } catch (firstErr) {
+          // A profile/session switch can finish while prompt.submit is in
+          // flight. Its 4007 belongs to the abandoned context; never try to
+          // resume that old durable id through the newly active gateway.
+          const failedSubmitDrift = sessionDriftReason()
+
+          if (failedSubmitDrift) {
+            console.warn('[submit-drift-abort]', failedSubmitDrift, { phase: 'failed-submit' })
+
+            return abortForSessionSwitch(sessionId)
+          }
+
           const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
 
           if ((isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) && recoverStoredSessionId) {
@@ -540,13 +551,30 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // backend loop (#55578 symptom d) rejects the submit even though
             // the stored session is fine — resume + retry instead of erroring
             // out and losing the session binding.
-            const resumeProfile = await resolveSessionProfile(recoverStoredSessionId)
+            let resumed: { session_id: string } | undefined
 
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: recoverStoredSessionId,
-              source: 'desktop',
-              ...(resumeProfile ? { profile: resumeProfile } : {})
-            })
+            try {
+              const resumeProfile = await resolveSessionProfile(recoverStoredSessionId)
+
+              resumed = await requestGateway<{ session_id: string }>('session.resume', {
+                session_id: recoverStoredSessionId,
+                source: 'desktop',
+                ...(resumeProfile ? { profile: resumeProfile } : {})
+              })
+            } catch (resumeErr) {
+              // The switch may have happened after the pre-resume guard while
+              // this RPC was awaiting its response. Treat that as a silent
+              // cancellation; otherwise preserve the original error behavior.
+              const failedResumeDrift = sessionDriftReason()
+
+              if (failedResumeDrift) {
+                console.warn('[submit-drift-abort]', failedResumeDrift, { phase: 'failed-resume-retry' })
+
+                return abortForSessionSwitch(sessionId)
+              }
+
+              throw resumeErr
+            }
 
             const resumeRetryDrift = sessionDriftReason()
 

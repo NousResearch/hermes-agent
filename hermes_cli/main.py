@@ -9822,7 +9822,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if _config_path.exists():
             try:
                 with open(_config_path, encoding="utf-8") as _config_file:
-                    _raw_config = fast_safe_load(_config_file) or {}
+                    _raw_config = fast_safe_load(_config_file)
+                if _raw_config is None:
+                    _raw_config = {}
                 if not isinstance(_raw_config, dict):
                     raise ValueError("config root must be a mapping")
                 _raw_updates = _raw_config.get("updates", {})
@@ -9904,6 +9906,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
     git_dir = PROJECT_ROOT / ".git"
 
     if not git_dir.exists():
+        if protect_local_commits:
+            print("✗ Update blocked: git metadata is unavailable.")
+            print(
+                "  Hermes cannot prove that reviewed local deployment commits are preserved."
+            )
+            _resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(3)
         if sys.platform == "win32":
             use_zip_update = True
         else:

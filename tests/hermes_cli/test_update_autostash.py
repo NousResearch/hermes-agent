@@ -520,6 +520,49 @@ def test_cmd_update_rejects_invalid_local_commit_protection_value(
     assert "safety configuration is invalid" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("raw_config", ["[]\n", "false\n"])
+def test_cmd_update_rejects_falsy_non_mapping_config_root(
+    monkeypatch, tmp_path, capsys, raw_config
+):
+    _setup_update_mocks(monkeypatch, tmp_path)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(raw_config)
+    monkeypatch.setattr(hermes_config, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"protect_local_commits": False}},
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        hermes_main._cmd_update_impl(SimpleNamespace(yes=True), gateway_mode=False)
+
+    assert exc.value.code == 3
+    assert "config root must be a mapping" in capsys.readouterr().out
+
+
+def test_cmd_update_protection_blocks_windows_zip_path_without_git_metadata(
+    monkeypatch, tmp_path, capsys
+):
+    _setup_update_mocks(monkeypatch, tmp_path)
+    (tmp_path / ".git").rmdir()
+    zip_calls = []
+    monkeypatch.setattr(hermes_main.sys, "platform", "win32")
+    monkeypatch.setattr(hermes_main, "_update_via_zip", lambda args: zip_calls.append(args))
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"protect_local_commits": True}},
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        hermes_main._cmd_update_impl(SimpleNamespace(yes=True), gateway_mode=False)
+
+    assert exc.value.code == 3
+    assert zip_calls == []
+    assert "git metadata is unavailable" in capsys.readouterr().out
+
+
 def test_cmd_update_protection_disables_windows_zip_fallback(
     monkeypatch, tmp_path, capsys
 ):

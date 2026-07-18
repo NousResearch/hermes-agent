@@ -155,6 +155,64 @@ def test_plaintext_session_maps_to_session_choice():
     _clear_approval_state()
 
 
+@pytest.mark.parametrize(
+    ("action", "reply", "expected"),
+    [
+        ("approve_once", "1", "once"),
+        ("approve_session", "2", "session"),
+        ("approve_always", "3", "always"),
+        ("deny", "0", "deny"),
+    ],
+)
+def test_configured_approval_alias_uses_canonical_busy_handler(
+    action, reply, expected,
+):
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    runner.config.approval_aliases = {action: [reply]}
+    session_key, entry = _register_blocking_approval(runner)
+
+    handled = asyncio.run(
+        runner._handle_active_session_busy_message(_make_event(reply), session_key)
+    )
+
+    assert handled is True
+    assert entry.event.is_set()
+    assert entry.result == expected
+    adapter._send_with_retry.assert_awaited()
+    _clear_approval_state()
+
+
+def test_configured_alias_matches_final_nonempty_line_of_quoted_reply():
+    _clear_approval_state()
+    runner, _adapter = _make_runner()
+    runner.config.approval_aliases = {"approve_once": ["1"]}
+    session_key, entry = _register_blocking_approval(runner)
+
+    handled = asyncio.run(
+        runner._handle_active_session_busy_message(
+            _make_event("[quoted approval prompt]\n\n1"), session_key,
+        )
+    )
+
+    assert handled is True
+    assert entry.result == "once"
+    _clear_approval_state()
+
+
+def test_matcher_ignores_malformed_alias_values():
+    runner, _adapter = _make_runner()
+    runner.config.approval_aliases = {
+        "approve_once": 1,
+        "deny": [0, None, {}],
+        "unknown_action": ["x"],
+    }
+
+    assert runner._match_gateway_approval_alias("1") is None
+    assert runner._match_gateway_approval_alias("0") is None
+    assert runner._match_gateway_approval_alias("x") is None
+
+
 def test_no_pending_approval_does_not_consume_conversational_yes():
     """A bare 'yes' with NO blocking approval must NOT be treated as an
     approval — it falls through to normal busy handling (design intent:
@@ -173,6 +231,21 @@ def test_no_pending_approval_does_not_consume_conversational_yes():
     # as ordinary text, not as a dangerous-command approval (design intent).
     # (It still flows through normal busy handling, which may send a busy
     # ack; the contract here is only that no approval was consumed.)
+    from tools.approval import _gateway_queues
+    assert session_key not in _gateway_queues
+    _clear_approval_state()
+
+
+def test_no_pending_approval_does_not_consume_configured_alias():
+    _clear_approval_state()
+    runner, _adapter = _make_runner()
+    runner.config.approval_aliases = {"approve_once": ["1"]}
+    session_key = runner._session_key_for_source(_make_source())
+
+    asyncio.run(
+        runner._handle_active_session_busy_message(_make_event("1"), session_key)
+    )
+
     from tools.approval import _gateway_queues
     assert session_key not in _gateway_queues
     _clear_approval_state()

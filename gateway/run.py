@@ -5581,7 +5581,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _deny_words = {"deny", "no", "reject", "cancel", "n", "👎"}
                 _approval_handler = None
                 _normalized_args = ""
-                if _raw_text in _approve_words:
+                _approval_alias = self._match_gateway_approval_alias(event.text)
+                if _approval_alias is not None:
+                    _alias_verb, _normalized_args = _approval_alias
+                    _approval_handler = (
+                        self._handle_approve_command
+                        if _alias_verb == "approve"
+                        else self._handle_deny_command
+                    )
+                elif _raw_text in _approve_words:
                     _approval_handler = self._handle_approve_command
                 elif _raw_text in _deny_words:
                     _approval_handler = self._handle_deny_command
@@ -15002,7 +15010,66 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
 
+    _APPROVAL_ALIAS_ACTIONS = {
+        "approve": ("approve", ""),
+        "approve_once": ("approve", ""),
+        "once": ("approve", ""),
+        "approve_session": ("approve", "session"),
+        "session": ("approve", "session"),
+        "approve_always": ("approve", "always"),
+        "always": ("approve", "always"),
+        "permanent": ("approve", "always"),
+        "approve_all": ("approve", "all"),
+        "approve_all_once": ("approve", "all"),
+        "approve_all_session": ("approve", "all session"),
+        "approve_all_always": ("approve", "all always"),
+        "deny": ("deny", ""),
+        "reject": ("deny", ""),
+        "deny_all": ("deny", "all"),
+    }
 
+    def _match_gateway_approval_alias(self, text: Optional[str]) -> Optional[tuple[str, str]]:
+        """Return the approval command mapped from a configured gateway alias.
+
+        Aliases are intentionally only checked while a dangerous-command
+        approval is live. That lets users configure plain text shortcuts such
+        as ``-1`` without stealing normal chat messages.
+        """
+        raw = (text or "").strip()
+        if not raw:
+            return None
+
+        cfg = getattr(self, "config", None)
+        if isinstance(cfg, dict):
+            approvals_cfg = cfg.get("approvals", {}) if isinstance(cfg.get("approvals"), dict) else {}
+            aliases = cfg.get("approval_aliases") or approvals_cfg.get("gateway_aliases", {})
+        else:
+            aliases = getattr(cfg, "approval_aliases", {}) or {}
+        if not isinstance(aliases, dict):
+            return None
+
+        raw_lower = raw.casefold()
+        raw_lines = [line.strip().casefold() for line in raw.splitlines() if line.strip()]
+        raw_candidates = {raw_lower}
+        if raw_lines:
+            raw_candidates.add(raw_lines[-1])
+        for action, values in aliases.items():
+            mapped = self._APPROVAL_ALIAS_ACTIONS.get(str(action).strip().lower())
+            if not mapped:
+                continue
+            if isinstance(values, str):
+                candidates = [values]
+            elif isinstance(values, (list, tuple, set)):
+                candidates = values
+            else:
+                continue
+            for candidate in candidates:
+                if not isinstance(candidate, str):
+                    continue
+                alias = candidate.strip().casefold()
+                if alias and alias in raw_candidates:
+                    return mapped
+        return None
 
     # Built-in messaging platforms where the ``/update`` command is allowed.
     # ACP, API server, and webhooks are programmatic interfaces that should

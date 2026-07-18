@@ -2626,6 +2626,17 @@ DEFAULT_CONFIG = {
         "mode": "smart",
         "timeout": 60,
         "cron_mode": "deny",
+        # Optional gateway-only shortcuts for pending dangerous-command
+        # approvals. Values may be a string or list of strings. Aliases are
+        # matched exactly after trimming whitespace and only while the session
+        # has a live approval prompt, so non-slash aliases like "-1" are safe.
+        # Example:
+        #   gateway_aliases:
+        #     approve_once: ["-1"]
+        #     approve_session: ["-2"]
+        #     approve_always: ["-3"]
+        #     deny: ["-0"]
+        "gateway_aliases": {},
         # User-defined deny rules: fnmatch globs matched against terminal
         # commands. A match blocks the command unconditionally — BEFORE the
         # --yolo / /yolo / mode=off bypass — making this the user-editable

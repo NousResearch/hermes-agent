@@ -452,6 +452,41 @@ class TestLoadGatewayConfig:
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
 
+    def test_bridges_approval_aliases_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "approvals:\n"
+            "  gateway_aliases:\n"
+            "    approve_once: ['1']\n"
+            "    deny: ['0']\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.approval_aliases == {
+            "approve_once": ["1"],
+            "deny": ["0"],
+        }
+
+    def test_ignores_malformed_approval_aliases_from_config_yaml(
+        self, tmp_path, monkeypatch,
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "approvals:\n"
+            "  gateway_aliases: ['not', 'a', 'mapping']\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.approval_aliases == {}
+
     def test_multiplex_profiles_from_nested_gateway_section(self, tmp_path, monkeypatch):
         """``gateway.multiplex_profiles: true`` (the nested form written by
         ``hermes config set gateway.multiplex_profiles true``) must enable

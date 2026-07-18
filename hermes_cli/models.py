@@ -2604,6 +2604,26 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             pass
 
+    # Amazon Bedrock Mantle — live /v1/models when a bearer is available.
+    if normalized == "amazon-bedrock-mantle":
+        try:
+            from agent.bedrock_mantle import (
+                discover_mantle_models,
+                resolve_mantle_bearer_token,
+                resolve_mantle_region,
+                FALLBACK_OSS_MODELS,
+                FALLBACK_CLAUDE_MODELS,
+            )
+            region = resolve_mantle_region()
+            token = resolve_mantle_bearer_token(region)
+            if token:
+                ids = discover_mantle_models(region, token)
+                if ids:
+                    return ids
+            return list(FALLBACK_OSS_MODELS) + list(FALLBACK_CLAUDE_MODELS)
+        except Exception:
+            pass
+
     # ── Profile-based generic live fetch (all simple api-key providers) ──
     # Handles any provider registered in providers/ with auth_type="api_key".
     # Replaces per-provider copy-paste blocks (stepfun, gmi, zai, etc.).

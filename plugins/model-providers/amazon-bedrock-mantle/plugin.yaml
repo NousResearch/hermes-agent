@@ -1,0 +1,5 @@
+name: amazon-bedrock-mantle-provider
+kind: model-provider
+version: 1.0.0
+description: Amazon Bedrock Mantle (OpenAI-compatible + Claude Messages)
+author: Nous Research

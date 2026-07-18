@@ -45,6 +45,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenAI API (direct)** | `OPENAI_API_KEY` in `~/.hermes/.env` (provider: `openai-api`, optional `OPENAI_BASE_URL`) |
 | **Azure AI Foundry** | `hermes model` → "Azure AI Foundry" (provider: `azure-foundry`; uses Azure OpenAI / Foundry endpoint and key) |
 | **AWS Bedrock** | `hermes model` → "AWS Bedrock" (provider: `bedrock`; standard AWS credentials chain via boto3) |
+| **Amazon Bedrock Mantle** | `AWS_BEARER_TOKEN_BEDROCK` (or IAM + `pip install aws-bedrock-token-generator`) — provider: `amazon-bedrock-mantle` (aliases: `bedrock-mantle`, `mantle`). OpenAI-compatible OSS models at `https://bedrock-mantle.<region>.api.aws/v1`; Claude models use the Mantle Anthropic Messages route. Region: `AWS_REGION` / `bedrock_mantle.region` (default `us-east-1`). Separate from native Bedrock Converse. |
 | **NVIDIA Build** | `NVIDIA_API_KEY` in `~/.hermes/.env` (provider: `nvidia`; NIM-hosted models on build.nvidia.com) |
 | **Ollama Cloud** | `hermes model` → "Ollama Cloud" (provider: `ollama-cloud`; cloud-hosted Ollama API) |
 | **Qwen OAuth** | `hermes model` → "Qwen OAuth" (provider: `qwen-oauth`; browser PKCE login) |
@@ -80,7 +81,9 @@ Some OpenClaw-only surfaces remain intentionally out of scope as dedicated chat 
 - **ClawRouter / media-only hosts** (Vydra, Runway, …) — tool backends, not chat model providers
 - **Chutes OAuth** — API-key path is first-class; browser OAuth can be added later
 
-Most models on those hosts are already reachable through **OpenRouter** or a **custom base URL**.
+**Amazon Bedrock Mantle** is first-class as `amazon-bedrock-mantle` (bearer / IAM mint). Native Bedrock Converse remains `bedrock`.
+
+Most models on deferred hosts are already reachable through **OpenRouter** or a **custom base URL**.
 :::
 
 For the official API-key path, see the dedicated [Google Gemini guide](/guides/google-gemini).

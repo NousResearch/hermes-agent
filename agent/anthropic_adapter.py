@@ -550,6 +550,14 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         # Hostname match (not substring) so e.g. evil.com/palantirfoundry
         # paths don't trigger Bearer auth.
         or base_url_host_matches(normalized, "palantirfoundry.com")
+        # Amazon Bedrock Mantle Anthropic route
+        # (bedrock-mantle.<region>.api.aws/anthropic) — AWS bearer token,
+        # not Anthropic x-api-key.
+        or (
+            "bedrock-mantle." in normalized
+            and ".api.aws" in normalized
+            and "/anthropic" in normalized
+        )
     )
 
 

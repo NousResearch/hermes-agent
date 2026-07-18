@@ -1933,6 +1933,112 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    # Amazon Bedrock Mantle (OpenAI-compatible /v1 + optional Anthropic Messages)
+    # Distinct from native Bedrock Converse (`provider=bedrock`).
+    if provider == "amazon-bedrock-mantle":
+        from agent.bedrock_mantle import (
+            has_mantle_credentials,
+            is_mantle_claude_model,
+            is_supported_mantle_region,
+            mantle_anthropic_base_url,
+            mantle_openai_base_url,
+            resolve_mantle_bearer_token,
+            resolve_mantle_region,
+        )
+
+        _cfg = load_config()
+        _mantle_cfg = _cfg.get("bedrock_mantle") or _cfg.get("amazon-bedrock-mantle") or {}
+        if not isinstance(_mantle_cfg, dict):
+            _mantle_cfg = {}
+        region = (
+            (_mantle_cfg.get("region") or "").strip()
+            or resolve_mantle_region()
+        )
+        # Optional full base URL override (OpenAI /v1 root)
+        override_base = (
+            (_mantle_cfg.get("base_url") or "").strip()
+            or (os.environ.get("BEDROCK_MANTLE_BASE_URL") or "").strip()
+            or (model_cfg.get("base_url") or "").strip()
+        )
+        if override_base:
+            base_openai = override_base.rstrip("/")
+            if base_openai.endswith("/anthropic"):
+                base_openai = base_openai[: -len("/anthropic")] + "/v1"
+            elif not base_openai.endswith("/v1"):
+                base_openai = base_openai + "/v1"
+        else:
+            base_openai = mantle_openai_base_url(region)
+
+        is_explicit = requested_provider in {
+            "amazon-bedrock-mantle",
+            "bedrock-mantle",
+            "mantle",
+            "aws-bedrock-mantle",
+            "amazon-mantle",
+        }
+        if not is_explicit and not has_mantle_credentials():
+            raise AuthError(
+                "No credentials found for Amazon Bedrock Mantle. Configure one of:\n"
+                "  - AWS_BEARER_TOKEN_BEDROCK (Bedrock API key / bearer)\n"
+                "  - AWS credentials + `pip install aws-bedrock-token-generator` "
+                "(IAM mint)\n"
+                "  - AWS_REGION / bedrock_mantle.region (default us-east-1)",
+                code="no_mantle_credentials",
+            )
+
+        token = resolve_mantle_bearer_token(region)
+        if not token:
+            raise AuthError(
+                "Could not resolve a Bedrock Mantle bearer token.\n"
+                "Set AWS_BEARER_TOKEN_BEDROCK, or install "
+                "aws-bedrock-token-generator and configure AWS credentials "
+                "(env keys, profile, or instance role).",
+                code="no_mantle_bearer",
+            )
+
+        if not is_supported_mantle_region(region):
+            # Still allow — AWS may expand regions; warn via empty discovery later.
+            pass
+
+        _current_model = str(target_model or model_cfg.get("default") or "").strip()
+        if is_mantle_claude_model(_current_model):
+            # Claude on Mantle → Anthropic Messages + Bearer (not x-api-key)
+            if override_base and "/anthropic" in override_base:
+                base_anthropic = override_base.rstrip("/")
+            else:
+                # Derive from openai base: .../v1 → .../anthropic
+                if base_openai.endswith("/v1"):
+                    base_anthropic = base_openai[: -len("/v1")] + "/anthropic"
+                else:
+                    base_anthropic = mantle_anthropic_base_url(region)
+            return {
+                "provider": "amazon-bedrock-mantle",
+                "api_mode": "anthropic_messages",
+                "base_url": base_anthropic,
+                "api_key": token,
+                "source": (
+                    "env:AWS_BEARER_TOKEN_BEDROCK"
+                    if os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip()
+                    else "aws-iam-bearer-mint"
+                ),
+                "region": region,
+                "requested_provider": requested_provider,
+            }
+
+        return {
+            "provider": "amazon-bedrock-mantle",
+            "api_mode": "chat_completions",
+            "base_url": base_openai,
+            "api_key": token,
+            "source": (
+                "env:AWS_BEARER_TOKEN_BEDROCK"
+                if os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip()
+                else "aws-iam-bearer-mint"
+            ),
+            "region": region,
+            "requested_provider": requested_provider,
+        }
+
     # AWS Bedrock (native Converse API via boto3)
     if provider == "bedrock":
         from agent.bedrock_adapter import (

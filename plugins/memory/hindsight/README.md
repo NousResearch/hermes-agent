@@ -51,6 +51,9 @@ Hindsight supports injecting custom long-term persona and preference templates d
 > [!IMPORTANT]
 > **Pre-requisite:** You must create these mental models in Hindsight first (either via the Hindsight Web UI or API) before configuring their IDs in Hermes.
 
+> [!NOTE]
+> **System-prompt injection is opt-in:** Setting a `user_model_id` or `agent_model_id` enables per-turn update injection by itself. To also inject the model into the system prompt at session start, set `use_user_mental_model_for_profile: true` or `use_agent_mental_model_for_soul: true` (top-level or per-bank).
+
 ### User Profile (`user_model_id`)
 This mental model is injected right after the core user profile block in the system prompt. It describes who you are and what you expect.
 

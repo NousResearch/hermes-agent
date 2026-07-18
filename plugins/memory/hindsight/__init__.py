@@ -39,9 +39,10 @@ import os
 import queue
 import sys
 import threading
+import time
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
@@ -54,33 +55,130 @@ _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
 # Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.yaml.
 _MIN_CLIENT_VERSION = "0.6.1"
+_CLOUD_CLIENT_DEP_SPEC = f"hindsight-client>={_MIN_CLIENT_VERSION},<0.7.0"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 
-# Leverages thread-safe functools.lru_cache with dynamic time-based cache key invalidation.
-# Extracts self._cache_ttl at runtime if available to support custom configured TTL values,
-# calculating stateless division to prevent generator race conditions in concurrent execution.
-def ttl_cache(maxsize=128, default_ttl=300):
-    from functools import wraps, lru_cache
-    import time
-    def wrapper(func):
-        @lru_cache(maxsize=maxsize)
-        def ttl_func(ttl_hash, *args, **kwargs):
-            return func(*args, **kwargs)
+# ---------------------------------------------------------------------------
+# Process-wide mental model cache
+# ---------------------------------------------------------------------------
 
-        @wraps(func)
-        def wrapped(*args, **kwargs):
-            self_obj = args[0] if args else None
-            ttl = getattr(self_obj, "_cache_ttl", default_ttl)
-            if not isinstance(ttl, (int, float)) or ttl <= 0:
-                ttl = default_ttl if isinstance(default_ttl, (int, float)) and default_ttl > 0 else 300
-            ttl_hash = int(time.time() / ttl)
-            return ttl_func(ttl_hash, *args, **kwargs)
+_MentalModelCacheKey = tuple[str, str]
+# Entry is ``(content, expires_at)`` where ``expires_at`` is a ``time.monotonic()``
+# value. Storing the expiry once at write time avoids recomputing ``now - fetched_at``
+# on every read.
+_MentalModelCacheEntry = tuple[str, float]
 
-        wrapped.cache_clear = ttl_func.cache_clear
-        wrapped.cache_info = ttl_func.cache_info
-        return wrapped
-    return wrapper
+_mental_model_cache: dict[_MentalModelCacheKey, _MentalModelCacheEntry] = {}
+_mental_model_cache_lock = threading.Lock()
+# Tracks bank/model keys that currently have a background refresh running.
+# Using a simple set avoids storing thread objects and, more importantly,
+# avoids starting a thread while holding _mental_model_cache_lock.
+_mental_model_refresh_in_flight: set[_MentalModelCacheKey] = set()
+
+
+# ---------------------------------------------------------------------------
+# Mental-model process cache helpers
+# ---------------------------------------------------------------------------
+
+def _mental_model_cache_key(bank_id: str, model_id: str) -> _MentalModelCacheKey:
+    return (bank_id, model_id)
+
+
+def _read_mental_model_cache(bank_id: str, model_id: str) -> tuple[str | None, bool]:
+    """Return (content, is_fresh) for the given bank/model.
+
+    ``is_fresh`` is True when a usable cached entry exists and has not passed
+    its expiry. A stale entry still returns its content so callers can use it
+    while a background refresh is in flight.
+    """
+    key = _mental_model_cache_key(bank_id, model_id)
+    with _mental_model_cache_lock:
+        entry = _mental_model_cache.get(key)
+    if entry is None:
+        return None, False
+    content, expires_at = entry
+    is_fresh = time.monotonic() <= expires_at
+    return content, is_fresh
+
+
+def _write_mental_model_cache(
+    bank_id: str, model_id: str, content: str, ttl: int
+) -> None:
+    key = _mental_model_cache_key(bank_id, model_id)
+    with _mental_model_cache_lock:
+        _mental_model_cache[key] = (content, time.monotonic() + ttl)
+
+
+def _run_mental_model_refresh(
+    bank_id: str,
+    model_id: str,
+    ttl: int,
+    fetch_fn: Callable[[], str | None],
+    key: _MentalModelCacheKey,
+) -> None:
+    """Thread target for a one-shot mental-model refresh."""
+    try:
+        content = fetch_fn()
+        if content is not None:
+            _write_mental_model_cache(bank_id, model_id, content, ttl)
+    except Exception as exc:
+        logger.debug(
+            "Hindsight mental model background refresh failed for %s/%s: %s",
+            bank_id, model_id, exc,
+        )
+    finally:
+        with _mental_model_cache_lock:
+            _mental_model_refresh_in_flight.discard(key)
+
+
+def _start_async_mental_model_refresh(
+    bank_id: str,
+    model_id: str,
+    ttl: int,
+    fetch_fn: Callable[[], str | None],
+) -> None:
+    """Start a one-shot background refresh if one is not already running."""
+    key = _mental_model_cache_key(bank_id, model_id)
+    with _mental_model_cache_lock:
+        if key in _mental_model_refresh_in_flight:
+            return
+        _mental_model_refresh_in_flight.add(key)
+
+    thread = threading.Thread(
+        target=_run_mental_model_refresh,
+        args=(bank_id, model_id, ttl, fetch_fn, key),
+        daemon=True,
+        name=f"hindsight-mm-refresh-{bank_id}-{model_id}",
+    )
+    thread.start()
+
+
+def _resolve_mental_model(
+    bank_id: str,
+    model_id: str,
+    ttl: int,
+    fetch_fn: Callable[[], str | None],
+    block_on_missing: bool = False,
+) -> str | None:
+    """Resolve a mental model from the cache or API.
+
+    - Cache hit + fresh: return cached value.
+    - Cache hit + stale: start async refresh, return stale value.
+    - Cache miss + block_on_missing=True: fetch synchronously, cache, return.
+    - Cache miss + block_on_missing=False: return None.
+    """
+    content, is_fresh = _read_mental_model_cache(bank_id, model_id)
+    if content is None:
+        if block_on_missing:
+            content = fetch_fn()
+            if content is not None:
+                _write_mental_model_cache(bank_id, model_id, content, ttl)
+        return content
+    if not is_fresh:
+        _start_async_mental_model_refresh(bank_id, model_id, ttl, fetch_fn)
+    return content
+
 
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
 # `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
@@ -111,6 +209,24 @@ def _parse_int_setting(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         logger.warning("Invalid integer Hindsight setting %r; using default %s", value, default)
         return default
+
+
+def _escape_mental_model_content(text: str) -> str:
+    """Escape XML-like tag delimiters so remote mental model content cannot
+    break out of its injection wrapper (e.g. ``<agent-context>``).
+
+    The stored model content may contain arbitrary text including markup or
+    pseudo-instruction tags; escaping keeps the wrapper structurally intact
+    without stripping meaningful content.
+    """
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _truncate_mental_model_content(text: str, max_chars: int) -> str:
+    """Truncate mental model content to a bounded character ceiling."""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    return text[:max_chars]
 
 
 # Env var the embedded daemon manager reads (at import time, as a module-level
@@ -742,6 +858,13 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_retain_mission: str | None = None
         self._bank_id_template = ""
 
+        # Mental-model content baked into the system prompt (immutable for the
+        # session) and the baseline used for per-turn diffing.
+        self._baked_initial_agent_model_content: str | None = None
+        self._baked_initial_user_model_content: str | None = None
+        self._baked_baseline_agent_model_content: str | None = None
+        self._baked_baseline_user_model_content: str | None = None
+
     @property
     def name(self) -> str:
         return "hindsight"
@@ -820,7 +943,7 @@ class HindsightMemoryProvider(MemoryProvider):
         env_writes: dict = {}
 
         # Step 2: Install/upgrade deps for selected mode
-        cloud_dep = f"hindsight-client>={_MIN_CLIENT_VERSION}"
+        cloud_dep = _CLOUD_CLIENT_DEP_SPEC
         local_dep = "hindsight-all"
         if mode == "local_embedded":
             deps_to_install = [local_dep]
@@ -1036,6 +1159,9 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "user_model_id", "description": "Hindsight mental model ID for the user", "default": "", "env_var": "HINDSIGHT_USER_MODEL_ID"},
             {"key": "agent_model_id", "description": "Hindsight mental model ID for the agent", "default": "", "env_var": "HINDSIGHT_AGENT_MODEL_ID"},
             {"key": "cache_ttl", "description": "Cache TTL in seconds for user and agent mental models", "default": 300, "env_var": "HINDSIGHT_CACHE_TTL"},
+            {"key": "mental_model_max_chars", "description": "Maximum characters to inject from a fetched mental model", "default": 4000},
+            {"key": "use_agent_mental_model_for_soul", "description": "Inject the agent mental model after SOUL.md in the system prompt", "default": False},
+            {"key": "use_user_mental_model_for_profile", "description": "Inject the user mental model after the user profile block in the system prompt", "default": False},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
             {"key": "port_health_grace_timeout", "description": "Seconds to wait for a slow daemon /health before treating it as stale (raise on busy/low-resource hosts; blank uses the 30s default)", "default": "", "when": {"mode": "local_embedded"}},
@@ -1259,16 +1385,16 @@ class HindsightMemoryProvider(MemoryProvider):
                     try:
                         subprocess.run(
                             [uv_path, "pip", "install", "--python", sys.executable,
-                             "--quiet", "--upgrade", f"hindsight-client>={_MIN_CLIENT_VERSION}"],
+                             "--quiet", "--upgrade", _CLOUD_CLIENT_DEP_SPEC],
                             check=True, timeout=120, capture_output=True,
                             stdin=subprocess.DEVNULL,
                         )
-                        logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
+                        logger.info("hindsight-client upgraded to %s", _CLOUD_CLIENT_DEP_SPEC)
                     except Exception as e:
-                        logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s'",
-                                       e, _MIN_CLIENT_VERSION)
+                        logger.warning("Auto-upgrade failed: %s. Run: uv pip install '%s'",
+                                       e, _CLOUD_CLIENT_DEP_SPEC)
                 else:
-                    logger.warning("uv not found. Run: pip install 'hindsight-client>=%s'", _MIN_CLIENT_VERSION)
+                    logger.warning("uv not found. Run: pip install '%s'", _CLOUD_CLIENT_DEP_SPEC)
         except Exception:
             pass  # packaging not available or other issue — proceed anyway
 
@@ -1386,11 +1512,54 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_async = self._config.get("retain_async", True)
 
         # Mental model settings and state tracking
-        self._user_model_id = os.environ.get("HINDSIGHT_USER_MODEL_ID") or banks.get("user_model_id", "")
-        self._agent_model_id = os.environ.get("HINDSIGHT_AGENT_MODEL_ID") or banks.get("agent_model_id", "")
-        self._cache_ttl = max(1, _parse_int_setting(os.environ.get("HINDSIGHT_CACHE_TTL") or banks.get("cache_ttl"), 300))
-        self._baked_user_model_content = None
-        self._baked_agent_model_content = None
+        self._user_model_id = (
+            self._config.get("user_model_id")
+            or banks.get("user_model_id")
+            or os.environ.get("HINDSIGHT_USER_MODEL_ID", "")
+        )
+        self._agent_model_id = (
+            self._config.get("agent_model_id")
+            or banks.get("agent_model_id")
+            or os.environ.get("HINDSIGHT_AGENT_MODEL_ID", "")
+        )
+        self._cache_ttl = max(
+            1,
+            _parse_int_setting(
+                self._config.get("cache_ttl")
+                or banks.get("cache_ttl")
+                or os.environ.get("HINDSIGHT_CACHE_TTL"),
+                300,
+            ),
+        )
+        self._mental_model_max_chars = _parse_int_setting(
+            self._config.get("mental_model_max_chars")
+            or banks.get("mental_model_max_chars"),
+            4000,
+        )
+
+        self._use_agent_model_for_soul = bool(
+            self._agent_model_id
+            and self._config.get(
+                "use_agent_mental_model_for_soul",
+                banks.get("use_agent_mental_model_for_soul", False),
+            )
+        )
+        self._use_user_model_for_profile = bool(
+            self._user_model_id
+            and self._config.get(
+                "use_user_mental_model_for_profile",
+                banks.get("use_user_mental_model_for_profile", False),
+            )
+        )
+
+        # Bake initial mental-model content into the system prompt and set the
+        # per-turn diffing baseline.
+        (
+            self._baked_initial_agent_model_content,
+            self._baked_initial_user_model_content,
+        ) = self._get_mental_models(block_on_missing=True)
+        self._baked_baseline_agent_model_content = self._baked_initial_agent_model_content
+        self._baked_baseline_user_model_content = self._baked_initial_user_model_content
 
         _client_version = "unknown"
         try:
@@ -1467,6 +1636,7 @@ class HindsightMemoryProvider(MemoryProvider):
                         if client._manager.is_running(profile):
                             with open(log_path, "a", encoding="utf-8") as f:
                                 f.write("\n=== Config changed, restarting daemon ===\n")
+
                             client._manager.stop(profile)
 
                     client._ensure_started()
@@ -1535,6 +1705,13 @@ class HindsightMemoryProvider(MemoryProvider):
             query = query[:self._recall_max_input_chars]
 
         def _run():
+            # Warm the mental-model cache in the background so that
+            # get_per_turn_context() during the next turn is network-free.
+            try:
+                self._get_mental_models(block_on_missing=False)
+            except Exception as e:
+                logger.debug("Hindsight mental-model prefetch failed: %s", e, exc_info=True)
+
             try:
                 if self._prefetch_method == "reflect":
                     logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
@@ -1564,6 +1741,117 @@ class HindsightMemoryProvider(MemoryProvider):
 
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
         self._prefetch_thread.start()
+
+    # ---------------------------------------------------------------------------
+    # Mental-model fetch / injection
+    # ---------------------------------------------------------------------------
+
+    def _fetch_mental_model_from_api(self, model_id: str) -> str:
+        """Fetch raw mental model content directly from the Hindsight API."""
+        async def _fetch(client):
+            res = await client.mental_models.get_mental_model(bank_id=self._bank_id, mental_model_id=model_id)
+
+            if not res:
+                return ""
+            if hasattr(res, "content") and res.content is not None:
+                return str(res.content)
+            if isinstance(res, dict) and "content" in res and res["content"] is not None:
+                return str(res["content"])
+            if isinstance(res, str):
+                return res
+            return "" if res is None else str(res)
+
+        return self._run_hindsight_operation(_fetch)
+
+    def _fetch_mental_model_sync(self, model_id: str) -> str | None:
+        """Fetch, bound, escape, and return a mental model, or None on failure."""
+        if not model_id:
+            return None
+        try:
+            raw = self._fetch_mental_model_from_api(model_id)
+        except Exception as exc:
+            logger.debug(
+                "Hindsight mental model fetch failed for %s/%s: %s",
+                self._bank_id, model_id, exc,
+            )
+            return None
+        if raw is None:
+            return None
+        text = _truncate_mental_model_content(raw, self._mental_model_max_chars)
+        text = _escape_mental_model_content(text)
+        return text
+
+    def _get_mental_models(
+        self, block_on_missing: bool = False
+    ) -> tuple[str | None, str | None]:
+        """Return the cached (agent, user) mental-model contents.
+
+        Each model is resolved from the process-wide cache when enabled. A
+        missing model returns ``None`` unless ``block_on_missing`` is set, in
+        which case the calling thread waits for the API fetch so the system
+        prompt can be primed on the very first load.
+        """
+        agent_content: str | None = None
+        if self._agent_model_id:
+            agent_content = _resolve_mental_model(
+                self._bank_id,
+                self._agent_model_id,
+                self._cache_ttl,
+                lambda: self._fetch_mental_model_sync(self._agent_model_id),
+                block_on_missing=block_on_missing,
+            )
+
+        user_content: str | None = None
+        if self._user_model_id:
+            user_content = _resolve_mental_model(
+                self._bank_id,
+                self._user_model_id,
+                self._cache_ttl,
+                lambda: self._fetch_mental_model_sync(self._user_model_id),
+                block_on_missing=block_on_missing,
+            )
+
+        return agent_content, user_content
+
+    def get_soul_extension_prompt(self) -> str:
+        """Return the agent mental model content to inject right after SOUL.md."""
+        if not self._use_agent_model_for_soul:
+            return ""
+        return self._baked_initial_agent_model_content or ""
+
+    def get_user_profile_extension_prompt(self) -> str:
+        """Return the user mental model content to inject right after the user profile block."""
+        if not self._use_user_model_for_profile:
+            return ""
+        return self._baked_initial_user_model_content or ""
+
+    def get_per_turn_context(self) -> str:
+        """Return the combined updated agent and user mental models as a per-turn context block.
+
+        Reads from the process cache. If the cache entry is stale, a background
+        refresh is started but the current (possibly stale) value is returned
+        immediately, so this method never blocks the foreground request.
+        """
+        parts = []
+        agent_content, user_content = self._get_mental_models(block_on_missing=False)
+
+        if agent_content:
+            if self._baked_baseline_agent_model_content is None:
+                self._baked_baseline_agent_model_content = agent_content
+            elif agent_content != self._baked_baseline_agent_model_content:
+                parts.append(f"<agent-context>\n{agent_content}\n</agent-context>")
+            self._baked_baseline_agent_model_content = agent_content
+
+        if user_content:
+            if self._baked_baseline_user_model_content is None:
+                self._baked_baseline_user_model_content = user_content
+            elif user_content != self._baked_baseline_user_model_content:
+                parts.append(f"<user-context>\n{user_content}\n</user-context>")
+            self._baked_baseline_user_model_content = user_content
+
+        return "\n\n".join(parts) if parts else ""
+
+
 
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
         now = datetime.now(timezone.utc).isoformat()
@@ -1926,6 +2214,12 @@ class HindsightMemoryProvider(MemoryProvider):
         with self._prefetch_lock:
             self._prefetch_result = ""
 
+        # Reset per-turn baseline to the current model for the new session.
+        (
+            self._baked_baseline_agent_model_content,
+            self._baked_baseline_user_model_content,
+        ) = self._get_mental_models(block_on_missing=False)
+
         # 3. Now rotate to the new session.
         if parent_session_id:
             self._parent_session_id = str(parent_session_id).strip()
@@ -1940,78 +2234,6 @@ class HindsightMemoryProvider(MemoryProvider):
             "Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s",
             self._session_id, self._parent_session_id, reset, self._document_id,
         )
-
-    @ttl_cache(maxsize=128, default_ttl=300)
-    def _fetch_mental_model_from_api(self, model_id: str) -> str:
-        """Fetch the mental model content directly from Hindsight API."""
-        async def _fetch(client):
-            res = await client.mental_models.get_mental_model(bank_id=self._bank_id, mental_model_id=model_id)
-
-            if not res:
-                return ""
-            if hasattr(res, "content") and res.content is not None:
-                return str(res.content)
-            if isinstance(res, dict) and "content" in res and res["content"] is not None:
-                return str(res["content"])
-            if isinstance(res, str):
-                return res
-            return "" if res is None else str(res)
-
-        return self._run_hindsight_operation(_fetch)
-
-    def get_user_model_content(self) -> str | None:
-        """Return the user mental model content if configured."""
-        if not self._user_model_id:
-            return None
-        try:
-            return self._fetch_mental_model_from_api(self._user_model_id)
-        except Exception as e:
-            logger.warning("Failed to fetch hindsight mental model %s: %s", self._user_model_id, e)
-            return self._baked_user_model_content
-
-    def get_agent_model_content(self) -> str | None:
-        """Return the agent mental model content if configured."""
-        if not self._agent_model_id:
-            return None
-        try:
-            return self._fetch_mental_model_from_api(self._agent_model_id)
-        except Exception as e:
-            logger.warning("Failed to fetch hindsight mental model %s: %s", self._agent_model_id, e)
-            return self._baked_agent_model_content
-
-    def get_soul_extension_prompt(self) -> str:
-        """Return the agent mental model content to inject right after soul.md persona."""
-        content = self.get_agent_model_content()
-        self._baked_agent_model_content = content
-        return content or ""
-
-    def get_user_profile_extension_prompt(self) -> str:
-        """Return the user mental model content to inject right after the user profile block."""
-        content = self.get_user_model_content()
-        self._baked_user_model_content = content
-        return content or ""
-
-    def get_per_turn_context(self) -> str:
-        """Return the combined updated agent and user mental models as a per-turn context block."""
-        parts = []
-
-        agent_content = self.get_agent_model_content()
-        if agent_content:
-            if self._baked_agent_model_content is None:
-                self._baked_agent_model_content = agent_content
-            elif agent_content != self._baked_agent_model_content:
-                clean_context = agent_content.replace("</agent-context>", "")
-                parts.append(f"<agent-context>\n{clean_context}\n</agent-context>")
-
-        user_content = self.get_user_model_content()
-        if user_content:
-            if self._baked_user_model_content is None:
-                self._baked_user_model_content = user_content
-            elif user_content != self._baked_user_model_content:
-                clean_context = user_content.replace("</user-context>", "")
-                parts.append(f"<user-context>\n{clean_context}\n</user-context>")
-
-        return "\n\n".join(parts) if parts else ""
 
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")

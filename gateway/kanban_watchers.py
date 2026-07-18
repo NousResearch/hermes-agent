@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import os
 import sqlite3
 import time
@@ -55,6 +56,48 @@ def _resolve_auto_decompose_settings(
     if per_tick < 1:
         per_tick = 1
     return enabled, per_tick
+
+
+def _resolve_auto_decompose_board_allowlist(
+    load_config: Callable[[], Any],
+) -> "Optional[frozenset[str]]":
+    """Resolve the optional board allowlist for auto-decomposition.
+
+    ``None`` preserves the historical default: every board may be considered.
+    An explicitly configured list is an allowlist, not a denylist.  Malformed
+    or unreadable explicit configuration fails closed to an empty allowlist so
+    a config mistake cannot re-enable fan-out on an unintended board.
+    """
+    try:
+        cfg = load_config()
+    except Exception:
+        return frozenset()
+    if not isinstance(cfg, dict):
+        return frozenset()
+    kcfg = cfg.get("kanban", {})
+    if not isinstance(kcfg, dict) or "auto_decompose_allowed_boards" not in kcfg:
+        return None
+    raw = kcfg.get("auto_decompose_allowed_boards")
+    if not isinstance(raw, list):
+        return frozenset()
+    allowed: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            return frozenset()
+        slug = item.strip().lower()
+        if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", slug):
+            allowed.add(slug)
+        else:
+            return frozenset()
+    return frozenset(allowed)
+
+
+def _auto_decompose_board_allowed(
+    board: str,
+    allowed_boards: "Optional[frozenset[str]]",
+) -> bool:
+    """Return whether a board may enter the auto-decompose path."""
+    return allowed_boards is None or board.strip().lower() in allowed_boards
 
 
 def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
@@ -1131,7 +1174,10 @@ class GatewayKanbanWatchersMixin:
             """Re-resolve (enabled, per_tick) from current config each tick."""
             return _resolve_auto_decompose_settings(_load_config)
 
-        def _auto_decompose_tick(auto_decompose_per_tick: int) -> int:
+        def _auto_decompose_tick(
+            auto_decompose_per_tick: int,
+            allowed_boards: "Optional[frozenset[str]]" = None,
+        ) -> int:
             """Run the auto-decomposer for up to N triage tasks across all
             boards. Returns the number of triage tasks that were
             successfully decomposed or specified this tick.
@@ -1151,6 +1197,12 @@ class GatewayKanbanWatchersMixin:
             successes = 0
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
+                if not _auto_decompose_board_allowed(slug, allowed_boards):
+                    logger.debug(
+                        "kanban auto-decompose [%s]: skipped by board allowlist",
+                        slug,
+                    )
+                    continue
                 if attempted >= auto_decompose_per_tick:
                     break
                 # Pin this board for the duration of the call — same
@@ -1230,8 +1282,15 @@ class GatewayKanbanWatchersMixin:
                 # flipping kanban.auto_decompose=false to STOP runaway fan-out
                 # takes effect on the next tick, not on gateway restart (#49638).
                 _ad_enabled, _ad_per_tick = _read_auto_decompose_settings()
+                _ad_allowed_boards = _resolve_auto_decompose_board_allowlist(
+                    _load_config
+                )
                 if _ad_enabled:
-                    await asyncio.to_thread(_auto_decompose_tick, _ad_per_tick)
+                    await asyncio.to_thread(
+                        _auto_decompose_tick,
+                        _ad_per_tick,
+                        _ad_allowed_boards,
+                    )
                 results = await asyncio.to_thread(_tick_once)
                 any_spawned = False
                 for slug, res in (results or []):

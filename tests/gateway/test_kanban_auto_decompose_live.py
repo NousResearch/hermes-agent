@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.kanban_watchers import _resolve_auto_decompose_settings
+from gateway.kanban_watchers import (
+    _auto_decompose_board_allowed,
+    _resolve_auto_decompose_board_allowlist,
+    _resolve_auto_decompose_settings,
+)
 
 
 def test_enabled_by_default_when_key_absent():
@@ -81,3 +85,42 @@ def test_live_toggle_takes_effect_between_calls():
     # User edits config.yaml mid-run.
     state["kanban"]["auto_decompose"] = False
     assert _resolve_auto_decompose_settings(lambda: state)[0] is False
+
+
+def test_board_allowlist_is_unrestricted_when_key_absent():
+    assert _resolve_auto_decompose_board_allowlist(lambda: {"kanban": {}}) is None
+    assert _auto_decompose_board_allowed("household-control-plane-pilot", None)
+
+
+def test_board_allowlist_is_explicit_and_normalized():
+    state = {
+        "kanban": {
+            "auto_decompose_allowed_boards": [
+                " default ",
+                "HOUSEHOLD-CONTROL-PLANE-PILOT",
+            ]
+        }
+    }
+    allowed = _resolve_auto_decompose_board_allowlist(lambda: state)
+    assert allowed == frozenset({"default", "household-control-plane-pilot"})
+    assert _auto_decompose_board_allowed("default", allowed)
+    assert _auto_decompose_board_allowed(" DEFAULT ", allowed)
+    assert not _auto_decompose_board_allowed("other-board", allowed)
+
+
+def test_malformed_or_unreadable_board_allowlist_fails_closed():
+    assert _resolve_auto_decompose_board_allowlist(
+        lambda: {"kanban": {"auto_decompose_allowed_boards": "default"}}
+    ) == frozenset()
+    assert _resolve_auto_decompose_board_allowlist(
+        lambda: {"kanban": {"auto_decompose_allowed_boards": ["default", 42]}}
+    ) == frozenset()
+    assert _resolve_auto_decompose_board_allowlist(
+        lambda: {"kanban": {"auto_decompose_allowed_boards": ["default", "bad/slug"]}}
+    ) == frozenset()
+    assert _resolve_auto_decompose_board_allowlist(lambda: None) == frozenset()
+
+    def _boom():
+        raise RuntimeError("config read failed")
+
+    assert _resolve_auto_decompose_board_allowlist(_boom) == frozenset()

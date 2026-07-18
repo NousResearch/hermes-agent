@@ -635,20 +635,10 @@ def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
         # orphan cleanup's platform scope (Windows falls back to plain
         # os.kill there too).
         return command, args
-    try:
-        my_pid = os.getpid()
-        try:
-            import psutil
-            create_time = psutil.Process(my_pid).create_time()
-        except ImportError:
-            create_time = time.time()
-    except Exception:
-        # Never let watchdog bookkeeping failure block a real MCP connection.
-        return command, args
+    my_pid = os.getpid()
     watchdog_args = [
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_stdio_watchdog.py"),
         "--ppid", str(my_pid),
-        "--create-time", repr(create_time),
         "--",
         command,
         *args,

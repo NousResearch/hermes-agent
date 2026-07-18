@@ -25,7 +25,6 @@ import sys
 import threading
 import time
 
-import psutil
 
 import cli as cli_mod
 from cli import HermesCLI
@@ -51,26 +50,24 @@ _ORPHAN_GRACE_S = max(0.0, _env_float("HERMES_SLASH_WATCHDOG_GRACE_S", 5.0))
 _in_flight = threading.Event()  # set while a command is executing
 
 
-def _is_orphaned(original_ppid, parent_create_time, getppid=os.getppid) -> bool:
+def _is_orphaned(original_ppid, getppid=os.getppid) -> bool:
     """True once our spawning gateway is gone. Compare to the ORIGINAL ppid
     (never ==1: Linux reparents to a subreaper).
 
-    The original implementation additionally guarded PID reuse by comparing a
-    freshly read ``psutil.Process(original_ppid).create_time()`` against the
-    recorded value. That comparison is UNSAFE: the public ``create_time()``
-    epoch is not a stable process-identity contract when the system clock or
-    Linux boot-time basis changes (psutil issue #2526 / PR #2527). On WSL2 the
-    value drifts, producing a false "orphan" verdict (issue #62505). For a
-    direct POSIX child the kernel-maintained parent/child relationship is
-    sufficient: if ``getppid()`` still points at the original parent and that
-    PID still exists, the process is not orphaned.
+    For a direct POSIX child the kernel-maintained parent/child
+    relationship is sufficient: if ``getppid()`` still points at the
+    original parent, the process is not orphaned. The original
+    implementation additionally guarded PID reuse by comparing a freshly
+    read ``psutil.Process(original_ppid).create_time()`` against a
+    recorded value, but that comparison is UNSAFE — the public
+    ``create_time()`` epoch is not a stable process-identity contract
+    when the system clock or Linux boot-time basis changes
+    (psutil issue #2526 / PR #2527). On WSL2 the value drifts,
+    producing a false "orphan" verdict (issue #62505). PPID equality
+    alone is the stable kernel contract (#62530 review: drop the
+    dead create_time / pid_exists chain).
     """
-    if getppid() != original_ppid:
-        return True
-    try:
-        return not psutil.pid_exists(original_ppid)
-    except psutil.Error:
-        return True
+    return getppid() != original_ppid
 
 
 def _prepare_slash_worker_runtime() -> None:
@@ -94,9 +91,9 @@ def _prepare_slash_worker_runtime() -> None:
     wait_for_mcp_discovery()
 
 
-def _start_parent_death_watchdog(original_ppid, parent_create_time) -> None:
+def _start_parent_death_watchdog(original_ppid) -> None:
     def _loop():
-        while not _is_orphaned(original_ppid, parent_create_time):
+        while not _is_orphaned(original_ppid):
             time.sleep(_WATCHDOG_POLL_S)
         deadline = time.monotonic() + _ORPHAN_GRACE_S
         while _in_flight.is_set() and time.monotonic() < deadline:
@@ -153,11 +150,7 @@ def main():
     # Start before the (hundreds-of-ms) HermesCLI build — that window is itself
     # an orphan risk if the gateway dies mid-spawn.
     orig_ppid = os.getppid()
-    try:
-        parent_create_time = psutil.Process(orig_ppid).create_time()
-    except psutil.Error:
-        parent_create_time = 0.0
-    _start_parent_death_watchdog(orig_ppid, parent_create_time)
+    _start_parent_death_watchdog(orig_ppid)
     _prepare_slash_worker_runtime()
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

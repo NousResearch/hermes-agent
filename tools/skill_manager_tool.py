@@ -1320,6 +1320,56 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
         _skill_gate_bypass.reset(token)
 
 
+# Debounce state for the HSP sync push hook. A burst of skill_manage writes
+# (e.g. create + several write_file calls) collapses into a single push after
+# a short quiet window, on a daemon timer so the agent write never blocks.
+_sync_push_timer = None
+_sync_push_lock = None
+_SYNC_PUSH_DEBOUNCE_S = 5.0
+
+
+def _maybe_debounced_sync_push(skill_name: str) -> None:
+    """Schedule a debounced best-effort HSP push after a skill write.
+
+    Cheap fast-path: if the skill isn't opted into sync, do nothing (no auth,
+    no network). Otherwise (re)arm a daemon timer; the actual push runs through
+    ``skills_sync_client.maybe_push_skills`` which enforces the DEV-PHASE gate
+    and swallows all errors. Never blocks the caller (M1-C: agent never blocks
+    on sync).
+    """
+    global _sync_push_timer, _sync_push_lock
+    try:
+        from tools.skill_usage import is_sync_enabled
+
+        if not is_sync_enabled(skill_name):
+            return
+    except Exception:
+        return
+
+    import threading
+
+    if _sync_push_lock is None:
+        _sync_push_lock = threading.Lock()
+
+    def _fire():
+        try:
+            from tools.skills_sync_client import maybe_push_skills
+
+            maybe_push_skills(message=f"sync: {skill_name}")
+        except Exception:
+            pass
+
+    with _sync_push_lock:
+        if _sync_push_timer is not None:
+            try:
+                _sync_push_timer.cancel()
+            except Exception:
+                pass
+        _sync_push_timer = threading.Timer(_SYNC_PUSH_DEBOUNCE_S, _fire)
+        _sync_push_timer.daemon = True
+        _sync_push_timer.start()
+
+
 def skill_manage(
     action: str,
     name: str,
@@ -1415,6 +1465,18 @@ def skill_manage(
                 # status`/`restore` still see it. Only a hard delete forgets.
                 if not result.get("_archived"):
                     forget(name)
+        except Exception:
+            pass
+
+        # HSP sync push hook (debounced, best-effort). Fires only AFTER the
+        # write gate passed (staged/unapproved writes never reach here -- the
+        # gate returns early above), so we never push un-reviewed content.
+        # Inert unless the DEV-PHASE gate is open (tool_gateway_admin on the
+        # token), a sync base URL is configured, and the skill is opted into
+        # sync. Debounced so a burst of edits collapses to one push. Never
+        # raises -- an agent write must never block on sync (M1-C invariant).
+        try:
+            _maybe_debounced_sync_push(name)
         except Exception:
             pass
 

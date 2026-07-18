@@ -21145,6 +21145,15 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)
 
+            # HSP skill sync — best-effort periodic pull on the same cadence.
+            # Inert unless the DEV-PHASE gate is open (tool_gateway_admin) and
+            # a sync base URL is configured; never raises.
+            try:
+                from tools.skills_sync_client import maybe_pull_skills
+                maybe_pull_skills()
+            except Exception as e:
+                logger.debug("Sync pull tick error: %s", e)
+
         stop_event.wait(timeout=interval)
     logger.info("Gateway housekeeping stopped")
 

@@ -119,6 +119,7 @@ _OPENVIKING_SERVER_LOG_RELATIVE_PATH = Path("logs") / "openviking-server.log"
 _OPENVIKING_RESPONDED_FAILURE_PREFIX = "OpenViking server responded"
 _PENDING_SESSIONS_RELATIVE_DIR = Path("openviking") / "pending_sessions"
 _RUN_LOCKS_RELATIVE_DIR = Path("openviking") / "runs"
+_LEGACY_RECOVERY_LOCK_FILENAME = "legacy-recovery.lock"
 _LOCK_BUSY_ERRNOS = {errno.EWOULDBLOCK, errno.EACCES, errno.EAGAIN}
 _SETUP_CANCELLED = object()
 
@@ -2478,21 +2479,29 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return None
         return directory / f"{quote(run_id, safe='')}.lock"
 
+    def _recovery_lock_path_for(self, owner_run_id: str) -> Optional[Path]:
+        owner_run_id = str(owner_run_id or "").strip()
+        if owner_run_id:
+            return self._run_lock_path_for(owner_run_id)
+        directory = self._run_lock_dir()
+        if directory is None:
+            return None
+        return directory / _LEGACY_RECOVERY_LOCK_FILENAME
+
     def _acquire_run_lock(self) -> None:
         if self._run_lock_path is not None:
             return
         path = self._run_lock_path_for(self._run_id)
         if path is None:
             return
+        if fcntl is None:
+            logger.debug("OpenViking run locks are not supported on this platform")
+            return
         lock_file = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             lock_file = path.open("a+", encoding="utf-8")
             self._run_lock_path = path
-            if fcntl is None:
-                logger.debug("OpenViking run locks are not supported on this platform")
-                lock_file.close()
-                return
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             self._run_lock_file = lock_file
         except Exception as e:
@@ -2531,32 +2540,30 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def _claim_owner_run_for_recovery(self, owner_run_id: str) -> tuple[bool, Optional[Any]]:
         owner_run_id = str(owner_run_id or "").strip()
-        if not owner_run_id:
-            # Legacy markers predate owner_run_id; recover them without a
-            # liveness check so old pending sessions do not strand forever.
-            return True, None
         if owner_run_id == self._run_id:
             return False, None
-        path = self._run_lock_path_for(owner_run_id)
+        path = self._recovery_lock_path_for(owner_run_id)
         if path is None:
             return False, None
-        if not path.exists():
-            return True, None
         if fcntl is None:
+            if not owner_run_id:
+                # Legacy markers were recoverable before run ownership existed.
+                # Preserve that upgrade path on platforms without POSIX locks;
+                # concurrent shared-profile recovery is guarded on POSIX only.
+                return True, None
             logger.debug(
                 "Skipping OpenViking pending-session recovery for owner %s; "
                 "advisory locks are not supported",
-                owner_run_id,
+                owner_run_id or "legacy",
             )
             return False, None
 
         lock_file = None
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
             lock_file = path.open("a+", encoding="utf-8")
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             return True, lock_file
-        except FileNotFoundError:
-            return True, None
         except BlockingIOError:
             if lock_file is not None:
                 lock_file.close()
@@ -2608,9 +2615,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def _cleanup_owner_run_lock(self, owner_run_id: str) -> None:
         owner_run_id = str(owner_run_id or "").strip()
-        if not owner_run_id or owner_run_id == self._run_id:
+        if owner_run_id == self._run_id:
             return
-        path = self._run_lock_path_for(owner_run_id)
+        path = self._recovery_lock_path_for(owner_run_id)
         if path is None:
             return
         try:

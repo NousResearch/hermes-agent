@@ -3055,10 +3055,35 @@ class SessionDB:
         """
         if not session_id or not task:
             return
-        # FK on session_model_usage.session_id → sessions.id: ensure the row
-        # exists (same INSERT OR IGNORE guard update_token_counts uses — the
-        # initial create_session() can fail under concurrent SQLite locking).
-        self._insert_session_row(session_id, "unknown")
+        # FK on session_model_usage.session_id → sessions.id. Do NOT invent a
+        # ghost sessions row here: when the agent is bound to the wrong profile
+        # DB after a desktop profile switch, INSERT OR IGNORE would plant an
+        # empty source="unknown" shell that steals auto-title and makes the
+        # real conversation look deleted (BRI-290). Drop the aux counters
+        # instead when the owning session row is missing.
+        try:
+            conn = self._conn
+            if conn is None:
+                return
+            with self._lock:
+                exists = conn.execute(
+                    "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+        except Exception:
+            logger.debug(
+                "record_auxiliary_usage: session existence check failed for %s",
+                session_id,
+                exc_info=True,
+            )
+            return
+        if not exists:
+            logger.debug(
+                "record_auxiliary_usage: skip ghost insert for missing session %s (task=%s)",
+                session_id,
+                task,
+            )
+            return
 
         def _do(conn):
             self._record_model_usage(

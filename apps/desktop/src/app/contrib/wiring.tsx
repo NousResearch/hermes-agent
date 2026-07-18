@@ -30,7 +30,7 @@ import { latestSessionTodos } from '@/lib/todos'
 import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $filePreviewTarget, $previewTarget } from '@/store/preview'
-import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '@/store/profile'
+import { $activeGatewayProfile, $freshSessionRequest, $profileScope, $sessionRestoreRequest, refreshActiveProfile } from '@/store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '@/store/projects'
 import {
   $activeSessionId,
@@ -419,6 +419,21 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     lastFreshRef.current = freshSessionRequest
     startFreshSessionDraft()
   }, [freshSessionRequest, startFreshSessionDraft])
+
+  // Profile rail switch with a remembered chat: navigate to that stored session
+  // instead of a blank draft so switching agents and back restores the prior
+  // conversation (BRI-290). resumeSession (via the route) rebinds the gateway.
+  const sessionRestoreRequest = useStore($sessionRestoreRequest)
+  const lastRestoreSeqRef = useRef(sessionRestoreRequest?.seq ?? 0)
+
+  useEffect(() => {
+    if (!sessionRestoreRequest || sessionRestoreRequest.seq === lastRestoreSeqRef.current) {
+      return
+    }
+
+    lastRestoreSeqRef.current = sessionRestoreRequest.seq
+    navigate(sessionRoute(sessionRestoreRequest.id))
+  }, [navigate, sessionRestoreRequest])
 
   // Swapping the live gateway to another profile must re-pull that profile's
   // global model + active-profile pill (both are nanostores — the blanket

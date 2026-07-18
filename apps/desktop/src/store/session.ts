@@ -4,7 +4,16 @@ import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
+import {
+  persistBoolean,
+  persistString,
+  persistStringRecord,
+  readJson,
+  storedBoolean,
+  storedString,
+  storedStringRecord,
+  writeJson
+} from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
@@ -23,12 +32,75 @@ const COMPOSER_MODEL_SOURCE_KEY = 'hermes.desktop.composer.model-source'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
 
-// The last chat the user had open, so a relaunch lands back on it instead of an
-// empty new-chat. Stored (not runtime) id — the route is keyed by stored id.
+// Last open chat, keyed PER PROFILE. Switching agents/profiles must restore the
+// conversation you left on that profile — a single global id made the previous
+// chat look "disappeared" when the rail switched (BRI-290 / hermes#60095 class).
+// Legacy key kept for migration + as a fallback for single-profile cold start.
 const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
+const LAST_SESSION_BY_PROFILE_KEY = 'hermes.desktop.lastSessionByProfile.v1'
 
-export const getRememberedSessionId = (): null | string => storedString(LAST_SESSION_KEY)
-export const setRememberedSessionId = (id: null | string) => persistString(LAST_SESSION_KEY, id)
+function normalizeRememberedProfileKey(name: string | null | undefined): string {
+  const value = (name ?? '').trim()
+
+  return value || 'default'
+}
+
+function loadLastSessionByProfile(): Record<string, string> {
+  const fromRecord = storedStringRecord(LAST_SESSION_BY_PROFILE_KEY)
+
+  if (Object.keys(fromRecord).length > 0) {
+    return fromRecord
+  }
+
+  // Older builds wrote a single global id. Promote it into the default slot so
+  // a one-time upgrade still restores the last chat after relaunch.
+  const legacy = storedString(LAST_SESSION_KEY)
+
+  if (legacy) {
+    return { default: legacy }
+  }
+
+  // Tolerate a prior writeJson shape if present.
+  const parsed = readJson<Record<string, string>>(LAST_SESSION_BY_PROFILE_KEY)
+
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+    )
+  }
+
+  return {}
+}
+
+/** Remembered stored-session id for a profile (defaults to \"default\"). */
+export function getRememberedSessionId(profile?: string | null): null | string {
+  const key = normalizeRememberedProfileKey(profile)
+  const map = loadLastSessionByProfile()
+
+  return map[key] ?? (key === 'default' ? storedString(LAST_SESSION_KEY) : null)
+}
+
+/** Persist the last open stored-session id for a profile. null clears it. */
+export function setRememberedSessionId(id: null | string, profile?: string | null): void {
+  const key = normalizeRememberedProfileKey(profile)
+  const map = loadLastSessionByProfile()
+
+  if (id) {
+    map[key] = id
+  } else {
+    delete map[key]
+  }
+
+  if (Object.keys(map).length === 0) {
+    writeJson(LAST_SESSION_BY_PROFILE_KEY, null)
+    persistString(LAST_SESSION_KEY, null)
+  } else {
+    persistStringRecord(LAST_SESSION_BY_PROFILE_KEY, map)
+    // Mirror the most-recent write into the legacy key so older restore paths
+    // and single-profile cold starts still find something sensible.
+    persistString(LAST_SESSION_KEY, id ?? map[key] ?? Object.values(map)[0] ?? null)
+  }
+}
 
 // The last non-overlay route (a page like /skills, or a session route), so a
 // relaunch lands back where you were instead of a bare new-chat.

@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
+import { $activeGatewayProfile } from '@/store/profile'
 import { getRememberedRoute, getRememberedSessionId, setRememberedRoute, setRememberedSessionId } from '@/store/session'
 import { onSessionsChanged } from '@/store/session-sync'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
@@ -60,10 +61,11 @@ export function useDesktopIntegrations({
   // Remember the open chat (session id for notifications/resume) AND the last
   // non-overlay route (a page like /skills, or a session route) so a relaunch
   // lands where you were. Overlays (settings/command-center/…) aren't stored —
-  // you don't want to boot into a modal.
+  // you don't want to boot into a modal. Key the session by the live gateway
+  // profile so switching agents and back restores the right chat (BRI-290).
   useEffect(() => {
     if (routedSessionId) {
-      setRememberedSessionId(routedSessionId)
+      setRememberedSessionId(routedSessionId, $activeGatewayProfile.get())
     }
 
     if (!isOverlayView(appViewForPath(locationPathname))) {
@@ -75,7 +77,8 @@ export function useDesktopIntegrations({
 
   // Restore once on cold start — only when the renderer booted at the default
   // route (a hidden-then-shown window keeps its own route). Prefer the full
-  // remembered route (covers pages); fall back to the last session id.
+  // remembered route (covers pages); fall back to the last session id for the
+  // active gateway profile.
   useEffect(() => {
     if (restoredRef.current || locationPathname !== NEW_CHAT_ROUTE) {
       restoredRef.current = true
@@ -92,7 +95,7 @@ export function useDesktopIntegrations({
       return
     }
 
-    const last = getRememberedSessionId()
+    const last = getRememberedSessionId($activeGatewayProfile.get())
 
     if (last) {
       navigate(sessionRoute(last), { replace: true })
@@ -100,8 +103,8 @@ export function useDesktopIntegrations({
   }, [locationPathname, navigate])
 
   useEffect(() => {
-    if (resumeExhaustedSessionId && getRememberedSessionId() === resumeExhaustedSessionId) {
-      setRememberedSessionId(null)
+    if (resumeExhaustedSessionId && getRememberedSessionId($activeGatewayProfile.get()) === resumeExhaustedSessionId) {
+      setRememberedSessionId(null, $activeGatewayProfile.get())
     }
   }, [resumeExhaustedSessionId])
 

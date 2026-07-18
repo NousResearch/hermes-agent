@@ -110,11 +110,16 @@ class TestRecordAuxiliaryUsage:
         db.record_auxiliary_usage("s1", "", input_tokens=5)
         assert _usage_rows(db, "s1") == []
 
-    def test_creates_session_row_if_missing(self, db):
-        """FK safety: recording against a not-yet-created session must not fail."""
+    def test_skips_missing_session_without_creating_ghost(self, db):
+        """BRI-290: never plant an empty source=unknown row for aux usage.
+
+        When the agent is bound to the wrong profile DB after a desktop profile
+        switch, inventing a ghost session steals auto-title and makes the real
+        conversation look deleted. Prefer dropping the aux counters.
+        """
         db.record_auxiliary_usage("ghost", "vision", model="m", input_tokens=5)
-        rows = _usage_rows(db, "ghost")
-        assert len(rows) == 1
+        assert _usage_rows(db, "ghost") == []
+        assert db.get_session("ghost") is None
 
 
 class TestSchemaMigrationV22:

@@ -18,8 +18,18 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, $profiles, ensureGatewayProfile, refreshProfiles } = await import('./profile')
-const { $connection } = await import('./session')
+const {
+  $activeGatewayProfile,
+  $freshSessionRequest,
+  $profiles,
+  $sessionRestoreRequest,
+  $showAllProfiles,
+  ensureGatewayProfile,
+  refreshProfiles,
+  selectProfile
+} = await import('./profile')
+const { $connection, $selectedStoredSessionId, getRememberedSessionId, setRememberedSessionId } =
+  await import('./session')
 const { queryClient } = await import('@/lib/query-client')
 const { getProfiles } = await import('@/hermes')
 
@@ -41,6 +51,17 @@ const localConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
 
 const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnection>>()
 
+const memoryStorage = () => {
+  const map = new Map<string, string>()
+
+  return {
+    clear: () => map.clear(),
+    getItem: (key: string) => map.get(key) ?? null,
+    removeItem: (key: string) => void map.delete(key),
+    setItem: (key: string, value: string) => void map.set(key, value)
+  }
+}
+
 beforeEach(() => {
   getConnection.mockReset()
   ensureGatewayForProfile.mockClear()
@@ -48,7 +69,11 @@ beforeEach(() => {
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
   $profiles.set([])
-  vi.stubGlobal('window', { hermesDesktop: { getConnection } })
+  $showAllProfiles.set(false)
+  $selectedStoredSessionId.set(null)
+  $sessionRestoreRequest.set(null)
+  $freshSessionRequest.set(0)
+  vi.stubGlobal('window', { hermesDesktop: { getConnection }, localStorage: memoryStorage() })
   vi.mocked(queryClient.invalidateQueries).mockClear()
   resetStarmapGraph.mockClear()
 })
@@ -132,5 +157,45 @@ describe('refreshProfiles shared rail list (#49289)', () => {
     await expect(refreshProfiles()).rejects.toThrow('backend unavailable')
 
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'test1'])
+  })
+})
+
+describe('selectProfile session restore (BRI-290)', () => {
+  it('remembers the open chat under the leaving profile and restores the destination profile chat', () => {
+    $activeGatewayProfile.set('architect-agent')
+    $selectedStoredSessionId.set('sess-arch-1')
+    setRememberedSessionId('sess-builder-1', 'builder-agent')
+    const freshBefore = $freshSessionRequest.get()
+
+    selectProfile('builder-agent')
+
+    expect(getRememberedSessionId('architect-agent')).toBe('sess-arch-1')
+    expect($sessionRestoreRequest.get()?.id).toBe('sess-builder-1')
+    expect($freshSessionRequest.get()).toBe(freshBefore)
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('builder-agent')
+  })
+
+  it('falls back to a fresh draft when the destination profile has no remembered chat', () => {
+    $activeGatewayProfile.set('architect-agent')
+    $selectedStoredSessionId.set('sess-arch-1')
+    const freshBefore = $freshSessionRequest.get()
+
+    selectProfile('builder-agent')
+
+    expect(getRememberedSessionId('architect-agent')).toBe('sess-arch-1')
+    expect($sessionRestoreRequest.get()).toBeNull()
+    expect($freshSessionRequest.get()).toBe(freshBefore + 1)
+  })
+
+  it('is a no-op for chat restore when re-selecting the already-active profile', () => {
+    $activeGatewayProfile.set('architect-agent')
+    $selectedStoredSessionId.set('sess-arch-1')
+    const freshBefore = $freshSessionRequest.get()
+    const restoreBefore = $sessionRestoreRequest.get()
+
+    selectProfile('architect-agent')
+
+    expect($freshSessionRequest.get()).toBe(freshBefore)
+    expect($sessionRestoreRequest.get()).toBe(restoreBefore)
   })
 })

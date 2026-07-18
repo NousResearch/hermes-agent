@@ -12,7 +12,12 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { $gateway, ensureGatewayForProfile } from '@/store/gateway'
-import { setConnection } from '@/store/session'
+import {
+  $selectedStoredSessionId,
+  getRememberedSessionId,
+  setConnection,
+  setRememberedSessionId
+} from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -164,6 +169,23 @@ export function requestFreshSession(): void {
   $freshSessionRequest.set($freshSessionRequest.get() + 1)
 }
 
+// Bumped when a profile switch should restore a prior stored session for the
+// destination profile instead of minting a blank draft (BRI-290). Wiring
+// navigates to the session route; resume rebinds the gateway if needed.
+export const $sessionRestoreRequest = atom<{ id: string; seq: number } | null>(null)
+
+export function requestRestoreSession(storedSessionId: string): void {
+  const id = storedSessionId.trim()
+
+  if (!id) {
+    requestFreshSession()
+
+    return
+  }
+
+  $sessionRestoreRequest.set({ id, seq: ($sessionRestoreRequest.get()?.seq ?? 0) + 1 })
+}
+
 // Route profile-scoped REST settings (config/env/skills/tools/model/…) to the
 // profile the live gateway is currently on, and drop cached settings from the
 // previous profile so pages refetch against the right backend. Fires once
@@ -300,14 +322,31 @@ export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile],
 // $activeGatewayProfile → name, so $profileScope follows).
 export function selectProfile(name: string): void {
   const target = normalizeProfileKey(name)
-  // Switching profiles (or coming back from the all-profiles browse view) starts
-  // fresh; re-tapping the profile you're already in leaves your session be.
-  const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
+  const current = normalizeProfileKey($activeGatewayProfile.get())
+  // Switching profiles (or coming back from the all-profiles browse view)
+  // changes context; re-tapping the profile you're already in leaves your
+  // session be.
+  const switching = $showAllProfiles.get() || target !== current
   $showAllProfiles.set(false)
   $newChatProfile.set(target)
 
   if (switching) {
-    requestFreshSession()
+    // Remember the chat we are leaving under the *current* profile so a later
+    // switch-back restores it. Without this, rail switches always land on a
+    // blank draft and the prior conversation looks deleted (BRI-290).
+    const openId = $selectedStoredSessionId.get()
+
+    if (openId) {
+      setRememberedSessionId(openId, current)
+    }
+
+    const restoreId = getRememberedSessionId(target)
+
+    if (restoreId) {
+      requestRestoreSession(restoreId)
+    } else {
+      requestFreshSession()
+    }
   }
 
   void ensureGatewayProfile(target)

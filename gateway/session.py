@@ -1434,6 +1434,10 @@ class SessionStore:
             display_name=source.chat_name,
             platform=source.platform,
             chat_type=source.chat_type,
+            # Carry the durable reset-boundary flag so callers can tell an
+            # expiry-watcher-finalized session (idle/daily reset already due)
+            # apart from a merely agent_close'd one that is still alive.
+            expiry_finalized=bool(row.get("expiry_finalized")),
         )
 
     def _recover_session_from_db(
@@ -1492,7 +1496,12 @@ class SessionStore:
     def _query_recoverable_session(self, *, session_key, source, now):
         """DB-only half of _recover_session_from_db (no lock needed).
 
-        Returns a SessionEntry or None.  Caller assigns _entries[key] under lock.
+        Returns a SessionEntry or None.  Caller assigns _entries[key] under
+        lock.  Unlike ``_recover_session_from_db`` this does NOT call
+        ``reopen_session``: the single caller (``_get_or_create_session_impl``
+        phase 3) may still decide to honour a reset boundary and create a fresh
+        session instead, in which case reopening the ended row would leave it
+        wrongly resumable.  The caller reopens only when it keeps the row.
         """
         if not self._db:
             return None
@@ -1526,14 +1535,20 @@ class SessionStore:
                 session_key,
             )
             return None
-        try:
-            self._db.reopen_session(str(recovered["id"]))
-        except Exception as exc:
-            logger.debug("Gateway session DB reopen failed for %s: %s",
-                         session_key, exc)
         return self._create_entry_from_recovered_row(
             row=recovered, session_key=session_key, source=source, now=now,
         )
+
+    def _reopen_recovered_session(self, session_id: str) -> None:
+        """Clear the ended markers so a kept recovered row is resumable."""
+        if not self._db:
+            return
+        try:
+            self._db.reopen_session(str(session_id))
+        except Exception as exc:
+            logger.debug("Gateway session DB reopen failed for %s: %s",
+                         session_id, exc)
+
     def _record_gateway_session_peer(
         self,
         session_id: str,
@@ -2029,7 +2044,42 @@ class SessionStore:
             recovered = self._query_recoverable_session(
                 session_key=session_key, source=source, now=now,
             )
+            # Reset-boundary guard for the absent-key recovery path (#54878
+            # follow-up).  The in-memory stale branch already honours the reset
+            # decision, but a gateway restart *prunes* the routing entry: the
+            # next message then arrives with the key absent and falls straight
+            # into recovery, which would resurrect a session the expiry watcher
+            # had already finalized (idle/daily reset was due) — reusing the
+            # expired conversation with its full transcript.  ``expiry_finalized``
+            # is durable (``reopen_session`` clears only ended_at/end_reason, not
+            # this flag), so it is the reliable signal that the reset boundary
+            # was already crossed.  Honour it: drop the recovered row and create
+            # a fresh session, unless the user has opted out of resets
+            # (mode == "none") or an active background process still pins it.
+            if (
+                recovered is not None
+                and recovered.expiry_finalized
+                and not self._has_active_processes_safe(
+                    session_key, context="recover"
+                )
+            ):
+                _policy = self.config.get_reset_policy(
+                    platform=source.platform,
+                    session_type=source.chat_type,
+                )
+                if _policy.mode != "none":
+                    was_auto_reset = True
+                    auto_reset_reason = (
+                        "idle" if _policy.mode in {"idle", "both"} else "daily"
+                    )
+                    reset_had_activity = True
+                    db_end_session_id = recovered.session_id
+                    recovered = None
             if recovered is not None:
+                # Keeping the recovered row → reopen it so the ended markers are
+                # cleared (deferred out of _query_recoverable_session so the
+                # reset-boundary branch above can skip reopening).
+                self._reopen_recovered_session(recovered.session_id)
                 with self._lock:
                     published = self._entries.get(session_key)
                     if published is None:

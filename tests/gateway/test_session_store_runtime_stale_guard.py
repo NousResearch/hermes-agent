@@ -267,3 +267,82 @@ class TestRuntimeStaleGuard:
         db.reopen_session.assert_not_called()
         # A brand-new session row was created.
         db.create_session.assert_called_once()
+
+    def test_absent_key_recovery_of_finalized_session_creates_fresh(
+        self, tmp_path,
+    ):
+        """Restart-pruned key + expiry-finalized DB row → fresh session.
+
+        The #54878 in-memory stale branch only guards keys still present in
+        ``_entries``.  A gateway restart *prunes* the routing entry
+        (``_prune_stale_sessions_locked``), so the next message arrives with
+        the key ABSENT and falls straight into ``_query_recoverable_session``.
+        Before this follow-up fix, recovery reopened the same session_id even
+        though the expiry watcher had already finalized it (idle/daily reset
+        was due) — resurrecting the expired transcript.  ``expiry_finalized``
+        is the durable signal (``reopen_session`` does not clear it) that the
+        reset boundary was crossed, so recovery of a finalized row must yield a
+        fresh session instead.
+        """
+        source = _source()
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=60),
+        )
+        db = _db_returning({})
+        # The recoverable row is expiry_finalized=1 (watcher already reset it),
+        # and reopen_session cleared end_reason so the finder still returns it.
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "sid_finalized",
+            "started_at": (datetime.now() - timedelta(hours=3)).timestamp(),
+            "expiry_finalized": 1,
+            "end_reason": None,
+        }
+
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+
+        # Key is ABSENT from _entries (pruned by the restart) → recovery path.
+        result = store.get_or_create_session(source)
+
+        assert result.session_id != "sid_finalized"
+        assert result.was_auto_reset is True
+        assert result.auto_reset_reason == "idle"
+        # Recovery was consulted, but the finalized row was NOT reopened.
+        db.find_latest_gateway_session_for_peer.assert_called_once()
+        db.reopen_session.assert_not_called()
+        db.create_session.assert_called_once()
+
+    def test_absent_key_recovery_of_non_finalized_session_resumes(
+        self, tmp_path,
+    ):
+        """Restart-pruned key + NON-finalized agent_close row → resume same id.
+
+        The crash-recovery negative case must still work: an ``agent_close``
+        row that was NOT expiry-finalized (a genuinely-live session whose agent
+        was merely evicted, reset not due) is still resumed with its original
+        session_id and transcript.
+        """
+        source = _source()
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=60),
+        )
+        db = _db_returning({})
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "sid_live",
+            "started_at": (datetime.now() - timedelta(minutes=5)).timestamp(),
+            "expiry_finalized": 0,
+            "end_reason": "agent_close",
+        }
+
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+
+        result = store.get_or_create_session(source)
+
+        assert result.session_id == "sid_live"
+        db.reopen_session.assert_called_once_with("sid_live")
+        db.create_session.assert_not_called()

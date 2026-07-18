@@ -4750,7 +4750,35 @@ class AIAgent:
             return ""
         return re.sub(r"\s+", " ", text).strip()
 
+    @staticmethod
+    def _assistant_content_parts_as_text(content: Any) -> str:
+        """Flatten assistant content that may be plain text or content parts.
+
+        Codex/OpenAI-format responses can preserve assistant ``content`` as a
+        list of typed parts.  Interim-visible comparison runs over previous
+        assistant messages too, so it must tolerate that stored structured
+        shape instead of passing a list into the think-block regex scrubber.
+        """
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                part_type = part.get("type")
+                if part_type not in {"text", "output_text", "input_text"}:
+                    continue
+                text = part.get("text")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+            return "\n".join(parts)
+        return str(content)
+
     def _interim_content_was_streamed(self, content: str) -> bool:
+        content = self._assistant_content_parts_as_text(content)
         visible_content = self._normalize_interim_visible_text(
             self._strip_think_blocks(content or "")
         )
@@ -4827,7 +4855,7 @@ class AIAgent:
         visible = self._extract_codex_interim_visible_text(assistant_msg)
         if visible:
             return visible
-        content = assistant_msg.get("content")
+        content = self._assistant_content_parts_as_text(assistant_msg.get("content"))
         return self._strip_think_blocks(content or "").strip()
 
     def _interim_text_was_delivered(self, text: str) -> bool:

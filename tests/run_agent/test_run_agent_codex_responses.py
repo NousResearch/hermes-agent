@@ -901,6 +901,34 @@ def test_run_codex_stream_multiple_commentary_items_are_not_reemitted(monkeypatc
     assert delivered == ["First update.", "Second update."]
 
 
+def test_interim_visible_text_flattens_structured_assistant_content(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    msg = {
+        "role": "assistant",
+        "content": [
+            {"type": "output_text", "text": "Visible update. "},
+            {"type": "text", "text": "More text."},
+            {"type": "image_url", "image_url": {"url": "ignored"}},
+        ],
+    }
+
+    assert agent._interim_assistant_visible_text(msg) == "Visible update. \nMore text."
+
+
+def test_interim_visible_text_strips_think_blocks_from_structured_content(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    msg = {
+        "role": "assistant",
+        "content": [
+            {"type": "output_text", "text": "<think>private</think>Public update."},
+        ],
+    }
+
+    assert agent._interim_assistant_visible_text(msg) == "Public update."
+
+
 def test_run_codex_stream_retry_deduplicates_multiple_commentary_items(monkeypatch):
     import httpx
 

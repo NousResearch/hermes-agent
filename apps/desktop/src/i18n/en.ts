@@ -1732,11 +1732,11 @@ export const en: Translations = {
     helpFooter: 'opens the full panel · backspace dismisses',
     commandDescs: {
       '/help': 'full list of commands + hotkeys',
-      '/clear': 'start a new session',
+      '/new': 'start a new chat',
       '/resume': 'resume a prior session',
-      '/details': 'control transcript detail level',
-      '/copy': 'copy selection or last assistant message',
-      '/quit': 'exit hermes'
+      '/compress': 'compress this conversation context',
+      '/usage': 'token usage for this session',
+      '/status': 'current session status'
     },
     hotkeyDescs: {
       'composer.mention': 'reference files, folders, urls, git',

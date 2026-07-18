@@ -3,9 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   checkHermesUpdate,
   getActionStatus,
+  getElevenLabsVoices,
   getStatus,
   restartGateway,
+  speakText,
   setApiRequestProfile,
+  transcribeAudio,
   updateHermes
 } from './hermes'
 
@@ -44,6 +47,18 @@ describe('backend action helpers are profile-scoped', () => {
 
     for (const call of api.mock.calls) {
       expect(call[0].profile).toBe('coder')
+    }
+  })
+
+  it('forwards the active profile to desktop audio helpers', () => {
+    setApiRequestProfile('jarvis')
+
+    void transcribeAudio('data:audio/wav;base64,AAAA', 'audio/wav')
+    void speakText('hello')
+    void getElevenLabsVoices()
+
+    for (const call of api.mock.calls) {
+      expect(call[0].profile).toBe('jarvis')
     }
   })
 })

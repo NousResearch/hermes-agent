@@ -144,6 +144,10 @@ def _is_session_key_unsafe(value: object) -> bool:
     return len(s) >= 2 and s[0].isalpha() and s[1] == ":"
 
 
+class SessionOwnershipConflict(RuntimeError):
+    """A physical unthreaded DM destination already has another owner."""
+
+
 @dataclass
 class SessionSource:
     """
@@ -1411,6 +1415,61 @@ class SessionStore:
             profile=self._resolve_profile_for_key(source),
         )
 
+    @staticmethod
+    def _unthreaded_destination_identity(
+        source: Optional[SessionSource],
+    ) -> Optional[tuple[str, str]]:
+        """Return the physical destination identity for an unthreaded chat."""
+        if source is None or not source.chat_id or source.thread_id:
+            return None
+        platform = (
+            source.platform.value
+            if isinstance(source.platform, Platform)
+            else str(source.platform)
+        )
+        return platform, str(source.chat_id)
+
+    def _assert_destination_owner_locked(
+        self,
+        source: SessionSource,
+        session_key: str,
+    ) -> None:
+        """Fail closed when a root DM would acquire a second routing owner.
+
+        ``build_session_key`` intentionally includes ``chat_type`` and may also
+        include a participant id.  A synthetic event that mislabels a Telegram
+        DM as ``group`` can therefore create a second logical key for the exact
+        same physical root chat.  That split owner is dangerous: whichever turn
+        runs last can appear to replace the user's foreground conversation.
+
+        Regular group per-user sessions remain valid.  The collision guard only
+        applies when at least one side identifies the unthreaded destination as
+        a DM.  Explicit thread/topic destinations are separate owners.
+
+        Must be called while ``self._lock`` is held.
+        """
+        destination = self._unthreaded_destination_identity(source)
+        if destination is None:
+            return
+
+        for existing_key, existing in self._entries.items():
+            if existing_key == session_key:
+                continue
+            existing_source = existing.origin
+            if self._unthreaded_destination_identity(existing_source) != destination:
+                continue
+            existing_type = (existing_source.chat_type if existing_source else "") or ""
+            incoming_type = (source.chat_type or "")
+            if "dm" not in {existing_type.lower(), incoming_type.lower()}:
+                continue
+            platform, chat_id = destination
+            raise SessionOwnershipConflict(
+                "destination ownership conflict: "
+                f"{platform}:{chat_id} is already owned by {existing_key!r}; "
+                f"refusing second owner {session_key!r}. Use a distinct "
+                "thread/topic for another conversational worker."
+            )
+
     def _create_entry_from_recovered_row(
         self,
         *,
@@ -1921,6 +1980,7 @@ class SessionStore:
         _entry_for_checks = None
         with self._lock:
             self._ensure_loaded_locked()
+            self._assert_destination_owner_locked(source, session_key)
             if force_new:
                 force_new_observed_entry = self._entries.get(session_key)
             if session_key in self._entries and not force_new:
@@ -2032,6 +2092,7 @@ class SessionStore:
                 with self._lock:
                     published = self._entries.get(session_key)
                     if published is None:
+                        self._assert_destination_owner_locked(source, session_key)
                         self._entries[session_key] = recovered
                         published = recovered
                 entry = published
@@ -2055,6 +2116,7 @@ class SessionStore:
                 reset_had_activity=reset_had_activity,
             )
             with self._lock:
+                self._assert_destination_owner_locked(source, session_key)
                 current = self._entries.get(session_key)
                 may_publish = current is None or (
                     force_new and current is force_new_observed_entry

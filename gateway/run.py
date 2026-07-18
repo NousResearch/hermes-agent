@@ -2944,6 +2944,28 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
         )
 
 
+def _require_isolated_handoff_thread(
+    *,
+    platform: Platform,
+    chat_id: str,
+    effective_thread_id: Optional[str],
+) -> str:
+    """Return the thread id or reject a handoff into a root destination.
+
+    A CLI handoff creates a conversational owner. Letting it fall back to an
+    unthreaded home chat can overwrite the root DM's foreground routing state.
+    Handoffs therefore fail closed unless the adapter created a thread/topic or
+    the configured home destination already names one.
+    """
+    if effective_thread_id:
+        return str(effective_thread_id)
+    platform_name = platform.value if isinstance(platform, Platform) else str(platform)
+    raise RuntimeError(
+        "handoff requires a distinct thread/topic; refusing unthreaded "
+        f"destination {platform_name}:{chat_id}"
+    )
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -7794,11 +7816,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             new_thread_id = None
 
-        # Use the new thread if the adapter created one; otherwise fall
-        # back to whatever thread (if any) the home channel was configured
-        # with.
+        # Use the new thread if the adapter created one; otherwise accept only
+        # an explicitly configured home thread. Never fall back to the root
+        # chat: a handoff is a new conversational owner and must be isolated.
         effective_thread_id = new_thread_id or (
             str(home.thread_id) if home.thread_id else None
+        )
+        effective_thread_id = _require_isolated_handoff_thread(
+            platform=platform,
+            chat_id=str(home.chat_id),
+            effective_thread_id=effective_thread_id,
         )
 
         # Determine chat_type/user_id for the destination source.
@@ -7815,7 +7842,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and looks_like_telegram_private_chat_id(home_chat_id)
         )
 
-        if new_thread_id and not is_telegram_private_chat:
+        if effective_thread_id and not is_telegram_private_chat:
             dest_chat_type = "thread"
             dest_user_id = "system:handoff"
         else:
@@ -12322,6 +12349,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _footer_line = ""
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
+                _footer_session_title = None
+                if self._session_db is not None:
+                    try:
+                        _footer_session_title = await self._session_db.get_session_title(
+                            session_entry.session_id
+                        )
+                    except Exception:
+                        logger.debug("runtime_footer title lookup failed", exc_info=True)
                 _footer_line = _bfl(
                     user_config=_load_gateway_config(),
                     platform_key=_platform_config_key(source.platform),
@@ -12329,6 +12364,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    total_tokens=agent_result.get("total_tokens"),
+                    estimated_cost_usd=agent_result.get("estimated_cost_usd"),
+                    profile=self._active_profile_name(),
+                    session_id=session_entry.session_id,
+                    session_title=_footer_session_title,
+                    session_role=(
+                        "foreground"
+                        if not source.thread_id and not getattr(event, "internal", False)
+                        else "background"
+                    ),
+                    thread_id=source.thread_id,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -15383,12 +15429,60 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return True
 
-    async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
+    async def _await_adapter_send_ready(self, adapter, *, timeout: float = 15.0) -> bool:
+        """Wait until a platform adapter is willing to send, if it exposes that state.
+
+        Telegram polling marks ``_send_path_degraded=True`` until the first
+        successful getUpdates after connect/reconnect. Post-boot lifecycle
+        messages used to fire during that window and fail with
+        ``send_path_degraded``, then drop the notify marker so the user never
+        saw "Gateway restarted successfully."
+        """
+        if adapter is None:
+            return False
+        if not getattr(adapter, "_send_path_degraded", False):
+            return True
+
+        progress = getattr(adapter, "_polling_progress_event", None)
+        if progress is not None:
+            try:
+                await asyncio.wait_for(progress.wait(), timeout=timeout)
+            except (asyncio.TimeoutError, AttributeError, TypeError):
+                pass
+        else:
+            deadline = time.monotonic() + timeout
+            while getattr(adapter, "_send_path_degraded", False) and time.monotonic() < deadline:
+                await asyncio.sleep(0.25)
+        return not getattr(adapter, "_send_path_degraded", False)
+
+    def _schedule_restart_notification_retry(self, attempt: int) -> None:
+        """Retry a chat-originated restart notification after a retryable send failure."""
+        max_attempts = 3
+        if attempt >= max_attempts:
+            return
+
+        async def _retry() -> None:
+            await asyncio.sleep(3.0 * attempt)
+            if not _restart_notification_pending():
+                return
+            await self._send_restart_notification(attempt=attempt + 1)
+
+        try:
+            task = asyncio.create_task(_retry())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        except Exception:
+            logger.debug("Failed to schedule restart notification retry", exc_info=True)
+
+    async def _send_restart_notification(
+        self, *, attempt: int = 1
+    ) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
             return None
 
+        cleanup = True
         try:
             data = json.loads(notify_path.read_text())
             platform_str = data.get("platform")
@@ -15417,6 +15511,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return None
 
+            # Wait out the post-connect Telegram send-path gate when present.
+            await self._await_adapter_send_ready(adapter, timeout=15.0)
+
             metadata = self._thread_metadata_for_target(
                 platform,
                 chat_id,
@@ -15435,12 +15532,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # we must inspect the result before claiming success — otherwise
             # the log line is misleading and hides real delivery failures.
             if result is not None and getattr(result, "success", True) is False:
+                err = getattr(result, "error", "send returned success=False")
+                retryable = bool(getattr(result, "retryable", False))
                 logger.warning(
                     "Restart notification to %s:%s was not delivered: %s",
                     platform_str,
                     chat_id,
-                    getattr(result, "error", "send returned success=False"),
+                    err,
                 )
+                # Keep the marker for a short deferred retry when the adapter
+                # itself says the failure is transient (e.g. send_path_degraded
+                # before first getUpdates progress). Permanent failures still
+                # clean up so a dead target cannot wedge boot forever.
+                if retryable and attempt < 3:
+                    cleanup = False
+                    self._schedule_restart_notification_retry(attempt)
                 return None
 
             logger.info(
@@ -15453,7 +15559,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning("Restart notification failed: %s", e)
             return None
         finally:
-            notify_path.unlink(missing_ok=True)
+            if cleanup:
+                notify_path.unlink(missing_ok=True)
 
     async def _send_home_channel_startup_notifications(
         self,

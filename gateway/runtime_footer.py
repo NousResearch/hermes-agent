@@ -9,7 +9,7 @@ Config (``~/.hermes/config.yaml``)::
     display:
       runtime_footer:
         enabled: true                       # off by default
-        fields: [model, context_pct, cwd]   # order shown; drop any to hide
+        fields: [model, tokens, context_pct, cost, profile, session, title, role, thread, cwd]
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -53,6 +53,19 @@ def _model_short(model: Optional[str]) -> str:
     return model.rsplit("/", 1)[-1]
 
 
+def _compact_tokens(tokens: Optional[int]) -> str:
+    """Render a token count compactly (``278400`` → ``278.4k tok``)."""
+    if tokens is None or tokens < 0:
+        return ""
+    if tokens >= 1_000_000:
+        value = f"{tokens / 1_000_000:.1f}".rstrip("0").rstrip(".")
+        return f"{value}m tok"
+    if tokens >= 1_000:
+        value = f"{tokens / 1_000:.1f}".rstrip("0").rstrip(".")
+        return f"{value}k tok"
+    return f"{tokens} tok"
+
+
 def resolve_footer_config(
     user_config: dict[str, Any] | None,
     platform_key: str | None = None,
@@ -94,6 +107,13 @@ def format_runtime_footer(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    total_tokens: Optional[int] = None,
+    estimated_cost_usd: Optional[float] = None,
+    profile: Optional[str] = None,
+    session_id: Optional[str] = None,
+    session_title: Optional[str] = None,
+    session_role: Optional[str] = None,
+    thread_id: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -107,14 +127,36 @@ def format_runtime_footer(
             m = _model_short(model)
             if m:
                 parts.append(m)
+        elif field == "tokens":
+            rendered_tokens = _compact_tokens(total_tokens)
+            if rendered_tokens:
+                parts.append(rendered_tokens)
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
                 parts.append(f"{pct}%")
+        elif field == "cost":
+            if estimated_cost_usd is not None and estimated_cost_usd >= 0:
+                parts.append(f"${estimated_cost_usd:.4f}")
         elif field == "cwd":
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field == "profile":
+            if profile:
+                parts.append(f"profile:{profile}")
+        elif field == "session":
+            if session_id:
+                parts.append(f"session:{session_id[:8]}")
+        elif field == "title":
+            if session_title:
+                compact_title = " ".join(str(session_title).split())
+                parts.append(f"title:{compact_title[:48]}")
+        elif field == "role":
+            if session_role:
+                parts.append(str(session_role))
+        elif field == "thread":
+            parts.append(f"thread:{thread_id if thread_id else 'root'}")
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -130,6 +172,13 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    total_tokens: Optional[int] = None,
+    estimated_cost_usd: Optional[float] = None,
+    profile: Optional[str] = None,
+    session_id: Optional[str] = None,
+    session_title: Optional[str] = None,
+    session_role: Optional[str] = None,
+    thread_id: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -145,5 +194,12 @@ def build_footer_line(
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
+        total_tokens=total_tokens,
+        estimated_cost_usd=estimated_cost_usd,
+        profile=profile,
+        session_id=session_id,
+        session_title=session_title,
+        session_role=session_role,
+        thread_id=thread_id,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

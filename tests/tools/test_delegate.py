@@ -2542,7 +2542,14 @@ class TestDelegateEventEnum(unittest.TestCase):
 
 
 class TestConcurrencyDefaults(unittest.TestCase):
-    """Tests for the concurrency default and no hard ceiling."""
+    """Tests for concurrency defaults and safe hard-cap clamping."""
+
+    def setUp(self):
+        import tools.delegate_tool as dt
+        # Clamp warnings are one-shot per process; reset so log assertions are stable.
+        dt._SAFE_CAP_CONCURRENT_CLAMP_WARNED = False
+        dt._SAFE_CAP_SPAWN_DEPTH_CLAMP_WARNED = False
+        dt._HIGH_CONCURRENCY_WARNED = False
 
     def test_load_config_prefers_active_persistent_config_over_cli_defaults(self):
         stale_cli = types.ModuleType("cli")
@@ -2568,7 +2575,8 @@ class TestConcurrencyDefaults(unittest.TestCase):
                 "hermes_cli.config.load_config_readonly", return_value=active_config
             ):
                 self.assertEqual(_load_config()["max_concurrent_children"], 50)
-                self.assertEqual(_get_max_concurrent_children(), 50)
+                # Raw config is 50; effective value is clamped by enforce_safe_caps.
+                self.assertEqual(_get_max_concurrent_children(), 16)
 
     def test_load_config_falls_back_to_cli_config_when_persistent_load_fails(self):
         fallback_cli = types.ModuleType("cli")
@@ -2617,14 +2625,19 @@ class TestConcurrencyDefaults(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config",
            return_value={"max_concurrent_children": 10})
-    def test_no_upper_ceiling(self, mock_cfg):
-        """Users can raise concurrency as high as they want — no hard cap."""
+    def test_values_at_or_below_hard_cap_pass_through(self, mock_cfg):
+        """Values at the soft-advisory threshold still pass under default hard cap 16."""
         self.assertEqual(_get_max_concurrent_children(), 10)
 
     @patch("tools.delegate_tool._load_config",
            return_value={"max_concurrent_children": 100})
-    def test_very_high_values_honored(self, mock_cfg):
-        self.assertEqual(_get_max_concurrent_children(), 100)
+    def test_very_high_values_clamped_to_hard_cap(self, mock_cfg):
+        """Absurd values are clamped to max_concurrent_children_hard_cap (default 16)."""
+        import logging
+        with self.assertLogs("tools.delegate_tool", level=logging.WARNING) as cm:
+            result = _get_max_concurrent_children()
+        self.assertEqual(result, 16)
+        self.assertTrue(any("hard cap" in m and "clamping" in m for m in cm.output))
 
     @patch("tools.delegate_tool._load_config",
            return_value={"max_concurrent_children": 0})
@@ -2633,7 +2646,7 @@ class TestConcurrencyDefaults(unittest.TestCase):
         self.assertEqual(_get_max_concurrent_children(), 1)
 
     @patch("tools.delegate_tool._load_config", return_value={})
-    def test_env_var_honored_uncapped(self, mock_cfg):
+    def test_env_var_honored_within_hard_cap(self, mock_cfg):
         with patch.dict(os.environ, {"DELEGATION_MAX_CONCURRENT_CHILDREN": "12"}):
             self.assertEqual(_get_max_concurrent_children(), 12)
 
@@ -2641,6 +2654,37 @@ class TestConcurrencyDefaults(unittest.TestCase):
            return_value={"max_concurrent_children": 6})
     def test_configured_value_returned(self, mock_cfg):
         self.assertEqual(_get_max_concurrent_children(), 6)
+
+    @patch("tools.delegate_tool._load_config",
+           return_value={"max_concurrent_children": 3})
+    def test_normal_value_unchanged(self, mock_cfg):
+        """Byte-stable: default-like normal value 3 passes through unchanged."""
+        self.assertEqual(_get_max_concurrent_children(), 3)
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={
+            "max_concurrent_children": 100,
+            "enforce_safe_caps": False,
+        },
+    )
+    def test_enforce_safe_caps_false_disables_concurrent_clamp(self, mock_cfg):
+        """enforce_safe_caps: false restores floor-only unbounded behaviour."""
+        self.assertEqual(_get_max_concurrent_children(), 100)
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={
+            "max_concurrent_children": 100,
+            "max_concurrent_children_hard_cap": 8,
+        },
+    )
+    def test_custom_hard_cap_used_when_clamping(self, mock_cfg):
+        import logging
+        with self.assertLogs("tools.delegate_tool", level=logging.WARNING) as cm:
+            result = _get_max_concurrent_children()
+        self.assertEqual(result, 8)
+        self.assertTrue(any("hard cap 8" in m for m in cm.output))
 
 
 class TestAsyncCapUnified(unittest.TestCase):
@@ -2673,6 +2717,11 @@ class TestAsyncCapUnified(unittest.TestCase):
 class TestMaxSpawnDepth(unittest.TestCase):
     """Tests for _get_max_spawn_depth clamping and fallback behavior."""
 
+    def setUp(self):
+        import tools.delegate_tool as dt
+        dt._SAFE_CAP_CONCURRENT_CLAMP_WARNED = False
+        dt._SAFE_CAP_SPAWN_DEPTH_CLAMP_WARNED = False
+
     @patch("tools.delegate_tool._load_config", return_value={})
     def test_max_spawn_depth_defaults_to_1(self, mock_cfg):
         from tools.delegate_tool import _get_max_spawn_depth
@@ -2690,10 +2739,45 @@ class TestMaxSpawnDepth(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config",
            return_value={"max_spawn_depth": 99})
-    def test_max_spawn_depth_no_upper_ceiling(self, mock_cfg):
-        """No upper ceiling — high values pass through unchanged (cost is the limiter)."""
+    def test_max_spawn_depth_clamped_to_hard_cap(self, mock_cfg):
+        """Default enforce_safe_caps clamps absurd depth to max_spawn_depth_hard_cap (3)."""
+        import logging
+        from tools.delegate_tool import _get_max_spawn_depth
+        with self.assertLogs("tools.delegate_tool", level=logging.WARNING) as cm:
+            result = _get_max_spawn_depth()
+        self.assertEqual(result, 3)
+        self.assertTrue(any("hard cap" in m and "clamping" in m for m in cm.output))
+
+    @patch("tools.delegate_tool._load_config",
+           return_value={"max_spawn_depth": 2})
+    def test_max_spawn_depth_normal_value_unchanged(self, mock_cfg):
+        """Byte-stable: documented normal values (1–3) pass through under default cap."""
+        from tools.delegate_tool import _get_max_spawn_depth
+        self.assertEqual(_get_max_spawn_depth(), 2)
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={"max_spawn_depth": 99, "enforce_safe_caps": False},
+    )
+    def test_max_spawn_depth_enforce_safe_caps_false(self, mock_cfg):
+        """enforce_safe_caps: false restores floor-only (no upper ceiling)."""
         from tools.delegate_tool import _get_max_spawn_depth
         self.assertEqual(_get_max_spawn_depth(), 99)
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={
+            "max_spawn_depth": 99,
+            "max_spawn_depth_hard_cap": 5,
+        },
+    )
+    def test_max_spawn_depth_custom_hard_cap(self, mock_cfg):
+        import logging
+        from tools.delegate_tool import _get_max_spawn_depth
+        with self.assertLogs("tools.delegate_tool", level=logging.WARNING) as cm:
+            result = _get_max_spawn_depth()
+        self.assertEqual(result, 5)
+        self.assertTrue(any("hard cap 5" in m for m in cm.output))
 
     @patch("tools.delegate_tool._load_config",
            return_value={"max_spawn_depth": "not-a-number"})

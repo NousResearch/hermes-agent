@@ -7,6 +7,8 @@ with every external resolver monkeypatched, so no live provider APIs are hit.
 Contract coverage:
   * router OFF (default) → inherited creds returned unchanged, no fallback
   * explicit tasks[].model / tasks[].provider → bypass router, resolve override
+  * explicit provider+model that fails resolution → ValueError (no parent-auth merge)
+  * model-only override → inherit parent auth, swap model id only
   * forced delegation.provider → bypass router
   * router ON → dynamic selection + provider-diverse fallback chain
   * router ON but resolution fails → safe fallback to inherited creds
@@ -103,23 +105,71 @@ def test_explicit_model_string_without_provider_keeps_inherited_auth(monkeypatch
         dt, "_resolve_provider_model_bundle",
         lambda p, m: (_ for _ in ()).throw(AssertionError("should not resolve")),
     )
+    parent = dict(
+        DEFAULT_CREDS,
+        provider="openrouter",
+        api_key="parent-key",
+        base_url="https://openrouter.ai/api/v1",
+        model="parent-model",
+    )
     cfg = {"model_router": {"enabled": True}}
     creds, chain = dt._resolve_task_credentials(
-        {"goal": "x", "model": "just-a-model"}, cfg, DEFAULT_CREDS
+        {"goal": "x", "model": "just-a-model"}, cfg, parent
     )
     assert creds["model"] == "just-a-model"
-    assert creds["provider"] is None
+    # parent auth bundle preserved (model-only override is legitimate)
+    assert creds["provider"] == "openrouter"
+    assert creds["api_key"] == "parent-key"
+    assert creds["base_url"] == "https://openrouter.ai/api/v1"
     assert chain is None
 
 
-def test_explicit_override_resolution_failure_falls_back(monkeypatch):
+def test_explicit_provider_model_resolution_failure_raises(monkeypatch):
+    """Regression: failed explicit provider must NOT merge model onto parent auth.
+
+    Pre-fix behaviour swapped only the model id onto the parent's credentials,
+    which ran a foreign model id against the wrong provider's API key → 401.
+    """
     monkeypatch.setattr(dt, "_resolve_provider_model_bundle", lambda p, m: None)
-    cfg = {"model_router": {"enabled": True}}
-    creds, chain = dt._resolve_task_credentials(
-        {"goal": "x", "model": {"provider": "acme", "model": "x"}}, cfg, DEFAULT_CREDS
+    parent = dict(
+        DEFAULT_CREDS,
+        provider="openrouter",
+        api_key="parent-openrouter-key",
+        base_url="https://openrouter.ai/api/v1",
+        model="parent-model",
     )
-    # resolution failed → inherited creds, model id still applied
-    assert creds["model"] == "x"
+    cfg = {"model_router": {"enabled": True}}
+    with pytest.raises(ValueError) as excinfo:
+        dt._resolve_task_credentials(
+            {"goal": "x", "model": {"provider": "acme", "model": "acme-x"}},
+            cfg,
+            parent,
+        )
+    msg = str(excinfo.value).lower()
+    assert "cannot resolve" in msg
+    assert "acme" in msg
+    # Must not return parent-key + acme-x (the 401-prone merge).
+    # (ValueError path — no return value to inspect; raise is the contract.)
+
+
+def test_explicit_provider_only_resolution_failure_raises(monkeypatch):
+    """Provider-only override that fails resolution also errors (no silent inherit)."""
+    monkeypatch.setattr(dt, "_resolve_provider_model_bundle", lambda p, m: None)
+    parent = dict(DEFAULT_CREDS, provider="openrouter", api_key="parent-key")
+    with pytest.raises(ValueError) as excinfo:
+        dt._resolve_task_credentials(
+            {"goal": "x", "provider": "bad-provider"},
+            {},
+            parent,
+        )
+    assert "bad-provider" in str(excinfo.value)
+
+
+def test_no_override_inherits_unchanged():
+    """No tasks[].model/provider → default_creds object identity preserved."""
+    parent = dict(DEFAULT_CREDS, provider="openrouter", api_key="k", model="m")
+    creds, chain = dt._resolve_task_credentials({"goal": "x"}, {}, parent)
+    assert creds is parent
     assert chain is None
 
 

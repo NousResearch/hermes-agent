@@ -117,19 +117,32 @@ def _get_subagent_approval_callback():
 # — the model has no toolsets argument. Subagents inherit the parent's toolsets.
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
+# Hard upper bound when delegation.enforce_safe_caps is on (default). Configurable
+# via delegation.max_concurrent_children_hard_cap. Normal configs (3–10) pass
+# through unchanged; only absurd values are clamped.
+_DEFAULT_MAX_CONCURRENT_CHILDREN_HARD_CAP = 16
 # One-shot guard: the high-concurrency cost advisory is emitted at most once
 # per process. _get_max_concurrent_children() runs on every get_definitions()
 # schema rebuild (via _build_top_level_description / _build_tasks_param_description),
 # so without this flag a config of max_concurrent_children>10 spams the log on
 # every turn / agent spawn even when delegate_task is never called.
 _HIGH_CONCURRENCY_WARNED = False
+# One-shot guards for safe-cap clamp warnings (same spam risk as above).
+_SAFE_CAP_CONCURRENT_CLAMP_WARNED = False
+_SAFE_CAP_SPAWN_DEPTH_CLAMP_WARNED = False
 MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected unless max_spawn_depth raised.
 # Configurable depth cap consulted by _get_max_spawn_depth; MAX_DEPTH
 # stays as the default fallback and is still the symbol tests import.
 _MIN_SPAWN_DEPTH = 1
-# No upper ceiling on spawn depth — like max_concurrent_children, depth has a
-# floor of 1 and no ceiling. Deeper trees multiply API cost, so the default
-# stays flat (MAX_DEPTH = 1); raising the config knob is an explicit opt-in.
+# Hard upper bound on spawn depth when enforce_safe_caps is on (default).
+# Documented range in cli-config is 1–3; absurd values (e.g. 99) fan out API
+# cost exponentially with nested orchestrators. Configurable via
+# delegation.max_spawn_depth_hard_cap. Default tree stays flat (MAX_DEPTH = 1).
+_DEFAULT_MAX_SPAWN_DEPTH_HARD_CAP = 3
+# When True (default), clamp max_concurrent_children / max_spawn_depth to their
+# hard caps and warn. Set delegation.enforce_safe_caps: false to restore
+# floor-only behaviour for power users who knowingly want unbounded fan-out.
+_DEFAULT_ENFORCE_SAFE_CAPS = True
 
 
 # ---------------------------------------------------------------------------
@@ -352,11 +365,108 @@ def _normalize_role(r: Optional[str]) -> str:
     return "leaf"
 
 
+def _enforce_safe_caps_enabled(cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """Whether to clamp absurd concurrency/depth values (default True).
+
+    Config key: ``delegation.enforce_safe_caps``. When false, only the floor
+    of 1 is enforced (legacy unbounded behaviour).
+    """
+    if cfg is None:
+        cfg = _load_config()
+    return is_truthy_value(
+        cfg.get("enforce_safe_caps", _DEFAULT_ENFORCE_SAFE_CAPS),
+        default=_DEFAULT_ENFORCE_SAFE_CAPS,
+    )
+
+
+def _get_max_concurrent_children_hard_cap(cfg: Optional[Dict[str, Any]] = None) -> int:
+    """Hard ceiling for max_concurrent_children when safe caps are enforced."""
+    if cfg is None:
+        cfg = _load_config()
+    val = cfg.get("max_concurrent_children_hard_cap")
+    if val is not None:
+        try:
+            return max(1, int(val))
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.max_concurrent_children_hard_cap=%r is not a valid "
+                "integer; using default %d",
+                val,
+                _DEFAULT_MAX_CONCURRENT_CHILDREN_HARD_CAP,
+            )
+    return _DEFAULT_MAX_CONCURRENT_CHILDREN_HARD_CAP
+
+
+def _get_max_spawn_depth_hard_cap(cfg: Optional[Dict[str, Any]] = None) -> int:
+    """Hard ceiling for max_spawn_depth when safe caps are enforced."""
+    if cfg is None:
+        cfg = _load_config()
+    val = cfg.get("max_spawn_depth_hard_cap")
+    if val is not None:
+        try:
+            return max(_MIN_SPAWN_DEPTH, int(val))
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.max_spawn_depth_hard_cap=%r is not a valid integer; "
+                "using default %d",
+                val,
+                _DEFAULT_MAX_SPAWN_DEPTH_HARD_CAP,
+            )
+    return _DEFAULT_MAX_SPAWN_DEPTH_HARD_CAP
+
+
+def _apply_concurrent_children_safe_cap(result: int, cfg: Dict[str, Any]) -> int:
+    """Clamp max_concurrent_children to the hard cap when enforce_safe_caps is on."""
+    global _SAFE_CAP_CONCURRENT_CLAMP_WARNED
+    if not _enforce_safe_caps_enabled(cfg):
+        return result
+    hard_cap = _get_max_concurrent_children_hard_cap(cfg)
+    if result <= hard_cap:
+        return result
+    if not _SAFE_CAP_CONCURRENT_CLAMP_WARNED:
+        _SAFE_CAP_CONCURRENT_CLAMP_WARNED = True
+        logger.warning(
+            "delegation.max_concurrent_children=%d exceeds hard cap %d "
+            "(delegation.max_concurrent_children_hard_cap); clamping to %d. "
+            "Set delegation.enforce_safe_caps: false to disable, or raise "
+            "max_concurrent_children_hard_cap deliberately.",
+            result,
+            hard_cap,
+            hard_cap,
+        )
+    return hard_cap
+
+
+def _apply_spawn_depth_safe_cap(result: int, cfg: Dict[str, Any]) -> int:
+    """Clamp max_spawn_depth to the hard cap when enforce_safe_caps is on."""
+    global _SAFE_CAP_SPAWN_DEPTH_CLAMP_WARNED
+    if not _enforce_safe_caps_enabled(cfg):
+        return result
+    hard_cap = _get_max_spawn_depth_hard_cap(cfg)
+    if result <= hard_cap:
+        return result
+    if not _SAFE_CAP_SPAWN_DEPTH_CLAMP_WARNED:
+        _SAFE_CAP_SPAWN_DEPTH_CLAMP_WARNED = True
+        logger.warning(
+            "delegation.max_spawn_depth=%d exceeds hard cap %d "
+            "(delegation.max_spawn_depth_hard_cap); clamping to %d. "
+            "Set delegation.enforce_safe_caps: false to disable, or raise "
+            "max_spawn_depth_hard_cap deliberately. Deep trees multiply API cost "
+            "exponentially with nested orchestrators.",
+            result,
+            hard_cap,
+            hard_cap,
+        )
+    return hard_cap
+
+
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
     DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
 
-    Users can raise this as high as they want; only the floor (1) is enforced.
+    Floor of 1 is always enforced. When ``delegation.enforce_safe_caps`` is
+    on (default), values above ``max_concurrent_children_hard_cap`` (default
+    16) are clamped with a one-shot warning. Normal configs are byte-stable.
 
     Uses the same ``_load_config()`` path that the rest of ``delegate_task``
     uses, keeping config priority consistent (config.yaml > env > default).
@@ -375,7 +485,7 @@ def _get_max_concurrent_children() -> int:
                         "independently. High values multiply cost linearly.",
                         result,
                     )
-            return result
+            return _apply_concurrent_children_safe_cap(result, cfg)
         except (TypeError, ValueError):
             logger.warning(
                 "delegation.max_concurrent_children=%r is not a valid integer; "
@@ -387,7 +497,8 @@ def _get_max_concurrent_children() -> int:
     env_val = os.getenv("DELEGATION_MAX_CONCURRENT_CHILDREN")
     if env_val:
         try:
-            return max(1, int(env_val))
+            result = max(1, int(env_val))
+            return _apply_concurrent_children_safe_cap(result, cfg)
         except (TypeError, ValueError):
             return _DEFAULT_MAX_CONCURRENT_CHILDREN
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
@@ -466,7 +577,7 @@ def _get_child_timeout() -> Optional[float]:
 
 
 def _get_max_spawn_depth() -> int:
-    """Read delegation.max_spawn_depth from config, floored at 1 (no ceiling).
+    """Read delegation.max_spawn_depth from config, floored at 1.
 
     depth 0 = parent agent.  max_spawn_depth = N means agents at depths
     0..N-1 can spawn; depth N is the leaf floor.  Default 1 is flat:
@@ -477,8 +588,11 @@ def _get_max_spawn_depth() -> int:
     Raise to 2+ to unlock nested orchestration. role="orchestrator"
     removes the toolset strip for spawning children when
     max_spawn_depth >= 2, enabling them to spawn their own workers.
-    Like max_concurrent_children, there is no upper ceiling — but each
-    extra level multiplies API cost, so raise it deliberately.
+
+    When ``delegation.enforce_safe_caps`` is on (default), values above
+    ``max_spawn_depth_hard_cap`` (default 3) are clamped with a one-shot
+    warning — deep trees multiply API cost exponentially. Normal configs
+    (1–3) are byte-stable.
     """
     cfg = _load_config()
     val = cfg.get("max_spawn_depth")
@@ -501,7 +615,7 @@ def _get_max_spawn_depth() -> int:
             _MIN_SPAWN_DEPTH,
             floored,
         )
-    return floored
+    return _apply_spawn_depth_safe_cap(floored, cfg)
 
 
 def _get_orchestrator_enabled() -> bool:
@@ -2490,8 +2604,8 @@ def delegate_task(
                     f"Delegation depth limit reached (depth={depth}, "
                     f"max_spawn_depth={max_spawn}). Raise "
                     f"delegation.max_spawn_depth in config.yaml if deeper "
-                    f"nesting is required (no hard ceiling, but each level "
-                    f"multiplies API cost)."
+                    f"nesting is required (safe hard cap applies by default; "
+                    f"each level multiplies API cost)."
                 )
             }
         )
@@ -2584,8 +2698,13 @@ def delegate_task(
             # tasks[].model/provider first, then a forced delegation provider,
             # then the opt-in dynamic model router, else inherits `creds`
             # unchanged (router OFF → byte-identical to prior behaviour).
+            # ValueError from an explicit override that failed to resolve must
+            # surface as tool_error — never fall back to parent auth with a
+            # mismatched model id (that produces opaque 401s at call time).
             try:
                 task_creds, task_fallback_chain = _resolve_task_credentials(t, cfg, creds)
+            except ValueError as exc:
+                return tool_error(str(exc))
             except Exception:
                 logger.debug("model_router: per-task credential resolution failed", exc_info=True)
                 task_creds, task_fallback_chain = creds, None
@@ -3346,6 +3465,12 @@ def _resolve_task_credentials(task: dict, cfg: dict, default_creds: dict) -> tup
     Returns ``(effective_creds, fallback_chain_or_None)``. When the router is
     disabled and no explicit override is present this returns
     ``(default_creds, None)`` byte-for-byte, preserving current behaviour.
+
+    Raises:
+        ValueError: when the task pins an explicit ``provider`` (with or without
+        a model) and that provider/model cannot be resolved to a usable
+        credential bundle. Callers must surface this (e.g. ``tool_error``) and
+        must not fall back to parent auth with a mismatched model id.
     """
     # 1. Explicit per-task override always wins — resolve it to a full bundle.
     exp_provider, exp_model = _parse_task_model_override(task)
@@ -3354,8 +3479,22 @@ def _resolve_task_credentials(task: dict, cfg: dict, default_creds: dict) -> tup
             bundle = _resolve_provider_model_bundle(exp_provider, exp_model)
             if bundle is not None:
                 return bundle, None
-            # Resolution failed → fall through to inherited creds but swap model
-            # so an explicit model id at least applies against inherited auth.
+            # Explicit provider was requested but could not be resolved (unknown
+            # provider, missing API key, runtime error). Do NOT merge the model
+            # id onto the parent's credentials — that pairs a foreign model with
+            # the wrong provider's auth and surfaces as a confusing 401 later.
+            # Surface a clear error now (caller maps ValueError → tool_error).
+            detail = f"provider '{exp_provider}'"
+            if exp_model:
+                detail += f" / model '{exp_model}'"
+            raise ValueError(
+                f"Cannot resolve explicit task override ({detail}). "
+                f"Check that the provider name is valid and has credentials "
+                f"(API key set / hermes auth), or omit tasks[].provider to "
+                f"inherit the parent's provider."
+            )
+        # Model-only override (no provider): legitimately inherit parent auth
+        # and swap the model id — same provider, different model.
         merged = dict(default_creds)
         if exp_model:
             merged["model"] = exp_model

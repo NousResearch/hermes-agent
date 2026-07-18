@@ -238,11 +238,12 @@ class FileToolsIntegrationTests(unittest.TestCase):
         self.assertNotIn("error", w_b)
 
         w_a = json.loads(write_file_tool(path=p, content="A stale\n", task_id="agentA"))
-        warn = w_a.get("_warning", "")
-        self.assertTrue(warn, f"expected warning, got: {w_a}")
+        err = w_a.get("error", "")
+        self.assertTrue(err, f"expected error, got: {w_a}")
         # The cross-agent message names the sibling task_id.
-        self.assertIn("agentB", warn)
-        self.assertIn("sibling", warn.lower())
+        self.assertIn("Refusing to write", err)
+        self.assertIn("agentB", err)
+        self.assertIn("sibling", err.lower())
 
     def test_same_agent_consecutive_writes_no_false_warning(self):
         p = self._write_seed("own.txt")

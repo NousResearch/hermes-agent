@@ -1604,11 +1604,14 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
+            if stale_warning:
+                return tool_error(
+                    f"Refusing to write: {stale_warning} "
+                    "Use read_file to get the current content, then retry the write."
+                )
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(path, content)
             result_dict = result.to_dict()
-            if stale_warning:
-                result_dict["_warning"] = stale_warning
             if not result_dict.get("error"):
                 _mark_verification_stale(task_id, [path], session_id=session_id)
             _update_read_timestamp(path, task_id)
@@ -1622,15 +1625,23 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # fire — its message names the sibling subagent.
             cross_warning = file_state.check_stale(task_id, _resolved)
             stale_warning = _check_file_staleness(path, task_id)
+            # Block on staleness — refuse to clobber external edits or
+            # sibling-subagent changes.  The caller must re-read first.
+            staleness_block = cross_warning or stale_warning
+            if staleness_block:
+                return tool_error(
+                    f"Refusing to write: {staleness_block} "
+                    "Use read_file to get the current content, then retry the write."
+                )
             # Workspace-divergence warning: relative path resolving outside the
-            # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
+            # terminal's cwd (the worktree-cwd bug). Lowest priority — kept as
+            # a soft warning because it doesn't risk data loss.
             cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
-            effective_warning = cross_warning or stale_warning or cwd_warning
-            if effective_warning:
-                result_dict["_warning"] = effective_warning
+            if cwd_warning:
+                result_dict["_warning"] = cwd_warning
             # Always report the ABSOLUTE path actually written, so a wrong-cwd
             # mismatch is visible in the response instead of silently routing
             # the edit to the wrong checkout.
@@ -1741,7 +1752,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 
             # Collect warnings — cross-agent registry first (names sibling),
             # then per-task tracker as a fallback.
-            stale_warnings: list[str] = []
+            stale_blocks: list[str] = []
+            cwd_warnings: list[str] = []
             _path_to_resolved: dict[str, str] = {}
             for _p in _paths_to_check:
                 try:
@@ -1750,13 +1762,25 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     _r = None
                 _path_to_resolved[_p] = _r
                 _cross = file_state.check_stale(task_id, _r) if _r else None
-                _sw = _cross or _check_file_staleness(_p, task_id)
-                if not _sw and _r:
+                _per_task = _check_file_staleness(_p, task_id)
+                _staleness = _cross or _per_task
+                if _staleness:
+                    stale_blocks.append(_staleness)
+                elif _r:
                     # Workspace-divergence warning (worktree-cwd bug): relative
                     # path resolving outside the terminal's cwd.
-                    _sw = _path_resolution_warning(_p, Path(_r), task_id)
-                if _sw:
-                    stale_warnings.append(_sw)
+                    _cwd = _path_resolution_warning(_p, Path(_r), task_id)
+                    if _cwd:
+                        cwd_warnings.append(_cwd)
+
+            # Block on staleness — refuse to apply a patch that would
+            # clobber external edits or sibling-subagent changes.
+            if stale_blocks:
+                msg = stale_blocks[0] if len(stale_blocks) == 1 else " | ".join(stale_blocks)
+                return tool_error(
+                    f"Refusing to patch: {msg} "
+                    "Use read_file to get the current content, then retry the patch."
+                )
 
             file_ops = _get_file_ops(task_id)
 
@@ -1780,8 +1804,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 return tool_error(f"Unknown mode: {mode}")
 
             result_dict = result.to_dict()
-            if stale_warnings:
-                result_dict["_warning"] = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)
+            if cwd_warnings:
+                result_dict["_warning"] = cwd_warnings[0] if len(cwd_warnings) == 1 else " | ".join(cwd_warnings)
             # Report the ABSOLUTE path(s) actually patched so a wrong-cwd
             # mismatch (e.g. a worktree session editing the main checkout) is
             # visible in the response instead of silently landing elsewhere.

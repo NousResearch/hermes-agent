@@ -104,7 +104,7 @@ class TestStalenessCheck(unittest.TestCase):
 
     @patch("tools.file_tools._get_file_ops")
     def test_warning_when_file_modified_externally(self, mock_ops):
-        """Read, then external modify, then write — should warn."""
+        """Read, then external modify, then write — should error."""
         mock_ops.return_value = _make_fake_ops("original content\n", 18)
         read_file_tool(self._tmpfile, task_id="t1")
 
@@ -114,8 +114,9 @@ class TestStalenessCheck(unittest.TestCase):
             f.write("someone else changed this\n")
 
         result = json.loads(write_file_tool(self._tmpfile, "new content", task_id="t1"))
-        self.assertIn("_warning", result)
-        self.assertIn("modified since you last read", result["_warning"])
+        self.assertIn("error", result)
+        self.assertIn("Refusing to write", result["error"])
+        self.assertIn("modified since you last read", result["error"])
 
     @patch("tools.file_tools._get_file_ops")
     def test_no_warning_when_file_never_read(self, mock_ops):
@@ -186,8 +187,9 @@ class TestStalenessCheck(unittest.TestCase):
         finally:
             terminal_tool.clear_session_cwd("live_task")
 
-        self.assertIn("_warning", result)
-        self.assertIn("modified since you last read", result["_warning"])
+        self.assertIn("error", result)
+        self.assertIn("Refusing to write", result["error"])
+        self.assertIn("modified since you last read", result["error"])
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +217,7 @@ class TestPatchStaleness(unittest.TestCase):
 
     @patch("tools.file_tools._get_file_ops")
     def test_patch_warns_on_stale_file(self, mock_ops):
-        """Patch should warn if the target file changed since last read."""
+        """Patch should error if the target file changed since last read."""
         mock_ops.return_value = _make_fake_ops("original line\n", 15)
         read_file_tool(self._tmpfile, task_id="p1")
 
@@ -228,8 +230,9 @@ class TestPatchStaleness(unittest.TestCase):
             old_string="original", new_string="patched",
             task_id="p1",
         ))
-        self.assertIn("_warning", result)
-        self.assertIn("modified since you last read", result["_warning"])
+        self.assertIn("error", result)
+        self.assertIn("Refusing to patch", result["error"])
+        self.assertIn("modified since you last read", result["error"])
 
     @patch("tools.file_tools._get_file_ops")
     def test_patch_no_warning_when_fresh(self, mock_ops):

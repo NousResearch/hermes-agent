@@ -204,5 +204,62 @@ class TestAuthListDisplay:
         assert long_url not in captured.out  # full URL should NOT be shown
         assert "example.com" in captured.out  # hostname should be shown
 
+class TestBaseUrlStorageIntegration:
+    """Integration test: prove --base-url is actually stored on the pool entry."""
 
-# ── Unified Resolver Integration Tests ───────────────────────────────────────
+    def test_base_url_flag_stored_on_entry(self):
+        """The --base-url value must be passed to PooledCredential.base_url."""
+        from hermes_cli.auth_commands import auth_add_command
+        from agent.credential_pool import PooledCredential
+
+        captured_entries = []
+
+        class FakePool:
+            def entries(self):
+                return []
+            def add_entry(self, entry):
+                captured_entries.append(entry)
+
+        args = SimpleNamespace(
+            provider="zai",
+            auth_action="add",
+            auth_type="api_key",
+            api_key="sk-test-key-12345",
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            label="Test Coding Key",
+        )
+
+        with patch("hermes_cli.auth_commands.load_pool", return_value=FakePool()):
+            auth_add_command(args)
+
+        assert len(captured_entries) == 1, f"Expected 1 entry, got {len(captured_entries)}"
+        entry = captured_entries[0]
+        assert entry.base_url == "https://api.z.ai/api/coding/paas/v4",             f"base_url mismatch: {entry.base_url}"
+
+    def test_no_base_url_flag_uses_registry_default(self):
+        """Without --base-url, the handler must fall back to _provider_base_url()."""
+        from hermes_cli.auth_commands import auth_add_command
+
+        captured_entries = []
+
+        class FakePool:
+            def entries(self):
+                return []
+            def add_entry(self, entry):
+                captured_entries.append(entry)
+
+        args = SimpleNamespace(
+            provider="deepseek",
+            auth_action="add",
+            auth_type="api_key",
+            api_key="sk-test-key-12345",
+            base_url=None,
+            label=None,
+        )
+
+        with patch("hermes_cli.auth_commands.load_pool", return_value=FakePool()):
+            auth_add_command(args)
+
+        assert len(captured_entries) == 1
+        entry = captured_entries[0]
+        assert "api.deepseek.com" in entry.base_url,             f"registry default not used: {entry.base_url}"

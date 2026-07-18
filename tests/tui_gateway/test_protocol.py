@@ -1389,6 +1389,102 @@ def test_session_branch_persists_branched_from_marker(
     assert register_calls == []
 
 
+@pytest.mark.parametrize("parent_explicit_cwd", [False, True], ids=["implicit", "explicit"])
+def test_session_branch_real_init_preserves_cwd_provenance(
+    server,
+    monkeypatch,
+    tmp_path,
+    parent_explicit_cwd,
+):
+    registrations = []
+
+    class _DB:
+        def __init__(self):
+            self.sessions = {}
+
+        def get_session_title(self, _key):
+            return "parent-title"
+
+        def get_next_title_in_lineage(self, base):
+            return f"{base} 2"
+
+        def create_session(self, new_key, **kwargs):
+            self.sessions[new_key] = {"id": new_key, **kwargs}
+            return new_key
+
+        def get_session(self, key):
+            return self.sessions.get(key)
+
+        def append_message(self, **_kwargs):
+            return None
+
+        def set_session_title(self, _key, _title):
+            return None
+
+    db = _DB()
+    terminal_tool = types.SimpleNamespace(
+        register_task_env_overrides=lambda key, overrides: registrations.append(
+            (key, overrides)
+        )
+    )
+    approval = types.SimpleNamespace(
+        register_gateway_notify=lambda *_args, **_kwargs: None,
+        load_permanent_allowlist=lambda: None,
+    )
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test/model")
+    monkeypatch.setattr(server, "_new_session_key", lambda: "20260101_000001_child0")
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda _sid, key, **_kwargs: types.SimpleNamespace(
+            model="test/model", session_id=key
+        ),
+    )
+    monkeypatch.setattr(server, "_SlashWorker", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_start_notification_poller", lambda _sid, _session: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {})
+    monkeypatch.setattr(server, "_persist_session_git_meta", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda *_args, **_kwargs: None)
+
+    parent_sid = "parent01"
+    parent_key = "20260101_000000_parent"
+    server._sessions[parent_sid] = {
+        "session_key": parent_key,
+        "history": [{"role": "user", "content": "hello"}],
+        "history_lock": threading.Lock(),
+        "cols": 80,
+        "cwd": str(tmp_path),
+        "explicit_cwd": parent_explicit_cwd,
+    }
+
+    with patch.dict(
+        sys.modules,
+        {"tools.approval": approval, "tools.terminal_tool": terminal_tool},
+    ):
+        resp = server.handle_request(
+            {"id": "b1", "method": "session.branch", "params": {"session_id": parent_sid}}
+        )
+
+    assert "error" not in resp, resp
+    child_sid = resp["result"]["session_id"]
+    child = server._sessions[child_sid]
+    assert child["explicit_cwd"] is parent_explicit_cwd
+    assert child["cwd"] == str(tmp_path)
+    expected_registrations = (
+        [("20260101_000001_child0", {"cwd": str(tmp_path)})]
+        if parent_explicit_cwd
+        else []
+    )
+    assert registrations == expected_registrations
+
+
 def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
     captured = {}
 

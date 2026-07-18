@@ -8,7 +8,10 @@ import pytest
 
 from gateway.project_finalization import ProjectFinalizationService
 from hermes_cli import kanban_db as kb
-from hermes_cli.project_delivery_ledger import get_latest_delivery_attempt
+from hermes_cli.project_delivery_ledger import (
+    get_latest_delivery_attempt,
+    list_delivery_attempts,
+)
 from hermes_cli.project_finalization_contract import (
     acquire_finalization_lock,
     create_project_finalization,
@@ -165,6 +168,54 @@ def test_rejected_delivery_schedules_retry_without_terminalizing(board):
     assert attempt.delivery_state == "retry_scheduled"
     assert attempt.next_retry_at == 130
     assert get_project_finalization(board, board_id="default", root_task_id=root, generation=1).terminal_outcome is None
+
+
+def test_rejected_delivery_retries_are_bounded_and_persist_permanent_failure(board):
+    root, _, _ = _setup(board, complete_checker=True, verdict="PASS")
+    clock = {"now": 100}
+    calls = []
+
+    async def rejected(*_):
+        calls.append(clock["now"])
+        return {"rejected": True, "error": "provider refused"}
+
+    def tick_from_restart():
+        service = ProjectFinalizationService(
+            kb.connect,
+            owner="test-owner",
+            now=lambda: clock["now"],
+            deliver=rejected,
+            enabled=True,
+            canary_scope=("*",),
+            cleanup_enabled=True,
+        )
+        return _run(service)
+
+    first = tick_from_restart()
+    before_due = tick_from_restart()
+    clock["now"] = 130
+    second = tick_from_restart()
+    repeated_due = tick_from_restart()
+    clock["now"] = 250
+    third = tick_from_restart()
+    after_cap = tick_from_restart()
+
+    attempts = list_delivery_attempts(
+        board,
+        board_id="default",
+        root_task_id=root,
+        generation=1,
+        platform="telegram",
+        destination_reference="-100-test",
+        message_kind="project_complete",
+    )
+    project = get_project_finalization(board, board_id="default", root_task_id=root, generation=1)
+    assert first.terminalized == before_due.terminalized == second.terminalized == repeated_due.terminalized == third.terminalized == after_cap.terminalized == 0
+    assert [attempt.attempt_number for attempt in attempts] == [1, 2, 3]
+    assert [attempt.delivery_state for attempt in attempts] == ["retry_scheduled", "retry_scheduled", "permanent_failure"]
+    assert calls == [100, 130, 250]
+    assert project.terminal_outcome is None
+    assert project.cleanup_after is None
 
 
 def test_accepted_delivery_restart_recovers_missing_terminal_state_without_resend(board):

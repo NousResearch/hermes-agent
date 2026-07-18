@@ -19,13 +19,17 @@ from hermes_cli.project_delivery_ledger import (
     DELIVERY_ACCEPTED,
     DELIVERY_AMBIGUOUS,
     DELIVERY_ATTEMPTING,
+    DELIVERY_PERMANENT_FAILURE,
     DELIVERY_REJECTED,
     DELIVERY_RETRY_SCHEDULED,
+    MAX_DELIVERY_ATTEMPTS,
     create_delivery_attempt,
+    create_next_delivery_attempt,
     get_latest_delivery_attempt,
     mark_delivery_attempt_accepted,
     mark_delivery_attempt_ambiguous,
     mark_delivery_attempt_attempting,
+    mark_delivery_attempt_permanent_failure,
     mark_delivery_attempt_rejected,
     mark_delivery_attempt_retry_scheduled,
 )
@@ -267,11 +271,16 @@ class ProjectFinalizationService:
                 return DELIVERY_ACCEPTED
             if latest.delivery_state in {DELIVERY_AMBIGUOUS, DELIVERY_ATTEMPTING}:
                 return DELIVERY_AMBIGUOUS
+            if latest.delivery_state == DELIVERY_PERMANENT_FAILURE:
+                return DELIVERY_PERMANENT_FAILURE
             if latest.delivery_state == DELIVERY_RETRY_SCHEDULED and (latest.next_retry_at or 0) > now:
                 return DELIVERY_RETRY_SCHEDULED
             if latest.delivery_state == DELIVERY_REJECTED:
                 return DELIVERY_RETRY_SCHEDULED
-        attempt = create_delivery_attempt(conn, attempt_number=1 if latest is None else latest.attempt_number, delivery_state="pending", **kwargs)
+        if latest is not None and latest.delivery_state == DELIVERY_RETRY_SCHEDULED:
+            attempt = create_next_delivery_attempt(conn, delivery_state="pending", **kwargs)
+        else:
+            attempt = create_delivery_attempt(conn, attempt_number=1 if latest is None else latest.attempt_number, delivery_state="pending", **kwargs)
         mark_delivery_attempt_attempting(conn, attempt_number=attempt.attempt_number, now=now, **{key: value for key, value in kwargs.items() if key != "thread_reference"})
         try:
             receipt = await self._deliver(destination.platform, destination.chat_id, destination.thread_id, f"Project {current.root_task_id} generation {current.generation}: {outcome}")
@@ -284,6 +293,9 @@ class ProjectFinalizationService:
             return DELIVERY_ACCEPTED
         if isinstance(receipt, Mapping) and receipt.get("rejected"):
             mark_delivery_attempt_rejected(conn, attempt_number=attempt.attempt_number, redacted_error=str(receipt.get("error") or "provider rejected delivery"), now=now, **{key: value for key, value in kwargs.items() if key != "thread_reference"})
+            if attempt.attempt_number >= MAX_DELIVERY_ATTEMPTS:
+                mark_delivery_attempt_permanent_failure(conn, attempt_number=attempt.attempt_number, redacted_error="delivery attempts exhausted", now=now, **{key: value for key, value in kwargs.items() if key != "thread_reference"})
+                return DELIVERY_PERMANENT_FAILURE
             mark_delivery_attempt_retry_scheduled(conn, attempt_number=attempt.attempt_number, now=now, **{key: value for key, value in kwargs.items() if key != "thread_reference"})
             return DELIVERY_RETRY_SCHEDULED
         mark_delivery_attempt_ambiguous(conn, attempt_number=attempt.attempt_number, redacted_error="provider acceptance could not be proven", now=now, **{key: value for key, value in kwargs.items() if key != "thread_reference"})

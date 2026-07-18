@@ -4,7 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { $activeSessionId, $currentModel, $currentProvider } from '@/store/session'
-import { $collapsedProviders } from '@/store/provider-collapse'
+import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 
 import { ModelMenuPanel } from './model-menu-panel'
 
@@ -196,5 +196,56 @@ describe('ModelMenuPanel provider collapse', () => {
     fireEvent.keyDown(header.closest('[role="menuitem"]') ?? header, { key: 'Enter' })
 
     expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+  })
+
+  // The collapsed-providers set is a global presentation preference
+  // (`hermes.desktop.collapsed-providers`), but the catalog the picker renders
+  // is profile-scoped (`getGlobalModelOptions` routes through
+  // `profileScoped()`). Pruning the global set against only the active catalog
+  // would silently delete a user's collapse preference on every profile switch
+  // whose configured providers don't include the slug — the bug the maintainer
+  // flagged. The set must survive catalog changes; if the same provider shows
+  // up again later, the previous collapse is preserved.
+  it('preserves the collapsed set across a profile switch whose catalog lacks the slug', async () => {
+    toggleCollapsedProvider('deepseek')
+    toggleCollapsedProvider('google')
+    expect($collapsedProviders.get()).toEqual(['deepseek', 'google'])
+
+    // Profile A: both providers present, render + unmount.
+    getGlobalModelOptions.mockResolvedValueOnce({ providers: MOCK_PROVIDERS })
+    const a = renderPanel()
+    await a.content.findByText('DeepSeek')
+    a.content.unmount()
+
+    // Profile B: google is not in the catalog (simulates a profile whose
+    // configured providers differ). The previously-collapsed 'google' slug
+    // must survive — pruning it would lose state across a profile switch.
+    getGlobalModelOptions.mockResolvedValueOnce({ providers: [DEEPSEEK_PROVIDER, MOA_PROVIDER] })
+    const b = renderPanel()
+    await b.content.findByText('DeepSeek')
+
+    expect($collapsedProviders.get()).toEqual(['deepseek', 'google'])
+  })
+
+  it('preserves the collapsed set when Refresh Models drops a provider', async () => {
+    toggleCollapsedProvider('deepseek')
+    toggleCollapsedProvider('google')
+
+    // First load: both providers present.
+    getGlobalModelOptions.mockResolvedValueOnce({ providers: MOCK_PROVIDERS })
+    const a = renderPanel()
+    await a.content.findByText('DeepSeek')
+    a.content.unmount()
+
+    // Refresh Models returns a catalog that drops google (revoked key,
+    // plugin disabled, backend policy change). 'google' must survive — the
+    // user explicitly collapsed it, and the global set is not tied to any
+    // single refresh.
+    getGlobalModelOptions.mockResolvedValueOnce({ providers: [DEEPSEEK_PROVIDER, MOA_PROVIDER] })
+    const b = renderPanel()
+    await b.content.findByText('DeepSeek')
+
+    expect($collapsedProviders.get()).toContain('google')
+    expect($collapsedProviders.get()).toContain('deepseek')
   })
 })

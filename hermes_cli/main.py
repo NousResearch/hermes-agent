@@ -10123,7 +10123,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else:
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
-        def _restore_protected_checkout(*, restore_stash: bool = True) -> bool:
+        def _restore_protected_checkout(
+            *, restore_stash: bool = True, prompt_user: bool = False
+        ) -> bool:
             """Restore the exact caller checkout before a protected-mode abort."""
             nonlocal auto_stash_ref
 
@@ -10171,7 +10173,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     git_cmd,
                     PROJECT_ROOT,
                     auto_stash_ref,
-                    prompt_user=False,
+                    prompt_user=prompt_user,
                     input_fn=gw_input_fn,
                 ):
                     return False
@@ -10243,23 +10245,44 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if is_fork and branch == "main":
                 _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
-            # Restore stash and switch back to original branch if we moved
-            if auto_stash_ref is not None:
-                _restore_stashed_changes(
-                    git_cmd,
-                    PROJECT_ROOT,
-                    auto_stash_ref,
-                    prompt_user=prompt_for_restore,
-                    input_fn=gw_input_fn,
-                )
-            if current_branch not in {branch, "HEAD"}:
-                subprocess.run(
-                    git_cmd + ["checkout", current_branch],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
+            # Restore the exact original checkout before applying its stash.
+            # Applying first can strand custom-branch edits on the update target.
+            if protect_local_commits:
+                if discard_local_changes and auto_stash_ref is not None:
+                    _restore_protected_checkout(restore_stash=False)
+                    _discard_stashed_changes(git_cmd, PROJECT_ROOT, auto_stash_ref)
+                    auto_stash_ref = None
+                else:
+                    _restore_protected_checkout(prompt_user=prompt_for_restore)
+            else:
+                if current_branch == "HEAD":
+                    subprocess.run(
+                        git_cmd + ["checkout", "--detach", original_head_sha],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                elif current_branch != branch:
+                    subprocess.run(
+                        git_cmd + ["checkout", current_branch],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                if auto_stash_ref is not None:
+                    if discard_local_changes:
+                        _discard_stashed_changes(git_cmd, PROJECT_ROOT, auto_stash_ref)
+                    else:
+                        _restore_stashed_changes(
+                            git_cmd,
+                            PROJECT_ROOT,
+                            auto_stash_ref,
+                            prompt_user=prompt_for_restore,
+                            input_fn=gw_input_fn,
+                        )
+                    auto_stash_ref = None
 
             # A current checkout does NOT imply a healthy install: a previous
             # dependency sync may have failed partway (classic on Windows,
@@ -10461,7 +10484,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             update_succeeded = True
         finally:
-            if auto_stash_ref is not None:
+            if update_succeeded and protect_local_commits:
+                # Successful protected updates must return to the exact caller
+                # checkout before applying staged/unstaged changes. Otherwise a
+                # custom-branch stash is consumed on the update target branch.
+                if discard_local_changes and auto_stash_ref is not None:
+                    _restore_protected_checkout(restore_stash=False)
+                    _discard_stashed_changes(git_cmd, PROJECT_ROOT, auto_stash_ref)
+                    auto_stash_ref = None
+                else:
+                    restored = _restore_protected_checkout(
+                        prompt_user=prompt_for_restore
+                    )
+                    if not restored and auto_stash_ref is not None:
+                        print(
+                            f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
+                        )
+            elif auto_stash_ref is not None:
                 # Don't attempt stash restore if the code update itself failed —
                 # working tree is in an unknown state.
                 if not update_succeeded:

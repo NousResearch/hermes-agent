@@ -2289,6 +2289,18 @@ DEFAULT_CONFIG = {
         "default_value_hint": 0.5,    # producer value when unspecified
         "categories": {},             # per-category overrides, e.g.
                                       #   {"omi_commitment": {"daily_cap": 2}}
+        # Implicit act-detection: learn from engagement without the user ever
+        # running `notify keep`/`mute`. When a delivered proactive notification's
+        # engagement window elapses, an inbound reply inside it counts as an
+        # implicit ACT (lowers that category's bar). Silence is recorded but
+        # NEVER raises the bar — a useful FYI needs no reply, so only the
+        # explicit `notify mute` dismisses. OPT-IN: off by default.
+        "implicit_learning": {
+            "enabled": False,
+            "engagement_window_minutes": 60,  # reply within this => implicit act
+            "max_lookback_hours": 48,         # ignore ledger rows older than this
+            "exclude_sources": ["tool", "tui", "cron"],  # not human replies
+        },
     },
 
     # Omi wearable commitment extraction. A scheduled scan reads the Omi

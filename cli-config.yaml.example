@@ -1126,6 +1126,21 @@ notifications:
   # categories:                 # per-category overrides
   #   omi_commitment:
   #     daily_cap: 2
+  # Implicit act-detection: learn from engagement WITHOUT you running
+  # `notify keep`/`mute`. When a delivered proactive notification's window
+  # elapses, a reply inside it counts as an implicit ACT (lowers that
+  # category's bar, like `notify keep`). Silence is recorded but NEVER raises
+  # the bar -- a useful FYI needs no reply, so only `notify mute` dismisses.
+  # Reconciled opportunistically on `hermes notify status`; run explicitly with
+  # `hermes notify reconcile`, or schedule it (e.g. hourly) via `hermes cron`.
+  implicit_learning:
+    enabled: false              # opt-in
+    engagement_window_minutes: 60   # a reply within this window => implicit act
+    max_lookback_hours: 48      # ignore ledger rows older than this
+    exclude_sources:            # sources that are not human replies
+      - tool
+      - tui
+      - cron
 
 # =============================================================================
 # Omi Commitment Extraction

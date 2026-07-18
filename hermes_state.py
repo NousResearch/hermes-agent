@@ -6988,6 +6988,74 @@ class SessionDB:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def list_allowed_awaiting_implicit(
+        self, min_created: float, max_created: float
+    ) -> List[Dict[str, Any]]:
+        """List allowed, not-yet-reconciled ledger rows in a time window.
+
+        Used by implicit act-detection: rows whose engagement window has fully
+        elapsed (``created_at <= max_created``) but which are recent enough to
+        still correlate (``created_at >= min_created``) and have no feedback
+        stamped yet. Deferred rows are excluded — only a delivered message can
+        be acted on.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, category, platform, chat_id, created_at "
+                "FROM notification_ledger "
+                "WHERE decision = 'allowed' AND feedback IS NULL "
+                "  AND created_at >= ? AND created_at <= ? "
+                "ORDER BY created_at ASC",
+                (min_created, max_created),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def has_inbound_user_message(
+        self,
+        after_epoch: float,
+        before_epoch: float,
+        *,
+        exclude_sources: Optional[List[str]] = None,
+        source: Optional[str] = None,
+        chat_id: Optional[str] = None,
+    ) -> bool:
+        """Whether a human sent an inbound message in ``(after, before]``.
+
+        Correlates user engagement with a proactive notification. When
+        *source*/*chat_id* are given the match is channel-scoped (the reply
+        must come from the same platform+chat the notification targeted);
+        otherwise any non-excluded human message in the window counts
+        (time-only fallback for digests that recorded no channel). Only
+        ``role='user'`` active messages are engagement; *exclude_sources*
+        (case-insensitive) drops non-human sources such as ``tool``/``tui``.
+        """
+        clauses = [
+            "m.role = 'user'",
+            "m.active = 1",
+            "m.timestamp > ?",
+            "m.timestamp <= ?",
+        ]
+        params: List[Any] = [after_epoch, before_epoch]
+        if source is not None:
+            clauses.append("LOWER(s.source) = LOWER(?)")
+            params.append(source)
+        if chat_id is not None:
+            clauses.append("s.chat_id = ?")
+            params.append(chat_id)
+        excluded = [str(x).lower() for x in (exclude_sources or [])]
+        if excluded:
+            placeholders = ", ".join("?" for _ in excluded)
+            clauses.append(f"LOWER(s.source) NOT IN ({placeholders})")
+            params.extend(excluded)
+        sql = (
+            "SELECT 1 FROM messages m "
+            "JOIN sessions s ON s.id = m.session_id "
+            "WHERE " + " AND ".join(clauses) + " LIMIT 1"
+        )
+        with self._lock:
+            row = self._conn.execute(sql, params).fetchone()
+        return row is not None
+
     def omi_conversation_seen(self, conversation_id: str) -> bool:
         """Whether an Omi conversation has already been processed."""
         with self._lock:

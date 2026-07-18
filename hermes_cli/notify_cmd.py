@@ -30,7 +30,11 @@ def notify_command(args) -> int:
         return _notify_feedback(args.category, "act")
     if action == "mute":
         return _notify_feedback(args.category, "dismiss")
-    print("Usage: hermes notify {status|keep <category>|mute <category>}")
+    if action == "reconcile":
+        return _notify_reconcile()
+    print(
+        "Usage: hermes notify {status|keep <category>|mute <category>|reconcile}"
+    )
     return 1
 
 
@@ -82,6 +86,31 @@ def _notify_feedback(category: str, signal: str) -> int:
     record_feedback(category, signal)
     verb = "muted (bar raised)" if signal == "dismiss" else "kept (bar lowered)"
     print(f"notification budget: category '{category}' {verb}.")
+    return 0
+
+
+def _notify_reconcile() -> int:
+    """Settle elapsed proactive notifications from implicit engagement.
+
+    Normally runs opportunistically on `notify status` (and can be scheduled
+    via cron); this exposes it as an explicit one-shot for inspection.
+    """
+    from agent.notification_budget import reconcile_implicit_feedback
+
+    result = reconcile_implicit_feedback()
+    if result.get("skipped") == "disabled":
+        print(
+            "implicit learning is disabled "
+            "(set notifications.implicit_learning.enabled: true to enable)."
+        )
+        return 0
+    if "error" in result:
+        print(f"notification budget: reconcile error: {result['error']}")
+        return 1
+    print(
+        f"notification budget: reconciled {result['reconciled']} "
+        f"(acted={result['acted']}, settled={result['settled']})."
+    )
     return 0
 
 

@@ -34,6 +34,11 @@ def build_notify_parser(subparsers, *, cmd_notify: Callable) -> None:
     )
     mute.add_argument("category", help="Notification category, e.g. cron:<job_id>")
 
+    notify_subparsers.add_parser(
+        "reconcile",
+        help="Settle elapsed notifications: infer acts from replies (implicit learning)",
+    )
+
     notify_parser.set_defaults(func=cmd_notify)
 
 

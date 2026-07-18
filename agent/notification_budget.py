@@ -322,6 +322,106 @@ def record_feedback(
         )
 
 
+def reconcile_implicit_feedback() -> Dict[str, Any]:
+    """Turn user engagement into learning without any explicit keep/mute.
+
+    For each allowed proactive notification whose engagement window has fully
+    elapsed and which hasn't been reconciled yet: if the user sent an inbound
+    message inside the window it is recorded as an implicit ``act`` (lowers the
+    category bar via :func:`record_feedback`); otherwise it is stamped
+    ``settled`` and the bar is left UNCHANGED.
+
+    Asymmetry is deliberate: silence is NOT a dismissal. Many useful proactive
+    messages (a deadline heads-up, a filed-commitment FYI) need no reply, so
+    treating silence as a dismiss would wrongly mute them over time. Only the
+    explicit ``notify mute`` raises a bar; implicit learning can only lower it.
+
+    Returns ``{"reconciled", "acted", "settled"}`` (a ``settled`` row is one
+    reconciled with no engagement), ``{"skipped": <reason>}`` when disabled, or
+    an ``error`` summary on failure. FAIL-SOFT: never raises to the caller.
+    """
+    try:
+        return _reconcile_implicit_feedback_impl()
+    except Exception as exc:
+        logger.debug(
+            "notification_budget.reconcile_implicit_feedback failed: %s",
+            exc,
+            exc_info=True,
+        )
+        return {"error": str(exc), "reconciled": 0, "acted": 0, "settled": 0}
+
+
+def _reconcile_implicit_feedback_impl() -> Dict[str, Any]:
+    notif_cfg = _config()
+    il_cfg = notif_cfg.get("implicit_learning", {})
+    if not isinstance(il_cfg, dict):
+        il_cfg = {}
+
+    if not il_cfg.get("enabled", False):
+        return {"skipped": "disabled", "reconciled": 0, "acted": 0, "settled": 0}
+
+    window_s = float(il_cfg.get("engagement_window_minutes", 60)) * 60
+    lookback_s = float(il_cfg.get("max_lookback_hours", 48)) * 3600
+    exclude_sources = il_cfg.get("exclude_sources", ["tool", "tui", "cron"])
+    if not isinstance(exclude_sources, list):
+        exclude_sources = ["tool", "tui", "cron"]
+
+    now = time.time()
+    # A row is ready to reconcile once its full window has elapsed
+    # (created_at <= now - window) and is still recent enough to correlate
+    # (created_at >= now - lookback).
+    max_created = now - window_s
+    min_created = now - lookback_s
+
+    db = _open_db()
+    pending = db.list_allowed_awaiting_implicit(min_created, max_created)
+
+    acted = 0
+    settled = 0
+    for row in pending:
+        # Per-row guard: one malformed/unwritable row must not abandon the
+        # rest of the batch (a failed row simply stays feedback=NULL and is
+        # retried on the next run). Logged at warning so the failure is
+        # visible, not silently swallowed.
+        try:
+            created = float(row["created_at"])
+            engaged = db.has_inbound_user_message(
+                created,
+                created + window_s,
+                exclude_sources=exclude_sources,
+                # Channel-scope only when the notification recorded one; digest
+                # producers send with no target, so fall back to time-only.
+                source=row.get("platform"),
+                chat_id=row.get("chat_id"),
+            )
+            if engaged:
+                # Stamps feedback='act' on the ledger row (dedups rescans) AND
+                # lowers the category threshold / lifts p_act via the EWMA.
+                record_feedback(row["category"], "act", ledger_id=row["id"])
+                acted += 1
+            else:
+                # Mark handled so we don't re-scan it forever — but do NOT
+                # raise the bar. Silence is not a dismissal.
+                db.set_notification_feedback(row["id"], "settled")
+                settled += 1
+        except Exception as exc:
+            logger.warning(
+                "implicit feedback: skipping ledger row %s (cat=%s): %s",
+                row.get("id"),
+                row.get("category"),
+                exc,
+            )
+
+    if acted or settled:
+        logger.info(
+            "implicit feedback reconciled: acted=%d settled=%d (of %d pending)",
+            acted,
+            settled,
+            len(pending),
+        )
+    return {"reconciled": acted + settled, "acted": acted, "settled": settled}
+
+
 def budget_status(day_key: Optional[str] = None) -> Dict[str, Any]:
     """Return today's budget usage + per-category thresholds for the CLI.
 
@@ -330,6 +430,11 @@ def budget_status(day_key: Optional[str] = None) -> Dict[str, Any]:
     ``error`` key on failure.
     """
     try:
+        # Opportunistically settle any elapsed engagement windows so the
+        # per-category stats below reflect implicit learning. No-op unless
+        # implicit_learning is enabled; fail-soft inside reconcile.
+        reconcile_implicit_feedback()
+
         notif_cfg = _config()
         day = day_key or _day_key()
         db = _open_db()

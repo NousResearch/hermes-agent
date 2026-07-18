@@ -108,6 +108,21 @@ class TestConfigYamlRouting:
         assert "docker" in config
         assert "terminal" not in _read_env(_isolated_hermes_home)
 
+    def test_list_typed_key_parses_yaml_list(self, _isolated_hermes_home):
+        set_config_value(
+            "skills.disabled",
+            '["computer-use", "segment-anything", "vllm"]',
+        )
+
+        import yaml
+
+        config = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert config["skills"]["disabled"] == [
+            "computer-use",
+            "segment-anything",
+            "vllm",
+        ]
+
     def test_terminal_image_goes_to_config(self, _isolated_hermes_home):
         """TERMINAL_DOCKER_IMAGE doesn't match _API_KEY or _TOKEN, so config.yaml."""
         set_config_value("terminal.docker_image", "python:3.12")

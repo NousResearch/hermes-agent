@@ -8435,7 +8435,20 @@ def set_config_value(key: str, value: str):
     # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
     # retain the historical best-effort coercion behavior.
     coerced_value: Any = value
-    if not isinstance(_default_value_for_key(key), str):
+    default_value = _default_value_for_key(key)
+    if isinstance(default_value, list) or value.lstrip().startswith("["):
+        try:
+            parsed_value = fast_safe_load(value)
+        except Exception:
+            parsed_value = None
+        if not isinstance(parsed_value, list):
+            print(
+                f"Invalid value for '{key}': expected a YAML/JSON list.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        coerced_value = parsed_value
+    elif not isinstance(default_value, str):
         if value.lower() in {'true', 'yes', 'on'}:
             coerced_value = True
         elif value.lower() in {'false', 'no', 'off'}:

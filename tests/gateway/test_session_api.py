@@ -252,6 +252,73 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
 
 
 @pytest.mark.asyncio
+async def test_session_chat_applies_model_route_and_history_window(auth_adapter, session_db):
+    session_id = session_db.create_session("routed-chat-session", "api_server")
+    for index in range(8):
+        session_db.append_message(session_id, "user" if index % 2 == 0 else "assistant", f"turn-{index}")
+    route = {
+        "model": "gpt-5.6-luna",
+        "provider": "openai-codex",
+        "reasoning_effort": "low",
+        "toolsets": [],
+        "history_messages": 4,
+    }
+    auth_adapter._model_routes = {"cortana-fast": route}
+
+    mock_run = AsyncMock(return_value=({"final_response": "fast answer", "session_id": session_id}, {"total_tokens": 2}))
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "hello", "model": "cortana-fast"},
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert resp.status == 200, await resp.text()
+
+    _, kwargs = mock_run.call_args
+    assert kwargs["route"] == route
+    assert [item["content"] for item in kwargs["conversation_history"]] == [
+        "turn-4", "turn-5", "turn-6", "turn-7",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_applies_model_route_and_history_window(adapter, session_db):
+    session_id = session_db.create_session("routed-stream-session", "api_server")
+    for index in range(6):
+        session_db.append_message(session_id, "user" if index % 2 == 0 else "assistant", f"turn-{index}")
+    route = {
+        "model": "gpt-5.6-luna",
+        "reasoning_effort": "low",
+        "toolsets": [],
+        "history_messages": 2,
+    }
+    adapter._model_routes = {"cortana-fast": route}
+    captured = {}
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+        kwargs["stream_delta_callback"]("fast")
+        return {"final_response": "fast", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "hello", "model": "cortana-fast"},
+            )
+            assert resp.status == 200, await resp.text()
+            body = await resp.text()
+
+    assert '"alias": "cortana-fast"' in body
+    assert '"model": "gpt-5.6-luna"' in body
+    assert captured["route"] == route
+    assert [item["content"] for item in captured["conversation_history"]] == ["turn-4", "turn-5"]
+
+
+@pytest.mark.asyncio
 async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db):
     session_id = session_db.create_session("image-session", "api_server")
     image_payload = [

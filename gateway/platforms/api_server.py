@@ -1653,7 +1653,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             return {}
 
-        allowed_keys = ("model", "provider", "api_key", "base_url")
+        string_keys = ("model", "provider", "api_key", "base_url")
+        valid_reasoning = {"none", "minimal", "low", "medium", "high", "xhigh"}
         routes: Dict[str, Dict[str, Any]] = {}
         for alias, cfg in raw.items():
             alias_str = str(alias).strip()
@@ -1662,11 +1663,29 @@ class APIServerAdapter(BasePlatformAdapter):
                     "api_server model_routes: dropping invalid route entry %r", alias_str or alias
                 )
                 continue
-            route = {
+            route: Dict[str, Any] = {
                 key: str(cfg[key]).strip()
-                for key in allowed_keys
+                for key in string_keys
                 if cfg.get(key) is not None and str(cfg[key]).strip()
             }
+            effort = str(cfg.get("reasoning_effort") or "").strip().lower()
+            if effort in valid_reasoning:
+                route["reasoning_effort"] = effort
+            if "toolsets" in cfg:
+                raw_toolsets = cfg.get("toolsets")
+                if isinstance(raw_toolsets, str):
+                    raw_toolsets = raw_toolsets.split(",")
+                if isinstance(raw_toolsets, list):
+                    route["toolsets"] = [
+                        str(item).strip() for item in raw_toolsets[:32] if str(item).strip()
+                    ]
+            if "history_messages" in cfg:
+                try:
+                    history_messages = int(cfg["history_messages"])
+                except (TypeError, ValueError):
+                    history_messages = 0
+                if 1 <= history_messages <= 200:
+                    route["history_messages"] = history_messages
             if not route.get("model"):
                 logger.warning(
                     "api_server model_routes: route %r has no 'model'; dropping", alias_str
@@ -1744,7 +1763,7 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        reasoning_config = GatewayRunner._load_reasoning_config()
+        reasoning_config = GatewayRunner._load_reasoning_config() or {}
         model = _resolve_gateway_model()
 
         # When the primary provider's auth fails (expired token / 429 quota
@@ -1767,7 +1786,9 @@ class APIServerAdapter(BasePlatformAdapter):
         session_override = self._session_model_override_for(
             gateway_session_key or session_id
         )
+        route_applied = False
         if route and not session_override:
+            route_applied = True
             if route.get("provider"):
                 # Resolve real credentials for the routed provider (mirrors
                 # the channel_overrides path in gateway/run.py) so a route
@@ -1806,12 +1827,32 @@ class APIServerAdapter(BasePlatformAdapter):
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        if route_applied and route is not None:
+            effort = route.get("reasoning_effort")
+            if effort == "none":
+                reasoning_config = {"enabled": False}
+            elif effort:
+                reasoning_config = {"enabled": True, "effort": effort}
+            if "toolsets" in route:
+                enabled_toolsets = list(route["toolsets"])
 
         max_iterations = _current_max_iterations()
 
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         fallback_model = GatewayRunner._load_fallback_model()
+
+        # Keep the API-server platform aligned with the native messaging
+        # gateway: global fast/priority mode must reach each AIAgent request.
+        fast_mode_kwargs = {}
+        service_tier = GatewayRunner._load_service_tier()
+        if service_tier:
+            from hermes_cli.models import resolve_fast_mode_overrides
+
+            fast_mode_kwargs = {
+                "service_tier": service_tier,
+                "request_overrides": resolve_fast_mode_overrides(model),
+            }
 
         agent = AIAgent(
             model=model,
@@ -1830,6 +1871,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
+            **fast_mode_kwargs,
             gateway_session_key=gateway_session_key,
         )
         return agent
@@ -2386,13 +2428,19 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        route = self._resolve_route(body.get("model"))
+        if route and self._session_model_override_for(gateway_session_key or session_id):
+            route = None
         history = self._conversation_history_for_session(session_id)
+        if route and route.get("history_messages"):
+            history = history[-int(route["history_messages"]):]
         result, usage = await self._run_agent(
             user_message=user_message,
             conversation_history=history,
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            route=route,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
@@ -2428,6 +2476,19 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        route_alias = str(body.get("model") or "").strip()
+        route = self._resolve_route(route_alias)
+        if route and self._session_model_override_for(gateway_session_key or session_id):
+            route = None
+        route_summary = None
+        if route:
+            route_summary = {
+                "alias": route_alias,
+                "model": route.get("model"),
+                "reasoning_effort": route.get("reasoning_effort"),
+                "toolsets": route.get("toolsets"),
+                "history_messages": route.get("history_messages"),
+            }
 
         loop = asyncio.get_running_loop()
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
@@ -2471,9 +2532,14 @@ class APIServerAdapter(BasePlatformAdapter):
 
         async def _run_and_signal() -> None:
             try:
-                await queue.put(_event_payload("run.started", {"user_message": {"role": "user", "content": user_message}}))
+                run_started = {"user_message": {"role": "user", "content": user_message}}
+                if route_summary:
+                    run_started["route"] = route_summary
+                await queue.put(_event_payload("run.started", run_started))
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
                 history = self._conversation_history_for_session(session_id)
+                if route and route.get("history_messages"):
+                    history = history[-int(route["history_messages"]):]
                 result, usage = await self._run_agent(
                     user_message=user_message,
                     conversation_history=history,
@@ -2482,6 +2548,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    route=route,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id

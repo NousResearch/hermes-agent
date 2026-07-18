@@ -468,6 +468,29 @@ hermes ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password reset-failed he
 
 Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
 
+:::info Opt-in hang detection via systemd watchdog
+
+The gateway can also send periodic keep-alive pings to systemd so a hung process (deadlock, GIL stall, infinite loop) is auto-restarted instead of silently sitting there. Off by default; opt in with an env var:
+
+```bash
+# ~/.hermes/.env (or the systemd Environment file)
+HERMES_SD_NOTIFY_WATCHDOG_SEC=60
+```
+
+Then reinstall or refresh the unit:
+
+```bash
+hermes gateway install    # regenerate the unit; picks up the env var
+systemctl --user daemon-reload
+systemctl --user restart hermes-gateway
+```
+
+When set, the generated unit switches to `Type=notify` and adds `WatchdogSec=<value>s` + `Restart=on-watchdog`. The existing `Restart=always` (crash/exit) stays in place — the two triggers union. The gateway pings systemd at half the interval per the sd_notify(3) man page.
+
+The env var is read by `refresh_systemd_unit_if_needed()` on every hermes update, so the setting survives updates automatically — no direct unit-file edits are needed (and would be overwritten). To disable, unset the env var and reinstall.
+
+:::
+
 :::info Multiple installations
 If you run multiple Hermes installations on the same machine (with different `HERMES_HOME` directories), each gets its own systemd service name. The default `~/.hermes` uses `hermes-gateway`; other installations use `hermes-gateway-<hash>`. The `hermes gateway` commands automatically target the correct service for your current `HERMES_HOME`.
 :::

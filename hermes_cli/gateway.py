@@ -2676,6 +2676,31 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     _drain_timeout = int(_get_restart_drain_timeout() or 0)
     restart_timeout = max(60, _drain_timeout) + 30
 
+    # Persistent enablement path for sd_notify + WatchdogSec — an operator
+    # sets HERMES_SD_NOTIFY_WATCHDOG_SEC (e.g. "60") in ~/.hermes/.env
+    # (or the equivalent systemd Environment file) and this unit
+    # generator promotes the service to Type=notify + WatchdogSec=<value>
+    # + Restart=on-watchdog. Unit regeneration (refresh_systemd_unit_
+    # if_needed) reads the same env var so the setting survives every
+    # code update — no direct unit edits, no drift.
+    #
+    # Restart semantics preserved: `Restart=always` (default) covers
+    # crash + planned restart exit code paths as before; the on-watchdog
+    # trigger is additive — it only fires when the WATCHDOG=1 heartbeat
+    # stops (the "process hung" case). When sd_notify is off, the unit
+    # is byte-identical to prior generations.
+    _sd_notify_watchdog = os.environ.get("HERMES_SD_NOTIFY_WATCHDOG_SEC", "").strip()
+    if _sd_notify_watchdog:
+        service_type = "notify"
+        watchdog_line = f"WatchdogSec={_sd_notify_watchdog}s\n"
+        # Restart=always alone won't trigger on a watchdog timeout — add
+        # on-watchdog explicitly. systemd unions the two.
+        restart_line = "Restart=always\nRestart=on-watchdog"
+    else:
+        service_type = "simple"
+        watchdog_line = ""
+        restart_line = "Restart=always"
+
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
@@ -2701,7 +2726,7 @@ Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+Type={service_type}
 User={username}
 Group={group_name}
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
@@ -2712,7 +2737,7 @@ Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=always
+{watchdog_line}{restart_line}
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
@@ -2740,13 +2765,13 @@ Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+Type={service_type}
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=always
+{watchdog_line}{restart_line}
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed

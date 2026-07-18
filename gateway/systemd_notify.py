@@ -139,6 +139,13 @@ def notify_stopping() -> bool:
     return notify("STOPPING=1")
 
 
+# Sub-second safety floor to prevent CPU-burn if a unit sets an absurdly
+# low WatchdogSec. 50ms is well below any realistic watchdog interval
+# (systemd's own default guidance is "seconds") while still respecting
+# sub-2s watchdogs like WATCHDOG_USEC=500000 (500ms → 250ms ping cadence).
+_HEARTBEAT_MIN_INTERVAL_S = 0.05
+
+
 def watchdog_usec() -> Optional[int]:
     """Return the watchdog interval in microseconds, or None.
 
@@ -146,14 +153,32 @@ def watchdog_usec() -> Optional[int]:
     set AND it's running under ``Type=notify``. The man page recommends
     pinging at half this interval to leave headroom for scheduling
     jitter.
+
+    Also honors ``$WATCHDOG_PID`` per the systemd protocol: if set, the
+    watchdog is only "owned" by the process whose PID matches. A
+    child/subprocess that inherits the env vars must NOT send WATCHDOG=1
+    pings on the parent's behalf. Absent WATCHDOG_PID = watchdog is
+    unscoped and owned by the receiving process (legacy systemd + the
+    common single-process case).
     """
     raw = os.environ.get("WATCHDOG_USEC")
     if not raw:
         return None
     try:
-        return int(raw)
+        usec = int(raw)
     except ValueError:
         return None
+    if usec <= 0:
+        return None
+    pid_raw = os.environ.get("WATCHDOG_PID")
+    if pid_raw is not None:
+        try:
+            pid = int(pid_raw)
+        except ValueError:
+            return None
+        if pid != os.getpid():
+            return None
+    return usec
 
 
 async def watchdog_heartbeat_task() -> None:
@@ -171,9 +196,14 @@ async def watchdog_heartbeat_task() -> None:
     usec = watchdog_usec()
     if usec is None:
         return
-    interval_s = max(1.0, usec / 1_000_000 / 2.0)
+    # Half-interval per the sd_notify(3) man page, with a small floor to
+    # guard against pathological low-WATCHDOG_USEC configs burning CPU.
+    # For WATCHDOG_USEC=500000 (500ms), this yields 250ms; for
+    # WATCHDOG_USEC=60_000_000 (60s), 30s. The floor only kicks in for
+    # sub-100ms watchdog deadlines, which no realistic deployment sets.
+    interval_s = max(_HEARTBEAT_MIN_INTERVAL_S, usec / 1_000_000 / 2.0)
     logger.info(
-        "systemd-notify: watchdog heartbeat starting (interval=%.1fs, half of WATCHDOG_USEC=%d)",
+        "systemd-notify: watchdog heartbeat starting (interval=%.3fs, half of WATCHDOG_USEC=%d)",
         interval_s,
         usec,
     )

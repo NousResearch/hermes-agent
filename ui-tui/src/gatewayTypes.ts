@@ -157,36 +157,36 @@ export interface BillingMutationResponse {
 export interface SubscriptionTierOption {
   tier_id: string
   name: string
-  tier_order: number                  // sorts the picker + upgrade/downgrade hint
-  dollars_per_month_display: string   // pre-formatted ($X / $X.YY)
+  tier_order: number // sorts the picker + upgrade/downgrade hint
+  dollars_per_month_display: string // pre-formatted ($X / $X.YY)
   monthly_credits: string | null
-  is_current: boolean                 // the active plan: shown, not selectable
-  is_enabled: boolean                 // false = grandfathered current tier
+  is_current: boolean // the active plan: shown, not selectable
+  is_enabled: boolean // false = grandfathered current tier
 }
 
 export interface SubscriptionStateResponse {
   ok: boolean
   logged_in: boolean
   is_admin: boolean
-  can_change_plan: boolean        // role gate (ADMIN/OWNER), from NAS
+  can_change_plan: boolean // role gate (ADMIN/OWNER), from NAS
   org_name: string | null
-  org_id: string | null           // org.id from the NAS response
+  org_id: string | null // org.id from the NAS response
   role: string | null
-  context: 'personal' | 'team'   // personal account vs team/org terminal
+  context: 'personal' | 'team' // personal account vs team/org terminal
   current: {
-    tier_id: string | null        // null = free (no active sub)
+    tier_id: string | null // null = free (no active sub)
     tier_name: string | null
     monthly_credits: string | null
     credits_remaining: string | null
-    cycle_ends_at: string | null  // ISO
+    cycle_ends_at: string | null // ISO
     pending_downgrade_tier_name: string | null
     pending_downgrade_at: string | null
-    pending_downgrade_display: string | null  // formatted pending_downgrade_at
+    pending_downgrade_display: string | null // formatted pending_downgrade_at
     cancel_at_period_end: boolean // subscription scheduled to cancel at period end
-    cancellation_effective_at: string | null  // ISO when cancellation takes effect
-    cancellation_effective_display: string | null  // formatted cancellation_effective_at
+    cancellation_effective_at: string | null // ISO when cancellation takes effect
+    cancellation_effective_display: string | null // formatted cancellation_effective_at
   } | null
-  tiers: SubscriptionTierOption[]  // selectable catalog for the in-terminal picker
+  tiers: SubscriptionTierOption[] // selectable catalog for the in-terminal picker
   portal_url: string | null
   error?: string | null
   // Shared dollar usage model (two-bar view), embedded by the gateway so the
@@ -206,8 +206,8 @@ export interface SubscriptionPreviewResponse {
   target_tier_id?: string | null
   target_tier_name?: string | null
   monthly_credits_delta?: string | null
-  amount_due_now_cents?: number | null  // the prorated upfront charge for an upgrade
-  effective_at?: string | null          // ISO, when a scheduled change lands
+  amount_due_now_cents?: number | null // the prorated upfront charge for an upgrade
+  effective_at?: string | null // ISO, when a scheduled change lands
   // typed-error envelope (present when ok=false)
   error?: string
   message?: string

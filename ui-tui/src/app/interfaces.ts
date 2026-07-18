@@ -3,7 +3,16 @@ import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'rea
 
 import type { PasteEvent } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { BillingCardInfo, BillingMutationResponse, BillingStateResponse, ImageAttachResponse, SessionCloseResponse, SubscriptionPreviewResponse, SubscriptionStateResponse, SubscriptionUpgradeResponse } from '../gatewayTypes.js'
+import type {
+  BillingCardInfo,
+  BillingMutationResponse,
+  BillingStateResponse,
+  ImageAttachResponse,
+  SessionCloseResponse,
+  SubscriptionPreviewResponse,
+  SubscriptionStateResponse,
+  SubscriptionUpgradeResponse
+} from '../gatewayTypes.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
@@ -96,9 +105,9 @@ export type BillingScreen = 'autoreload' | 'buy' | 'confirm' | 'limit' | 'overvi
 
 /** Outcome of a charge attempt — lets the overlay route without tearing down. */
 export type BillingChargeOutcome =
-  | 'submitted'          // 202 accepted; settlement is reported via transcript lines
-  | 'needs_remote_spending'  // insufficient_scope → route to the stepup screen
-  | 'error'              // any other failure (already surfaced via sys)
+  | 'submitted' // 202 accepted; settlement is reported via transcript lines
+  | 'needs_remote_spending' // insufficient_scope → route to the stepup screen
+  | 'error' // any other failure (already surfaced via sys)
 
 /**
  * The functions the overlay needs to talk to the gateway and emit
@@ -173,10 +182,7 @@ export type SubscriptionScreen = 'confirm' | 'overview' | 'picker' | 'result' | 
 
 // The action held while the stepup screen grants terminal billing, replayed on
 // grant: re-preview a tier, re-apply the confirmed pending change, or re-resume.
-export type SubscriptionStepUpRetry =
-  | { kind: 'apply' }
-  | { kind: 'preview'; tierId: string }
-  | { kind: 'resume' }
+export type SubscriptionStepUpRetry = { kind: 'apply' } | { kind: 'preview'; tierId: string } | { kind: 'resume' }
 
 /** Outcome of a terminal-billing step-up: granted, plus the typed denial (for copy). */
 export interface StepUpResult {

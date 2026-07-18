@@ -79,8 +79,22 @@ describe('/usage slash command', () => {
           renews_display: 'Jul 1, 2026',
           total_spendable_display: '$26.00',
           has_topup: true,
-          plan_bar: { kind: 'plan', remaining_display: '$14.00', total_display: '$20.00', spent_display: '$6.00', pct_used: 30, fill_fraction: 0.7 },
-          topup_bar: { kind: 'topup', remaining_display: '$12.00', total_display: '$12.00', spent_display: '$0.00', pct_used: null, fill_fraction: 1 }
+          plan_bar: {
+            kind: 'plan',
+            remaining_display: '$14.00',
+            total_display: '$20.00',
+            spent_display: '$6.00',
+            pct_used: 30,
+            fill_fraction: 0.7
+          },
+          topup_bar: {
+            kind: 'topup',
+            remaining_display: '$12.00',
+            total_display: '$12.00',
+            spent_display: '$0.00',
+            pct_used: null,
+            fill_fraction: 1
+          }
         }
       })
     })

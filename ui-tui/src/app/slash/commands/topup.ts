@@ -13,7 +13,8 @@ import type { SlashCommand, SlashRunCtx } from '../types.js'
 // Poll cadence (plan §5, frozen): 2s interval, 5-minute cap.
 const POLL_INTERVAL_MS = 2000
 const POLL_CAP_MS = 5 * 60 * 1000
-const UNCONFIRMED_CHARGE_MESSAGE = '🟡 Your last charge’s outcome is unconfirmed — check your balance/history before retrying.'
+const UNCONFIRMED_CHARGE_MESSAGE =
+  '🟡 Your last charge’s outcome is unconfirmed — check your balance/history before retrying.'
 
 type Sys = (text: string) => void
 
@@ -74,7 +75,9 @@ const renderBillingError = (
       break
 
     case 'role_required':
-      sys('Adding funds needs someone with billing permissions (owner, admin, or finance admin), or manage this on the portal.')
+      sys(
+        'Adding funds needs someone with billing permissions (owner, admin, or finance admin), or manage this on the portal.'
+      )
 
       break
 
@@ -94,7 +97,9 @@ const renderBillingError = (
       break
 
     case 'auto_top_up_disabled_failures':
-      sys('Auto-reload was turned off after repeated charge failures. Fix the card issue, then re-enable it from /topup → Auto-reload.')
+      sys(
+        'Auto-reload was turned off after repeated charge failures. Fix the card issue, then re-enable it from /topup → Auto-reload.'
+      )
 
       break
 
@@ -199,7 +204,11 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: st
         ctx.guarded<BillingChargeStatusResponse>(r => {
           if (!r.ok) {
             // 429/503 while polling = retry-after, NOT a failure. Back off + continue.
-            if (r.error === 'rate_limited' || r.error === 'temporarily_unavailable' || r.error === 'stripe_unavailable') {
+            if (
+              r.error === 'rate_limited' ||
+              r.error === 'temporarily_unavailable' ||
+              r.error === 'stripe_unavailable'
+            ) {
               if (timedOut()) {
                 return
               }

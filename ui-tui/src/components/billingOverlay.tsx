@@ -157,7 +157,9 @@ function OverviewScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
           full menu — members/billing-off get the portal note instead. */}
       {full && (
         <Text color={t.color.muted}>
-          {s.card ? `Card: ${s.card.display ?? s.card.masked}` : 'No saved card on file — “Add funds” walks you through adding one.'}
+          {s.card
+            ? `Card: ${s.card.display ?? s.card.masked}`
+            : 'No saved card on file — “Add funds” walks you through adding one.'}
         </Text>
       )}
       {note && (
@@ -354,14 +356,19 @@ function BuyScreen({ ctx, onPatch, s, t }: ScreenProps) {
           Add funds
         </Text>
         <Text color={t.color.text}>No saved card on file.</Text>
-        <Text color={t.color.muted}>Add a card once on the portal billing page — after that you can top up right from the terminal.</Text>
+        <Text color={t.color.muted}>
+          Add a card once on the portal billing page — after that you can top up right from the terminal.
+        </Text>
         <Text />
         {rows.map((label, i) => (
           <MenuRow active={cSel === i} index={i + 1} key={label} label={label} t={t} />
         ))}
         {error && <Text color={t.color.error}>{error}</Text>}
         <Text />
-        {footer(checking ? 'Checking for a card…' : `↑/↓ select · 1-${rows.length} quick pick · Enter confirm · Esc back`, t)}
+        {footer(
+          checking ? 'Checking for a card…' : `↑/↓ select · 1-${rows.length} quick pick · Enter confirm · Esc back`,
+          t
+        )}
       </Box>
     )
   }
@@ -475,7 +482,9 @@ function ConfirmScreen({
       <Text color={t.color.muted}>{payLine}</Text>
       {/* Provenance-less payloads (older NAS) keep the generic line; when the
           resolver says WHY this card, payLine already carries it. */}
-      {s.card && !s.card.resolved_via && <Text color={t.color.muted}>Your card saved on the portal will be charged.</Text>}
+      {s.card && !s.card.resolved_via && (
+        <Text color={t.color.muted}>Your card saved on the portal will be charged.</Text>
+      )}
       <Text color={t.color.muted}>By confirming, you allow Nous Research to charge your card.</Text>
       <Text />
       <ActionRow active={sel === 0} color={t.color.ok} label={`Pay $${amount} now`} t={t} />
@@ -677,9 +686,12 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
   const ar = s.auto_reload
   const enabled = Boolean(ar?.enabled)
   const distinctCard = ar?.card.kind === 'distinct' ? ar.card : null
+
   const distinctCardName = distinctCard
-    ? [distinctCard.brand, distinctCard.last4 ? `••${distinctCard.last4}` : null].filter(Boolean).join(' ') || 'a different card'
+    ? [distinctCard.brand, distinctCard.last4 ? `••${distinctCard.last4}` : null].filter(Boolean).join(' ') ||
+      'a different card'
     : null
+
   const manageCardLabel = 'Use your card on file — manage on portal'
 
   // Prefill from state (strip the $ from the *_usd raw fields if present).
@@ -690,14 +702,17 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
   const [error, setError] = useState<null | string>(null)
   // focusRow: 0=threshold field, 1=reloadTo field, 2=Agree, 3=Turn off (if enabled), last=Cancel
   const manageCardRows = distinctCard && s.portal_url ? [manageCardLabel] : []
+
   const actionRows = enabled
     ? ['Agree and turn on', 'Turn off', ...manageCardRows, 'Cancel']
     : ['Agree and turn on', ...manageCardRows, 'Cancel']
+
   const actionColors: Record<string, string> = {
     'Agree and turn on': t.color.ok,
     'Turn off': t.color.warn,
     [manageCardLabel]: t.color.accent
   }
+
   const FIELD_ROWS = 2
   const [row, setRow] = useState(0)
 

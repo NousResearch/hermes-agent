@@ -313,19 +313,28 @@ describe('/billing slash command (overlay-driven)', () => {
   it.each([
     ['admin', 'An admin turned off terminal billing for this terminal'],
     ['self', 'You turned off terminal billing for this terminal']
-  ])('ctx.charge remote_spending_revoked (%s) → clears the overlay (no zombie button) + actor copy', async (actor, copy) => {
-    const { run, sys } = buildCtx({
-      'billing.state': ownerState(),
-      'billing.charge': { ok: false, error: 'remote_spending_revoked', actor, recovery: 'reconnect', idempotency_key: 'k' }
-    })
+  ])(
+    'ctx.charge remote_spending_revoked (%s) → clears the overlay (no zombie button) + actor copy',
+    async (actor, copy) => {
+      const { run, sys } = buildCtx({
+        'billing.state': ownerState(),
+        'billing.charge': {
+          ok: false,
+          error: 'remote_spending_revoked',
+          actor,
+          recovery: 'reconnect',
+          idempotency_key: 'k'
+        }
+      })
 
-    await run('')
-    getOverlayState().billing!.ctx.charge('100')
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(printed(sys)).toContain(copy)
-    expect(getOverlayState().billing).toBeNull()
-  })
+      await run('')
+      getOverlayState().billing!.ctx.charge('100')
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(printed(sys)).toContain(copy)
+      expect(getOverlayState().billing).toBeNull()
+    }
+  )
 
   it('ctx.charge session_revoked → clears overlay + re-login (not reconnect) copy', async () => {
     const { run, sys } = buildCtx({
@@ -353,9 +362,7 @@ describe('/billing slash command (overlay-driven)', () => {
         return Promise.reject(new Error('socket closed'))
       }
 
-      return Promise.resolve(
-        method === 'billing.charge' ? { ok: true, charge_id: 'ch_1', idempotency_key: 'k' } : null
-      )
+      return Promise.resolve(method === 'billing.charge' ? { ok: true, charge_id: 'ch_1', idempotency_key: 'k' } : null)
     })
     await getOverlayState().billing!.ctx.charge('100')
     await vi.waitFor(() => expect(printed(sys)).toContain('outcome is unconfirmed'))

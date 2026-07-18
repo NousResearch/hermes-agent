@@ -106,7 +106,10 @@ const buildSubscriptionCtx = (
       // Carry the typed denial (session_revoked / remote_spending_revoked /
       // rate_limited / …) so the stepup screen shows the right recovery.
       .then(r => ({ error: r?.error, granted: !!(r && r.ok && r.granted), message: r?.message }))
-      .catch(() => ({ granted: false, message: 'Could not reach the billing service — check your connection, then retry.' })),
+      .catch(() => ({
+        granted: false,
+        message: 'Could not reach the billing service — check your connection, then retry.'
+      })),
   resume: () =>
     ctx.gateway
       .rpc<BillingMutationResponse>('subscription.resume', {})
